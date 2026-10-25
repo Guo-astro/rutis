@@ -97,8 +97,8 @@ fn binary_runtime_name(prefix: &str, path: &std::path::Path) -> String {
 
 /// The key the runtime session named `name` is provided under
 /// (`RuntimeSession#gpu`).
-pub fn runtime_session_key(name: &str) -> rutis::TypeKey {
-    rutis::TypeKey::keyed_dynamic::<dyn RuntimeSession>(name.to_owned())
+pub fn runtime_session_key(name: &str) -> rutis::host::Key<dyn RuntimeSession> {
+    rutis::host::Key::dynamic(name.to_owned())
 }
 
 #[cfg(all(test, any(feature = "go", feature = "swift")))]

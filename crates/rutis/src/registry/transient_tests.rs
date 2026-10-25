@@ -3,23 +3,24 @@
 
 use super::*;
 use crate::ctx::Ctx;
-use crate::{BoxFuture, CordisError, DependencyStatus, Effect, Plugin};
+use crate::host::CtxHost;
+use crate::{BoxFuture, DependencyStatus, Effect, Error};
 use std::time::Duration;
 
 struct Declares {
     keys: Vec<TypeKey>,
 }
 
-impl Plugin for Declares {
+impl crate::DynPlugin for Declares {
     fn name(&self) -> &str {
         "declares"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.keys
+    fn injects(&self) -> Vec<TypeKey> {
+        self.keys.to_vec()
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }

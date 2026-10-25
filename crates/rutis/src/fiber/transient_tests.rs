@@ -2,17 +2,19 @@
 //! provide 的清理记录、provided 记账在长寿 root 上回到基线。
 
 use super::*;
-use crate::{BoxFuture, CordisError, Effect, Event, Listener, Plugin};
+use crate::host::CtxHost;
+use crate::internal::CtxInternal;
+use crate::{BoxFuture, Effect, Error, Event};
 use std::time::Duration;
 
 struct Noop;
 
-impl Plugin for Noop {
+impl crate::DynPlugin for Noop {
     fn name(&self) -> &str {
         "noop"
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -48,7 +50,7 @@ async fn churn_root_provides_release_accounting() {
     let root = ctx.weak_fiber().upgrade().expect("root alive");
     for i in 0..25 {
         let key = TypeKey::keyed_dynamic::<u32>(format!("svc/{i}"));
-        let disposer = ctx.provide_as::<u32>(key, Arc::new(i)).unwrap();
+        let disposer = ctx.provide_key::<u32>(key, Arc::new(i)).unwrap();
         disposer.dispose().await.unwrap();
     }
     assert!(
@@ -70,7 +72,7 @@ async fn shutdown_completes_dispose_task_queued_behind_it() {
     let root = ctx.weak_fiber().upgrade().unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    ctx.effect({
+    ctx.effect_raw({
         let entered = entered.clone();
         let release = release.clone();
         move || {
@@ -140,13 +142,13 @@ async fn issue_234_root_dispose_before_shutdown_shares_one_cleanup() {
     let ctx = Ctx::root().unwrap();
     let root = ctx.root_view().unwrap();
     let cleanups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    ctx.effect({
+    ctx.effect_raw({
         let cleanups = cleanups.clone();
         move || {
             Effect::AsyncDisposer(Box::new(move || {
                 Box::pin(async move {
                     cleanups.fetch_add(1, Ordering::SeqCst);
-                    Err(CordisError::PluginFailed("root cleanup failed".into()))
+                    Err(ErrorKind::PluginFailed("root cleanup failed".into()).into())
                 })
             }))
         }
@@ -174,34 +176,32 @@ impl Event for ProbeEvent {
     type Value = ();
 }
 
-fn own_key(ctx: &Ctx) -> crate::EventKey<ProbeEvent> {
-    crate::EventKey::dynamic(format!("rutis-test-instance-churn/{}", ctx.instance()))
+fn own_name(ctx: &Ctx) -> String {
+    format!("rutis-test-instance-churn/{}", ctx.instance())
 }
 
-struct IdleListener;
-impl Listener<ProbeEvent> for IdleListener {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a ProbeEvent,
-        _: crate::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
+/// A listener that does nothing.
+fn idle_listener(
+    _: Arc<ProbeEvent>,
+    _: crate::events::Call<ProbeEvent>,
+) -> std::future::Ready<Result<Option<()>, Error>> {
+    std::future::ready(Ok(None))
 }
 
 struct ChurnPlugin(Vec<TypeKey>);
-impl Plugin for ChurnPlugin {
+impl crate::DynPlugin for ChurnPlugin {
     fn name(&self) -> &str {
         "churn-plugin"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
-            ctx.events().on(ctx, &own_key(ctx), IdleListener)?;
+            ctx.provide_key(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
+            ctx.listen::<ProbeEvent>()
+                .name(own_name(ctx))
+                .on(idle_listener)?;
             Ok(Effect::Done)
         })
     }
@@ -234,20 +234,22 @@ async fn thousand_shutdowns_reclaim_all_root_side_records() {
 /// a dispatch chain for it while the callback runs, and listens on a key
 /// every instance shares, so one listener list holds all of them.
 struct EmittingChurnPlugin(Vec<TypeKey>);
-impl Plugin for EmittingChurnPlugin {
+impl crate::DynPlugin for EmittingChurnPlugin {
     fn name(&self) -> &str {
         "emitting-churn-plugin"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_as(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
-            let key = own_key(ctx);
-            ctx.events().on(ctx, &key, IdleListener)?;
-            ctx.events().on(ctx, &crate::EventKey::of(), IdleListener)?;
-            ctx.events().emit(ctx, &key, Arc::new(ProbeEvent))?;
+            ctx.provide_key(TypeKey::instance::<u64>(ctx.instance()), Arc::new(1u64))?;
+            let name = own_name(ctx);
+            ctx.listen::<ProbeEvent>()
+                .name(name.clone())
+                .on(idle_listener)?;
+            ctx.on::<ProbeEvent>(idle_listener)?;
+            crate::internal::CtxInternal::named(ctx, name).emit(ProbeEvent)?;
             Ok(Effect::Done)
         })
     }

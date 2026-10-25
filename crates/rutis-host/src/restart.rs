@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use rutis::{CordisError, FiberView};
+use rutis::host::{ErrorKind, FiberView};
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use tokio::time::Instant;
 
@@ -66,7 +66,7 @@ pub async fn supervise(
         // It runs again, or its start failed and it is down once more,
         // which counts as one more end.
         if let Err(error) = fiber.restart().await {
-            if matches!(*error, CordisError::Closed | CordisError::InactiveEffect) {
+            if matches!(*error, ErrorKind::Closed | ErrorKind::InactiveEffect) {
                 return Supervised::Closed;
             }
         }
@@ -91,7 +91,9 @@ async fn ended(handle: &RuntimeHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rutis::{BoxFuture, Ctx, Effect, Plugin};
+    use rutis::host::CtxHost;
+    use rutis::host::{BoxFuture, DynPlugin, Effect};
+    use rutis::{Ctx, Error};
     use rutis_bridge::runtime::RuntimePlugin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -184,12 +186,12 @@ mod tests {
         }
     }
 
-    impl Plugin for Crashing {
+    impl DynPlugin for Crashing {
         fn name(&self) -> &str {
             "crashing-runtime"
         }
 
-        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             self.starts.fetch_add(1, Ordering::SeqCst);
             self.runtime.starting();
             self.runtime.failed("crashed");

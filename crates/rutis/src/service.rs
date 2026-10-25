@@ -77,6 +77,7 @@
 //! }
 //! ```
 
+use crate::error::ErrorKind;
 use std::any::{Any, TypeId};
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -88,7 +89,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::{BoxFuture, CordisError, Ctx, Disposer, TypeKey};
+use crate::{BoxFuture, Ctx, Disposer, Error, TypeKey};
 
 pub use erased_serde;
 
@@ -108,7 +109,7 @@ pub struct Entry {
 }
 
 /// Read the marked service `provision` provided at `key` through `ctx`, by
-/// the strict read path ([`Ctx::require_provided_as`]): `check()` applies,
+/// the strict read path ([`CtxInternal::require_provided_as`](crate::internal::CtxInternal::require_provided_as)): `check()` applies,
 /// read interceptors apply with `actor` (the calling row) as the reader,
 /// and a read that finds another binding than the one provided (the slot
 /// provided again, by another build after a swap, say) is refused.
@@ -407,18 +408,18 @@ pub fn name_of(type_id: TypeId) -> Option<&'static str> {
 /// a block names, else the derived one. Two blocks naming it differently
 /// is an error, and so is a method name two blocks both export: the
 /// dispatcher could only ever reach one of them (#541).
-pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisError> {
+pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, Error> {
     let mut named: Option<&'static str> = None;
     let mut methods = HashSet::new();
     for entry in entries {
         for method in entry.methods() {
             if !methods.insert(*method) {
-                return Err(CordisError::Validation {
+                return Err(ErrorKind::Validation {
                     issues: vec![format!(
                         "two #[rutis::service] blocks of {} both export `{method}`: rename one (they are the same name for other languages)",
                         entry.type_name()
                     )],
-                });
+                }.into());
             }
         }
         if !entry.named {
@@ -426,13 +427,14 @@ pub fn exported_name(entries: &[&'static Entry]) -> Result<&'static str, CordisE
         }
         match named {
             Some(name) if name != entry.name => {
-                return Err(CordisError::Validation {
+                return Err(ErrorKind::Validation {
                     issues: vec![format!(
                         "two #[rutis::service] blocks of {} name it `{name}` and `{}`",
                         entry.type_name(),
                         entry.name
                     )],
-                })
+                }
+                .into())
             }
             _ => named = Some(entry.name),
         }
@@ -450,13 +452,13 @@ pub struct Exposure<'a> {
     pub ctx: &'a Ctx,
     /// Where the native service is provided.
     pub native: &'a TypeKey,
-    /// The isolation scope ([`Ctx::isolate`]) the native service is
+    /// The isolation scope ([`CtxHost::isolate`](crate::host::CtxHost::isolate)) the native service is
     /// provided in, if any: the name is served in the same one.
     pub scope: Option<&'a str>,
     /// The marked blocks of its type.
     pub entries: Vec<&'static Entry>,
     /// The `check()` predicate the native binding is gated by
-    /// ([`Ctx::provide_as_with_check`]): it gates the name too.
+    /// ([`CtxInternal::provide_checked`](crate::internal::CtxInternal::provide_checked)): it gates the name too.
     pub check: Option<Check>,
     /// The native binding being provided, for [`Entry::resolve`].
     pub provision: Arc<Provision>,
@@ -474,11 +476,11 @@ pub trait Exposer: Send + Sync + 'static {
     /// Whether the marked service `exposure` describes can be served by
     /// name: its blocks agree on the name and the name is free where it
     /// would be served ([`vacant`]). Nothing is registered.
-    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), CordisError>;
+    fn admit(&self, exposure: &Exposure<'_>) -> Result<(), Error>;
     /// Serve the marked service `exposure` describes by name, in the same
     /// scope as the native one, which is provided by now. The returned
     /// disposer stops serving it.
-    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, CordisError>;
+    fn expose(&self, exposure: Exposure<'_>) -> Result<Disposer, Error>;
 }
 
 /// Whether a provide of `key` on `ctx` finds its slot free (in the
@@ -489,7 +491,7 @@ pub fn vacant(ctx: &Ctx, key: &TypeKey) -> bool {
 }
 
 /// The `check()` predicate a service was provided with
-/// ([`Ctx::provide_as_with_check`]): the entry by name is gated by it too.
+/// ([`CtxInternal::provide_checked`](crate::internal::CtxInternal::provide_checked)): the entry by name is gated by it too.
 pub type Check = Arc<dyn Fn() -> bool + Send + Sync>;
 
 static EXPOSER: OnceLock<&'static dyn Exposer> = OnceLock::new();
@@ -511,7 +513,7 @@ pub(crate) fn marked<T: ?Sized + 'static>(ctx: &Ctx) -> Option<Vec<&'static Entr
 }
 
 /// Whether a marked service can be served by name ([`Exposer::admit`]).
-pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), CordisError> {
+pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), Error> {
     match EXPOSER.get() {
         Some(exposer) => exposer.admit(exposure),
         None => Ok(()),
@@ -519,7 +521,7 @@ pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), CordisError> {
 }
 
 /// Serve a marked service by name ([`marked`]).
-pub(crate) fn expose(exposure: Exposure<'_>) -> Option<Result<Disposer, CordisError>> {
+pub(crate) fn expose(exposure: Exposure<'_>) -> Option<Result<Disposer, Error>> {
     let exposer = EXPOSER.get()?;
     Some(exposer.expose(exposure))
 }
@@ -549,7 +551,7 @@ pub enum Answer {
 /// A failed call into or out of a marked service: what a function passed
 /// by another language fails with, and what a method's `Err` is thrown as.
 /// The error type of a function parameter must convert from it
-/// (`CordisError`, `anyhow::Error` and boxed errors do).
+/// (`Error`, `anyhow::Error` and boxed errors do).
 pub struct CallError {
     message: String,
     raw: Option<Box<dyn Any + Send + Sync>>,
@@ -594,12 +596,6 @@ impl std::fmt::Debug for CallError {
 }
 
 impl std::error::Error for CallError {}
-
-impl From<CallError> for CordisError {
-    fn from(error: CallError) -> Self {
-        CordisError::PluginFailed(Box::new(error))
-    }
-}
 
 /// A function another language passed, to call back.
 pub trait Function: Send + Sync + 'static {
@@ -903,8 +899,9 @@ impl FailString for &&&&&Failure<'_, String> {
 pub trait FailCordis {
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError;
 }
-impl FailCordis for &&&&Failure<'_, CordisError> {
+impl FailCordis for &&&&Failure<'_, Error> {
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
+        // thrown under the name it had in 0.16, as every language reads it
         let code = debug_ident(&format!("{:?}", self.0));
         wire.failure("CordisError", &code, self.0.to_string(), None)
     }

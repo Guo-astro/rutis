@@ -193,7 +193,7 @@ async fn a_row_that_would_fail_changes_nothing() {
 
 /// The running copy of the row `id`: its plugin and that plugin's
 /// generation (a restart changes either).
-fn copy(host: &Host, id: &str) -> (Option<rutis::PluginId>, Option<u64>) {
+fn copy(host: &Host, id: &str) -> (Option<rutis::host::PluginId>, Option<u64>) {
     let entry = host
         .loader
         .entries()

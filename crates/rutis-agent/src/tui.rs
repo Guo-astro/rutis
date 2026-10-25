@@ -17,12 +17,13 @@
 //! ## 线程模型
 //!
 //! `ScrollbackState` 内部的 markdown 渲染器含 onig_sys 的 `*mut`(非 Send),
-//! 故 `App` 非 Send,不能跨 `tokio::select!` 的 await 持有(apply 返回的
-//! `BoxFuture` 要求 Send)。解法:TUI 是天然单线程的,把 `App` + `Terminal`
+//! 故 `App` 非 Send,不能跨 `tokio::select!` 的 await 持有(`Plugin::apply`
+//! 返回的 future 要求 Send)。解法:TUI 是天然单线程的,把 `App` + `Terminal`
 //! 放进一个专用 OS 线程跑同步渲染循环,async `apply` 只持有 Send 的通道句柄
 //! 做 IO 多路复用,转发 crossterm 事件 / agent 事件 / 取消信号进 std 通道,
 //! 等 OS 线程结束。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
@@ -40,7 +41,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
-use rutis::{BoxFuture, Call, CordisError, Ctx, Effect, Listener, Plugin, TypeKey};
+use rutis::host::ErrorKind;
+use rutis::{Ctx, Disposer, Error, Event, Plugin};
 use rutui_core::scrollback::block::RenderBlock;
 use rutui_core::scrollback::blocks::{
     AgentMessageBlock, OtherToolCallBlock, SessionEvent, SessionEventBlock, SystemMessageBlock,
@@ -57,17 +59,13 @@ use crate::events::{AgentReasoning, AgentTextDelta, AgentToolCall, AgentToolResu
 /// TUI 前端插件:apply 时读取 agent 服务(启动时门控),不声明依赖——
 /// driver fiber 热重启时 TUI 不级联驱逐,UI 保持运行(热重启意图)。
 pub struct TuiPlugin {
-    inject_keys: Vec<TypeKey>,
     /// 启动时置顶的说明行(如后端类型提示,离线脚本示例用它自我标识)。
     intro: Vec<String>,
 }
 
 impl TuiPlugin {
     pub fn new() -> Self {
-        Self {
-            inject_keys: Vec::new(),
-            intro: Vec::new(),
-        }
+        Self { intro: Vec::new() }
     }
 
     /// 启动时在对话区顶部插入灰色说明行。
@@ -532,310 +530,221 @@ fn copy_to_clipboard_os52(text: &str) {
 
 // ── 事件 → UI 通道监听器(归 TUI fiber 所有,D28)─────────────────────
 
-/// `AgentTextDelta` → UI。
-struct DeltaL(mpsc::Sender<UiCmd>);
-impl Listener<AgentTextDelta> for DeltaL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTextDelta,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let tx = self.0.clone();
-        let ev = UiCmd::TextDelta(e.delta.clone());
-        Box::pin(async move {
+/// 监听 `E`:每个事件经 `cmd` 转成 [`UiCmd`] 送进 UI 通道。
+fn forward<E: Event>(
+    ctx: &Ctx,
+    tx: &mpsc::Sender<UiCmd>,
+    cmd: fn(&E) -> UiCmd,
+) -> rutis::Result<Disposer> {
+    let tx = tx.clone();
+    ctx.on::<E>(move |event, _| {
+        let tx = tx.clone();
+        let ev = cmd(&event);
+        async move {
             let _ = tx.send(ev).await;
             Ok(None)
-        })
-    }
-}
-
-/// `AgentToolCall` → UI。
-struct ToolCallL(mpsc::Sender<UiCmd>);
-impl Listener<AgentToolCall> for ToolCallL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentToolCall,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let tx = self.0.clone();
-        let ev = UiCmd::ToolCall {
-            name: e.name.clone(),
-            args: e.args.to_string(),
-        };
-        Box::pin(async move {
-            let _ = tx.send(ev).await;
-            Ok(None)
-        })
-    }
-}
-
-/// `AgentToolResult` → UI。
-struct ToolResultL(mpsc::Sender<UiCmd>);
-impl Listener<AgentToolResult> for ToolResultL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentToolResult,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let tx = self.0.clone();
-        let ev = UiCmd::ToolResult {
-            name: e.name.clone(),
-            ok: e.ok,
-            output: e.output.clone(),
-        };
-        Box::pin(async move {
-            let _ = tx.send(ev).await;
-            Ok(None)
-        })
-    }
-}
-
-/// `AgentTurnEnd` → UI(兜底:followup 任务的返回值之外,turn 状态也经事件)。
-struct TurnEndL(mpsc::Sender<UiCmd>);
-impl Listener<AgentTurnEnd> for TurnEndL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentTurnEnd,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let tx = self.0.clone();
-        let ev = UiCmd::TurnEnd {
-            ok: e.ok,
-            error: e.error.clone(),
-        };
-        Box::pin(async move {
-            let _ = tx.send(ev).await;
-            Ok(None)
-        })
-    }
-}
-
-/// `AgentReasoning` → UI(推理/reasoning 增量,渲染为 Thinking 块)。
-struct ReasoningL(mpsc::Sender<UiCmd>);
-impl Listener<AgentReasoning> for ReasoningL {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a AgentReasoning,
-        _call: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let tx = self.0.clone();
-        let ev = UiCmd::ReasoningDelta(e.delta.clone());
-        Box::pin(async move {
-            let _ = tx.send(ev).await;
-            Ok(None)
-        })
-    }
+        }
+    })
 }
 
 impl Plugin for TuiPlugin {
+    /// 可选依赖:apply 时读一次,不门控、不随 agent 重载。
+    type Deps = Option<Arc<dyn Agent>>;
+
     fn name(&self) -> &str {
         "tui"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.inject_keys
-    }
+    async fn apply(&self, ctx: &Ctx, agent: Option<Arc<dyn Agent>>) -> rutis::Result {
+        // 启动门控:agent 服务未就绪则报错(不声明依赖,避免热重启时驱逐)
+        if agent.is_none() {
+            return Err(ErrorKind::InjectUnsatisfied(vec!["agent".to_string()]).into());
+        }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // 启动门控:agent 服务未就绪则报错(不声明依赖,避免热重启时驱逐)
-            let _agent = ctx
-                .get_as::<dyn Agent>(crate::agent_key())
-                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["agent".to_string()]))?;
+        // 终端恢复兜底:任何卸载路径(fiber dispose / apply 提前失败)
+        ctx.effect(|| async {
+            let _ = restore_terminal();
+            Ok(())
+        })?;
+        setup_terminal().map_err(|e| Error::msg(format!("tui setup: {e}")))?;
 
-            // 终端恢复兜底:任何卸载路径(fiber dispose / apply 提前失败)
-            ctx.effect(|| {
-                Effect::Disposer(Box::new(|| {
-                    let _ = restore_terminal();
-                    Ok(())
-                }))
-            })?;
-            setup_terminal()
-                .map_err(|e| CordisError::PluginFailed(format!("tui setup: {e}").into()))?;
+        // async 侧(.Send)持有的通道:
+        //   ui_tx —— agent 事件 listener → 渲染线程
+        //   (input 经 EventStream 直接读,转 key 到 thread_tx)
+        let (ui_tx, mut ui_rx) = mpsc::channel::<UiCmd>(256);
+        // agent/* 事件订阅:监听器归本 fiber 所有,随 fiber 卸载(D28)
+        // 推理/reasoning 增量,渲染为 Thinking 块
+        forward::<AgentReasoning>(ctx, &ui_tx, |e| UiCmd::ReasoningDelta(e.delta.clone()))?;
+        forward::<AgentTextDelta>(ctx, &ui_tx, |e| UiCmd::TextDelta(e.delta.clone()))?;
+        forward::<AgentToolCall>(ctx, &ui_tx, |e| UiCmd::ToolCall {
+            name: e.name.clone(),
+            args: e.args.to_string(),
+        })?;
+        forward::<AgentToolResult>(ctx, &ui_tx, |e| UiCmd::ToolResult {
+            name: e.name.clone(),
+            ok: e.ok,
+            output: e.output.clone(),
+        })?;
+        // 兜底:followup 任务的返回值之外,turn 状态也经事件
+        forward::<AgentTurnEnd>(ctx, &ui_tx, |e| UiCmd::TurnEnd {
+            ok: e.ok,
+            error: e.error.clone(),
+        })?;
 
-            // async 侧(.Send)持有的通道:
-            //   ui_tx —— agent 事件 listener → 渲染线程
-            //   (input 经 EventStream 直接读,转 key 到 thread_tx)
-            let (ui_tx, mut ui_rx) = mpsc::channel::<UiCmd>(256);
-            // agent/* 事件订阅:监听器归本 fiber 所有,随 fiber 卸载(D28)
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), ReasoningL(ui_tx.clone()))?;
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), DeltaL(ui_tx.clone()))?;
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), ToolCallL(ui_tx.clone()))?;
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), ToolResultL(ui_tx.clone()))?;
-            ctx.events()
-                .on(ctx, &rutis::EventKey::of(), TurnEndL(ui_tx.clone()))?;
+        // 渲染线程 ↔ async 侧的 std 通道(Send,跨 OS 线程)
+        let (thread_tx, thread_rx) = std::sync::mpsc::channel::<ThreadMsg>();
+        // 渲染线程回传结果(Quit/Cancel/Submit 动作需在 tokio runtime 执行)
+        let (outcome_tx, mut outcome_rx) = oneshot::channel::<rutis::Result>();
 
-            // 渲染线程 ↔ async 侧的 std 通道(Send,跨 OS 线程)
-            let (thread_tx, thread_rx) = std::sync::mpsc::channel::<ThreadMsg>();
-            // 渲染线程回传结果(Quit/Cancel/Submit 动作需在 tokio runtime 执行)
-            let (outcome_tx, mut outcome_rx) = oneshot::channel::<Result<(), CordisError>>();
+        let intro = self.intro.clone();
+        let handle = tokio::runtime::Handle::current();
+        // 渲染线程持 ctx(同步 get 最新 agent 服务;driver 热重启后
+        // 重新 get 到新实例,不缓存旧 driver)
+        let thread_ctx = ctx.clone();
 
-            let intro = self.intro.clone();
-            let handle = ctx.handle().clone();
-            // 渲染线程持 ctx(同步 get 最新 agent 服务;driver 热重启后
-            // 重新 get 到新实例,不缓存旧 driver)
-            let thread_ctx = ctx.clone();
-
-            // ── 渲染线程:持有非 Send 的 App + Terminal,跑同步循环 ──
-            let render_thread = std::thread::Builder::new()
-                .name("rutis-tui".into())
-                .spawn(move || {
-                    let backend = CrosstermBackend::new(std::io::stdout());
-                    let mut terminal = match Terminal::new(backend) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            let _ = outcome_tx.send(Err(CordisError::PluginFailed(
-                                format!("tui terminal: {e}").into(),
-                            )));
-                            return;
-                        }
-                    };
-                    let mut app = App::new(&intro);
-                    let outcome: Result<(), CordisError> = loop {
-                        let _ = app.scrollback.tick();
-                        if let Err(e) = terminal.draw(|f| render(f, &mut app)) {
-                            break Err(CordisError::PluginFailed(format!("tui draw: {e}").into()));
-                        }
-                        // 非阻塞收取消息;无消息时短暂 park 等下一帧
-                        match thread_rx.recv_timeout(Duration::from_millis(50)) {
-                            Ok(ThreadMsg::Key(key)) => {
-                                if key.kind == KeyEventKind::Press {
-                                    match app.handle_key(key) {
-                                        Some(HandleOutcome::Quit) => break Ok(()),
-                                        Some(HandleOutcome::Cancel) => {
-                                            if let Some(agent) =
-                                                thread_ctx.get_as::<dyn Agent>(crate::agent_key())
-                                            {
-                                                handle.spawn(async move {
-                                                    agent.cancel();
-                                                });
-                                            }
+        // ── 渲染线程:持有非 Send 的 App + Terminal,跑同步循环 ──
+        let render_thread = std::thread::Builder::new()
+            .name("rutis-tui".into())
+            .spawn(move || {
+                let backend = CrosstermBackend::new(std::io::stdout());
+                let mut terminal = match Terminal::new(backend) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = outcome_tx.send(Err(Error::msg(format!("tui terminal: {e}"))));
+                        return;
+                    }
+                };
+                let mut app = App::new(&intro);
+                let outcome: rutis::Result = loop {
+                    let _ = app.scrollback.tick();
+                    if let Err(e) = terminal.draw(|f| render(f, &mut app)) {
+                        break Err(Error::msg(format!("tui draw: {e}")));
+                    }
+                    // 非阻塞收取消息;无消息时短暂 park 等下一帧
+                    match thread_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(ThreadMsg::Key(key)) => {
+                            if key.kind == KeyEventKind::Press {
+                                match app.handle_key(key) {
+                                    Some(HandleOutcome::Quit) => break Ok(()),
+                                    Some(HandleOutcome::Cancel) => {
+                                        if let Some(agent) = thread_ctx.get::<dyn Agent>() {
+                                            handle.spawn(async move {
+                                                agent.cancel();
+                                            });
                                         }
-                                        Some(HandleOutcome::Submit(text)) => {
-                                            if let Some(agent) =
-                                                thread_ctx.get_as::<dyn Agent>(crate::agent_key())
-                                            {
-                                                handle.spawn(async move {
-                                                    if let Err(e) = agent.followup(&text).await {
-                                                        eprintln!("turn failed: {e}");
-                                                    }
-                                                });
-                                            }
+                                    }
+                                    Some(HandleOutcome::Submit(text)) => {
+                                        if let Some(agent) = thread_ctx.get::<dyn Agent>() {
+                                            handle.spawn(async move {
+                                                if let Err(e) = agent.followup(&text).await {
+                                                    eprintln!("turn failed: {e}");
+                                                }
+                                            });
                                         }
-                                        None => {}
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
+                        Ok(ThreadMsg::Mouse(m)) => match m.kind {
+                            MouseEventKind::ScrollUp => {
+                                app.selection = None;
+                                app.scrollback.scroll_up(MOUSE_SCROLL_LINES)
+                            }
+                            MouseEventKind::ScrollDown => {
+                                app.selection = None;
+                                app.scrollback.scroll_down(MOUSE_SCROLL_LINES)
+                            }
+                            // 左键拖选:按下起选、拖动延伸、抬起取文本入剪贴板。
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                app.selection = conv_point((m.column, m.row), app.conv_area)
+                                    .map(|p| Selection { start: p, end: p });
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                if let (Some(sel), Some(p)) = (
+                                    &mut app.selection,
+                                    conv_point((m.column, m.row), app.conv_area),
+                                ) {
+                                    sel.end = p;
+                                }
+                            }
+                            MouseEventKind::Up(MouseButton::Left) => {
+                                if let Some(sel) = app.selection {
+                                    if sel.start != sel.end {
+                                        if let Some(text) = selection_text(
+                                            terminal.current_buffer_mut(),
+                                            &sel,
+                                            app.conv_area,
+                                        ) {
+                                            copy_to_clipboard_os52(&text);
+                                        }
+                                    } else {
+                                        app.selection = None;
                                     }
                                 }
                             }
-                            Ok(ThreadMsg::Mouse(m)) => match m.kind {
-                                MouseEventKind::ScrollUp => {
-                                    app.selection = None;
-                                    app.scrollback.scroll_up(MOUSE_SCROLL_LINES)
-                                }
-                                MouseEventKind::ScrollDown => {
-                                    app.selection = None;
-                                    app.scrollback.scroll_down(MOUSE_SCROLL_LINES)
-                                }
-                                // 左键拖选:按下起选、拖动延伸、抬起取文本入剪贴板。
-                                MouseEventKind::Down(MouseButton::Left) => {
-                                    app.selection = conv_point((m.column, m.row), app.conv_area)
-                                        .map(|p| Selection { start: p, end: p });
-                                }
-                                MouseEventKind::Drag(MouseButton::Left) => {
-                                    if let (Some(sel), Some(p)) = (
-                                        &mut app.selection,
-                                        conv_point((m.column, m.row), app.conv_area),
-                                    ) {
-                                        sel.end = p;
-                                    }
-                                }
-                                MouseEventKind::Up(MouseButton::Left) => {
-                                    if let Some(sel) = app.selection {
-                                        if sel.start != sel.end {
-                                            if let Some(text) = selection_text(
-                                                terminal.current_buffer_mut(),
-                                                &sel,
-                                                app.conv_area,
-                                            ) {
-                                                copy_to_clipboard_os52(&text);
-                                            }
-                                        } else {
-                                            app.selection = None;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            },
-                            Ok(ThreadMsg::Ui(cmd)) => app.on_ui_cmd(cmd),
-                            Ok(ThreadMsg::Cancel) => break Ok(()),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Ok(()),
-                        }
-                    };
-                    let _ = restore_terminal();
-                    let _ = outcome_tx.send(outcome);
-                })
-                .map_err(|e| CordisError::PluginFailed(format!("tui thread spawn: {e}").into()))?;
-
-            // ── async 侧:多路复用 crossterm 事件 / agent 事件 / 取消 ──
-            let (input_tx, mut input_rx) = mpsc::channel::<CrosstermEvent>(16);
-            let input_task = ctx.handle().spawn(async move {
-                let mut events = EventStream::new();
-                while let Some(Ok(ev)) = events.next().await {
-                    if input_tx.send(ev).await.is_err() {
-                        break;
+                            _ => {}
+                        },
+                        Ok(ThreadMsg::Ui(cmd)) => app.on_ui_cmd(cmd),
+                        Ok(ThreadMsg::Cancel) => break Ok(()),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Ok(()),
                     }
-                }
-            });
+                };
+                let _ = restore_terminal();
+                let _ = outcome_tx.send(outcome);
+            })
+            .map_err(|e| Error::msg(format!("tui thread spawn: {e}")))?;
 
-            let outcome: Result<(), CordisError> = loop {
-                tokio::select! {
-                    // fiber 卸载 → 通知渲染线程退出
-                    _ = ctx.cancelled() => {
-                        let _ = thread_tx.send(ThreadMsg::Cancel);
+        // ── async 侧:多路复用 crossterm 事件 / agent 事件 / 取消 ──
+        let (input_tx, mut input_rx) = mpsc::channel::<CrosstermEvent>(16);
+        let input_task = tokio::spawn(async move {
+            let mut events = EventStream::new();
+            while let Some(Ok(ev)) = events.next().await {
+                if input_tx.send(ev).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let outcome: rutis::Result = loop {
+            tokio::select! {
+                // fiber 卸载 → 通知渲染线程退出
+                _ = ctx.cancelled() => {
+                    let _ = thread_tx.send(ThreadMsg::Cancel);
+                    break Ok(());
+                }
+                ev = input_rx.recv() => {
+                    let Some(ev) = ev else { continue };
+                    let msg = match ev {
+                        CrosstermEvent::Key(key) => ThreadMsg::Key(key),
+                        CrosstermEvent::Mouse(m) => ThreadMsg::Mouse(m),
+                        _ => continue,
+                    };
+                    if thread_tx.send(msg).is_err() {
                         break Ok(());
                     }
-                    ev = input_rx.recv() => {
-                        let Some(ev) = ev else { continue };
-                        let msg = match ev {
-                            CrosstermEvent::Key(key) => ThreadMsg::Key(key),
-                            CrosstermEvent::Mouse(m) => ThreadMsg::Mouse(m),
-                            _ => continue,
-                        };
-                        if thread_tx.send(msg).is_err() {
-                            break Ok(());
-                        }
-                    }
-                    ev = ui_rx.recv() => {
-                        let Some(ev) = ev else { continue };
-                        if thread_tx.send(ThreadMsg::Ui(ev)).is_err() {
-                            break Ok(());
-                        }
-                    }
-                    r = &mut outcome_rx => {
-                        // 渲染线程已结束(Quit / draw 失败)
-                        match r {
-                            Ok(o) => break o,
-                            Err(_) => break Ok(()),
-                        }
+                }
+                ev = ui_rx.recv() => {
+                    let Some(ev) = ev else { continue };
+                    if thread_tx.send(ThreadMsg::Ui(ev)).is_err() {
+                        break Ok(());
                     }
                 }
-            };
+                r = &mut outcome_rx => {
+                    // 渲染线程已结束(Quit / draw 失败)
+                    match r {
+                        Ok(o) => break o,
+                        Err(_) => break Ok(()),
+                    }
+                }
+            }
+        };
 
-            input_task.abort();
-            // 等渲染线程彻底退出(确保终端已恢复)
-            let _ = render_thread.join();
-            outcome?;
-            Ok(Effect::Done)
-        })
+        input_task.abort();
+        // 等渲染线程彻底退出(确保终端已恢复)
+        let _ = render_thread.join();
+        outcome
     }
 }
 

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, InstanceId, Plugin, PluginFactory, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, ErrorKind, InstanceId, PluginFactory, TypeKey};
+use rutis::internal::build_fn;
+use rutis::{Error, Plugin};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -104,7 +106,7 @@ impl Resolved {
 
 /// Builds a copy's factory from the instances it runs in.
 pub type ScopedFactory =
-    Arc<dyn Fn(&Build) -> Result<Arc<dyn PluginFactory<Value>>, CordisError> + Send + Sync>;
+    Arc<dyn Fn(&Build) -> Result<Arc<dyn PluginFactory<Value>>, Error> + Send + Sync>;
 
 pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
 
@@ -125,13 +127,15 @@ pub(crate) struct BuildLink {
 impl Build {
     /// The `ctx.instance()` of the enclosing instance of `group`: plugins in
     /// that instance can provide and read keys qualified with it.
-    pub fn instance(&self, group: &str) -> Result<InstanceId, CordisError> {
+    pub fn instance(&self, group: &str) -> Result<InstanceId, Error> {
         self.chain
             .iter()
             .find(|link| link.group == group)
             .map(|link| link.instance)
             .ok_or_else(|| {
-                CordisError::PluginFailed(format!("not inside an instance of {group:?}").into())
+                rutis::Error::from(ErrorKind::PluginFailed(
+                    format!("not inside an instance of {group:?}").into(),
+                ))
             })
     }
 
@@ -185,33 +189,32 @@ impl Builtins {
         Self::default()
     }
 
-    /// Register a factory whose config deserializes from JSON; the schema is
-    /// generated from `C`. A `null` config (the row has none) is decoded as
-    /// `null` first, then as `{}`.
-    pub fn register<C, F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
+    /// Register a plugin built from its row's config: `build` makes the
+    /// plugin from the config `C`, decoded from JSON (a `null` config, when
+    /// the row has none, is decoded as `null` first, then as `{}`). The
+    /// config's schema is generated from `C` (none for
+    /// `serde_json::Value`); what the rows wait for comes from `P::Deps`.
+    ///
+    /// ```ignore
+    /// builtins.register("weather", Weather::new); // fn new(config: &WeatherConfig) -> rutis::Result<Weather>
+    /// ```
+    pub fn register<C, P, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
     where
         C: DeserializeOwned + JsonSchema + Send + Sync + 'static,
-        F: PluginFactory<C>,
-    {
-        let schema = serde_json::to_value(schemars::schema_for!(C)).ok();
-        self.insert(name, Arc::new(Json::<C, F>::new(factory)), schema)
-    }
-
-    /// Register a closure for a config type without a schema.
-    pub fn register_fn<C, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
-    where
-        C: DeserializeOwned + Send + Sync + 'static,
-        B: Fn(&C) -> Result<Box<dyn Plugin>, CordisError> + Send + Sync + 'static,
+        P: Plugin,
+        B: Fn(&C) -> Result<P, Error> + Send + Sync + 'static,
     {
         let name = name.into();
-        let factory = Closure {
+        let factory = Named {
             name: name.clone(),
-            build,
+            factory: build_fn(build),
         };
-        self.insert(name, Arc::new(Json::<C, _>::new(factory)), None)
+        self.insert(name, Arc::new(Json::<C, _>::new(factory)), schema_of::<C>())
     }
 
-    /// Register a factory that takes the raw JSON config.
+    /// Register a factory that takes the raw JSON config: for a plugin
+    /// whose dependencies are known only at run time (a
+    /// [`DynPlugin`](rutis::host::DynPlugin) built from the config).
     pub fn register_raw(
         &mut self,
         name: impl Into<String>,
@@ -221,23 +224,31 @@ impl Builtins {
         self.insert(name, Arc::new(factory), schema)
     }
 
-    /// Register a plugin whose factory depends on the instances it runs
-    /// in: `build` makes the factory for each copy, typically from
-    /// [`Build::instance`]. Outside instanced groups such a row fails.
-    pub fn register_with<C, F, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
+    /// [`register`](Self::register) for a plugin that depends on the
+    /// instances it runs in: `build` makes each copy from where it runs
+    /// ([`Build::instance`]) and its config. Outside instanced groups such
+    /// a row fails when `build` does.
+    pub fn register_with<C, P, B>(&mut self, name: impl Into<String>, build: B) -> &mut Self
     where
         C: DeserializeOwned + JsonSchema + Send + Sync + 'static,
-        F: PluginFactory<C>,
-        B: Fn(&Build) -> Result<F, CordisError> + Send + Sync + 'static,
+        P: Plugin,
+        B: Fn(&Build, &C) -> Result<P, Error> + Send + Sync + 'static,
     {
         let name = name.into();
-        let schema = serde_json::to_value(schemars::schema_for!(C)).ok();
+        let build = Arc::new(build);
+        let label = name.clone();
         let scoped: ScopedFactory = Arc::new(move |at: &Build| {
-            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, F>::new(build(at)?));
+            let at = at.clone();
+            let build = build.clone();
+            let factory = Named {
+                name: label.clone(),
+                factory: build_fn(move |config: &C| build(&at, config)),
+            };
+            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, _>::new(factory));
             Ok(factory)
         });
         let factory = Arc::new(Unscoped { name: name.clone() });
-        self.insert_resolved(name, factory, schema, Some(scoped))
+        self.insert_resolved(name, factory, schema_of::<C>(), Some(scoped))
     }
 
     fn insert(
@@ -369,17 +380,19 @@ impl<C, F> Json<C, F> {
     }
 }
 
-fn decode<C: DeserializeOwned>(value: &Value) -> Result<C, CordisError> {
+fn decode<C: DeserializeOwned>(value: &Value) -> Result<C, Error> {
     let first = serde_json::from_value::<C>(value.clone());
     match (first, value) {
         (Ok(config), _) => Ok(config),
         (Err(_), Value::Null) => serde_json::from_value::<C>(Value::Object(Default::default()))
-            .map_err(|e| CordisError::Validation {
-                issues: vec![e.to_string()],
+            .map_err(|e| {
+                rutis::Error::from(ErrorKind::Validation {
+                    issues: vec![e.to_string()],
+                })
             }),
-        (Err(e), _) => Err(CordisError::Validation {
+        (Err(e), _) => Err(rutis::Error::from(ErrorKind::Validation {
             issues: vec![e.to_string()],
-        }),
+        })),
     }
 }
 
@@ -392,15 +405,15 @@ where
         self.inner.name()
     }
 
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.inner.injects()
     }
 
-    fn validate_config(&self, config: &Value) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &Value) -> Result<(), Error> {
         self.inner.validate_config(&decode::<C>(config)?)
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         self.inner.build(&decode::<C>(config)?)
     }
 }
@@ -415,28 +428,45 @@ impl PluginFactory<Value> for Unscoped {
         &self.name
     }
 
-    fn build(&self, _config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
-        Err(CordisError::PluginFailed(
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        Err(rutis::Error::from(ErrorKind::PluginFailed(
             format!("{} runs only inside an instanced group", self.name).into(),
-        ))
+        )))
     }
 }
 
-struct Closure<B> {
+/// A factory shown under the name it was registered with.
+struct Named<F> {
     name: String,
-    build: B,
+    factory: F,
 }
 
-impl<C, B> PluginFactory<C> for Closure<B>
+impl<C, F> PluginFactory<C> for Named<F>
 where
     C: Send + Sync + 'static,
-    B: Fn(&C) -> Result<Box<dyn Plugin>, CordisError> + Send + Sync + 'static,
+    F: PluginFactory<C>,
 {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn build(&self, config: &C) -> Result<Box<dyn Plugin>, CordisError> {
-        (self.build)(config)
+    fn injects(&self) -> Vec<TypeKey> {
+        self.factory.injects()
     }
+
+    fn validate_config(&self, config: &C) -> Result<(), Error> {
+        self.factory.validate_config(config)
+    }
+
+    fn build(&self, config: &C) -> Result<Box<dyn DynPlugin>, Error> {
+        self.factory.build(config)
+    }
+}
+
+/// The schema of `C`; none for a raw JSON config.
+fn schema_of<C: JsonSchema + 'static>() -> Option<Value> {
+    if TypeId::of::<C>() == TypeId::of::<Value>() {
+        return None;
+    }
+    serde_json::to_value(schemars::schema_for!(C)).ok()
 }

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
@@ -99,7 +100,7 @@ async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdra
     )
     .await;
     let provided = b
-        .provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock(Default::default())))
+        .provide_at(host_key("clock"), Arc::new(Clock(Default::default())))
         .unwrap();
     b.plugin(LinkPlugin::new(
         LinkConfig::dial(id("a"), "memory", "b", "a-in").retry(quick()),
@@ -118,7 +119,7 @@ async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdra
     c.plugin(ImportPlugin::new(id("a"), ["clock"]));
 
     let clock = eventually(
-        || c.get_as::<dyn HostDispatch>(host_key("clock")),
+        || c.get_at::<dyn HostDispatch>(&host_key("clock")),
         "the clock at c",
     )
     .await;
@@ -157,7 +158,7 @@ async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdra
     provided.dispose().await.unwrap();
     eventually(
         || {
-            a.get_as::<dyn HostDispatch>(host_key("clock"))
+            a.get_at::<dyn HostDispatch>(&host_key("clock"))
                 .is_none()
                 .then_some(())
         },
@@ -166,7 +167,7 @@ async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdra
     .await;
     eventually(
         || {
-            c.get_as::<dyn HostDispatch>(host_key("clock"))
+            c.get_at::<dyn HostDispatch>(&host_key("clock"))
                 .is_none()
                 .then_some(())
         },

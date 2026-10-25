@@ -60,40 +60,43 @@ export = []
 `src/lib.rs`：
 
 ```rust
-use rutis_sdk::rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis_sdk::rutis::{Ctx, Error, Plugin, Result};
 use rutis_sdk::ConfigValue;
 
-struct Factory;
-struct MyPlugin;
+struct MyPlugin {
+    greeting: String,
+}
 
-impl PluginFactory<ConfigValue> for Factory {
-    fn name(&self) -> &str {
-        "my-plugin"
-    }
-    fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
-        let _ = config;
-        Ok(Box::new(MyPlugin))
+impl MyPlugin {
+    /// 由行的配置构造；配置变了，宿主用它构造新的一份。
+    fn new(config: &ConfigValue) -> Result<Self> {
+        let greeting = config["greeting"].as_str().unwrap_or("hello from my-plugin");
+        if greeting.is_empty() {
+            return Err(Error::msg("greeting must not be empty"));
+        }
+        Ok(MyPlugin { greeting: greeting.to_owned() })
     }
 }
 
 impl Plugin for MyPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "my-plugin"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // tokio 直接用再导出：任务跑在宿主的运行时上。
-            rutis_sdk::tokio::spawn(async {})
-                .await
-                .map_err(|e| CordisError::PluginFailed(e.into()))?;
-            ctx.provide("hello from my-plugin".to_string())?;
-            Ok(Effect::Done)
-        })
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        // tokio 直接用再导出：任务跑在宿主的运行时上。
+        rutis_sdk::tokio::spawn(async {}).await?;
+        ctx.provide(self.greeting.clone())?;
+        Ok(())
     }
 }
 
-rutis_sdk::export_plugin! { id: "my-plugin", factory: Factory }
+rutis_sdk::export_plugin! { id: "my-plugin", build: MyPlugin::new }
 ```
+
+插件本身怎么写（依赖、服务、事件、清理、错误）见[写一个 Rust 插件](guide/rust-plugin.md)，写法与编进宿主的插件相同。`build:` 接受构造函数 `Fn(&C) -> rutis::Result<P>`，`P` 是 `Plugin`，依赖取自它的 `type Deps`；`C` 是从行的 JSON 配置解码出的类型，这里用原样的 `ConfigValue`。可选的 `schema:` 给出配置的 JSON Schema（`serde_json::Value`），供显示配置表单的宿主使用。依赖要到运行时才知道的插件（例如按配置里的名字），实现 `rutis_sdk::rutis::host::DynPlugin` 和 `host::PluginFactory<ConfigValue>`，用 `export_plugin! { id: "…", factory: … }` 导出。
 
 私有依赖的类型可以随便用，但**不能出现在跨插件/跨宿主的边界上**：服务、事件、配置里
 交换的类型必须来自 `rutis_sdk` 的再导出。给宿主传结构化数据用
@@ -138,7 +141,7 @@ cargo xtask pack-plugin --bundle <sdk-bundle 目录> \
 
 宿主方升级 SDK 后，旧插件在新宿主上因 L1/L2 不符被拒绝，用户侧不可加载。拿到新的
 sdk-bundle（`sdk.toml` 的 `artifact_sha256` 变了）后重新打包插件即可；你的源码通常不用
-改（除非 SDK 的 API 变了）。工作区里只需替换 sdk-bundle 并更新 `.cargo/config.toml`
+改（除非 SDK 的 API 变了；0.17 改了 Rust API，见[迁移到 0.17](migration-0.17.md)）。工作区里只需替换 sdk-bundle 并更新 `.cargo/config.toml`
 的路径。
 
 ## 已知限制

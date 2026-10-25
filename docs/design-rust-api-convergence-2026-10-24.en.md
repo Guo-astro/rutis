@@ -311,14 +311,14 @@ The six states, exactly-once cleanup and "consumers stop before providers" are u
   - `ctx.on::<E>(|event, call| async move { … })` registers an async listener;
   - `ctx.on_sync::<E>(|event, call| …)` registers a sync listener, which every mode can call;
   - for options use `ctx.listen::<E>()`: `.prefix(p)`, `.name(n)`, `.once()`, `.prepend()`, `.global()`, ending with `.on(…)` or `.on_sync(…)`. The plugin guide covers `prefix` and `name` first and the other three in an "advanced" section.
-- A listener is a closure taking `(Arc<E>, Call<E>)`; a sync listener takes `(Arc<E>, SyncCall<E>)`. It returns `Result<Option<E::Value>>`, where `Ok(None)` is "no result". The compiler infers the parameter types, and the body can use `?` on any error.
+- A listener is a closure taking `(Arc<E>, Call<E>)`; a sync listener takes `(Arc<E>, SyncCall<'_, E>)`. It returns `Result<Option<E::Value>>`, where `Ok(None)` is "no result". The compiler infers the parameter types, and the body can use `?` on any error.
 - `call.mode()` is this dispatch's mode; `call.name()` is the name dispatched (for prefix listeners); `call.next()` works only in `waterfall`; `call.ctx()` is the `Ctx` that registered the listener.
 - Sending:
   - `emit`, `parallel`, `serial`, `waterfall` and `bail` take `E` or `Arc<E>`;
   - `waterfall` returns a builder: `.terminal(…)` may come before `.await`;
   - `bail` is today's `bail_sync`, renamed to match the other languages;
   - `ctx.filter(pred)` gives the same five methods.
-- Names: an event registers and dispatches under `E::NAME`. Event types without a fixed name (rutis-bridge's `Args`, for example) override `Event::name(&self)`, so the value carries its own name; to listen to such an event use `ctx.listen::<Args>().name("file-changed")`. This only replaces today's `EventKey::dynamic`.
+- Names: an event registers and dispatches under `E::NAME`. Event types without a fixed name override `Event::name(&self)`, so the value carries its own name; to listen to such an event use `ctx.listen::<E>().name("file-changed")`. This only replaces today's `EventKey::dynamic`. rutis-bridge's `Args` is the exception: its values carry no name (kept as it is in the implementation; otherwise its type would change). It is still listened to with `ctx.listen::<Args>().name(..)`, and only rutis's own crates send it by name, through `internal`'s `CtxInternal::named`.
 - The semantics of the five modes, scope, filters and waiting at unload follow the [unified events design](design-events-2026-10-18.en.md), unchanged.
 
 ### Errors
@@ -327,7 +327,7 @@ The six states, exactly-once cleanup and "consumers stop before providers" are u
 - `?` turns any `std::error::Error + Send + Sync + 'static` into `rutis::Error`, rutis's own errors included. `Error::msg("…")` makes one from a string.
 - `rutis::Error` itself does not implement `std::error::Error`; that is what lets `?` accept any error (as with `anyhow::Error` and Bevy's `BevyError`).
 - A host that needs to tell rutis's failures apart calls `err.kind()`, which returns `Option<&host::ErrorKind>`. `ErrorKind` is today's `CordisError` enum, renamed, with the same variants. An error from plugin code has `kind()` `None`; when it reaches a host it is wrapped in `ErrorKind::PluginFailed`, as today.
-- Errors still do not implement `Clone`; share them as `Arc<Error>` (D11 and D25 unchanged).
+- Errors still do not implement `Clone`; share them as `Arc<host::ErrorKind>`, today's `Arc<CordisError>` renamed (D11 and D25 unchanged). Found while implementing: `rutis::Error` does not implement `std::error::Error`, so `Arc<rutis::Error>` could not be turned into a `Box<dyn Error>` with `?`; `Arc<ErrorKind>` can, so a host awaiting a plugin's view or closing the root still writes `?`. A `rutis::Error` dereferences to the `ErrorKind` it reports to the host, so `match &*err { … }` matches on the kind.
 
 With common error libraries (tested on Rust 1.88, anyhow 1.0.104, thiserror 2.0.21):
 
@@ -487,7 +487,7 @@ The 10 `EventBus` methods that only rutis-bridge / rutis-loader use (`on_remote`
 | `Listener` | `events::Listener` (satisfied by async listener closures; not implemented by hand) |
 | `SyncListener`, `PatternListener`, `SyncPatternListener` | removed; listeners are closures, and prefix listeners read the name from `call.name()` |
 | `Terminal` | removed; use `ctx.waterfall(e).terminal(…)` |
-| `Call`, `SyncCall` | `events::Call<E>`, `events::SyncCall<E>` (owned, no lifetime parameter) |
+| `Call`, `SyncCall` | `events::Call<E>` (owned, no lifetime parameter), `events::SyncCall<'_, E>` (kept its lifetime in the implementation: the rest of a sync chain and `waterfall_sync`'s terminal borrow the caller's stack, and an owned one would need a `'static` terminal, a change of semantics. The compiler infers a closure's parameters, so authors do not write the type) |
 | `Mode`, `ListenerInfo`, `Scope` | `events::` |
 | `FiberView`, `FiberState`, `FiberStatusChanged`, `PluginId`, `Snapshot`, `DisposeWaitError`, `shutdown_deadline` | `host::` |
 | diagnostics types (`RuntimeDiagnostics` and 9 more) | `host::diagnostics::` |
@@ -577,7 +577,7 @@ rutis-migrate 0.17 path/to/crate
 | `provide_as(TypeKey::of::<T>(), arc)` becomes `provide_as::<T>(arc)`, with named keys becoming `provide_at(…)`; `get_as(TypeKey::of::<T>())` becomes `get::<T>()` | yes |
 | Files using host methods such as `root`, `shutdown`, `require` get `use rutis::host::*;`; names moved off the rutis-loader root get their module paths | yes |
 | `Builtins::register_fn(name, \|c\| Ok(Box::new(P::new(c))))` becomes `register(name, \|c\| Ok(P::new(c)))` | yes |
-| Structs with a hand-written `impl Listener`, `match`es on `CordisError` variants (which become `match err.kind()`), `Gate` / `Keyed` / `KeyedGate` / `Typed::with_keys` | no, a TODO |
+| Structs with a hand-written `impl Listener`, `match`es on `CordisError` variants (the tool turns them into `match &*err`), `Gate` / `Keyed` / `KeyedGate` / `Typed::with_keys` | no, a TODO |
 
 Validation: the repository's own crates are migrated with this tool (outside the kernel: 42 `impl Plugin`, 14 `impl PluginFactory`, 1277 `CordisError`), and it is then run separately on the 0.16 `examples/` and aimux-llm. The results must compile and pass their tests; the number of remaining TODOs goes into the release notes.
 

@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use rutis::FiberState;
+use rutis::host::FiberState;
 use rutis_bridge::session::{HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::PeerId;
-use rutis_loader::{Build, EntryInfo, EntryStatus, Layer, Loader, Patch};
+use rutis_loader::report::{EntryInfo, EntryStatus};
+use rutis_loader::resolve::Build;
+use rutis_loader::{Layer, Loader, Patch};
 use rutis_test_support::{Guard, HANG_GUARD};
 use schemars::JsonSchema;
 use serde::Deserialize;

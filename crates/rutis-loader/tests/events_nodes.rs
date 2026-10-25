@@ -10,13 +10,12 @@ mod common;
 use std::sync::Arc;
 
 use common::runtimes::id;
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
-use rutis_loader::{
-    register_peer_node, Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch,
-    PeerResolver,
-};
+use rutis_loader::peer::{register_peer_node, PeerResolver};
+use rutis_loader::{Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::{json, Value};
 
 fn layer(rows: Value) -> Vec<Layer> {
@@ -120,8 +119,7 @@ mod dispatch {
     //! The link carries the five modes; an imported entry is never passed
     //! on (no multi-hop); a node announces only what the other imports.
     use super::*;
-    use rutis::events::Call;
-    use rutis::EventKey;
+    use rutis::internal::CtxInternal;
     use rutis_bridge::events::{ArgValue, Args};
     use rutis_bridge::session::Value as RpcValue;
 
@@ -136,39 +134,24 @@ mod dispatch {
         json!({ "id": format!("link-{peer}"), "name": "rutis-bridge/peer", "config": config })
     }
 
-    struct Answer(&'static str);
-
-    impl rutis::Listener<Args> for Answer {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            _: &'a Args,
-            _: Call<'a, ArgValue>,
-        ) -> rutis::BoxFuture<'a, Result<Option<ArgValue>, rutis::CordisError>> {
-            let answer = ArgValue(RpcValue::Data(json!(self.0)));
-            Box::pin(std::future::ready(Ok(Some(answer))))
-        }
-    }
-
     /// Listen to `name` on `ctx`, answering `answer`.
     fn answer(ctx: &Ctx, name: &str, answer: &'static str) {
-        ctx.events()
-            .on(
-                ctx,
-                &EventKey::<Args>::dynamic(name.to_owned()),
-                Answer(answer),
-            )
+        ctx.listen::<Args>()
+            .name(name.to_owned())
+            .on(move |_, _| {
+                let answer = ArgValue(RpcValue::Data(json!(answer)));
+                std::future::ready(Ok(Some(answer)))
+            })
             .unwrap();
     }
 
     /// `serial` of `name` from `ctx`, once the link has announced a
     /// listener (at most 10 s).
     async fn serial(ctx: &Ctx, name: &str) -> Option<Value> {
-        let key = EventKey::<Args>::dynamic(name.to_owned());
         for _ in 0..1000 {
             let result = ctx
-                .events()
-                .serial(ctx, &key, Arc::new(Args(Vec::new())))
+                .named(name.to_owned())
+                .serial(Args(Vec::new()))
                 .await
                 .unwrap();
             if let Some(value) = result {
@@ -220,10 +203,9 @@ mod dispatch {
         assert_eq!(serial(&b, "t/x").await, Some(json!("from c")), "b hears c");
         answer(&b, "t/y", "from b");
         assert_eq!(serial(&a, "t/y").await, Some(json!("from b")), "a hears b");
-        let key = EventKey::<Args>::dynamic("t/x".to_owned());
         let from_a = a
-            .events()
-            .serial(&a, &key, Arc::new(Args(Vec::new())))
+            .named("t/x".to_owned())
+            .serial(Args(Vec::new()))
             .await
             .unwrap();
         assert!(from_a.is_none(), "a must not reach c through b");
@@ -269,10 +251,9 @@ mod dispatch {
         answer(&mac, "t/other", "outside");
         answer(&mac, "t/s/hello", "inside");
         assert_eq!(serial(&main, "t/s/hello").await, Some(json!("inside")));
-        let key = EventKey::<Args>::dynamic("t/other".to_owned());
         assert!(main
-            .events()
-            .serial(&main, &key, Arc::new(Args(Vec::new())))
+            .named("t/other".to_owned())
+            .serial(Args(Vec::new()))
             .await
             .unwrap()
             .is_none());

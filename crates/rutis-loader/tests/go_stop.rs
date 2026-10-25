@@ -12,13 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::runtimes::{layer, COLD};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::transport::local::{kill_processes, running_processes};
-use rutis_loader::{
-    Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimes, Loader, LoaderOptions, LoaderPlugin,
-    ServiceCatalog,
-};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
 /// The runtime's own deadline here, in seconds.
@@ -40,7 +40,7 @@ fn build_stuck(dir: &Path) {
 
 /// The process serving the service `stuck`, once it is published.
 fn pid(root: &Ctx) -> Option<u64> {
-    let service = root.get_as::<dyn HostDispatch>(host_key("stuck"))?;
+    let service = root.get_at::<dyn HostDispatch>(&host_key("stuck"))?;
     let value: Value = service.invoke("pid", json!([]).into()).ok()?.json().ok()?;
     value.as_u64()
 }

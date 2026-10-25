@@ -1,6 +1,7 @@
 //! Runs generated dispatch against an ordinary local rutis context.
 use crate::cordis::rpc::{self, Connection, Reply, Value as RpcValue};
 use crate::cordis::Error;
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use serde_json::Value;
 use std::future::Future;

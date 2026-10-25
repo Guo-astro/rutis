@@ -3,11 +3,11 @@
 
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, PluginFactory, TypeKey,
-};
+use rutis::host::{CtxHost, ErrorKind, FiberState, FiberView};
+use rutis::{Ctx, Plugin};
 use tokio::sync::{mpsc, oneshot};
 
 type BoxError = Box<dyn Error + Send + Sync>;
@@ -33,93 +33,74 @@ impl Indexer {
 
 struct BackendPlugin(String);
 impl Plugin for BackendPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "backend"
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> rutis::Result {
         if self.0.trim().is_empty() {
-            return Err(CordisError::Validation {
+            return Err(ErrorKind::Validation {
                 issues: vec!["backend label must not be empty".into()],
-            });
+            }
+            .into());
         }
         Ok(())
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Backend(self.0.clone()))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide(Backend(self.0.clone()))?;
+        Ok(())
     }
 }
 
-struct BackendFactory;
-impl PluginFactory<String> for BackendFactory {
-    fn name(&self) -> &str {
-        "backend"
-    }
-
-    fn build(&self, label: &String) -> Result<Box<dyn Plugin>, CordisError> {
-        // 纯构造：预检查和正式装载都会调用这里。
-        Ok(Box::new(BackendPlugin(label.clone())))
-    }
+/// 纯构造：预检查和正式装载都会调用它。构造函数接 `&C`，这里 C 是 `String`。
+#[allow(clippy::ptr_arg)]
+fn backend(label: &String) -> rutis::Result<BackendPlugin> {
+    Ok(BackendPlugin(label.clone()))
 }
 
-struct IndexerPlugin(Vec<TypeKey>);
+struct IndexerPlugin;
 impl Plugin for IndexerPlugin {
+    type Deps = (Arc<Backend>, Arc<Completed>);
+
     fn name(&self) -> &str {
         "indexer"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
-    }
+    async fn apply(&self, ctx: &Ctx, (backend, completed): Self::Deps) -> rutis::Result {
+        let (sender, mut receiver) = mpsc::channel::<Job>(8);
+        let stopping = ctx.cancelled();
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            let backend = ctx
-                .get::<Backend>()
-                .ok_or_else(|| CordisError::ServiceNotFound("Backend".into()))?;
-            let completed = ctx
-                .get::<Completed>()
-                .ok_or_else(|| CordisError::ServiceNotFound("Completed".into()))?;
-            let (sender, mut receiver) = mpsc::channel::<Job>(8);
-            let token = ctx.cancellation_token();
-            let stop = token.clone();
-            let runtime = ctx.handle().clone();
-
-            // 在 effect 工厂内启动，启动后立即交回清理责任。
-            // 先登记 worker，再提供服务：清理时先撤销服务，再 join worker。
-            ctx.effect(move || {
-                let task = runtime.spawn(async move {
-                    loop {
-                        tokio::select! {
-                            biased;
-                            _ = token.cancelled() => break,
-                            job = receiver.recv() => {
-                                let Some(Job(document, reply)) = job else { break };
-                                // 示例用字符串处理代替真正的异步索引 I/O。
-                                let value = format!("{}: {document}", backend.0);
-                                completed.0.fetch_add(1, Ordering::SeqCst);
-                                let _ = reply.send(value);
-                            }
+        // 在 effect 的闭包里启动，启动后立即交回清理责任。
+        // 先登记 worker，再提供服务：清理时先撤销服务，再 join worker。
+        ctx.effect(move || {
+            let task = tokio::spawn(async move {
+                tokio::pin!(stopping);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut stopping => break,
+                        job = receiver.recv() => {
+                            let Some(Job(document, reply)) = job else { break };
+                            // 示例用字符串处理代替真正的异步索引 I/O。
+                            let value = format!("{}: {document}", backend.0);
+                            completed.0.fetch_add(1, Ordering::SeqCst);
+                            let _ = reply.send(value);
                         }
                     }
-                    // 本例选择取消未处理请求：drop receiver 及排队的 reply。
-                });
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        stop.cancel();
-                        task.await
-                            .map_err(|error| CordisError::PluginFailed(Box::new(error)))?;
-                        Ok(())
-                    })
-                }))
-            })?;
-            ctx.provide(Indexer(sender))?;
-            Ok(Effect::Done)
-        })
+                }
+                // 本例选择取消未处理请求：drop receiver 及排队的 reply。
+            });
+            // 插件停下时 `stopping` 完成，worker 退出；清理等它结束。
+            async move {
+                task.await?;
+                Ok(())
+            }
+        })?;
+        ctx.provide(Indexer(sender))?;
+        Ok(())
     }
 }
 
@@ -146,14 +127,11 @@ async fn wait_active(view: &FiberView) -> Result<(), BoxError> {
 async fn exercise(root: &Ctx) -> Result<(), BoxError> {
     // 这是有意选择的 root 级状态；Indexer 重载不清空它。
     root.provide(Completed::default())?;
-    let indexer = root.plugin(IndexerPlugin(vec![
-        TypeKey::of::<Backend>(),
-        TypeKey::of::<Completed>(),
-    ]));
+    let indexer = root.plugin(IndexerPlugin);
     (&indexer).await?;
     assert_eq!(indexer.state().state, FiberState::Pending);
 
-    let backend = root.plugin_with(BackendFactory, String::from("v1"));
+    let backend = root.plugin_from(backend, String::from("v1"));
     wait_active(&indexer).await?;
     let old = root.get::<Indexer>().ok_or("missing Indexer")?;
     assert_eq!(old.index("first.txt").await?, "v1: first.txt");

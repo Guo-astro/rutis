@@ -7,11 +7,11 @@
 //! + 一个 [`Session`](连续 loop 的事实源,可选持久化:重启恢复历史)。**
 //!
 //! - **LLM 后端**是服务不是插件:aimux 已实现 seam(329 provider),
-//!   直接 `root.provide_as(llm_key(), model)`——不写 `LlmPlugin` 空壳。
+//!   直接 `root.provide_as::<dyn LanguageModel>(model)`——不写 `LlmPlugin` 空壳。
 //! - **[`ToolsPlugin`]** 提供 `ToolRegistry` 服务:schema 直接产 aimux
 //!   `FunctionTool` 进 `CallOptions.tools`;runner 失败转 `error: ...`
 //!   回喂模型,panic 任务边界,不崩循环。
-//! - **[`AgentDriverPlugin`]** 双门控(`injects = [llm, tools]`),就绪后
+//! - **[`AgentDriverPlugin`]** 双门控(`type Deps = (llm, tools)`),就绪后
 //!   提供 `dyn Agent`;fiber 卸载经 `ctx.cancelled()` 级联取消当前 turn。
 //! - **[`Session`]** 只存模型可见消息(一层,无事件→投影两层):多轮
 //!   `followup` 之间 history 连续;session 是事实源。可选持久化
@@ -24,7 +24,7 @@
 //! - **loop 关键节点走 waterfall**(设计 §四.1):`agent/pre-step`
 //!   (改写/拒绝进入这步的 messages)+ 工具三段 `tools/pre-execute`
 //!   (门控)/ 执行 / `tools/post-execute`(结果决策,失败也到这);
-//!   默认行为即原行为,插件挂 `on` 监听器(被 `waterfall` 调用)可改写、可 veto
+//!   默认行为即原行为,插件挂 `ctx.on` 监听器(被 `waterfall` 调用)可改写、可 veto
 //!   ——框架自己吃狗粮。
 //! - **[`TuiPlugin`]**:ratatui+crossterm 前端,`agent/*` 事件监听器,
 //!   不是 loop 的一部分。
@@ -37,28 +37,25 @@
 //! ```no_run
 //! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
+//! use aimux_core::LanguageModel;
+//! use rutis::host::*;
 //! use rutis::Ctx;
-//! use rutis_agent::{agent_key, llm_key, Agent, AgentDriverPlugin, AgentTextDelta, ToolsPlugin};
+//! use rutis_agent::{Agent, AgentDriverPlugin, AgentTextDelta, ToolsPlugin};
 //!
 //! let root = Ctx::root()?;
-//! let llm: Arc<dyn aimux_core::LanguageModel> = /* aimux provider 或 ScriptedLlm */ unimplemented!();
-//! root.provide_as(llm_key(), llm)?;
+//! let llm: Arc<dyn LanguageModel> = /* aimux provider 或 ScriptedLlm */ unimplemented!();
+//! root.provide_as::<dyn LanguageModel>(llm)?;
 //! root.plugin(ToolsPlugin::new(vec![]));
 //! let driver_view = root.plugin(AgentDriverPlugin::new(16));
 //! (&driver_view).await.expect("driver loads (gated on llm+tools)");
 //!
 //! // 观察方:订阅 agent/* 事件,过程增量逐块到达
-//! # struct L;
-//! # impl rutis::Listener<AgentTextDelta> for L {
-//! #     fn call<'a>(&'a self, _c: &'a rutis::Ctx, e: &'a AgentTextDelta,
-//! #         _call: rutis::Call<'a, ()>)
-//! #         -> rutis::BoxFuture<'a, Result<Option<()>, rutis::CordisError>> {
-//! #         print!("{}", e.delta); Box::pin(async { Ok(None) })
-//! #     }
-//! # }
-//! root.events().on(&root, &rutis::EventKey::of(), L)?;
+//! root.on::<AgentTextDelta>(|e, _| async move {
+//!     print!("{}", e.delta);
+//!     Ok(None)
+//! })?;
 //!
-//! let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+//! let agent = root.get::<dyn Agent>().unwrap();
 //! let answer = agent.followup("weather in Oslo?").await?; // 终态
 //! # Ok(())
 //! # }
@@ -74,8 +71,8 @@ mod session;
 mod tools;
 mod tui;
 
-pub use agent::{agent_key, Agent, AgentError, AgentStatus, SessionSnapshot};
-pub use driver::{llm_key, session_path_key, AgentDriver, AgentDriverPlugin};
+pub use agent::{Agent, AgentError, AgentStatus, SessionSnapshot};
+pub use driver::{AgentDriver, AgentDriverPlugin};
 pub use events::{
     AgentPreStep, AgentStepEvent, AgentTextDelta, AgentToolCall, AgentToolResult, AgentTurnEnd,
     ToolPostExecute, ToolPreExecute,
@@ -85,5 +82,5 @@ pub use scripted::{into_service, tool_call, LlmResponse, ScriptedCall, ScriptedL
 pub use session::{Session, SessionId};
 pub use tools::bash::bash_tool;
 pub use tools::replace_text::replace_text_tool;
-pub use tools::{tools_key, ToolDef, ToolOutput, ToolRegistry, ToolsPlugin};
+pub use tools::{ToolDef, ToolOutput, ToolRegistry, ToolsPlugin};
 pub use tui::TuiPlugin;

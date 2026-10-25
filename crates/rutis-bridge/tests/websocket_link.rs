@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{Connection, Value};
@@ -61,8 +62,8 @@ async fn two_rust_endpoints_link_over_websocket() {
         &address,
     )));
 
-    let at_main = eventually(|| main.get_as::<Peer>(peer_key(&id("mac"))), "the link").await;
-    let at_mac = eventually(|| mac.get_as::<Peer>(peer_key(&id("main"))), "the link").await;
+    let at_main = eventually(|| main.get_at::<Peer>(&peer_key(&id("mac"))), "the link").await;
+    let at_mac = eventually(|| mac.get_at::<Peer>(&peer_key(&id("main"))), "the link").await;
     let _offered = at_mac
         .register(
             "clock",

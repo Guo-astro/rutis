@@ -4,7 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener};
+use rutis::host::CtxHost;
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Event};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -16,26 +18,25 @@ impl Event for Job {
 }
 
 /// Handles one event per permit.
-struct Slow(Arc<Semaphore>);
-impl Listener<Job> for Slow {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Job,
-        _: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            self.0.acquire().await.unwrap().forget();
-            Ok(None)
+fn slow(ctx: &Ctx, name: &str, permits: &Arc<Semaphore>) {
+    let permits = permits.clone();
+    ctx.listen::<Job>()
+        .name(name)
+        .on(move |_, _| {
+            let permits = permits.clone();
+            async move {
+                permits.acquire().await.unwrap().forget();
+                Ok(None)
+            }
         })
-    }
+        .unwrap();
 }
 
-fn pending(ctx: &Ctx, key: &EventKey<Job>) -> Option<(usize, Duration)> {
+fn pending(ctx: &Ctx, name: &str) -> Option<(usize, Duration)> {
     ctx.diagnostics()
         .event_backlogs
         .into_iter()
-        .find(|backlog| backlog.name == key.name())
+        .find(|backlog| backlog.name == name)
         .map(|backlog| (backlog.pending, backlog.oldest))
 }
 
@@ -46,25 +47,24 @@ fn pending(ctx: &Ctx, key: &EventKey<Job>) -> Option<(usize, Duration)> {
 async fn emits_with_unfinished_calls_are_visible() {
     let ctx = Ctx::root().unwrap();
     let permits = Arc::new(Semaphore::new(0));
-    let busy = EventKey::<Job>::named("busy");
-    let idle = EventKey::<Job>::named("idle");
-    ctx.events().on(&ctx, &busy, Slow(permits.clone())).unwrap();
-    ctx.events().on(&ctx, &idle, Slow(permits.clone())).unwrap();
+    let (busy, idle) = ("busy", "idle");
+    slow(&ctx, busy, &permits);
+    slow(&ctx, idle, &permits);
 
     for _ in 0..3 {
-        ctx.events().emit(&ctx, &busy, Arc::new(Job)).unwrap();
+        ctx.named(busy).emit(Job).unwrap();
     }
     tokio::time::sleep(Duration::from_millis(20)).await; // only lets the oldest age
-    let (count, oldest) = pending(&ctx, &busy).expect("busy name has a backlog");
+    let (count, oldest) = pending(&ctx, busy).expect("busy name has a backlog");
     assert_eq!(count, 3);
     assert!(oldest >= Duration::from_millis(20), "{oldest:?}");
     // A name with no accepted emits has no entry.
-    assert_eq!(pending(&ctx, &idle), None);
+    assert_eq!(pending(&ctx, idle), None);
 
     // Each handled event leaves the backlog; the entry goes once it is empty.
     permits.add_permits(1);
     tokio::time::timeout(Duration::from_secs(10), async {
-        while pending(&ctx, &busy).map(|(count, _)| count) != Some(2) {
+        while pending(&ctx, busy).map(|(count, _)| count) != Some(2) {
             tokio::task::yield_now().await;
         }
     })
@@ -72,7 +72,7 @@ async fn emits_with_unfinished_calls_are_visible() {
     .expect("one event handled");
     permits.add_permits(2);
     tokio::time::timeout(Duration::from_secs(10), async {
-        while pending(&ctx, &busy).is_some() {
+        while pending(&ctx, busy).is_some() {
             tokio::task::yield_now().await;
         }
     })

@@ -1,3 +1,5 @@
+use crate::host::CtxHost;
+use crate::internal::CtxInternal;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -8,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::ctx::{Ctx, Shared};
 use crate::effect::{Disposer, Effect};
 use crate::error::{
-    panic_error, CordisError, ServiceReadFailure, ServiceWriteError, ServiceWriteFailure,
+    panic_error, Error, ErrorKind, ServiceReadFailure, ServiceWriteError, ServiceWriteFailure,
 };
 use crate::fiber::{FiberInner, FiberState};
 use crate::key::{ScopeId, TypeKey};
@@ -220,22 +222,21 @@ impl Drop for ReentryGuard {
 }
 
 impl Ctx {
-    /// Intercept only strict reads after existing declaration, visibility and
-    /// readiness checks. Explicit `get_as` remains an unhooked locator.
-    pub fn intercept_require_as<T: ?Sized + Send + Sync + 'static>(
+    /// [`CtxInternal::intercept_require_as`](crate::internal::CtxInternal::intercept_require_as).
+    pub(crate) fn intercept_require_impl<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,
         hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         self.register_service_interceptor(key.into(), HookKind::Read, hook)
     }
 
-    /// Intercept a provider's update of a binding made with `provide_mut_as`.
-    pub fn intercept_set_as<T: ?Sized + Send + Sync + 'static>(
+    /// [`CtxInternal::intercept_set_as`](crate::internal::CtxInternal::intercept_set_as).
+    pub(crate) fn intercept_set_impl<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,
         hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         self.register_service_interceptor(key.into(), HookKind::Write, hook)
     }
 
@@ -244,16 +245,17 @@ impl Ctx {
         key: TypeKey,
         kind: HookKind,
         callback: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, CordisError> {
+    ) -> Result<Disposer, Error> {
         self.registration_preflight()?;
         self.check_instance(&key)?;
         if !key.has_type::<T>() {
-            return Err(CordisError::Validation {
+            return Err(ErrorKind::Validation {
                 issues: vec![format!(
                     "interceptor type does not match {}",
                     key.describe()
                 )],
-            });
+            }
+            .into());
         }
         let scoped_key = (key.clone(), self.scope_for(&key));
         let call = move |value: &StoredValue| {
@@ -429,7 +431,7 @@ impl<T: ?Sized + Send + Sync + 'static> ServiceWriter<T> {
         // and reported via the error sink.
         if let Err(panic) = catch_unwind(AssertUnwindSafe(|| drop(owned))) {
             let sink = caller.error_sink();
-            let error = Arc::new(panic_error(panic));
+            let error = panic_error(panic).shared();
             let _ = catch_unwind(AssertUnwindSafe(|| sink(error)));
         }
         result
@@ -439,16 +441,16 @@ impl<T: ?Sized + Send + Sync + 'static> ServiceWriter<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BoxFuture, Plugin};
+    use crate::{BoxFuture, DynPlugin};
 
     struct HookPlugin;
 
-    impl Plugin for HookPlugin {
+    impl DynPlugin for HookPlugin {
         fn name(&self) -> &str {
             "hook-churn"
         }
 
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 let key = TypeKey::instance::<u64>(ctx.instance());
                 ctx.intercept_require_as::<u64>(key.clone(), |_| ServiceIntercept::Continue)?;

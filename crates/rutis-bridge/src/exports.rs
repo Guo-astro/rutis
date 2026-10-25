@@ -24,7 +24,9 @@
 
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, InstanceId, Plugin, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, Effect, InstanceId, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
@@ -34,7 +36,7 @@ use crate::session::{host_key, Error, HostDispatch, Reference, Reply, Value};
 #[doc(hidden)]
 pub use crate::marked::{claimed_in, claims_in, install, on_claim, unexported};
 
-type Wrap = dyn Fn(&Ctx, &TypeKey) -> Result<Arc<dyn HostDispatch>, CordisError> + Send + Sync;
+type Wrap = dyn Fn(&Ctx, &TypeKey) -> Result<Arc<dyn HostDispatch>, RutisError> + Send + Sync;
 
 /// A Rust service exported by name: the native service of type `T`, and the
 /// generated dispatcher that serves it to other languages.
@@ -68,7 +70,7 @@ impl Export {
             group: None,
             native: TypeKey::of::<T>(),
             wrap: Arc::new(move |ctx: &Ctx, key: &TypeKey| {
-                Ok(dispatch(ctx.require_as::<T>(key.clone())?))
+                Ok(dispatch(ctx.require_key::<T>(key.clone())?))
             }),
         }
     }
@@ -100,14 +102,14 @@ impl Export {
         let (native, provided) = match instance {
             Some(instance) => (
                 self.native.clone().with_instance(instance),
-                host_key(&self.name).with_instance(instance),
+                host_key(&self.name).instance(instance),
             ),
             None => (self.native.clone(), host_key(&self.name)),
         };
         ExportPlugin {
             label: format!("rutis-export:{}", self.name),
             injects: vec![native],
-            provided,
+            provided: provided.erase(),
             wrap: self.wrap.clone(),
         }
     }
@@ -121,19 +123,19 @@ pub struct ExportPlugin {
     wrap: Arc<Wrap>,
 }
 
-impl Plugin for ExportPlugin {
+impl DynPlugin for ExportPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let dispatch = (self.wrap)(ctx, &self.injects[0])?;
-            ctx.provide_as::<dyn HostDispatch>(self.provided.clone(), dispatch)?;
+            ctx.provide_key::<dyn HostDispatch>(self.provided.clone(), dispatch)?;
             Ok(Effect::Done)
         })
     }

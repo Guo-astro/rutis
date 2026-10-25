@@ -311,14 +311,14 @@ pub trait Plugin: Send + Sync + 'static {
   - `ctx.on::<E>(|event, call| async move { … })` 注册异步监听器；
   - `ctx.on_sync::<E>(|event, call| …)` 注册同步监听器，所有方式都能调用它；
   - 需要选项时用 `ctx.listen::<E>()`：`.prefix(p)`、`.name(n)`、`.once()`、`.prepend()`、`.global()`，最后写 `.on(…)` 或 `.on_sync(…)`。插件指南先讲 `prefix` 和 `name`，后三个放在"高级"一节。
-- 监听器是闭包，参数是 `(Arc<E>, Call<E>)`；同步监听器的参数是 `(Arc<E>, SyncCall<E>)`。返回 `Result<Option<E::Value>>`，`Ok(None)` 表示没有结果。闭包的参数类型由编译器推断，块里可以对任何错误用 `?`。
+- 监听器是闭包，参数是 `(Arc<E>, Call<E>)`；同步监听器的参数是 `(Arc<E>, SyncCall<'_, E>)`。返回 `Result<Option<E::Value>>`，`Ok(None)` 表示没有结果。闭包的参数类型由编译器推断，块里可以对任何错误用 `?`。
 - `call.mode()` 是这次分发的方式；`call.name()` 是分发时用的名字（前缀监听器用得到）；`call.next()` 只在 `waterfall` 里可用；`call.ctx()` 是登记这个监听器的 `Ctx`。
 - 发出：
   - `emit`、`parallel`、`serial`、`waterfall`、`bail` 都接受 `E` 或 `Arc<E>`；
   - `waterfall` 返回一个构建器，可以先写 `.terminal(…)` 再 `.await`；
   - `bail` 是原来的 `bail_sync`，改成和其他语言同名；
   - `ctx.filter(pred)` 给出同样这五个方法。
-- 名字：事件以 `E::NAME` 登记和发出。没有固定名字的事件类型（例如 rutis-bridge 的 `Args`）重写 `Event::name(&self)`，让值自己带上名字；监听这种事件时用 `ctx.listen::<Args>().name("file-changed")`。这只是代替了现在的 `EventKey::dynamic`。
+- 名字：事件以 `E::NAME` 登记和发出。没有固定名字的事件类型重写 `Event::name(&self)`，让值自己带上名字；监听这种事件时用 `ctx.listen::<E>().name("file-changed")`。这只是代替了现在的 `EventKey::dynamic`。rutis-bridge 的 `Args` 是例外：它的值不带名字（实现时保持原样，否则要改它的类型），监听照样用 `ctx.listen::<Args>().name(..)`，按名字发出它的只有 rutis 自己的 crate，用 `internal` 里的 `CtxInternal::named`。
 - 五种方式的语义、作用域、过滤、卸载等待，都和[统一事件设计](design-events-2026-10-18.md)一致，不变。
 
 ### 错误
@@ -327,7 +327,7 @@ pub trait Plugin: Send + Sync + 'static {
 - `?` 能把任何 `std::error::Error + Send + Sync + 'static` 转成 `rutis::Error`，rutis 自己的错误也一样。`Error::msg("…")` 用字符串构造一个错误。
 - `rutis::Error` 本身不实现 `std::error::Error`，这是 `?` 能接住任何错误的前提（`anyhow::Error` 和 Bevy 的 `BevyError` 也是这么做的）。
 - 宿主要区分 rutis 的失败时，`err.kind()` 返回 `Option<&host::ErrorKind>`。`ErrorKind` 就是现在的 `CordisError` 枚举，改了名字，变体不变。来自插件代码的错误，`kind()` 是 `None`；它报到宿主时被包在 `ErrorKind::PluginFailed` 里，与现在相同。
-- 错误仍然不能 `Clone`，要共享时用 `Arc<Error>`（D11、D25 不变）。
+- 错误仍然不能 `Clone`，要共享时用 `Arc<host::ErrorKind>`，也就是现在的 `Arc<CordisError>` 改了名字（D11、D25 不变）。实现时发现：`rutis::Error` 不实现 `std::error::Error`，`Arc<rutis::Error>` 就没法用 `?` 转成 `Box<dyn Error>`；`Arc<ErrorKind>` 可以，宿主等待插件视图、关闭根时照旧直接 `?`。`rutis::Error` 解引用到它报给宿主的 `ErrorKind`，`match &*err { … }` 就能按种类匹配。
 
 和常用错误库一起用（Rust 1.88、anyhow 1.0.104、thiserror 2.0.21 上实测）：
 
@@ -487,7 +487,7 @@ impl DynPlugin for Router {
 | `Listener` | `events::Listener`（由异步监听器闭包自动满足，不手写实现） |
 | `SyncListener`、`PatternListener`、`SyncPatternListener` | 删除；监听器只用闭包，前缀监听器从 `call.name()` 读名字 |
 | `Terminal` | 删除；用 `ctx.waterfall(e).terminal(…)` |
-| `Call`、`SyncCall` | `events::Call<E>`、`events::SyncCall<E>`（拥有所有权，不再带生命周期参数） |
+| `Call`、`SyncCall` | `events::Call<E>`（拥有所有权，不再带生命周期参数）、`events::SyncCall<'_, E>`（实现时保留了生命周期：同步链的其余部分和 `waterfall_sync` 的 terminal 都借用调用方的栈，改成拥有所有权就得要求 terminal 是 `'static`，那是改语义。闭包的参数由编译器推断，作者不写这个类型） |
 | `Mode`、`ListenerInfo`、`Scope` | `events::` |
 | `FiberView`、`FiberState`、`FiberStatusChanged`、`PluginId`、`Snapshot`、`DisposeWaitError`、`shutdown_deadline` | `host::` |
 | 诊断类型（`RuntimeDiagnostics` 等 10 个） | `host::diagnostics::` |
@@ -577,7 +577,7 @@ rutis-migrate 0.17 path/to/crate
 | `provide_as(TypeKey::of::<T>(), arc)` 改成 `provide_as::<T>(arc)`，带名字的键改成 `provide_at(…)`；`get_as(TypeKey::of::<T>())` 改成 `get::<T>()` | 是 |
 | 用到 `root`、`shutdown`、`require` 等宿主方法的文件加 `use rutis::host::*;`；rutis-loader 根上移走的名字改成模块路径 | 是 |
 | `Builtins::register_fn(name, \|c\| Ok(Box::new(P::new(c))))` 改成 `register(name, \|c\| Ok(P::new(c)))` | 是 |
-| 手写 `impl Listener` 的结构体、`match` `CordisError` 的变体（要改成 `match err.kind()`）、`Gate` / `Keyed` / `KeyedGate` / `Typed::with_keys` | 否，留 TODO |
+| 手写 `impl Listener` 的结构体、`match` `CordisError` 的变体（工具改成 `match &*err`）、`Gate` / `Keyed` / `KeyedGate` / `Typed::with_keys` | 否，留 TODO |
 
 验证：仓库自己的 crate 就用这个工具迁移（内核之外 42 处 `impl Plugin`、14 处 `impl PluginFactory`、1277 处 `CordisError`），再在 0.16 的 `examples/` 和 aimux-llm 上单独跑一遍。结果要能编译、测试通过，剩下的 TODO 数量写进发布说明。
 

@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::runtimes::{id, repo, COLD};
-use rutis::{Ctx, FiberView};
+use rutis::host::{CtxHost, FiberView};
+use rutis::Ctx;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
@@ -22,9 +23,8 @@ use rutis_bridge::{
     peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry,
     StaticIdentity,
 };
-use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 
@@ -345,7 +345,7 @@ async fn a_reconnecting_controller_gets_a_new_lease(language: Language) {
     remote.wait_for("start a").await;
     let peer = COLD
         .eventually(
-            || controller.root.get_as::<Peer>(peer_key(&id("remote"))),
+            || controller.root.get_at::<Peer>(&peer_key(&id("remote"))),
             "the peer",
         )
         .await;

@@ -30,7 +30,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-use rutis::{shutdown_deadline, BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin, TypeKey};
+use rutis::host::{
+    shutdown_deadline, BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberView, TypeKey,
+};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
@@ -139,6 +142,7 @@ impl Binaries {
 
 /// The manifest format this host reads. A binary may print a newer one;
 /// it is refused whole rather than half-read.
+#[doc(hidden)]
 pub const MANIFEST_FORMAT: u64 = 1;
 
 fn default_manifest_format() -> u64 {
@@ -226,6 +230,7 @@ pub struct BinaryFile {
 
 /// What the binary at `path` serves, whatever its language: it runs `path
 /// --rutis-manifest` (within 30 s).
+#[doc(hidden)]
 pub fn read_binary_manifest(path: &Path) -> Result<BinaryManifest, String> {
     read_manifest(path)
 }
@@ -1694,7 +1699,10 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
 async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
     let limit = shutdown_deadline() + STOP_MARGIN;
     let disposed = slot.view.dispose_with_timeout(limit).await;
-    let timed_out = matches!(disposed, Err(rutis::DisposeWaitError::TimedOut { .. }));
+    let timed_out = matches!(
+        disposed,
+        Err(rutis::host::DisposeWaitError::TimedOut { .. })
+    );
     if let Err(error) = &disposed {
         eprintln!(
             "rutis-loader: stopping the {} runtime {runtime}: {error}",
@@ -2159,16 +2167,16 @@ impl<L: BinaryLanguage> Inner<L> {
     }
 }
 
-impl<L: BinaryLanguage> Plugin for BinaryRuntimes<L> {
+impl<L: BinaryLanguage> DynPlugin for BinaryRuntimes<L> {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let loader = ctx.require::<Loader>()?;
             let inner = self.inner.clone();
@@ -2204,7 +2212,7 @@ impl<L: BinaryLanguage> Plugin for BinaryRuntimes<L> {
             };
             let inner = self.inner.clone();
             ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
+                async move {
                     sweeper.abort();
                     // Stopping its runtimes is no end of theirs.
                     for pending in inner.pending.lock().unwrap().drain(..) {
@@ -2224,7 +2232,7 @@ impl<L: BinaryLanguage> Plugin for BinaryRuntimes<L> {
                         inner.resolver.stopped(&name);
                     }
                     Ok(())
-                }))
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -2256,23 +2264,23 @@ impl<L: BinaryLanguage> BinaryRuntime<L> {
     }
 }
 
-impl<L: BinaryLanguage> Plugin for BinaryRuntime<L> {
+impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             // The manifest was read from this file as it was; a rebuild
             // since would start a process whose rows are another's (#539).
             if stamp(&self.binary) != self.stamp {
-                return Err(CordisError::PluginFailed(
+                return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     std::io::Error::other(format!(
                         "{} changed after its manifest was read",
                         self.binary.display()
                     ))
                     .into(),
-                ));
+                )));
             }
             let local = self
                 .first

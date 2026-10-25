@@ -10,13 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{layer, row_state, Probe};
-use rutis::{BoxFuture, CordisError, Ctx, EventKey, FiberState, FiberView, Listener};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, TypeKey,
+};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_loader::report::{EntryStatus, LoaderChanged, RowStatus, Supply};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin,
-    Patch, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin, ServiceCatalog,
+    Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 use rutis_test_support::{until, within};
 use serde_json::{json, Value};
@@ -303,7 +307,7 @@ export function apply(ctx, config) {
 /// The probe host, the Cordis runtime, then the loader with its rows.
 async fn interop_loader(probe: &Probe) -> (Ctx, Loader, FiberView) {
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let (loader, runtime) = mount(&root, node_package(), &["probe"]).await;
     (&runtime).await.unwrap();
@@ -530,7 +534,7 @@ async fn rows_wait_for_their_hosts_not_the_runtime() {
     assert_eq!(runtime.state().state, FiberState::Active);
 
     let host = root
-        .provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+        .provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     probe.wait_for("c: hello rust").await;
 
@@ -572,7 +576,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
     let transitions = common::Transitions::on(&root);
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe").register_shared("greeter");
@@ -616,7 +620,7 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
 
     // `greeter` from Rust: the JavaScript consumer calls it through Cordis.
     let greeter = root
-        .provide_as::<dyn HostDispatch>(host_key("greeter"), Arc::new(RustGreeter))
+        .provide_at(host_key("greeter"), Arc::new(RustGreeter))
         .unwrap();
     probe.wait_for("c: hello from rust").await;
     // No start before that: the fiber resolved offline went without ever
@@ -791,29 +795,25 @@ fn weather_package(dir: &Path) -> PathBuf {
 /// A Rust plugin using `weather` by name, whoever provides it.
 struct RustUser(Probe);
 
-impl rutis::Plugin for RustUser {
+impl DynPlugin for RustUser {
     fn name(&self) -> &str {
         "rust-user"
     }
 
-    fn injects(&self) -> &[rutis::TypeKey] {
-        static KEYS: std::sync::OnceLock<[rutis::TypeKey; 1]> = std::sync::OnceLock::new();
-        KEYS.get_or_init(|| [host_key("weather")])
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![host_key("weather").erase()]
     }
 
-    fn apply<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let weather = ctx.require_as::<dyn HostDispatch>(host_key("weather"))?;
+            let weather = ctx.require_at(&host_key("weather"))?;
             let today: String = rutis_bridge::session::decode_value(
                 weather.invoke("today", json!([]).into()).unwrap(),
             )
             .unwrap();
             let probe = self.0.clone();
             probe.0.lock().unwrap().push(format!("rust: {today}"));
-            Ok(rutis::Effect::Disposer(Box::new(move || {
+            Ok(Effect::Disposer(Box::new(move || {
                 probe.0.lock().unwrap().push("rust: bye".into());
                 Ok(())
             })))
@@ -830,7 +830,7 @@ async fn row_services_are_shared_by_name() {
     std::fs::write(&forecaster, FORECASTER).unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let (loader, runtime) = mount(&root, node_package(), &["probe", "weather"]).await;
     (&runtime).await.unwrap();
@@ -895,24 +895,21 @@ export function apply(ctx) {
 /// A Rust plugin calling `store` by name, whoever provides it.
 struct StoreUser(Probe);
 
-impl rutis::Plugin for StoreUser {
+impl DynPlugin for StoreUser {
     fn name(&self) -> &str {
         "store-user"
     }
 
-    fn injects(&self) -> &[rutis::TypeKey] {
-        static KEYS: std::sync::OnceLock<[rutis::TypeKey; 1]> = std::sync::OnceLock::new();
-        KEYS.get_or_init(|| [host_key("store")])
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![host_key("store").erase()]
     }
 
-    fn apply<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let store = ctx.require_as::<dyn HostDispatch>(host_key("store"))?;
-            let failed =
-                |e: rutis_bridge::session::Error| CordisError::PluginFailed(e.to_string().into());
+            let store = ctx.require_at(&host_key("store"))?;
+            let failed = |e: rutis_bridge::session::Error| {
+                rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+            };
             let methods = store.methods().unwrap_or_default();
             let got = settle(store.invoke("get", json!(["y"]).into()).map_err(failed)?)
                 .await
@@ -920,7 +917,7 @@ impl rutis::Plugin for StoreUser {
                 .map_err(failed)?;
             let line = format!("rust: {} {methods}", got.as_str().unwrap_or_default());
             self.0 .0.lock().unwrap().push(line);
-            Ok(rutis::Effect::Done)
+            Ok(Effect::Done)
         })
     }
 }
@@ -940,7 +937,7 @@ async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
     std::fs::write(&user, STORE_USER).unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // As rutis-host: every name crosses by name.
     let (loader, runtime) = mount_by_name(&root).await;
@@ -957,7 +954,7 @@ async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
         .iter()
         .find(|row| row.id == "u")
         .map(|row| match &row.status {
-            rutis_loader::RowStatus::Checked { requires, .. } => requires.clone(),
+            RowStatus::Checked { requires, .. } => requires.clone(),
             other => panic!("{other:?}"),
         })
         .unwrap();
@@ -967,7 +964,7 @@ async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
             .find(|requirement| requirement.service == "store")
             .unwrap()
             .supply,
-        rutis_loader::Supply::Announced(vec!["s".into()])
+        Supply::Announced(vec!["s".into()])
     );
     let report = loader.reconcile(layer(rows), None).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
@@ -990,10 +987,10 @@ async fn a_service_provided_twice_fails_the_later_row() {
     std::fs::write(&store, STORE).unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // The application provides `store` itself.
-    root.provide_as::<dyn HostDispatch>(host_key("store"), Arc::new(probe.clone()))
+    root.provide_at(host_key("store"), Arc::new(probe.clone()))
         .unwrap();
     let (loader, runtime) = mount_by_name(&root).await;
     (&runtime).await.unwrap();
@@ -1139,7 +1136,7 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
     .unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let (loader, runtime) = mount(&root, node_package(), &["probe", "inspector"]).await;
     (&runtime).await.unwrap();
@@ -1159,12 +1156,8 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
     )
     .await;
     let key = host_key("inspector");
-    until(
-        || root.get_as::<dyn HostDispatch>(key.clone()).is_some(),
-        "the inspector",
-    )
-    .await;
-    let inspector = root.get_as::<dyn HostDispatch>(key).unwrap();
+    until(|| root.get_at(&key).is_some(), "the inspector").await;
+    let inspector = root.get_at(&key).unwrap();
     let has_probe = inspector
         .invoke("has", json!(["probe"]).into())
         .unwrap()
@@ -1232,20 +1225,6 @@ export function apply(ctx, config) {
 }
 "#;
 
-struct Changes(Arc<Mutex<Vec<LoaderChanged>>>);
-
-impl Listener<LoaderChanged> for Changes {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a LoaderChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push(e.clone());
-        Box::pin(async { Ok(None) })
-    }
-}
-
 /// A Cordis plugin that disposes its own fiber ends its row, as a Rust
 /// plugin disposing itself: while it starts, just after, later, or behind
 /// the gate of the row's `inject`. A gate unloading because its inject
@@ -1262,13 +1241,12 @@ async fn a_plugin_that_disposes_itself_ends_its_row() {
     let probe = Probe::default();
     let (root, loader, _runtime) = interop_loader(&probe).await;
     let changes = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(
-            &root,
-            &EventKey::<LoaderChanged>::of(),
-            Changes(changes.clone()),
-        )
-        .unwrap();
+    let seen = changes.clone();
+    root.on::<LoaderChanged>(move |e, _| {
+        seen.lock().unwrap().push((*e).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
     let gated = row(
         "w",
         &quit,

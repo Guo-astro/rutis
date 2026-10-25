@@ -6,6 +6,7 @@
 rutis_bridge::include_mounts!();
 
 use edge::{Edge, Input, JoinerHost, Left, Right};
+use rutis::host::CtxHost;
 
 struct Host;
 impl JoinerHost for Host {

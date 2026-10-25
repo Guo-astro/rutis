@@ -5,14 +5,16 @@ mod common;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use common::{patches, MemStore};
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, EventKey, FiberState, Listener, Plugin, PluginFactory,
-    TypeKey,
+use common::{json, patches, schema_of, MemStore, Scoped};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, PluginFactory, TypeKey,
 };
+use rutis::{Ctx, Error};
+use rutis_loader::edit::{Editable, Instance, InstanceResult, NewEntry};
+use rutis_loader::report::{EntryInfo, EntryStatus, Isolate, LoaderChanged, ReconcileReport};
+use rutis_loader::resolve::Build;
 use rutis_loader::{
-    Builtins, Editable, EntryInfo, EntryStatus, Instance, InstanceResult, Isolate, Layer, Loader,
-    LoaderChanged, LoaderError, LoaderOptions, LoaderPlugin, NewEntry, ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog,
 };
 use rutis_test_support::until;
 use schemars::JsonSchema;
@@ -53,10 +55,10 @@ struct Cfg {
 #[derive(Clone)]
 enum Mode {
     Echo,
-    ProvideDoc(TypeKey),
-    ReadDoc(TypeKey),
-    ProvidePage(TypeKey),
-    ReadPage { doc: TypeKey, page: TypeKey },
+    ProvideDoc(Key<Doc>),
+    ReadDoc(Key<Doc>),
+    ProvidePage(Key<Page>),
+    ReadPage { doc: Key<Doc>, page: Key<Page> },
     CreatePage,
     ProvideShared,
     ReadShared,
@@ -69,36 +71,36 @@ struct Probe {
     log: Log,
 }
 
-impl Plugin for Probe {
+impl DynPlugin for Probe {
     fn name(&self) -> &str {
         "probe"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             if self.config.fail_in.as_deref() == Some(self.title.as_str()) {
-                return Err(CordisError::PluginFailed(
+                return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     format!("failed in {}", self.title).into(),
-                ));
+                )));
             }
             let label = &self.config.label;
             let line = match &self.mode {
                 Mode::Echo => format!("apply {label}"),
                 Mode::ProvideDoc(key) => {
-                    ctx.provide_as(key.clone(), Arc::new(Doc(self.title.clone())))?;
+                    ctx.provide_at(key.clone(), Arc::new(Doc(self.title.clone())))?;
                     format!("doc {}", self.title)
                 }
                 Mode::ReadDoc(key) => {
-                    let doc = ctx.require_as::<Doc>(key.clone())?;
+                    let doc = ctx.require_at(key)?;
                     format!("read {label} {}", doc.0)
                 }
                 Mode::ProvidePage(key) => {
-                    ctx.provide_as(key.clone(), Arc::new(Page(self.title.clone())))?;
+                    ctx.provide_at(key.clone(), Arc::new(Page(self.title.clone())))?;
                     format!("page {}", self.title)
                 }
                 Mode::ReadPage { doc, page } => {
-                    let doc = ctx.require_as::<Doc>(doc.clone())?;
-                    let page = ctx.require_as::<Page>(page.clone())?;
+                    let doc = ctx.require_at(doc)?;
+                    let page = ctx.require_at(page)?;
                     format!("read page {} in {}", page.0, doc.0)
                 }
                 Mode::ProvideShared => {
@@ -115,7 +117,9 @@ impl Plugin for Probe {
                         .create_instance(ctx, "page")
                         .with(Title(format!("{}/p", self.title)))
                         .await
-                        .map_err(|e| CordisError::PluginFailed(e.to_string().into()))?;
+                        .map_err(|e| {
+                            rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into()))
+                        })?;
                     format!("created page with {} rows", page.report.len())
                 }
             };
@@ -145,20 +149,20 @@ impl PluginFactory<Cfg> for ProbeFactory {
         "probe"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn validate_config(&self, config: &Cfg) -> Result<(), CordisError> {
+    fn validate_config(&self, config: &Cfg) -> Result<(), Error> {
         if config.invalid || config.reject_in.as_deref() == Some(self.title.as_str()) {
-            return Err(CordisError::Validation {
+            return Err(rutis::Error::from(ErrorKind::Validation {
                 issues: vec![format!("rejected in {:?}", self.title)],
-            });
+            }));
         }
         Ok(())
     }
 
-    fn build(&self, config: &Cfg) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Cfg) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Probe {
             mode: self.mode.clone(),
             title: self.title.clone(),
@@ -168,39 +172,41 @@ impl PluginFactory<Cfg> for ProbeFactory {
     }
 }
 
-fn resolver(log: &Log) -> Builtins {
-    let mut builtins = Builtins::new();
-    let title = |build: &rutis_loader::Build| {
+fn resolver(log: &Log) -> Chain {
+    let mut plain = Builtins::new();
+    let mut builtins = Scoped::new();
+    let title = |build: &Build| {
         build
             .value::<Title>()
             .map(|t| t.0.clone())
             .unwrap_or_default()
     };
     let l = log.clone();
-    builtins.register::<Cfg, _>(
+    plain.register_raw(
         "echo",
-        ProbeFactory {
+        json(ProbeFactory {
             mode: Mode::Echo,
             injects: vec![],
             title: String::new(),
             log: l,
-        },
+        }),
+        schema_of::<Cfg>(),
     );
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("doc-scope", move |build| {
+    builtins.register::<Cfg, _, _>("doc-scope", move |build| {
         Ok(ProbeFactory {
-            mode: Mode::ProvideDoc(TypeKey::instance::<Doc>(build.instance("doc")?)),
+            mode: Mode::ProvideDoc(Key::of().instance(build.instance("doc")?)),
             injects: vec![],
             title: title(build),
             log: l.clone(),
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("doc-reader", move |build| {
-        let key = TypeKey::instance::<Doc>(build.instance("doc")?);
+    builtins.register::<Cfg, _, _>("doc-reader", move |build| {
+        let key = Key::<Doc>::of().instance(build.instance("doc")?);
         Ok(ProbeFactory {
-            mode: Mode::ReadDoc(key.clone()),
-            injects: vec![key],
+            injects: vec![key.erase()],
+            mode: Mode::ReadDoc(key),
             title: title(build),
             log: l.clone(),
         })
@@ -208,45 +214,42 @@ fn resolver(log: &Log) -> Builtins {
     // Like `doc-reader`, but in instance "B" it fails the way it does
     // outside any instance: the same error from another copy.
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("picky-reader", move |build| {
+    builtins.register::<Cfg, _, _>("picky-reader", move |build| {
         if title(build) == "B" {
-            return Err(CordisError::PluginFailed(
+            return Err(rutis::Error::from(ErrorKind::PluginFailed(
                 format!("not inside an instance of {:?}", "doc").into(),
-            ));
+            )));
         }
-        let key = TypeKey::instance::<Doc>(build.instance("doc")?);
+        let key = Key::<Doc>::of().instance(build.instance("doc")?);
         Ok(ProbeFactory {
-            mode: Mode::ReadDoc(key.clone()),
-            injects: vec![key],
+            injects: vec![key.erase()],
+            mode: Mode::ReadDoc(key),
             title: title(build),
             log: l.clone(),
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("page-scope", move |build| {
+    builtins.register::<Cfg, _, _>("page-scope", move |build| {
         Ok(ProbeFactory {
-            mode: Mode::ProvidePage(TypeKey::instance::<Page>(build.instance("page")?)),
+            mode: Mode::ProvidePage(Key::of().instance(build.instance("page")?)),
             injects: vec![],
             title: title(build),
             log: l.clone(),
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("page-reader", move |build| {
-        let doc = TypeKey::instance::<Doc>(build.instance("doc")?);
-        let page = TypeKey::instance::<Page>(build.instance("page")?);
+    builtins.register::<Cfg, _, _>("page-reader", move |build| {
+        let doc = Key::<Doc>::of().instance(build.instance("doc")?);
+        let page = Key::<Page>::of().instance(build.instance("page")?);
         Ok(ProbeFactory {
-            mode: Mode::ReadPage {
-                doc: doc.clone(),
-                page: page.clone(),
-            },
-            injects: vec![doc, page],
+            injects: vec![doc.erase(), page.erase()],
+            mode: Mode::ReadPage { doc, page },
             title: title(build),
             log: l.clone(),
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("creator", move |build| {
+    builtins.register::<Cfg, _, _>("creator", move |build| {
         Ok(ProbeFactory {
             mode: Mode::CreatePage,
             injects: vec![TypeKey::of::<Loader>()],
@@ -255,7 +258,7 @@ fn resolver(log: &Log) -> Builtins {
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("shared-provider", move |build| {
+    builtins.register::<Cfg, _, _>("shared-provider", move |build| {
         Ok(ProbeFactory {
             mode: Mode::ProvideShared,
             injects: vec![],
@@ -264,7 +267,7 @@ fn resolver(log: &Log) -> Builtins {
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("shared-reader", move |build| {
+    builtins.register::<Cfg, _, _>("shared-reader", move |build| {
         Ok(ProbeFactory {
             mode: Mode::ReadShared,
             injects: vec![TypeKey::of::<Shared>()],
@@ -272,21 +275,7 @@ fn resolver(log: &Log) -> Builtins {
             log: l.clone(),
         })
     });
-    builtins
-}
-
-struct Changes(Arc<Mutex<Vec<LoaderChanged>>>);
-
-impl Listener<LoaderChanged> for Changes {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a LoaderChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push(e.clone());
-        Box::pin(async { Ok(None) })
-    }
+    Chain::new().with(plain).with(builtins)
 }
 
 struct Setup {
@@ -344,7 +333,7 @@ async fn setup_report(
     base: &str,
     store: MemStore,
     catalog: ServiceCatalog,
-) -> (Setup, rutis_loader::ReconcileReport) {
+) -> (Setup, ReconcileReport) {
     let log = Log::default();
     let root = Ctx::root().unwrap();
     let plugin = LoaderPlugin::new(
@@ -358,13 +347,12 @@ async fn setup_report(
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
     let changes = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on(
-            &root,
-            &EventKey::<LoaderChanged>::of(),
-            Changes(changes.clone()),
-        )
-        .unwrap();
+    let seen = changes.clone();
+    root.on::<LoaderChanged>(move |e, _| {
+        seen.lock().unwrap().push((*e).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
     let report = loader
         .reconcile(
             vec![
@@ -877,12 +865,12 @@ async fn rows_under_a_waiting_group_are_waiting() {
 /// Keeps the context it is applied in.
 struct Hold(Arc<Mutex<Option<Ctx>>>);
 
-impl Plugin for Hold {
+impl DynPlugin for Hold {
     fn name(&self) -> &str {
         "hold"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             *self.0.lock().unwrap() = Some(ctx.clone());
             Ok(Effect::Done)

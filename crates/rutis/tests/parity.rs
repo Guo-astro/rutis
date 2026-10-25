@@ -14,10 +14,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, Event, FiberState, FiberStatusChanged, FiberView,
-    Listener, Plugin, PluginId, Terminal, TypeKey,
+use rutis::events::{Call, Listener};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberStatusChanged, FiberView,
+    PluginId, TypeKey,
 };
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
@@ -72,22 +75,20 @@ struct Rec {
     notify: Option<Gate>,
 }
 
-impl Listener<Ping> for Rec {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Ping,
-        _call: rutis::Call<'a, u32>,
-    ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-        let hits = self.hits.clone();
-        let notify = self.notify.clone();
-        Box::pin(async move {
-            hits.fetch_add(1, Ordering::SeqCst);
-            if let Some(n) = notify {
-                n.notify_one();
+impl Rec {
+    /// 作为 `Ping` 的监听器。
+    fn listener(self) -> impl Listener<Ping> {
+        move |_, _| {
+            let hits = self.hits.clone();
+            let notify = self.notify.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                if let Some(n) = notify {
+                    n.notify_one();
+                }
+                Ok(None)
             }
-            Ok(None)
-        })
+        }
     }
 }
 
@@ -98,24 +99,24 @@ struct Simple<F> {
     apply: F,
 }
 
-impl<F> Plugin for Simple<F>
+impl<F> DynPlugin for Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     fn name(&self) -> &str {
         self.name
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         (self.apply)(ctx)
     }
 }
 
 fn simple<F>(name: &'static str, apply: F) -> Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     Simple {
         name,
@@ -126,7 +127,7 @@ where
 
 fn simple_dep<F>(name: &'static str, injects: Vec<TypeKey>, apply: F) -> Simple<F>
 where
-    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> + Send + Sync + 'static,
 {
     Simple {
         name,
@@ -147,23 +148,23 @@ fn failing_effect(msg: &'static str) -> Effect {
 }
 
 /// 0.2.3:失败装载的终态错误聚合原始错误与回滚清理错误(sink 仍为观察者)。
-fn failure_contains(e: &CordisError, msg: &str) -> bool {
+fn failure_contains(e: &ErrorKind, msg: &str) -> bool {
     match e {
-        CordisError::ServiceNotFound(m) => m == msg,
-        CordisError::Aggregate { errors } => errors.iter().any(|e| failure_contains(e, msg)),
+        ErrorKind::ServiceNotFound(m) => m == msg,
+        ErrorKind::Aggregate { errors } => errors.iter().any(|e| failure_contains(e, msg)),
         _ => false,
     }
 }
-fn err(msg: &'static str) -> CordisError {
-    CordisError::ServiceNotFound(msg.to_string())
+fn err(msg: &'static str) -> Error {
+    Error::from(ErrorKind::ServiceNotFound(msg.to_string()))
 }
 
-fn sink_ctx() -> (Ctx, Arc<Mutex<Vec<Arc<CordisError>>>>) {
-    let collected: Arc<Mutex<Vec<Arc<CordisError>>>> = Arc::new(Mutex::new(Vec::new()));
+fn sink_ctx() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
+    let collected: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::new(Mutex::new(Vec::new()));
     let to = collected.clone();
     let ctx = Ctx::root_with_sink(
         Handle::current(),
-        Arc::new(move |e: Arc<CordisError>| to.lock().unwrap().push(e)),
+        Arc::new(move |e: Arc<ErrorKind>| to.lock().unwrap().push(e)),
     );
     (ctx, collected)
 }
@@ -221,19 +222,16 @@ struct StatusLog {
     seen: Arc<Mutex<Vec<(PluginId, FiberState, FiberState)>>>,
 }
 
-impl Listener<FiberStatusChanged> for StatusLog {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a FiberStatusChanged,
-        _call: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let seen = self.seen.clone();
-        let ev = e.clone();
-        Box::pin(async move {
-            seen.lock().unwrap().push((ev.plugin_id, ev.from, ev.to));
-            Ok(None)
-        })
+impl StatusLog {
+    /// 作为 `FiberStatusChanged` 的监听器。
+    fn listener(self) -> impl Listener<FiberStatusChanged> {
+        move |e: Arc<FiberStatusChanged>, _| {
+            let seen = self.seen.clone();
+            async move {
+                seen.lock().unwrap().push((e.plugin_id, e.from, e.to));
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -260,11 +258,11 @@ struct Staged {
     seq: Seq,
 }
 
-impl Plugin for Staged {
+impl DynPlugin for Staged {
     fn name(&self) -> &str {
         self.name
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let gates = self.gates.clone();
         let signals = self.signals.clone();
         let seq = self.seq.clone();
@@ -275,11 +273,9 @@ impl Plugin for Staged {
                 seq.lock().unwrap().push(odd);
                 let seq2 = seq.clone();
                 let even = i as u32 * 2 + 2;
-                ctx.effect(move || {
-                    Effect::Disposer(Box::new(move || {
-                        seq2.lock().unwrap().push(even);
-                        Ok(())
-                    }))
+                ctx.effect(move || async move {
+                    seq2.lock().unwrap().push(even);
+                    Ok(())
                 })?;
                 signals[i].notify_one();
                 if ctx.cancellation_token().is_cancelled() {
@@ -301,7 +297,7 @@ async fn keeps_plugin_execution_failure_separate_from_rollback_cleanup_failure()
     let (ctx, sink) = sink_ctx();
     let view = ctx.plugin(simple("fail-and-dirty", move |ctx: &Ctx| {
         Box::pin(async move {
-            ctx.effect(move || Effect::Disposer(Box::new(move || Err(err("cleanup failed")))))?;
+            ctx.effect(move || async move { Err(err("cleanup failed")) })?;
             Err(err("execution failed"))
         })
     }));
@@ -314,7 +310,7 @@ async fn keeps_plugin_execution_failure_separate_from_rollback_cleanup_failure()
     // 回滚清理错误恰好一条进 sink(仍为观察者)
     assert_eq!(sink.lock().unwrap().len(), 1);
     assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "cleanup failed")
+        matches!(*sink.lock().unwrap()[0], ErrorKind::ServiceNotFound(ref m) if m == "cleanup failed")
     );
 }
 
@@ -395,42 +391,36 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
     struct ErrOnDisposed {
         id: PluginId,
     }
-    impl Listener<FiberStatusChanged> for ErrOnDisposed {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a FiberStatusChanged,
-            _call: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
-            Box::pin(async move {
-                if hit {
-                    Err(err("observer failed"))
-                } else {
-                    Ok(None)
+    impl ErrOnDisposed {
+        fn listener(self) -> impl Listener<FiberStatusChanged> {
+            move |e: Arc<FiberStatusChanged>, _| {
+                let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
+                async move {
+                    if hit {
+                        Err(err("observer failed"))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            })
+            }
         }
     }
     struct MarkDisposed {
         id: PluginId,
         seen: StrSeq,
     }
-    impl Listener<FiberStatusChanged> for MarkDisposed {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a FiberStatusChanged,
-            _call: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let seen = self.seen.clone();
-            let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
-            Box::pin(async move {
-                if hit {
-                    seen.lock().unwrap().push("disposed");
+    impl MarkDisposed {
+        fn listener(self) -> impl Listener<FiberStatusChanged> {
+            move |e: Arc<FiberStatusChanged>, _| {
+                let seen = self.seen.clone();
+                let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
+                async move {
+                    if hit {
+                        seen.lock().unwrap().push("disposed");
+                    }
+                    Ok(None)
                 }
-                Ok(None)
-            })
+            }
         }
     }
 
@@ -439,20 +429,17 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
         Box::pin(async { Ok(Effect::Done) })
     }));
     (&view).await.expect("load");
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), ErrOnDisposed { id: view.id })
+    ctx.on::<FiberStatusChanged>(ErrOnDisposed { id: view.id }.listener())
         .unwrap();
     let seen = str_seq();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            MarkDisposed {
-                id: view.id,
-                seen: seen.clone(),
-            },
-        )
-        .unwrap();
+    ctx.on::<FiberStatusChanged>(
+        MarkDisposed {
+            id: view.id,
+            seen: seen.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
 
     view.dispose()
         .await
@@ -463,8 +450,8 @@ async fn logs_disposal_observer_failures_without_rejecting_disposal() {
     // An emit listener's failure reaches the sink as `ListenerFailed`.
     assert!(matches!(
         &*sink.lock().unwrap()[0],
-        CordisError::ListenerFailed { error, .. }
-            if matches!(&**error, CordisError::ServiceNotFound(m) if m == "observer failed")
+        ErrorKind::ListenerFailed { error, .. }
+            if matches!(&**error, ErrorKind::ServiceNotFound(m) if m == "observer failed")
     ));
     assert_eq!(view.state().state, FiberState::Disposed);
 }
@@ -479,24 +466,21 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
         started: Gate,
         gate: Gate,
     }
-    impl Listener<FiberStatusChanged> for SlowObserver {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a FiberStatusChanged,
-            _call: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let started = self.started.clone();
-            let gate = self.gate.clone();
-            let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
-            Box::pin(async move {
-                if !hit {
-                    return Ok(None);
+    impl SlowObserver {
+        fn listener(self) -> impl Listener<FiberStatusChanged> {
+            move |e: Arc<FiberStatusChanged>, _| {
+                let started = self.started.clone();
+                let gate = self.gate.clone();
+                let hit = e.plugin_id == self.id && e.to == FiberState::Unloading;
+                async move {
+                    if !hit {
+                        return Ok(None);
+                    }
+                    started.notify_one();
+                    gate.notified().await;
+                    Err(err("observer"))
                 }
-                started.notify_one();
-                gate.notified().await;
-                Err(err("observer"))
-            })
+            }
         }
     }
 
@@ -523,17 +507,15 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
         })
     }));
     (&view).await.expect("load");
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            SlowObserver {
-                id: view.id,
-                started: observer_started.clone(),
-                gate: observer_gate.clone(),
-            },
-        )
-        .unwrap();
+    ctx.on::<FiberStatusChanged>(
+        SlowObserver {
+            id: view.id,
+            started: observer_started.clone(),
+            gate: observer_gate.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
 
     let v = view.clone();
     let disposal = tokio::spawn(async move { v.dispose().await });
@@ -550,8 +532,8 @@ async fn does_not_await_async_disposal_observers_but_still_observes_rejections()
     // An emit listener's failure reaches the sink as `ListenerFailed`.
     assert!(matches!(
         &*sink.lock().unwrap()[0],
-        CordisError::ListenerFailed { error, .. }
-            if matches!(&**error, CordisError::ServiceNotFound(m) if m == "observer")
+        ErrorKind::ListenerFailed { error, .. }
+            if matches!(&**error, ErrorKind::ServiceNotFound(m) if m == "observer")
     ));
 }
 
@@ -645,18 +627,11 @@ async fn makes_a_loading_parent_join_child_cleanup_already_in_progress() {
                 let child_slot = child_slot_for_child.clone();
                 Box::pin(async move {
                     go.notified().await; // 等 test 填好 owner view 槽
-                    ctx.effect(move || {
-                        Effect::AsyncDisposer(Box::new(move || {
-                            let started = started.clone();
-                            let hold = hold.clone();
-                            let count = count.clone();
-                            Box::pin(async move {
-                                started.notify_one();
-                                hold.notified().await;
-                                count.fetch_add(1, Ordering::SeqCst);
-                                Ok(())
-                            })
-                        }))
+                    ctx.effect(move || async move {
+                        started.notify_one();
+                        hold.notified().await;
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
                     })?;
                     let owner = owner_slot.lock().unwrap().clone().unwrap();
                     tokio::spawn(async move {
@@ -713,21 +688,11 @@ async fn returns_one_disposal_promise_and_joins_cleanup_already_in_progress() {
     let started_in = started.clone();
     let hold_in = hold.clone();
     let d = ctx
-        .effect(move || {
-            let started = started_in.clone();
-            let hold = hold_in.clone();
-            let c = c.clone();
-            Effect::AsyncDisposer(Box::new(move || {
-                let started = started.clone();
-                let hold = hold.clone();
-                let c = c.clone();
-                Box::pin(async move {
-                    started.notify_one();
-                    hold.notified().await;
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            }))
+        .effect(move || async move {
+            started_in.notify_one();
+            hold_in.notified().await;
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         })
         .unwrap();
 
@@ -762,7 +727,7 @@ async fn attempts_every_cleanup_in_lifo_order_and_aggregates_failures_determinis
     let s = seq();
     let s_in = s.clone();
     let d = ctx
-        .effect(move || {
+        .effect_raw(move || {
             let s = s_in.clone();
             let s1 = s.clone();
             let s2 = s.clone();
@@ -790,9 +755,9 @@ async fn attempts_every_cleanup_in_lifo_order_and_aggregates_failures_determinis
     let e = d.dispose().await.expect_err("aggregate");
     assert_eq!(*s.lock().unwrap(), vec![3, 2, 1]); // LIFO
     match &*e {
-        CordisError::Aggregate { errors } => {
-            assert!(matches!(*errors[0], CordisError::ServiceNotFound(ref m) if m == "third"));
-            assert!(matches!(*errors[1], CordisError::ServiceNotFound(ref m) if m == "first"));
+        ErrorKind::Aggregate { errors } => {
+            assert!(matches!(*errors[0], ErrorKind::ServiceNotFound(ref m) if m == "third"));
+            assert!(matches!(*errors[1], ErrorKind::ServiceNotFound(ref m) if m == "first"));
         }
         other => panic!("expected aggregate, got {other:?}"),
     }
@@ -804,12 +769,16 @@ async fn attempts_every_cleanup_in_lifo_order_and_aggregates_failures_determinis
 async fn preserves_an_aggregate_error_thrown_by_user_cleanup_as_one_failure() {
     let ctx = Ctx::root().unwrap();
     let d = ctx
-        .effect(move || {
+        .effect_raw(move || {
             Effect::Many(vec![
                 Effect::Disposer(Box::new(|| {
-                    Err(CordisError::Aggregate {
-                        errors: vec![Arc::new(err("a")), Arc::new(err("b"))],
-                    })
+                    Err(ErrorKind::Aggregate {
+                        errors: vec![
+                            Arc::new(err("a").into_kind()),
+                            Arc::new(err("b").into_kind()),
+                        ],
+                    }
+                    .into())
                 })),
                 Effect::Disposer(Box::new(|| Err(err("other")))),
             ])
@@ -817,11 +786,11 @@ async fn preserves_an_aggregate_error_thrown_by_user_cleanup_as_one_failure() {
         .unwrap();
     let e = d.dispose().await.expect_err("aggregate");
     match &*e {
-        CordisError::Aggregate { errors } => {
+        ErrorKind::Aggregate { errors } => {
             assert_eq!(errors.len(), 2);
-            assert!(matches!(*errors[0], CordisError::ServiceNotFound(ref m) if m == "other"));
+            assert!(matches!(*errors[0], ErrorKind::ServiceNotFound(ref m) if m == "other"));
             match &*errors[1] {
-                CordisError::Aggregate { errors: inner } => assert_eq!(inner.len(), 2),
+                ErrorKind::Aggregate { errors: inner } => assert_eq!(inner.len(), 2),
                 other => panic!("expected nested aggregate, got {other:?}"),
             }
         }
@@ -835,7 +804,7 @@ async fn preserves_an_aggregate_error_thrown_by_user_cleanup_as_one_failure() {
 async fn keeps_a_direct_cleanup_failure_observable_through_the_shared_promise() {
     let ctx = Ctx::root().unwrap();
     let d = ctx
-        .effect(move || Effect::Disposer(Box::new(move || Err(err("cleanup failed")))))
+        .effect(move || async move { Err(err("cleanup failed")) })
         .unwrap();
     let e1 = d.dispose().await.expect_err("first observation");
     // fiber 级卸载 join 同一记录:同一错误 identity
@@ -861,7 +830,7 @@ async fn contains_cleanup_failure_at_structural_restart() {
     assert_eq!(view.state().state, FiberState::Active);
     assert_eq!(sink.lock().unwrap().len(), 1);
     assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "cleanup failed")
+        matches!(*sink.lock().unwrap()[0], ErrorKind::ServiceNotFound(ref m) if m == "cleanup failed")
     );
 }
 
@@ -887,7 +856,7 @@ async fn separates_synchronous_execution_and_rollback_cleanup_failures() {
         let attempts = att_in.clone();
         Box::pin(async move {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                ctx.effect(move || failing_effect("cleanup failed"))?;
+                ctx.effect_raw(move || failing_effect("cleanup failed"))?;
                 registered.notify_one();
                 hold.notified().await;
                 let v = slot.lock().unwrap().clone().unwrap();
@@ -919,7 +888,7 @@ async fn separates_synchronous_execution_and_rollback_cleanup_failures() {
     wait_state(&view, FiberState::Active).await; // restart 落地
     assert_eq!(sink.lock().unwrap().len(), 1); // 回滚清理错误恰好一条
     assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "cleanup failed")
+        matches!(*sink.lock().unwrap()[0], ErrorKind::ServiceNotFound(ref m) if m == "cleanup failed")
     );
 }
 
@@ -938,7 +907,7 @@ async fn removes_a_synchronously_failed_effect_after_rolling_back_collected_clea
         Box::pin(async move {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                 let c = cleanups.clone();
-                ctx.effect(move || counting_effect(c))?;
+                ctx.effect_raw(move || counting_effect(c))?;
                 Err(err("execution failed"))
             } else {
                 Ok(Effect::Done)
@@ -946,7 +915,7 @@ async fn removes_a_synchronously_failed_effect_after_rolling_back_collected_clea
         })
     }));
     let e = (&view).await.expect_err("execution failed");
-    assert!(matches!(*e, CordisError::ServiceNotFound(ref m) if m == "execution failed"));
+    assert!(matches!(*e, ErrorKind::ServiceNotFound(ref m) if m == "execution failed"));
     assert_eq!(cleanups.load(Ordering::SeqCst), 1); // 回滚恰好一次
 
     view.dispose().await.unwrap(); // 不重放
@@ -983,18 +952,11 @@ async fn makes_reentrant_restart_await_async_rollback_without_replaying_the_exec
                 let started = started.clone();
                 let hold = hold.clone();
                 let count = count.clone();
-                ctx.effect(move || {
-                    Effect::AsyncDisposer(Box::new(move || {
-                        let started = started.clone();
-                        let hold = hold.clone();
-                        let count = count.clone();
-                        Box::pin(async move {
-                            started.notify_one();
-                            hold.notified().await;
-                            count.fetch_add(1, Ordering::SeqCst);
-                            Ok(())
-                        })
-                    }))
+                ctx.effect(move || async move {
+                    started.notify_one();
+                    hold.notified().await;
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
                 })?;
                 registered.notify_one();
                 let v = slot.lock().unwrap().clone().unwrap();
@@ -1028,7 +990,7 @@ async fn separates_asynchronous_execution_and_disposal_failures() {
     let (ctx, sink) = sink_ctx();
     let view = ctx.plugin(simple("two-channels", move |ctx: &Ctx| {
         Box::pin(async move {
-            ctx.effect(move || failing_effect("cleanup failed"))?;
+            ctx.effect_raw(move || failing_effect("cleanup failed"))?;
             Err(err("execution failed"))
         })
     }));
@@ -1037,7 +999,7 @@ async fn separates_asynchronous_execution_and_disposal_failures() {
     assert!(failure_contains(&e, "cleanup failed"));
     assert_eq!(sink.lock().unwrap().len(), 1); // 清理错误走回滚通道(sink 观察)
     assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "cleanup failed")
+        matches!(*sink.lock().unwrap()[0], ErrorKind::ServiceNotFound(ref m) if m == "cleanup failed")
     );
     view.dispose().await.unwrap(); // 已回滚 → 无残留清理
     assert_eq!(view.state().state, FiberState::Disposed);
@@ -1066,7 +1028,7 @@ async fn logs_auto_rollback_cleanup_failure_once_when_a_structural_owner_joins()
         let restart_done = flag_in.clone();
         Box::pin(async move {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                ctx.effect(move || failing_effect("cleanup failed"))?;
+                ctx.effect_raw(move || failing_effect("cleanup failed"))?;
                 registered.notify_one();
                 hold.notified().await;
                 let v = slot.lock().unwrap().clone().unwrap();
@@ -1088,7 +1050,7 @@ async fn logs_auto_rollback_cleanup_failure_once_when_a_structural_owner_joins()
     // 回滚 + 重启 join 同一回滚:错误只记录一次
     assert_eq!(sink.lock().unwrap().len(), 1);
     assert!(
-        matches!(*sink.lock().unwrap()[0], CordisError::ServiceNotFound(ref m) if m == "cleanup failed")
+        matches!(*sink.lock().unwrap()[0], ErrorKind::ServiceNotFound(ref m) if m == "cleanup failed")
     );
     assert_eq!(view.state().state, FiberState::Active);
 }
@@ -1165,7 +1127,7 @@ async fn makes_reentrant_restart_await_async_execution_and_cleanup() {
 #[tokio::test]
 async fn rejects_effect_registration_during_unload() {
     let ctx = Ctx::root().unwrap();
-    let captured: Arc<Mutex<Option<CordisError>>> = Arc::new(Mutex::new(None));
+    let captured: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
     let cap = captured.clone();
     let view = ctx.plugin(simple("reject-during-unload", move |ctx: &Ctx| {
         let cap = cap.clone();
@@ -1174,7 +1136,7 @@ async fn rejects_effect_registration_during_unload() {
             Ok(Effect::Disposer(Box::new(move || {
                 let cap = cap.clone();
                 let ctx3 = ctx2.clone();
-                *cap.lock().unwrap() = ctx3.effect(move || Effect::Done).err();
+                *cap.lock().unwrap() = ctx3.effect(move || async { Ok(()) }).err();
                 Ok(())
             })))
         })
@@ -1182,8 +1144,8 @@ async fn rejects_effect_registration_during_unload() {
     (&view).await.expect("load");
     view.restart().await.expect("restart completes");
     assert!(matches!(
-        captured.lock().unwrap().take(),
-        Some(CordisError::InactiveEffect)
+        captured.lock().unwrap().take().as_deref(),
+        Some(ErrorKind::InactiveEffect)
     ));
     assert_eq!(view.state().state, FiberState::Active);
 }
@@ -1211,10 +1173,10 @@ async fn accepts_effects_while_a_child_is_pending_or_loading() {
                 let cleaned = cleaned.clone();
                 ctx.effect(move || {
                     let cleaned = cleaned.clone();
-                    Effect::Disposer(Box::new(move || {
+                    async move {
                         cleaned.lock().unwrap().push("loading");
                         Ok(())
-                    }))
+                    }
                 })?;
                 Ok(Effect::Done)
             })
@@ -1279,12 +1241,7 @@ async fn does_not_let_a_stale_execution_failure_poison_the_current_generation() 
 async fn inertia_lock_1() {
     let ctx = Ctx::root().unwrap();
     let log: TransitionLog = Arc::new(Mutex::new(Vec::new()));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            StatusLog { seen: log.clone() },
-        )
+    ctx.on::<FiberStatusChanged>(StatusLog { seen: log.clone() }.listener())
         .unwrap();
     let exec_hold = gate();
     let cleanup_count = counter();
@@ -1345,12 +1302,7 @@ async fn inertia_lock_1() {
 async fn inertia_lock_2() {
     let ctx = Ctx::root().unwrap();
     let log: TransitionLog = Arc::new(Mutex::new(Vec::new()));
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            StatusLog { seen: log.clone() },
-        )
+    ctx.on::<FiberStatusChanged>(StatusLog { seen: log.clone() }.listener())
         .unwrap();
     let exec_hold = gate();
     let applies = counter();
@@ -1436,8 +1388,7 @@ async fn plugin_error() {
         simple("apply-fail", move |ctx: &Ctx| {
             let hits = hits.clone();
             Box::pin(async move {
-                ctx.events()
-                    .on(ctx, &rutis::EventKey::of(), Rec { hits, notify: None })?;
+                ctx.on::<Ping>(Rec { hits, notify: None }.listener())?;
                 Err(err("plugin error"))
             })
         })
@@ -1447,8 +1398,7 @@ async fn plugin_error() {
         simple("apply-ok", move |ctx: &Ctx| {
             let hits = hits.clone();
             Box::pin(async move {
-                ctx.events()
-                    .on(ctx, &rutis::EventKey::of(), Rec { hits, notify: None })?;
+                ctx.on::<Ping>(Rec { hits, notify: None }.listener())?;
                 Ok(Effect::Done)
             })
         })
@@ -1456,16 +1406,13 @@ async fn plugin_error() {
     let fiber1 = ctx.plugin(fail);
     let fiber2 = ctx.plugin(ok);
     let e = (&fiber1).await.expect_err("apply fails");
-    assert!(matches!(*e, CordisError::ServiceNotFound(ref m) if m == "plugin error"));
+    assert!(matches!(*e, ErrorKind::ServiceNotFound(ref m) if m == "plugin error"));
     assert_eq!(fiber1.state().state, FiberState::Failed);
     (&fiber2).await.expect("fiber2 loads");
     assert_eq!(fiber2.state().state, FiberState::Active);
     assert!(sink.lock().unwrap().is_empty()); // 偏差:不记 logger
 
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 只有成功 fiber 的监听器
 }
 
@@ -1493,7 +1440,7 @@ async fn dispose_error() {
         .dispose()
         .await
         .expect_err("cleanup error via dispose channel");
-    assert!(matches!(*e1, CordisError::ServiceNotFound(ref m) if m == "test"));
+    assert!(matches!(*e1, ErrorKind::ServiceNotFound(ref m) if m == "test"));
     assert_eq!(calls.load(Ordering::SeqCst), 1); // 恰好一次
     let e2 = view.clone().dispose().await.expect_err("joins same error");
     assert!(Arc::ptr_eq(&e1, &e2));
@@ -1598,7 +1545,7 @@ async fn dispose_manually() {
     let calls = counter();
     let c_in = calls.clone();
     let d = ctx
-        .effect(move || {
+        .effect_raw(move || {
             let calls = c_in.clone();
             counting_effect(calls)
         })
@@ -1620,40 +1567,38 @@ async fn yield_dispose() {
     let s1 = s.clone();
     ctx.effect(move || {
         let s = s1.clone();
-        Effect::Disposer(Box::new(move || {
+        async move {
             s.lock().unwrap().push(1);
             Ok(())
-        }))
+        }
     })
     .unwrap();
     let hits = counter();
     let h_in = hits.clone();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: h_in,
-                notify: None,
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: h_in,
+            notify: None,
+        }
+        .listener(),
+    )
+    .unwrap();
     let s2 = s.clone();
     ctx.effect(move || {
         let s = s2.clone();
-        Effect::Disposer(Box::new(move || {
+        async move {
             s.lock().unwrap().push(2);
             Ok(())
-        }))
+        }
     })
     .unwrap();
     let s3 = s.clone();
     ctx.effect(move || {
         let s = s3.clone();
-        Effect::Disposer(Box::new(move || {
+        async move {
             s.lock().unwrap().push(3);
             Ok(())
-        }))
+        }
     })
     .unwrap();
 
@@ -1842,7 +1787,7 @@ async fn dispose_return_with_error() {
         Box::pin(async { Err(err("test")) }) // 抛错先于任何注册
     }));
     let e = (&view).await.expect_err("throws immediately");
-    assert!(matches!(*e, CordisError::ServiceNotFound(ref m) if m == "test"));
+    assert!(matches!(*e, ErrorKind::ServiceNotFound(ref m) if m == "test"));
     assert_eq!(cleanups.load(Ordering::SeqCst), 0);
     view.dispose().await.unwrap(); // 无清理 → 正常完成
     assert_eq!(cleanups.load(Ordering::SeqCst), 0);
@@ -1863,7 +1808,7 @@ async fn dispose_yield_with_error() {
         Box::pin(async move {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                 let c = cleanups.clone();
-                ctx.effect(move || counting_effect(c))?; // 已注册的清理
+                ctx.effect_raw(move || counting_effect(c))?; // 已注册的清理
                 Err(err("test"))
             } else {
                 Ok(Effect::Done)
@@ -1892,7 +1837,7 @@ async fn dispose_async_return_with_error() {
     wait_state(&view, FiberState::Loading).await;
     hold.notify_one();
     let e = (&view).await.expect_err("rejects via await channel");
-    assert!(matches!(*e, CordisError::ServiceNotFound(ref m) if m == "test"));
+    assert!(matches!(*e, ErrorKind::ServiceNotFound(ref m) if m == "test"));
     assert_eq!(cleanups.load(Ordering::SeqCst), 0);
     assert_eq!(view.state().state, FiberState::Failed);
 }
@@ -1912,14 +1857,14 @@ async fn dispose_async_yield_with_error() {
         Box::pin(async move {
             hold.notified().await;
             let c = cleanups.clone();
-            ctx.effect(move || counting_effect(c))?; // 首段已注册
+            ctx.effect_raw(move || counting_effect(c))?; // 首段已注册
             Err(err("test"))
         })
     }));
     wait_state(&view, FiberState::Loading).await;
     hold.notify_one();
     let e = (&view).await.expect_err("rejects");
-    assert!(matches!(*e, CordisError::ServiceNotFound(ref m) if m == "test"));
+    assert!(matches!(*e, ErrorKind::ServiceNotFound(ref m) if m == "test"));
     assert_eq!(cleanups.load(Ordering::SeqCst), 1); // 已注册的清理回滚一次
 }
 
@@ -1951,7 +1896,7 @@ async fn plugin_apply_functional_plugin() {
 async fn plugin_inactive_context() {
     let ctx = Ctx::root().unwrap();
     let hits = counter();
-    let errs: Arc<Mutex<Vec<CordisError>>> = Arc::new(Mutex::new(Vec::new()));
+    let errs: Arc<Mutex<Vec<Error>>> = Arc::new(Mutex::new(Vec::new()));
     let late_slot = view_slot();
     let errs_in = errs.clone();
     let hits_in = hits.clone();
@@ -1967,14 +1912,10 @@ async fn plugin_inactive_context() {
                 let hits = hits.clone();
                 let slot = slot.clone();
                 let ctx3 = ctx2.clone();
-                if let Some(e) = ctx3.effect(move || Effect::Done).err() {
+                if let Some(e) = ctx3.effect(move || async { Ok(()) }).err() {
                     errs.lock().unwrap().push(e);
                 }
-                if let Some(e) = ctx3
-                    .events()
-                    .on(&ctx3, &rutis::EventKey::of(), Rec { hits, notify: None })
-                    .err()
-                {
+                if let Some(e) = ctx3.on::<Ping>(Rec { hits, notify: None }.listener()).err() {
                     errs.lock().unwrap().push(e);
                 }
                 let child = ctx3.plugin(simple("late", move |_c: &Ctx| {
@@ -1994,7 +1935,7 @@ async fn plugin_inactive_context() {
         assert!(
             captured
                 .iter()
-                .all(|e| matches!(e, CordisError::InactiveEffect)),
+                .all(|e| matches!(&**e, ErrorKind::InactiveEffect)),
             "all registrations rejected: {captured:?}"
         );
     }
@@ -2019,22 +1960,21 @@ struct Nested {
     hits: Arc<AtomicUsize>,
 }
 
-impl Plugin for Nested {
+impl DynPlugin for Nested {
     fn name(&self) -> &str {
         "nested"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let depth = self.depth;
         let hits = self.hits.clone();
         Box::pin(async move {
             let h = hits.clone();
-            ctx.events().on(
-                ctx,
-                &rutis::EventKey::of(),
+            ctx.on::<Ping>(
                 Rec {
                     hits: h,
                     notify: None,
-                },
+                }
+                .listener(),
             )?;
             if depth > 0 {
                 ctx.plugin(Nested {
@@ -2054,40 +1994,29 @@ async fn plugin_nested_plugins() {
     let ctx = Ctx::root().unwrap();
     let hits = counter();
     let root_hits = hits.clone();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: root_hits,
-                notify: None,
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: root_hits,
+            notify: None,
+        }
+        .listener(),
+    )
+    .unwrap();
     let view = ctx.plugin(Nested {
         depth: 2,
         hits: hits.clone(),
     });
     (&view).await.expect("nested applied");
 
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 4); // root + 三层嵌套
 
     view.dispose().await.unwrap();
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 5); // 只剩 root 的 1 个
 
     view.dispose().await.unwrap(); // 二次 dispose 幂等
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 6); // 仍然 1 个
 }
 
@@ -2146,20 +2075,15 @@ async fn plugin_compare_snapshot() {
     let ctx = Ctx::root().unwrap();
     let hits = counter();
     let root_hits = hits.clone();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: root_hits,
-                notify: None,
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.on::<Ping>(
+        Rec {
+            hits: root_hits,
+            notify: None,
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     let baseline = hits.load(Ordering::SeqCst);
 
     let view = ctx.plugin(Nested {
@@ -2167,18 +2091,12 @@ async fn plugin_compare_snapshot() {
         hits: hits.clone(),
     });
     (&view).await.expect("applied");
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     let with_plugin = hits.load(Ordering::SeqCst);
     assert_eq!(with_plugin - baseline, 4);
 
     view.dispose().await.unwrap();
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst) - with_plugin, 1); // 恢复基线
 
     let view2 = ctx.plugin(Nested {
@@ -2186,10 +2104,7 @@ async fn plugin_compare_snapshot() {
         hits: hits.clone(),
     });
     (&view2).await.expect("re-applied");
-    ctx.events()
-        .serial(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .await
-        .unwrap();
+    ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), with_plugin + 1 + 4); // 重装一致
 }
 
@@ -2455,30 +2370,22 @@ async fn events_ctx_on() {
     let ctx = Ctx::root().unwrap();
     let (hits, done) = (counter(), gate());
     let d = ctx
-        .events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
+        .on::<Ping>(
             Rec {
                 hits: hits.clone(),
                 notify: Some(done.clone()),
-            },
+            }
+            .listener(),
         )
         .unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     eventually(|| hits.load(Ordering::SeqCst) >= 2).await;
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     d.dispose().await.unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 2); // 卸载后不再分发
 }
@@ -2490,30 +2397,22 @@ async fn events_ctx_once() {
     let ctx = Ctx::root().unwrap();
     let (hits, done) = (counter(), gate());
     let d = ctx
-        .events()
-        .once(
-            &ctx,
-            &rutis::EventKey::of(),
-            Rec {
-                hits: hits.clone(),
-                notify: Some(done.clone()),
-            },
-        )
+        .listen::<Ping>()
+        .once()
+        .on(Rec {
+            hits: hits.clone(),
+            notify: Some(done.clone()),
+        }
+        .listener())
         .unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     soon(done.notified()).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 至多一次
     d.dispose().await.unwrap();
-    ctx.events()
-        .emit(&ctx, &rutis::EventKey::of(), Arc::new(Ping { value: 1 }))
-        .expect("default event dispatch");
+    ctx.emit(Ping { value: 1 }).expect("default event dispatch");
     drained(&ctx).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
@@ -2525,47 +2424,31 @@ async fn events_ctx_waterfall() {
     struct Adder {
         called: Arc<AtomicUsize>,
     }
-    impl Listener<Ping> for Adder {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a Ping,
-            call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let called = self.called.clone();
-            let base = e.value;
-            Box::pin(async move {
-                called.fetch_add(1, Ordering::SeqCst);
-                let inner = call.next().await?.unwrap_or(0);
-                Ok(Some(base + inner))
-            })
+    impl Adder {
+        fn listener(self) -> impl Listener<Ping> {
+            move |e: Arc<Ping>, call: Call<Ping>| {
+                let called = self.called.clone();
+                let base = e.value;
+                async move {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    let inner = call.next().await?.unwrap_or(0);
+                    Ok(Some(base + inner))
+                }
+            }
         }
     }
     struct Veto {
         called: Arc<AtomicUsize>,
     }
-    impl Listener<Ping> for Veto {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            e: &'a Ping,
-            _call: rutis::Call<'a, u32>,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            let called = self.called.clone();
-            Box::pin(async move {
-                called.fetch_add(1, Ordering::SeqCst);
-                Ok(Some(e.value)) // veto:不调 next,直接返回
-            })
-        }
-    }
-    struct ConstTerminal(u32);
-    impl Terminal<Ping> for ConstTerminal {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a Ctx,
-            _e: &'a Ping,
-        ) -> BoxFuture<'a, Result<Option<u32>, CordisError>> {
-            Box::pin(async { Ok(Some(self.0)) })
+    impl Veto {
+        fn listener(self) -> impl Listener<Ping> {
+            move |e: Arc<Ping>, _| {
+                let called = self.called.clone();
+                async move {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    Ok(Some(e.value)) // veto:不调 next,直接返回
+                }
+            }
         }
     }
 
@@ -2574,64 +2457,46 @@ async fn events_ctx_waterfall() {
     let a2_called = counter();
     let veto_called = counter();
     let a4_called = counter();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Adder {
-                called: a1_called.clone(),
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Adder {
-                called: a2_called.clone(),
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Adder {
+            called: a1_called.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Adder {
+            called: a2_called.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
     let out = ctx
-        .events()
-        .waterfall(
-            &ctx,
-            &rutis::EventKey::of(),
-            &Ping { value: 1 },
-            ConstTerminal(2),
-        )
+        .waterfall(Ping { value: 1 })
+        .terminal(|_| async { Ok(Some(2)) })
         .await
         .unwrap();
     assert_eq!(out, Some(4)); // 1 + (1 + terminal 2)
     assert_eq!(a1_called.load(Ordering::SeqCst), 1);
     assert_eq!(a2_called.load(Ordering::SeqCst), 1);
 
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Veto {
-                called: veto_called.clone(),
-            },
-        )
-        .unwrap();
-    ctx.events()
-        .on(
-            &ctx,
-            &rutis::EventKey::of(),
-            Adder {
-                called: a4_called.clone(),
-            },
-        )
-        .unwrap();
+    ctx.on::<Ping>(
+        Veto {
+            called: veto_called.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
+    ctx.on::<Ping>(
+        Adder {
+            called: a4_called.clone(),
+        }
+        .listener(),
+    )
+    .unwrap();
     let out2 = ctx
-        .events()
-        .waterfall(
-            &ctx,
-            &rutis::EventKey::of(),
-            &Ping { value: 1 },
-            ConstTerminal(2),
-        )
+        .waterfall(Ping { value: 1 })
+        .terminal(|_| async { Ok(Some(2)) })
         .await
         .unwrap();
     assert_eq!(out2, Some(3)); // veto 截断:1 + (1 + veto 1)

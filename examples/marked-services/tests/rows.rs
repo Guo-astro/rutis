@@ -6,13 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use marked_services_example::Calendar;
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{decode_value, host_key, HostDispatch, Reply, Value as RpcValue};
-use rutis_loader::{
-    Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
-    ServiceCatalog,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
@@ -95,7 +94,7 @@ async fn fixture(rows: Value) -> Fixture {
     let dir = self::rows();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // The service, provided as usual: that is all it takes.
     root.provide(Calendar::new()).unwrap();

@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch, Value as RpcValue};
@@ -82,12 +83,8 @@ async fn service(
         .await
         .unwrap();
     let key = host_key(name);
-    until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
-        name,
-    )
-    .await;
-    ctx.get_as::<dyn HostDispatch>(key).unwrap()
+    until(|| ctx.get_at::<dyn HostDispatch>(&key).is_some(), name).await;
+    ctx.get_at::<dyn HostDispatch>(&key).unwrap()
 }
 
 fn json_of(service: &Arc<dyn HostDispatch>, method: &str, args: Value) -> Value {

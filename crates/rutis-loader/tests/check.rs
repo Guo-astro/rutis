@@ -4,29 +4,35 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, PluginFactory};
+use rutis::{Ctx, Error};
+use rutis_loader::report::{CheckReport, Provider, RowStatus, Supply, Unknown};
+use rutis_loader::resolve::{Declared, Resolved};
 use rutis_loader::{
-    Builtins, Chain, Declared, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch,
-    Provider, Resolved, Resolver, RowStatus, ServiceCatalog, Supply, Unknown,
+    Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, Resolver,
+    ServiceCatalog,
 };
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// Counts its applies: a check applies nothing.
 struct Counted(Arc<AtomicUsize>);
 
-impl Plugin for Counted {
+impl rutis::Plugin for Counted {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "counted"
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _ctx: &Ctx, (): ()) -> rutis::Result {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(Effect::Done) })
+        Ok(())
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[allow(dead_code)]
 struct Sized {
     size: u32,
@@ -35,7 +41,7 @@ struct Sized {
 struct CountedFactory(Arc<AtomicUsize>);
 
 impl PluginFactory<Value> for CountedFactory {
-    fn build(&self, _config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Counted(self.0.clone())))
     }
 }
@@ -64,15 +70,13 @@ async fn loader(applied: &Arc<AtomicUsize>) -> (Ctx, Loader) {
     let mut builtins = Builtins::new();
     let counted = |applied: &Arc<AtomicUsize>| {
         let applied = applied.clone();
-        move |_: &Value| -> Result<Box<dyn Plugin>, CordisError> {
-            Ok(Box::new(Counted(applied.clone())))
-        }
+        move |_: &Value| Ok(Counted(applied.clone()))
     };
-    builtins.register_fn::<Value, _>("plain", counted(applied));
-    builtins.register_fn::<Value, _>("vague", counted(applied));
-    builtins.register_fn::<Value, _>("remote", counted(applied));
+    builtins.register("plain", counted(applied));
+    builtins.register("vague", counted(applied));
+    builtins.register("remote", counted(applied));
     let sized = applied.clone();
-    builtins.register_fn::<Sized, _>("sized", move |_| Ok(Box::new(Counted(sized.clone()))));
+    builtins.register("sized", move |_: &Sized| Ok(Counted(sized.clone())));
     let names = |config: &Value, field: &str| -> Vec<String> {
         config[field]
             .as_array()
@@ -125,7 +129,7 @@ fn layers(rows: Value) -> Vec<Layer> {
 }
 
 /// Each row's requirements, as (service, supply).
-fn supplies(report: &rutis_loader::CheckReport, id: &str) -> Vec<(String, Supply)> {
+fn supplies(report: &CheckReport, id: &str) -> Vec<(String, Supply)> {
     let row = report.rows.iter().find(|row| row.id == id).expect(id);
     match &row.status {
         RowStatus::Checked { requires, .. } => requires

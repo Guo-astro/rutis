@@ -18,14 +18,10 @@ use std::time::Duration;
 
 use aimux_core::options::Tool;
 use aimux_core::tool::{FunctionTool, ToolCall};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use futures::future::BoxFuture;
+use rutis::{Ctx, Plugin};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
-
-/// tools 服务键。
-pub fn tools_key() -> TypeKey {
-    TypeKey::of::<ToolRegistry>()
-}
 
 /// 一次工具执行的输出(失败已转为模型可见的 `error: ...` 文本)。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -205,16 +201,16 @@ impl ToolsPlugin {
 }
 
 impl Plugin for ToolsPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "tools"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            let registry = Arc::new(ToolRegistry::new(ctx.handle().clone(), self.defs.clone()));
-            ctx.provide_as(tools_key(), registry)?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+        let handle = tokio::runtime::Handle::current();
+        ctx.provide(ToolRegistry::new(handle, self.defs.clone()))?;
+        Ok(())
     }
 }
 

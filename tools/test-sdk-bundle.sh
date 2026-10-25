@@ -131,29 +131,24 @@ base64 = "0.22"
 EOF
 cat > "$e2a/src/lib.rs" <<'EOF'
 #![cfg(feature = "export")]
-use rutis_sdk::rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis_sdk::rutis::{Ctx, Plugin, Result};
 use rutis_sdk::ConfigValue;
 use base64::Engine as _;
 
-struct Factory;
 struct E2a;
-impl PluginFactory<ConfigValue> for Factory {
-    fn name(&self) -> &str { "e2a" }
-    fn build(&self, _: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
-        Ok(Box::new(E2a))
-    }
-}
 impl Plugin for E2a {
+    type Deps = ();
     fn name(&self) -> &str { "e2a" }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            let encoded = base64::engine::general_purpose::STANDARD.encode("hello e2a");
-            ctx.provide(encoded)?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> Result {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("hello e2a");
+        ctx.provide(encoded)?;
+        Ok(())
     }
 }
-rutis_sdk::export_plugin! { id: "e2a", factory: Factory }
+fn e2a(_: &ConfigValue) -> Result<E2a> {
+    Ok(E2a)
+}
+rutis_sdk::export_plugin! { id: "e2a", build: e2a }
 EOF
 with_timeout 900 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo xtask pack-plugin \
   --manifest-path "$e2a/Cargo.toml" --bundle "$base/sdk-bundle" \
@@ -347,7 +342,8 @@ tokio-stream = "0.1"
 EOF
 cat > "$e2d/src/lib.rs" <<'EOF'
 #![cfg(feature = "export")]
-use rutis_sdk::rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis_sdk::rutis::host::{BoxFuture, DynPlugin, Effect, PluginFactory};
+use rutis_sdk::rutis::{Ctx, Error};
 use rutis_sdk::ConfigValue;
 // Actually touching the private dependency's API loads its tokio copy's
 // metadata, which is what collides with the SDK closure; merely declaring
@@ -358,13 +354,13 @@ struct Factory;
 struct E2d;
 impl PluginFactory<ConfigValue> for Factory {
     fn name(&self) -> &str { "e2d" }
-    fn build(&self, _: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &ConfigValue) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(E2d))
     }
 }
-impl Plugin for E2d {
+impl DynPlugin for E2d {
     fn name(&self) -> &str { "e2d" }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let _ = tokio_stream::iter(vec![1u8]).next();
             ctx.provide("e2d".to_string())?;

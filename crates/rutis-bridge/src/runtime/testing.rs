@@ -9,6 +9,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::session::{settle, Error, Reply, Value};
+use rutis::host::CtxHost;
+use rutis::internal::CtxInternal;
 
 pub mod events;
 
@@ -224,7 +226,8 @@ pub async fn runtime(
         .await
         .expect("hosts.provide");
     // The declared service, and the ones the row announces (`undeclared`).
-    let projection = row_projection_of("row w", &provides, host_key, |_| false);
+    let projection =
+        row_projection_of("row w", &provides, |name| host_key(name).erase(), |_| false);
     projection.attach(ctx, process.clone()).unwrap();
     let load = || {
         process.load_row_exporting(
@@ -241,11 +244,11 @@ pub async fn runtime(
     load().await.expect("rows.load");
     let key = host_key(service);
     eventually(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
+        || ctx.get_at::<dyn HostDispatch>(&key.clone()).is_some(),
         "the weather service",
     )
     .await;
-    let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
+    let weather = ctx.get_at::<dyn HostDispatch>(&key.clone()).unwrap();
 
     // Every call but the last, which ends the process.
     let (crash, calls) = expected["calls"].as_array().unwrap().split_last().unwrap();
@@ -292,12 +295,8 @@ pub async fn runtime(
             .map(argument)
             .collect();
         let emitted = ctx
-            .events()
-            .parallel(
-                ctx,
-                &rutis::EventKey::<crate::events::Args>::dynamic(name.to_owned()),
-                Arc::new(crate::events::Args(args)),
-            )
+            .named(name.to_owned())
+            .parallel(crate::events::Args(args))
             .await
             .map_err(|error| crate::events::to_session_error(&error));
         match entry.get("then") {
@@ -330,11 +329,11 @@ pub async fn runtime(
     );
     let announced = host_key(name);
     eventually(
-        || ctx.get_as::<dyn HostDispatch>(announced.clone()).is_some(),
+        || ctx.get_at::<dyn HostDispatch>(&announced.clone()).is_some(),
         "the undeclared service",
     )
     .await;
-    let forecast = ctx.get_as::<dyn HostDispatch>(announced.clone()).unwrap();
+    let forecast = ctx.get_at::<dyn HostDispatch>(&announced.clone()).unwrap();
     assert_eq!(
         forecast.methods().as_ref(),
         Some(&undeclared["methods"]),
@@ -352,7 +351,7 @@ pub async fn runtime(
 
     process.unload_row("w").await.expect("rows.unload");
     eventually(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
+        || ctx.get_at::<dyn HostDispatch>(&key.clone()).is_none(),
         "the withdrawal",
     )
     .await;
@@ -364,11 +363,11 @@ pub async fn runtime(
     let method = crash["call"].as_str().unwrap();
     load().await.expect("rows.load again");
     eventually(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
+        || ctx.get_at::<dyn HostDispatch>(&key.clone()).is_some(),
         "the service again",
     )
     .await;
-    let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
+    let weather = ctx.get_at::<dyn HostDispatch>(&key.clone()).unwrap();
     let crashed = call(&weather, method, &kind(method), json!([]).into()).await;
     // How `ExitStatus` reads: `exit status: 17` on Unix, `exit code: 17` on
     // Windows.

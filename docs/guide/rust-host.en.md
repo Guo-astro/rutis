@@ -6,18 +6,117 @@ Use the crates directly when your application needs to provide its own Rust serv
 
 ```toml
 [dependencies]
-rutis = "0.15"
-rutis-loader = { version = "0.15", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.15", features = ["python", "websocket"] }   # node is enabled by default
+rutis = "0.17"
+rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
+rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node is enabled by default
 ```
 
 | Crate / feature | Contents |
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
 | `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
-| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) generates the dispatchers of [exported Rust services](#export-an-existing-rust-service); `testing` enables compatibility tests. |
+| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) generates the dispatchers of [exported Rust services](#third-party-types-list-them-in-buildrs); `testing` enables compatibility tests. |
 
 Enable only the language features you use so the application compiles and starts only the required components.
+
+## Mount Rust plugins
+
+How to write a Rust plugin: [write a Rust plugin](rust-plugin.en.md); `Printer` and `Weather` below are its examples. The methods of a host (making and closing the root, reading and writing by key, mounting from configuration) are in `rutis::host`; after `use rutis::host::*;` they are methods of `Ctx`:
+
+```rust
+use rutis::host::*;
+use rutis::Ctx;
+use rutis_loader::Builtins;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let root = Ctx::root()?;                       // on the current tokio runtime
+    root.plugin(Printer);                          // waits for its Deps
+    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with Weather::new
+
+    let mut builtins = Builtins::new();            // rutis-loader rows find it by name
+    builtins.register("weather", Weather::new);
+    // …the loader, see "Runtime and loader" below
+
+    root.shutdown().await?;                        // waits for every cleanup
+    Ok(())
+}
+```
+
+| To | Write |
+| --- | --- |
+| Make the root | `Ctx::root()` (the current tokio runtime; an error without one), `Ctx::root_with(handle)`, `Ctx::root_with_sink(handle, sink)` (your own error sink) |
+| Mount a plugin | `root.plugin(p)`: any `Plugin`, or a `host::DynPlugin`; a `Box<dyn DynPlugin>` is one too, for a list of plugins chosen at run time |
+| Mount from configuration | `root.plugin_from(build, config)`: `build` is a `Fn(&C) -> Result<P>`, the dependencies come from `P::Deps`; the returned `FiberView` can `update(config)`, and its name in diagnostics is the plugin's type name. When the dependencies are known only at run time, implement `host::PluginFactory<C>` and use `plugin_with(factory, config)` |
+| rutis-loader rows | `Builtins::register(name, build)`: the config is decoded as `C`, its schema generated from `C` (none for `serde_json::Value`); `register_with(name, \|build, config\| …)`: one copy built per instance; `register_raw(name, factory, schema)`: a `PluginFactory<serde_json::Value>` |
+| Read services | `get::<T>()`; by key `get_at(&key)`, provide with `provide_at(key, arc)`, the key a `host::Key<T>` (see [depend on services by name](#depend-on-services-by-name)); `require` / `require_at` are strict reads, of declared dependencies in a `DynPlugin`'s `apply` |
+| Stop | `root.shutdown().await` unloads everything and waits for the cleanups, `shutdown_with_timeout(limit)` bounds the wait; one plugin: `view.dispose()`, `view.restart()` |
+| Observe | `view.state()`, `view.watch()`, `root.diagnostics()`, `root.subscriptions()` |
+
+### Depend on services by name
+
+`type Deps` depends by type. When two services of one type are provided under different names (two plugins providing `dyn Llm` as `openai` and `local`) and a plugin depends on one by name, implement the object-safe form of a plugin, `host::DynPlugin`: list the keys in `injects()` and read them with `require_at` in `apply`:
+
+```rust
+use rutis::host::*;
+use rutis::Ctx;
+
+pub trait Llm: Send + Sync {}
+
+const OPENAI: Key<dyn Llm> = Key::named("openai");
+
+struct Router {
+    local: Key<dyn Llm>,              // Key::dynamic(a name from the config)
+}
+
+impl DynPlugin for Router {
+    fn name(&self) -> &str {
+        "router"
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![OPENAI.erase(), self.local.erase()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let smart = ctx.require_at(&OPENAI)?;
+            let fast = ctx.require_at(&self.local)?;
+            // starts once both are ready; restarts when either is replaced
+            Ok(Effect::Done)
+        })
+    }
+}
+```
+
+- The provider writes `ctx.provide_at(Key::named("openai"), arc)?`; a read that does not gate is `ctx.get_at(&key)`.
+- A `Key<T>` names its value type: `Key::of()`, `Key::named("x")` (a `const` if you like), `Key::dynamic(name)` (a name known at run time), `.instance(id)` (an instance's own); `.erase()` gives the `TypeKey` that `injects` wants. A value of another type than the key's does not compile.
+- Every `Plugin` is a `DynPlugin`, so the two kinds can depend on each other. The `Effect` that `DynPlugin::apply` returns is a cleanup, `Effect::Done` for none; `ctx.effect` in `apply` works too.
+
+### Errors a host sees
+
+- Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly; with rutis's `anyhow` feature, one returning `anyhow::Result` does too.
+- `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …: 0.16's `CordisError` renamed, the same variants), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
+- Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
+
+```rust
+use std::sync::Arc;
+use rutis::host::*;
+use rutis::Ctx;
+
+fn describe(error: &rutis::Error) -> &'static str {
+    match error.kind() {
+        Some(ErrorKind::Closed) => "root is shut down",
+        Some(ErrorKind::ListenersFailed { .. }) => "some listeners failed",
+        Some(_) => "another rutis failure",
+        None => "the plugin's own error",
+    }
+}
+
+let sink: ErrorSink = Arc::new(|error: Arc<ErrorKind>| eprintln!("[app] {error}"));
+let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+```
 
 ## Provide Rust services to plugins
 
@@ -26,14 +125,15 @@ Enable only the language features you use so the application compiles and starts
 Add `#[rutis::service]` to a Rust service's `impl` block and provide it as usual: the rows of every language call it by name ([#510](https://github.com/arcships/rutis/issues/510)). No list, no `build.rs`, no `export_all`, no `HostDispatch`; the crate that defines the service depends on `rutis` alone.
 
 ```rust
-use rutis::{service, BoxFuture, CordisError};
+use rutis::host::BoxFuture;
+use rutis::service;
 
 #[service]                         // served as "calendar": the type's name, first word lowercased
 impl Calendar {
     pub fn new() -> Self { /* … */ }                          // no self: not served
     pub async fn add(&self, entry: NewEntry) -> Result<Entry, CalendarError> { /* … */ }
     pub fn get(&self, id: u64) -> Result<Entry, CalendarError> { /* … */ }
-    pub async fn subscribe(&self, ctx: &rutis::Ctx, handler: impl Fn(Change) -> BoxFuture<'static, Result<(), CordisError>>) { /* … */ }
+    pub async fn subscribe(&self, ctx: &rutis::Ctx, handler: impl Fn(Change) -> BoxFuture<'static, rutis::Result>) { /* … */ }
     #[service(skip)]
     pub fn compact(&mut self) { /* … */ }                     // stays in Rust
 }
@@ -48,8 +148,8 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **What is served**: the public `&self` methods of the marked `impl` blocks; a type may have several marked blocks. Each is `async` for the caller (a Promise in JavaScript, an awaitable in Python), and Node, Bun, Python and Go rows call the same dispatcher. Method names are camelCase (`add_entry` is `addEntry`). A method under `#[cfg(...)]` is served, and checked for whether it can be bound, only in the builds that include it (two methods of one name are fine when `#[cfg]` keeps one out of each build); two methods of one name across a type's marked blocks cannot both be served, and `provide` fails naming it. Parameter types may name lifetimes or `Self`.
 - **Its name**: by default the type's name with the first word lowercased (`Calendar` is `calendar`, `TreeCommands` `treeCommands`, `HTTPClient` `httpClient`); `#[service(name = "cal")]` renames it.
-- **Provided means served**: `ctx.provide(value)` (and `provide_as` when the key is the type itself) also serves it by name; one disposer removes both, and both go when the plugin unloads, stopping the rows that use it, as with any service. Provided with a `check()` predicate (`provide_as_with_check`), the name is gated by it too: while it fails, the rows using the name stop as the native service's users do. A mutable binding (`provide_mut_as`) is not served, nor is a keyed one (`TypeKey::keyed`): a second value of the type would take the same name. Each call by name reads the service through the providing context's strict read path, so read interceptors (`intercept_require_as`) deny or replace it as they would for a Rust reader in the calling row's place: those of the row's ancestors apply (the provider's when no row calls). The read serves only the value the entry was provided with: a reference kept after the service went, even once the slot is provided again, is refused. A `provide` refused because the native service or the name is already there serves nothing. The name is served after the native service and withdrawn before it (by the disposer and by the plugin unloading alike), so a row the name wakes can always call it.
-- **Its scope follows where it is provided**: provided inside an instance (`TypeKey::instance::<Notes>(build.instance("session")?)`), it is that instance's own, and the rows in that instance get it; provided outside instances, it is global. Provided in an isolation scope (`ctx.isolate(TypeKey::of::<Notes>(), "a")`), the name is served in the same scope (`isolate(host_key("notes"), "a")`), so two isolated scopes each serve their own. No instance group is written down. Once an instance provides it, the rows in that instance use that instance's own and do not fall back to a global one of the same name: when the instance's service goes, they wait for it to be provided there again (design R3, scope follows where it is provided).
+- **Provided means served**: `ctx.provide(value)` (and `provide_as::<T>` providing it as its own type) also serves it by name; one disposer removes both, and both go when the plugin unloads, stopping the rows that use it, as with any service. Provided with a `check()` predicate (a way of providing internal to rutis's own crates), the name is gated by it too: while it fails, the rows using the name stop as the native service's users do. A writable binding is not served, nor is a named one (`provide_at(Key::named(…), …)`): a second value of the type would take the same name. Each call by name reads the service through the providing context's strict read path, so read interceptors (`intercept_require_as`) deny or replace it as they would for a Rust reader in the calling row's place: those of the row's ancestors apply (the provider's when no row calls). The read serves only the value the entry was provided with: a reference kept after the service went, even once the slot is provided again, is refused. A `provide` refused because the native service or the name is already there serves nothing. The name is served after the native service and withdrawn before it (by the disposer and by the plugin unloading alike), so a row the name wakes can always call it.
+- **Its scope follows where it is provided**: provided inside an instance (`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`), it is that instance's own, and the rows in that instance get it; provided outside instances, it is global. Provided in an isolation scope (`ctx.isolate(Key::<Notes>::of(), "a")`), the name is served in the same scope (`isolate(host_key("notes"), "a")`), so two isolated scopes each serve their own. No instance group is written down. Once an instance provides it, the rows in that instance use that instance's own and do not fall back to a global one of the same name: when the instance's service goes, they wait for it to be provided there again (design R3, scope follows where it is provided).
 - **What crosses, how errors are thrown**: as for the third-party types below ([reference](#exported-services-reference)): serde parameters and results, callbacks by reference, the calling row's `&Ctx`, `Err(e)` thrown with `name`, `code`, `message` and `data`.
 - **Errors at compile time**: a public method in a marked block that cannot be bound (`&mut self`, a borrowed result, a mutable reference parameter, a generic parameter that is not a function, …) is a compile error pointing at it; mark one you keep in Rust `#[service(skip)]`.
 - **Name conflicts**: when two types in one scope have the same name, the later `provide` fails, and the error names both; nothing of it is provided, the native service included.
@@ -65,10 +165,10 @@ For a type whose source you cannot change (one of another crate), `build.rs` nam
 
 ```toml
 [dependencies]
-rutis-bridge = "0.15"
+rutis-bridge = "0.17"
 
 [build-dependencies]
-rutis-bridge = { version = "0.15", features = ["exports"] }
+rutis-bridge = { version = "0.17", features = ["exports"] }
 ```
 
 ```rust
@@ -91,9 +191,9 @@ rutis_bridge::include_exports!();          // the generated module `exports`
 
 let mut catalog = ServiceCatalog::new();
 catalog.export_all(exports::all());         // the names, served by the loader
-// The native service, provided as usual: at TypeKey::of::<Calendar>().
+// The native service, provided as usual: as its own type.
 root.provide(Calendar::new())?;
-// An instance's Notes: from a row inside the group, at TypeKey::instance::<Notes>(build.instance("session")?).
+// An instance's Notes: from a row inside the group, at Key::<Notes>::of().instance(build.instance("session")?).
 ```
 
 - The loader serves an export while its native service is there: rows that inject the name wait for it and stop when it goes, as with any service. An instance export resolves as `register_shared_instance` does: a row gets the nearest enclosing instance of the group. Without the loader, mount `exports::calendar().plugin(None)` yourself.
@@ -123,7 +223,7 @@ impl HostDispatch for Clock {
     }
 }
 
-root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock))?;
+root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key returns a Key<dyn HostDispatch>
 ```
 
 To give an error a code and data, as an exported service's `Err(e)` has, return `rutis_bridge::exports::failure(name, code, message, data)`: the caller's language throws an error named `name` with `message`, and `code` and `data` (a `serde_json::Value`, or `None`) beside them.
@@ -135,7 +235,6 @@ Services provided by plugins also appear in rutis under `host_key(name)`, so Rus
 A service that registers things for plugins (tools, routes, listeners) or grants things per plugin needs to know which row calls it. During `invoke`, `session::caller_row()` returns the calling row; tie a registration to that row's `Ctx`, and it goes when the row unloads or restarts, while the runtime keeps running:
 
 ```rust
-use rutis::Effect;
 use rutis_bridge::session::{caller_row, native_error, HostDispatch, Reply, Value};
 
 impl HostDispatch for Tools {
@@ -147,7 +246,10 @@ impl HostDispatch for Tools {
             self.add(row.id(), &name);
             let (tools, id) = (self.clone(), row.id().to_owned());
             row.ctx()
-                .effect(move || Effect::Disposer(Box::new(move || Ok(tools.remove(&id, &name)))))
+                .effect(|| async move {
+                    tools.remove(&id, &name);
+                    Ok(())
+                })
                 .map_err(native_error)?;
         }
         Ok(Value::Undefined)
@@ -166,9 +268,8 @@ impl HostDispatch for Tools {
 ```rust
 use std::sync::Arc;
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 
 // Every service name is shared across languages by name, as in rutis-host. To share only the names
 // registered as shared (register_shared, export), call catalog.share_registered_only().
@@ -222,7 +323,7 @@ let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/p
 Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis-loader`). `GoResolver` reads binaries' manifests (`<binary> --rutis-manifest`) and routes `go:<plugin>` to the binary that has it; `GoRuntimes` starts a binary's runtime when a row uses it and stops it once idle:
 
 ```rust
-use rutis_loader::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
 
 let go = Arc::new(
     GoResolver::new(GoBinaries::new().dir("app/plugins/go").file("app/bin/netkit"))
@@ -237,8 +338,8 @@ root.plugin(go_runtimes).await?;
 
 - A runtime is named after its file (`netkit` → `go-netkit`); when two binaries have a plugin of the same name, the row is `go-netkit:<plugin>`.
 - While a process runs, rows resolve from the manifest it started with; a replaced binary takes effect after `control.restart("go-netkit")`.
-- A crashed runtime is not restarted automatically by default. After `control.supervise(RestartPolicy::OnFailure, |end| …)`, a runtime whose process ended on its own starts again after a wait (1 s, doubling each time up to 30 s, back to 1 s after 60 s of running; after 5 restarts within 5 minutes one more end gives up), each runtime counted on its own; `RestartPolicy::Exit` only reports the end to the callback (`RuntimeEnd::Exit`), for the application to stop. `end.line()` is the line rutis-host prints; `control.unsupervise()` stops supervising, and a restart waiting out its wait does not happen. A runtime that ended before the first `supervise` (it crashed while the application was starting) is handled by `supervise` all the same, only its latest end kept; an application that will not supervise calls `control.unsupervise()` once, and those ends are no longer kept. A binary whose handshake was refused (an old SDK) did not end on its own and is not restarted.
-- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); `GoResolver` is `BinaryResolver<Go>`.
+- A crashed runtime is not restarted automatically by default. After `control.supervise(RestartPolicy::OnFailure, |end| …)` (`rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd}`), a runtime whose process ended on its own starts again after a wait (1 s, doubling each time up to 30 s, back to 1 s after 60 s of running; after 5 restarts within 5 minutes one more end gives up), each runtime counted on its own; `RestartPolicy::Exit` only reports the end to the callback (`RuntimeEnd::Exit`), for the application to stop. `end.line()` is the line rutis-host prints; `control.unsupervise()` stops supervising, and a restart waiting out its wait does not happen. A runtime that ended before the first `supervise` (it crashed while the application was starting) is handled by `supervise` all the same, only its latest end kept; an application that will not supervise calls `control.unsupervise()` once, and those ends are no longer kept. A binary whose handshake was refused (an old SDK) did not end on its own and is not restarted.
+- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); `GoResolver` is `BinaryResolver<Go>`.
 
 - To run one fixed binary, it also works as Python does: `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (rows `<runtime name>:<plugin>`).
 
@@ -260,17 +361,18 @@ root.plugin(PeerPlugin::new(
 )?);
 ```
 
-For rutis-loader configuration, `rutis_loader::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
+For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
 
 ## Events
 
-The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what you emit on `ctx.events()` reaches listeners in every language, and what they emit reaches the Rust listeners here.
+The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what `ctx.emit` and the other modes send reaches listeners in every language, and what they emit reaches the Rust listeners here. How plugins write it: [write a Rust plugin: events](rust-plugin.en.md#events); a host uses the same methods on its root `Ctx`.
 
 An event type is named across languages by `Event::NAME` and its arguments are serde-encoded, so it and its `Value` derive `Serialize` / `Deserialize`. A tuple struct of two or more fields is that many arguments, so `Created` below is `emit("session/created", id, size)` in other languages:
 
 ```rust
-use std::sync::Arc;
-use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener, Mode, SyncCall};
+use rutis::events::Mode;
+use rutis::host::*;
+use rutis::Event;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -280,54 +382,44 @@ impl Event for Created {
     type Value = String;
 }
 
-struct Audit;
-impl Listener<Created> for Audit {
-    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a Created, call: Call<'a, String>)
-        -> BoxFuture<'a, Result<Option<String>, CordisError>> {
-        Box::pin(async move {
-            if call.mode() == Mode::Waterfall {
-                // middleware: run the rest of the chain, then rewrite its result
-                let inner = call.next().await?;
-                return Ok(inner.map(|text| format!("[{text}]")));
-            }
-            Ok(Some(format!("audited {}", event.0)))      // Ok(None) is no result
-        })
+let off = ctx.on::<Created>(|event, call| async move {                // the listener is called with this ctx
+    if call.mode() == Mode::Waterfall {
+        // middleware: run the rest of the chain, then rewrite its result
+        let inner = call.next().await?;
+        return Ok(inner.map(|text| format!("[{text}]")));
     }
-}
+    Ok(Some(format!("audited {}", event.0)))                          // Ok(None) is no result
+})?;
+ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
 
-fn terminal<'a>(_: &'a Ctx, e: &'a Created) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
-    Box::pin(async move { Ok(Some(format!("saved {}", e.0))) })
-}
-
-let key = EventKey::<Created>::of();
-let events = ctx.events();
-let off = events.on(&ctx, &key, Audit)?;                                   // the listener is called with this ctx
-events.on_sync(&ctx, &key, |_: &Ctx, e: &Created, _: SyncCall<'_, String>| Ok(Some(format!("sync {}", e.1))))?;
-
-events.emit(&ctx, &key, Arc::new(Created("s1".into(), 3)))?;              // returns at once
-events.parallel(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;    // waits for all; ListenersFailed
-let first: Option<String> = events.serial(&ctx, &key, Arc::new(Created("s1".into(), 3))).await?;
-let out = events.waterfall(&ctx, &key, &Created("s1".into(), 3), terminal).await?;   // `()`: no terminal
-let sync = events.bail_sync(&ctx, &key, &Created("s1".into(), 3));        // meets Audit (async): AsyncListener
-let python_only = events
-    .filter(|l| l.runtime.as_deref() == Some("py"))                       // ListenerInfo
-    .serial(&ctx, &key, Arc::new(Created("s1".into(), 3)))
+ctx.emit(Created("s1".into(), 3))?;                                   // returns at once
+ctx.parallel(Created("s1".into(), 3)).await?;                         // waits for all; ListenersFailed
+let first: Option<String> = ctx.serial(Created("s1".into(), 3)).await?;
+let out = ctx
+    .waterfall(Created("s1".into(), 3))
+    .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // optional: no terminal
+    .await?;
+let sync = ctx.bail(Created("s1".into(), 3));                         // meets the async listener above: AsyncListener
+let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // a host method: a synchronous waterfall
+let python_only = ctx
+    .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
+    .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
 ```
 
 | Topic | Rule |
 | --- | --- |
-| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail_sync` / `waterfall_sync` (`AsyncListener`) |
-| Options and prefixes | `on_opt` / `on_sync_opt` take an `EventOptions`, written with its builders: `EventOptions::default().prepend(true)` (also `.once(true)`, `.global(true)`); `on_pattern(&ctx, &EventPattern::prefix("session/"), ..)` receives every name under the prefix |
-| By name | Without a type, use `rutis_bridge::events::Args`: `EventKey::<Args>::dynamic("file-changed")`, arguments `Args(vec![Value::Data(json!(…))])`, results `ArgValue`. Typed and `Args` listeners of one name receive each other's events, converted through serde |
-| Scope | The emitter's scope is `ctx.scope()`: the loader calls `Ctx::mark_scope` for each group instance. Events are delivered by name to every listener; a scope is a descriptor for filters (`ListenerInfo::scope`) |
-| Failures | A failing `emit` listener reaches the error sink as `CordisError::ListenerFailed` (`Ctx::root_with_sink`), and `rutis_bridge::events::report_line` gives the line rutis-host prints; `parallel` gives `CordisError::ListenersFailed` (registration order); errors of listeners elsewhere arrive with their name and message |
+| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail` / `waterfall_sync` (`AsyncListener`) |
+| Options and prefixes | `ctx.listen::<E>()` followed by `.prefix("session/")` (every name under the prefix; `call.name()` is the actual one), `.name(n)`, `.once()`, `.prepend()`, `.global()`, then `.on(…)` or `.on_sync(…)` |
+| By name | Without a type, listen with `rutis_bridge::events::Args`: `ctx.listen::<Args>().name("file-changed")`, arguments `Args(vec![Value::Data(json!(…))])`, results `ArgValue`. Typed and `Args` listeners of one name receive each other's events, converted through serde. An event type whose value decides its name has an empty `NAME` and overrides `Event::name` |
+| Scope | The emitter's scope is `ctx.scope()`: the loader marks each group instance as a scope. Events are delivered by name to every listener; a scope is a descriptor for filters (`ListenerInfo::scope`) |
+| Failures | A failing `emit` listener reaches the error sink as `ErrorKind::ListenerFailed` (`Ctx::root_with_sink`), and `rutis_bridge::events::report_line` gives the line rutis-host prints; `parallel` gives `ErrorKind::ListenersFailed` (registration order); errors of listeners elsewhere arrive with their name and message |
 | Unload and cancellation | When a plugin unloads, its listeners leave the bus, running calls see `ctx.cancelled()`, and the unload waits for them (up to the shutdown deadline). Dropping the future of `parallel` / `serial` / `waterfall` cancels the dispatch |
-| Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `on`; emitting `rutis/*` fails with `ReservedEvent` |
+| Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `ctx.on`; emitting `rutis/*` fails with `ReservedEvent` |
 | Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
 
-Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above. Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
+Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#3-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
 
 ## Exported services: reference
 
@@ -364,7 +456,7 @@ Rust services, used by name from the rows of every language (TypeScript, JavaScr
 
 Arguments are decoded with serde (any `Deserialize`), results encoded with serde (any `Serialize`); Cargo checks every generated call against the real signatures.
 
-**Functions passed by reference:** the Rust side gets a function that calls the caller's: its future resolves once the function returned and the Promise it returned settled, so a subscriber has handled an event before the native side goes on; a throw or rejection is the future's `Err` (`E: From<rutis_bridge::session::Error>`, which `CordisError`, `anyhow::Error` and boxed errors are), so it takes the native failure path. What the function returns where Rust expects `()` is ignored.
+**Functions passed by reference:** the Rust side gets a function that calls the caller's: its future resolves once the function returned and the Promise it returned settled, so a subscriber has handled an event before the native side goes on; a throw or rejection is the future's `Err` (`E: From<rutis_bridge::session::Error>`, which `rutis::Error`, `anyhow::Error` and boxed errors are), so it takes the native failure path. What the function returns where Rust expects `()` is ignored.
 
 **Cancellation:** a call the caller stops waiting for (an `AbortSignal`, a dropped future) drops the method's future on the Rust side, as for every call.
 
@@ -380,7 +472,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 | An enum without serde (or `untagged`) | its type name | the variant's Rust name (from its derived `Debug`) | its serde value if it has one |
 | A struct with serde | its type name | the string it serializes to, else its type name | its serde value |
 | `String` | `Error` | `Error` (the string is the `message`) | — |
-| `rutis::CordisError` | `CordisError` | its variant | — |
+| `rutis::Error`, `rutis::host::ErrorKind` | `CordisError` (the name on the wire is unchanged) | the `ErrorKind` variant (`PluginFailed` for an error from plugin code) | — |
 | `rutis_bridge::session::Error` | thrown as it is (a call it forwarded keeps the far end's error) | | |
 | Anything else (`anyhow::Error`, `io::Error`) | its type name | its type name | — |
 

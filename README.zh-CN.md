@@ -83,7 +83,8 @@ cargo add tokio --features full
 
 ```rust
 use std::sync::Arc;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, Typed, TypedPlugin};
+use rutis::host::*;                 // Ctx::root、shutdown：宿主调用的方法
+use rutis::{Ctx, Plugin, Result};
 
 /// 服务就是一个类型。
 struct Greeting(String);
@@ -92,36 +93,30 @@ struct Greeting(String);
 struct Greeter(&'static str);
 
 impl Plugin for Greeter {
-    fn name(&self) -> &str { "greeter" }
+    type Deps = ();
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Greeting(format!("hello from {}", self.0)))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.provide(Greeting(format!("hello from {}", self.0)))?;
+        Ok(())
     }
 }
 
 /// 依赖 Greeting：它出现时启动，被替换时重启。
 struct Listener;
 
-impl TypedPlugin for Listener {
-    type Deps = (Arc<Greeting>,);
+impl Plugin for Listener {
+    type Deps = Arc<Greeting>;
 
-    fn name(&self) -> &str { "listener" }
-
-    fn apply<'a>(&'a self, _: &'a Ctx, (greeting,): Self::Deps) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            println!("{}", greeting.0);
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, _: &Ctx, greeting: Arc<Greeting>) -> Result {
+        println!("{}", greeting.0);
+        Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Ctx::root()?;
-    let listener = ctx.plugin(Typed::new(Listener));  // 等待 Greeting
+    let listener = ctx.plugin(Listener);              // 等待 Greeting
 
     let english = ctx.plugin(Greeter("English"));
     (&english).await?;
@@ -137,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-没有人碰过 `Listener`：provider 一换，它就跟着停下、再启动。在仓库里运行：`cargo run -p rutis --example quickstart`。要在 Rust 应用里运行 TypeScript、Python 和 Go 插件，见 [在 Rust 中嵌入](docs/guide/rust-host.md)。
+没有人碰过 `Listener`：provider 一换，它就跟着停下、再启动。在仓库里运行：`cargo run -p rutis --example quickstart`。服务、事件、清理和 dylib 插件的写法见[写一个 Rust 插件](docs/guide/rust-plugin.md)。要在 Rust 应用里运行 TypeScript、Python 和 Go 插件，见 [在 Rust 中嵌入](docs/guide/rust-host.md)。
 
 ## 从尝试到落地
 
@@ -242,7 +237,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 
 ## 文档
 
-- **[指南](docs/guide/README.md)**：按任务组织。写 TypeScript / Bun / Python / Go / Swift 插件、运行 rutis-host、连接节点、在 Rust 中嵌入、与 Cordis 互通。
+- **[指南](docs/guide/README.md)**：按任务组织。写 Rust / TypeScript / Bun / Python / Go / Swift 插件、运行 rutis-host、连接节点、在 Rust 中嵌入、与 Cordis 互通。
 - **[设计哲学](docs/design-philosophy.md)**：rutis 为什么存在，由此而来的形态、代价和原则。
 - **[应用设计指南](docs/development-guide.md)**：如何拆分插件、画依赖图、设计重载与多实例。
 - **[开发手册](docs/development-handbook.md)**：API 用法、资源清理、事件、排障与验证。
@@ -250,7 +245,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 - **[保证登记表](docs/guarantees.md)**：rutis 承诺了什么、属于哪一级、由哪些测试验证。
 - **[API 文档](https://docs.rs/rutis)**：docs.rs 上的完整参考。
 - **设计记录**：[内核设计](docs/design-rust-port.md)、[与 Cordis 的逐条对拍](docs/cordis-spec-parity-2026-08-18.md)，以及 [docs](docs) 目录下的全部设计记录。
-- **升级**：[0.8 → 0.9](docs/migration-0.8-to-0.9.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.md) · [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
+- **升级**：[0.16 → 0.17](docs/migration-0.17.md) · [0.8 → 0.9](docs/migration-0.8-to-0.9.md) · [0.7 → 0.8](docs/migration-0.7-to-0.8.md) · [从 rutis-interop 迁移到 0.7](docs/migration-interop-to-0.7.md) · [0.6.0 → 0.6.1](docs/migration-0.6.0-to-0.6.1.md) · [0.5 → 0.6](docs/migration-0.5-to-0.6.md) · [0.3 → 0.5](docs/migration-0.3-to-0.5.md) · [0.1 → 0.2](docs/migration-0.1-to-0.2.md)
 
 ## 平台与状态
 

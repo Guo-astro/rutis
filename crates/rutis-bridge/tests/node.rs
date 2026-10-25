@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Effect, EventKey, FiberView, Listener, Plugin, PluginFactory,
-};
+use rutis::events::{Call, Listener};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, PluginFactory};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -61,8 +62,8 @@ async fn linked() -> (Ctx, Ctx, FiberView) {
     let mac_link = mac.plugin(LinkPlugin::new(
         LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick()),
     ));
-    eventually(|| main.get_as::<Peer>(peer_key(&id("mac"))), "main's peer").await;
-    eventually(|| mac.get_as::<Peer>(peer_key(&id("main"))), "mac's peer").await;
+    eventually(|| main.get_at::<Peer>(&peer_key(&id("mac"))), "main's peer").await;
+    eventually(|| mac.get_at::<Peer>(&peer_key(&id("main"))), "mac's peer").await;
     (main, mac, mac_link)
 }
 
@@ -89,14 +90,12 @@ fn clock(base: u64) -> Arc<dyn HostDispatch> {
 #[tokio::test(flavor = "multi_thread")]
 async fn exported_services_are_imported_replaced_and_withdrawn() {
     let (main, mac, _) = linked().await;
-    let provided = main
-        .provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
+    let provided = main.provide_at(host_key("clock"), clock(0)).unwrap();
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
 
     let imported = eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "the import",
     )
     .await;
@@ -120,12 +119,10 @@ async fn exported_services_are_imported_replaced_and_withdrawn() {
 
     // Replaced over there: replaced here.
     provided.dispose().await.unwrap();
-    let provided = main
-        .provide_as::<dyn HostDispatch>(host_key("clock"), clock(500))
-        .unwrap();
+    let provided = main.provide_at(host_key("clock"), clock(500)).unwrap();
     let replaced = eventually(
         || {
-            let service = mac.get_as::<dyn HostDispatch>(host_key("clock"))?;
+            let service = mac.get_at::<dyn HostDispatch>(&host_key("clock"))?;
             let now = settle(service.invoke("later", Value::List(vec![])).ok()?);
             let now = futures_now(now)?;
             (now >= 1500).then_some(now)
@@ -139,7 +136,7 @@ async fn exported_services_are_imported_replaced_and_withdrawn() {
     provided.dispose().await.unwrap();
     eventually(
         || {
-            mac.get_as::<dyn HostDispatch>(host_key("clock"))
+            mac.get_at::<dyn HostDispatch>(&host_key("clock"))
                 .is_none()
                 .then_some(())
         },
@@ -195,12 +192,10 @@ async fn announce(
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_never_replaces_a_service_provided_here() {
     let (main, mac, _) = linked().await;
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
-    mac.provide_as::<dyn HostDispatch>(host_key("clock"), clock(7))
-        .unwrap();
+    main.provide_at(host_key("clock"), clock(0)).unwrap();
+    mac.provide_at(host_key("clock"), clock(7)).unwrap();
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let at_main = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     let mut offers = at_main.offers();
     eventually(
         || offers.borrow_and_update().epoch("services"),
@@ -216,7 +211,7 @@ async fn an_import_never_replaces_a_service_provided_here() {
         error.to_string().contains("already provided here"),
         "{error}"
     );
-    let local = mac.get_as::<dyn HostDispatch>(host_key("clock")).unwrap();
+    let local = mac.get_at::<dyn HostDispatch>(&host_key("clock")).unwrap();
     let now = tokio::task::spawn_blocking(move || local.invoke("now", Value::List(vec![])))
         .await
         .unwrap()
@@ -227,19 +222,18 @@ async fn an_import_never_replaces_a_service_provided_here() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_export_waits_for_the_far_end_to_offer_services() {
     let (main, mac, _) = linked().await;
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
+    main.provide_at(host_key("clock"), clock(0)).unwrap();
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
     // clock: weak-negative — the exporter waiting for an offer leaves
     // nothing to observe across the session's threads; a slow machine can
     // only miss a premature export here, never fail. The late import below
     // is the positive half.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(mac.get_as::<dyn HostDispatch>(host_key("clock")).is_none());
+    assert!(mac.get_at::<dyn HostDispatch>(&host_key("clock")).is_none());
     // Importing later still gets it: the exporter announces on the offer.
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "the late import",
     )
     .await;
@@ -248,18 +242,18 @@ async fn an_export_waits_for_the_far_end_to_offer_services() {
 /// A Rust plugin installed on mac, providing `greeting` with its config.
 struct Greeter;
 impl PluginFactory<Json> for Greeter {
-    fn build(&self, config: &Json) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Json) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Greeting(
             config["text"].as_str().unwrap_or("hello").to_owned(),
         )))
     }
 }
 struct Greeting(String);
-impl Plugin for Greeting {
+impl DynPlugin for Greeting {
     fn name(&self) -> &str {
         "greeter"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.provide(GreetingService(self.0.clone()))?;
             Ok(Effect::Done)
@@ -281,7 +275,7 @@ async fn a_host_loads_installed_plugins_for_its_peer() {
         Greeter,
     );
     mac.plugin(HostPlugin::new(id("main"), Arc::new(catalog)));
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let at_main = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     let mut offers = at_main.offers();
     eventually(
         || {
@@ -385,35 +379,22 @@ async fn a_host_loads_installed_plugins_for_its_peer() {
     .await;
 }
 
-fn node_event(name: &str) -> EventKey<Args> {
-    EventKey::dynamic(name.to_owned())
-}
-
 /// Records each event's arguments after a while, and answers `answer`.
-struct Record(Arc<Mutex<Vec<Value>>>, Option<&'static str>);
-impl Listener<Args> for Record {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Args,
-        _: Call<'a, ArgValue>,
-    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-        Box::pin(async move {
+fn record(heard: Arc<Mutex<Vec<Value>>>, answer: Option<&'static str>) -> impl Listener<Args> {
+    move |event: Arc<Args>, _: Call<Args>| {
+        let heard = heard.clone();
+        async move {
             tokio::time::sleep(Duration::from_millis(30)).await;
-            self.0.lock().unwrap().push(Value::List(event.0.clone()));
-            Ok(self.1.map(|answer| ArgValue(Value::Data(json!(answer)))))
-        })
+            heard.lock().unwrap().push(Value::List(event.0.clone()));
+            Ok(answer.map(|answer| ArgValue(Value::Data(json!(answer)))))
+        }
     }
 }
 
 /// `serial` of `name` from `ctx`, until its result is not none.
 async fn serial_until_heard(ctx: &Ctx, name: &str, args: Vec<Value>) -> Value {
     for _ in 0..500 {
-        let result = ctx
-            .events()
-            .serial(ctx, &node_event(name), Arc::new(Args(args.clone())))
-            .await
-            .unwrap();
+        let result = ctx.named(name).serial(Args(args.clone())).await.unwrap();
         if let Some(ArgValue(value)) = result {
             return value;
         }
@@ -433,19 +414,13 @@ async fn serial_until_heard(ctx: &Ctx, name: &str, args: Vec<Value>) -> Value {
 async fn node_listeners_are_entries_of_the_other_bus() {
     let (main, mac, mac_link) = linked().await;
     let heard = Arc::new(Mutex::new(Vec::new()));
-    mac.events()
-        .on(
-            &mac,
-            &node_event("t/tick"),
-            Record(heard.clone(), Some("pong")),
-        )
+    mac.listen::<Args>()
+        .name("t/tick")
+        .on(record(heard.clone(), Some("pong")))
         .unwrap();
-    mac.events()
-        .on(
-            &mac,
-            &node_event("n/kept"),
-            Record(heard.clone(), Some("leaked")),
-        )
+    mac.listen::<Args>()
+        .name("n/kept")
+        .on(record(heard.clone(), Some("leaked")))
         .unwrap();
     // mac hears main's `t/*`; main's emissions of every name reach mac.
     (&mac.plugin(LinkEventsPlugin::new(
@@ -473,27 +448,17 @@ async fn node_listeners_are_entries_of_the_other_bus() {
     );
 
     heard.lock().unwrap().clear();
-    main.events()
-        .parallel(&main, &node_event("t/tick"), Arc::new(Args(vec![])))
-        .await
-        .unwrap();
+    main.named("t/tick").parallel(Args(vec![])).await.unwrap();
     assert_eq!(heard.lock().unwrap().len(), 1, "parallel waited for mac");
 
-    let kept = main
-        .events()
-        .serial(&main, &node_event("n/kept"), Arc::new(Args(vec![])))
-        .await
-        .unwrap();
+    let kept = main.named("n/kept").serial(Args(vec![])).await.unwrap();
     assert!(kept.is_none(), "mac does not import n/kept");
 
     // The link goes: so does mac's entry on main's bus.
     mac_link.dispose().await.unwrap();
     let mut gone = false;
     for _ in 0..500 {
-        let result = main
-            .events()
-            .serial(&main, &node_event("t/tick"), Arc::new(Args(vec![])))
-            .await;
+        let result = main.named("t/tick").serial(Args(vec![])).await;
         if matches!(result, Ok(None)) {
             gone = true;
             break;
@@ -506,11 +471,11 @@ async fn node_listeners_are_entries_of_the_other_bus() {
 /// A child plugin of `parent`, marked as the scope `tenant`; its context.
 async fn in_tenant(parent: &Ctx) -> (FiberView, Ctx) {
     struct Child(std::sync::mpsc::Sender<Ctx>);
-    impl Plugin for Child {
+    impl DynPlugin for Child {
         fn name(&self) -> &str {
             "in-tenant"
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 ctx.mark_scope("tenant")?;
                 self.0.send(ctx.clone()).unwrap();
@@ -542,12 +507,9 @@ async fn a_link_inside_an_instance_shares_names_outside_it() {
         .unwrap();
 
     // The root's listener is announced by the tenant's link to mac...
-    main.events()
-        .on(
-            &main,
-            &node_event("t/root"),
-            Record(Arc::new(Mutex::new(Vec::new())), Some("pong")),
-        )
+    main.listen::<Args>()
+        .name("t/root")
+        .on(record(Arc::new(Mutex::new(Vec::new())), Some("pong")))
         .unwrap();
     assert_eq!(
         serial_until_heard(&mac, "t/root", vec![]).await,
@@ -556,12 +518,9 @@ async fn a_link_inside_an_instance_shares_names_outside_it() {
 
     // ...and mac's listener, accepted at the tenant's scope, is heard by the
     // root's emitter.
-    mac.events()
-        .on(
-            &mac,
-            &node_event("t/mac"),
-            Record(Arc::new(Mutex::new(Vec::new())), Some("pong")),
-        )
+    mac.listen::<Args>()
+        .name("t/mac")
+        .on(record(Arc::new(Mutex::new(Vec::new())), Some("pong")))
         .unwrap();
     assert_eq!(
         serial_until_heard(&main, "t/mac", vec![]).await,
@@ -582,10 +541,8 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
-    main.provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
-    main.provide_as::<dyn HostDispatch>(host_key("calendar"), clock(100))
-        .unwrap();
+    main.provide_at(host_key("clock"), clock(0)).unwrap();
+    main.provide_at(host_key("calendar"), clock(100)).unwrap();
     let composed = PeerPlugin::new(
         LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick()),
         Features {
@@ -616,13 +573,13 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
         .unwrap(),
     );
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock imported",
     )
     .await;
-    let session = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let session = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     assert!(mac
-        .get_as::<dyn HostDispatch>(host_key("calendar"))
+        .get_at::<dyn HostDispatch>(&host_key("calendar"))
         .is_none());
 
     // Export calendar as well: it arrives, and the session is the same.
@@ -634,11 +591,11 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
         .await
         .unwrap();
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "calendar imported",
     )
     .await;
-    let still = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let still = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     assert_eq!(still.generation(), session.generation());
     assert!(Arc::ptr_eq(&still, &session), "the link kept its session");
 }
@@ -646,19 +603,19 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
 /// Provides `host_key("svc")`; counts its starts.
 struct Provider(Arc<AtomicU64>);
 impl PluginFactory<Json> for Provider {
-    fn build(&self, _: &Json) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &Json) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Providing(self.0.clone())))
     }
 }
 struct Providing(Arc<AtomicU64>);
-impl Plugin for Providing {
+impl DynPlugin for Providing {
     fn name(&self) -> &str {
         "provider"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.0.fetch_add(1, Ordering::SeqCst);
-            ctx.provide_as::<dyn HostDispatch>(host_key("svc"), clock(0))?;
+            ctx.provide_at(host_key("svc"), clock(0))?;
             Ok(Effect::Done)
         })
     }
@@ -673,7 +630,7 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
     let catalog =
         StaticCatalog::new().with("provider", Described::default(), Provider(starts.clone()));
     mac.plugin(HostPlugin::new(id("main"), Arc::new(catalog)));
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let at_main = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     let mut offers = at_main.offers();
     eventually(|| offers.borrow_and_update().epoch("plugins"), "the host").await;
     let session = at_main.connection();
@@ -693,7 +650,7 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
         .unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert!(
-        mac.get_as::<dyn HostDispatch>(host_key("svc")).is_none(),
+        mac.get_at::<dyn HostDispatch>(&host_key("svc")).is_none(),
         "an isolated service stays in the row's scope"
     );
 
@@ -715,9 +672,7 @@ async fn a_hosted_plugin_keeps_its_rows_isolate_and_inject() {
         1,
         "it waits for what the row injects"
     );
-    let _needed = mac
-        .provide_as::<dyn HostDispatch>(host_key("needed"), clock(0))
-        .unwrap();
+    let _needed = mac.provide_at(host_key("needed"), clock(0)).unwrap();
     eventually(
         || (starts.load(Ordering::SeqCst) == 2).then_some(()),
         "the start once it is there",
@@ -735,10 +690,10 @@ async fn a_hosted_plugin_with_an_unknown_service_is_refused() {
         StaticCatalog::new().with("provider", Described::default(), Provider(starts.clone()));
     mac.plugin(
         HostPlugin::new(id("main"), Arc::new(catalog)).services(Arc::new(|name: &str| {
-            (name == "svc").then(|| host_key(name))
+            (name == "svc").then(|| host_key(name).erase())
         })),
     );
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let at_main = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     let mut offers = at_main.offers();
     eventually(|| offers.borrow_and_update().epoch("plugins"), "the host").await;
     let refused = at_main
@@ -763,7 +718,7 @@ async fn a_hosted_plugin_with_an_unknown_service_is_refused() {
 async fn an_announcement_older_than_a_withdrawal_is_stale() {
     let (main, mac, _link) = linked().await;
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
-    let at_main = main.get_as::<Peer>(peer_key(&id("mac"))).unwrap();
+    let at_main = main.get_at::<Peer>(&peer_key(&id("mac"))).unwrap();
     let mut offers = at_main.offers();
     eventually(
         || offers.borrow_and_update().epoch("services"),
@@ -812,14 +767,14 @@ async fn an_announcement_older_than_a_withdrawal_is_stale() {
 
     announce(1).await;
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock imported",
     )
     .await;
     withdraw(3).await;
     eventually(
         || {
-            mac.get_as::<dyn HostDispatch>(host_key("clock"))
+            mac.get_at::<dyn HostDispatch>(&host_key("clock"))
                 .is_none()
                 .then_some(())
         },
@@ -830,13 +785,13 @@ async fn an_announcement_older_than_a_withdrawal_is_stale() {
     // Importer::announce): once announce(2) returns, it was ignored or not.
     announce(2).await;
     assert!(
-        mac.get_as::<dyn HostDispatch>(host_key("clock")).is_none(),
+        mac.get_at::<dyn HostDispatch>(&host_key("clock")).is_none(),
         "an announcement older than the withdrawal is stale"
     );
     // A newer one provides it again.
     announce(4).await;
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock again",
     )
     .await;
@@ -848,11 +803,9 @@ async fn an_announcement_older_than_a_withdrawal_is_stale() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_exporter_announces_again_to_a_new_offer_it_never_saw_withdrawn() {
     let (main, mac, _link) = linked().await;
-    let _clock = main
-        .provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
+    let _clock = main.provide_at(host_key("clock"), clock(0)).unwrap();
     // mac's importer, as a handler that counts the announcements.
-    let at_mac = mac.get_as::<Peer>(peer_key(&id("main"))).unwrap();
+    let at_mac = mac.get_at::<Peer>(&peer_key(&id("main"))).unwrap();
     let announced = Arc::new(AtomicU64::new(0));
     let count = announced.clone();
     let _services = at_mac
@@ -898,16 +851,12 @@ async fn an_exporter_announces_again_to_a_new_offer_it_never_saw_withdrawn() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_export_changed_to_another_list_keeps_what_it_still_exports() {
     let (main, mac, _link) = linked().await;
-    let _clock = main
-        .provide_as::<dyn HostDispatch>(host_key("clock"), clock(0))
-        .unwrap();
-    let _calendar = main
-        .provide_as::<dyn HostDispatch>(host_key("calendar"), clock(100))
-        .unwrap();
+    let _clock = main.provide_at(host_key("clock"), clock(0)).unwrap();
+    let _calendar = main.provide_at(host_key("calendar"), clock(100)).unwrap();
     mac.plugin(ImportPlugin::new(id("main"), ["clock", "calendar"]));
     let first = main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock",
     )
     .await;
@@ -915,7 +864,7 @@ async fn an_export_changed_to_another_list_keeps_what_it_still_exports() {
     first.dispose().await.unwrap();
     eventually(
         || {
-            mac.get_as::<dyn HostDispatch>(host_key("clock"))
+            mac.get_at::<dyn HostDispatch>(&host_key("clock"))
                 .is_none()
                 .then_some(())
         },
@@ -924,12 +873,12 @@ async fn an_export_changed_to_another_list_keeps_what_it_still_exports() {
     .await;
     main.plugin(ExportPlugin::new(id("mac"), ["clock", "calendar"]));
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("calendar")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("calendar")),
         "calendar",
     )
     .await;
     eventually(
-        || mac.get_as::<dyn HostDispatch>(host_key("clock")),
+        || mac.get_at::<dyn HostDispatch>(&host_key("clock")),
         "clock again",
     )
     .await;
@@ -959,12 +908,14 @@ fn imported_names(ctx: &Ctx) -> Vec<String> {
 async fn entries_of_an_events_feature_that_restarted_are_replaced() {
     let (main, mac, _mac_link) = linked().await;
     let heard = Arc::new(Mutex::new(Vec::new()));
-    mac.events()
-        .on(&mac, &node_event("t/a"), Record(heard.clone(), Some("a")))
+    mac.listen::<Args>()
+        .name("t/a")
+        .on(record(heard.clone(), Some("a")))
         .unwrap();
     let b = mac
-        .events()
-        .on(&mac, &node_event("t/b"), Record(heard.clone(), Some("b")))
+        .listen::<Args>()
+        .name("t/b")
+        .on(record(heard.clone(), Some("b")))
         .unwrap();
     let mac_events = mac.plugin(LinkEventsPlugin::new(
         id("main"),
@@ -1002,13 +953,9 @@ async fn entries_of_an_events_feature_that_restarted_are_replaced() {
     )
     .await;
     // Nothing stale answers, or fails, for `t/b`.
-    within(
-        "parallel of t/b",
-        main.events()
-            .parallel(&main, &node_event("t/b"), Arc::new(Args(vec![]))),
-    )
-    .await
-    .unwrap();
+    within("parallel of t/b", main.named("t/b").parallel(Args(vec![])))
+        .await
+        .unwrap();
     let answer = serial_until_heard(&main, "t/a", vec![]).await;
     assert_eq!(answer, Value::Data(json!("a")));
 }
@@ -1020,29 +967,16 @@ async fn entries_of_an_events_feature_that_restarted_are_replaced() {
 /// an event under both reaches it once.
 #[tokio::test(flavor = "multi_thread")]
 async fn nested_prefixes_of_a_link_deliver_once() {
-    use rutis::EventPattern;
     let (main, mac, _mac_link) = linked().await;
-    /// Records every event under its prefix.
-    struct Every(Arc<Mutex<Vec<Value>>>);
-    impl rutis::PatternListener<Args> for Every {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            _: EventKey<Args>,
-            event: &'a Args,
-            _: Call<'a, ArgValue>,
-        ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-            self.0.lock().unwrap().push(Value::List(event.0.clone()));
-            Box::pin(async { Ok(None) })
-        }
-    }
     let heard = Arc::new(Mutex::new(Vec::new()));
-    mac.events()
-        .on_pattern(
-            &mac,
-            &EventPattern::<Args>::prefix("t/"),
-            Every(heard.clone()),
-        )
+    // Records every event under its prefix.
+    let every = heard.clone();
+    mac.listen::<Args>()
+        .prefix("t/")
+        .on(move |event, _| {
+            every.lock().unwrap().push(Value::List(event.0.clone()));
+            std::future::ready(Ok(None))
+        })
         .unwrap();
     (&mac.plugin(LinkEventsPlugin::new(
         id("main"),
@@ -1064,12 +998,8 @@ async fn nested_prefixes_of_a_link_deliver_once() {
     )
     .await;
     assert_eq!(imported_names(&main), ["t/"], "one entry, the wider prefix");
-    main.events()
-        .parallel(
-            &main,
-            &node_event("t/a/x"),
-            Arc::new(Args(vec![json!(1).into()])),
-        )
+    main.named("t/a/x")
+        .parallel(Args(vec![json!(1).into()]))
         .await
         .unwrap();
     assert_eq!(

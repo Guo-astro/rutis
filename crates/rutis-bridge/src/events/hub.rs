@@ -10,12 +10,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 
-use rutis::events::{
-    BatchFilter, Candidate, Dispatch, EventOptions, FilterAnswer, ListenerInfo, ListenerKind, Mode,
-    PayloadRef, RawTerminal, RemoteCall, RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall,
-    RemoteSyncNext, Scope, TableChange, TableEntry,
+use rutis::events::{ListenerInfo, Mode, Scope};
+use rutis::host::BoxFuture;
+use rutis::host::{CtxHost, ErrorKind, ListenerKind};
+use rutis::internal::events::{
+    BatchFilter, Candidate, Dispatch, FilterAnswer, PayloadRef, RawTerminal, RemoteCall,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
+    TableEntry,
 };
-use rutis::{BoxFuture, CordisError, Ctx, Disposer};
+use rutis::internal::{CtxInternal, EventOptions};
+use rutis::{Ctx, Disposer, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use super::args::{from_wire, result_from_wire, result_to_wire, to_wire, SessionTranscoder};
@@ -102,12 +106,7 @@ impl Hub {
             .map_err(|error| to_session(&error))?;
         *hub.watching.lock().unwrap() = Some(watching);
         let services = ctx
-            .events()
-            .on(
-                ctx,
-                &rutis::EventKey::<rutis::ServiceChanged>::of(),
-                super::framework::ServiceEvents,
-            )
+            .on::<rutis::host::diagnostics::ServiceChanged>(super::framework::service_events)
             .map_err(|error| to_session(&error))?;
         *hub.services.lock().unwrap() = Some(services);
         {
@@ -746,7 +745,7 @@ impl SessionEvents {
             Some(row) => Some(crate::session::decode::<String>(row.json()?)?),
         };
         let row_key = row.clone();
-        if name.starts_with(rutis::events::RESERVED_PREFIX) {
+        if name.starts_with(rutis::internal::RESERVED_PREFIX) {
             return Err(Error::Remote {
                 name: "ReservedEvent".into(),
                 message: format!("rutis/* events are emitted by rutis only: {name}"),
@@ -921,7 +920,7 @@ impl Drop for SessionEvents {
 
 /// Report a failed `emit` dispatch (its filter, events protocol §5.6) to
 /// the host's error sink.
-fn report_filter(ctx: &Ctx, name: &str, row: Option<&str>, error: &CordisError) {
+fn report_filter(ctx: &Ctx, name: &str, row: Option<&str>, error: &RutisError) {
     let error = to_session(error);
     let (kind, message) = match &error {
         Error::Remote { name, message, .. } => (name.clone(), message.clone()),
@@ -932,7 +931,7 @@ fn report_filter(ctx: &Ctx, name: &str, row: Option<&str>, error: &CordisError) 
         None => "the mount".to_owned(),
     };
     let line = format!("filter of {name} from {from} failed: {kind}: {message}");
-    (ctx.error_sink())(Arc::new(CordisError::PluginFailed(line.into())));
+    (ctx.error_sink())(Arc::new(ErrorKind::PluginFailed(line.into())));
 }
 
 /// A request's fields.
@@ -997,7 +996,7 @@ fn selector(
             })
             .collect();
         let argument = Value::List(vec![Value::List(described)]);
-        let answers = move |reply: Value| -> Result<Vec<bool>, CordisError> {
+        let answers = move |reply: Value| -> Result<Vec<bool>, RutisError> {
             let wrong = |got: usize| {
                 to_cordis(binding(format!(
                     "filter of {name} returned {got} answers for {wanted} listeners"
@@ -1033,7 +1032,7 @@ fn selector(
 fn reporting(filter: BatchFilter, ctx: Ctx, name: String, row: Option<String>) -> BatchFilter {
     Box::new(move |candidates: Vec<Candidate>| {
         let wanted = candidates.len();
-        let settle = move |answer: Result<Vec<bool>, CordisError>| {
+        let settle = move |answer: Result<Vec<bool>, RutisError>| {
             answer.or_else(|error| {
                 report_filter(&ctx, &name, row.as_deref(), &error);
                 Ok(vec![false; wanted])
@@ -1092,13 +1091,13 @@ struct Invocation<'a> {
 }
 
 impl WireEntry {
-    fn connection(&self) -> Result<Connection, CordisError> {
+    fn connection(&self) -> Result<Connection, RutisError> {
         self.connection
             .upgrade()
             .ok_or_else(|| to_cordis(Error::Transport("session closed".into())))
     }
 
-    fn request(&self, call: Invocation<'_>) -> Result<Value, CordisError> {
+    fn request(&self, call: Invocation<'_>) -> Result<Value, RutisError> {
         let mut fields = BTreeMap::new();
         fields.insert("listener".into(), Value::Data(json!(self.id)));
         fields.insert(
@@ -1175,7 +1174,7 @@ impl RemoteListener for WireEntry {
     fn call<'a>(
         &'a self,
         call: RemoteCall<'a>,
-    ) -> BoxFuture<'a, Result<Option<rutis::events::Value>, CordisError>> {
+    ) -> BoxFuture<'a, Result<Option<rutis::internal::events::Value>, RutisError>> {
         let mode = call.mode();
         let own = self.own(call.origin());
         let connection = match self.connection() {
@@ -1239,7 +1238,7 @@ impl RemoteListener for WireEntry {
     fn call_sync(
         &self,
         call: RemoteSyncCall<'_>,
-    ) -> Result<Option<rutis::events::Value>, CordisError> {
+    ) -> Result<Option<rutis::internal::events::Value>, RutisError> {
         let mode = call.mode();
         let own = self.own(call.origin());
         let connection = self.connection()?;

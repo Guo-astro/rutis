@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::task::Poll;
 
-use rutis::{
-    BoxFuture, Call, CordisError, Ctx, Effect, Event, EventKey, EventOptions, EventPattern,
-    Listener, Mode, PatternListener, Plugin, SyncCall, SyncListener,
-};
+use rutis::events::{Call, Listener, Mode, SyncCall};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
+use rutis::internal::events::{Dispatch, Payload, PayloadRef, RawTerminal, Value};
+use rutis::internal::{CtxInternal, EventKey};
+use rutis::{Ctx, Error, Event};
 use rutis_test_support::until;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Notify, Semaphore};
@@ -26,45 +27,62 @@ impl Event for Other {
     const NAME: &'static str = "other";
     type Value = u64;
 }
-
-struct PanicCreatingFuture;
-impl Listener<Ping> for PanicCreatingFuture {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        panic!("panic creating listener future")
-    }
+/// `Ping`'s shape under the name "terminal", which no listener hears: its
+/// synchronous waterfall runs only the terminal, through the typed path.
+#[derive(Serialize, Deserialize)]
+struct Unheard(u64);
+impl Event for Unheard {
+    const NAME: &'static str = "terminal";
+    type Value = u64;
 }
-impl PatternListener<Ping> for PanicCreatingFuture {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: EventKey<Ping>,
-        _: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        panic!("panic creating listener future")
-    }
+
+/// `waterfall_sync` of a `Ping` under `name`. `CtxInternal::named` has no
+/// synchronous waterfall, so this makes the raw dispatch the typed one
+/// makes: the same payload (listeners and observers get the `Ping` itself)
+/// and the terminal's value as the last `next`. The raw terminal catches
+/// its own panic, so a test of a panicking terminal uses the typed path.
+fn waterfall_sync_at(
+    ctx: &Ctx,
+    name: &str,
+    event: Ping,
+    terminal: impl FnOnce(&Ping) -> Result<Option<u64>, Error> + Send + 'static,
+) -> Result<Option<u64>, Error> {
+    let mut dispatch = Dispatch::new(name, Mode::WaterfallSync, Payload::new(Arc::new(event)));
+    dispatch.terminal = Some(RawTerminal::Sync(Box::new(
+        move |payload: PayloadRef<'_>| {
+            let event = payload.downcast::<Ping>().expect("the dispatched Ping");
+            Ok(terminal(event)?.map(Value::new))
+        },
+    )));
+    let bus = ctx.events();
+    bus.dispatch_sync(ctx, dispatch)?
+        .map(|value| value.into_typed::<u64>(&*bus.transcoder()))
+        .transpose()
+}
+
+/// A listener that panics while creating its future.
+fn panic_creating_future(
+    _: Arc<Ping>,
+    _: Call<Ping>,
+) -> std::future::Ready<Result<Option<u64>, Error>> {
+    panic!("panic creating listener future")
 }
 
 #[tokio::test]
 async fn serial_catches_user_panic_while_creating_exact_and_pattern_futures() {
     let root = Ctx::root().unwrap();
-    root.events()
-        .on(&root, &EventKey::of(), PanicCreatingFuture)
+    root.on::<Ping>(panic_creating_future).unwrap();
+    root.listen::<Ping>()
+        .prefix("panic/")
+        .on(panic_creating_future)
         .unwrap();
-    root.events()
-        .on_pattern(&root, &EventPattern::prefix("panic/"), PanicCreatingFuture)
-        .unwrap();
-    for key in [EventKey::of(), EventKey::named("panic/created")] {
-        let error = root
-            .events()
-            .serial(&root, &key, Arc::new(Ping(0)))
+    for error in [
+        root.serial(Ping(0)).await.unwrap_err(),
+        root.named("panic/created")
+            .serial(Ping(0))
             .await
-            .unwrap_err();
+            .unwrap_err(),
+    ] {
         assert!(error.to_string().contains("panic creating listener future"));
     }
     // The pattern's flight is released even when construction panics.
@@ -72,11 +90,11 @@ async fn serial_catches_user_panic_while_creating_exact_and_pattern_futures() {
 }
 
 struct Capture(Mutex<Option<oneshot::Sender<Ctx>>>);
-impl Plugin for Capture {
+impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             if let Some(sender) = self.0.lock().unwrap().take() {
                 assert!(sender.send(ctx.clone()).is_ok());
@@ -85,14 +103,14 @@ impl Plugin for Capture {
         })
     }
 }
-async fn child(root: &Ctx) -> (rutis::FiberView, Ctx) {
+async fn child(root: &Ctx) -> (rutis::host::FiberView, Ctx) {
     let (sender, receiver) = oneshot::channel();
     let view = root.plugin(Capture(Mutex::new(Some(sender))));
     (&view).await.unwrap();
     (view, receiver.await.unwrap())
 }
 /// A child marked as a scope of `group`.
-async fn scope(parent: &Ctx, group: &str) -> (rutis::FiberView, Ctx) {
+async fn scope(parent: &Ctx, group: &str) -> (rutis::host::FiberView, Ctx) {
     let (view, ctx) = child(parent).await;
     ctx.mark_scope(group).unwrap();
     (view, ctx)
@@ -119,76 +137,74 @@ fn record(label: &'static str, log: &Log) -> Record {
         result: None,
     }
 }
-impl Listener<Ping> for Record {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async move {
-            self.log.lock().unwrap().push(self.label.into());
-            Ok(self.result)
-        })
+impl Record {
+    /// As an exact listener: logs its label.
+    fn exact(self) -> impl Listener<Ping> {
+        let record = Arc::new(self);
+        move |_, _| {
+            let record = record.clone();
+            async move {
+                record.log.lock().unwrap().push(record.label.into());
+                Ok(record.result)
+            }
+        }
     }
-}
-impl PatternListener<Ping> for Record {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        key: EventKey<Ping>,
-        _: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async move {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("{}:{}", self.label, key.name()));
-            Ok(self.result)
-        })
+    /// As a prefix listener: logs its label and the dispatched name.
+    fn pattern(self) -> impl Listener<Ping> {
+        let record = Arc::new(self);
+        move |_, call: Call<Ping>| {
+            let record = record.clone();
+            async move {
+                record
+                    .log
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}:{}", record.label, call.name()));
+                Ok(record.result)
+            }
+        }
     }
 }
 /// A waterfall listener: wraps the rest of the chain and adds one.
 struct Around(Log, &'static str);
-impl Listener<Ping> for Around {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: &'a Ping,
-        call: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async move {
+impl Around {
+    /// As an exact async listener.
+    fn exact(self) -> impl Listener<Ping> {
+        let around = Arc::new(self);
+        move |_, call: Call<Ping>| {
+            let around = around.clone();
+            async move {
+                around.0.lock().unwrap().push(format!("{} in", around.1));
+                let value = call.next().await?;
+                around.0.lock().unwrap().push(format!("{} out", around.1));
+                Ok(value.map(|value| value + 1))
+            }
+        }
+    }
+    /// As a prefix async listener, which only hears "room/1".
+    fn pattern(self) -> impl Listener<Ping> {
+        let exact = self.exact();
+        move |event, call: Call<Ping>| {
+            assert_eq!(call.name(), "room/1");
+            exact(event, call)
+        }
+    }
+    /// As a synchronous listener.
+    fn sync(
+        self,
+    ) -> impl Fn(Arc<Ping>, SyncCall<'_, Ping>) -> Result<Option<u64>, Error> + Send + Sync + 'static
+    {
+        move |_, call| {
             self.0.lock().unwrap().push(format!("{} in", self.1));
-            let value = call.next().await?;
+            let value = call.next()?;
             self.0.lock().unwrap().push(format!("{} out", self.1));
             Ok(value.map(|value| value + 1))
-        })
-    }
-}
-impl PatternListener<Ping> for Around {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        key: EventKey<Ping>,
-        event: &'a Ping,
-        call: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        assert_eq!(key.name(), "room/1");
-        Listener::call(self, ctx, event, call)
-    }
-}
-impl SyncListener<Ping> for Around {
-    fn call(&self, _: &Ctx, _: &Ping, call: SyncCall<'_, u64>) -> Result<Option<u64>, CordisError> {
-        self.0.lock().unwrap().push(format!("{} in", self.1));
-        let value = call.next()?;
-        self.0.lock().unwrap().push(format!("{} out", self.1));
-        Ok(value.map(|value| value + 1))
+        }
     }
 }
 
-fn terminal<'a>(_: &'a Ctx, event: &'a Ping) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-    Box::pin(async move { Ok(Some(event.0)) })
+async fn terminal(event: Arc<Ping>) -> Result<Option<u64>, Error> {
+    Ok(Some(event.0))
 }
 
 /// Was `deprecated_named_wrappers_share_keys_order_once_and_waterfall`: the
@@ -197,41 +213,40 @@ fn terminal<'a>(_: &'a Ctx, event: &'a Ping) -> BoxFuture<'a, Result<Option<u64>
 #[tokio::test]
 async fn named_key_keeps_order_once_and_waterfall_nesting() {
     let root = Ctx::root().unwrap();
-    let bus = root.events();
-    let key = EventKey::<Ping>::named("legacy");
+    let key = "legacy";
     let log: Log = Arc::default();
-    let normal = bus.on(&root, &key, record("normal", &log)).unwrap();
-    let prepend = bus
-        .on_opt(
-            &root,
-            &key,
-            record("prepend", &log),
-            EventOptions::default().prepend(true),
-        )
+    let normal = root
+        .listen::<Ping>()
+        .name(key)
+        .on(record("normal", &log).exact())
         .unwrap();
-    bus.once(&root, &key, record("once", &log)).unwrap();
-    assert_eq!(
-        bus.serial(&root, &key, Arc::new(Ping(0))).await.unwrap(),
-        None
-    );
+    let prepend = root
+        .listen::<Ping>()
+        .name(key)
+        .prepend()
+        .on(record("prepend", &log).exact())
+        .unwrap();
+    root.listen::<Ping>()
+        .name(key)
+        .once()
+        .on(record("once", &log).exact())
+        .unwrap();
+    assert_eq!(root.named(key).serial(Ping(0)).await.unwrap(), None);
     assert_eq!(*log.lock().unwrap(), ["prepend", "normal", "once"]);
     log.lock().unwrap().clear();
     assert_eq!(
-        bus.serial(
-            &root,
-            &EventKey::dynamic(String::from("legacy")),
-            Arc::new(Ping(0))
-        )
-        .await
-        .unwrap(),
+        root.named(String::from("legacy"))
+            .serial(Ping(0))
+            .await
+            .unwrap(),
         None
     );
     assert_eq!(*log.lock().unwrap(), ["prepend", "normal"]);
     log.lock().unwrap().clear();
-    bus.parallel(&root, &key, Arc::new(Ping(0))).await.unwrap();
+    root.named(key).parallel(Ping(0)).await.unwrap();
     assert_eq!(log.lock().unwrap().len(), 2);
     log.lock().unwrap().clear();
-    bus.emit(&root, &key, Arc::new(Ping(0))).unwrap();
+    root.named(key).emit(Ping(0)).unwrap();
     until(|| log.lock().unwrap().len() == 2, "both emit calls ran").await;
     for label in ["normal", "prepend"] {
         assert_eq!(
@@ -243,26 +258,24 @@ async fn named_key_keeps_order_once_and_waterfall_nesting() {
             1
         );
     }
-    assert_eq!(
-        bus.serial(&root, &EventKey::named("other"), Arc::new(Ping(0)))
-            .await
-            .unwrap(),
-        None
-    );
+    assert_eq!(root.named("other").serial(Ping(0)).await.unwrap(), None);
     // Every listener is called by every mode: withdraw the plain ones, which
     // would end a waterfall without calling `next`.
     normal.dispose().await.unwrap();
     prepend.dispose().await.unwrap();
     log.lock().unwrap().clear();
-    bus.on(&root, &key, Around(log.clone(), "old")).unwrap();
-    bus.on(
-        &root,
-        &EventKey::dynamic("legacy"),
-        Around(log.clone(), "new"),
-    )
-    .unwrap();
+    root.listen::<Ping>()
+        .name(key)
+        .on(Around(log.clone(), "old").exact())
+        .unwrap();
+    root.listen::<Ping>()
+        .name(String::from("legacy"))
+        .on(Around(log.clone(), "new").exact())
+        .unwrap();
     assert_eq!(
-        bus.waterfall(&root, &EventKey::dynamic("legacy"), &Ping(3), terminal)
+        root.named(String::from("legacy"))
+            .waterfall(Ping(3))
+            .terminal(terminal)
             .await
             .unwrap(),
         Some(5)
@@ -273,7 +286,9 @@ async fn named_key_keeps_order_once_and_waterfall_nesting() {
     );
     log.lock().unwrap().clear();
     assert_eq!(
-        bus.waterfall(&root, &key, &Ping(3), terminal)
+        root.named(key)
+            .waterfall(Ping(3))
+            .terminal(terminal)
             .await
             .unwrap(),
         Some(5)
@@ -294,32 +309,21 @@ async fn typed_identity_and_prefix_scope_are_distinct() {
     assert_ne!(EventKey::<Ping>::of(), KEY);
     let root = Ctx::root().unwrap();
     let log: Log = Arc::default();
-    root.events()
-        .on_pattern(
-            &root,
-            &EventPattern::prefix("room/"),
-            Record {
-                label: "all",
-                log: log.clone(),
-                result: None,
-            },
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .on(Record {
+            label: "all",
+            log: log.clone(),
+            result: None,
+        }
+        .pattern())
         .unwrap();
-    root.events()
-        .serial(&root, &KEY, Arc::new(Ping(0)))
-        .await
-        .unwrap();
-    root.events()
-        .serial(&root, &EventKey::of(), Arc::new(Ping(0)))
-        .await
-        .unwrap();
+    root.named(KEY.name()).serial(Ping(0)).await.unwrap();
+    root.serial(Ping(0)).await.unwrap();
     assert_eq!(*log.lock().unwrap(), ["all:room/1"]);
     // Listeners are found by name: another type dispatched under a name
     // the prefix covers reaches the `Ping` listener, converted through serde.
-    root.events()
-        .serial(&root, &EventKey::named("room/2"), Arc::new(Other(5)))
-        .await
-        .unwrap();
+    root.named("room/2").serial(Other(5)).await.unwrap();
     assert_eq!(*log.lock().unwrap(), ["all:room/1", "all:room/2"]);
     root.shutdown().await.unwrap();
 }
@@ -327,49 +331,42 @@ async fn typed_identity_and_prefix_scope_are_distinct() {
 #[tokio::test]
 async fn exact_and_pattern_share_registration_and_prepend_order() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::named("room/1");
+    let key = "room/1";
     let log: Log = Arc::default();
-    let bus = root.events();
-    bus.on(
-        &root,
-        &key,
-        Record {
+    root.listen::<Ping>()
+        .name(key)
+        .on(Record {
             label: "exact",
             log: log.clone(),
             result: None,
-        },
-    )
-    .unwrap();
-    bus.on_pattern(
-        &root,
-        &EventPattern::prefix("room/"),
-        Record {
+        }
+        .exact())
+        .unwrap();
+    root.listen::<Ping>()
+        .prefix("room/")
+        .on(Record {
             label: "group",
             log: log.clone(),
             result: None,
-        },
-    )
-    .unwrap();
-    bus.on_pattern_opt(
-        &root,
-        &EventPattern::prefix("room/"),
-        Record {
+        }
+        .pattern())
+        .unwrap();
+    root.listen::<Ping>()
+        .prefix("room/")
+        .prepend()
+        .on(Record {
             label: "first",
             log: log.clone(),
             result: None,
-        },
-        EventOptions::default().prepend(true),
-    )
-    .unwrap();
-    assert_eq!(
-        bus.serial(&root, &key, Arc::new(Ping(0))).await.unwrap(),
-        None
-    );
+        }
+        .pattern())
+        .unwrap();
+    assert_eq!(root.named(key).serial(Ping(0)).await.unwrap(), None);
     assert_eq!(
         *log.lock().unwrap(),
         ["first:room/1", "exact", "group:room/1"]
     );
-    let subscriptions = bus.subscriptions();
+    let subscriptions = root.subscriptions();
     assert_eq!(subscriptions.len(), 3);
     assert_eq!(
         subscriptions
@@ -384,10 +381,10 @@ async fn exact_and_pattern_share_registration_and_prepend_order() {
     );
     assert!(subscriptions.iter().all(|entry| entry.calls == 1));
     log.lock().unwrap().clear();
-    bus.parallel(&root, &key, Arc::new(Ping(0))).await.unwrap();
+    root.named(key).parallel(Ping(0)).await.unwrap();
     assert_eq!(log.lock().unwrap().len(), 3);
     root.shutdown().await.unwrap();
-    assert!(bus.subscriptions().is_empty());
+    assert!(root.subscriptions().is_empty());
 }
 
 /// Was `grouped_once_is_claimed_once_across_concurrent_names`: multi-prefix
@@ -397,17 +394,15 @@ async fn exact_and_pattern_share_registration_and_prepend_order() {
 async fn prefix_once_is_claimed_once_across_concurrent_names() {
     let root = Ctx::root().unwrap();
     let log: Log = Arc::default();
-    root.events()
-        .on_pattern_opt(
-            &root,
-            &EventPattern::prefix("room/"),
-            Record {
-                label: "once",
-                log: log.clone(),
-                result: None,
-            },
-            EventOptions::default().once(true),
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .once()
+        .on(Record {
+            label: "once",
+            log: log.clone(),
+            result: None,
+        }
+        .pattern())
         .unwrap();
     let barrier = Arc::new(Barrier::new(3));
     std::thread::scope(|scope| {
@@ -417,18 +412,14 @@ async fn prefix_once_is_claimed_once_across_concurrent_names() {
             scope.spawn(move || {
                 barrier.wait();
                 root.handle()
-                    .block_on(root.events().serial(
-                        &root,
-                        &EventKey::named(name),
-                        Arc::new(Ping(0)),
-                    ))
+                    .block_on(root.named(name).serial(Ping(0)))
                     .unwrap();
             });
         }
         barrier.wait();
     });
     assert_eq!(log.lock().unwrap().len(), 1);
-    assert!(root.events().subscriptions().is_empty());
+    assert!(root.subscriptions().is_empty());
     root.shutdown().await.unwrap();
 }
 
@@ -437,22 +428,21 @@ async fn prefix_once_is_claimed_once_across_concurrent_names() {
 #[tokio::test]
 async fn waterfall_pattern_wraps_and_options_work() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::named("room/1");
+    let key = "room/1";
     let log: Log = Arc::default();
-    root.events()
-        .on(&root, &key, Around(log.clone(), "exact"))
+    root.listen::<Ping>()
+        .name(key)
+        .on(Around(log.clone(), "exact").exact())
         .unwrap();
-    root.events()
-        .on_pattern_opt(
-            &root,
-            &EventPattern::prefix("room/"),
-            Around(log.clone(), "pattern"),
-            EventOptions::default().prepend(true),
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .prepend()
+        .on(Around(log.clone(), "pattern").pattern())
         .unwrap();
     assert_eq!(
-        root.events()
-            .waterfall(&root, &key, &Ping(1), terminal)
+        root.named(key)
+            .waterfall(Ping(1))
+            .terminal(terminal)
             .await
             .unwrap(),
         Some(3)
@@ -462,17 +452,16 @@ async fn waterfall_pattern_wraps_and_options_work() {
         ["pattern in", "exact in", "exact out", "pattern out"]
     );
     log.lock().unwrap().clear();
-    root.events()
-        .on_opt(
-            &root,
-            &key,
-            Around(log.clone(), "once"),
-            EventOptions::default().prepend(true).once(true),
-        )
+    root.listen::<Ping>()
+        .name(key)
+        .prepend()
+        .once()
+        .on(Around(log.clone(), "once").exact())
         .unwrap();
     assert_eq!(
-        root.events()
-            .waterfall(&root, &key, &Ping(1), terminal)
+        root.named(key)
+            .waterfall(Ping(1))
+            .terminal(terminal)
             .await
             .unwrap(),
         Some(4)
@@ -489,20 +478,15 @@ async fn waterfall_pattern_wraps_and_options_work() {
         ]
     );
     assert_eq!(
-        root.events()
-            .waterfall(&root, &key, &Ping(1), terminal)
+        root.named(key)
+            .waterfall(Ping(1))
+            .terminal(terminal)
             .await
             .unwrap(),
         Some(3)
     );
     // No terminal: the innermost `next` gives `None`.
-    assert_eq!(
-        root.events()
-            .waterfall(&root, &key, &Ping(1), ())
-            .await
-            .unwrap(),
-        None
-    );
+    assert_eq!(root.named(key).waterfall(Ping(1)).await.unwrap(), None);
     root.shutdown().await.unwrap();
 }
 
@@ -511,22 +495,22 @@ struct GatePattern {
     release: Arc<Semaphore>,
     log: Arc<Mutex<Vec<(String, u64)>>>,
 }
-impl PatternListener<Ping> for GatePattern {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        key: EventKey<Ping>,
-        event: &'a Ping,
-        _: Call<'a, u64>,
-    ) -> BoxFuture<'a, Result<Option<u64>, CordisError>> {
-        Box::pin(async move {
-            if key.name() == "room/a" && event.0 == 0 {
-                self.entered.notify_one();
-                self.release.acquire().await.unwrap().forget();
+impl GatePattern {
+    /// As a prefix listener: a call of `room/a` with `Ping(0)` blocks until
+    /// released; every call logs its name and value.
+    fn pattern(self) -> impl Listener<Ping> {
+        let gate = Arc::new(self);
+        move |event: Arc<Ping>, call: Call<Ping>| {
+            let gate = gate.clone();
+            async move {
+                if call.name() == "room/a" && event.0 == 0 {
+                    gate.entered.notify_one();
+                    gate.release.acquire().await.unwrap().forget();
+                }
+                gate.log.lock().unwrap().push((call.name().into(), event.0));
+                Ok(None)
             }
-            self.log.lock().unwrap().push((key.name().into(), event.0));
-            Ok(None)
-        })
+        }
     }
 }
 
@@ -538,27 +522,19 @@ async fn pattern_only_emit_preserves_each_name_without_global_tail() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
     let log = Arc::new(Mutex::new(Vec::new()));
-    root.events()
-        .on_pattern(
-            &root,
-            &EventPattern::prefix("room/"),
-            GatePattern {
-                entered: entered.clone(),
-                release: release.clone(),
-                log: log.clone(),
-            },
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .on(GatePattern {
+            entered: entered.clone(),
+            release: release.clone(),
+            log: log.clone(),
+        }
+        .pattern())
         .unwrap();
-    root.events()
-        .emit(&root, &EventKey::named("room/a"), Arc::new(Ping(0)))
-        .unwrap();
+    root.named("room/a").emit(Ping(0)).unwrap();
     entered.notified().await;
-    root.events()
-        .emit(&root, &EventKey::named("room/a"), Arc::new(Ping(1)))
-        .unwrap();
-    root.events()
-        .emit(&root, &EventKey::named("room/b"), Arc::new(Ping(2)))
-        .unwrap();
+    root.named("room/a").emit(Ping(1)).unwrap();
+    root.named("room/b").emit(Ping(2)).unwrap();
     until(
         || log.lock().unwrap().len() == 2,
         "the later emits ran past the blocked call",
@@ -581,47 +557,30 @@ async fn pattern_only_emit_preserves_each_name_without_global_tail() {
 #[tokio::test]
 async fn sync_bail_short_circuits_and_a_once_listener_stays_until_called() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::named("room/1");
+    let key = "room/1";
     let skipped = Arc::new(AtomicUsize::new(0));
     let stop = root
-        .events()
-        .on_sync(&root, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-            Ok(Some(7))
-        })
+        .listen::<Ping>()
+        .name(key)
+        .on_sync(|_, _| Ok(Some(7)))
         .unwrap();
     let calls = skipped.clone();
-    root.events()
-        .on_sync_pattern_opt(
-            &root,
-            &EventPattern::prefix("room/"),
-            move |_: &Ctx, _: EventKey<Ping>, _: &Ping, _: SyncCall<'_, u64>| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(None)
-            },
-            EventOptions::default().once(true),
-        )
+    root.listen::<Ping>()
+        .prefix("room/")
+        .once()
+        .on_sync(move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
         .unwrap();
-    assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        Some(7)
-    );
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), Some(7));
     assert_eq!(skipped.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        root.events().subscriptions().len(),
-        2,
-        "the once listener stays"
-    );
+    assert_eq!(root.subscriptions().len(), 2, "the once listener stays");
     stop.dispose().await.unwrap();
-    assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        None
-    );
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), None);
     assert_eq!(skipped.load(Ordering::SeqCst), 1, "called now");
-    assert!(root.events().subscriptions().is_empty(), "and gone");
-    assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        None
-    );
+    assert!(root.subscriptions().is_empty(), "and gone");
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), None);
     assert_eq!(skipped.load(Ordering::SeqCst), 1, "only once");
     root.shutdown().await.unwrap();
 }
@@ -629,21 +588,17 @@ async fn sync_bail_short_circuits_and_a_once_listener_stays_until_called() {
 #[tokio::test]
 async fn sync_waterfall_borrows_mutex_and_veto_skips_terminal() {
     let root = Ctx::root().unwrap();
-    let key = EventKey::of();
     let log: Log = Arc::default();
-    root.events()
-        .on_sync(&root, &key, Around(log.clone(), "outer"))
+    root.on_sync::<Ping>(Around(log.clone(), "outer").sync())
         .unwrap();
-    root.events()
-        .on_sync(&root, &key, Around(log.clone(), "inner"))
+    root.on_sync::<Ping>(Around(log.clone(), "inner").sync())
         .unwrap();
     let storage = Mutex::new(10);
     let mut terminal_calls = 0;
     {
         let mut locked = storage.lock().unwrap();
         let value = root
-            .events()
-            .waterfall_sync(&root, &key, &Ping(3), |_, event| {
+            .waterfall_sync(Ping(3), |event| {
                 terminal_calls += 1;
                 Ok(Some(*locked + event.0))
             })
@@ -656,21 +611,17 @@ async fn sync_waterfall_borrows_mutex_and_veto_skips_terminal() {
         *log.lock().unwrap(),
         ["outer in", "inner in", "inner out", "outer out"]
     );
-    root.events()
-        .on_sync_opt(
-            &root,
-            &key,
-            |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| Ok(Some(99)),
-            EventOptions::default().prepend(true).once(true),
-        )
+    root.listen::<Ping>()
+        .prepend()
+        .once()
+        .on_sync(|_, _| Ok(Some(99)))
         .unwrap();
     assert_eq!(
-        root.events()
-            .waterfall_sync(&root, &key, &Ping(0), |_, _| {
-                terminal_calls += 1;
-                Ok(Some(0))
-            })
-            .unwrap(),
+        root.waterfall_sync(Ping(0), |_| {
+            terminal_calls += 1;
+            Ok(Some(0))
+        })
+        .unwrap(),
         Some(99)
     );
     assert_eq!(terminal_calls, 1);
@@ -681,7 +632,7 @@ async fn sync_waterfall_borrows_mutex_and_veto_skips_terminal() {
 /// `waterfall-sync`, in one registration order.
 #[tokio::test]
 async fn sync_patterns_expose_keys_and_share_order_for_both_modes() {
-    fn answer(call: SyncCall<'_, u64>, own: u64) -> Result<Option<u64>, CordisError> {
+    fn answer(call: SyncCall<'_, Ping>, own: u64) -> Result<Option<u64>, Error> {
         if call.mode() == Mode::WaterfallSync {
             Ok(call.next()?.map(|value| value + own))
         } else {
@@ -689,45 +640,30 @@ async fn sync_patterns_expose_keys_and_share_order_for_both_modes() {
         }
     }
     let root = Ctx::root().unwrap();
-    let key = EventKey::named("room/1");
-    root.events()
-        .on_sync(&root, &key, |_: &Ctx, _: &Ping, call: SyncCall<'_, u64>| {
-            answer(call, 10)
+    let key = "room/1";
+    root.listen::<Ping>()
+        .name(key)
+        .on_sync(|_, call| answer(call, 10))
+        .unwrap();
+    root.listen::<Ping>()
+        .prefix("room/")
+        .prepend()
+        .on_sync(|_, call| {
+            assert_eq!(call.name(), "room/1");
+            answer(call, 20)
         })
         .unwrap();
-    root.events()
-        .on_sync_pattern_opt(
-            &root,
-            &EventPattern::prefix("room/"),
-            |_: &Ctx, key: EventKey<Ping>, _: &Ping, call: SyncCall<'_, u64>| {
-                assert_eq!(key.name(), "room/1");
-                answer(call, 20)
-            },
-            EventOptions::default().prepend(true),
-        )
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), Some(20));
+    root.listen::<Ping>()
+        .prefix("room/")
+        .on_sync(|_, call| {
+            assert_eq!(call.name(), "room/1");
+            answer(call, 1)
+        })
         .unwrap();
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), Some(20));
     assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        Some(20)
-    );
-    root.events()
-        .on_sync_pattern(
-            &root,
-            &EventPattern::prefix("room/"),
-            |_: &Ctx, key: EventKey<Ping>, _: &Ping, call: SyncCall<'_, u64>| {
-                assert_eq!(key.name(), "room/1");
-                answer(call, 1)
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        Some(20)
-    );
-    assert_eq!(
-        root.events()
-            .waterfall_sync(&root, &key, &Ping(0), |_, _| Ok(Some(4)))
-            .unwrap(),
+        waterfall_sync_at(&root, key, Ping(0), |_| Ok(Some(4))).unwrap(),
         Some(35)
     );
     root.shutdown().await.unwrap();
@@ -739,22 +675,17 @@ async fn sync_patterns_expose_keys_and_share_order_for_both_modes() {
 /// dispatch runs on the same stack and is observed like any.
 #[tokio::test]
 async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
-    fn nested(
-        ctx: &Ctx,
-        key: &EventKey<Ping>,
-        waterfall: bool,
-    ) -> Result<Option<u64>, CordisError> {
+    fn nested(ctx: &Ctx, key: &str, waterfall: bool) -> Result<Option<u64>, Error> {
         if waterfall {
-            ctx.events()
-                .waterfall_sync(ctx, key, &Ping(1), |_, _| Ok(Some(99)))
+            waterfall_sync_at(ctx, key, Ping(1), |_| Ok(Some(99)))
         } else {
-            ctx.events().bail_sync(ctx, key, &Ping(1))
+            ctx.named(key).bail(Ping(1))
         }
     }
     for outer_waterfall in [false, true] {
         for inner_waterfall in [false, true] {
             let root = Ctx::root().unwrap();
-            let key = EventKey::<Ping>::named("reentry");
+            let key = "reentry";
             let observed = Arc::new(AtomicUsize::new(0));
             let count = observed.clone();
             root.events()
@@ -762,25 +693,20 @@ async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
                     count.fetch_add(1, Ordering::SeqCst);
                 })
                 .unwrap();
-            let inner_key = key.clone();
             // One listener answers both modes: the outer call dispatches
             // the same name once more, the inner one answers.
-            root.events()
-                .on_sync(
-                    &root,
-                    &key,
-                    move |ctx: &Ctx, event: &Ping, _: SyncCall<'_, u64>| match event.0 {
-                        0 => Ok(nested(ctx, &inner_key, inner_waterfall)?.map(|inner| inner + 1)),
-                        _ => Ok(Some(10)),
-                    },
-                )
+            root.listen::<Ping>()
+                .name(key)
+                .on_sync(move |event, call| match event.0 {
+                    0 => Ok(nested(call.ctx(), key, inner_waterfall)?.map(|inner| inner + 1)),
+                    _ => Ok(Some(10)),
+                })
                 .unwrap();
             for attempt in 1..=2 {
                 let result = if outer_waterfall {
-                    root.events()
-                        .waterfall_sync(&root, &key, &Ping(0), |_, _| Ok(Some(0)))
+                    waterfall_sync_at(&root, key, Ping(0), |_| Ok(Some(0)))
                 } else {
-                    root.events().bail_sync(&root, &key, &Ping(0))
+                    root.named(key).bail(Ping(0))
                 };
                 assert_eq!(result.unwrap(), Some(11));
                 assert_eq!(observed.load(Ordering::SeqCst), attempt * 2);
@@ -794,7 +720,7 @@ async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
 async fn same_sync_key_can_execute_on_two_threads_at_once() {
     for waterfall in [false, true] {
         let root = Ctx::root().unwrap();
-        let key = EventKey::<Ping>::named("concurrent");
+        let key = "concurrent";
         let (entered_tx, entered_rx) = oneshot::channel();
         let entered = Mutex::new(Some(entered_tx));
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -805,40 +731,31 @@ async fn same_sync_key_can_execute_on_two_threads_at_once() {
                 release.lock().unwrap().recv().unwrap();
             }
         };
-        root.events()
-            .on_sync(
-                &root,
-                &key,
-                move |_: &Ctx, event: &Ping, call: SyncCall<'_, u64>| {
-                    gate(event);
-                    if call.mode() == Mode::WaterfallSync {
-                        call.next()
-                    } else {
-                        Ok(Some(event.0 + 7))
-                    }
-                },
-            )
+        root.listen::<Ping>()
+            .name(key)
+            .on_sync(move |event, call| {
+                gate(&event);
+                if call.mode() == Mode::WaterfallSync {
+                    call.next()
+                } else {
+                    Ok(Some(event.0 + 7))
+                }
+            })
             .unwrap();
         let caller = root.clone();
-        let first_key = key.clone();
         let first = tokio::task::spawn_blocking(move || {
             if waterfall {
-                caller
-                    .events()
-                    .waterfall_sync(&caller, &first_key, &Ping(0), |_, event| {
-                        Ok(Some(event.0 + 7))
-                    })
+                waterfall_sync_at(&caller, key, Ping(0), |event| Ok(Some(event.0 + 7)))
             } else {
-                caller.events().bail_sync(&caller, &first_key, &Ping(0))
+                caller.named(key).bail(Ping(0))
             }
         });
         entered_rx.await.unwrap();
         // The first call is still in its listener when this thread calls the same key.
         let second = if waterfall {
-            root.events()
-                .waterfall_sync(&root, &key, &Ping(1), |_, event| Ok(Some(event.0 + 7)))
+            waterfall_sync_at(&root, key, Ping(1), |event| Ok(Some(event.0 + 7)))
         } else {
-            root.events().bail_sync(&root, &key, &Ping(1))
+            root.named(key).bail(Ping(1))
         };
         release_tx.send(()).unwrap();
         assert_eq!(first.await.unwrap().unwrap(), Some(7));
@@ -853,7 +770,7 @@ async fn same_sync_key_can_execute_on_two_threads_at_once() {
 async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
     let root = Ctx::root().unwrap();
     let other = Ctx::root().unwrap();
-    let key = EventKey::<Ping>::named("same");
+    let key = "same";
     let checks = Arc::new(AtomicUsize::new(0));
     let checked = checks.clone();
     root.events()
@@ -868,43 +785,28 @@ async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
         event.downcast_ref::<Ping>().map(|event| event.0)
     }
     let observed_ctx = root.clone();
-    let observed_key = key.clone();
     let guard_seen = Arc::new(AtomicUsize::new(0));
     let guard_check = guard_seen.clone();
     root.events()
         .observe_dispatch(&root, move |attempt| {
             // Once per waterfall: the inner bail is observed too.
             if attempt.mode == Mode::WaterfallSync
-                && matches!(
-                    observed_ctx
-                        .events()
-                        .bail_sync(&observed_ctx, &observed_key, &Ping(0)),
-                    Ok(None)
-                )
+                && matches!(observed_ctx.named(key).bail(Ping(0)), Ok(None))
             {
                 guard_check.fetch_add(1, Ordering::SeqCst);
             }
         })
         .unwrap();
-    let result = root
-        .events()
-        .waterfall_sync(&root, &key, &Ping(0), |_, _| {
-            assert!(matches!(
-                root.events().bail_sync(&root, &key, &Ping(0)),
-                Ok(None)
-            ));
-            assert_eq!(
-                other
-                    .events()
-                    .waterfall_sync(&other, &key, &Ping(0), |_, _| Ok(Some(5)))?,
-                Some(5)
-            );
-            root.events()
-                .waterfall_sync(&root, &EventKey::named("different"), &Ping(0), |_, _| {
-                    Ok(Some(6))
-                })
-        })
-        .unwrap();
+    let (inner, other_bus) = (root.clone(), other.clone());
+    let result = waterfall_sync_at(&root, key, Ping(0), move |_| {
+        assert!(matches!(inner.named(key).bail(Ping(0)), Ok(None)));
+        assert_eq!(
+            waterfall_sync_at(&other_bus, key, Ping(0), |_| Ok(Some(5)))?,
+            Some(5)
+        );
+        waterfall_sync_at(&inner, "different", Ping(0), |_| Ok(Some(6)))
+    })
+    .unwrap();
     assert_eq!(result, Some(6));
     assert_eq!(guard_seen.load(Ordering::SeqCst), 2);
     assert_eq!(checks.load(Ordering::SeqCst), 2);
@@ -923,46 +825,34 @@ async fn sync_error_is_preserved_and_panic_reports_once_even_with_panicking_sink
             panic!("sink");
         }),
     );
-    let key = EventKey::of();
     let fail = root
-        .events()
-        .on_sync(&root, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-            Err(CordisError::Validation {
+        .on_sync::<Ping>(|_, _| {
+            Err(Error::from(ErrorKind::Validation {
                 issues: vec!["original".into()],
-            })
+            }))
         })
         .unwrap();
     assert!(
-        matches!(root.events().bail_sync(&root, &key, &Ping(0)), Err(CordisError::Validation { issues }) if issues == ["original"])
+        matches!(&*root.bail(Ping(0)).unwrap_err(), ErrorKind::Validation { issues } if *issues == ["original"])
     );
     assert_eq!(reports.load(Ordering::SeqCst), 0);
     fail.dispose().await.unwrap();
-    root.events()
-        .on_sync(&root, &key, Around(Arc::default(), "outer"))
+    root.on_sync::<Ping>(Around(Arc::default(), "outer").sync())
         .unwrap();
-    root.events()
-        .on_sync(
-            &root,
-            &key,
-            |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| -> Result<Option<u64>, CordisError> {
-                panic!("inner")
-            },
-        )
+    root.on_sync::<Ping>(|_, _| -> Result<Option<u64>, Error> { panic!("inner") })
         .unwrap();
     assert!(matches!(
-        root.events()
-            .waterfall_sync(&root, &key, &Ping(0), |_, _| Ok(Some(0))),
-        Err(CordisError::SyncEventPanicked(_))
+        &*root.waterfall_sync(Ping(0), |_| Ok(Some(0))).unwrap_err(),
+        ErrorKind::SyncEventPanicked(_)
     ));
     assert_eq!(reports.load(Ordering::SeqCst), 1);
     assert!(matches!(
-        root.events().waterfall_sync(
-            &root,
-            &EventKey::named("terminal"),
-            &Ping(0),
-            |_, _| -> Result<Option<u64>, CordisError> { panic!("terminal") }
-        ),
-        Err(CordisError::SyncEventPanicked(_))
+        &*root
+            .waterfall_sync(Unheard(0), |_| -> Result<Option<u64>, Error> {
+                panic!("terminal")
+            })
+            .unwrap_err(),
+        ErrorKind::SyncEventPanicked(_)
     ));
     assert_eq!(reports.load(Ordering::SeqCst), 2);
     root.shutdown().await.unwrap();
@@ -976,38 +866,28 @@ async fn sync_error_is_preserved_and_panic_reports_once_even_with_panicking_sink
 async fn thousand_early_sync_disposals_reject_new_selection_while_old_calls_finish() {
     let root = Ctx::root().unwrap();
     for _ in 0..1000 {
-        let key = EventKey::named("blocking");
+        let key = "blocking";
         let (entered_tx, entered_rx) = oneshot::channel();
         let entered = Mutex::new(Some(entered_tx));
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let release = Mutex::new(release_rx);
         let listener = root
-            .events()
-            .on_sync(
-                &root,
-                &key,
-                move |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-                    if let Some(sender) = entered.lock().unwrap().take() {
-                        sender.send(()).unwrap();
-                    }
-                    release.lock().unwrap().recv().unwrap();
-                    Ok(Some(9))
-                },
-            )
+            .listen::<Ping>()
+            .name(key)
+            .on_sync(move |_, _| {
+                if let Some(sender) = entered.lock().unwrap().take() {
+                    sender.send(()).unwrap();
+                }
+                release.lock().unwrap().recv().unwrap();
+                Ok(Some(9))
+            })
             .unwrap();
         let caller = root.clone();
-        let dispatch = tokio::task::spawn_blocking(move || {
-            caller
-                .events()
-                .bail_sync(&caller, &EventKey::named("blocking"), &Ping(0))
-        });
+        let dispatch = tokio::task::spawn_blocking(move || caller.named("blocking").bail(Ping(0)));
         entered_rx.await.unwrap();
         listener.dispose().await.unwrap();
-        assert!(root.events().subscriptions().is_empty());
-        assert_eq!(
-            root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-            None
-        );
+        assert!(root.subscriptions().is_empty());
+        assert_eq!(root.named(key).bail(Ping(0)).unwrap(), None);
         assert!(!dispatch.is_finished());
         release_tx.send(()).unwrap();
         assert_eq!(dispatch.await.unwrap().unwrap(), Some(9));
@@ -1025,7 +905,7 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
             let root = Ctx::root().unwrap();
             let (view, owner) = scope(&root, "owner").await;
             let (_, emitter) = child(&owner).await;
-            let key = EventKey::<Ping>::named("scoped");
+            let key = "scoped";
             let (entered_tx, entered_rx) = oneshot::channel();
             let entered = Mutex::new(Some(entered_tx));
             let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -1036,30 +916,24 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
                 }
                 release.lock().unwrap().recv().unwrap();
             };
-            let listener = root
-                .events()
-                .on_sync(
-                    &owner,
-                    &key,
-                    move |_: &Ctx, _: &Ping, call: SyncCall<'_, u64>| {
-                        gate();
-                        if call.mode() == Mode::WaterfallSync {
-                            Ok(call.next()?.map(|value| value + 9))
-                        } else {
-                            Ok(Some(10))
-                        }
-                    },
-                )
+            let listener = owner
+                .listen::<Ping>()
+                .name(key)
+                .on_sync(move |_, call| {
+                    gate();
+                    if call.mode() == Mode::WaterfallSync {
+                        Ok(call.next()?.map(|value| value + 9))
+                    } else {
+                        Ok(Some(10))
+                    }
+                })
                 .unwrap();
-            let dispatch_key = key.clone();
             let caller = emitter.clone();
             let dispatch = tokio::task::spawn_blocking(move || {
                 if waterfall {
-                    caller
-                        .events()
-                        .waterfall_sync(&caller, &dispatch_key, &Ping(0), |_, _| Ok(Some(1)))
+                    waterfall_sync_at(&caller, key, Ping(0), |_| Ok(Some(1)))
                 } else {
-                    caller.events().bail_sync(&caller, &dispatch_key, &Ping(0))
+                    caller.named(key).bail(Ping(0))
                 }
             });
             entered_rx.await.unwrap();
@@ -1078,28 +952,16 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
                 finish.as_mut().await.unwrap();
             }
             if shutdown {
-                assert!(emitter
-                    .events()
-                    .bail_sync(&emitter, &key, &Ping(0))
-                    .is_err());
+                assert!(emitter.named(key).bail(Ping(0)).is_err());
             } else {
                 until(
-                    || root.events().subscriptions().is_empty(),
+                    || root.subscriptions().is_empty(),
                     "the listener left the table",
                 )
                 .await;
+                assert_eq!(emitter.named(key).bail(Ping(0)).unwrap(), None);
                 assert_eq!(
-                    emitter
-                        .events()
-                        .bail_sync(&emitter, &key, &Ping(0))
-                        .unwrap(),
-                    None
-                );
-                assert_eq!(
-                    emitter
-                        .events()
-                        .waterfall_sync(&emitter, &key, &Ping(0), |_, _| Ok(Some(1)))
-                        .unwrap(),
+                    waterfall_sync_at(&emitter, key, Ping(0), |_| Ok(Some(1))).unwrap(),
                     Some(1)
                 );
             }
@@ -1112,7 +974,7 @@ async fn scoped_sync_bail_and_waterfall_drain_during_removal_and_subtree_shutdow
                 finish.await.unwrap();
             }
             view.shutdown().await.unwrap();
-            assert!(root.events().subscriptions().is_empty());
+            assert!(root.subscriptions().is_empty());
             root.shutdown().await.unwrap();
         }
     }
@@ -1126,82 +988,46 @@ async fn sync_flat_bus_stale_context_and_self_shutdown() {
     let root = Ctx::root().unwrap();
     let (view, ctx) = scope(&root, "a").await;
     let (_, sibling) = scope(&root, "b").await;
-    let key = EventKey::<Ping>::named("scoped");
-    ctx.events()
-        .on_sync(&ctx, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-            Ok(Some(8))
-        })
+    let key = "scoped";
+    ctx.listen::<Ping>()
+        .name(key)
+        .on_sync(|_, _| Ok(Some(8)))
         .unwrap();
-    assert_eq!(
-        ctx.events().bail_sync(&ctx, &key, &Ping(0)).unwrap(),
-        Some(8)
-    );
-    assert_eq!(
-        root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-        Some(8)
-    );
-    assert_eq!(
-        sibling
-            .events()
-            .bail_sync(&sibling, &key, &Ping(0))
-            .unwrap(),
-        Some(8)
-    );
+    assert_eq!(ctx.named(key).bail(Ping(0)).unwrap(), Some(8));
+    assert_eq!(root.named(key).bail(Ping(0)).unwrap(), Some(8));
+    assert_eq!(sibling.named(key).bail(Ping(0)).unwrap(), Some(8));
     sibling
-        .events()
-        .on_sync(&sibling, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-            Ok(Some(9))
-        })
+        .listen::<Ping>()
+        .name(key)
+        .on_sync(|_, _| Ok(Some(9)))
         .unwrap();
+    assert_eq!(sibling.named(key).bail(Ping(0)).unwrap(), Some(8));
+    assert_eq!(ctx.named(key).bail(Ping(0)).unwrap(), Some(8));
     assert_eq!(
-        sibling
-            .events()
-            .bail_sync(&sibling, &key, &Ping(0))
-            .unwrap(),
-        Some(8)
-    );
-    assert_eq!(
-        ctx.events().bail_sync(&ctx, &key, &Ping(0)).unwrap(),
-        Some(8)
-    );
-    assert_eq!(
-        sibling
-            .events()
-            .waterfall_sync(&sibling, &key, &Ping(0), |_, _| {
-                panic!("the sibling's own listener answers without next")
-            })
-            .unwrap(),
+        waterfall_sync_at(&sibling, key, Ping(0), |_| {
+            panic!("the sibling's own listener answers without next")
+        })
+        .unwrap(),
         Some(8)
     );
     view.restart().await.unwrap();
     assert!(matches!(
-        ctx.events().bail_sync(&ctx, &key, &Ping(0)),
-        Err(CordisError::StaleGeneration { .. })
+        &*ctx.named(key).bail(Ping(0)).unwrap_err(),
+        ErrorKind::StaleGeneration { .. }
     ));
     assert!(ctx
-        .events()
-        .on_sync(&ctx, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| Ok(
-            None
-        ))
+        .listen::<Ping>()
+        .name(key)
+        .on_sync(|_, _| Ok(None))
         .is_err());
     view.shutdown().await.unwrap();
     let own = root.clone();
-    root.events()
-        .on_sync(
-            &root,
-            &EventKey::of(),
-            move |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-                drop(own.shutdown());
-                Ok(Some(1))
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        root.events()
-            .bail_sync(&root, &EventKey::of(), &Ping(0))
-            .unwrap(),
-        Some(1)
-    );
+    root.on_sync::<Ping>(move |_, _| {
+        drop(own.shutdown());
+        Ok(Some(1))
+    })
+    .unwrap();
+    assert_eq!(root.bail(Ping(0)).unwrap(), Some(1));
     root.shutdown().await.unwrap();
 }
 
@@ -1209,28 +1035,21 @@ async fn sync_flat_bus_stale_context_and_self_shutdown() {
 async fn thousand_registrations_and_disposals_leave_no_subscriptions() {
     let root = Ctx::root().unwrap();
     for i in 0..1000 {
-        let key = EventKey::<Ping>::dynamic(format!("room/{i}"));
+        let key = format!("room/{i}");
         let a = root
-            .events()
-            .on_sync(&root, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| {
-                Ok(None)
-            })
+            .listen::<Ping>()
+            .name(key.clone())
+            .on_sync(|_, _| Ok(None))
             .unwrap();
         let b = root
-            .events()
-            .on_sync_pattern(
-                &root,
-                &EventPattern::prefix("room/"),
-                |_: &Ctx, _: EventKey<Ping>, _: &Ping, _: SyncCall<'_, u64>| Ok(None),
-            )
+            .listen::<Ping>()
+            .prefix("room/")
+            .on_sync(|_, _| Ok(None))
             .unwrap();
-        assert_eq!(
-            root.events().bail_sync(&root, &key, &Ping(0)).unwrap(),
-            None
-        );
+        assert_eq!(root.named(key).bail(Ping(0)).unwrap(), None);
         a.dispose().await.unwrap();
         b.dispose().await.unwrap();
-        assert!(root.events().subscriptions().is_empty());
+        assert!(root.subscriptions().is_empty());
     }
     root.shutdown().await.unwrap();
 }
@@ -1247,20 +1066,17 @@ async fn pattern_shutdown_drains_old_callback_and_excludes_new_named_dispatches(
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Semaphore::new(0));
         let log = Arc::new(Mutex::new(Vec::new()));
-        root.events()
-            .on_pattern(
-                &owner,
-                &EventPattern::prefix("room/"),
-                GatePattern {
-                    entered: entered.clone(),
-                    release: release.clone(),
-                    log: log.clone(),
-                },
-            )
+        owner
+            .listen::<Ping>()
+            .prefix("room/")
+            .on(GatePattern {
+                entered: entered.clone(),
+                release: release.clone(),
+                log: log.clone(),
+            }
+            .pattern())
             .unwrap();
-        root.events()
-            .emit(&root, &EventKey::named("room/a"), Arc::new(Ping(0)))
-            .unwrap();
+        root.named("room/a").emit(Ping(0)).unwrap();
         entered.notified().await;
         let mut shutdown = pin!(if root_owner {
             root.shutdown()
@@ -1270,20 +1086,13 @@ async fn pattern_shutdown_drains_old_callback_and_excludes_new_named_dispatches(
         pending(shutdown.as_mut()).await;
         // Async dispatch still returns Ok for an old context, but the
         // closing pattern owner cannot admit another call.
-        root.events()
-            .serial(&root, &EventKey::named("room/new"), Arc::new(Ping(1)))
-            .await
-            .unwrap();
-        assert!(root
-            .events()
-            .subscriptions()
-            .iter()
-            .all(|entry| entry.calls == 1));
+        root.named("room/new").serial(Ping(1)).await.unwrap();
+        assert!(root.subscriptions().iter().all(|entry| entry.calls == 1));
         pending(shutdown.as_mut()).await;
         release.add_permits(1);
         shutdown.await.unwrap();
         assert_eq!(log.lock().unwrap().len(), 1);
-        assert!(root.events().subscriptions().is_empty());
+        assert!(root.subscriptions().is_empty());
         root.shutdown().await.unwrap();
     }
 }
@@ -1296,44 +1105,25 @@ async fn sync_observer_can_register_before_snapshot_or_close_admission() {
     root.events()
         .observe_dispatch(&root, move |attempt| {
             if attempt.mode == Mode::Bail && once.fetch_add(1, Ordering::SeqCst) == 0 {
-                observed
-                    .events()
-                    .on_sync(
-                        &observed,
-                        &EventKey::of(),
-                        |_: &Ctx, _: &Ping, _: SyncCall<'_, u64>| Ok(Some(33)),
-                    )
-                    .unwrap();
+                observed.on_sync::<Ping>(|_, _| Ok(Some(33))).unwrap();
             }
         })
         .unwrap();
-    assert_eq!(
-        root.events()
-            .bail_sync(&root, &EventKey::of(), &Ping(0))
-            .unwrap(),
-        Some(33)
-    );
+    assert_eq!(root.bail(Ping(0)).unwrap(), Some(33));
     let body_ctx = root.clone();
-    root.events()
-        .on_sync(
-            &root,
-            &EventKey::named("body"),
-            move |_: &Ctx, event: &Ping, _: SyncCall<'_, u64>| match event.0 {
-                // The body dispatches its own name once more.
-                0 => body_ctx
-                    .events()
-                    .bail_sync(&body_ctx, &EventKey::named("body"), &Ping(1))
-                    .map(|inner| inner.map(|inner| inner + 1)),
-                _ => Ok(Some(40)),
-            },
-        )
+    root.listen::<Ping>()
+        .name("body")
+        .on_sync(move |event, _| match event.0 {
+            // The body dispatches its own name once more.
+            0 => body_ctx
+                .named("body")
+                .bail(Ping(1))
+                .map(|inner| inner.map(|inner| inner + 1)),
+            _ => Ok(Some(40)),
+        })
         .unwrap();
     assert_eq!(
-        root.events()
-            .waterfall_sync(&root, &EventKey::named("body"), &Ping(0), |_, _| Ok(Some(
-                0
-            )))
-            .unwrap(),
+        waterfall_sync_at(&root, "body", Ping(0), |_| Ok(Some(0))).unwrap(),
         Some(41)
     );
     let closing = root.clone();
@@ -1350,18 +1140,17 @@ async fn sync_observer_can_register_before_snapshot_or_close_admission() {
     // after that is rejected.
     let mut called = false;
     assert_eq!(
-        root.events()
-            .waterfall_sync(&root, &EventKey::of(), &Ping(0), |_, _| {
-                called = true;
-                Ok(Some(0))
-            })
-            .unwrap(),
+        root.waterfall_sync(Ping(0), |_| {
+            called = true;
+            Ok(Some(0))
+        })
+        .unwrap(),
         Some(0)
     );
     assert!(called);
     assert!(matches!(
-        root.events().bail_sync(&root, &EventKey::of(), &Ping(0)),
-        Err(CordisError::Closed)
+        &*root.bail(Ping(0)).unwrap_err(),
+        ErrorKind::Closed
     ));
     root.shutdown().await.unwrap();
 }

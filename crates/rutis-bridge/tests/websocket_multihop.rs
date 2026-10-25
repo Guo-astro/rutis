@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
@@ -102,7 +103,7 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
         "b",
         StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())),
     ));
-    b.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock(Default::default())))
+    b.provide_at(host_key("clock"), Arc::new(Clock(Default::default())))
         .unwrap();
     b.plugin(LinkPlugin::new(LinkConfig::dial(
         id("a"),

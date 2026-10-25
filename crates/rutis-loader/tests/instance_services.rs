@@ -5,12 +5,14 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{active, title, Title};
+use common::Scoped;
 use common::{patches, MemStore};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory, TypeKey};
-use rutis_loader::{
-    Builtins, Editable, EntryInfo, EntryStatus, ExprScope, Expressions, InstanceResult, Layer,
-    Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog,
-};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory};
+use rutis::{Ctx, Error};
+use rutis_loader::edit::{Editable, Instance, InstanceResult};
+use rutis_loader::report::{EntryInfo, EntryStatus, ReconcileReport};
+use rutis_loader::resolve::{ExprScope, Expressions};
+use rutis_loader::{Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -33,7 +35,7 @@ struct Cfg {
 
 enum Mode {
     /// Provides `Tools` at this key.
-    Provide(TypeKey),
+    Provide(Key<Tools>),
     /// Logs its config label.
     Echo,
 }
@@ -45,19 +47,21 @@ struct Probe {
     log: Log,
 }
 
-impl Plugin for Probe {
+impl DynPlugin for Probe {
     fn name(&self) -> &str {
         "probe"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             if self.config.fail_in.as_deref() == Some(self.title.as_str()) {
-                return Err(CordisError::PluginFailed("failed here".into()));
+                return Err(rutis::Error::from(ErrorKind::PluginFailed(
+                    "failed here".into(),
+                )));
             }
             let line = match &*self.mode {
                 Mode::Provide(key) => {
-                    ctx.provide_as(key.clone(), Arc::new(Tools(self.title.clone())))?;
+                    ctx.provide_at(key.clone(), Arc::new(Tools(self.title.clone())))?;
                     format!("tools {}", self.title)
                 }
                 Mode::Echo => format!("echo {} {}", self.title, self.config.label),
@@ -79,7 +83,7 @@ impl PluginFactory<Cfg> for ProbeFactory {
         "probe"
     }
 
-    fn build(&self, config: &Cfg) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Cfg) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Probe {
             mode: self.mode.clone(),
             title: self.title.clone(),
@@ -89,20 +93,20 @@ impl PluginFactory<Cfg> for ProbeFactory {
     }
 }
 
-fn resolver(log: &Log) -> Builtins {
-    let mut builtins = Builtins::new();
+fn resolver(log: &Log) -> Scoped {
+    let mut builtins = Scoped::new();
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("tools", move |build| {
+    builtins.register::<Cfg, _, _>("tools", move |build| {
         Ok(ProbeFactory {
-            mode: Arc::new(Mode::Provide(TypeKey::instance::<Tools>(
-                build.instance("session")?,
-            ))),
+            mode: Arc::new(Mode::Provide(
+                Key::of().instance(build.instance("session")?),
+            )),
             title: title(build),
             log: l.clone(),
         })
     });
     let l = log.clone();
-    builtins.register_with::<Cfg, _, _>("echo", move |build| {
+    builtins.register::<Cfg, _, _>("echo", move |build| {
         Ok(ProbeFactory {
             mode: Arc::new(Mode::Echo),
             title: title(build),
@@ -137,7 +141,7 @@ struct Setup {
 }
 
 impl Setup {
-    async fn create(&self, title: &str) -> rutis_loader::Instance {
+    async fn create(&self, title: &str) -> Instance {
         self.loader
             .create_instance(&self.root, "session")
             .with(Title(title.into()))
@@ -160,7 +164,7 @@ impl Setup {
     }
 }
 
-async fn setup(base: Value) -> (Setup, rutis_loader::ReconcileReport) {
+async fn setup(base: Value) -> (Setup, ReconcileReport) {
     let log = Log::default();
     let mut catalog = ServiceCatalog::new();
     catalog.readable_instance::<Tools>("tools", "session");

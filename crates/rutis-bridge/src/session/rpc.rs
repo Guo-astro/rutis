@@ -10,7 +10,7 @@ use std::task::{Context, Poll, Waker};
 use std::thread::ThreadId;
 
 use crate::channel::{Channel, ChannelError, Closer, Sender};
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 use serde_json::Value as Json;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{oneshot, watch, Notify};

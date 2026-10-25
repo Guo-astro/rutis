@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use crate::channel::PeerId;
-use rutis::TypeKey;
+use rutis::host::{CtxHost, Key};
 
 /// A credential presented when dialing. Its `Debug` never shows the secret.
 #[derive(Clone)]
@@ -57,8 +57,8 @@ pub trait Identity: Send + Sync + 'static {
 }
 
 /// The key an identity named `name` is provided under (`Identity#main`).
-pub fn identity_key(name: &str) -> TypeKey {
-    TypeKey::keyed_dynamic::<dyn Identity>(name.to_owned())
+pub fn identity_key(name: &str) -> Key<dyn Identity> {
+    Key::dynamic(name.to_owned())
 }
 
 /// Provides an identity as `Identity#<name>`.
@@ -79,7 +79,7 @@ impl IdentityPlugin {
     }
 }
 
-impl rutis::Plugin for IdentityPlugin {
+impl rutis::host::DynPlugin for IdentityPlugin {
     fn name(&self) -> &str {
         &self.label
     }
@@ -87,10 +87,10 @@ impl rutis::Plugin for IdentityPlugin {
     fn apply<'a>(
         &'a self,
         ctx: &'a rutis::Ctx,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+    ) -> rutis::host::BoxFuture<'a, Result<rutis::host::Effect, rutis::Error>> {
         Box::pin(async move {
-            ctx.provide_as::<dyn Identity>(identity_key(&self.key), self.identity.clone())?;
-            Ok(rutis::Effect::Done)
+            ctx.provide_at(identity_key(&self.key), self.identity.clone())?;
+            Ok(rutis::host::Effect::Done)
         })
     }
 }
@@ -213,8 +213,8 @@ pub trait Admission: Send + Sync + 'static {
 pub struct Rejection(pub String);
 
 /// The key an admission named `name` is provided under (`Admission#phone`).
-pub fn admission_key(name: &str) -> TypeKey {
-    TypeKey::keyed_dynamic::<dyn Admission>(name.to_owned())
+pub fn admission_key(name: &str) -> Key<dyn Admission> {
+    Key::dynamic(name.to_owned())
 }
 
 /// Provides an admission as `Admission#<name>`.
@@ -234,7 +234,7 @@ impl AdmissionPlugin {
     }
 }
 
-impl rutis::Plugin for AdmissionPlugin {
+impl rutis::host::DynPlugin for AdmissionPlugin {
     fn name(&self) -> &str {
         &self.label
     }
@@ -242,10 +242,10 @@ impl rutis::Plugin for AdmissionPlugin {
     fn apply<'a>(
         &'a self,
         ctx: &'a rutis::Ctx,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+    ) -> rutis::host::BoxFuture<'a, Result<rutis::host::Effect, rutis::Error>> {
         Box::pin(async move {
-            ctx.provide_as::<dyn Admission>(admission_key(&self.key), self.admission.clone())?;
-            Ok(rutis::Effect::Done)
+            ctx.provide_at(admission_key(&self.key), self.admission.clone())?;
+            Ok(rutis::host::Effect::Done)
         })
     }
 }

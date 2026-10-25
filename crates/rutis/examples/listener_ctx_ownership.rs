@@ -5,7 +5,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, Listener, Plugin};
+use rutis::host::CtxHost;
+use rutis::{Ctx, Event, Plugin};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tick;
@@ -15,52 +16,32 @@ impl Event for Tick {
     type Value = ();
 }
 
-struct OwnedListener {
-    owner: Ctx,
-    cleaned: Arc<AtomicUsize>,
-}
-
-impl Listener<Tick> for OwnedListener {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        _event: &'a Tick,
-        _call: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            // The registering context, whoever emitted.
-            assert_eq!(ctx.instance(), self.owner.instance());
-            let cleaned = self.cleaned.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    cleaned.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
-            })?;
-            Ok(None)
-        })
-    }
-}
-
 struct Register(Arc<AtomicUsize>);
 
 impl Plugin for Register {
+    type Deps = ();
+
     fn name(&self) -> &str {
         "register-listener"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.events().on::<Tick>(
-                ctx,
-                &rutis::EventKey::of(),
-                OwnedListener {
-                    owner: ctx.clone(),
-                    cleaned: self.0.clone(),
-                },
-            )?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        let owner = ctx.instance();
+        let cleaned = self.0.clone();
+        ctx.on::<Tick>(move |_, call| {
+            let cleaned = cleaned.clone();
+            async move {
+                // The registering context, whoever emitted.
+                let ctx = call.ctx();
+                assert_eq!(ctx.instance(), owner);
+                ctx.effect(|| async move {
+                    cleaned.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })?;
+                Ok(None)
+            }
+        })?;
+        Ok(())
     }
 }
 
@@ -70,9 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cleaned = Arc::new(AtomicUsize::new(0));
     let plugin = root.plugin(Register(cleaned.clone()));
     (&plugin).await?;
-    root.events()
-        .serial(&root, &rutis::EventKey::of(), Arc::new(Tick))
-        .await?;
+    root.serial(Tick).await?;
     plugin.shutdown().await?;
     assert_eq!(cleaned.load(Ordering::SeqCst), 1);
     root.shutdown().await?;

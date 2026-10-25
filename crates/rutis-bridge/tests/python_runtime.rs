@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
 use rutis_bridge::session::{host_key, HostDispatch};
@@ -123,11 +124,11 @@ async fn python_rows_follow_the_row_contract() {
         .unwrap();
     let key = host_key("weather");
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_some(),
         "the weather service",
     )
     .await;
-    let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
+    let weather = ctx.get_at::<dyn HostDispatch>(&key).unwrap();
     assert_eq!(
         weather
             .invoke("today", json!([]).into())
@@ -152,7 +153,7 @@ async fn python_rows_follow_the_row_contract() {
 
     process.unload_row("w").await.unwrap();
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_none(),
         "the withdrawal",
     )
     .await;
@@ -181,7 +182,7 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin(runtime);
     let _ = (&view).await;
-    assert_eq!(view.state().state, rutis::FiberState::Failed);
+    assert_eq!(view.state().state, rutis::host::FiberState::Failed);
     match handle.state() {
         rutis_bridge::runtime::RuntimeState::Down(message) => {
             assert!(message.contains("lacks rows.v2 and hosts"), "{message}")
@@ -246,14 +247,14 @@ async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime(
         .unwrap();
     let key = host_key("weather");
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_some(),
         "the weather service",
     )
     .await;
 
     process.unload_row("w").await.unwrap();
     until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
+        || ctx.get_at::<dyn HostDispatch>(&key).is_none(),
         "the withdrawal",
     )
     .await;

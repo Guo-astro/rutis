@@ -48,7 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 

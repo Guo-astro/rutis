@@ -13,7 +13,9 @@ use std::time::Duration;
 use crate::channel::{Channel, Closer, ConnectError, PeerId};
 use crate::session::rpc::{Connection, Endpoint, Format};
 use crate::session::{Error, Handshake};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{mpsc, watch};
 
 use crate::access_point::Release;
@@ -195,8 +197,8 @@ impl LinkPlugin {
         Self {
             name: format!("rutis-bridge/link#{}", config.peer),
             injects: [
-                transport_key(&config.transport),
-                identity_key(&config.identity),
+                transport_key(&config.transport).erase(),
+                identity_key(&config.identity).erase(),
             ],
             state: Arc::new(watch::channel(LinkState::Idle).0),
             config,
@@ -208,25 +210,27 @@ impl LinkPlugin {
     }
 }
 
-impl Plugin for LinkPlugin {
+impl DynPlugin for LinkPlugin {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let missing = |what: &str| {
-                CordisError::PluginFailed(format!("{}: {what} is not provided", self.name).into())
+                rutis::Error::from(ErrorKind::PluginFailed(
+                    format!("{}: {what} is not provided", self.name).into(),
+                ))
             };
             let transport = ctx
-                .get_as::<dyn Transport>(self.injects[0].clone())
+                .get_key::<dyn Transport>(self.injects[0].clone())
                 .ok_or_else(|| missing("the transport"))?;
             let identity = ctx
-                .get_as::<dyn Identity>(self.injects[1].clone())
+                .get_key::<dyn Identity>(self.injects[1].clone())
                 .ok_or_else(|| missing("the identity"))?;
             let link = Link {
                 ctx: ctx.clone(),
@@ -249,13 +253,13 @@ impl Plugin for LinkPlugin {
             };
             let state = self.state.clone();
             ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
+                async move {
                     // Dropping the task's state closes the session, revokes
                     // the registration and cancels any retry.
                     task.abort();
                     state.send_replace(LinkState::Idle);
                     Ok(())
-                }))
+                }
             })?;
             Ok(Effect::Done)
         })
@@ -460,7 +464,7 @@ impl Link {
         );
         let provided = self
             .ctx
-            .provide_as(peer_key(&self.config.peer), Arc::new(peer))
+            .provide_at(peer_key(&self.config.peer), Arc::new(peer))
             .map_err(|error| Error::Transport(format!("cannot provide the peer: {error}")))?;
         self.state.send_replace(LinkState::Ready {
             generation: self.generation,

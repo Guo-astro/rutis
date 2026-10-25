@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect};
+use rutis::host::BoxFuture;
+use rutis::Ctx;
 
 use crate::model::{CalendarError, Change, Entry, Handler, NewEntry};
 
@@ -97,18 +98,16 @@ impl Calendar {
 
     /// Tell `handler` of every change from now on, until `ctx`'s plugin
     /// unloads or [`Calendar::unsubscribe`]; returns the subscription.
-    pub fn subscribe(&self, ctx: &Ctx, handler: Handler) -> Result<u64, CordisError> {
+    pub fn subscribe(&self, ctx: &Ctx, handler: Handler) -> rutis::Result<u64> {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         self.subscribers.lock().unwrap().push((id, handler));
         let subscribers = self.subscribers.clone();
-        ctx.effect(move || {
-            Effect::Disposer(Box::new(move || {
-                subscribers
-                    .lock()
-                    .unwrap()
-                    .retain(|(known, _)| *known != id);
-                Ok(())
-            }))
+        ctx.effect(|| async move {
+            subscribers
+                .lock()
+                .unwrap()
+                .retain(|(known, _)| *known != id);
+            Ok(())
         })?;
         Ok(id)
     }
@@ -124,8 +123,8 @@ impl Calendar {
     /// returns how many were visited.
     pub async fn each(
         &self,
-        visit: impl Fn(Entry) -> BoxFuture<'static, Result<(), CordisError>> + Send + Sync,
-    ) -> Result<usize, CordisError> {
+        visit: impl Fn(Entry) -> BoxFuture<'static, rutis::Result> + Send + Sync,
+    ) -> rutis::Result<usize> {
         let entries: Vec<Entry> = self.entries.lock().unwrap().values().cloned().collect();
         for entry in &entries {
             visit(entry.clone()).await?;
@@ -135,7 +134,7 @@ impl Calendar {
 
     /// Hand `change` to every subscriber in turn; done once each of them
     /// handled it, failed when one of them failed.
-    pub async fn publish(&self, change: Change) -> Result<(), CordisError> {
+    pub async fn publish(&self, change: Change) -> rutis::Result {
         let handlers: Vec<Handler> = self
             .subscribers
             .lock()

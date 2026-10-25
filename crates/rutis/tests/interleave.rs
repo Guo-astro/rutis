@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, TypeKey};
+use rutis::{Ctx, Error};
 
 const ROUNDS: u64 = 100;
 const TASKS: u64 = 6;
@@ -99,16 +100,16 @@ struct Tracked {
     child: Option<(Arc<Ledger>, ChildSlot)>,
 }
 
-impl Plugin for Tracked {
+impl DynPlugin for Tracked {
     fn name(&self) -> &str {
         "tracked"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             for _ in 0..3 {
                 tokio::task::yield_now().await;
@@ -117,12 +118,10 @@ impl Plugin for Tracked {
             let live = ledger.live.fetch_add(1, Ordering::SeqCst) + 1;
             ledger.max_live.fetch_max(live, Ordering::SeqCst);
             let cleanup = ledger.clone();
-            let registered = ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    cleanup.live.fetch_sub(1, Ordering::SeqCst);
-                    cleanup.cleaned.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
+            let registered = ctx.effect(move || async move {
+                cleanup.live.fetch_sub(1, Ordering::SeqCst);
+                cleanup.cleaned.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             });
             match registered {
                 Ok(_) => {

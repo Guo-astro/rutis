@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use rutis_dsh::profile::layers::parse_patch_list;
 use rutis_dsh::profile::{ProfileContext, UserLayerStore};
-use rutis_loader::Persist;
+use rutis_loader::edit::Persist;
 use serde_json::Value;
 
 /// The samples' directory, without `..`.

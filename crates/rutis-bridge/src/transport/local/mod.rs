@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::channel::{Channel, ConnectError};
 use crate::{transport_key, Dial, Transport};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::{Ctx, Error};
 
 pub(crate) mod lines;
 
@@ -62,22 +63,20 @@ impl LocalPlugin {
     }
 }
 
-impl Plugin for LocalPlugin {
+impl DynPlugin for LocalPlugin {
     fn name(&self) -> &str {
         "rutis-bridge/local"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let transport = Arc::new(LocalTransport::default());
             let open = transport.clone();
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    open.close_all();
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                open.close_all();
+                Ok(())
             })?;
-            ctx.provide_as::<dyn Transport>(transport_key("local"), transport)?;
+            ctx.provide_at(transport_key("local"), transport)?;
             Ok(Effect::Done)
         })
     }

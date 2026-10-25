@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use rutis::{FiberView, PluginId};
+use rutis::host::{CtxHost, FiberView, PluginId};
 use serde_json::Value;
 
 use crate::edit::Edit;
@@ -181,7 +181,7 @@ impl Loader {
         found
             .injects
             .iter()
-            .filter(|inject| inject.status == rutis::DependencyStatus::Missing)
+            .filter(|inject| inject.status == rutis::host::diagnostics::DependencyStatus::Missing)
             .map(|inject| match inject.key.name() {
                 Some(name) => match rutis_bridge::exports::unexported(&ctx, name) {
                     Some(why) => format!("{name}: {why}"),
@@ -205,7 +205,7 @@ impl Loader {
     /// The row whose fiber has `instance` (the plugin's `ctx.instance()`).
     /// Answers from inside `apply`: the loader records a fiber before its
     /// first load runs.
-    pub fn row(&self, instance: rutis::InstanceId) -> Option<RowInfo> {
+    pub fn row(&self, instance: rutis::host::InstanceId) -> Option<RowInfo> {
         let state = self.inner.state.lock().unwrap();
         let (slot, _) = state
             .running

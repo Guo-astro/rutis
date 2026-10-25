@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::runtimes::{layer, repo, row_state, Llm, Probe, COLD};
-use rutis::{Ctx, FiberState, FiberView};
+use rutis::host::{CtxHost, FiberState, FiberView};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Chain, Loader, LoaderOptions, LoaderPlugin, RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_bridge::session::host_key;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
 // ── The plugins, once per language ──────────────────────────────
@@ -209,7 +209,7 @@ async fn fixture() -> Fixture {
     let (py, js) = write_plugins(dir.path());
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in ["probe", "llm", "py_weather", "js_weather", "js_relay"] {
@@ -440,7 +440,7 @@ async fn injected_services_gate_the_plugin() {
 
     let llm = fixture
         .root
-        .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(Llm))
+        .provide_at(host_key("llm"), Arc::new(Llm))
         .unwrap();
     fixture.probe.wait_for("py gated: 42").await;
     fixture.probe.wait_for("js gated: 42").await;

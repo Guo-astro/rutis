@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use aimux_core::language_model::LanguageModel;
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_agent::{
-    llm_key, tool_call, AgentDriverPlugin, LlmResponse, ScriptedLlm, ToolDef, ToolsPlugin,
-    TuiPlugin,
+    tool_call, AgentDriverPlugin, LlmResponse, ScriptedLlm, ToolDef, ToolsPlugin, TuiPlugin,
 };
 use serde_json::{json, Value};
 
@@ -54,7 +54,8 @@ async fn main() {
     let service: Arc<dyn LanguageModel> = llm;
 
     let root = Ctx::root().expect("run inside a tokio runtime");
-    root.provide_as(llm_key(), service).expect("provide llm");
+    root.provide_as::<dyn LanguageModel>(service)
+        .expect("provide llm");
     let tools_view = root.plugin(ToolsPlugin::new(vec![weather_tool()]));
     let driver_view = root.plugin(AgentDriverPlugin::new(10000).with_default_session_path());
     (&tools_view).await.expect("tools loads");

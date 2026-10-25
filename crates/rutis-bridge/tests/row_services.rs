@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::task::Poll;
 
-use rutis::{BoxFuture, CordisError, Ctx, EventKey, Listener, ServiceChange, ServiceChanged};
+use rutis::events::{Call, Listener};
+use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
+use rutis::host::CtxHost;
+use rutis::Ctx;
 use rutis_bridge::runtime::{
     row_projection, row_projection_of, Mount, Process, Projection, RowService,
 };
@@ -134,9 +137,12 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
     assert!(process.supports("rows.announce"));
     let entry = write(dir.path(), "store.mjs", STORE);
     let ctx = Ctx::root().unwrap();
-    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key, |name| {
-        name == "kept"
-    });
+    let projection = row_projection_of(
+        "row store",
+        &serde_json::Map::new(),
+        |name| host_key(name).erase(),
+        |name| name == "kept",
+    );
     projection.attach(&ctx, process.clone()).unwrap();
     process
         .load_row_exporting(
@@ -152,7 +158,7 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
         .await
         .unwrap();
     let store = ctx
-        .get_as::<dyn HostDispatch>(host_key("store"))
+        .get_at::<dyn HostDispatch>(&host_key("store"))
         .expect("announced and published before the load returned");
     assert_eq!(
         store.methods(),
@@ -170,11 +176,11 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
         "a field is not a method"
     );
     drop(store);
-    assert!(ctx.get_as::<dyn HostDispatch>(host_key("kept")).is_none());
+    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("kept")).is_none());
 
     projection.withdraw().await;
     process.unload_row("store").await.unwrap();
-    assert!(ctx.get_as::<dyn HostDispatch>(host_key("store")).is_none());
+    assert!(ctx.get_at::<dyn HostDispatch>(&host_key("store")).is_none());
     process.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
@@ -241,12 +247,8 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
         .await
         .unwrap();
     let key = host_key("weather");
-    until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_some(),
-        "the weather service",
-    )
-    .await;
-    let weather = ctx.get_as::<dyn HostDispatch>(key.clone()).unwrap();
+    until(|| ctx.get_at(&key).is_some(), "the weather service").await;
+    let weather = ctx.get_at(&key).unwrap();
     assert_eq!(
         weather
             .invoke("today", json!([]).into())
@@ -282,11 +284,7 @@ async fn row_services_reach_rutis_and_hosts_are_leased() {
 
     // Unloading the row withdraws its service from rutis.
     process.unload_row("weather").await.unwrap();
-    until(
-        || ctx.get_as::<dyn HostDispatch>(key.clone()).is_none(),
-        "the withdrawal",
-    )
-    .await;
+    until(|| ctx.get_at(&key).is_none(), "the withdrawal").await;
     projection.close();
 
     first.release().await.unwrap();
@@ -313,7 +311,7 @@ fn held_projection() -> (Arc<Projection>, mpsc::Receiver<()>, mpsc::Sender<()>) 
     let projection = Projection::new();
     projection.service_keyed::<dyn HostDispatch>(
         "greeter",
-        host_key("greeter"),
+        host_key("greeter").erase(),
         move |process, handle| {
             if let Some((tell, wait)) = first.take() {
                 tell.send(()).unwrap();
@@ -329,17 +327,16 @@ fn held_projection() -> (Arc<Projection>, mpsc::Receiver<()>, mpsc::Sender<()>) 
 #[derive(Clone, Default)]
 struct Published(Arc<AtomicUsize>);
 
-impl Listener<ServiceChanged> for Published {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        changed: &'a ServiceChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        if changed.change == ServiceChange::Provided {
-            self.0.fetch_add(1, Ordering::SeqCst);
+impl Published {
+    /// The listener that counts them.
+    fn listener(&self) -> impl Listener<ServiceChanged> {
+        let count = self.0.clone();
+        move |changed: Arc<ServiceChanged>, _: Call<ServiceChanged>| {
+            if changed.change == ServiceChange::Provided {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+            std::future::ready(Ok(None))
         }
-        Box::pin(async { Ok(None) })
     }
 }
 
@@ -388,9 +385,7 @@ async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
     let entry = write(dir.path(), "greeter.mjs", GREETER);
     let ctx = Ctx::root().unwrap();
     let published = Published::default();
-    ctx.events()
-        .on(&ctx, &EventKey::of(), published.clone())
-        .unwrap();
+    ctx.on(published.listener()).unwrap();
     let (projection, held, release) = held_projection();
     projection.attach(&ctx, process.clone()).unwrap();
     load_held(&process, &entry, &projection, held).await;
@@ -406,7 +401,7 @@ async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
     .await;
     until(
         || {
-            ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+            ctx.get_at::<dyn HostDispatch>(&host_key("greeter"))
                 .is_none()
         },
         "the withdrawal",
@@ -436,7 +431,7 @@ async fn withdraw_waits_for_a_publication_under_way() {
     release.send(()).unwrap();
     within("the withdrawal", withdrawal).await;
     assert!(
-        ctx.get_as::<dyn HostDispatch>(host_key("greeter"))
+        ctx.get_at::<dyn HostDispatch>(&host_key("greeter"))
             .is_none(),
         "withdrawn once withdraw returns"
     );

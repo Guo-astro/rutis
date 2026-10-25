@@ -2,6 +2,7 @@ use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
 use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
 use crate::transport::local::Stdio;
+use rutis::host::CtxHost;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -946,7 +947,7 @@ impl Process {
         config: Value,
         isolate: &[(String, String)],
         inject: &[String],
-        scope: &[rutis::Scope],
+        scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
         let id = self.row_loading(key, scope);
         let loaded = self
@@ -979,7 +980,7 @@ impl Process {
 
     /// Row `key` is being loaded in `scope`: its listeners may register
     /// from now on. Its id (`rows.load`'s `id`).
-    fn row_loading(&self, key: &str, scope: &[rutis::Scope]) -> String {
+    fn row_loading(&self, key: &str, scope: &[rutis::events::Scope]) -> String {
         let id = self
             .imports
             .names
@@ -1024,7 +1025,7 @@ impl Process {
         inject: &[String],
         exports: &serde_json::Map<String, Value>,
         observer: Arc<dyn ServiceEvents>,
-        scope: &[rutis::Scope],
+        scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
         let loaded = self
             .load_exporting(
@@ -1049,7 +1050,7 @@ impl Process {
         inject: &[String],
         exports: &serde_json::Map<String, Value>,
         observer: Arc<dyn ServiceEvents>,
-        scope: &[rutis::Scope],
+        scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
         if !exports.is_empty() {
             self.require("rows.v2")?;

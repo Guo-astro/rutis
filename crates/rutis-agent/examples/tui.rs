@@ -11,9 +11,10 @@
 use std::sync::Arc;
 
 use aimux_core::language_model::LanguageModel;
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_agent::{
-    llm_key, minimal_persona, minimal_tools, AgentDriverPlugin, ToolDef, ToolsPlugin, TuiPlugin,
+    minimal_persona, minimal_tools, AgentDriverPlugin, ToolDef, ToolsPlugin, TuiPlugin,
 };
 use serde_json::{json, Value};
 
@@ -51,7 +52,7 @@ async fn main() {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".into());
     let root = Ctx::root().expect("run inside a tokio runtime");
-    root.provide_as(llm_key(), llm)
+    root.provide_as::<dyn LanguageModel>(llm)
         .expect("provide llm service");
     // minimal mode:bash + replace_text + get_weather
     let mut tools = minimal_tools();

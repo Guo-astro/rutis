@@ -9,7 +9,8 @@
 
 use std::sync::Mutex;
 
-use rutis::{service, BoxFuture, CordisError};
+use rutis::host::BoxFuture;
+use rutis::service;
 use serde::{Deserialize, Serialize};
 
 /// A calendar entry.
@@ -59,8 +60,8 @@ impl Calendar {
     /// Call `visit` with each entry, in order; how many there were.
     pub async fn each(
         &self,
-        visit: impl Fn(Entry) -> BoxFuture<'static, Result<(), CordisError>>,
-    ) -> Result<usize, CordisError> {
+        visit: impl Fn(Entry) -> BoxFuture<'static, rutis::Result>,
+    ) -> rutis::Result<usize> {
         let entries = self.entries.lock().unwrap().clone();
         for entry in &entries {
             visit(entry.clone()).await?;

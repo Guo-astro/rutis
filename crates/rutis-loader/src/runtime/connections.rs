@@ -32,7 +32,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, InstanceId, Plugin, PluginFactory};
+use rutis::host::{BoxFuture, DynPlugin, ErrorKind, InstanceId, PluginFactory};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{Mount, Process, RowSchema};
 use rutis_bridge::session::host_key;
 use rutis_bridge::{Accept, Accepted, PeerId, Release};
@@ -282,7 +283,7 @@ impl RuntimeInstances {
         row: &str,
         plugin: &str,
         build: &Build,
-    ) -> Result<Arc<dyn PluginFactory<Value>>, CordisError> {
+    ) -> Result<Arc<dyn PluginFactory<Value>>, Error> {
         let inner = &self.inner;
         let found =
             connections(build).find(|(connection, _)| connection.runtime() == inner.runtime);
@@ -322,17 +323,17 @@ impl RuntimeInstances {
             .map(|name| {
                 let key = match inner.catalog.is_shared(name) {
                     true => inner.catalog.key_in(name, build).map_err(super::failed)?,
-                    false => host_key(name),
+                    false => host_key(name).erase(),
                 };
                 Ok((name.clone(), key))
             })
-            .collect::<Result<Vec<_>, CordisError>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         // Its services are its instance's own.
         let provided = described
             .provides
             .keys()
             .map(|name| {
-                let key = host_key(name).with_instance(instance);
+                let key = host_key(name).instance(instance).erase();
                 (name.clone(), key)
             })
             .collect();
@@ -352,7 +353,7 @@ impl RuntimeInstances {
             // instance's own for every copy there.
             .announcing(Arc::new(move |name| {
                 connection.announced(name);
-                host_key(name).with_instance(instance)
+                host_key(name).instance(instance).erase()
             })),
         );
         Ok(factory)
@@ -369,13 +370,13 @@ impl RuntimeInstances {
 }
 
 /// A row of the runtime used outside its group.
-fn outside(row: &str, group: &str) -> CordisError {
-    CordisError::PluginFailed(
+fn outside(row: &str, group: &str) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(
         format!(
             "{row} runs only inside the {group} group, in the instance of a runtime connection"
         )
         .into(),
-    )
+    ))
 }
 
 impl Resolver for RuntimeInstances {
@@ -431,7 +432,7 @@ impl PluginFactory<Value> for Outside {
         &self.name
     }
 
-    fn build(&self, _config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Err(outside(&self.name, &self.group))
     }
 }

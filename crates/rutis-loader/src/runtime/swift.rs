@@ -23,10 +23,12 @@ use super::binary::{
 
 /// In every binary built with the Swift SDK: only files containing it are
 /// run to read their manifest.
+#[doc(hidden)]
 pub const SWIFT_MARKER: &[u8] = b"rutis-swift-runtime:1";
 
 /// The plugin API of Swift binaries this host runs, read from their
 /// manifests.
+#[doc(hidden)]
 pub const SWIFT_PLUGIN_API: u64 = 3;
 
 /// Swift as a [`BinaryLanguage`].
@@ -75,6 +77,7 @@ pub type SwiftRuntimeInfo = BinaryRuntimeInfo;
 
 /// What the Swift binary at `path` serves: it runs `path --rutis-manifest`
 /// (within 30 s).
+#[doc(hidden)]
 pub fn read_swift_manifest(path: &Path) -> Result<SwiftManifest, String> {
     read_binary_manifest(path)
 }

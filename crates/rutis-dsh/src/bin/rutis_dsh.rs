@@ -75,8 +75,10 @@ mod host {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use aimux_llm::{llm_service_key, AimuxLlmPlugin, LlmService};
-    use rutis::{BoxFuture, CordisError, Ctx, Effect, EventKey, Listener, Plugin, TypeKey};
+    use aimux_llm::{AimuxLlmPlugin, LlmService};
+    use rutis::host::*;
+    use rutis::{Ctx, Error, Plugin};
+    use rutis_dsh::events::{Exit, Ready, StartupFailed};
     use rutis_dsh::web;
     use tokio::sync::mpsc;
 
@@ -153,33 +155,34 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
         Some((profile, rest))
     }
 
-    async fn serve(
-        root: &Ctx,
-        profile: Option<String>,
-        args: Vec<String>,
-    ) -> Result<Stop, CordisError> {
+    async fn serve(root: &Ctx, profile: Option<String>, args: Vec<String>) -> Result<Stop, Error> {
         let llm = root.plugin(AimuxLlmPlugin::from_env());
         (&llm)
             .await
-            .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            .map_err(|error| Error::msg(error.to_string()))?;
         let service: Arc<dyn LlmService> = root
-            .get_as::<dyn LlmService>(llm_service_key())
-            .ok_or_else(|| CordisError::ServiceNotFound("aimux-llm".into()))?;
+            .get::<dyn LlmService>()
+            .ok_or_else(|| Error::from(ErrorKind::ServiceNotFound("aimux-llm".into())))?;
         rutis_dsh::provide_web_aimux(root, service)?;
 
         let (stop, mut stopped) = mpsc::unbounded_channel();
-        let events = root.events();
-        events.on(root, &EventKey::<rutis_dsh::events::Ready>::of(), Ready)?;
-        events.on(
-            root,
-            &EventKey::<rutis_dsh::events::StartupFailed>::of(),
-            Forward(stop.clone()),
-        )?;
-        events.on(
-            root,
-            &EventKey::<rutis_dsh::events::Exit>::of(),
-            Forward(stop.clone()),
-        )?;
+        root.on::<Ready>(|event, _| async move {
+            eprintln!(
+                "[rutis-dsh] dsh is up; model routes: {}",
+                event.0.join(", ")
+            );
+            Ok(None)
+        })?;
+        let forward = stop.clone();
+        root.on::<StartupFailed>(move |event, _| {
+            let _ = forward.send(Stop::StartupFailed(event.0.clone()));
+            async { Ok(None) }
+        })?;
+        let forward = stop.clone();
+        root.on::<Exit>(move |event, _| {
+            let _ = forward.send(Stop::Exit(event.0 as i32));
+            async { Ok(None) }
+        })?;
 
         let cwd = std::env::current_dir()
             .ok()
@@ -191,12 +194,9 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
         }));
         (&view)
             .await
-            .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            .map_err(|error| Error::msg(error.to_string()))?;
         // Withdrawn when the Node process goes away.
-        root.plugin(Watch(
-            Mutex::new(Some(stop)),
-            [TypeKey::of::<web::Launched>()],
-        ));
+        root.plugin(Watch(Mutex::new(Some(stop))));
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => Ok(Stop::Interrupted),
@@ -204,68 +204,25 @@ provider's key variable, e.g. DEEPSEEK_API_KEY.";
         }
     }
 
-    struct Ready;
-    impl Listener<rutis_dsh::events::Ready> for Ready {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            event: &'a rutis_dsh::events::Ready,
-            _: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            Box::pin(async move {
-                eprintln!(
-                    "[rutis-dsh] dsh is up; model routes: {}",
-                    event.0.join(", ")
-                );
-                Ok(None)
-            })
-        }
-    }
-
-    struct Forward(mpsc::UnboundedSender<Stop>);
-    impl Listener<rutis_dsh::events::StartupFailed> for Forward {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            event: &'a rutis_dsh::events::StartupFailed,
-            _: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let _ = self.0.send(Stop::StartupFailed(event.0.clone()));
-            Box::pin(async { Ok(None) })
-        }
-    }
-    impl Listener<rutis_dsh::events::Exit> for Forward {
-        fn call<'a>(
-            &'a self,
-            _: &'a Ctx,
-            event: &'a rutis_dsh::events::Exit,
-            _: rutis::Call<'a, ()>,
-        ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-            let _ = self.0.send(Stop::Exit(event.0 as i32));
-            Box::pin(async { Ok(None) })
-        }
-    }
-
     /// Depends on the launcher's `rutisDsh` service; its cleanup runs when
     /// the service is withdrawn, i.e. when the dsh process ended.
-    struct Watch(Mutex<Option<mpsc::UnboundedSender<Stop>>>, [TypeKey; 1]);
+    struct Watch(Mutex<Option<mpsc::UnboundedSender<Stop>>>);
     impl Plugin for Watch {
+        type Deps = Arc<web::Launched>;
+
         fn name(&self) -> &str {
             "rutis-dsh:watch"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.1
-        }
-        fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+
+        async fn apply(&self, ctx: &Ctx, _: Arc<web::Launched>) -> rutis::Result {
             let stop = self.0.lock().unwrap().take();
-            Box::pin(async move {
-                Ok(Effect::Disposer(Box::new(move || {
-                    if let Some(stop) = stop {
-                        let _ = stop.send(Stop::ProcessEnded);
-                    }
-                    Ok(())
-                })))
-            })
+            ctx.effect(|| async move {
+                if let Some(stop) = stop {
+                    let _ = stop.send(Stop::ProcessEnded);
+                }
+                Ok(())
+            })?;
+            Ok(())
         }
     }
 }

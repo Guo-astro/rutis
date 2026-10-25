@@ -12,13 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use common::runtimes::{layer, repo, row_state, Probe, COLD};
-use rutis::{Ctx, FiberState, FiberView};
+use rutis::host::{CtxHost, FiberState, FiberView};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Chain, EntryStatus, Loader, LoaderError, LoaderOptions, LoaderPlugin, RuntimeResolver,
-    RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_bridge::session::host_key;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
 /// A plugin written with the SDK, imported from this checkout.
@@ -91,7 +91,7 @@ async fn fixture_with(install: impl FnOnce(&Path)) -> Fixture {
     }
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in ["probe", "forecast"] {

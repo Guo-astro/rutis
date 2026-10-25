@@ -5,66 +5,87 @@
 //! layer and are handed to a persistence hook. The loader reads and writes no
 //! files. Design: `docs/design-rutis-loader-2026-10-02.md`.
 
+//!
+//! The root has what assembling a loader takes; the rest is grouped by
+//! topic: [`runtime`] (plugins of other languages), [`peer`] (rows from a
+//! linked node), [`report`] (what the loader's methods return), [`edit`]
+//! (imperative edits and persistence) and [`resolve`] (writing a
+//! resolver). [`internal`] is for rutis-host and tests, with no stability
+//! promise.
+
 pub mod backoff;
 mod catalog;
-mod edit;
+pub mod edit;
 mod error;
 mod framework;
 mod loader;
 mod patch;
 #[cfg(feature = "peer")]
-mod peer;
+pub mod peer;
 mod persist;
 mod resolver;
 #[cfg(feature = "runtimes")]
-mod runtime;
+pub mod runtime;
 mod volatile;
 
-pub use catalog::{ExprScope, Expressions, ServiceCatalog};
-pub use edit::{apply_edit, Edit};
-pub use error::{Failure, LoaderError, PersistError, Unavailable};
-pub use framework::{RowEvent, RowState};
-pub use loader::{
-    CheckReport, CreateInstance, Editable, EntryInfo, EntryStatus, Instance, InstanceInfo,
-    InstanceResult, Isolate, Loader, LoaderChanged, LoaderOptions, LoaderPlugin, NewEntry,
-    PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck, RowInfo, RowStatus,
-    Supply, Unknown,
-};
-pub use patch::{apply_patches, Composed, ComposedRow, Layer, Owner, Patch, PatchWarning};
-#[cfg(feature = "peer")]
-pub use peer::{
-    node_schema, register_peer_node, LoaderCatalog, PeerResolver, PeerRows, PeerRowsPlugin,
-    REMOVED_EVENTS,
-};
-pub use persist::{NoPersist, Persist, Version};
-pub use resolver::{
-    Build, Builtins, Chain, Declarations, Declared, Resolved, Resolver, ScopedFactory,
-};
-#[cfg(feature = "node")]
-pub use runtime::resolve_entry;
-#[cfg(feature = "go")]
-pub use runtime::PLUGIN_API;
-#[cfg(feature = "runtimes")]
-pub use runtime::{
-    is_runtime_name, AcceptInstances, RowsSource, RuntimeConnection, RuntimeInstances,
-    RuntimeResolver, RuntimeRows, RuntimeRowsPlugin,
-};
-#[cfg(feature = "binary")]
-pub use runtime::{
-    read_binary_manifest, Binaries, BinaryFile, BinaryLanguage, BinaryManifest, BinaryResolver,
-    BinaryRuntimeInfo, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle, RestartPolicy,
-    RuntimeEnd,
-};
-#[cfg(feature = "go")]
-pub use runtime::{
-    read_go_manifest, Go, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo,
-    GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER,
-};
-#[cfg(feature = "swift")]
-pub use runtime::{
-    read_swift_manifest, Swift, SwiftBinaries, SwiftBinary, SwiftManifest, SwiftResolver,
-    SwiftRuntimeInfo, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle, SWIFT_MARKER,
-    SWIFT_PLUGIN_API,
-};
+pub use catalog::ServiceCatalog;
+pub use error::LoaderError;
+pub use framework::RowEvent;
+pub use loader::{Loader, LoaderOptions, LoaderPlugin};
+pub use patch::{Layer, Patch};
+pub use resolver::{Builtins, Chain, Resolver};
 
-pub use volatile::{volatile_key, volatile_paths, VolatileUpdate};
+/// What the loader's methods return: reports, row and entry states,
+/// failures, change notices.
+pub mod report {
+    pub use crate::error::{Failure, Unavailable};
+    pub use crate::framework::RowState;
+    pub use crate::loader::{
+        CheckReport, EntryInfo, EntryStatus, InstanceInfo, Isolate, LoaderChanged,
+        PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck, RowInfo, RowStatus,
+        Supply, Unknown,
+    };
+}
+
+/// Writing a resolver: what a name resolves to and how a copy is built.
+pub mod resolve {
+    pub use crate::catalog::{ExprScope, Expressions};
+    pub use crate::resolver::{Build, Declarations, Declared, Resolved, ScopedFactory};
+}
+
+/// What rutis-host and the tests use. No stability promise.
+#[doc(hidden)]
+pub mod internal {
+    pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
+    #[cfg(feature = "peer")]
+    pub use crate::peer::{node_schema, REMOVED_EVENTS};
+    #[cfg(feature = "binary")]
+    pub use crate::runtime::binary::read_binary_manifest;
+    #[cfg(feature = "go")]
+    pub use crate::runtime::go::{read_go_manifest, GO_MARKER, PLUGIN_API};
+    #[cfg(feature = "runtimes")]
+    pub use crate::runtime::is_runtime_name;
+    #[cfg(feature = "node")]
+    pub use crate::runtime::resolve_entry;
+    #[cfg(feature = "swift")]
+    pub use crate::runtime::swift::{read_swift_manifest, SWIFT_MARKER, SWIFT_PLUGIN_API};
+}
+
+// The crate's own code reaches every item from the root, as before.
+#[cfg(feature = "peer")]
+#[allow(unused_imports)]
+pub(crate) use crate::peer::*;
+#[cfg(feature = "binary")]
+#[allow(unused_imports)]
+pub(crate) use crate::runtime::binary::*;
+#[cfg(feature = "go")]
+#[allow(unused_imports)]
+pub(crate) use crate::runtime::go::*;
+#[cfg(feature = "swift")]
+#[allow(unused_imports)]
+pub(crate) use crate::runtime::swift::*;
+#[cfg(feature = "runtimes")]
+#[allow(unused_imports)]
+pub(crate) use crate::runtime::*;
+#[allow(unused_imports)]
+pub(crate) use crate::{edit::*, internal::*, report::*, resolve::*};

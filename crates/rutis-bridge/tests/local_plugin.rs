@@ -5,6 +5,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::{transport_key, ConnectError, Transport};
@@ -18,7 +19,7 @@ async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
     let fiber = root.plugin(LocalPlugin::new());
     (&fiber).await.unwrap();
     let transport = root
-        .get_as::<dyn Transport>(transport_key("local"))
+        .get_at::<dyn Transport>(&transport_key("local"))
         .expect("Transport#local is provided");
 
     let address = format!("unix:{}", path.display());
@@ -46,7 +47,7 @@ async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
 
     fiber.dispose().await.unwrap();
     assert!(root
-        .get_as::<dyn Transport>(transport_key("local"))
+        .get_at::<dyn Transport>(&transport_key("local"))
         .is_none());
     assert!(matches!(channel.receiver.recv(), Ok(None) | Err(_)));
 }

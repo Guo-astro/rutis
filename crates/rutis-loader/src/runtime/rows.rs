@@ -12,7 +12,9 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::Runtime;
 
 use super::RuntimeResolver;
@@ -67,25 +69,25 @@ impl RuntimeRowsPlugin {
     pub fn new(resolver: Arc<impl RowsSource>) -> Self {
         let name = resolver.runtime_name().to_owned();
         Self {
-            injects: [Runtime::key(&name), TypeKey::of::<Loader>()],
+            injects: [Runtime::key(&name).erase(), TypeKey::of::<Loader>()],
             name,
             resolver,
         }
     }
 }
 
-impl Plugin for RuntimeRowsPlugin {
+impl DynPlugin for RuntimeRowsPlugin {
     fn name(&self) -> &str {
         "runtime-rows"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let runtime = ctx.require_as::<Runtime>(Runtime::key(&self.name))?;
+            let runtime = ctx.require_at::<Runtime>(&Runtime::key(&self.name))?;
             let key = RuntimeRows::key(&self.name);
             let loader = ctx.require::<Loader>()?;
             let stale = self.resolver.take_stale();
@@ -110,7 +112,7 @@ impl Plugin for RuntimeRowsPlugin {
                         eprintln!("rutis-loader: cannot resolve row {id} again: {error}");
                     }
                 }
-                if let Err(error) = owner.provide_as(key, Arc::new(RuntimeRows { runtime })) {
+                if let Err(error) = owner.provide_key(key, Arc::new(RuntimeRows { runtime })) {
                     // Disposed meanwhile: nothing to provide to.
                     if !owner.cancellation_token().is_cancelled() {
                         eprintln!("rutis-loader: cannot release the rows: {error}");
@@ -118,13 +120,11 @@ impl Plugin for RuntimeRowsPlugin {
                 }
             });
             let refresh = Arc::new(Mutex::new(Some(refresh)));
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    if let Some(refresh) = refresh.lock().unwrap().take() {
-                        refresh.abort();
-                    }
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                if let Some(refresh) = refresh.lock().unwrap().take() {
+                    refresh.abort();
+                }
+                Ok(())
             })?;
             Ok(Effect::Done)
         })

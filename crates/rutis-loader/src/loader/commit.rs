@@ -4,7 +4,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use rutis::{CordisError, Ctx};
+use rutis::host::ErrorKind;
+use rutis::{Ctx, Error};
 
 use crate::edit::{apply_edit, Edit};
 use crate::error::Failure;
@@ -211,9 +212,9 @@ impl Inner {
         targets: Vec<Target>,
         tolerated: &dyn Fn(Option<u64>, &LoaderError) -> bool,
     ) -> Result<(), LoaderError> {
-        let rejected = |error: CordisError| LoaderError::Rejected {
+        let rejected = |error: Error| LoaderError::Rejected {
             id: row.id.clone(),
-            error: Arc::new(error),
+            error: Arc::new(error.into_kind()),
         };
         for (copy, base, build) in targets {
             // A copy unavailable in its instance fails there alone.
@@ -262,9 +263,9 @@ impl Inner {
             let result = match checked {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(error)) => Err(rejected(error)),
-                Err(_) => Err(rejected(CordisError::PluginFailed(
+                Err(_) => Err(rejected(rutis::Error::from(ErrorKind::PluginFailed(
                     "panicked during the dry run".into(),
-                ))),
+                )))),
             };
             check(result)?;
         }

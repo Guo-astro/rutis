@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::channel::PeerId;
 use crate::session::rpc::{Connection, Dispatch, Reply, Value};
 use crate::session::Error;
-use rutis::TypeKey;
+use rutis::host::Key;
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -220,8 +220,8 @@ pub struct Peer {
 }
 
 /// The key the peer `id` is provided under (`Peer#mac`).
-pub fn peer_key(id: &PeerId) -> TypeKey {
-    TypeKey::keyed_dynamic::<Peer>(id.to_string())
+pub fn peer_key(id: &PeerId) -> Key<Peer> {
+    Key::dynamic(id.to_string())
 }
 
 /// A family registered on a peer; dropping it unregisters the family and

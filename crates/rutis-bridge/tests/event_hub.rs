@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::events::{ListenerInfo, Scope};
-use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener, SyncCall, SyncListener};
+use rutis::events::{Call, Listener, ListenerInfo, Scope, SyncCall};
+use rutis::host::{BoxFuture, CtxHost, ErrorKind};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::runtime::{Mount, Process};
@@ -185,10 +187,6 @@ fn answers(answer: Json) -> Behavior {
     Arc::new(move |_| Ok(Value::Data(answer.clone())))
 }
 
-fn key(name: &str) -> EventKey<Args> {
-    EventKey::dynamic(name.to_owned())
-}
-
 fn args(values: &[Json]) -> Arc<Args> {
     Arc::new(Args(values.iter().cloned().map(Value::Data).collect()))
 }
@@ -214,18 +212,13 @@ async fn eventually(mut check: impl FnMut() -> bool, what: &str) {
 }
 
 /// Answers a fixed value; counts its calls.
-struct Answer(Option<&'static str>, Arc<Mutex<Vec<Vec<Value>>>>);
-impl Listener<Args> for Answer {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Args,
-        _: Call<'a, ArgValue>,
-    ) -> BoxFuture<'a, Result<Option<ArgValue>, CordisError>> {
-        Box::pin(async move {
-            self.1.lock().unwrap().push(event.0.clone());
-            Ok(self.0.map(|answer| ArgValue(Value::Data(json!(answer)))))
-        })
+fn answer(value: Option<&'static str>, heard: Arc<Mutex<Vec<Vec<Value>>>>) -> impl Listener<Args> {
+    move |event: Arc<Args>, _: Call<Args>| {
+        let heard = heard.clone();
+        async move {
+            heard.lock().unwrap().push(event.0.clone());
+            Ok(value.map(|answer| ArgValue(Value::Data(json!(answer)))))
+        }
     }
 }
 
@@ -266,8 +259,9 @@ async fn a_runtime_hears_what_is_elsewhere() {
     within("presence", async {
         let root = Ctx::root().unwrap();
         let heard = Arc::new(Mutex::new(Vec::new()));
-        root.events()
-            .on(&root, &key("t/before"), Answer(None, heard.clone()))
+        root.listen::<Args>()
+            .name("t/before")
+            .on(answer(None, heard.clone()))
             .unwrap();
         let rig = rig_with(root.clone(), Endpoint::rust(id("rt")))
             .await
@@ -275,8 +269,9 @@ async fn a_runtime_hears_what_is_elsewhere() {
         assert_eq!(rig.elsewhere()[0], json!({ "add": ["t/before"] }));
 
         let later = root
-            .events()
-            .on(&root, &key("t/later"), Answer(None, heard.clone()))
+            .listen::<Args>()
+            .name("t/later")
+            .on(answer(None, heard.clone()))
             .unwrap();
         // Queued before `on` returned.
         eventually(|| rig.elsewhere().len() == 2, "t/later").await;
@@ -301,18 +296,13 @@ impl Event for Created {
     type Value = String;
 }
 
-struct Typed(Arc<Mutex<Vec<Created>>>);
-impl Listener<Created> for Typed {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a Created,
-        _: Call<'a, String>,
-    ) -> BoxFuture<'a, Result<Option<String>, CordisError>> {
-        Box::pin(async move {
-            self.0.lock().unwrap().push(event.clone());
+fn typed(seen: Arc<Mutex<Vec<Created>>>) -> impl Listener<Created> {
+    move |event: Arc<Created>, _: Call<Created>| {
+        let seen = seen.clone();
+        async move {
+            seen.lock().unwrap().push((*event).clone());
             Ok(Some(format!("rust saw {}", event.0)))
-        })
+        }
     }
 }
 
@@ -337,16 +327,7 @@ async fn dispatches_cross_between_host_and_runtime() {
         )
         .await;
         // Host -> runtime: typed, two arguments.
-        let result = rig
-            .root
-            .events()
-            .serial(
-                &rig.root,
-                &EventKey::<Created>::of(),
-                Arc::new(Created("x".into(), 3)),
-            )
-            .await
-            .unwrap();
+        let result = rig.root.serial(Created("x".into(), 3)).await.unwrap();
         assert_eq!(result, None, "false is no result");
         let call = rig.fake.calls.lock().unwrap()[0].clone();
         assert_eq!(call["listener"], Value::Data(json!("1")));
@@ -359,11 +340,8 @@ async fn dispatches_cross_between_host_and_runtime() {
         assert_eq!(call["signal"], Value::Signal);
 
         // Runtime -> host -> both: the runtime's first, then the host's.
-        let typed = Arc::new(Mutex::new(Vec::new()));
-        rig.root
-            .events()
-            .on(&rig.root, &EventKey::<Created>::of(), Typed(typed.clone()))
-            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        rig.root.on(typed(seen.clone())).unwrap();
         let result = rig
             .dispatch(
                 Some("chat"),
@@ -375,7 +353,7 @@ async fn dispatches_cross_between_host_and_runtime() {
             .await
             .unwrap();
         assert_eq!(result, Value::Data(json!("rust saw y")));
-        assert_eq!(typed.lock().unwrap()[0], Created("y".into(), 4));
+        assert_eq!(seen.lock().unwrap()[0], Created("y".into(), 4));
         let own = rig.fake.calls.lock().unwrap()[1].clone();
         assert_eq!(own["own"], Value::Data(json!(true)));
     })
@@ -408,8 +386,9 @@ async fn rows_dispatch_and_hear_by_name() {
         .await;
         let heard = Arc::new(Mutex::new(Vec::new()));
         rig.root
-            .events()
-            .on(&rig.root, &key("t/x"), Answer(Some("host"), heard.clone()))
+            .listen::<Args>()
+            .name("t/x")
+            .on(answer(Some("host"), heard.clone()))
             .unwrap();
         // From t1: every listener of the name hears it, whatever its scope.
         let result = rig
@@ -417,15 +396,21 @@ async fn rows_dispatch_and_hear_by_name() {
             .await
             .unwrap();
         assert_eq!(result, Value::Undefined);
-        let listeners: Vec<Json> = rig
+        let mut listeners: Vec<String> = rig
             .fake
             .calls
             .lock()
             .unwrap()
             .iter()
-            .map(|call| call["listener"].clone().json().unwrap())
+            .map(|call| call["listener"].clone().json().unwrap().to_string())
             .collect();
-        assert_eq!(listeners, vec![json!("in-t2"), json!("at-root")]);
+        // `parallel` starts the calls together: they reach the runtime in
+        // either order.
+        listeners.sort();
+        assert_eq!(
+            listeners,
+            vec![json!("at-root").to_string(), json!("in-t2").to_string()]
+        );
         assert_eq!(heard.lock().unwrap().len(), 1);
 
         let error = rig
@@ -454,16 +439,14 @@ async fn the_filter_runs_in_the_emitters_process() {
         rig.load("chat", &[]).await;
         let heard = Arc::new(Mutex::new(Vec::new()));
         rig.root
-            .events()
-            .on(&rig.root, &key("t/f"), Answer(Some("kept"), heard.clone()))
+            .listen::<Args>()
+            .name("t/f")
+            .on(answer(Some("kept"), heard.clone()))
             .unwrap();
         rig.root
-            .events()
-            .on(
-                &rig.root,
-                &key("t/f"),
-                Answer(Some("dropped"), heard.clone()),
-            )
+            .listen::<Args>()
+            .name("t/f")
+            .on(answer(Some("dropped"), heard.clone()))
             .unwrap();
         let seen: Arc<Mutex<Vec<Json>>> = Arc::default();
         let recorded = seen.clone();
@@ -517,7 +500,7 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
         let into = lines.clone();
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::current(),
-            Arc::new(move |error: Arc<CordisError>| {
+            Arc::new(move |error: Arc<ErrorKind>| {
                 if let Some(line) = rutis_bridge::events::report_line(&error) {
                     into.lock().unwrap().push(line);
                 }
@@ -527,8 +510,9 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
         rig.load("chat", &[]).await;
         let heard = Arc::new(Mutex::new(Vec::new()));
         rig.root
-            .events()
-            .on(&rig.root, &key("t/fe"), Answer(None, heard.clone()))
+            .listen::<Args>()
+            .name("t/fe")
+            .on(answer(None, heard.clone()))
             .unwrap();
         let throws = Value::callback(|_| {
             Err(Error::Remote {
@@ -565,7 +549,7 @@ async fn an_unloaded_row_lets_go_of_its_emit_whose_filter_never_answers() {
         let into = lines.clone();
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::current(),
-            Arc::new(move |error: Arc<CordisError>| {
+            Arc::new(move |error: Arc<ErrorKind>| {
                 into.lock()
                     .unwrap()
                     .push(rutis_bridge::events::report_line(&error).unwrap_or_default());
@@ -576,8 +560,9 @@ async fn an_unloaded_row_lets_go_of_its_emit_whose_filter_never_answers() {
         rig.load("other", &[]).await;
         let heard = Arc::new(Mutex::new(Vec::new()));
         rig.root
-            .events()
-            .on(&rig.root, &key("t/h"), Answer(None, heard.clone()))
+            .listen::<Args>()
+            .name("t/h")
+            .on(answer(None, heard.clone()))
             .unwrap();
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = asked.clone();
@@ -654,8 +639,8 @@ async fn entries_leave_with_their_row_and_their_session() {
             .await;
         let serial = || async {
             rig.root
-                .events()
-                .serial(&rig.root, &key("t/l"), args(&[]))
+                .named("t/l")
+                .serial(args(&[]))
                 .await
                 .map(|value| value.map(|value| value.0))
         };
@@ -802,16 +787,8 @@ async fn reserved_and_internal_names_are_refused() {
     .await;
 }
 
-struct SyncAnswer;
-impl SyncListener<Args> for SyncAnswer {
-    fn call(
-        &self,
-        _: &Ctx,
-        _: &Args,
-        _: SyncCall<'_, ArgValue>,
-    ) -> Result<Option<ArgValue>, CordisError> {
-        Ok(Some(ArgValue(Value::Data(json!("sync host")))))
-    }
+fn sync_answer(_: Arc<Args>, _: SyncCall<'_, Args>) -> Result<Option<ArgValue>, RutisError> {
+    Ok(Some(ArgValue(Value::Data(json!("sync host")))))
 }
 
 /// guarantee: events/hub-bail
@@ -827,12 +804,10 @@ async fn bail_is_synchronous_everywhere() {
         rig.on("s", "t/b", Some("chat"), "sync", answers(json!(null)))
             .await;
         let root = rig.root.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            root.events().bail_sync(&root, &key("t/b"), &Args(vec![]))
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        let result = tokio::task::spawn_blocking(move || root.named("t/b").bail(Args(vec![])))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result, None);
         assert_eq!(
             rig.fake.calls.lock().unwrap()[0]["mode"],
@@ -842,19 +817,18 @@ async fn bail_is_synchronous_everywhere() {
         rig.on("a", "t/b", Some("chat"), "async", answers(json!(null)))
             .await;
         let root = rig.root.clone();
-        let error = tokio::task::spawn_blocking(move || {
-            root.events().bail_sync(&root, &key("t/b"), &Args(vec![]))
-        })
-        .await
-        .unwrap()
-        .unwrap_err();
+        let error = tokio::task::spawn_blocking(move || root.named("t/b").bail(Args(vec![])))
+            .await
+            .unwrap()
+            .unwrap_err();
         assert_eq!(error.wire_name(), Some("AsyncListener"), "{error}");
 
         rig.process.unload_row("chat").await.unwrap();
         rig.load("chat", &[]).await;
         rig.root
-            .events()
-            .on_sync(&rig.root, &key("t/b2"), SyncAnswer)
+            .listen::<Args>()
+            .name("t/b2")
+            .on_sync(sync_answer)
             .unwrap();
         let result = rig
             .dispatch(Some("chat"), "t/b2", "bail", vec![], None)
@@ -897,11 +871,11 @@ async fn parallel_failures_are_aggregated_in_registration_order() {
             .await;
         let error = rig
             .root
-            .events()
-            .parallel(&rig.root, &key("t/p"), args(&[json!(1)]))
+            .named("t/p")
+            .parallel(args(&[json!(1)]))
             .await
             .unwrap_err();
-        let CordisError::ListenersFailed { name, errors } = &error else {
+        let ErrorKind::ListenersFailed { name, errors } = &*error else {
             panic!("{error:?}");
         };
         assert_eq!(name, "t/p");
@@ -911,15 +885,11 @@ async fn parallel_failures_are_aggregated_in_registration_order() {
         // Bytes: the runtime does not take them; each invocation fails.
         let error = rig
             .root
-            .events()
-            .parallel(
-                &rig.root,
-                &key("t/p"),
-                Arc::new(Args(vec![Value::Bytes(b"x".to_vec())])),
-            )
+            .named("t/p")
+            .parallel(Args(vec![Value::Bytes(b"x".to_vec())]))
             .await
             .unwrap_err();
-        let CordisError::ListenersFailed { errors, .. } = &error else {
+        let ErrorKind::ListenersFailed { errors, .. } = &*error else {
             panic!("{error:?}");
         };
         assert_eq!(errors.len(), 2);
@@ -932,16 +902,16 @@ async fn parallel_failures_are_aggregated_in_registration_order() {
 
 /// Captures the context it is applied in.
 struct Owner(Mutex<Option<tokio::sync::oneshot::Sender<Ctx>>>);
-impl rutis::Plugin for Owner {
+impl rutis::host::DynPlugin for Owner {
     fn name(&self) -> &str {
         "owner"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<rutis::host::Effect, RutisError>> {
         Box::pin(async move {
             if let Some(sender) = self.0.lock().unwrap().take() {
                 let _ = sender.send(ctx.clone());
             }
-            Ok(rutis::Effect::Done)
+            Ok(rutis::host::Effect::Done)
         })
     }
 }
@@ -959,7 +929,7 @@ async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
     let into = errors.clone();
     let root = Ctx::root_with_sink(
         tokio::runtime::Handle::current(),
-        Arc::new(move |error: Arc<CordisError>| into.lock().unwrap().push(error.to_string())),
+        Arc::new(move |error: Arc<ErrorKind>| into.lock().unwrap().push(error.to_string())),
     );
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let view = root.plugin(Owner(Mutex::new(Some(sender))));
@@ -975,12 +945,7 @@ async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
     )
     .await;
     let emitter = root.clone();
-    let parallel = tokio::spawn(async move {
-        emitter
-            .events()
-            .parallel(&emitter, &key("t/hang"), args(&[]))
-            .await
-    });
+    let parallel = tokio::spawn(async move { emitter.named("t/hang").parallel(args(&[])).await });
     eventually(
         || !rig.fake.calls.lock().unwrap().is_empty(),
         "the call reached the runtime",
@@ -1042,16 +1007,9 @@ async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
 async fn args_events_need_a_name() {
     let root = Ctx::root().unwrap();
     let message = "Args events need a name: EventKey::dynamic(name)";
-    let emitted = root
-        .events()
-        .emit(&root, &EventKey::<Args>::of(), args(&[]))
-        .unwrap_err();
+    let emitted = root.emit(args(&[])).unwrap_err();
     assert_eq!(emitted.to_string(), message);
-    let refused = root
-        .events()
-        .on(&root, &EventKey::<Args>::of(), Answer(None, Arc::default()))
-        .err()
-        .unwrap();
+    let refused = root.on(answer(None, Arc::default())).err().unwrap();
     assert_eq!(refused.to_string(), message);
     // The session error a runtime gets: `to_session_error` is exported only
     // with the `testing` feature.

@@ -27,7 +27,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::channel::{Channel, ChannelError, Closer, PeerId, Receiver};
@@ -164,8 +166,8 @@ impl AccessPointPlugin {
         Self {
             label: format!("rutis-bridge/access-point#{}", config.name),
             injects: [
-                transport_key(&config.transport),
-                admission_key(&config.admission),
+                transport_key(&config.transport).erase(),
+                admission_key(&config.admission).erase(),
             ],
             accept: None,
             events: broadcast::channel(64).0,
@@ -186,24 +188,27 @@ impl AccessPointPlugin {
     }
 }
 
-impl Plugin for AccessPointPlugin {
+impl DynPlugin for AccessPointPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let failed =
-                |what: String| CordisError::PluginFailed(format!("{}: {what}", self.label).into());
+            let failed = |what: String| {
+                rutis::Error::from(ErrorKind::PluginFailed(
+                    format!("{}: {what}", self.label).into(),
+                ))
+            };
             let transport = ctx
-                .get_as::<dyn Transport>(self.injects[0].clone())
+                .get_key::<dyn Transport>(self.injects[0].clone())
                 .ok_or_else(|| failed("the transport is not provided".into()))?;
             let admission = ctx
-                .get_as::<dyn Admission>(self.injects[1].clone())
+                .get_key::<dyn Admission>(self.injects[1].clone())
                 .ok_or_else(|| failed("the admission is not provided".into()))?;
             let (sender, mut delivered) = mpsc::unbounded_channel::<Channel>();
             let registered = transport
@@ -253,15 +258,11 @@ impl Plugin for AccessPointPlugin {
                 // up, also one stopped half-way through a takeover.
                 while connections.join_next().await.is_some() {}
             });
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        drop(registered);
-                        let _ = stop.send(true);
-                        let _ = task.await;
-                        Ok(())
-                    })
-                }))
+            ctx.effect(move || async move {
+                drop(registered);
+                let _ = stop.send(true);
+                let _ = task.await;
+                Ok(())
             })?;
             Ok(Effect::Done)
         })

@@ -11,13 +11,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::runtimes::{go_binary, layer, repo, row_state, Llm, Probe};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Chain, GoBinaries, GoResolver, GoRuntimes, Loader, LoaderOptions, LoaderPlugin,
-    RuntimeResolver, RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_bridge::session::host_key;
+use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
 
@@ -116,7 +116,7 @@ struct Fixture {
     root: Ctx,
     loader: Loader,
     probe: Probe,
-    go: rutis_loader::GoRuntimesHandle,
+    go: rutis_loader::runtime::go::GoRuntimesHandle,
     js: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -148,7 +148,7 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in ["probe", "llm", "py_weather", "js_weather", "go_weather"] {
@@ -376,7 +376,7 @@ async fn injected_services_gate_a_go_plugin() {
     assert_eq!(row_state(loader, "gg"), Some(FiberState::Pending));
     let llm = fixture
         .root
-        .provide_as::<dyn HostDispatch>(host_key("llm"), Arc::new(Llm))
+        .provide_at(host_key("llm"), Arc::new(Llm))
         .unwrap();
     fixture.probe.wait_for("go gated: 42").await;
     // It did not start before `llm`: its fibers loaded once, for it. An

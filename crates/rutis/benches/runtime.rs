@@ -3,17 +3,18 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::{Ctx, Error};
 
 struct Store(u64);
 
 /// Provides `Store`.
 struct Provider;
-impl Plugin for Provider {
+impl DynPlugin for Provider {
     fn name(&self) -> &str {
         "bench-provider"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.provide(Store(1))?;
             Ok(Effect::Done)
@@ -23,14 +24,14 @@ impl Plugin for Provider {
 
 /// Depends on `Store` and reads it once; keeps its context for later reads.
 struct Consumer([TypeKey; 1], std::sync::Mutex<Option<Ctx>>);
-impl Plugin for Consumer {
+impl DynPlugin for Consumer {
     fn name(&self) -> &str {
         "bench-consumer"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             black_box(ctx.require::<Store>()?.0);
             *self.1.lock().unwrap() = Some(ctx.clone());
@@ -105,25 +106,25 @@ fn main() {
 
 /// A plugin with no dependencies and no services.
 struct Provider2;
-impl Plugin for Provider2 {
+impl DynPlugin for Provider2 {
     fn name(&self) -> &str {
         "bench-plain"
     }
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
 
 /// Mounts a shared consumer, so the bench can keep its context.
 struct ConsumerRef(std::sync::Arc<Consumer>);
-impl Plugin for ConsumerRef {
+impl DynPlugin for ConsumerRef {
     fn name(&self) -> &str {
         self.0.name()
     }
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         self.0.injects()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         self.0.apply(ctx)
     }
 }

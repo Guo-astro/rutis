@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use common::runtimes::Probe;
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
-};
+use rutis_bridge::session::host_key;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::json;
 
 fn plugin(version: &str) -> String {
@@ -31,7 +31,7 @@ async fn reloading_a_row_runs_the_edited_module() {
     std::fs::write(&module, plugin("v1")).unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("probe"), Arc::new(probe.clone()))
+    root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
     let python = LocalRuntime::python(dir.path()).python_path(sdk);

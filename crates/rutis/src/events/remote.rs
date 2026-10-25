@@ -16,13 +16,14 @@
 //! remote entry of kind [`ListenerKind::Async`] is never called by them:
 //! the dispatch fails with `AsyncListener`.
 
+use crate::error::ErrorKind;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
 use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Value};
 use crate::bus::run::Inv;
 use crate::error::NextMisuse;
-use crate::{BoxFuture, CordisError, Ctx};
+use crate::{BoxFuture, Ctx, Error};
 
 /// A listener whose calls go to an external dispatcher.
 pub trait RemoteListener: Send + Sync + 'static {
@@ -36,13 +37,10 @@ pub trait RemoteListener: Send + Sync + 'static {
     /// frame written eagerly inside `call` keeps the start order. Dropping
     /// the future cancels the call (protocol spec §5.7). In `emit`, an error
     /// is reported to the error sink.
-    fn call<'a>(
-        &'a self,
-        call: RemoteCall<'a>,
-    ) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
+    fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>>;
 
     /// One call by `bail` or `waterfall-sync`, on the dispatching thread.
-    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, CordisError>;
+    fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, Error>;
 
     /// The id its session knows it by (a runtime's `events.on` id), which a
     /// batch filter gets with its descriptor ([`Candidate::id`]).
@@ -117,7 +115,7 @@ impl<'a> RemoteSyncCall<'a> {
     }
 }
 
-type NextReply = tokio::sync::oneshot::Sender<Result<Option<Value>, CordisError>>;
+type NextReply = tokio::sync::oneshot::Sender<Result<Option<Value>, Error>>;
 
 /// The rest of an async waterfall, for a remote entry. `'static`: it can
 /// be handed out as a function reference. The first call runs the rest of
@@ -131,10 +129,12 @@ pub struct RemoteNext {
 }
 
 impl RemoteNext {
-    pub fn call(&self) -> BoxFuture<'static, Result<Option<Value>, CordisError>> {
-        let misuse = |misuse| CordisError::WaterfallNext {
-            name: self.name.to_string(),
-            misuse,
+    pub fn call(&self) -> BoxFuture<'static, Result<Option<Value>, Error>> {
+        let misuse = |misuse| {
+            Error::from(ErrorKind::WaterfallNext {
+                name: self.name.to_string(),
+                misuse,
+            })
         };
         if self.called.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return Box::pin(std::future::ready(Err(misuse(NextMisuse::AlreadyCalled))));
@@ -148,7 +148,7 @@ impl RemoteNext {
     }
 }
 
-pub(crate) type SyncNextFn = dyn Fn() -> Result<Option<Value>, CordisError>;
+pub(crate) type SyncNextFn = dyn Fn() -> Result<Option<Value>, Error>;
 
 pub(crate) struct SyncNextState {
     /// The rest of the chain on the dispatching thread's stack; `None` once
@@ -173,23 +173,23 @@ pub struct RemoteSyncNext {
 }
 
 impl RemoteSyncNext {
-    pub fn call(&self) -> Result<Option<Value>, CordisError> {
-        let misuse = |misuse| CordisError::WaterfallNext {
+    pub fn call(&self) -> Result<Option<Value>, Error> {
+        let misuse = |misuse| ErrorKind::WaterfallNext {
             name: self.name.to_string(),
             misuse,
         };
         let run = {
             let mut state = self.state.lock().unwrap();
             if state.called {
-                return Err(misuse(NextMisuse::AlreadyCalled));
+                return Err(misuse(NextMisuse::AlreadyCalled).into());
             }
             match state.run {
                 Some(run) if state.thread == std::thread::current().id() => {
                     state.called = true;
                     run
                 }
-                Some(_) => return Err(misuse(NextMisuse::OtherThread)),
-                None => return Err(misuse(NextMisuse::Ended)),
+                Some(_) => return Err(misuse(NextMisuse::OtherThread).into()),
+                None => return Err(misuse(NextMisuse::Ended).into()),
             }
         };
         // SAFETY: see `SyncNextState`: same thread, and `run` is still set,
@@ -198,7 +198,7 @@ impl RemoteSyncNext {
     }
 }
 
-/// A remote entry to register with [`EventBus::on_remote`](crate::EventBus::on_remote).
+/// A remote entry to register with [`EventBus::on_remote`](crate::internal::EventBus::on_remote).
 #[derive(Debug, Clone)]
 pub struct RemoteEntry {
     /// The event name, or the prefix when `prefix`.
@@ -214,10 +214,10 @@ pub struct RemoteEntry {
     pub origin: u64,
 }
 
-/// A table entry, as [`EventBus::watch_table`](crate::EventBus::watch_table) reports it.
+/// A table entry, as [`EventBus::watch_table`](crate::internal::EventBus::watch_table) reports it.
 #[derive(Debug, Clone)]
 pub struct TableEntry {
-    /// Stable for the entry's life; [`EventBus::invoke_entry`](crate::EventBus::invoke_entry) takes it.
+    /// Stable for the entry's life; [`EventBus::invoke_entry`](crate::internal::EventBus::invoke_entry) takes it.
     pub id: u64,
     pub name: String,
     pub prefix: bool,
@@ -241,9 +241,9 @@ pub enum TableChange {
 
 /// What a batch filter answers: one `bool` per listener, `true` = deliver.
 pub enum FilterAnswer {
-    Ready(Result<Vec<bool>, CordisError>),
+    Ready(Result<Vec<bool>, Error>),
     /// Not allowed in `bail` / `waterfall-sync`.
-    Pending(BoxFuture<'static, Result<Vec<bool>, CordisError>>),
+    Pending(BoxFuture<'static, Result<Vec<bool>, Error>>),
 }
 
 /// One listener a batch filter is asked about.
@@ -268,14 +268,11 @@ pub type BatchFilter = Box<dyn FnOnce(Vec<Candidate>) -> FilterAnswer + Send>;
 pub enum RawTerminal {
     Async(
         Box<
-            dyn for<'p> FnOnce(
-                    PayloadRef<'p>,
-                )
-                    -> BoxFuture<'static, Result<Option<Value>, CordisError>>
+            dyn for<'p> FnOnce(PayloadRef<'p>) -> BoxFuture<'static, Result<Option<Value>, Error>>
                 + Send,
         >,
     ),
-    Sync(Box<dyn for<'p> FnOnce(PayloadRef<'p>) -> Result<Option<Value>, CordisError> + Send>),
+    Sync(Box<dyn for<'p> FnOnce(PayloadRef<'p>) -> Result<Option<Value>, Error> + Send>),
 }
 
 /// A dispatch whose event is only known erased: what a host dispatches on

@@ -3,8 +3,10 @@
 
 use super::*;
 use crate::ctx::Ctx;
-use crate::error::CordisError;
-use crate::events::{Call, Event, Listener, SyncCall};
+use crate::error::Error;
+use crate::events::Event;
+use crate::host::CtxHost;
+use crate::internal::CtxInternal;
 use crate::BoxFuture;
 use std::time::Duration;
 
@@ -17,11 +19,11 @@ impl Event for Ping {
 }
 
 struct Capture(tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Ctx>>>);
-impl crate::Plugin for Capture {
+impl crate::DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture-sync-context"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let sender = self.0.lock().await.take().unwrap();
             assert!(sender.send(ctx.clone()).is_ok());
@@ -39,26 +41,23 @@ async fn thousand_subtrees_release_exact_and_prefix_entries() {
         let view = root.plugin(Capture(tokio::sync::Mutex::new(Some(sender))));
         (&view).await.unwrap();
         let ctx = receiver.await.unwrap();
-        let key = crate::EventKey::<Ping>::dynamic(format!("room/{i}"));
-        bus.on_sync(&ctx, &key, |_: &Ctx, _: &Ping, _: SyncCall<'_, ()>| {
-            Ok(None)
-        })
-        .unwrap();
-        bus.on_sync_pattern(
-            &ctx,
-            &crate::EventPattern::prefix("room/"),
-            |_: &Ctx, _: crate::EventKey<Ping>, _: &Ping, call: SyncCall<'_, ()>| {
+        let name = format!("room/{i}");
+        ctx.listen::<Ping>()
+            .name(name.clone())
+            .on_sync(|_, _| Ok(None))
+            .unwrap();
+        ctx.listen::<Ping>()
+            .prefix("room/")
+            .on_sync(|_, call| {
                 if call.mode().is_waterfall() {
                     call.next()
                 } else {
                     Ok(None)
                 }
-            },
-        )
-        .unwrap();
-        bus.bail_sync(&ctx, &key, &Ping).unwrap();
-        bus.waterfall_sync(&ctx, &key, &Ping, |_, _| Ok(None))
+            })
             .unwrap();
+        ctx.named(name.clone()).bail(Ping).unwrap();
+        ctx.named(name).waterfall_sync(Ping, |_| Ok(None)).unwrap();
         view.shutdown().await.unwrap();
         assert_eq!(bus.table_counts().0, 0);
         assert_eq!(bus.table_counts().1, 0);
@@ -66,29 +65,12 @@ async fn thousand_subtrees_release_exact_and_prefix_entries() {
     root.shutdown().await.unwrap();
 }
 
-struct Nop;
-
-impl Listener<Ping> for Nop {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _e: &'a Ping,
-        _: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
-}
-
-impl crate::PatternListener<Ping> for Nop {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        _: crate::EventKey<Ping>,
-        _: &'a Ping,
-        _: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(None) })
-    }
+/// A listener that does nothing.
+fn nop(
+    _: Arc<Ping>,
+    _: crate::events::Call<Ping>,
+) -> std::future::Ready<Result<Option<()>, Error>> {
+    std::future::ready(Ok(None))
 }
 
 #[tokio::test]
@@ -96,15 +78,8 @@ async fn thousand_prefix_entries_release_and_tails_prune() {
     let ctx = Ctx::root().unwrap();
     let bus = ctx.events().clone();
     for i in 0..1000 {
-        let listener = bus
-            .on_pattern(&ctx, &crate::EventPattern::prefix("ch/"), Nop)
-            .unwrap();
-        bus.emit(
-            &ctx,
-            &crate::EventKey::dynamic(format!("ch/{i}")),
-            Arc::new(Ping),
-        )
-        .unwrap();
+        let listener = ctx.listen::<Ping>().prefix("ch/").on(nop).unwrap();
+        ctx.named(format!("ch/{i}")).emit(Ping).unwrap();
         listener.dispose().await.unwrap();
         assert_eq!(bus.table_counts().0, 0);
     }
@@ -118,15 +93,10 @@ async fn named_channels_and_dispatch_tails_prune() {
     let bus = ctx.events().clone();
     for i in 0..25 {
         let name = format!("ch/{i}");
-        let listener = bus
-            .on::<Ping>(&ctx, &crate::EventKey::dynamic(name.clone()), Nop)
-            .unwrap();
-        bus.emit::<Ping>(
-            &ctx,
-            &crate::EventKey::dynamic(name.clone()),
-            Arc::new(Ping),
-        )
-        .expect("default event dispatch");
+        let listener = ctx.listen::<Ping>().name(name.clone()).on(nop).unwrap();
+        ctx.named(name.clone())
+            .emit(Ping)
+            .expect("default event dispatch");
         listener.dispose().await.unwrap();
     }
     for _ in 0..5_000 {
@@ -142,10 +112,9 @@ async fn named_channels_and_dispatch_tails_prune() {
     );
     assert!(bus.backlogs().is_empty());
     // 摘除后再次注册/派发同名仍工作(条目按需重建)
-    let listener = bus
-        .on::<Ping>(&ctx, &crate::EventKey::dynamic("ch/0"), Nop)
-        .unwrap();
-    bus.emit::<Ping>(&ctx, &crate::EventKey::dynamic("ch/0"), Arc::new(Ping))
+    let listener = ctx.listen::<Ping>().name("ch/0").on(nop).unwrap();
+    ctx.named("ch/0")
+        .emit(Ping)
         .expect("default event dispatch");
     listener.dispose().await.unwrap();
 }
@@ -174,16 +143,12 @@ fn an_emit_dropped_by_a_runtime_shutting_down_leaves_no_backlog() {
         .unwrap();
     let ctx = Ctx::root_with(runtime.handle().clone());
     let bus = ctx.events().clone();
-    let listener = runtime.block_on(async {
-        bus.on::<Ping>(&ctx, &crate::EventKey::dynamic("gone/1"), Nop)
-            .unwrap()
-    });
+    let listener = runtime.block_on(async { ctx.listen::<Ping>().name("gone/1").on(nop).unwrap() });
     // The root outlives its driver: its listener is still live.
     let root = ctx.root_view().unwrap();
     runtime.shutdown_timeout(Duration::from_secs(1));
     assert_eq!(bus.subscriptions().len(), 1);
-    bus.emit::<Ping>(&ctx, &crate::EventKey::dynamic("gone/1"), Arc::new(Ping))
-        .unwrap();
+    ctx.named("gone/1").emit(Ping).unwrap();
     assert!(bus.backlogs().is_empty(), "{:?}", bus.backlogs());
     std::mem::forget(root);
     assert_eq!(

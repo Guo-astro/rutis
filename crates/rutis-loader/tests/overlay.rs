@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use common::*;
-use rutis::{BoxFuture, FiberState};
-use rutis_loader::{
-    Builtins, Editable, EntryStatus, Layer, LoaderError, LoaderOptions, Resolved, Resolver,
-};
+use rutis::host::{BoxFuture, CtxHost, FiberState};
+use rutis_loader::edit::Editable;
+use rutis_loader::report::EntryStatus;
+use rutis_loader::resolve::Resolved;
+use rutis_loader::{Builtins, Layer, LoaderError, LoaderOptions, Resolver};
 use serde_json::json;
 
 /// guarantee: loader/overlay
@@ -149,7 +150,7 @@ async fn reload_is_all_or_nothing() {
 
 struct PlainEcho;
 
-impl rutis::PluginFactory<serde_json::Value> for PlainEcho {
+impl rutis::host::PluginFactory<serde_json::Value> for PlainEcho {
     fn name(&self) -> &str {
         "echo"
     }
@@ -157,14 +158,14 @@ impl rutis::PluginFactory<serde_json::Value> for PlainEcho {
     fn build(
         &self,
         _config: &serde_json::Value,
-    ) -> Result<Box<dyn rutis::Plugin>, rutis::CordisError> {
+    ) -> Result<Box<dyn rutis::host::DynPlugin>, rutis::Error> {
         Ok(Box::new(Quiet))
     }
 }
 
 struct Quiet;
 
-impl rutis::Plugin for Quiet {
+impl rutis::host::DynPlugin for Quiet {
     fn name(&self) -> &str {
         "quiet"
     }
@@ -172,8 +173,8 @@ impl rutis::Plugin for Quiet {
     fn apply<'a>(
         &'a self,
         _ctx: &'a rutis::Ctx,
-    ) -> BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-        Box::pin(async { Ok(rutis::Effect::Done) })
+    ) -> BoxFuture<'a, Result<rutis::host::Effect, rutis::Error>> {
+        Box::pin(async { Ok(rutis::host::Effect::Done) })
     }
 }
 

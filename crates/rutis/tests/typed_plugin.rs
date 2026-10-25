@@ -5,11 +5,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, DepKey, Deps, Effect, ErrorSink, FiberState, FiberStatusChanged,
-    FiberView, Gate, Keyed, KeyedGate, Listener, Plugin, TypeKey, Typed, TypedFactory, TypedPlugin,
-    TypedPluginFactory,
+use rutis::events::{Call, Listener};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, ErrorSink, FiberState, FiberStatusChanged,
+    FiberView, Key, TypeKey,
 };
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Deps, Error, Plugin};
 use rutis_test_support::within;
 use tokio::sync::Notify;
 
@@ -39,23 +41,20 @@ type Seen = Arc<Mutex<Vec<u32>>>;
 /// Requires `Llm`, takes `Logger` when present, waits for `Ready`.
 struct Chat(Seen);
 
-impl TypedPlugin for Chat {
-    type Deps = (Arc<Llm>, Option<Arc<Logger>>, Gate<Ready>);
+impl Plugin for Chat {
+    // `Ready` only gates: it is taken and left unused.
+    type Deps = (Arc<Llm>, Option<Arc<Logger>>, Arc<Ready>);
 
     fn name(&self) -> &str {
         "chat"
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        (llm, logger, _): Self::Deps,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _: &Ctx, (llm, logger, _): Self::Deps) -> rutis::Result {
         self.0
             .lock()
             .unwrap()
             .push(llm.0 + if logger.is_some() { 100 } else { 0 });
-        Box::pin(async { Ok(Effect::Done) })
+        Ok(())
     }
 }
 
@@ -63,7 +62,7 @@ impl TypedPlugin for Chat {
 async fn required_and_gate_dependencies_gate_optional_ones_do_not() {
     let ctx = Ctx::root().unwrap();
     let seen = Seen::default();
-    let plugin = Typed::new(Chat(seen.clone()));
+    let plugin = Chat(seen.clone());
     assert_eq!(
         plugin.injects(),
         [TypeKey::of::<Llm>(), TypeKey::of::<Ready>()]
@@ -85,7 +84,7 @@ async fn an_optional_dependency_is_passed_when_present() {
     ctx.provide(Logger).unwrap();
     ctx.provide(Ready).unwrap();
     let seen = Seen::default();
-    let view = ctx.plugin(Typed::new(Chat(seen.clone())));
+    let view = ctx.plugin(Chat(seen.clone()));
     soon(&view).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), [101]);
 }
@@ -96,7 +95,7 @@ async fn losing_a_required_dependency_evicts_and_the_next_one_is_passed() {
     ctx.provide(Ready).unwrap();
     let first = ctx.provide(Llm(1)).unwrap();
     let seen = Seen::default();
-    let view = ctx.plugin(Typed::new(Chat(seen.clone())));
+    let view = ctx.plugin(Chat(seen.clone()));
     soon(&view).await.unwrap();
 
     first.dispose().await.unwrap();
@@ -109,20 +108,16 @@ async fn losing_a_required_dependency_evicts_and_the_next_one_is_passed() {
 #[test]
 fn a_key_named_twice_gates_once() {
     struct Twice;
-    impl TypedPlugin for Twice {
-        type Deps = (Arc<Llm>, Option<Arc<Logger>>, Gate<Llm>, Arc<Llm>);
+    impl Plugin for Twice {
+        type Deps = (Arc<Llm>, Option<Arc<Logger>>, Arc<Llm>, Arc<Llm>);
         fn name(&self) -> &str {
             "twice"
         }
-        fn apply<'a>(
-            &'a self,
-            _: &'a Ctx,
-            _: Self::Deps,
-        ) -> BoxFuture<'a, Result<Effect, CordisError>> {
-            Box::pin(async { Ok(Effect::Done) })
+        async fn apply(&self, _: &Ctx, _: Self::Deps) -> rutis::Result {
+            Ok(())
         }
     }
-    assert_eq!(Typed::new(Twice).injects(), [TypeKey::of::<Llm>()]);
+    assert_eq!(Twice.injects(), [TypeKey::of::<Llm>()]);
 }
 
 // ── services behind trait objects ───────────────────────────────
@@ -141,21 +136,17 @@ trait Tracer: Send + Sync {}
 
 struct UsesModel(Seen);
 
-impl TypedPlugin for UsesModel {
+impl Plugin for UsesModel {
     type Deps = (Arc<dyn Model>, Option<Arc<dyn Tracer>>);
 
     fn name(&self) -> &str {
         "uses-model"
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        (model, tracer): Self::Deps,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _: &Ctx, (model, tracer): Self::Deps) -> rutis::Result {
         assert!(tracer.is_none());
         self.0.lock().unwrap().push(model.id());
-        Box::pin(async { Ok(Effect::Done) })
+        Ok(())
     }
 }
 
@@ -163,33 +154,43 @@ impl TypedPlugin for UsesModel {
 async fn trait_object_services_are_dependencies() {
     let ctx = Ctx::root().unwrap();
     let seen = Seen::default();
-    let view = ctx.plugin(Typed::new(UsesModel(seen.clone())));
+    let view = ctx.plugin(UsesModel(seen.clone()));
     let model: Arc<dyn Model> = Arc::new(Llm(5));
-    ctx.provide_as(TypeKey::of::<dyn Model>(), model).unwrap();
+    ctx.provide_as::<dyn Model>(model).unwrap();
     reach(&view, FiberState::Active).await;
     assert_eq!(*seen.lock().unwrap(), [5]);
 }
 
 // ── keys chosen when mounting ───────────────────────────────────
 
-struct Pair(Seen);
+/// Requires the `Llm` under `primary`, takes the one under `backup` when
+/// present, waits for the `Ready` under `ready`: a plugin that depends by
+/// name lists the keys in `injects` and reads them with `require_at`.
+struct Pair {
+    seen: Seen,
+    primary: Key<Llm>,
+    backup: Key<Llm>,
+    ready: Key<Ready>,
+}
 
-impl TypedPlugin for Pair {
-    type Deps = (Keyed<Llm>, Option<Keyed<Llm>>, KeyedGate<Ready>);
-
+impl DynPlugin for Pair {
     fn name(&self) -> &str {
         "pair"
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        (primary, backup, _): Self::Deps,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        let mut seen = self.0.lock().unwrap();
-        seen.push(primary.0 .0);
-        seen.extend(backup.map(|backup| backup.0 .0));
-        Box::pin(async { Ok(Effect::Done) })
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.primary.erase(), self.ready.erase()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let primary = ctx.require_at(&self.primary)?;
+            let backup = ctx.get_at(&self.backup);
+            let mut seen = self.seen.lock().unwrap();
+            seen.push(primary.0);
+            seen.extend(backup.map(|backup| backup.0));
+            Ok(Effect::Done)
+        })
     }
 }
 
@@ -197,12 +198,12 @@ impl TypedPlugin for Pair {
 async fn named_keys_are_chosen_when_mounting() {
     let ctx = Ctx::root().unwrap();
     let seen = Seen::default();
-    let keys = (
-        DepKey::named("primary"),
-        DepKey::dynamic(format!("backup-{}", 1)),
-        DepKey::named("ready"),
-    );
-    let plugin = Typed::with_keys(Pair(seen.clone()), keys);
+    let plugin = Pair {
+        seen: seen.clone(),
+        primary: Key::named("primary"),
+        backup: Key::dynamic(format!("backup-{}", 1)),
+        ready: Key::named("ready"),
+    };
     assert_eq!(
         plugin.injects(),
         [
@@ -217,11 +218,11 @@ async fn named_keys_are_chosen_when_mounting() {
     soon(&view).await.unwrap();
     assert_eq!(view.state().state, FiberState::Pending);
 
-    ctx.provide_as(TypeKey::keyed::<Llm>("primary"), Arc::new(Llm(1)))
+    ctx.provide_at(Key::<Llm>::named("primary"), Arc::new(Llm(1)))
         .unwrap();
-    ctx.provide_as(TypeKey::keyed::<Llm>("backup-1"), Arc::new(Llm(2)))
+    ctx.provide_at(Key::<Llm>::named("backup-1"), Arc::new(Llm(2)))
         .unwrap();
-    ctx.provide_as(TypeKey::keyed::<Ready>("ready"), Arc::new(Ready))
+    ctx.provide_at(Key::<Ready>::named("ready"), Arc::new(Ready))
         .unwrap();
     reach(&view, FiberState::Active).await;
     assert_eq!(*seen.lock().unwrap(), [1, 2]);
@@ -230,12 +231,12 @@ async fn named_keys_are_chosen_when_mounting() {
 /// Hands out the context of a fiber of its own (a new instance).
 struct Capture(Arc<Mutex<Option<Ctx>>>);
 
-impl Plugin for Capture {
+impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         *self.0.lock().unwrap() = Some(ctx.clone());
         Box::pin(async { Ok(Effect::Done) })
     }
@@ -252,20 +253,40 @@ async fn instance(parent: &Ctx) -> Ctx {
 /// Requires one `Llm`.
 struct One(Seen);
 
-impl TypedPlugin for One {
-    type Deps = Keyed<Llm>;
+impl Plugin for One {
+    type Deps = Arc<Llm>;
 
     fn name(&self) -> &str {
         "one"
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        llm: Keyed<Llm>,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        self.0.lock().unwrap().push(llm.0 .0);
-        Box::pin(async { Ok(Effect::Done) })
+    async fn apply(&self, _: &Ctx, llm: Arc<Llm>) -> rutis::Result {
+        self.0.lock().unwrap().push(llm.0);
+        Ok(())
+    }
+}
+
+/// [`One`] with the key of its `Llm` chosen when mounting.
+struct OneAt {
+    key: Key<Llm>,
+    seen: Seen,
+}
+
+impl DynPlugin for OneAt {
+    fn name(&self) -> &str {
+        "one"
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.key.erase()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let llm = ctx.require_at(&self.key)?;
+            self.seen.lock().unwrap().push(llm.0);
+            Ok(Effect::Done)
+        })
     }
 }
 
@@ -274,12 +295,18 @@ async fn instance_keys_resolve_inside_their_instance_only() {
     let root = Ctx::root().unwrap();
     let a = instance(&root).await;
     let b = instance(&root).await;
-    let key = DepKey::<Llm>::of().instance(a.instance());
-    a.provide_as(key.key().clone(), Arc::new(Llm(10))).unwrap();
+    let key = Key::<Llm>::of().instance(a.instance());
+    a.provide_at(key.clone(), Arc::new(Llm(10))).unwrap();
 
     let seen = Seen::default();
-    let inside = a.plugin(Typed::with_keys(One(seen.clone()), key.clone()));
-    let outside = b.plugin(Typed::with_keys(One(seen.clone()), key));
+    let inside = a.plugin(OneAt {
+        key: key.clone(),
+        seen: seen.clone(),
+    });
+    let outside = b.plugin(OneAt {
+        key,
+        seen: seen.clone(),
+    });
     soon(&inside).await.unwrap();
     soon(&outside).await.unwrap();
     assert_eq!(inside.state().state, FiberState::Active);
@@ -295,9 +322,9 @@ async fn isolated_scopes_pass_their_own_service() {
     scope.provide(Llm(1)).unwrap();
     ctx.provide(Llm(2)).unwrap();
     let seen = Seen::default();
-    let scoped = scope.plugin(Typed::new(One(seen.clone())));
+    let scoped = scope.plugin(One(seen.clone()));
     soon(&scoped).await.unwrap();
-    let shared = ctx.plugin(Typed::new(One(seen.clone())));
+    let shared = ctx.plugin(One(seen.clone()));
     soon(&shared).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), [1, 2]);
 }
@@ -307,12 +334,12 @@ async fn a_failing_check_keeps_the_plugin_pending() {
     let ctx = Ctx::root().unwrap();
     let healthy = Arc::new(AtomicBool::new(false));
     let check = healthy.clone();
-    ctx.provide_as_with_check(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
+    ctx.provide_checked(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
         check.load(Ordering::SeqCst)
     })
     .unwrap();
     let seen = Seen::default();
-    let view = ctx.plugin(Typed::new(One(seen.clone())));
+    let view = ctx.plugin(One(seen.clone()));
     soon(&view).await.unwrap();
     assert_eq!(view.state().state, FiberState::Pending);
     healthy.store(true, Ordering::SeqCst);
@@ -323,33 +350,19 @@ async fn a_failing_check_keeps_the_plugin_pending() {
 
 // ── factories ───────────────────────────────────────────────────
 
-/// Builds `Offset` plugins from a configured offset.
-struct OffsetFactory(Seen);
-
 struct Offset(u32, Seen);
 
-impl TypedPlugin for Offset {
-    type Deps = (Arc<Llm>, Gate<Ready>);
+impl Plugin for Offset {
+    // `Ready` only gates: it is taken and left unused.
+    type Deps = (Arc<Llm>, Arc<Ready>);
 
     fn name(&self) -> &str {
         "offset"
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        (llm, _): Self::Deps,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _: &Ctx, (llm, _): Self::Deps) -> rutis::Result {
         self.1.lock().unwrap().push(llm.0 + self.0);
-        Box::pin(async { Ok(Effect::Done) })
-    }
-}
-
-impl TypedPluginFactory<u32> for OffsetFactory {
-    type Plugin = Offset;
-
-    fn build(&self, offset: &u32) -> Result<Offset, CordisError> {
-        Ok(Offset(*offset, self.0.clone()))
+        Ok(())
     }
 }
 
@@ -357,8 +370,12 @@ impl TypedPluginFactory<u32> for OffsetFactory {
 async fn a_typed_factory_declares_from_the_same_description() {
     let ctx = Ctx::root().unwrap();
     let seen = Seen::default();
-    let factory = TypedFactory::new(OffsetFactory(seen.clone()));
-    let view = ctx.plugin_with(factory, 10u32);
+    // Builds `Offset` plugins from a configured offset.
+    let build_seen = seen.clone();
+    let view = ctx.plugin_from(
+        move |offset: &u32| Ok(Offset(*offset, build_seen.clone())),
+        10u32,
+    );
     ctx.provide(Llm(1)).unwrap();
     soon(&view).await.unwrap();
     assert_eq!(view.state().state, FiberState::Pending); // the gate is declared too
@@ -371,17 +388,10 @@ async fn a_typed_factory_declares_from_the_same_description() {
 // ── a dependency lost between the gate and the read ─────────────
 
 /// Records every state the fiber enters.
-struct States(Arc<Mutex<Vec<FiberState>>>);
-
-impl Listener<FiberStatusChanged> for States {
-    fn call<'a>(
-        &'a self,
-        _: &'a Ctx,
-        event: &'a FiberStatusChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        self.0.lock().unwrap().push(event.to);
-        Box::pin(async { Ok(None) })
+fn record_states(states: Arc<Mutex<Vec<FiberState>>>) -> impl Listener<FiberStatusChanged> {
+    move |event: Arc<FiberStatusChanged>, _: Call<FiberStatusChanged>| {
+        states.lock().unwrap().push(event.to);
+        std::future::ready(Ok(None))
     }
 }
 
@@ -408,25 +418,28 @@ impl LosesItsDependency {
     }
 }
 
-impl Plugin for LosesItsDependency {
+impl DynPlugin for LosesItsDependency {
     fn name(&self) -> &str {
         "loses-its-dependency"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let first = self.generations.fetch_add(1, Ordering::SeqCst) == 0;
             if first {
                 // Withdrawing the provider cancels this generation.
                 ctx.cancelled().await;
             }
-            let read = <Arc<Llm> as Deps>::resolve(&(), ctx);
+            let read = <Arc<Llm> as Deps>::resolve(ctx);
             if first {
-                assert!(matches!(read, Err(CordisError::InjectUnsatisfied(_))));
+                assert!(matches!(
+                    &read,
+                    Err(error) if matches!(&**error, ErrorKind::InjectUnsatisfied(_))
+                ));
                 self.read.notify_one();
                 if let Some(hold) = &self.hold {
                     hold.notified().await;
@@ -451,8 +464,7 @@ async fn lose_and_restore_in(ctx: Ctx, hold: bool) -> (Vec<u32>, Vec<FiberState>
     let read = plugin.read.clone();
     let view = ctx.plugin(plugin);
     reach(&view, FiberState::Loading).await;
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), States(states.clone()))
+    ctx.on::<FiberStatusChanged>(record_states(states.clone()))
         .unwrap();
 
     // The gate was open; the dependency goes before apply reads it. The
@@ -492,7 +504,7 @@ async fn a_dependency_back_before_the_failure_is_handled_still_reloads() {
 }
 
 /// A root whose ErrorSink records everything sent to it.
-fn root_with_recording_sink() -> (Ctx, Arc<Mutex<Vec<Arc<CordisError>>>>) {
+fn root_with_recording_sink() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
     let sunk = Arc::new(Mutex::new(Vec::new()));
     let sink: ErrorSink = {
         let sunk = sunk.clone();
@@ -600,22 +612,22 @@ impl UntypedLoss {
     }
 }
 
-impl Plugin for UntypedLoss {
+impl DynPlugin for UntypedLoss {
     fn name(&self) -> &str {
         "untyped-loss"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             if self.generations.fetch_add(1, Ordering::SeqCst) == 0 {
                 // Withdrawing the provider cancels this generation.
                 ctx.cancelled().await;
             }
-            let lost = || CordisError::InjectUnsatisfied(vec!["Llm".into()]);
+            let lost = || Error::from(ErrorKind::InjectUnsatisfied(vec!["Llm".into()]));
             let llm = match self.read {
                 Read::Get => ctx.get::<Llm>().ok_or_else(lost)?,
                 Read::Require => ctx.require::<Llm>().map_err(|_| lost())?,
@@ -632,12 +644,12 @@ impl Plugin for UntypedLoss {
 /// its subtree.)
 struct ProvidesLlm(u32);
 
-impl Plugin for ProvidesLlm {
+impl DynPlugin for ProvidesLlm {
     fn name(&self) -> &str {
         "provides-llm"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.provide(Llm(self.0))?;
             Ok(Effect::Done)
@@ -647,7 +659,7 @@ impl Plugin for ProvidesLlm {
 
 /// Mounts an [`UntypedLoss`], withdraws its `Llm` while the first
 /// generation loads, and returns the settled outcome of that load.
-async fn untyped_loss(read: Read) -> (Ctx, FiberView, Seen, Result<(), Arc<CordisError>>) {
+async fn untyped_loss(read: Read) -> (Ctx, FiberView, Seen, Result<(), Arc<ErrorKind>>) {
     let ctx = Ctx::root().unwrap();
     let provider = ctx.plugin(ProvidesLlm(1));
     within("the provider", (&provider).into_future())
@@ -703,14 +715,14 @@ async fn a_get_read_is_not_evidence_of_a_lost_dependency() {
     let (_ctx, view, seen, settled) = untyped_loss(Read::Get).await;
     let error = settled.expect_err("a get read does not count");
     assert!(
-        matches!(*error, CordisError::InjectUnsatisfied(_)),
+        matches!(*error, ErrorKind::InjectUnsatisfied(_)),
         "{error:?}"
     );
     assert_eq!(view.state().state, FiberState::Failed);
     assert!(seen.lock().unwrap().is_empty());
 }
 
-type Withdrawal = Arc<Mutex<Option<std::thread::JoinHandle<Result<(), Arc<CordisError>>>>>>;
+type Withdrawal = Arc<Mutex<Option<std::thread::JoinHandle<Result<(), Arc<ErrorKind>>>>>>;
 
 /// Withdraws its `Llm` while being validated, after the gate opened and
 /// before `apply` reads it.
@@ -721,14 +733,14 @@ struct WithdrawnWhileValidating {
     seen: Seen,
 }
 
-impl TypedPlugin for WithdrawnWhileValidating {
+impl Plugin for WithdrawnWhileValidating {
     type Deps = Arc<Llm>;
 
     fn name(&self) -> &str {
         "withdrawn-while-validating"
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         if let Some(disposer) = self.withdraw.lock().unwrap().take() {
             // From another thread: a task spawned here would wait in this
             // (blocked) worker's own slot.
@@ -745,13 +757,9 @@ impl TypedPlugin for WithdrawnWhileValidating {
         Ok(())
     }
 
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        llm: Arc<Llm>,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    async fn apply(&self, _: &Ctx, llm: Arc<Llm>) -> rutis::Result {
         self.seen.lock().unwrap().push(llm.0);
-        Box::pin(async { Ok(Effect::Done) })
+        Ok(())
     }
 }
 
@@ -761,12 +769,12 @@ async fn a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pendin
     let first = ctx.provide(Llm(1)).unwrap();
     let seen = Seen::default();
     let withdrawal = Withdrawal::default();
-    let view = ctx.plugin(Typed::new(WithdrawnWhileValidating {
+    let view = ctx.plugin(WithdrawnWhileValidating {
         ctx: ctx.clone(),
         withdraw: Mutex::new(Some(first)),
         withdrawal: withdrawal.clone(),
         seen: seen.clone(),
-    }));
+    });
     // Settles once the first load has been handled (it starts Pending).
     soon(&view).await.expect("back to Pending, not Failed");
     assert_eq!(view.state().state, FiberState::Pending);
@@ -785,16 +793,16 @@ async fn a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pendin
 /// evaluates the provider's check.
 struct Bystander(Vec<TypeKey>);
 
-impl Plugin for Bystander {
+impl DynPlugin for Bystander {
     fn name(&self) -> &str {
         "bystander"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.clone()
     }
 
-    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
@@ -811,25 +819,28 @@ struct HeldRead {
     injects: Vec<TypeKey>,
 }
 
-impl Plugin for HeldRead {
+impl DynPlugin for HeldRead {
     fn name(&self) -> &str {
         "held-read"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let first = self.generations.fetch_add(1, Ordering::SeqCst) == 0;
             if first {
                 self.entered.notify_one();
                 self.go.notified().await;
             }
-            let read = <Arc<Llm> as Deps>::resolve(&(), ctx);
+            let read = <Arc<Llm> as Deps>::resolve(ctx);
             if first {
-                assert!(matches!(read, Err(CordisError::InjectUnsatisfied(_))));
+                assert!(matches!(
+                    &read,
+                    Err(error) if matches!(&**error, ErrorKind::InjectUnsatisfied(_))
+                ));
                 self.read.notify_one();
                 self.hold.notified().await;
             }
@@ -845,7 +856,7 @@ async fn a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_i
     let states = Arc::new(Mutex::new(Vec::new()));
     let healthy = Arc::new(AtomicBool::new(true));
     let check = healthy.clone();
-    ctx.provide_as_with_check(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
+    ctx.provide_checked(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
         check.load(Ordering::SeqCst)
     })
     .unwrap();
@@ -869,8 +880,7 @@ async fn a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_i
     );
     let view = ctx.plugin(plugin);
     soon(entered.notified()).await;
-    ctx.events()
-        .on(&ctx, &rutis::EventKey::of(), States(states.clone()))
+    ctx.on::<FiberStatusChanged>(record_states(states.clone()))
         .unwrap();
 
     // Same binding, but its check now rejects; the bystander's refresh
@@ -897,17 +907,17 @@ async fn a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_i
 /// Claims a lost dependency without a failed read.
 struct FalseClaim(Vec<TypeKey>);
 
-impl Plugin for FalseClaim {
+impl DynPlugin for FalseClaim {
     fn name(&self) -> &str {
         "false-claim"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.0
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.clone()
     }
 
-    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async { Err(CordisError::InjectUnsatisfied(vec!["Llm".into()])) })
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async { Err(ErrorKind::InjectUnsatisfied(vec!["Llm".into()]).into()) })
     }
 }
 
@@ -917,7 +927,7 @@ async fn the_claim_without_a_failed_read_is_a_plain_failure() {
     ctx.provide(Llm(1)).unwrap();
     let view = ctx.plugin(FalseClaim(vec![TypeKey::of::<Llm>()]));
     let error = soon(&view).await.expect_err("fails instead of looping");
-    assert!(matches!(*error, CordisError::InjectUnsatisfied(_)));
+    assert!(matches!(*error, ErrorKind::InjectUnsatisfied(_)));
     assert_eq!(view.state().state, FiberState::Failed);
 }
 
@@ -926,18 +936,16 @@ async fn the_claim_without_a_failed_read_is_a_plain_failure() {
 /// Provides `Llm` to whoever asks, typed or not.
 struct Provider;
 
-impl TypedPlugin for Provider {
+impl Plugin for Provider {
     type Deps = ();
 
     fn name(&self) -> &str {
         "provider"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx, (): ()) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Llm(7))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide(Llm(7))?;
+        Ok(())
     }
 }
 
@@ -947,16 +955,16 @@ struct Untyped {
     injects: Vec<TypeKey>,
 }
 
-impl Plugin for Untyped {
+impl DynPlugin for Untyped {
     fn name(&self) -> &str {
         "untyped"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.clone()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             *self.got.lock().unwrap() = Some(ctx.require::<Llm>()?.0);
             Ok(Effect::Done)
@@ -973,8 +981,8 @@ async fn typed_and_untyped_plugins_depend_on_each_other() {
         injects: vec![TypeKey::of::<Llm>()],
     });
     let seen = Seen::default();
-    let typed = ctx.plugin(Typed::new(One(seen.clone())));
-    let provider = ctx.plugin(Typed::new(Provider));
+    let typed = ctx.plugin(One(seen.clone()));
+    let provider = ctx.plugin(Provider);
     soon(&provider).await.unwrap();
     reach(&untyped, FiberState::Active).await;
     reach(&typed, FiberState::Active).await;

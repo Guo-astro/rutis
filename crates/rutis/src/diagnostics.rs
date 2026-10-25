@@ -1,13 +1,14 @@
 //! Read-only snapshots of fiber ownership and service resolution.
 use std::sync::Arc;
 
-use crate::{CordisError, FiberState, InstanceId, PluginId, ServiceReadFailure, TypeKey};
+use crate::error::ErrorKind;
+use crate::{FiberState, InstanceId, PluginId, ServiceReadFailure, TypeKey};
 
 /// A read-only, best-effort view of live fibers and service bindings.
 ///
 /// Fields are collected under separate locks, so concurrent lifecycle changes
 /// can make entries reflect different moments. A retained snapshot does not
-/// update itself; call [`crate::Ctx::diagnostics`] again for a fresh view.
+/// update itself; call [`CtxHost::diagnostics`](crate::host::CtxHost::diagnostics) again for a fresh view.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RuntimeDiagnostics {
@@ -40,7 +41,7 @@ pub struct PluginDiagnostics {
     pub name: String,
     pub state: FiberState,
     pub generation: u64,
-    pub error: Option<Arc<CordisError>>,
+    pub error: Option<Arc<ErrorKind>>,
     pub injects: Vec<DependencyDiagnostics>,
     pub resolved_dependencies: Vec<ResolvedDependency>,
     pub accesses: Vec<ServiceAccess>,
@@ -129,9 +130,9 @@ pub struct ServiceChanged {
     pub provider: PluginId,
     pub generation: u64,
     pub change: ServiceChange,
-    /// The provider's scope chain on the logical bus ([`Ctx::scope`](crate::Ctx::scope)).
+    /// The provider's scope chain on the logical bus ([`CtxHost::scope`](crate::host::CtxHost::scope)).
     pub chain: Vec<crate::Scope>,
-    /// The row the provider belongs to ([`Ctx::row`](crate::Ctx::row)).
+    /// The row the provider belongs to ([`CtxHost::row`](crate::host::CtxHost::row)).
     pub row: Option<String>,
 }
 

@@ -16,6 +16,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
 use std::time::Duration;
 
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::{Launcher, LocalRuntime, Mount, Process, Stdio};
 

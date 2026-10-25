@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use rutis::{CordisError, Ctx, Effect};
+use rutis::host::{CtxHost, ErrorKind};
+use rutis::{Ctx, Error};
 use tokio::sync::{oneshot, Semaphore};
 
 #[tokio::test]
@@ -8,10 +9,10 @@ async fn taking_early_cleanup_errors_releases_them_and_excludes_unload() {
     let ctx = Ctx::root().unwrap();
     for _ in 0..128 {
         let disposer = ctx
-            .effect(|| {
-                Effect::Disposer(Box::new(|| {
-                    Err(CordisError::ServiceNotFound("early cleanup".into()))
-                }))
+            .effect(|| async {
+                Err(Error::from(ErrorKind::ServiceNotFound(
+                    "early cleanup".into(),
+                )))
             })
             .unwrap();
         let immediate = disposer.dispose().await.unwrap_err();
@@ -31,11 +32,7 @@ async fn taking_early_cleanup_errors_releases_them_and_excludes_unload() {
 async fn unconsumed_early_cleanup_error_reaches_unload_with_same_identity() {
     let ctx = Ctx::root().unwrap();
     let disposer = ctx
-        .effect(|| {
-            Effect::Disposer(Box::new(|| {
-                Err(CordisError::ServiceNotFound("unconsumed".into()))
-            }))
-        })
+        .effect(|| async { Err(Error::from(ErrorKind::ServiceNotFound("unconsumed".into()))) })
         .unwrap();
     let immediate = disposer.dispose().await.unwrap_err();
     let final_error = ctx.shutdown().await.unwrap_err();
@@ -51,15 +48,13 @@ async fn early_cleanup_and_owner_shutdown_assign_error_once() {
         let disposer = ctx
             .effect({
                 let release = release.clone();
-                move || {
-                    Effect::AsyncDisposer(Box::new(move || {
-                        Box::pin(async move {
-                            let _ = started_tx.send(());
-                            let permit = release.acquire().await.unwrap();
-                            permit.forget();
-                            Err(CordisError::ServiceNotFound("racing cleanup".into()))
-                        })
-                    }))
+                move || async move {
+                    let _ = started_tx.send(());
+                    let permit = release.acquire().await.unwrap();
+                    permit.forget();
+                    Err(Error::from(ErrorKind::ServiceNotFound(
+                        "racing cleanup".into(),
+                    )))
                 }
             })
             .unwrap();

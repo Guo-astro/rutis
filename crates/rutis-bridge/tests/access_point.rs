@@ -5,7 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, Ctx, FiberView, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, FiberView};
+use rutis::Ctx;
 use rutis_bridge::channel::{Channel, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
@@ -240,7 +241,7 @@ async fn runtimes_with_different_ids_each_get_their_own_session() {
         assert_eq!(whoami(&accepted).await, json!(who.as_str()));
     }
     // Nothing keyed by a connection id is provided in the application.
-    assert!(main.root.get_as::<Peer>(peer_key(&id("pixel"))).is_none());
+    assert!(main.root.get_at::<Peer>(&peer_key(&id("pixel"))).is_none());
     drop((pixel, tablet));
 }
 
@@ -361,7 +362,7 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
         .await
         .unwrap();
     eventually(
-        || main.root.get_as::<Peer>(peer_key(&id("mac"))),
+        || main.root.get_at::<Peer>(&peer_key(&id("mac"))),
         "the static link's peer",
     )
     .await;

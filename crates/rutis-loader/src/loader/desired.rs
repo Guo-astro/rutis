@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use rutis::{Ctx, TypeKey};
+use rutis::host::{CtxHost, TypeKey};
+use rutis::Ctx;
 use serde_json::Value;
 
 use crate::catalog::{ExprScope, Expressions, NameKey, ServiceCatalog};

@@ -4,9 +4,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, PluginFactory};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, PluginFactory};
+use rutis::{Ctx, Error};
 use rutis_dev::{AuditRecord, DevChannel, DevOptions};
-use rutis_loader::{Builtins, Layer, LoaderError, LoaderOptions, LoaderPlugin, Resolved, Resolver};
+use rutis_loader::resolve::Resolved;
+use rutis_loader::{Builtins, Layer, LoaderError, LoaderOptions, LoaderPlugin, Resolver};
 use rutis_test_support::within;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -16,19 +18,16 @@ use tokio::net::UnixStream;
 /// when given.
 struct Provider(u32, Option<String>);
 
-impl Plugin for Provider {
+impl DynPlugin for Provider {
     fn name(&self) -> &str {
         "provider"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             match &self.1 {
                 None => ctx.provide(self.0)?,
-                Some(key) => ctx.provide_as::<u32>(
-                    rutis::TypeKey::keyed_dynamic::<u32>(key.clone()),
-                    Arc::new(self.0),
-                )?,
+                Some(key) => ctx.provide_at(Key::<u32>::dynamic(key.clone()), Arc::new(self.0))?,
             };
             Ok(Effect::Done)
         })
@@ -42,7 +41,7 @@ impl PluginFactory<Value> for ProviderFactory {
         "provider"
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Provider(
             config["value"].as_u64().unwrap_or(0) as u32,
             config["key"].as_str().map(str::to_owned),

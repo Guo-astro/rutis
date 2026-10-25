@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::runtimes::{id, COLD};
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
@@ -20,9 +21,8 @@ use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
 use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
-use rutis_loader::{
-    Chain, Layer, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver, RuntimeRowsPlugin,
-};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 
@@ -109,7 +109,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
 
     let root = Ctx::root().unwrap();
     let clock = Clock::default();
-    root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(clock.clone()))
+    root.provide_at(host_key("clock"), Arc::new(clock.clone()))
         .unwrap();
     (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
         .await
@@ -148,7 +148,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
     // The row runs over there, and its service is here.
     let weather = COLD
         .eventually(
-            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            || root.get_at::<dyn HostDispatch>(&host_key("weather")),
             "the remote row's service",
         )
         .await;
@@ -161,7 +161,7 @@ async fn a_remote_python_runtime_runs_loader_rows() {
     runtime_process.start_kill().unwrap();
     COLD.eventually(
         || {
-            root.get_as::<dyn HostDispatch>(host_key("weather"))
+            root.get_at::<dyn HostDispatch>(&host_key("weather"))
                 .is_none()
                 .then_some(())
         },
@@ -243,7 +243,7 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
     });
 
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock::default()))
+    root.provide_at(host_key("clock"), Arc::new(Clock::default()))
         .unwrap();
     (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
         .await
@@ -284,7 +284,7 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         .unwrap();
     let weather = COLD
         .eventually(
-            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            || root.get_at::<dyn HostDispatch>(&host_key("weather")),
             "the remote npm row's service",
         )
         .await;
@@ -302,7 +302,7 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
             || {
                 let entry = loader.get("x")?;
                 match entry.status {
-                    rutis_loader::EntryStatus::Unresolved(error) => Some(error),
+                    rutis_loader::report::EntryStatus::Unresolved(error) => Some(error),
                     _ => None,
                 }
             },
@@ -334,7 +334,7 @@ async fn remote_rows_share_the_runtime_session() {
     let (_runtime_process, address) = remote_python(project.path()).await;
 
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(Clock::default()))
+    root.provide_at(host_key("clock"), Arc::new(Clock::default()))
         .unwrap();
     (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
         .await
@@ -373,13 +373,13 @@ async fn remote_rows_share_the_runtime_session() {
         .unwrap();
     let weather = COLD
         .eventually(
-            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            || root.get_at::<dyn HostDispatch>(&host_key("weather")),
             "weather",
         )
         .await;
     let second = COLD
         .eventually(
-            || root.get_as::<dyn HostDispatch>(host_key("second")),
+            || root.get_at::<dyn HostDispatch>(&host_key("second")),
             "second",
         )
         .await;
@@ -400,7 +400,7 @@ async fn remote_rows_share_the_runtime_session() {
         .unwrap();
     COLD.eventually(
         || {
-            root.get_as::<dyn HostDispatch>(host_key("weather"))
+            root.get_at::<dyn HostDispatch>(&host_key("weather"))
                 .is_none()
                 .then_some(())
         },
@@ -460,7 +460,7 @@ async fn a_runtime_link_can_listen() {
 
     let root = Ctx::root().unwrap();
     let clock = Clock::default();
-    root.provide_as::<dyn HostDispatch>(host_key("clock"), Arc::new(clock.clone()))
+    root.provide_at(host_key("clock"), Arc::new(clock.clone()))
         .unwrap();
     let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
         "public",
@@ -543,7 +543,7 @@ async fn a_runtime_link_can_listen() {
     // The runtime that came in runs the row, as one rutis dialed would.
     let weather = COLD
         .eventually(
-            || root.get_as::<dyn HostDispatch>(host_key("weather")),
+            || root.get_at::<dyn HostDispatch>(&host_key("weather")),
             "the remote row's service",
         )
         .await;
@@ -556,7 +556,7 @@ async fn a_runtime_link_can_listen() {
     relay.abort();
     COLD.eventually(
         || {
-            root.get_as::<dyn HostDispatch>(host_key("weather"))
+            root.get_at::<dyn HostDispatch>(&host_key("weather"))
                 .is_none()
                 .then_some(())
         },

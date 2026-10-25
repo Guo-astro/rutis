@@ -6,6 +6,11 @@ use serde_json::{Map, Value};
 use crate::patch::{apply_patches, truthy, ComposedRow, Layer, Owner, Patch};
 use crate::LoaderError;
 
+pub use crate::error::PersistError;
+pub use crate::loader::{CreateInstance, Editable, Instance, InstanceResult, NewEntry};
+pub use crate::persist::{NoPersist, Persist, Version};
+pub use crate::volatile::{volatile_key, volatile_paths, VolatileUpdate};
+
 /// One imperative edit. Edits are semantic, so they can be replayed on newer
 /// content after a version conflict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

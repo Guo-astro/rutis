@@ -192,8 +192,8 @@ impl Rutis {
             .into_iter()
             .filter(|entry| entry.id == id && entry.instance.is_some())
             .filter(|entry| {
-                matches!(&entry.status, rutis_loader::EntryStatus::Running(snapshot)
-                    if snapshot.state == rutis::FiberState::Active)
+                matches!(&entry.status, rutis_loader::report::EntryStatus::Running(snapshot)
+                    if snapshot.state == rutis::host::FiberState::Active)
             })
             .count()
     }
@@ -534,8 +534,8 @@ async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
     let failed = |id: &str| {
         rutis.host.loader.entries().into_iter().find_map(|entry| {
             match (&entry.status, entry.instance.is_some() && entry.id == id) {
-                (rutis_loader::EntryStatus::Running(snapshot), true)
-                    if snapshot.state == rutis::FiberState::Failed =>
+                (rutis_loader::report::EntryStatus::Running(snapshot), true)
+                    if snapshot.state == rutis::host::FiberState::Failed =>
                 {
                     snapshot.error.as_ref().map(|error| error.to_string())
                 }

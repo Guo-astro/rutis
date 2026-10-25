@@ -1,7 +1,9 @@
 use std::future::IntoFuture;
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, EffectPhase, Event, Listener, Plugin};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, EffectPhase, ErrorKind};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Error, Event};
 use tokio::sync::oneshot;
 
 #[tokio::test]
@@ -38,7 +40,7 @@ async fn named_effect_reports_actual_nested_cleanup_and_disappears_after_disposa
     assert_eq!(order.lock().unwrap().as_slice(), [3, 2, 1]);
     assert!(view.effects().iter().all(|effect| effect.label != "top"));
 
-    let anonymous = ctx.effect(|| Effect::Done).unwrap();
+    let anonymous = ctx.effect(|| async { Ok(()) }).unwrap();
     assert!(view
         .effects()
         .iter()
@@ -86,25 +88,25 @@ impl Event for Ping {
 
 struct Nop;
 
-impl Listener<Ping> for Nop {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _event: &'a Ping,
-        _call: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async { Ok(None) })
+impl Nop {
+    async fn on_event(
+        &self,
+        _ctx: &rutis::Ctx,
+        _event: &Ping,
+        _call: rutis::events::Call<Ping>,
+    ) -> Result<Option<()>, Error> {
+        Ok(None)
     }
 }
 
 struct NamedPlugin;
 
-impl Plugin for NamedPlugin {
+impl DynPlugin for NamedPlugin {
     fn name(&self) -> &str {
         "named-plugin"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.effect_named("child-owned", || Effect::Done)?;
             Ok(Effect::Done)
@@ -118,8 +120,16 @@ async fn framework_labels_and_child_ownership_follow_lifecycle() {
     let root_view = root.root_view().unwrap();
     let service = root.provide(7u64).unwrap();
     let listener = root
-        .events()
-        .on(&root, &rutis::EventKey::of(), Nop)
+        .on::<Ping>({
+            let __listener = std::sync::Arc::new(Nop);
+            move |event, call| {
+                let __listener = __listener.clone();
+                async move {
+                    let __ctx = call.ctx().clone();
+                    __listener.on_event(&__ctx, &event, call).await
+                }
+            }
+        })
         .unwrap();
     let effects = root_view.effects();
     assert!(effects
@@ -162,15 +172,17 @@ async fn framework_labels_and_child_ownership_follow_lifecycle() {
 
 struct FailingPlugin;
 
-impl Plugin for FailingPlugin {
+impl DynPlugin for FailingPlugin {
     fn name(&self) -> &str {
         "failing-plugin"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.effect_named("rollback", || Effect::Done)?;
-            Err(CordisError::PluginFailed("failure".into()))
+            Err(rutis::Error::from(ErrorKind::PluginFailed(
+                "failure".into(),
+            )))
         })
     }
 }

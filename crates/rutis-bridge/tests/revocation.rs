@@ -19,9 +19,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, EventKey, Listener, ServiceChange, ServiceChanged, TypeKey,
-};
+use rutis::events::{Call, Listener};
+use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
+use rutis::host::{BoxFuture, CtxHost, TypeKey};
+use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
 use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
@@ -170,7 +171,7 @@ async fn dial_with(address: &str, name: &str, token: &str, revocations: Revocati
 }
 
 fn peer(root: &Ctx, of: &str) -> Option<Arc<Peer>> {
-    root.get_as::<Peer>(peer_key(&id(of)))
+    root.get_at::<Peer>(&peer_key(&id(of)))
 }
 
 async fn ready(states: &watch::Receiver<LinkState>, what: &str) {
@@ -581,17 +582,16 @@ struct Provides {
     count: Arc<Mutex<usize>>,
 }
 
-impl Listener<ServiceChanged> for Provides {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        changed: &'a ServiceChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        if changed.change == ServiceChange::Provided && changed.key == self.key {
-            *self.count.lock().unwrap() += 1;
+impl Provides {
+    /// The listener that counts them.
+    fn listener(&self) -> impl Listener<ServiceChanged> {
+        let this = self.clone();
+        move |changed: Arc<ServiceChanged>, _: Call<ServiceChanged>| {
+            if changed.change == ServiceChange::Provided && changed.key == this.key {
+                *this.count.lock().unwrap() += 1;
+            }
+            std::future::ready(Ok(None))
         }
-        Box::pin(async { Ok(None) })
     }
 }
 
@@ -636,12 +636,10 @@ async fn a_far_end_revoked_while_it_greets_never_becomes_a_peer() {
     // and would miss a `Ready` replaced at once).
     let main = Ctx::root().unwrap();
     let provides = Provides {
-        key: peer_key(&id("far")),
+        key: peer_key(&id("far")).erase(),
         count: Arc::default(),
     };
-    main.events()
-        .on(&main, &EventKey::of(), provides.clone())
-        .unwrap();
+    main.on(provides.listener()).unwrap();
     (&main.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
         .await
         .unwrap();

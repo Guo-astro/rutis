@@ -12,7 +12,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rutis_loader::{Loader, ReconcileReport};
+use rutis_loader::report::ReconcileReport;
+use rutis_loader::Loader;
 
 use super::layers::{load, version_of, Profile, ProfileContext, SkipKind};
 

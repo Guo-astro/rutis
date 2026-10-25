@@ -24,10 +24,12 @@ use super::binary::{
 
 /// In every binary built with the Go SDK: only files containing it are run
 /// to read their manifest.
+#[doc(hidden)]
 pub const GO_MARKER: &[u8] = b"rutis-go-runtime:1";
 
 /// The plugin API of Go binaries this host runs, read from their manifests.
 /// The one definition: `rutis-host` uses it for the same check.
+#[doc(hidden)]
 pub const PLUGIN_API: u64 = 3;
 
 /// Go as a [`BinaryLanguage`].
@@ -77,6 +79,7 @@ pub type GoRuntimeInfo = BinaryRuntimeInfo;
 
 /// What the Go binary at `path` serves: it runs `path --rutis-manifest`
 /// (within 30 s).
+#[doc(hidden)]
 pub fn read_go_manifest(path: &Path) -> Result<GoManifest, String> {
     read_binary_manifest(path)
 }

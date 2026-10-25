@@ -5,7 +5,8 @@
 use std::sync::{Arc, Mutex};
 
 use dsh_baseline::persona::{self, PromptSection, SystemPromptHostGetSectionOrderName as Order};
-use rutis::{Ctx, FiberState};
+use rutis::host::*;
+use rutis::Ctx;
 use rutis_bridge::session::Error;
 use rutis_bridge::session::Value;
 
@@ -80,12 +81,7 @@ async fn persona_uses_the_system_prompt_the_rutis_host_provides() {
     );
 
     // The host emits its change event into Cordis like the native registry.
-    ctx.events()
-        .parallel(
-            &ctx,
-            &rutis::EventKey::<dsh_baseline::events::SystemPromptChange>::of(),
-            std::sync::Arc::new(dsh_baseline::events::SystemPromptChange),
-        )
+    ctx.parallel(dsh_baseline::events::SystemPromptChange)
         .await
         .unwrap();
 

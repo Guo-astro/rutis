@@ -8,7 +8,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, ServiceIntercept, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::internal::{CtxInternal, ServiceIntercept};
+use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, decode_value, Error};
 use rutis_test_support::{until, within};
@@ -58,11 +60,11 @@ struct Mount {
     process: Shared,
 }
 
-impl Plugin for Mount {
+impl DynPlugin for Mount {
     fn name(&self) -> &str {
         "projection-lifecycle"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let projection = Projection::new();
             projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
@@ -76,13 +78,9 @@ impl Plugin for Mount {
             .await?;
             let owner = process.clone();
             let followed = projection.clone();
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        followed.close();
-                        owner.dispose().await.map_err(Into::into)
-                    })
-                }))
+            ctx.effect(move || async move {
+                followed.close();
+                owner.dispose().await.map_err(Into::into)
             })?;
             *self.process.lock().unwrap() = Some(process.clone());
             projection.attach(ctx, process)?;
@@ -91,7 +89,7 @@ impl Plugin for Mount {
     }
 }
 
-async fn mounted() -> (tempfile::NamedTempFile, Ctx, rutis::FiberView, Shared) {
+async fn mounted() -> (tempfile::NamedTempFile, Ctx, rutis::host::FiberView, Shared) {
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(COUNTER.as_bytes()).unwrap();
     let ctx = Ctx::root().unwrap();
@@ -281,11 +279,11 @@ struct PairMount {
     process: Shared,
 }
 
-impl Plugin for PairMount {
+impl DynPlugin for PairMount {
     fn name(&self) -> &str {
         "projection-pair"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let projection = Projection::new();
             projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
@@ -300,13 +298,9 @@ impl Plugin for PairMount {
             .await?;
             let owner = process.clone();
             let followed = projection.clone();
-            ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        followed.close();
-                        owner.dispose().await.map_err(Into::into)
-                    })
-                }))
+            ctx.effect(move || async move {
+                followed.close();
+                owner.dispose().await.map_err(Into::into)
             })?;
             *self.process.lock().unwrap() = Some(process.clone());
             projection.attach(ctx, process)?;
@@ -315,7 +309,12 @@ impl Plugin for PairMount {
     }
 }
 
-async fn pair() -> (tempfile::NamedTempFile, Ctx, rutis::FiberView, Arc<Process>) {
+async fn pair() -> (
+    tempfile::NamedTempFile,
+    Ctx,
+    rutis::host::FiberView,
+    Arc<Process>,
+) {
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(PAIR.as_bytes()).unwrap();
     let ctx = Ctx::root().unwrap();
@@ -411,21 +410,19 @@ struct Consumer {
     injects: [TypeKey; 1],
 }
 
-impl Plugin for Consumer {
+impl DynPlugin for Consumer {
     fn name(&self) -> &str {
         "consumer"
     }
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         let stopped = self.stopped.clone();
         Box::pin(async move {
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    *stopped.lock().unwrap() = true;
-                    Ok(())
-                }))
+            ctx.effect(move || async move {
+                *stopped.lock().unwrap() = true;
+                Ok(())
             })?;
             Ok(Effect::Done)
         })

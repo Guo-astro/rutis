@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use rutis::CordisError;
+use rutis::host::ErrorKind;
+use rutis::Error;
 
 /// A row that ended up `Failed` or `Unresolved`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub enum LoaderError {
     Resolve { name: String, message: String },
     /// The dry run (config validation, build, instance validation) failed.
     #[error("entry {id:?} rejected: {error}")]
-    Rejected { id: String, error: Arc<CordisError> },
+    Rejected { id: String, error: Arc<ErrorKind> },
     #[error("no entry {0:?}")]
     UnknownEntry(String),
     #[error("invalid entry: {0}")]
@@ -89,7 +90,7 @@ pub enum LoaderError {
 /// Why one copy of a row cannot run in its instance while copies in other
 /// instances can: what the instance brings lacks something the row needs,
 /// such as a runtime connection without the row's plugin. A scoped factory
-/// ([`crate::ScopedFactory`]) returns it in [`CordisError::PluginFailed`].
+/// ([`crate::ScopedFactory`]) returns it in [`ErrorKind::PluginFailed`](rutis::host::ErrorKind::PluginFailed).
 /// The copy fails with it in that instance alone: an edit is neither
 /// refused by the dry run nor rolled back because of it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -98,8 +99,8 @@ pub struct Unavailable(pub String);
 
 impl Unavailable {
     /// `self` as the error a scoped factory returns.
-    pub fn into_error(self) -> CordisError {
-        CordisError::PluginFailed(Box::new(self))
+    pub fn into_error(self) -> Error {
+        rutis::Error::from(ErrorKind::PluginFailed(Box::new(self)))
     }
 
     /// Whether `error` says a copy is [`Unavailable`] in its instance.
@@ -107,7 +108,7 @@ impl Unavailable {
         match error {
             LoaderError::Rejected { error, .. } => matches!(
                 &**error,
-                CordisError::PluginFailed(source) if source.is::<Unavailable>()
+                ErrorKind::PluginFailed(source) if source.is::<Unavailable>()
             ),
             _ => false,
         }

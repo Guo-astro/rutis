@@ -1,7 +1,8 @@
 //! JSON views of the runtime: diagnostics, loader rows and bus events.
 
-use rutis::{FiberStatusChanged, PluginId, RuntimeDiagnostics, ServiceChange, ServiceChanged};
-use rutis_loader::{EntryInfo, EntryStatus, LoaderChanged, PendingEditDropped};
+use rutis::host::diagnostics::{RuntimeDiagnostics, ServiceChange, ServiceChanged};
+use rutis::host::{FiberStatusChanged, PluginId};
+use rutis_loader::report::{EntryInfo, EntryStatus, LoaderChanged, PendingEditDropped};
 use serde_json::{json, Value};
 
 fn id(plugin: PluginId) -> Value {

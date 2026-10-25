@@ -3,6 +3,9 @@
 rutis_bridge::include_mounts!();
 
 #[cfg(unix)]
+use rutis::host::CtxHost;
+
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = rutis::Ctx::root()?;
@@ -28,10 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::bindings;
-    use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, TypeKey};
+    use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
+    use rutis::{Ctx, Error};
     use std::sync::{Arc, Mutex};
 
-    async fn mount(ctx: &Ctx, initial: f64) -> rutis::FiberView {
+    async fn mount(ctx: &Ctx, initial: f64) -> rutis::host::FiberView {
         let view = ctx.plugin(bindings::Plugin::new(bindings::Config { initial }));
         (&view).await.unwrap();
         view
@@ -83,14 +87,14 @@ mod tests {
         observed: Arc<Mutex<Vec<f64>>>,
     }
 
-    impl Plugin for Consumer {
+    impl DynPlugin for Consumer {
         fn name(&self) -> &str {
             "ordinary-counter-consumer"
         }
-        fn injects(&self) -> &[TypeKey] {
-            &self.injects
+        fn injects(&self) -> Vec<TypeKey> {
+            self.injects.to_vec()
         }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
             Box::pin(async move {
                 let counter = ctx.require::<bindings::Counter>()?;
                 self.observed.lock().unwrap().push(counter.add(1.0)?);

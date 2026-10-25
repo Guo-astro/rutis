@@ -3170,6 +3170,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "rutis"
 version = "0.16.0"
 dependencies = [
+ "anyhow",
  "erased-serde",
  "rutis-macros",
  "rutis-test-support",
@@ -3411,6 +3412,14 @@ version = "0.16.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "rutis-migrate"
+version = "0.16.0"
+dependencies = [
+ "proc-macro2",
  "syn 2.0.119",
 ]
 

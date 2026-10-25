@@ -13,7 +13,7 @@ use aimux_core::types::FinishReasonUnified;
 use aimux_llm::service::{MessageSpec, PartStream, PromptSpec, ToolCallSpec, ToolSpec};
 use aimux_llm::{LlmService, StreamRequest};
 use futures::{FutureExt, StreamExt};
-use rutis::BoxFuture;
+use rutis::host::BoxFuture;
 use rutis_bridge::session::Error;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -127,7 +127,8 @@ macro_rules! serve_aimux {
             fn open(
                 &self,
                 request: $mount::AimuxRequest,
-            ) -> ::rutis::BoxFuture<'static, Result<String, ::rutis_bridge::session::Error>> {
+            ) -> ::rutis::host::BoxFuture<'static, Result<String, ::rutis_bridge::session::Error>>
+            {
                 match $crate::aimux::convert(&request) {
                     Ok(request) => $crate::aimux::AimuxBridge::open(self, request),
                     Err(error) => Box::pin(async move { Err(error) }),
@@ -137,7 +138,7 @@ macro_rules! serve_aimux {
             fn next(
                 &self,
                 stream: String,
-            ) -> ::rutis::BoxFuture<
+            ) -> ::rutis::host::BoxFuture<
                 'static,
                 Result<Vec<$mount::AimuxPart>, ::rutis_bridge::session::Error>,
             > {
@@ -154,8 +155,10 @@ macro_rules! serve_aimux {
                 &self,
                 provider: String,
                 api_key: Option<String>,
-            ) -> ::rutis::BoxFuture<'static, Result<Vec<String>, ::rutis_bridge::session::Error>>
-            {
+            ) -> ::rutis::host::BoxFuture<
+                'static,
+                Result<Vec<String>, ::rutis_bridge::session::Error>,
+            > {
                 $crate::aimux::AimuxBridge::list_models(self, provider, api_key)
             }
         }

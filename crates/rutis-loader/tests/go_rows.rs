@@ -14,14 +14,17 @@ use std::task::Poll;
 use std::time::Duration;
 
 use common::runtimes::{layer, row_state, COLD};
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::RuntimeState;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
-use rutis_loader::{
-    Chain, EntryStatus, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
-    Loader, LoaderError, LoaderOptions, LoaderPlugin, RestartPolicy, RuntimeEnd, RuntimeRows,
-    ServiceCatalog,
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
+use rutis_loader::runtime::go::{
+    GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
 };
+use rutis_loader::runtime::RuntimeRows;
+use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
@@ -176,7 +179,7 @@ fn alive(pid: u32) -> Option<bool> {
 }
 
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
-    root.get_as::<dyn HostDispatch>(host_key(name))
+    root.get_at::<dyn HostDispatch>(&host_key(name))
 }
 
 /// Call `method` of the service `name` synchronously, off the async runtime.
@@ -949,16 +952,16 @@ struct Gate {
     hold: Arc<Mutex<Hold>>,
 }
 
-impl Plugin for Gate {
+impl DynPlugin for Gate {
     fn name(&self) -> &str {
         "gate"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         let hold = self.hold.clone();
         Box::pin(async move {
             Ok(Effect::AsyncDisposer(Box::new(move || {

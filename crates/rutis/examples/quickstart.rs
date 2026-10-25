@@ -13,7 +13,8 @@
 
 use std::sync::Arc;
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, Typed, TypedPlugin};
+use rutis::host::CtxHost;
+use rutis::{Ctx, Plugin};
 
 /// 服务就是一个类型。
 struct Greeting(String);
@@ -22,44 +23,30 @@ struct Greeting(String);
 struct Greeter(&'static str);
 
 impl Plugin for Greeter {
-    fn name(&self) -> &str {
-        "greeter"
-    }
+    type Deps = ();
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            ctx.provide(Greeting(format!("hello from {}", self.0)))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide(Greeting(format!("hello from {}", self.0)))?;
+        Ok(())
     }
 }
 
 /// 依赖 `Greeting`:它出现时启动,被替换时重启。
 struct Listener;
 
-impl TypedPlugin for Listener {
-    type Deps = (Arc<Greeting>,);
+impl Plugin for Listener {
+    type Deps = Arc<Greeting>;
 
-    fn name(&self) -> &str {
-        "listener"
-    }
-
-    fn apply<'a>(
-        &'a self,
-        _: &'a Ctx,
-        (greeting,): Self::Deps,
-    ) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            println!("{}", greeting.0);
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, _: &Ctx, greeting: Arc<Greeting>) -> rutis::Result {
+        println!("{}", greeting.0);
+        Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Ctx::root()?;
-    let listener = ctx.plugin(Typed::new(Listener)); // 等待 Greeting
+    let listener = ctx.plugin(Listener); // 等待 Greeting
 
     let english = ctx.plugin(Greeter("English"));
     (&english).await?;

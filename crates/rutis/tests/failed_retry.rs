@@ -3,9 +3,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, FiberView, Plugin, PluginFactory, TypeKey,
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, PluginFactory, TypeKey,
 };
+use rutis::{Ctx, Error};
 use tokio::sync::Notify;
 
 struct A;
@@ -18,12 +19,12 @@ fn injects() -> [TypeKey; 2] {
 /// Provides `A` and `B` once released, so consumers register while it loads.
 struct Provider(Arc<Notify>);
 
-impl Plugin for Provider {
+impl DynPlugin for Provider {
     fn name(&self) -> &str {
         "provider"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.0.notified().await;
             ctx.provide(A)?;
@@ -47,29 +48,31 @@ struct Consumer {
     injects: [TypeKey; 2],
 }
 
-impl Plugin for Consumer {
+impl DynPlugin for Consumer {
     fn name(&self) -> &str {
         "consumer"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn validate(&self) -> Result<(), CordisError> {
+    fn validate(&self) -> Result<(), Error> {
         if let Failure::Validate = self.failure {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            return Err(CordisError::Validation {
+            return Err(Error::from(ErrorKind::Validation {
                 issues: vec!["consumer rejects".into()],
-            });
+            }));
         }
         Ok(())
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            Err(CordisError::PluginFailed("consumer fails".into()))
+            Err(Error::from(ErrorKind::PluginFailed(
+                "consumer fails".into(),
+            )))
         })
     }
 }
@@ -82,14 +85,16 @@ impl PluginFactory<()> for ConsumerFactory {
         "consumer"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.2
+    fn injects(&self) -> Vec<TypeKey> {
+        self.2.to_vec()
     }
 
-    fn build(&self, _: &()) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, _: &()) -> Result<Box<dyn DynPlugin>, Error> {
         if let Failure::Build = self.0 {
             self.1.fetch_add(1, Ordering::SeqCst);
-            return Err(CordisError::PluginFailed("consumer cannot be built".into()));
+            return Err(Error::from(ErrorKind::PluginFailed(
+                "consumer cannot be built".into(),
+            )));
         }
         Ok(Box::new(Consumer {
             failure: self.0,

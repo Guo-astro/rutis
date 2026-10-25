@@ -6,9 +6,10 @@
     allow(dead_code, reason = "exclusive versions: nothing is exported")
 )]
 
-use rutis_sdk::rutis::{
-    BoxFuture, CordisError, Ctx, Effect, FiberState, Plugin, PluginFactory, Snapshot, TypeKey,
+use rutis_sdk::rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, PluginFactory, Snapshot, TypeKey,
 };
+use rutis_sdk::rutis::{Ctx, Error};
 use rutis_sdk::ConfigValue;
 
 struct Factory;
@@ -51,29 +52,27 @@ impl PluginFactory<ConfigValue> for Factory {
         #[cfg(not(feature = "changed_identity"))]
         "greeter"
     }
-    fn injects(&self) -> &[TypeKey] {
+    fn injects(&self) -> Vec<TypeKey> {
         #[cfg(feature = "changed_identity")]
-        return std::sync::OnceLock::get_or_init(&INJECTS, || vec![TypeKey::of::<u8>()]);
+        return vec![TypeKey::of::<u8>()];
         #[cfg(not(feature = "changed_identity"))]
-        &[]
+        Vec::new()
     }
-    fn build(&self, config: &ConfigValue) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &ConfigValue) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(Greeter {
             scope: config["scope"].as_str().map(str::to_owned),
         }))
     }
 }
-#[cfg(feature = "changed_identity")]
-static INJECTS: std::sync::OnceLock<Vec<TypeKey>> = std::sync::OnceLock::new();
-impl Plugin for Greeter {
+impl DynPlugin for Greeter {
     fn name(&self) -> &str {
         "greeter"
     }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             rutis_sdk::tokio::spawn(async {})
                 .await
-                .map_err(|e| CordisError::PluginFailed(e.into()))?;
+                .map_err(|e| rutis_sdk::rutis::Error::from(ErrorKind::PluginFailed(e.into())))?;
             let ctx = match &self.scope {
                 Some(scope) => ctx
                     .isolate(TypeKey::of::<String>(), scope)

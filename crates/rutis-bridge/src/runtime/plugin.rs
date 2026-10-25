@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::internal::CtxInternal;
+use rutis::{Ctx, Disposer, Error};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -39,8 +41,8 @@ impl Runtime {
 
     /// The key the runtime named `name` provides this service under
     /// ([`RuntimePlugin::named`]; `"node"` by default).
-    pub fn key(name: &str) -> TypeKey {
-        TypeKey::keyed_dynamic::<Runtime>(name.to_owned())
+    pub fn key(name: &str) -> rutis::host::Key<Runtime> {
+        rutis::host::Key::dynamic(name.to_owned())
     }
 
     /// The methods declared with [`RuntimePlugin::host`] for `name`.
@@ -196,7 +198,7 @@ impl RuntimePlugin {
     fn with(runtime: String, anchor: PathBuf, remote: bool) -> Self {
         Self {
             label: format!("{runtime}-runtime"),
-            session: [crate::runtime::runtime_session_key(&runtime)],
+            session: [crate::runtime::runtime_session_key(&runtime).erase()],
             remote,
             runtime,
             anchor,
@@ -223,8 +225,8 @@ impl RuntimePlugin {
     }
 
     /// Declare the methods `{ method: "sync" | "async" }` of the rutis
-    /// service at [`host_key`]`(name)`, for when it does not report them
-    /// itself ([`HostDispatch::methods`]). The runtime does not wait for it:
+    /// service at [`host_key`](crate::session::host_key)`(name)`, for when it does not report them
+    /// itself ([`HostDispatch::methods`](crate::session::HostDispatch::methods)). The runtime does not wait for it:
     /// the plugins that use it do.
     pub fn host(mut self, name: &str, methods: Value) -> Self {
         Arc::make_mut(&mut self.hosts).insert(name.to_owned(), methods);
@@ -237,7 +239,7 @@ impl RuntimePlugin {
     pub fn named(mut self, name: impl Into<String>) -> Self {
         self.runtime = name.into();
         self.label = format!("{}-runtime", self.runtime);
-        self.session = [crate::runtime::runtime_session_key(&self.runtime)];
+        self.session = [crate::runtime::runtime_session_key(&self.runtime).erase()];
         self
     }
 
@@ -269,16 +271,16 @@ impl RuntimePlugin {
     }
 }
 
-impl Plugin for RuntimePlugin {
+impl DynPlugin for RuntimePlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.session
+    fn injects(&self) -> Vec<TypeKey> {
+        self.session.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.announce(ctx);
             self.state.send_replace(RuntimeState::Starting);
@@ -286,7 +288,7 @@ impl Plugin for RuntimePlugin {
             // cancels this generation.
             let start = async {
                 let session = ctx
-                    .get_as::<dyn crate::runtime::RuntimeSession>(self.session[0].clone())
+                    .get_key::<dyn crate::runtime::RuntimeSession>(self.session[0].clone())
                     .ok_or_else(|| {
                         crate::runtime::Error::Value(format!(
                             "the session of the {} runtime is gone",
@@ -351,29 +353,27 @@ impl Plugin for RuntimePlugin {
             let state = self.state.clone();
             let stop_watching = watcher.clone();
             let registered = ctx.effect(move || {
-                Effect::AsyncDisposer(Box::new(move || {
-                    Box::pin(async move {
-                        if let Some(watcher) = stop_watching.lock().unwrap().take() {
-                            watcher.abort();
-                        }
-                        let ended = matches!(*state.borrow(), RuntimeState::Down(_));
-                        if ended {
-                            // Already gone, and its cause stays visible: the
-                            // plugin may stop only because its session went.
-                            return Ok(());
-                        }
-                        // The session ended, and the plugin stops because it
-                        // went, before the watcher (aborted above) saw it:
-                        // both follow the same end, in either order. The
-                        // process still ended on its own, and says so.
-                        if owner.connection().close_reason().is_some() {
-                            state.send_replace(RuntimeState::Down(ended_status(&owner)));
-                            return Ok(());
-                        }
-                        state.send_replace(RuntimeState::Idle);
-                        owner.dispose().await.map_err(Into::into)
-                    })
-                }))
+                async move {
+                    if let Some(watcher) = stop_watching.lock().unwrap().take() {
+                        watcher.abort();
+                    }
+                    let ended = matches!(*state.borrow(), RuntimeState::Down(_));
+                    if ended {
+                        // Already gone, and its cause stays visible: the
+                        // plugin may stop only because its session went.
+                        return Ok(());
+                    }
+                    // The session ended, and the plugin stops because it
+                    // went, before the watcher (aborted above) saw it:
+                    // both follow the same end, in either order. The
+                    // process still ended on its own, and says so.
+                    if owner.connection().close_reason().is_some() {
+                        state.send_replace(RuntimeState::Down(ended_status(&owner)));
+                        return Ok(());
+                    }
+                    state.send_replace(RuntimeState::Idle);
+                    owner.dispose().await.map_err(Into::into)
+                }
             });
             if let Err(error) = registered {
                 // Nothing owns the process: dropping it kills it.
@@ -383,7 +383,7 @@ impl Plugin for RuntimePlugin {
                     false => Err(error),
                 };
             }
-            let disposer = ctx.provide_as(
+            let disposer = ctx.provide_at(
                 Runtime::key(&self.runtime),
                 Arc::new(Runtime {
                     process: process.clone(),

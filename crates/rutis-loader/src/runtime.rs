@@ -22,12 +22,13 @@
 //!   to the plugin, as dsh's loader does.
 //! - **Python** (feature `python`, [`RuntimeResolver::modules`]): a row named
 //!   `py:<module>` loads that module as a leaf plugin.
-//! - **Go** (feature `go`, [`GoResolver`], [`GoRuntimes`]): a row named
+//! - **Go** (feature `go`, [`GoResolver`](go::GoResolver), [`GoRuntimes`](go::GoRuntimes)): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
 //!   per binary, started when a row uses it. What compiled languages share
-//!   (feature `binary`, which theirs enable) is [`BinaryResolver`] and
-//!   [`BinaryRuntimes`]; a language names itself with a [`BinaryLanguage`].
-//! - **Swift** (feature `swift`, [`SwiftResolver`], [`SwiftRuntimes`]): a
+//!   (feature `binary`, which theirs enable) is [`BinaryResolver`](binary::BinaryResolver) and
+//!   [`BinaryRuntimes`](binary::BinaryRuntimes); a language names itself with a
+//!   [`BinaryLanguage`](binary::BinaryLanguage).
+//! - **Swift** (feature `swift`, [`SwiftResolver`](swift::SwiftResolver), [`SwiftRuntimes`](swift::SwiftRuntimes)): a
 //!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
 //!   it, as Go does.
 
@@ -65,7 +66,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Listener, Plugin, PluginFactory, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactory, TypeKey};
+use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
     row_projection_of, HostLease, Process, Projection, Runtime, RuntimeHandle,
 };
@@ -77,35 +79,22 @@ use crate::{
     volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
 };
 
+/// Runtimes started from a binary that carries its own manifest.
 #[cfg(feature = "binary")]
-mod binary;
+pub mod binary;
 mod connections;
+/// Go runtimes: binaries built with the Go SDK.
 #[cfg(feature = "go")]
-mod go;
+pub mod go;
 mod rows;
+/// Swift runtimes: binaries built with the Swift SDK.
 #[cfg(feature = "swift")]
-mod swift;
-#[cfg(feature = "binary")]
-pub use binary::{
-    read_binary_manifest, Binaries, BinaryFile, BinaryLanguage, BinaryManifest, BinaryResolver,
-    BinaryRuntimeInfo, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle, RestartPolicy,
-    RuntimeEnd,
-};
+pub mod swift;
 pub(crate) use connections::{claimed, claimed_names};
 pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
-#[cfg(feature = "go")]
-pub use go::{
-    read_go_manifest, Go, GoBinaries, GoBinary, GoManifest, GoResolver, GoRuntimeInfo,
-    GoRuntimeState, GoRuntimes, GoRuntimesHandle, GO_MARKER, PLUGIN_API,
-};
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
-#[cfg(feature = "swift")]
-pub use swift::{
-    read_swift_manifest, Swift, SwiftBinaries, SwiftBinary, SwiftManifest, SwiftResolver,
-    SwiftRuntimeInfo, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle, SWIFT_MARKER,
-    SWIFT_PLUGIN_API,
-};
 
+use rutis::internal::CtxInternal;
 #[cfg(doc)]
 use rutis_bridge::runtime::RuntimePlugin;
 
@@ -174,6 +163,7 @@ impl Naming {
 /// (`py:weather`, `bun:@acme/weather`, `<remote>:<module>`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
+#[doc(hidden)]
 pub fn is_runtime_name(name: &str) -> bool {
     name.len() >= 2
         && name != "file"
@@ -470,20 +460,20 @@ impl JsModule {
     }
 
     /// The factory of a copy running in `build`'s instances.
-    fn factory(&self, build: &Build) -> Result<JsFactory, CordisError> {
+    fn factory(&self, build: &Build) -> Result<JsFactory, Error> {
         // A shared name resolves through the catalog (inside instances, to
         // the instance's key); any other name a leaf runtime gates on is
         // shared by name.
-        let key = |name: &str| -> Result<TypeKey, CordisError> {
+        let key = |name: &str| -> Result<TypeKey, Error> {
             match self.catalog.is_shared(name) {
                 true => self.catalog.key_in(name, build).map_err(failed),
-                false => Ok(host_key(name)),
+                false => Ok(host_key(name).erase()),
             }
         };
         let keyed = |names: &mut dyn Iterator<Item = &String>| {
             names
                 .map(|name| Ok((name.clone(), key(name)?)))
-                .collect::<Result<Vec<_>, CordisError>>()
+                .collect::<Result<Vec<_>, Error>>()
         };
         let scopes = self
             .catalog
@@ -497,8 +487,8 @@ impl JsModule {
         let announced: KeyOf = Arc::new(move |name| match catalog.is_shared(name) {
             true => catalog
                 .key_in(name, &build)
-                .unwrap_or_else(|_| host_key(name)),
-            false => host_key(name),
+                .unwrap_or_else(|_| host_key(name).erase()),
+            false => host_key(name).erase(),
         });
         Ok(JsFactory::with_keys(
             &self.name,
@@ -558,11 +548,11 @@ type Refused = Arc<Refusals>;
 /// run when the clash is long gone; that one is refused again if it
 /// provides the name while the clash is still there.
 #[derive(Default)]
-struct Refusals(Mutex<HashMap<rutis::InstanceId, (String, bool)>>);
+struct Refusals(Mutex<HashMap<rutis::host::InstanceId, (String, bool)>>);
 
 impl Refusals {
     /// Record why `instance` was refused, unless it was already.
-    fn record(&self, instance: rutis::InstanceId, why: String) {
+    fn record(&self, instance: rutis::host::InstanceId, why: String) {
         self.0
             .lock()
             .unwrap()
@@ -572,14 +562,14 @@ impl Refusals {
 
     /// The restart for `instance`'s refusal is about to run: its apply
     /// fails with it.
-    fn arm(&self, instance: rutis::InstanceId) {
+    fn arm(&self, instance: rutis::host::InstanceId) {
         if let Some((_, armed)) = self.0.lock().unwrap().get_mut(&instance) {
             *armed = true;
         }
     }
 
     /// Why this apply of `instance` fails: the refusal whose restart runs it.
-    fn take(&self, instance: rutis::InstanceId) -> Option<String> {
+    fn take(&self, instance: rutis::host::InstanceId) -> Option<String> {
         let mut refusals = self.0.lock().unwrap();
         match refusals.get(&instance) {
             Some((_, true)) => refusals.remove(&instance).map(|(why, _)| why),
@@ -588,7 +578,7 @@ impl Refusals {
     }
 
     /// The refusal's restart has run, or will not: it fails nothing more.
-    fn forget(&self, instance: rutis::InstanceId) {
+    fn forget(&self, instance: rutis::host::InstanceId) {
         self.0.lock().unwrap().remove(&instance);
     }
 }
@@ -605,13 +595,13 @@ impl JsFactory {
         let gated = gated
             .into_iter()
             .map(|name| {
-                let key = host_key(&name);
+                let key = host_key(&name).erase();
                 (name, key)
             })
             .collect();
         let provided = provides
             .keys()
-            .map(|name| (name.clone(), host_key(name)))
+            .map(|name| (name.clone(), host_key(name).erase()))
             .collect();
         Self::with_keys(
             name,
@@ -650,7 +640,7 @@ impl JsFactory {
             provided,
             scopes,
             injects,
-            announced: Arc::new(host_key),
+            announced: Arc::new(|name: &str| host_key(name).erase()),
             refused: Refused::default(),
         }
     }
@@ -667,11 +657,11 @@ impl PluginFactory<Value> for JsFactory {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn build(&self, config: &Value) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(JsRow {
             name: self.name.clone(),
             runtime: self.runtime.clone(),
@@ -703,20 +693,20 @@ struct JsRow {
     refused: Refused,
 }
 
-fn failed(error: impl std::fmt::Display) -> CordisError {
-    CordisError::PluginFailed(error.to_string().into())
+fn failed(error: impl std::fmt::Display) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
 }
 
-impl Plugin for JsRow {
+impl DynPlugin for JsRow {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
@@ -726,7 +716,7 @@ impl Plugin for JsRow {
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
                     let runtime = ctx
-                        .require_as::<RuntimeRows>(RuntimeRows::key(name))?
+                        .require_key::<RuntimeRows>(RuntimeRows::key(name))?
                         .runtime()
                         .clone();
                     (runtime.process().clone(), Some(runtime))
@@ -780,7 +770,7 @@ impl JsRow {
         process: &Arc<Process>,
         runtime: Option<&Runtime>,
         leases: &mut Vec<HostLease>,
-    ) -> Result<(String, Arc<Projection>), CordisError> {
+    ) -> Result<(String, Arc<Projection>), Error> {
         let row = ctx
             .get::<Loader>()
             .and_then(|loader| loader.row(ctx.instance()));
@@ -821,7 +811,7 @@ impl JsRow {
         // One served by a row of this same process is already there
         // natively.
         for (name, key) in &self.gated {
-            let dispatch = ctx.require_as::<dyn HostDispatch>(key.clone())?;
+            let dispatch = ctx.require_key::<dyn HostDispatch>(key.clone())?;
             if dispatch
                 .origin()
                 .is_some_and(|origin| origin == process.connection().tag())
@@ -895,14 +885,17 @@ impl JsRow {
             return Err(failed(refused));
         }
         // Volatile-only changes go to Cordis, which commits them in place.
-        let listening = ctx.events().on(
-            ctx,
-            &volatile_key(ctx),
-            Forward {
-                key: key.clone(),
-                process: process.clone(),
-            },
-        );
+        let forward = Arc::new(Forward {
+            key: key.clone(),
+            process: process.clone(),
+        });
+        let listening =
+            ctx.listen::<VolatileUpdate>()
+                .name(volatile_key(ctx))
+                .on(move |update, _| {
+                    let forward = forward.clone();
+                    async move { forward.apply(&update).await }
+                });
         if let Err(error) = listening {
             // The plugin is loaded, but no cleanup will be registered for it:
             // undo the load here.
@@ -956,20 +949,13 @@ struct Forward {
     process: Arc<Process>,
 }
 
-impl Listener<VolatileUpdate> for Forward {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        update: &'a VolatileUpdate,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        Box::pin(async move {
-            self.process
-                .update_row(&self.key, update.config.clone())
-                .await
-                .map_err(failed)?;
-            Ok(None)
-        })
+impl Forward {
+    async fn apply(&self, update: &VolatileUpdate) -> Result<Option<()>, Error> {
+        self.process
+            .update_row(&self.key, update.config.clone())
+            .await
+            .map_err(failed)?;
+        Ok(None)
     }
 }
 
@@ -1304,4 +1290,5 @@ mod npm {
     }
 }
 #[cfg(feature = "node")]
+#[doc(hidden)]
 pub use npm::resolve_entry;

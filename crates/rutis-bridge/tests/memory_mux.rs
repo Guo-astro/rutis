@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
-use rutis::{BoxFuture, Ctx};
+use rutis::host::{BoxFuture, CtxHost};
+use rutis::Ctx;
 use rutis_bridge::channel::{
     Channel, ChannelError, ChannelInfo, Closer, ConnectError, PeerId, Receiver, Sender,
 };
@@ -606,7 +607,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     };
     // main: one listener, two far ends.
     let main = Ctx::root().unwrap();
-    main.provide_as::<dyn Transport>(transport_key("mux"), main_side.clone())
+    main.provide_at(transport_key("mux"), main_side.clone())
         .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
@@ -625,7 +626,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     let mut far = Vec::new();
     for (name, token) in [("mac", "mac-token"), ("pi", "pi-token")] {
         let root = Ctx::root().unwrap();
-        root.provide_as::<dyn Transport>(transport_key("mux"), mac_side.clone())
+        root.provide_at(transport_key("mux"), mac_side.clone())
             .unwrap();
         root.plugin(IdentityPlugin::new(
             name,
@@ -641,7 +642,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
         async move {
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    if let Some(found) = root.get_as::<Peer>(peer_key(&peer)) {
+                    if let Some(found) = root.get_at::<Peer>(&peer_key(&peer)) {
                         return found;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -671,7 +672,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
         .close(rutis_bridge::session::Error::Transport("closed".into()));
     let mac_again = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Some(again) = main.get_as::<Peer>(peer_key(&id("mac"))) {
+            if let Some(again) = main.get_at::<Peer>(&peer_key(&id("mac"))) {
                 if again.generation() > mac.generation() {
                     return again;
                 }
@@ -681,7 +682,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     })
     .await
     .unwrap();
-    let pi_now = main.get_as::<Peer>(peer_key(&id("pi"))).unwrap();
+    let pi_now = main.get_at::<Peer>(&peer_key(&id("pi"))).unwrap();
     assert!(Arc::ptr_eq(&pi, &pi_now), "pi kept its session");
     assert_eq!(
         mac_side.physicals_made.load(Ordering::SeqCst),
@@ -699,10 +700,10 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let pi_now = main
-                .get_as::<Peer>(peer_key(&id("pi")))
+                .get_at::<Peer>(&peer_key(&id("pi")))
                 .map(|p| p.generation());
             let mac_now = main
-                .get_as::<Peer>(peer_key(&id("mac")))
+                .get_at::<Peer>(&peer_key(&id("mac")))
                 .map(|p| p.generation());
             if pi_now.is_some_and(|g| g > pi_before) && mac_now.is_some_and(|g| g > mac_before + 1)
             {

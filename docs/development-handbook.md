@@ -8,7 +8,7 @@
 
 ```toml
 [dependencies]
-rutis = "0.6"
+rutis = "0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -16,42 +16,34 @@ serde = { version = "1", features = ["derive"] }
 下面用一个提供方和一个消费者演示服务注册与依赖声明。示例中，Backend 提供服务，Indexer 声明并使用这个服务。
 
 ```rust
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Plugin, TypeKey};
+use std::sync::Arc;
+use rutis::host::*;
+use rutis::{Ctx, Plugin};
 
 struct Backend(String);
 struct BackendPlugin(String);
 
 impl Plugin for BackendPlugin {
+    type Deps = ();
+
     fn name(&self) -> &str { "backend" }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx)
-        -> BoxFuture<'a, Result<Effect, CordisError>>
-    {
-        Box::pin(async move {
-            ctx.provide(Backend(self.0.clone()))?;
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        ctx.provide(Backend(self.0.clone()))?;
+        Ok(())
     }
 }
 
-struct IndexerPlugin {
-    dependencies: Vec<TypeKey>,
-}
+struct IndexerPlugin;
 
 impl Plugin for IndexerPlugin {
+    type Deps = Arc<Backend>;
+
     fn name(&self) -> &str { "indexer" }
 
-    fn injects(&self) -> &[TypeKey] { &self.dependencies }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx)
-        -> BoxFuture<'a, Result<Effect, CordisError>>
-    {
-        Box::pin(async move {
-            let backend = ctx.get::<Backend>()
-                .ok_or_else(|| CordisError::ServiceNotFound("Backend".into()))?;
-            println!("Indexer connected to {}", backend.0);
-            Ok(Effect::Done)
-        })
+    async fn apply(&self, _: &Ctx, backend: Arc<Backend>) -> rutis::Result {
+        println!("Indexer connected to {}", backend.0);
+        Ok(())
     }
 }
 
@@ -62,9 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend = root.plugin(BackendPlugin("local".into()));
         (&backend).await?;
 
-        let indexer = root.plugin(IndexerPlugin {
-            dependencies: vec![TypeKey::of::<Backend>()],
-        });
+        let indexer = root.plugin(IndexerPlugin);
         (&indexer).await
     }.await;
 
@@ -75,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-运行后输出 `Indexer connected to local`。这个例子先完成后端初始化，再加载 Indexer。实际应用也可以先注册消费者：它会在 `Pending` 状态等待依赖就绪。
+运行后输出 `Indexer connected to local`。Indexer 的 `type Deps = Arc<Backend>` 既是依赖声明，也是 `apply` 收到的参数。这个例子先完成后端初始化，再加载 Indexer。实际应用也可以先注册消费者：它会在 `Pending` 状态等待依赖就绪。`Ctx::root()`、`shutdown()` 等宿主用的方法来自 `use rutis::host::*;`。
 
 这里的 `(&view).await` 等待该插件处理完此前排队的操作。判断一个运行中的服务是否可用，应观察提供它的插件是否进入 `Active`，具体见 [启动与关闭](#启动与关闭)。
 
@@ -91,24 +81,24 @@ cargo run -p rutis --example development_workflow
 
 `apply` 按以下顺序组织：
 
-1. 读取本次加载需要的服务。
-2. 创建资源，并登记对应的清理函数。
+1. 取得本次加载需要的服务：必需的写在 `type Deps` 里，作为参数传入。
+2. 创建资源，并用 `ctx.effect` 登记对应的清理。
 3. 提供服务、注册监听器或创建子插件。
-4. 返回 `Effect`，完成初始化。
+4. 返回 `Ok(())`，完成初始化。
 
-插件进入 `Active` 后，其服务即可供外部消费者使用。持续运行的工作放在后台任务中，由清理函数负责结束。
+插件进入 `Active` 后，其服务即可供外部消费者使用。持续运行的工作放在后台任务中，由清理负责结束。
 
-`name()` 用于日志和诊断；`injects()` 声明服务依赖；`validate()` 校验插件持有的配置。插件实现需要满足 `Send + Sync + 'static`。
+`type Deps` 声明服务依赖，没有依赖时写 `()`；`name()` 用于日志和诊断，默认是类型名的最后一段；`validate()` 在 `apply` 之前校验插件持有的配置。插件实现需要满足 `Send + Sync + 'static`。
 
 ### 选择创建方式
 
 | 创建方式 | 适用情况 | 重新加载时的行为 |
 |---|---|---|
 | `ctx.plugin(plugin)` | 配置由插件对象持有 | 在同一个对象上再次执行 `apply` |
-| `ctx.plugin_with(factory, config)` | 运行期间需要更新配置 | 根据当前配置创建新的插件对象 |
-| `ctx.plugin_from(build, config)` | 使用无依赖的简单工厂 | 调用闭包创建新的插件对象 |
+| `ctx.plugin_from(build, config)` | 运行期间需要更新配置 | 调用 `build` 从当前配置创建新的插件对象 |
+| `ctx.plugin_with(factory, config)` | 依赖由工厂在运行时列出（`host::PluginFactory`） | 根据当前配置创建新的插件对象 |
 
-普通插件把依赖声明写在 `Plugin::injects()` 中；工厂插件写在 `PluginFactory::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
+插件的依赖写在 `type Deps` 中；`plugin_from` 的依赖取自 `build` 返回的插件类型的 `Deps`；工厂写在 `PluginFactory::injects()` 中；按名字依赖服务的插件实现 `host::DynPlugin`，写在 `DynPlugin::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
 
 创建资源的代码放在 `apply` 中。这样，每次重新加载都会取得当前依赖，创建所需资源，并登记新的清理函数。
 
@@ -118,52 +108,50 @@ cargo run -p rutis --example development_workflow
 
 注册、依赖声明和读取使用同一个键：
 
-| 服务形式 | 注册 | 依赖键 | 读取 |
+| 服务形式 | 注册 | 依赖声明 | 读取 |
 |---|---|---|---|
-| 具体类型 | `provide(value)` | `TypeKey::of::<T>()` | `get::<T>()` |
-| trait 接口 | `provide_as::<dyn T>(key, value)` | `key.clone()` | `get_as::<dyn T>(key)` |
-| 带名称的服务 | `provide_as::<T>(key, value)` | `key.clone()` | `get_as::<T>(key)` |
+| 具体类型 | `provide(value)` | `type Deps = Arc<T>` | `apply` 的参数；可选读取 `get::<T>()` |
+| trait 接口 | `provide_as::<dyn T>(value)` | `type Deps = Arc<dyn T>` | `apply` 的参数；可选读取 `get::<dyn T>()` |
+| 带名称的服务 | `provide_at(key, value)` | `DynPlugin::injects()` 里的 `key.erase()` | `require_at(&key)`；可选读取 `get_at(&key)` |
 
-其中，`provide_as` 接收 `Arc<T>`。trait 服务的键使用相同的 trait 类型；例如，`TypeKey::of::<dyn Store>()` 对应 `Arc<dyn Store>`。
+其中，`provide_as` 和 `provide_at` 接收 `Arc<T>`。trait 服务按 trait 对象的类型登记；例如，`provide_as::<dyn Store>(Arc::new(store))` 提供的就是 `Arc<dyn Store>` 依赖的那个服务。按键读写的 `provide_at`、`get_at`、`require_at` 是宿主层的方法，`use rutis::host::*;` 之后可用。
 
-同类型的多个服务通过限定名区分：
+同类型的多个服务通过名称区分，键 `host::Key<T>` 带着服务的类型：
 
 ```rust
-use rutis::TypeKey;
+use rutis::host::Key;
 
 struct Backend;
 
-fn primary_backend() -> TypeKey {
-    TypeKey::keyed::<Backend>("primary")
-}
+const PRIMARY_BACKEND: Key<Backend> = Key::named("primary");
 ```
 
-把这类键函数放在公共接口模块，供提供方和使用方共同调用。运行时生成的名称使用 `TypeKey::keyed_dynamic`。
+把这类键放在公共接口模块，供提供方和使用方共同使用。运行时生成的名称使用 `Key::dynamic`。
 
 ### 声明依赖
 
-在 `injects()` 中列出插件运行必需的服务。框架会等待这些服务存在、提供方进入 `Active`，以及可选的健康检查通过，然后执行 `apply`。
+把插件运行必需的服务写进 `type Deps`，多个时写成元组。框架会等待这些服务存在、提供方进入 `Active`，以及可选的健康检查通过，然后执行 `apply`。
 
-`get/get_as` 负责查找当前可见的服务，返回 `Option<Arc<T>>`。自动重载关系由 `injects()` 建立，因此每个必需服务都应有对应的依赖声明。
+`get` / `get_at` 负责查找当前可见的服务，返回 `Option<Arc<T>>`；它不等待服务，也不建立重载关系，诊断里记为未声明的访问。自动重载关系由依赖声明（`Deps`，或 `DynPlugin::injects()`）建立，因此每个必需服务都应写进依赖声明。`Deps` 里的 `Option<Arc<T>>` 是装载时的快照：不等待，之后出现或消失都不重载。
 
-服务需要额外健康条件时，可以通过 `provide_as_with_check` 注册同步谓词。条件改变后调用 `ctx.refresh()`，框架会重新检查依赖，并据此调整消费者状态。
+带额外健康条件的服务（同步谓词，条件改变后重新检查依赖，据此调整消费者状态）由 `rutis::internal` 里的 `provide_checked` 和 `refresh` 提供，只给 rutis 自己的 crate 用，不承诺稳定。
 
 ### 选择作用域
 
-普通类型键用于 root 内共享的服务。同一个键和作用域对应一个有效服务绑定；重复提供会返回 `ServiceExists`。
+按类型提供的服务在 root 内共享。同一个键和作用域对应一个有效服务绑定；重复提供会返回 `ServiceExists`。
 
 `isolate` 为指定服务键选择作用域。下面的片段为同一个键建立两个独立的查找范围：
 
 ```rust,ignore
-let scope_a = root.isolate(primary_backend(), "a");
-let scope_b = root.isolate(primary_backend(), "b");
+let scope_a = root.isolate(PRIMARY_BACKEND, "a");
+let scope_b = root.isolate(PRIMARY_BACKEND, "b");
 ```
 
 在对应上下文下注册提供方和消费者，即可分别使用各自的绑定。同一个 root 内，同键同 label 共享作用域。isolate 作用于指定服务键，资源生命周期沿用原上下文；实例级资源管理见 [实例子树](#实例子树)。
 
 ## 管理资源
 
-插件作者负责业务资源的完整生命周期，通过 `apply` 实现初始化，通过 `Effect` 登记清理。Rutis 按生命周期规则调用这些实现。职责说明见 [职责划分](development-guide.md#职责划分)。
+插件作者负责业务资源的完整生命周期，通过 `apply` 实现初始化，通过 `ctx.effect` 登记清理。Rutis 按生命周期规则调用这些实现。职责说明见 [职责划分](development-guide.md#职责划分)。
 
 ### 登记清理
 
@@ -172,17 +160,13 @@ let scope_b = root.isolate(primary_backend(), "b");
 以下片段放在插件的 `apply` 中，演示异步清理的写法：
 
 ```rust,ignore
-ctx.effect(move || {
-    Effect::AsyncDisposer(Box::new(move || {
-        Box::pin(async move {
-            connection.close().await?;
-            Ok(())
-        })
-    }))
+ctx.effect(move || async move {
+    connection.close().await?;
+    Ok(())
 })?;
 ```
 
-`effect` 的工厂闭包立即执行，返回的清理函数在卸载时执行。资源取得后应及时登记清理，同时处理登记失败时的释放。`apply` 中途失败时，框架会执行已经登记的清理函数。
+`effect` 的闭包立即执行，它返回的 future 就是清理，在卸载时执行。插件已经在停下时，`effect` 返回 `InactiveEffect`，闭包不执行。资源取得后应及时登记清理，同时处理登记失败时的释放。`apply` 中途失败时，框架会执行已经登记的清理。
 
 清理句柄 `Disposer` 可用于提前释放：调用 `disposer.dispose().await`，等待并处理结果。保留或丢弃句柄，都允许所属插件在卸载时负责最终清理。
 
@@ -191,27 +175,20 @@ ctx.effect(move || {
 后台任务需要同时安排取消和等待退出。下面的片段展示了基本结构；任务中的等待可替换为业务循环：
 
 ```rust,ignore
-let token = ctx.cancellation_token();
-let stop = token.clone();
-let runtime = ctx.handle().clone();
+let stopping = ctx.cancelled();
 
 ctx.effect(move || {
-    let task = runtime.spawn(async move {
-        token.cancelled().await;
+    let task = tokio::spawn(async move {
+        stopping.await;
     });
-
-    Effect::AsyncDisposer(Box::new(move || {
-        Box::pin(async move {
-            stop.cancel();
-            task.await
-                .map_err(|e| CordisError::PluginFailed(Box::new(e)))?;
-            Ok(())
-        })
-    }))
+    async move {
+        task.await?;
+        Ok(())
+    }
 })?;
 ```
 
-每次 `apply` 捕获一次当前代的 token，并将它传给这一代的任务。任务收到取消信号后，按约定完成或取消当前操作，然后退出。清理函数通过 `JoinHandle` 等待实际退出。
+每次 `apply` 取一次当前这一代的 `ctx.cancelled()`，交给这一代的任务；插件开始停下时它就完成，早于清理。任务收到这个信号后，按约定完成或取消当前操作，然后退出。清理通过 `JoinHandle` 等待实际退出。用 `Disposer` 提前释放这个清理时插件还没有停下，任务需要另外的停止方式。
 
 业务循环通常用 `tokio::select!` 同时等待输入和取消。队列中的请求可以选择完成、取消或保存，具体策略由服务接口约定。完整实现见 [IndexerPlugin 示例](../crates/rutis/examples/development_workflow.rs)。
 
@@ -219,7 +196,7 @@ ctx.effect(move || {
 
 ### 安排清理顺序
 
-同一插件内的清理按登记顺序逆序执行。后登记的资源先释放，`apply` 返回的 `Effect` 最后登记。
+同一插件内的清理按登记顺序逆序执行，后登记的资源先释放。（`host::DynPlugin` 的 `apply` 返回的 `Effect` 最后登记。）
 
 当底层连接需要保留到消费者退出时，采用以下顺序：
 
@@ -242,11 +219,10 @@ ctx.effect(move || {
 
 ### 定义事件和监听器
 
-定义事件类型时，实现 `Event`，指定事件名称和处理结果类型；事件和结果类型实现 serde 的 `Serialize` 与 `Deserialize`（依赖中加入 `serde = { version = "1", features = ["derive"] }`）。处理逻辑通过 `Listener` 实现。下面以携带文档名称的 `DocumentIndexed` 为例：
+定义事件类型时，实现 `Event`，指定事件名称和处理结果类型；事件和结果类型实现 serde 的 `Serialize` 与 `Deserialize`（依赖中加入 `serde = { version = "1", features = ["derive"] }`）。监听器是一个闭包，参数是事件（`Arc<E>`）和这次调用（`Call<E>`）。下面以携带文档名称的 `DocumentIndexed` 为例：
 
 ```rust
-use std::sync::Arc;
-use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, Listener};
+use rutis::{Ctx, Event};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DocumentIndexed(String);
@@ -256,32 +232,21 @@ impl Event for DocumentIndexed {
     type Value = ();
 }
 
-struct Progress;
-
-impl Listener<DocumentIndexed> for Progress {
-    fn call<'a>(&'a self, _ctx: &'a Ctx, event: &'a DocumentIndexed, _call: Call<'a, ()>)
-        -> BoxFuture<'a, Result<Option<()>, CordisError>>
-    {
-        Box::pin(async move {
-            println!("indexed: {}", event.0);
-            Ok(None)
-        })
-    }
-}
-
-fn index(ctx: &Ctx, path: String) -> Result<(), CordisError> {
-    let key = EventKey::<DocumentIndexed>::of();
-    ctx.events().on(ctx, &key, Progress)?;
-    ctx.events().emit(ctx, &key, Arc::new(DocumentIndexed(path)))?;
+fn index(ctx: &Ctx, path: String) -> rutis::Result {
+    ctx.on::<DocumentIndexed>(|event, _call| async move {
+        println!("indexed: {}", event.0);
+        Ok(None)
+    })?;
+    ctx.emit(DocumentIndexed(path))?;
     Ok(())
 }
 ```
 
-在这个例子中，`EventKey::<DocumentIndexed>::of()` 指向名为 `DocumentIndexed::NAME` 的事件，`on` 为这个名称注册监听器，`emit` 发送这个名称的事件；两者都返回 `Result`，失败时（例如上下文已经关闭）不会注册或投递。
+在这个例子中，`on::<DocumentIndexed>` 为名称 `DocumentIndexed::NAME` 注册监听器，`emit` 以这个名称发送事件；两者都返回 `Result`，失败时（例如上下文已经关闭）不会注册或投递。闭包的参数类型由编译器推断。
 
-事件按名称匹配。`EventKey::named("…")`（运行时生成的名称用 `EventKey::dynamic`）给同一事件类型换一个名称；前缀监听用 `on_pattern` 和 `EventPattern::prefix("…")`。不同 Rust 类型使用同一名称时听到同一批事件，框架经 serde 转换，所以不相关的事件类型应使用不同名称。以 `rutis/` 开头的名称留给框架事件，插件只能监听。
+事件按名称匹配。`ctx.listen::<E>().name("…")` 在另一个名称下监听同一事件类型，`ctx.listen::<E>().prefix("…")` 监听一个前缀下的所有名称（`call.name()` 是实际的名称）；没有固定名称的事件类型重写 `Event::name`，让每个值带上自己的名称。不同 Rust 类型使用同一名称时听到同一批事件，框架经 serde 转换，所以不相关的事件类型应使用不同名称。以 `rutis/` 开头的名称留给框架事件，插件只能监听。
 
-监听器属于注册时传入的 `Ctx`，回调收到的也是这个 `Ctx`，而不是发送方的。回调通过它注册的资源因此属于监听插件，`ctx.cancelled()` 就是它所在插件的卸载信号。插件开始卸载后，它的监听器不再被调用，卸载会等待它们正在运行的调用结束。可运行代码见 [上下文归属示例](../crates/rutis/examples/listener_ctx_ownership.rs)。
+监听器属于注册它的 `Ctx`，回调里的 `call.ctx()` 就是这个 `Ctx`，而不是发送方的。回调通过它注册的资源因此属于监听插件，`ctx.cancelled()` 就是它所在插件的卸载信号。插件开始卸载后，它的监听器不再被调用，卸载会等待它们正在运行的调用结束。可运行代码见 [上下文归属示例](../crates/rutis/examples/listener_ctx_ownership.rs)。
 
 ### 选择分发方式
 
@@ -293,11 +258,11 @@ fn index(ctx: &Ctx, path: String) -> Result<(), CordisError> {
 | `parallel` | 并发调用监听器，等待全部完成 | 成功返回 `()`；失败汇总为 `ListenersFailed`（只有一个失败时也是），按注册顺序排列 |
 | `serial` | 按注册顺序逐个调用，遇到结果或错误时结束 | 返回首个结果；`None` 和 `Some(false)` 视为没有结果 |
 | `waterfall` | 监听器通过 `call.next()` 调用后续处理，并可处理其返回结果 | 返回最外层监听器的结果 |
-| `bail_sync` / `waterfall_sync` | 与 `serial` / `waterfall` 相同，但在调用方线程内同步执行 | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
+| `bail` / `waterfall_sync` | 与 `serial` / `waterfall` 相同，但在调用方线程内同步执行（`waterfall_sync` 是宿主层的方法） | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
 
-监听器的返回类型为 `Result<Option<E::Value>, CordisError>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
+监听器的返回类型为 `rutis::Result<Option<E::Value>>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
 
-在 waterfall 中，监听器调用 `call.next().await` 执行后续流程，并可以处理返回结果；直接返回则结束当前流程。其他分发方式中调用 `next` 得到 `WaterfallNext` 错误。调用方通过 `terminal` 提供链末的处理函数（`()` 表示没有）。事件参数在整条链中保持相同，结果通过返回值传递。
+在 waterfall 中，监听器调用 `call.next().await` 执行后续流程，并可以处理返回结果；直接返回则结束当前流程。其他分发方式中调用 `next` 得到 `WaterfallNext` 错误。调用方用 `ctx.waterfall(event).terminal(…)` 提供链末的处理函数，可以省略。事件参数在整条链中保持相同，结果通过返回值传递。
 
 emit 和 parallel 忽略监听器返回的 `Some(value)`；serial 用它决定何时结束调用。选择分发方式时，应明确是否等待完成、是否需要返回值，以及处理函数之间的顺序要求。
 
@@ -315,32 +280,30 @@ emit 和 parallel 忽略监听器返回的 `Some(value)`；serial 用它决定�
 
 ```rust,ignore
 let workspace = ctx.instance();
-let state_key = TypeKey::instance::<WorkspaceState>(workspace);
+let state_key = Key::<WorkspaceState>::of().instance(workspace);
 
-ctx.provide_as::<WorkspaceState>(state_key.clone(), Arc::new(state))?;
+ctx.provide_at(state_key.clone(), Arc::new(state))?;
 ctx.plugin(IndexerPlugin::new(state_key));
-Ok(Effect::Done)
+Ok(())
 ```
 
-Indexer 将传入的键用于 `injects` 和 `get_as`。该服务的访问范围是工作区及其子插件；外部管理功能通过工作区显式提供的业务接口调用。
+Indexer 实现 `host::DynPlugin`：传入的键在 `injects()` 里写成 `state_key.erase()`，在 `apply` 里用 `require_at(&state_key)` 读取。该服务的访问范围是工作区及其子插件；外部管理功能通过工作区显式提供的业务接口调用。
 
 父插件提供状态、创建子插件后即完成初始化。宿主随后等待 Indexer 就绪，这样子插件可以顺利取得已经 Active 的父插件服务。
 
 ### 示例：实例内的事件分发
 
-工作区插件把自己标记为一个作用域，Progress 和 Indexer 作为它的子插件，各自使用自己的上下文：
+Progress 和 Indexer 作为工作区插件的子插件，各自使用自己的上下文。用 rutis-loader 的实例组时，加载器把每个组实例标记为一个作用域：
 
 ```rust,ignore
-// 在 WorkspacePlugin::apply 中：这个插件的子树成为一个作用域。
-ctx.mark_scope("workspace")?;
-
-let key = EventKey::<DocumentIndexed>::of();
-
 // 在 Progress 子插件中注册。
-progress_ctx.events().on(progress_ctx, &key, Progress)?;
+progress_ctx.on::<DocumentIndexed>(|event, _call| async move {
+    println!("indexed: {}", event.0);
+    Ok(None)
+})?;
 
 // 在 Indexer 子插件中发送。
-indexer_ctx.events().emit(indexer_ctx, &key, Arc::new(DocumentIndexed(path)))?;
+indexer_ctx.emit(DocumentIndexed(path))?;
 ```
 
 事件是平总线：一个 root 里按名字送达所有监听器，与发出方或监听器的作用域无关。作用域只是 `ListenerInfo` 里的描述，供过滤使用；要按实例筛选，用 `filter` 或不同的事件名。关闭子树时，框架等待其中监听器正在运行的调用结束，再完成资源清理。回调中产生的额外后台任务，按前面的任务管理方式登记。
@@ -351,38 +314,37 @@ isolate 的服务作用域独立于事件作用域。
 
 ## 更新配置
 
-需要热更新的插件使用 `PluginFactory`。下面的工厂复用快速开始中的 `BackendPlugin`，并在构造时检查配置：
+需要热更新的插件由一个构造函数从配置构造。下面的构造函数复用快速开始中的 `BackendPlugin`，并在构造时检查配置：
 
 ```rust,ignore
-use rutis::PluginFactory;
+use rutis::host::ErrorKind;
 
-struct BackendFactory;
-
-impl PluginFactory<String> for BackendFactory {
-    fn build(&self, label: &String) -> Result<Box<dyn Plugin>, CordisError> {
-        if label.trim().is_empty() {
-            return Err(CordisError::Validation {
-                issues: vec!["backend label is required".into()],
-            });
+fn backend(label: &String) -> rutis::Result<BackendPlugin> {
+    if label.trim().is_empty() {
+        return Err(ErrorKind::Validation {
+            issues: vec!["backend label is required".into()],
         }
-        Ok(Box::new(BackendPlugin(label.clone())))
+        .into());
     }
+    Ok(BackendPlugin(label.clone()))
 }
 ```
 
-宿主通过工厂注册插件，之后提交新配置：
+宿主用构造函数注册插件，之后提交新配置：
 
 ```rust,ignore
-let backend = root.plugin_with(BackendFactory, String::from("local"));
+let backend = root.plugin_from(backend, String::from("local"));
 backend.update(String::from("remote")).await?;
 ```
 
+依赖在运行时才确定的插件实现 `host::PluginFactory`，用 `plugin_with(factory, config)` 注册，更新的规则相同。
+
 一次更新分为两步：
 
-1. **预检查。** 执行 `validate_config`、`build` 和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
+1. **预检查。** 执行构造函数（工厂为 `validate_config` 和 `build`）和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
 2. **重新加载。** 保存新配置，清理旧实例，依赖就绪后再次构造和加载插件。消费者随服务变化重新加载。
 
-`build` 负责纯粹的对象构造，网络连接、任务启动等操作放在 `apply` 中。首次加载也需要的校验写在 `build` 或插件的 `validate` 中；`validate_config` 用于更新预检查。
+构造函数（以及工厂的 `build`）只负责构造对象，网络连接、任务启动等操作放在 `apply` 中。首次加载也需要的校验写在构造函数或插件的 `validate` 中；工厂的 `validate_config` 用于更新预检查。
 
 正式加载仍可能遇到网络或资源错误，宿主应保留恢复策略，例如重试或重新提交上次有效配置。更新后观察实际业务入口的状态，再恢复请求处理。需要改用另一组依赖时，由宿主选择并注册相应插件。
 
@@ -420,10 +382,10 @@ backend.update(String::from("remote")).await?;
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
-use rutis::{CordisError, FiberView};
+use rutis::host::{ErrorKind, FiberView};
 
 async fn try_shutdown(view: &FiberView, limit: Duration)
-    -> Result<bool, Arc<CordisError>>
+    -> Result<bool, Arc<ErrorKind>>
 {
     match tokio::time::timeout(limit, view.shutdown()).await {
         Ok(result) => {
@@ -453,11 +415,11 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 | 插件进入 Failed | `view.state().error` 中的具体原因 |
 | 关闭持续等待 | 初始化是否结束，任务是否响应取消，清理和监听器回调是否完成 |
 
-`diagnostics()` 读取已有状态。使用健康谓词的服务在条件变化后调用 `refresh()`，再观察检查结果。
+`diagnostics()` 读取已有状态。使用健康谓词的服务（见[声明依赖](#声明依赖)）在条件变化后先调用 `refresh()`，再观察检查结果。
 
 ### 处理错误
 
-生命周期操作和等待型事件的错误通过返回值处理。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。
+生命周期操作和等待型事件的错误通过返回值处理。错误类型是 `rutis::Error`，`?` 能把任何标准错误转成它；要区分 rutis 自己的失败时用 `err.kind()`，它返回 `Option<&ErrorKind>`，来自插件代码的错误是 `None`。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。ErrorSink、`take_cleanup_errors()`，以及等待 `FiberView`、`dispose()`、`shutdown()` 得到的错误，是共享的 `Arc<ErrorKind>`。
 
 提前释放 effect 时，先处理 `Disposer::dispose()` 的结果。长寿命插件还可定期调用 `take_cleanup_errors()`，取走并处理已完成的历史清理错误。后台任务的错误由任务所有者观察和报告。
 
@@ -483,4 +445,4 @@ cargo run -p rutis --example development_workflow
 
 ---
 
-适用于 Rutis 0.3.0。行为依据仓库提交 `015d48c`。标注为片段的代码在相应上下文中使用；完整程序见快速开始和配套示例。
+适用于 Rutis 0.17。标注为片段的代码在相应上下文中使用；完整程序见快速开始和配套示例。

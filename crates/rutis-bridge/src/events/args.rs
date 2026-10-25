@@ -12,19 +12,21 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use rutis::events::{Codec, Mode, Payload, PayloadRef, Transcoder, Value as Result_};
-use rutis::{CordisError, Event};
+use rutis::events::Mode;
+use rutis::host::ErrorKind;
+use rutis::internal::events::{Codec, Payload, PayloadRef, Transcoder, Value as Result_};
+use rutis::{Error as RutisError, Event};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::session::{decode_with, encode_with, transcode_with, Dynamic, Error, Value};
 
-/// A dynamic event: its arguments as session values. Use it as
-/// `EventKey::<Args>::dynamic(name)` to listen to, or emit, an event by
-/// name with whatever arguments it has. It has no name of its own: with
-/// [`EventKey::of`](rutis::EventKey::of) every registration and dispatch
-/// fails (`Args events need a name: EventKey::dynamic(name)`, events
-/// protocol §12.1).
+/// A dynamic event: its arguments as session values. Listen to it by name
+/// with `ctx.listen::<Args>().name(name)`, and send it under a name with
+/// `CtxInternal::named(&ctx, name)`, to take whatever arguments the event
+/// has. It has no name of its own: without one every registration and
+/// dispatch fails (`Args events need a name: EventKey::dynamic(name)`,
+/// events protocol §12.1).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Args(pub Vec<Value>);
 
@@ -64,11 +66,11 @@ impl<'de> Deserialize<'de> for ArgValue {
     }
 }
 
-fn event_error(type_name: &'static str, message: impl Into<String>) -> CordisError {
-    CordisError::EventValue {
+fn event_error(type_name: &'static str, message: impl Into<String>) -> RutisError {
+    rutis::Error::from(ErrorKind::EventValue {
         type_name,
         message: message.into(),
-    }
+    })
 }
 
 /// The bus's transcoder once rutis-bridge runs on it: conversions keep
@@ -77,11 +79,7 @@ fn event_error(type_name: &'static str, message: impl Into<String>) -> CordisErr
 pub(crate) struct SessionTranscoder;
 
 impl Transcoder for SessionTranscoder {
-    fn event(
-        &self,
-        from: PayloadRef<'_>,
-        into: &Codec,
-    ) -> Result<Box<dyn Any + Send>, CordisError> {
+    fn event(&self, from: PayloadRef<'_>, into: &Codec) -> Result<Box<dyn Any + Send>, RutisError> {
         let into_args = into.type_id() == std::any::TypeId::of::<Args>();
         if let Some(args) = from.downcast::<Args>() {
             if into_args {
@@ -112,7 +110,7 @@ impl Transcoder for SessionTranscoder {
         .map_err(|error| event_error(into.type_name(), error))
     }
 
-    fn value(&self, from: &Result_, into: &Codec) -> Result<Box<dyn Any + Send>, CordisError> {
+    fn value(&self, from: &Result_, into: &Codec) -> Result<Box<dyn Any + Send>, RutisError> {
         transcode_with(
             || from.to_json().map_err(|e| e.to_string()),
             |json| into.from_json(json).map_err(|error| error.to_string()),

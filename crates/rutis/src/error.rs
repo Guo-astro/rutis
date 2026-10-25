@@ -84,33 +84,42 @@ pub struct ServiceWriteError {
     pub reason: ServiceWriteFailure,
 }
 
-/// 框架错误。不 `Clone`(D11);跨任务共享走 `Arc<CordisError>`。
+/// What went wrong in rutis: the variants a host matches on, through
+/// [`Error::kind`] or `match &*error` (an [`Error`] dereferences to its
+/// kind). An error from plugin code is `PluginFailed`.
 ///
-/// It is an `Error + Send + Sync + 'static` and is shared through `Arc`:
+/// It is an `Error + Send + Sync + 'static`; errors are shared as
+/// `Arc<ErrorKind>` (the error sink, a fiber's result):
 ///
 /// ```
 /// // guarantee: core/D11
 /// fn shared<T: std::error::Error + Send + Sync + 'static>() {}
-/// shared::<rutis::CordisError>();
-/// let first = std::sync::Arc::new(rutis::CordisError::Closed);
+/// shared::<rutis::host::ErrorKind>();
+/// let first = std::sync::Arc::new(rutis::host::ErrorKind::Closed);
 /// let second = std::sync::Arc::clone(&first);
 /// assert!(std::sync::Arc::ptr_eq(&first, &second));
 /// ```
 ///
-/// It does not implement `Clone`; copies would lose the identity that
-/// joiners compare (D25):
+/// Neither it nor [`Error`] implements `Clone`; copies would lose the
+/// identity that joiners compare (D25):
 ///
 /// ```compile_fail,E0277
 /// // guarantee: core/D11
 /// fn cloneable<T: Clone>() {}
-/// cloneable::<rutis::CordisError>();
+/// cloneable::<rutis::host::ErrorKind>();
 /// ```
 ///
-/// 变体分层(D25):`PluginFailed` 仅包装 apply/清理边界外来的非 Cordis 错误;
-/// apply 自身返回的 `CordisError` 直接传播,不再递归包一层。
+/// ```compile_fail,E0277
+/// // guarantee: core/D11
+/// fn cloneable<T: Clone>() {}
+/// cloneable::<rutis::Error>();
+/// ```
+///
+/// 变体分层(D25):`PluginFailed` 仅包装 apply/清理边界外来的非 rutis 错误;
+/// apply 自身返回的 rutis 错误直接传播,不再递归包一层。
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum CordisError {
+pub enum ErrorKind {
     #[error(transparent)]
     ServiceRead(#[from] ServiceReadError),
     #[error("service {0:?} not found in scope")]
@@ -121,7 +130,7 @@ pub enum CordisError {
     Aggregate {
         /// 聚合成员,不压平(D18/§五 dispose 契约)。`Arc` 成员是 D11(不
         /// Clone)与 D25(错误 identity 缓存 `Arc`)的推论,见 §八 实现记录。
-        errors: Vec<Arc<CordisError>>,
+        errors: Vec<Arc<ErrorKind>>,
     },
     #[error("fiber disposed")]
     InactiveEffect,
@@ -151,7 +160,7 @@ pub enum CordisError {
     #[error("{} listeners of {name} failed", errors.len())]
     ListenersFailed {
         name: String,
-        errors: Vec<Arc<CordisError>>,
+        errors: Vec<Arc<ErrorKind>>,
     },
     /// `bail` / `waterfall-sync` met an asynchronous listener.
     #[error(
@@ -174,14 +183,14 @@ pub enum CordisError {
     ListenerFailed {
         name: String,
         listener: String,
-        error: Arc<CordisError>,
+        error: Arc<ErrorKind>,
     },
     /// An `emit` filter failed; reported to the error sink.
     #[error("filter of {name} from {emitter} failed: {error}")]
     FilterFailed {
         name: String,
         emitter: String,
-        error: Arc<CordisError>,
+        error: Arc<ErrorKind>,
     },
     /// The entry is no longer in the listener table.
     #[error("listener {id} of {name} is withdrawn")]
@@ -193,10 +202,12 @@ pub enum CordisError {
         message: String,
     },
     #[error(transparent)]
-    SyncEventPanicked(Arc<CordisError>),
-    /// The key of an event type with no name of its own (an empty `NAME`,
-    /// `rutis_bridge::events::Args`) was not given one: `EventKey::of()`
-    /// where `EventKey::dynamic(name)` is needed (protocol spec §12.1).
+    SyncEventPanicked(Arc<ErrorKind>),
+    /// An event type with no name of its own (an empty `NAME`,
+    /// `rutis_bridge::events::Args`) was listened to or sent without one:
+    /// `ctx.listen::<E>().name(..)`, or a value whose `Event::name` gives it,
+    /// was needed (protocol spec §12.1). The message is the protocol's and
+    /// stays as it is in every language.
     #[error("{event} events need a name: EventKey::dynamic(name)")]
     EventNeedsName { event: String },
     /// An unload waited `seconds` (`RUTIS_SHUTDOWN_TIMEOUT`) for the event
@@ -241,37 +252,170 @@ impl NextMisuse {
     }
 }
 
-impl CordisError {
+impl ErrorKind {
     /// The cross-language error name of an event error (protocol spec §11):
     /// `AggregateError`, `AsyncListener`, `WaterfallNext`, `ReservedEvent`;
     /// `None` for every other error.
     pub fn wire_name(&self) -> Option<&'static str> {
         match self {
-            CordisError::ListenersFailed { .. } => Some("AggregateError"),
-            CordisError::AsyncListener { .. } => Some("AsyncListener"),
-            CordisError::WaterfallNext { .. } => Some("WaterfallNext"),
-            CordisError::ReservedEvent { .. } => Some("ReservedEvent"),
-            CordisError::EventNeedsName { .. } => Some("BindingError"),
+            ErrorKind::ListenersFailed { .. } => Some("AggregateError"),
+            ErrorKind::AsyncListener { .. } => Some("AsyncListener"),
+            ErrorKind::WaterfallNext { .. } => Some("WaterfallNext"),
+            ErrorKind::ReservedEvent { .. } => Some("ReservedEvent"),
+            ErrorKind::EventNeedsName { .. } => Some("BindingError"),
             _ => None,
         }
     }
 }
 
+/// The error of every rutis signature.
+///
+/// `?` turns any `std::error::Error + Send + Sync + 'static` into it; a
+/// rutis error keeps its [`ErrorKind`], any other is the plugin's own
+/// error: [`Error::kind`] is `None` and the host sees it inside
+/// [`ErrorKind::PluginFailed`]. It does not implement `std::error::Error`
+/// itself (that is what lets `?` accept any error, as with
+/// `anyhow::Error`); it dereferences to the [`ErrorKind`] the host sees,
+/// which does, and converts into `Box<dyn std::error::Error + Send + Sync>`.
+/// Shared errors (the error sink, a plugin's result) are `Arc<ErrorKind>`.
+///
+/// ```
+/// fn read() -> rutis::Result<String> {
+///     Ok(std::fs::read_to_string("/nonexistent/rutis")?) // io::Error through `?`
+/// }
+/// fn host() -> Result<(), Box<dyn std::error::Error>> {
+///     let _ = read().is_err();
+///     Err(rutis::Error::msg("boom"))?
+/// }
+/// assert!(host().is_err());
+/// ```
+pub struct Error {
+    kind: Box<ErrorKind>,
+    /// Made from a non-rutis error or a message: plugin code's own error.
+    foreign: bool,
+}
+
+/// `Result` with [`Error`]: `rutis::Result` is `Result<(), Error>`.
+pub type Result<T = (), E = Error> = std::result::Result<T, E>;
+
+impl Error {
+    fn new(kind: ErrorKind, foreign: bool) -> Self {
+        Error {
+            kind: Box::new(kind),
+            foreign,
+        }
+    }
+
+    /// Which rutis failure this is, to match on; `None` for an error that
+    /// came from plugin code (`?` on another error type, [`Error::msg`]).
+    pub fn kind(&self) -> Option<&ErrorKind> {
+        (!self.foreign).then_some(&*self.kind)
+    }
+
+    /// The kind the host sees, by value: a plugin code error is a
+    /// [`ErrorKind::PluginFailed`].
+    pub fn into_kind(self) -> ErrorKind {
+        *self.kind
+    }
+
+    /// This error as the shared form errors take when several parties
+    /// hold them (the error sink, a fiber's result).
+    pub(crate) fn shared(self) -> Arc<ErrorKind> {
+        Arc::new(self.into_kind())
+    }
+
+    /// An error with this message (a `PluginFailed`).
+    pub fn msg(message: impl Into<String>) -> Self {
+        Error::new(ErrorKind::PluginFailed(message.into().into()), true)
+    }
+
+    /// An `anyhow::Error` as a rutis error. `anyhow::Error` does not
+    /// implement `std::error::Error`, so `?` cannot convert it.
+    #[cfg(feature = "anyhow")]
+    pub fn from_anyhow(error: anyhow::Error) -> Self {
+        Error::new(ErrorKind::PluginFailed(error.into()), true)
+    }
+}
+
+impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
+    fn from(error: E) -> Self {
+        // A rutis error keeps its kind (D25: no second wrapping); a strict
+        // read error keeps its `ServiceRead` variant.
+        let mut slot = Some(error);
+        let any: &mut dyn std::any::Any = &mut slot;
+        if let Some(kind) = any.downcast_mut::<Option<ErrorKind>>() {
+            return Error::new(kind.take().expect("taken once"), false);
+        }
+        if let Some(read) = any.downcast_mut::<Option<ServiceReadError>>() {
+            return Error::new(
+                ErrorKind::ServiceRead(read.take().expect("taken once")),
+                false,
+            );
+        }
+        let error = slot.take().expect("taken once");
+        Error::new(ErrorKind::PluginFailed(Box::new(error)), true)
+    }
+}
+
+impl std::ops::Deref for Error {
+    type Target = ErrorKind;
+    fn deref(&self) -> &ErrorKind {
+        &self.kind
+    }
+}
+
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.kind, f)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.kind, f)
+    }
+}
+
+impl AsRef<dyn std::error::Error + Send + Sync + 'static> for Error {
+    fn as_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        &*self.kind
+    }
+}
+
+impl From<Error> for Box<dyn std::error::Error + Send + Sync + 'static> {
+    fn from(error: Error) -> Self {
+        error.kind
+    }
+}
+
+impl From<Error> for Box<dyn std::error::Error + 'static> {
+    fn from(error: Error) -> Self {
+        error.kind
+    }
+}
+
+#[cfg(feature = "anyhow")]
+impl From<Error> for anyhow::Error {
+    fn from(error: Error) -> Self {
+        anyhow::Error::new(error.into_kind())
+    }
+}
+
 /// 错误汇聚点。默认实现输出到 stderr(设计 §二)。
 ///
-/// 成员为 `Arc<CordisError>`:dispose 类错误经 `TransitionTask` 缓存 identity
-/// (D25),而 `CordisError` 刻意不 Clone(D11),见 §八 实现记录。
-pub type ErrorSink = Arc<dyn Fn(Arc<CordisError>) + Send + Sync>;
+/// 成员为 `Arc<ErrorKind>`:dispose 类错误经 `TransitionTask` 缓存 identity
+/// (D25),而 `Error` 刻意不 Clone(D11),见 §八 实现记录。
+pub type ErrorSink = Arc<dyn Fn(Arc<ErrorKind>) + Send + Sync>;
 
 /// The sink `Ctx::root` / `Ctx::root_with` install: one `[rutis] ...` line on
 /// stderr per error. A host installing its own sink can delegate to it.
 pub fn default_sink() -> ErrorSink {
-    Arc::new(|e: Arc<CordisError>| eprintln!("[rutis] {}", format_for_sink(&e)))
+    Arc::new(|e: Arc<ErrorKind>| eprintln!("[rutis] {}", format_for_sink(&e)))
 }
 
-fn format_for_sink(error: &CordisError) -> String {
+fn format_for_sink(error: &ErrorKind) -> String {
     fn write_source(source: &(dyn std::error::Error + 'static), out: &mut String, indent: usize) {
-        if let Some(error) = source.downcast_ref::<CordisError>() {
+        if let Some(error) = source.downcast_ref::<ErrorKind>() {
             write_error(error, out, indent);
             return;
         }
@@ -284,9 +428,9 @@ fn format_for_sink(error: &CordisError) -> String {
         }
     }
 
-    fn write_error(error: &CordisError, out: &mut String, indent: usize) {
+    fn write_error(error: &ErrorKind, out: &mut String, indent: usize) {
         match error {
-            CordisError::Aggregate { errors } => {
+            ErrorKind::Aggregate { errors } => {
                 out.push_str("multiple errors:");
                 for (index, member) in errors.iter().enumerate() {
                     out.push('\n');
@@ -295,13 +439,13 @@ fn format_for_sink(error: &CordisError) -> String {
                     write_error(member, out, indent + 3);
                 }
             }
-            CordisError::PluginFailed(source) => {
+            ErrorKind::PluginFailed(source) => {
                 let display = error.to_string();
                 let direct = source.to_string();
                 match display.strip_suffix(&direct) {
                     Some(prefix) => {
                         // Keep the public Display as the source of the prefix,
-                        // while formatting a nested CordisError structurally.
+                        // while formatting a nested rutis error structurally.
                         out.push_str(prefix);
                         write_source(source.as_ref(), out, indent);
                     }
@@ -328,16 +472,16 @@ fn format_for_sink(error: &CordisError) -> String {
 }
 
 /// 单错原样、多错聚合不压平,成员是共享 identity 的 `Arc`;返回 `None` 表示无错。
-pub(crate) fn aggregate_arcs(errors: Vec<Arc<CordisError>>) -> Option<Arc<CordisError>> {
+pub(crate) fn aggregate_arcs(errors: Vec<Arc<ErrorKind>>) -> Option<Arc<ErrorKind>> {
     match errors.len() {
         0 => None,
         1 => errors.into_iter().next(),
-        _ => Some(Arc::new(CordisError::Aggregate { errors })),
+        _ => Some(Arc::new(ErrorKind::Aggregate { errors })),
     }
 }
 
 /// 把任务边界捕获的 panic 转成 `PluginFailed`(D30)。
-pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> CordisError {
+pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> Error {
     let msg = if let Some(s) = p.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = p.downcast_ref::<String>() {
@@ -345,16 +489,16 @@ pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> CordisError {
     } else {
         "panic in task".to_string()
     };
-    CordisError::PluginFailed(msg.into())
+    ErrorKind::PluginFailed(msg.into()).into()
 }
 
 /// JoinError → 错误:先区分 panic 与取消——`into_panic()` 在取消场景会
 /// 二次 panic(评审 P2),取消转明确的任务取消错误。
-pub(crate) fn join_panic_error(join_err: tokio::task::JoinError) -> CordisError {
+pub(crate) fn join_panic_error(join_err: tokio::task::JoinError) -> Error {
     if join_err.is_panic() {
         panic_error(join_err.into_panic())
     } else {
-        CordisError::PluginFailed("task cancelled before completion".into())
+        ErrorKind::PluginFailed("task cancelled before completion".into()).into()
     }
 }
 
@@ -375,7 +519,7 @@ mod tests {
 
     #[test]
     fn plugin_failure_display_and_sink_preserve_each_cause_once() {
-        let error = CordisError::PluginFailed(Box::new(OuterCause { source: InnerCause }));
+        let error = ErrorKind::PluginFailed(Box::new(OuterCause { source: InnerCause }));
         assert_eq!(error.to_string(), "plugin failed: outer cause");
         assert_eq!(
             format_for_sink(&error),
@@ -389,10 +533,10 @@ mod tests {
 
     #[test]
     fn sink_formats_aggregate_members_without_debug_noise() {
-        let error = CordisError::Aggregate {
+        let error = ErrorKind::Aggregate {
             errors: vec![
-                Arc::new(CordisError::PluginFailed("cleanup detail".into())),
-                Arc::new(CordisError::ServiceNotFound("missing".into())),
+                Arc::new(ErrorKind::PluginFailed("cleanup detail".into())),
+                Arc::new(ErrorKind::ServiceNotFound("missing".into())),
             ],
         };
         assert_eq!(
@@ -403,13 +547,35 @@ mod tests {
 
     #[test]
     fn sink_recurses_into_aggregate_used_as_plugin_failure_source() {
-        let nested = CordisError::Aggregate {
-            errors: vec![Arc::new(CordisError::ServiceNotFound("nested".into()))],
+        let nested = ErrorKind::Aggregate {
+            errors: vec![Arc::new(ErrorKind::ServiceNotFound("nested".into()))],
         };
-        let error = CordisError::PluginFailed(Box::new(nested));
+        let error = ErrorKind::PluginFailed(Box::new(nested));
         assert_eq!(
             format_for_sink(&error),
             "plugin failed: multiple errors:\n1. service \"nested\" not found in scope"
         );
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("quota exceeded")]
+    struct Quota;
+
+    #[test]
+    fn question_mark_keeps_rutis_kinds_and_wraps_foreign_errors() {
+        let kept: Error = ErrorKind::Closed.into();
+        assert!(matches!(kept.kind(), Some(ErrorKind::Closed)));
+        let wrapped: Error = Quota.into();
+        assert!(wrapped.kind().is_none(), "a plugin's own error has no kind");
+        match &*wrapped {
+            ErrorKind::PluginFailed(source) => assert_eq!(source.to_string(), "quota exceeded"),
+            other => panic!("expected PluginFailed, got {other:?}"),
+        }
+        let io: Error = std::io::Error::other("disk").into();
+        assert!(io.kind().is_none());
+        assert!(matches!(&*io, ErrorKind::PluginFailed(_)));
+        assert!(Error::msg("boom").kind().is_none());
+        let boxed: Box<dyn std::error::Error + Send + Sync> = kept.into();
+        assert_eq!(boxed.to_string(), "root has been shut down");
     }
 }

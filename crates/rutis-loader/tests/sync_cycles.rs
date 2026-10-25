@@ -11,14 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use common::runtimes::{repo, COLD};
-use rutis::{Ctx, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
-use rutis_loader::{
-    Chain, EntryStatus, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RuntimeResolver,
-    RuntimeRowsPlugin, ServiceCatalog,
-};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::recv_within;
 use serde_json::{json, Value};
 
@@ -256,7 +256,7 @@ fn active(loader: &Loader, id: &str) -> bool {
 }
 
 fn service(root: &Ctx, name: &str) -> Option<Arc<dyn HostDispatch>> {
-    root.get_as::<dyn HostDispatch>(host_key(name))
+    root.get_at::<dyn HostDispatch>(&host_key(name))
 }
 
 /// Call `method` of `name` synchronously, on a thread of its own, as an
@@ -319,8 +319,7 @@ async fn fixture(
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = Ctx::root().unwrap();
-    root.provide_as::<dyn HostDispatch>(host_key("gate"), Arc::new(gate))
-        .unwrap();
+    root.provide_at(host_key("gate"), Arc::new(gate)).unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in std::iter::once(&"gate").chain(services) {
         catalog.register_shared(*name);
@@ -331,8 +330,10 @@ async fn fixture(
     #[cfg(feature = "go")]
     let go = go.then(|| {
         Arc::new(
-            rutis_loader::GoResolver::new(rutis_loader::GoBinaries::new().file(go_binary()))
-                .with_catalog(&catalog),
+            rutis_loader::runtime::go::GoResolver::new(
+                rutis_loader::runtime::go::GoBinaries::new().file(go_binary()),
+            )
+            .with_catalog(&catalog),
         )
     });
     #[cfg(feature = "go")]
@@ -344,8 +345,8 @@ async fn fixture(
     #[cfg(all(feature = "swift", target_os = "macos"))]
     let swift = swift.then(|| {
         Arc::new(
-            rutis_loader::SwiftResolver::new(
-                rutis_loader::SwiftBinaries::new()
+            rutis_loader::runtime::swift::SwiftResolver::new(
+                rutis_loader::runtime::swift::SwiftBinaries::new()
                     .file(common::runtimes::swift_binary("RutisMultilang", "relay")),
             )
             .with_catalog(&catalog),
@@ -382,13 +383,13 @@ async fn fixture(
     }
     #[cfg(feature = "go")]
     if let Some(go) = go {
-        root.plugin(rutis_loader::GoRuntimes::new(go, dir.path()).idle(None))
+        root.plugin(rutis_loader::runtime::go::GoRuntimes::new(go, dir.path()).idle(None))
             .await
             .unwrap();
     }
     #[cfg(all(feature = "swift", target_os = "macos"))]
     if let Some(swift) = swift {
-        root.plugin(rutis_loader::SwiftRuntimes::new(swift, dir.path()).idle(None))
+        root.plugin(rutis_loader::runtime::swift::SwiftRuntimes::new(swift, dir.path()).idle(None))
             .await
             .unwrap();
     }

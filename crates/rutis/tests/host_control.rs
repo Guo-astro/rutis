@@ -3,31 +3,30 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::{
-    BoxFuture, CordisError, Ctx, Effect, EventKey, Listener, Plugin, PluginId, ServiceChange,
-    ServiceChanged, TypeKey,
-};
+use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginId, TypeKey};
+use rutis::{Ctx, Error};
 
 struct Named(&'static str);
 
-impl Plugin for Named {
+impl DynPlugin for Named {
     fn name(&self) -> &str {
         self.0
     }
 
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async { Ok(Effect::Done) })
     }
 }
 
 struct Provides(u32);
 
-impl Plugin for Provides {
+impl DynPlugin for Provides {
     fn name(&self) -> &str {
         "provides"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.provide(self.0)?;
             Ok(Effect::Done)
@@ -38,12 +37,12 @@ impl Plugin for Provides {
 /// Mounts a child plugin from inside apply.
 struct Parent;
 
-impl Plugin for Parent {
+impl DynPlugin for Parent {
     fn name(&self) -> &str {
         "parent"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.plugin(Named("child"));
             Ok(Effect::Done)
@@ -54,7 +53,7 @@ impl Plugin for Parent {
 #[tokio::test]
 async fn boxed_plugins_mount() {
     let root = Ctx::root().unwrap();
-    let chosen: Vec<Box<dyn Plugin>> = vec![Box::new(Named("a")), Box::new(Provides(7))];
+    let chosen: Vec<Box<dyn DynPlugin>> = vec![Box::new(Named("a")), Box::new(Provides(7))];
     let mut views = Vec::new();
     for plugin in chosen {
         views.push(root.plugin(plugin));
@@ -91,18 +90,12 @@ async fn view_finds_a_fiber_by_id() {
 #[derive(Clone, Default)]
 struct Changes(Arc<Mutex<Vec<(TypeKey, PluginId, ServiceChange)>>>);
 
-impl Listener<ServiceChanged> for Changes {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        e: &'a ServiceChanged,
-        _: rutis::Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
+impl Changes {
+    fn record(&self, e: &ServiceChanged) {
         self.0
             .lock()
             .unwrap()
             .push((e.key.clone(), e.provider, e.change));
-        Box::pin(async { Ok(None) })
     }
 }
 
@@ -120,9 +113,12 @@ async fn wait_for(changes: &Changes, len: usize) {
 async fn service_changes_are_announced() {
     let root = Ctx::root().unwrap();
     let changes = Changes::default();
-    root.events()
-        .on(&root, &EventKey::of(), changes.clone())
-        .unwrap();
+    let listener = changes.clone();
+    root.on::<ServiceChanged>(move |e, _| {
+        listener.record(&e);
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
 
     let provider = root.plugin(Provides(1));
     (&provider).await.unwrap();
@@ -143,12 +139,12 @@ async fn service_changes_are_announced() {
 /// Disposes itself during apply when told to.
 struct Quitter;
 
-impl Plugin for Quitter {
+impl DynPlugin for Quitter {
     fn name(&self) -> &str {
         "quitter"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.dispose_self()?;
             Ok(Effect::Done)
@@ -163,32 +159,32 @@ async fn a_plugin_can_dispose_itself() {
     let quitter = root.plugin(Quitter);
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut watch = quitter.watch();
-        while watch.borrow().state != rutis::FiberState::Disposed {
+        while watch.borrow().state != rutis::host::FiberState::Disposed {
             watch.changed().await.unwrap();
         }
     })
     .await
     .expect("disposed");
     (&sibling).await.unwrap();
-    assert_eq!(sibling.state().state, rutis::FiberState::Active);
+    assert_eq!(sibling.state().state, rutis::host::FiberState::Active);
     assert!(root.dispose_self().is_err(), "the root shuts down instead");
 }
 
 /// Keeps the context of every generation it applies in.
 struct Keeper(Arc<Mutex<Vec<Ctx>>>);
 
-impl Plugin for Keeper {
+impl DynPlugin for Keeper {
     fn name(&self) -> &str {
         "keeper"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         self.0.lock().unwrap().push(ctx.clone());
         Box::pin(async { Ok(Effect::Done) })
     }
 }
 
-async fn settled(view: &rutis::FiberView, state: rutis::FiberState) {
+async fn settled(view: &rutis::host::FiberView, state: rutis::host::FiberState) {
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut watch = view.watch();
         while watch.borrow().state != state {
@@ -208,15 +204,15 @@ async fn a_stale_context_cannot_dispose_the_next_generation() {
     let first = kept.lock().unwrap()[0].clone();
     view.restart().await.unwrap();
     assert!(matches!(
-        first.dispose_self(),
-        Err(CordisError::InactiveEffect)
+        first.dispose_self().map_err(Error::into_kind),
+        Err(ErrorKind::InactiveEffect)
     ));
-    assert_eq!(view.state().state, rutis::FiberState::Active);
+    assert_eq!(view.state().state, rutis::host::FiberState::Active);
 
     // The current generation still can.
     let second = kept.lock().unwrap()[1].clone();
     second.dispose_self().unwrap();
-    settled(&view, rutis::FiberState::Disposed).await;
+    settled(&view, rutis::host::FiberState::Disposed).await;
 }
 
 #[tokio::test]
@@ -231,11 +227,11 @@ async fn dispose_self_during_a_restart_is_refused() {
     let restart = tokio::spawn(view.restart());
     tokio::task::yield_now().await;
     assert!(matches!(
-        first.dispose_self(),
-        Err(CordisError::InactiveEffect)
+        first.dispose_self().map_err(Error::into_kind),
+        Err(ErrorKind::InactiveEffect)
     ));
     restart.await.unwrap().unwrap();
-    assert_eq!(view.state().state, rutis::FiberState::Active);
+    assert_eq!(view.state().state, rutis::host::FiberState::Active);
     assert!(view.state().generation > generation);
 }
 
@@ -254,9 +250,9 @@ async fn dispose_self_racing_a_restart_is_all_or_nothing() {
         let _ = restart.await.unwrap();
         // Accepted: the fiber ends disposed. Refused: the restart's
         // generation runs on.
-        let expected = match disposed {
-            Ok(()) => rutis::FiberState::Disposed,
-            Err(CordisError::InactiveEffect) => rutis::FiberState::Active,
+        let expected = match disposed.map_err(Error::into_kind) {
+            Ok(()) => rutis::host::FiberState::Disposed,
+            Err(ErrorKind::InactiveEffect) => rutis::host::FiberState::Active,
             Err(other) => panic!("{other:?}"),
         };
         settled(&view, expected).await;
@@ -267,17 +263,17 @@ async fn dispose_self_racing_a_restart_is_all_or_nothing() {
 /// Records each build's config.
 struct Recording(Arc<Mutex<Vec<u32>>>);
 
-impl rutis::PluginFactory<u32> for Recording {
-    fn validate_config(&self, config: &u32) -> Result<(), CordisError> {
+impl rutis::host::PluginFactory<u32> for Recording {
+    fn validate_config(&self, config: &u32) -> Result<(), Error> {
         if *config == 0 {
-            return Err(CordisError::Validation {
+            return Err(rutis::Error::from(ErrorKind::Validation {
                 issues: vec!["zero".into()],
-            });
+            }));
         }
         Ok(())
     }
 
-    fn build(&self, config: &u32) -> Result<Box<dyn Plugin>, CordisError> {
+    fn build(&self, config: &u32) -> Result<Box<dyn DynPlugin>, Error> {
         self.0.lock().unwrap().push(*config);
         Ok(Box::new(Named("recorded")))
     }

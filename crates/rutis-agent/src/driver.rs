@@ -18,29 +18,19 @@ use aimux_core::message::{MessageContent, ModelMessage, Role};
 use aimux_core::options::CallOptions;
 use aimux_core::stream_part::StreamPart;
 use aimux_core::tool::ToolCall;
+use futures::future::BoxFuture;
 use futures::StreamExt;
-use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, EventKey, Plugin, TypeKey};
+use rutis::host::CtxHost;
+use rutis::{Ctx, Event, Plugin};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentError, AgentStatus, SessionSnapshot, StatusCell};
 use crate::events::{
     AgentPreStep, AgentReasoning, AgentStepEvent, AgentTextDelta, AgentToolCall, AgentToolResult,
-    AgentTurnEnd, PreStepDecision, ToolPostExecute, ToolPreExecute,
+    AgentTurnEnd, ToolPostExecute, ToolPreExecute,
 };
 use crate::session::{Session, SessionId};
 use crate::tools::{ToolOutput, ToolRegistry};
-use crate::{agent_key, tools_key};
-
-/// llm 服务键(aimux `LanguageModel` 直接 provide,无插件空壳)。
-pub fn llm_key() -> TypeKey {
-    TypeKey::of::<dyn LanguageModel>()
-}
-
-/// session 持久化路径服务键(`AgentDriverPlugin` 在 apply 时 provide;
-/// 供 `self_persist` 等自我控制工具经服务注册表读取,不污染 `Agent` trait)。
-pub fn session_path_key() -> TypeKey {
-    TypeKey::of::<Option<PathBuf>>()
-}
 
 /// 默认 session 持久化路径约定:`<cwd>/.rutis/session.json`。
 ///
@@ -77,35 +67,6 @@ pub struct AgentDriver {
     /// 并发 turn 会在同一把锁上排队,
     /// 避免 user/assistant/tool 的 push 交错导致历史乱序(悬空 tool_call)。
     turn_lock: tokio::sync::Mutex<()>,
-}
-
-/// `tools/pre-execute` 终态续延:放行。
-fn pre_execute_default<'a>(
-    _ctx: &'a Ctx,
-    _e: &'a ToolPreExecute,
-) -> BoxFuture<'a, Result<Option<Option<String>>, CordisError>> {
-    Box::pin(async { Ok(Some(None)) })
-}
-
-/// `tools/post-execute` 终态续延:原样 accept。
-fn post_execute_default<'a>(
-    _ctx: &'a Ctx,
-    e: &'a ToolPostExecute,
-) -> BoxFuture<'a, Result<Option<ToolOutput>, CordisError>> {
-    Box::pin(async {
-        Ok(Some(ToolOutput {
-            ok: e.ok,
-            output: e.output.clone(),
-        }))
-    })
-}
-
-/// `agent/pre-step` 终态续延:原样放行。
-fn pre_step_default<'a>(
-    _ctx: &'a Ctx,
-    e: &'a AgentPreStep,
-) -> BoxFuture<'a, Result<Option<PreStepDecision>, CordisError>> {
-    Box::pin(async { Ok(Some(Ok((e.prompt.clone(), e.tools.clone())))) })
 }
 
 impl AgentDriver {
@@ -148,9 +109,8 @@ impl AgentDriver {
             session.persist(&path)
         };
         if let Err(e) = result {
-            let err: Box<dyn std::error::Error + Send + Sync> =
-                format!("session persist failed: {e}").into();
-            self.ctx.error_sink()(Arc::new(CordisError::PluginFailed(err)));
+            let err = rutis::Error::msg(format!("session persist failed: {e}"));
+            self.ctx.error_sink()(Arc::new(err.into_kind()));
         }
     }
 
@@ -215,12 +175,8 @@ impl AgentDriver {
 
     /// 通知无法入队时交给 ErrorSink,不中断 agent 循环。
     fn emit_default<E: Event>(&self, event: E) {
-        if let Err(error) = self
-            .ctx
-            .events()
-            .emit(&self.ctx, &EventKey::of(), Arc::new(event))
-        {
-            self.ctx.error_sink()(Arc::new(error));
+        if let Err(error) = self.ctx.emit(event) {
+            self.ctx.error_sink()(Arc::new(error.into_kind()));
         }
     }
 
@@ -239,16 +195,12 @@ impl AgentDriver {
         //    管线自身失败按拒绝处理——门控 fail closed)
         let gate: Option<String> = self
             .ctx
-            .events()
-            .waterfall(
-                &self.ctx,
-                &EventKey::of(),
-                &ToolPreExecute {
-                    session,
-                    call: call.clone(),
-                },
-                pre_execute_default,
-            )
+            .waterfall(ToolPreExecute {
+                session,
+                call: call.clone(),
+            })
+            // 终态续延:放行
+            .terminal(|_| async { Ok(Some(None)) })
             .await
             .map(Option::flatten)
             .unwrap_or_else(|e| Some(e.to_string()));
@@ -263,18 +215,19 @@ impl AgentDriver {
         //    默认原样 accept)
         let out = self
             .ctx
-            .events()
-            .waterfall(
-                &self.ctx,
-                &EventKey::of(),
-                &ToolPostExecute {
-                    session,
-                    call: call.clone(),
-                    ok: original.ok,
-                    output: original.output.clone(),
-                },
-                post_execute_default,
-            )
+            .waterfall(ToolPostExecute {
+                session,
+                call: call.clone(),
+                ok: original.ok,
+                output: original.output.clone(),
+            })
+            // 终态续延:原样 accept
+            .terminal(|e| async move {
+                Ok(Some(ToolOutput {
+                    ok: e.ok,
+                    output: e.output.clone(),
+                }))
+            })
             .await
             // 无结果(None)= 无人改写,原样 accept
             .map(|v| v.unwrap_or_else(|| original.clone()))
@@ -369,18 +322,14 @@ impl AgentDriver {
                 // ── agent/pre-step waterfall:改写/拒绝进入这步(默认原样)──
                 let (prompt, tools) = self
                     .ctx
-                    .events()
-                    .waterfall(
-                        &self.ctx,
-                        &EventKey::of(),
-                        &AgentPreStep {
-                            session,
-                            step,
-                            prompt: prompt.clone(),
-                            tools: tools.clone(),
-                        },
-                        pre_step_default,
-                    )
+                    .waterfall(AgentPreStep {
+                        session,
+                        step,
+                        prompt: prompt.clone(),
+                        tools: tools.clone(),
+                    })
+                    // 终态续延:原样放行
+                    .terminal(|e| async move { Ok(Some(Ok((e.prompt.clone(), e.tools.clone())))) })
                     .await
                     .map_err(|e| AgentError::Pipeline(e.to_string()))?
                     // 无结果(None)= 无人改写,原样放行
@@ -818,7 +767,7 @@ impl Agent for AgentDriver {
     }
 }
 
-/// agent driver 插件:`injects = [llm, tools]` 双门控,就绪后提供
+/// agent driver 插件:`Deps = (llm, tools)` 双门控,就绪后提供
 /// `dyn Agent` 服务;fiber 卸载经 `ctx.cancelled()` watcher 级联取消
 /// 当前 turn(session 保留,重载即新 driver 新 session)。
 pub struct AgentDriverPlugin {
@@ -826,7 +775,6 @@ pub struct AgentDriverPlugin {
     system_prompt: Option<String>,
     session_path: Option<PathBuf>,
     token_budget: Option<u64>,
-    inject_keys: Vec<TypeKey>,
 }
 
 impl AgentDriverPlugin {
@@ -836,7 +784,6 @@ impl AgentDriverPlugin {
             system_prompt: None,
             session_path: None,
             token_budget: None,
-            inject_keys: vec![llm_key(), tools_key()],
         }
     }
 
@@ -876,69 +823,49 @@ impl Default for AgentDriverPlugin {
 }
 
 impl Plugin for AgentDriverPlugin {
+    /// 双门控:llm + tools 都就绪才 apply,任一被撤即卸载。
+    type Deps = (Arc<dyn LanguageModel>, Arc<ToolRegistry>);
+
     fn name(&self) -> &str {
         "agent-driver"
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.inject_keys
-    }
+    async fn apply(&self, ctx: &Ctx, (llm, tools): Self::Deps) -> rutis::Result {
+        let driver = Arc::new(AgentDriver::new(
+            llm,
+            tools,
+            ctx.clone(),
+            self.max_steps,
+            self.system_prompt.clone(),
+            self.session_path.clone(),
+            self.token_budget,
+        ));
+        ctx.provide_as::<dyn Agent>(driver.clone())?;
+        // 持久化路径服务:自我控制工具(`self_status`/`self_persist`)读取
+        ctx.provide(self.session_path.clone())?;
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
-        Box::pin(async move {
-            // 双门控保证此处 llm + tools 必在
-            let llm = ctx
-                .get_as::<dyn LanguageModel>(llm_key())
-                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["llm".to_string()]))?;
-            let tools = ctx
-                .get_as::<ToolRegistry>(tools_key())
-                .ok_or_else(|| CordisError::InjectUnsatisfied(vec!["tools".to_string()]))?;
-            let driver = Arc::new(AgentDriver::new(
-                llm,
-                tools,
-                ctx.clone(),
-                self.max_steps,
-                self.system_prompt.clone(),
-                self.session_path.clone(),
-                self.token_budget,
-            ));
-            ctx.provide_as::<dyn Agent>(agent_key(), driver.clone())?;
-            // 持久化路径服务:自我控制工具(`self_status`/`self_persist`)读取
-            ctx.provide_as::<Option<PathBuf>>(
-                session_path_key(),
-                Arc::new(self.session_path.clone()),
-            )?;
+        // fiber 卸载 → 落盘 session(持久化路径已配置时)。
+        // 保存时机 ②:挂 effect 清理,后注册→先清理(LIFO),
+        // 保证卸载时 session 是最后一代快照。
+        let persist_driver = driver.clone();
+        ctx.effect(|| async move {
+            persist_driver.persist_session();
+            Ok(())
+        })?;
 
-            // fiber 卸载 → 落盘 session(持久化路径已配置时)。
-            // 保存时机 ②:挂 effect disposer,后注册→先清理(LIFO),
-            // 保证卸载时 session 是最后一代快照。
-            let persist_driver = driver.clone();
-            ctx.effect(move || {
-                let driver = persist_driver.clone();
-                Effect::AsyncDisposer(Box::new(move || {
-                    let driver = driver.clone();
-                    Box::pin(async move {
-                        driver.persist_session();
-                        Ok(())
-                    })
-                }))
-            })?;
-
-            // fiber 卸载 → cancel 当前 turn(driver 内 token 级联停止)
-            let watcher_ctx = ctx.clone();
-            let watcher_driver = driver.clone();
-            ctx.effect(move || {
-                let watcher_ctx = watcher_ctx.clone();
-                let driver = watcher_driver.clone();
-                let handle = watcher_ctx.handle().clone();
-                handle.spawn(async move {
-                    watcher_ctx.cancelled().await;
-                    driver.cancel();
-                });
-                Effect::Done
-            })?;
-            Ok(Effect::Done)
-        })
+        // fiber 卸载 → cancel 当前 turn(driver 内 token 级联停止)
+        let cancelled = ctx.cancelled();
+        ctx.effect(|| {
+            let watcher = tokio::spawn(async move {
+                cancelled.await;
+                driver.cancel();
+            });
+            async move {
+                let _ = watcher.await;
+                Ok(())
+            }
+        })?;
+        Ok(())
     }
 }
 
@@ -1269,12 +1196,12 @@ mod tests {
     async fn failed_turn_rolls_back_session() {
         let root = Ctx::root().unwrap();
         let llm: Arc<dyn LanguageModel> = Arc::new(ScriptedLlm::new(Vec::new()));
-        let llm_d = root.provide_as(llm_key(), llm).unwrap();
+        let llm_d = root.provide_as::<dyn LanguageModel>(llm).unwrap();
         let tools_v = root.plugin(ToolsPlugin::new(Vec::new()));
         let driver_v = root.plugin(AgentDriverPlugin::new(16));
         (&tools_v).await.expect("tools loads");
         (&driver_v).await.expect("driver loads");
-        let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+        let agent = root.get::<dyn Agent>().unwrap();
 
         let before = agent.session().messages().len();
         let res = soon(agent.followup("hi")).await;
@@ -1350,12 +1277,12 @@ mod tests {
             inner: inner.clone(),
             hit: AtomicBool::new(false),
         });
-        let llm_d = root.provide_as(llm_key(), llm).unwrap();
+        let llm_d = root.provide_as::<dyn LanguageModel>(llm).unwrap();
         let tools_v = root.plugin(ToolsPlugin::new(Vec::new()));
         let driver_v = root.plugin(AgentDriverPlugin::new(16).with_session_path(path.clone()));
         (&tools_v).await.expect("tools loads");
         (&driver_v).await.expect("driver loads");
-        let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+        let agent = root.get::<dyn Agent>().unwrap();
         assert!(agent.session().messages().len() > 40, "应恢复了 50 条历史");
 
         let res = soon(agent.followup("go")).await;
@@ -1419,12 +1346,12 @@ mod tests {
         let llm: Arc<dyn LanguageModel> = Arc::new(RateLimited {
             calls: calls.clone(),
         });
-        let llm_d = root.provide_as(llm_key(), llm).unwrap();
+        let llm_d = root.provide_as::<dyn LanguageModel>(llm).unwrap();
         let tools_v = root.plugin(ToolsPlugin::new(Vec::new()));
         let driver_v = root.plugin(AgentDriverPlugin::new(16).with_session_path(path.clone()));
         (&tools_v).await.expect("tools loads");
         (&driver_v).await.expect("driver loads");
-        let agent = root.get_as::<dyn Agent>(agent_key()).unwrap();
+        let agent = root.get::<dyn Agent>().unwrap();
 
         assert!(soon(agent.followup("go")).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);

@@ -9,7 +9,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use rutis::{BoxFuture, CordisError, Ctx, Effect, FiberView, Plugin};
+use rutis::host::{BoxFuture, DynPlugin, Effect, FiberView};
+use rutis::{Ctx, Error};
 
 use crate::events::LinkEventsPlugin;
 use crate::runtime::RuntimeAccessPlugin;
@@ -233,12 +234,12 @@ impl PeerHandle {
     }
 }
 
-impl Plugin for PeerPlugin {
+impl DynPlugin for PeerPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let link = LinkPlugin::new(self.link.clone());
             *self.state.lock().unwrap() = Some(link.state());
@@ -253,11 +254,11 @@ impl Plugin for PeerPlugin {
             }
             let children = self.children.clone();
             ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
+                async move {
                     // The children are this fiber's and go with it.
                     *children.lock().unwrap() = Children::default();
                     Ok(())
-                }))
+                }
             })?;
             Ok(Effect::Done)
         })

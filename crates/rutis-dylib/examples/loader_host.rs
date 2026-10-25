@@ -7,9 +7,11 @@ mod imp {
     use std::path::Path;
     use std::sync::Arc;
 
-    use rutis::{Ctx, FiberState};
+    use rutis::host::{CtxHost, FiberState};
+    use rutis::Ctx;
     use rutis_dylib::{DylibResolver, Loader};
-    use rutis_loader::{EntryStatus, Layer, LoaderError, LoaderOptions, LoaderPlugin, Patch};
+    use rutis_loader::report::EntryStatus;
+    use rutis_loader::{Layer, LoaderError, LoaderOptions, LoaderPlugin, Patch};
 
     fn replace(dir: &Path, from: &Path) -> std::io::Result<()> {
         if dir.exists() {

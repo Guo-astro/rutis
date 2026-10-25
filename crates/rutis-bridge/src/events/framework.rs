@@ -2,10 +2,17 @@
 //! of every language listen to them; only rutis emits them, in `emit`
 //! mode. `rutis/row` is rutis-loader's.
 
+use std::future::Future;
 use std::sync::Arc;
 
-use rutis::events::{Dispatch, Mode, Payload, Scope};
-use rutis::{BoxFuture, Call, CordisError, Ctx, Event, EventKey, ServiceChange, ServiceChanged};
+use rutis::events::Call;
+use rutis::events::{Mode, Scope};
+use rutis::host::diagnostics::{ServiceChange, ServiceChanged};
+use rutis::host::CtxHost;
+use rutis::internal::events::{Dispatch, Payload};
+use rutis::internal::CtxInternal;
+use rutis::internal::EventKey;
+use rutis::{Ctx, Event};
 use serde::{Deserialize, Serialize};
 
 use crate::session::host_key;
@@ -50,37 +57,30 @@ impl Event for RuntimeEvent {
     type Value = ();
 }
 
-fn report(ctx: &Ctx, error: rutis::CordisError) {
-    (ctx.error_sink())(Arc::new(error));
+fn report(ctx: &Ctx, error: rutis::Error) {
+    (ctx.error_sink())(Arc::new(error.into_kind()));
 }
 
 /// The name of the host service `key` is ([`host_key`], in an instance or
 /// not; an isolated one without its label), if it is one.
-fn service_name(key: &rutis::TypeKey) -> Option<&str> {
+fn service_name(key: &rutis::host::TypeKey) -> Option<&str> {
     let name = key.name()?;
     let plain = match key.instance_id() {
-        Some(instance) => host_key(name).with_instance(instance),
+        Some(instance) => host_key(name).instance(instance),
         None => host_key(name),
     };
-    (&plain == key).then(|| name.split('\0').next().unwrap_or(name))
+    (&plain.erase() == key).then(|| name.split('\0').next().unwrap_or(name))
 }
 
 /// Turns the kernel's [`ServiceChanged`] of every host service, whoever
 /// provides it (a Rust plugin, a runtime's row, a node), into
 /// `rutis/service` at the provider's scope (events protocol §8). Listens
 /// at the root, which hears every scope.
-pub(crate) struct ServiceEvents;
-
-impl rutis::Listener<ServiceChanged> for ServiceEvents {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        changed: &'a ServiceChanged,
-        _: Call<'a, ()>,
-    ) -> BoxFuture<'a, Result<Option<()>, CordisError>> {
-        let Some(name) = service_name(&changed.key) else {
-            return Box::pin(std::future::ready(Ok(None)));
-        };
+pub(crate) fn service_events(
+    changed: Arc<ServiceChanged>,
+    call: Call<ServiceChanged>,
+) -> impl Future<Output = rutis::Result<Option<()>>> + Send + 'static {
+    let dispatch = service_name(&changed.key).map(|name| {
         let event = ServiceEvent {
             name: name.to_owned(),
             scope: changed.chain.clone(),
@@ -93,12 +93,16 @@ impl rutis::Listener<ServiceChanged> for ServiceEvents {
             Payload::new(Arc::new(event)),
         );
         dispatch.framework = true;
-        Box::pin(async move {
-            if let Err(error) = ctx.events().dispatch(ctx, dispatch).await {
-                report(ctx, error);
+        dispatch
+    });
+    let ctx = call.ctx().clone();
+    async move {
+        if let Some(dispatch) = dispatch {
+            if let Err(error) = ctx.events().dispatch(&ctx, dispatch).await {
+                report(&ctx, error);
             }
-            Ok(None)
-        })
+        }
+        Ok(None)
     }
 }
 

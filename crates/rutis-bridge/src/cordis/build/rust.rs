@@ -291,7 +291,11 @@ fn generate(
         .filter_map(|item| match item {
             Item::Impl(item)
                 if item.trait_.as_ref().is_some_and(|(_, path, _)| {
-                    path.segments.last().is_some_and(|s| s.ident == "Plugin")
+                    // the plugin trait (`rutis::Plugin`) or the object-safe
+                    // one (`rutis::host::DynPlugin`)
+                    path.segments
+                        .last()
+                        .is_some_and(|s| s.ident == "Plugin" || s.ident == "DynPlugin")
                 }) =>
             {
                 Some(item)
@@ -577,24 +581,26 @@ fn generate(
             "{field}: ::std::sync::Arc<{crate_name}::{service}>,\n"
         ));
         capture.push_str(&format!(
-            "{field}: ctx.require::<{crate_name}::{service}>()?,\n"
+            "{field}: ::rutis::host::CtxHost::require::<{crate_name}::{service}>(ctx)?,\n"
         ));
-        dependencies.push(format!("::rutis::TypeKey::of::<{crate_name}::{service}>()"));
+        dependencies.push(format!(
+            "::rutis::host::TypeKey::of::<{crate_name}::{service}>()"
+        ));
     }
     let rust = format!(
         r#"
     struct Exports {{ {fields} }}
     struct Exporter {{
-        dependencies: Vec<::rutis::TypeKey>,
+        dependencies: Vec<::rutis::host::TypeKey>,
         exports: ::std::sync::Arc<::std::sync::Mutex<Option<Exports>>>,
     }}
-    impl ::rutis::Plugin for Exporter {{
+    impl ::rutis::host::DynPlugin for Exporter {{
         fn name(&self) -> &str {{ "interop-export" }}
-        fn injects(&self) -> &[::rutis::TypeKey] {{ &self.dependencies }}
-        fn apply<'a>(&'a self, ctx: &'a ::rutis::Ctx) -> ::rutis::BoxFuture<'a, Result<::rutis::Effect, ::rutis::CordisError>> {{
+        fn injects(&self) -> Vec<::rutis::host::TypeKey> {{ self.dependencies.clone() }}
+        fn apply<'a>(&'a self, ctx: &'a ::rutis::Ctx) -> ::rutis::host::BoxFuture<'a, ::rutis::Result<::rutis::host::Effect>> {{
             Box::pin(async move {{
                 *self.exports.lock().unwrap() = Some(Exports {{ {capture} }});
-                Ok(::rutis::Effect::Done)
+                Ok(::rutis::host::Effect::Done)
             }})
         }}
     }}

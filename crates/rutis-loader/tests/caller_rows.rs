@@ -16,9 +16,11 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::{layer, COLD};
-use rutis::{Ctx, Effect, FiberState};
+use rutis::host::{CtxHost, FiberState};
+use rutis::Ctx;
 use rutis_bridge::session::{caller_row, host_key, native_error, HostDispatch, Reply, Value};
-use rutis_loader::{EntryStatus, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::{Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::json;
 
 /// A calling row: its id, key, fiber identity and scope.
@@ -46,11 +48,9 @@ impl HostDispatch for Ledger {
         if let Some(row) = &row {
             let (heard, removed) = (self.0.clone(), name.clone());
             row.ctx()
-                .effect(move || {
-                    Effect::Disposer(Box::new(move || {
-                        heard.lock().unwrap().removed.push(removed);
-                        Ok(())
-                    }))
+                .effect(move || async move {
+                    heard.lock().unwrap().removed.push(removed);
+                    Ok(())
                 })
                 .map_err(native_error)?;
         }
@@ -101,7 +101,7 @@ async fn loader_on(
     ledger: &Ledger,
     chain: impl FnOnce(&Ctx, &ServiceCatalog) -> rutis_loader::Chain,
 ) -> (Ctx, Loader) {
-    root.provide_as::<dyn HostDispatch>(host_key("ledger"), Arc::new(ledger.clone()))
+    root.provide_at(host_key("ledger"), Arc::new(ledger.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("ledger");
@@ -177,7 +177,9 @@ async fn rows_are_callers(
     assert_eq!(ledger.removed(), ["a"]);
 
     // A call from Rust names no row.
-    let service = root.get_as::<dyn HostDispatch>(host_key("ledger")).unwrap();
+    let service = root
+        .get_at::<dyn HostDispatch>(&host_key("ledger"))
+        .unwrap();
     service.invoke("register", json!(["rust"]).into()).unwrap();
     assert_eq!(ledger.registered("rust"), Some(None));
 
@@ -210,7 +212,8 @@ export default definePlugin({{
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("registrant.mjs");
@@ -251,7 +254,8 @@ async fn node_rows_are_callers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -283,7 +287,8 @@ async fn python_rows_are_callers() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_rows_are_callers() {
-    use rutis_loader::{Chain, GoBinaries, GoResolver, GoRuntimeState, GoRuntimes};
+    use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimeState, GoRuntimes};
+    use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::default();
@@ -312,7 +317,10 @@ async fn go_rows_are_callers() {
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_rows_are_callers() {
-    use rutis_loader::{Chain, SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes};
+    use rutis_loader::runtime::swift::{
+        SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes,
+    };
+    use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::default();
@@ -346,7 +354,8 @@ async fn swift_rows_are_callers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::{Chain, RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();

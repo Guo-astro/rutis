@@ -14,11 +14,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::events::{
-    EntryCall, EventOptions, ListenerInfo, ListenerKind, Mode, RawTerminal, RemoteEntry, Scope,
-    TableChange, TableEntry,
-};
-use rutis::{BoxFuture, CordisError, Ctx, Disposer, Effect, Plugin, TypeKey};
+use rutis::events::{ListenerInfo, Mode, Scope};
+use rutis::host::{BoxFuture, DynPlugin, Effect, TypeKey};
+use rutis::host::{CtxHost, ErrorKind, ListenerKind};
+use rutis::internal::events::{EntryCall, RawTerminal, RemoteEntry, TableChange, TableEntry};
+use rutis::internal::{CtxInternal, EventOptions};
+use rutis::{Ctx, Disposer, Error as RutisError};
 use serde_json::{json, Value as Json};
 
 use super::args::{from_wire, result_from_wire, result_to_wire, SessionTranscoder};
@@ -125,7 +126,7 @@ impl LinkEventsPlugin {
         let items = |items: Vec<String>| items.iter().map(|item| Item::parse(item)).collect();
         Self {
             label: format!("rutis-bridge/events#{peer}"),
-            injects: [peer_key(&peer)],
+            injects: [peer_key(&peer).erase()],
             peer,
             export: items(export.into_iter().map(Into::into).collect()),
             import: items(import.into_iter().map(Into::into).collect()),
@@ -520,9 +521,9 @@ impl Link {
             origin: Some(self.origin),
         };
         let ctx = self.ctx.clone();
-        let mapped = move |error: CordisError| match error {
-            CordisError::ListenerWithdrawn { .. } => withdrawn(),
-            error => to_session(&error),
+        let mapped = move |error: RutisError| match &*error {
+            ErrorKind::ListenerWithdrawn { .. } => withdrawn(),
+            error => to_session(error),
         };
         if mode.is_sync() {
             let result = ctx
@@ -545,7 +546,7 @@ impl Link {
         // `emit` invocations start in arrival order (§5.5): this one starts
         // here, in its turn on the session's ordered task (never on its
         // reader), before the next event operation; the rest runs on a task.
-        let mut run: rutis::BoxFuture<'static, Reply> = Box::pin(run);
+        let mut run: rutis::host::BoxFuture<'static, Reply> = Box::pin(run);
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         if let std::task::Poll::Ready(reply) = run.as_mut().poll(&mut context) {
             return reply;
@@ -610,20 +611,24 @@ impl crate::Handler for Handler {
     }
 }
 
-impl Plugin for LinkEventsPlugin {
+impl DynPlugin for LinkEventsPlugin {
     fn name(&self) -> &str {
         &self.label
     }
 
-    fn injects(&self) -> &[TypeKey] {
-        &self.injects
+    fn injects(&self) -> Vec<TypeKey> {
+        self.injects.to_vec()
     }
 
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, CordisError>> {
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
-            let peer = ctx.get_as::<Peer>(self.injects[0].clone()).ok_or_else(|| {
-                CordisError::PluginFailed(format!("{}: the peer is gone", self.label).into())
-            })?;
+            let peer = ctx
+                .get_key::<Peer>(self.injects[0].clone())
+                .ok_or_else(|| {
+                    rutis::Error::from(ErrorKind::PluginFailed(
+                        format!("{}: the peer is gone", self.label).into(),
+                    ))
+                })?;
             ctx.events().set_transcoder(Arc::new(SessionTranscoder));
             let origin = next_origin();
             LINK_ORIGINS.lock().unwrap().push(origin);
@@ -637,9 +642,8 @@ impl Plugin for LinkEventsPlugin {
                 origin,
                 state: Mutex::default(),
             });
-            let offered: Offered = peer
-                .register("events", Arc::new(Handler(Arc::downgrade(&link))))
-                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+            let offered: Offered =
+                peer.register("events", Arc::new(Handler(Arc::downgrade(&link))))?;
             link.state.lock().unwrap().epoch = offered.epoch();
             // Own entries change from now on; they are announced once the
             // peer takes them.
@@ -678,24 +682,22 @@ impl Plugin for LinkEventsPlugin {
                 })
             };
             let kept = Arc::new(Mutex::new(Some((offered, link, watching))));
-            ctx.effect(move || {
-                Effect::Disposer(Box::new(move || {
-                    announcer.abort();
-                    if let Some((offered, link, watching)) = kept.lock().unwrap().take() {
-                        drop(offered);
-                        dispose_now(watching);
-                        let accepted: Vec<Disposer> =
-                            std::mem::take(&mut link.state.lock().unwrap().accepted)
-                                .into_values()
-                                .flatten()
-                                .collect();
-                        for disposer in accepted {
-                            dispose_now(disposer);
-                        }
-                        LINK_ORIGINS.lock().unwrap().retain(|o| *o != link.origin);
+            ctx.effect(move || async move {
+                announcer.abort();
+                if let Some((offered, link, watching)) = kept.lock().unwrap().take() {
+                    drop(offered);
+                    dispose_now(watching);
+                    let accepted: Vec<Disposer> =
+                        std::mem::take(&mut link.state.lock().unwrap().accepted)
+                            .into_values()
+                            .flatten()
+                            .collect();
+                    for disposer in accepted {
+                        dispose_now(disposer);
                     }
-                    Ok(())
-                }))
+                    LINK_ORIGINS.lock().unwrap().retain(|o| *o != link.origin);
+                }
+                Ok(())
             })?;
             Ok(Effect::Done)
         })
@@ -756,7 +758,7 @@ mod tests {
         let accept = |state: &mut LinkState, id: &str| {
             let gone = Link::announced_under(state, epoch_of(id).unwrap()).expect("taken");
             assert!(gone.is_empty());
-            let disposer = root.effect(|| Effect::Done).unwrap();
+            let disposer = root.effect_raw(|| Effect::Done).unwrap();
             state.accepted.insert(id.to_owned(), vec![disposer]);
         };
         // Offers seen without `events` (other families), then its entry.

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::diagnostics::{BindingDiagnostics, DependencyStatus};
-use crate::error::CordisError;
+use crate::error::{Error, ErrorKind};
 use crate::fiber::{FiberInner, FiberState, Intent, PluginId};
 use crate::key::{ScopeId, TypeKey};
 
@@ -124,16 +124,17 @@ impl Registry {
         key: TypeKey,
         scope: Option<ScopeId>,
         binding: Binding,
-    ) -> Result<Arc<Binding>, CordisError> {
+    ) -> Result<Arc<Binding>, Error> {
         let mut bindings = self.bindings.lock().unwrap();
         let entry = (key.clone(), scope.clone());
         if let Some(existing) = bindings.get(&entry) {
             if !existing.removing.load(std::sync::atomic::Ordering::SeqCst) {
                 let scope_desc = entry.1.as_deref().unwrap_or("<default>");
-                return Err(CordisError::ServiceExists(format!(
+                return Err(ErrorKind::ServiceExists(format!(
                     "{} in scope {scope_desc}",
                     key.describe()
-                )));
+                ))
+                .into());
             }
             // 摘除进行中的绑定可被同键新 provide 替换(TS dispose 同步释放
             // 注册表槽位;旧绑定由驱逐方按 Arc 身份 finalize,不误伤新绑定)

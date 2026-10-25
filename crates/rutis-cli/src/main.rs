@@ -14,12 +14,11 @@
 use std::sync::Arc;
 
 use aimux_core::language_model::LanguageModel;
+use rutis::host::*;
 use rutis::Ctx;
 #[cfg(all(feature = "dylib-plugins", panic = "abort"))]
 compile_error!("dylib-plugins requires panic = unwind");
-use rutis_agent::{
-    llm_key, minimal_persona, minimal_tools, AgentDriverPlugin, ToolsPlugin, TuiPlugin,
-};
+use rutis_agent::{minimal_persona, minimal_tools, AgentDriverPlugin, ToolsPlugin, TuiPlugin};
 #[cfg(feature = "dylib-plugins")]
 use rutis_sdk as _;
 
@@ -262,7 +261,7 @@ async fn run(
         return Err("--plugin requires a dylib-plugins build".into());
     }
     let root = Ctx::root()?;
-    root.provide_as(llm_key(), llm)?;
+    root.provide_as::<dyn LanguageModel>(llm)?;
     #[cfg(feature = "dylib-plugins")]
     let plugin_view = if let Some(dir) = plugin {
         let module = unsafe { loader.load(dir)? };
