@@ -73,6 +73,8 @@ public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("de
 
 Test plugins with `RutisTest` as in the plugin guide (§3); it runs in the iOS simulator too.
 
+A plugin definition a plugin hands to a service ([Swift plugin](swift-plugin.en.md#handing-a-plugin-to-a-service)) runs in the app's process; when the app dials in, it mounts only in that connection's instance (or deeper), and every copy mounted from it ends when the app calls `stop()` or disconnects.
+
 ## 3. Start and stop
 
 ```swift

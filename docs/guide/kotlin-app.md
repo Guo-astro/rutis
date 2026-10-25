@@ -47,6 +47,24 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 - 插件要 `Context` 时，像上面这样把插件写成一个接 `Context` 的函数，传 `applicationContext`。
 - `provides` 不用写：提供的服务自动让 rutis 知道，rutis 一侧同一实例里的行照样能用。
 - 等待 rutis 的调用（`@RutisClient` 接口里的非 `suspend` 方法）不能在主线程上调用，会抛 `IllegalStateException`：在协程里用 `suspend` 方法，或换个线程。rutis 调进应用的方法本来就在后台线程上运行。
+- 插件本身也是一个值：`Rutis.define(...)` 的结果（`Plugin`）可以照常作为参数交给一个服务，收的一方在别处挂它，每挂一次是一份。`@RutisClient` 接口、`@RutisService` 类的参数或返回值类型写 `Plugin`：
+
+  ```kotlin
+  @RutisClient
+  interface Parts {
+      suspend fun register(scope: String, part: Plugin)
+  }
+
+  val git = Rutis.define<Rutis.NoConfig>(name = "git", inject = listOf("parts")) { ctx, _ ->
+      val pool = openPool()
+      val status = Rutis.define<StatusConfig>(name = "git_status", inject = listOf("history")) { ctx, config ->
+          ctx.provide("gitStatus", GitStatus(pool, config.depth))
+      }
+      ctx.use<Parts>("parts").register("session", status)
+  }
+  ```
+
+  每一份在应用的进程里运行；应用连进来时，它只能挂在这个连接所在的实例里（或更里面）。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`。规则见 [插件 API](plugin-api.md#插件定义)。
 
 ## 3. 接入 rutis
 
