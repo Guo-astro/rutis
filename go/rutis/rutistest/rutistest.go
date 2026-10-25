@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"reflect"
 	"slices"
@@ -104,6 +105,9 @@ type Loaded struct {
 	row    string
 	scope  []rutis.Scope
 	unload sync.Once
+	// What its plugin declares: the harness's plugin's, or, for a copy of
+	// a plugin definition the plugin handed over, that definition's.
+	declared declaration
 }
 
 // harness is the runtime under test and the host side of its session.
@@ -129,9 +133,11 @@ type harness struct {
 	// The bus: every listener, in position order.
 	entries     []*busEntry
 	first, last int64
-	dispatches  int64
-	reported    []string
-	closed      bool
+	// Copies of plugin definitions loaded so far (loadCopy's labels).
+	copies     int
+	dispatches int64
+	reported   []string
+	closed     bool
 	// Serializes events.elsewhere, which is sent without mu.
 	pushing sync.Mutex
 }
@@ -177,8 +183,19 @@ func hook() {
 // Load loads `plugin` with `config` (a value of its config type, or nil)
 // and the services in `services` (Go values whose exported methods are the
 // service's methods). The plugin is unloaded when the test ends.
+//
+// `plugin` may also be a plugin definition a loaded plugin handed to a
+// test service (a *rutis.Definition parameter of its method): it is then
+// loaded as rutis mounts one, as another row in the runtime that defined
+// it, with what its `apply` prepared there (docs/design-plugin-values
+// R10). `services` are that copy's own, as the services of the instance
+// rutis mounts a copy in; a name it injects that `services` leaves out is
+// the runtime's, given to the plugin that handed it over.
 func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) *Loaded {
 	t.Helper()
+	if remote, ok := remoteOf(plugin); ok {
+		return loadCopy(t, remote, config, services, opts)
+	}
 	declared := describe(t, plugin)
 	for _, name := range declared.Inject {
 		if _, ok := services[name]; !ok {
@@ -192,11 +209,12 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	}
 	runtimeSide, hostSide := net.Pipe()
 	h := &harness{
-		runtime:   o.runtime,
-		t:         t,
-		plugin:    plugin,
-		declared:  declared,
-		services:  services,
+		runtime:  o.runtime,
+		t:        t,
+		plugin:   plugin,
+		declared: declared,
+		// Copies of plugin definitions may add services (loadCopy).
+		services:  maps.Clone(services),
 		conn:      hostSide,
 		done:      make(chan error, 1),
 		handles:   map[string]string{},
@@ -209,6 +227,9 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 		Host:     true,
 		Dispatch: h.dispatch,
 		Arrive:   h.arrive,
+		// Plugin definitions the plugin hands to test services, as rutis
+		// takes them.
+		Plugins: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -245,6 +266,85 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	return loaded
 }
 
+// remoteOf is the plugin definition another process handed over that
+// `plugin` stands for, if it is one.
+func remoteOf(plugin *rutis.Definition) (*peer.RemotePlugin, bool) {
+	if plugin == nil {
+		return nil, false
+	}
+	value, err := convert.ToPeer(plugin)
+	if err != nil {
+		return nil, false
+	}
+	remote, ok := value.(*peer.RemotePlugin)
+	return remote, ok
+}
+
+// loadCopy loads a copy of a plugin definition a loaded plugin handed
+// over, in the runtime that defined it, as rutis mounts one: described
+// with `plugins.read`, loaded with the definition as the row's entry.
+func loadCopy(t testing.TB, remote *peer.RemotePlugin, config any, services map[string]any, opts []Option) *Loaded {
+	t.Helper()
+	var h *harness
+	harnessesMu.Lock()
+	for candidate := range harnesses {
+		if candidate.session == remote.Peer() {
+			h = candidate
+		}
+	}
+	harnessesMu.Unlock()
+	if h == nil {
+		t.Fatal("rutistest: the plugin definition comes from a runtime that is no longer loaded")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	described, err := h.session.Call(ctx, "", "plugins.read", []any{remote}, false)
+	if err != nil {
+		t.Fatalf("rutistest: plugins.read: %v", err)
+	}
+	var declared declaration
+	if err := convert.Decode(described, &declared); err != nil {
+		t.Fatalf("rutistest: plugins.read: %v", err)
+	}
+	// The services given here are this copy's own, as the services of the
+	// instance rutis mounts a copy in: the copy isolates them under a
+	// label of its own. Those not given are the runtime's.
+	h.mu.Lock()
+	h.copies++
+	label := "copy-" + strconv.Itoa(h.copies)
+	h.mu.Unlock()
+	isolate := []any{}
+	for _, name := range declared.Inject {
+		given, ok := services[name]
+		if !ok {
+			h.mu.Lock()
+			_, provided := h.services[name]
+			h.mu.Unlock()
+			if !provided {
+				t.Fatalf("rutistest: the plugin definition injects %s: give the test a service %s", name, name)
+			}
+			continue
+		}
+		kinds := map[string]string{}
+		for wire := range convert.Methods(reflect.TypeOf(given)) {
+			kinds[wire] = "sync"
+		}
+		h.mu.Lock()
+		if h.services == nil {
+			h.services = map[string]any{}
+		}
+		h.services[name+"\x00"+label] = given
+		h.mu.Unlock()
+		if _, err := h.session.Call(ctx, "", "hosts.provide", []any{name, kinds, label}, false); err != nil {
+			t.Fatalf("rutistest: provide %s: %v", name, err)
+		}
+		isolate = append(isolate, []any{name, label})
+	}
+	loaded := h.loadEntry(remote, declared, declared.Provides, isolate, config, opts)
+	t.Cleanup(loaded.Unload)
+	return loaded
+}
+
 // Load loads another row of the same plugin into the same runtime, with
 // `config`; give it a scope with InScope to test how events cross scopes.
 // It unloads when the test ends.
@@ -254,6 +354,21 @@ func (l *Loaded) Load(config any, options ...Option) *Loaded {
 }
 
 func (h *harness) load(config any, list []Option) *Loaded {
+	h.t.Helper()
+	// The first row exports what the plugin declares.
+	var exports map[string]map[string]string
+	h.mu.Lock()
+	if len(h.rows) == 0 {
+		exports = h.declared.Provides
+	}
+	h.mu.Unlock()
+	return h.loadEntry(h.plugin.Name(), h.declared, exports, []any{}, config, list)
+}
+
+// loadEntry loads a row of `entry`: the plugin's name, or a plugin
+// definition it handed over; `isolate` are its scope labels ([name,
+// label] pairs).
+func (h *harness) loadEntry(entry any, declared declaration, declaredExports map[string]map[string]string, isolate []any, config any, list []Option) *Loaded {
 	h.t.Helper()
 	h.mu.Lock()
 	o := options{row: firstRow}
@@ -268,12 +383,10 @@ func (h *harness) load(config any, list []Option) *Loaded {
 		h.t.Fatalf("rutistest: a row %s is already loaded", o.row)
 	}
 	exports := map[string]any{}
-	if len(h.rows) == 0 {
-		for name, kinds := range h.declared.Provides {
-			exports[name] = kinds
-		}
+	for name, kinds := range declaredExports {
+		exports[name] = kinds
 	}
-	loaded := &Loaded{h: h, row: o.row, scope: o.scope}
+	loaded := &Loaded{h: h, row: o.row, scope: o.scope, declared: declared}
 	h.scope[o.row] = o.scope
 	h.rows = append(h.rows, loaded)
 	h.mu.Unlock()
@@ -290,9 +403,9 @@ func (h *harness) load(config any, list []Option) *Loaded {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := h.session.Call(ctx, "", "rows.load", []any{o.row, h.plugin.Name(), configValue, []any{}, []any{}, exports, map[string]any{"scope": scope}}, false); err != nil {
+	if _, err := h.session.Call(ctx, "", "rows.load", []any{o.row, entry, configValue, isolate, []any{}, exports, map[string]any{"scope": scope}}, false); err != nil {
 		h.forgetRow(o.row)
-		h.t.Fatalf("rutistest: load %s: %v", h.plugin.Name(), err)
+		h.t.Fatalf("rutistest: load %s: %v", o.row, err)
 	}
 	return loaded
 }
@@ -423,7 +536,9 @@ func (h *harness) dispatch(ctx context.Context, target, method string, args []an
 	if !ok {
 		return nil, fmt.Errorf("the test serves no %s %s", target, method)
 	}
+	h.mu.Lock()
 	service, ok := h.services[name]
+	h.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("the test gives no service %s", name)
 	}
@@ -935,7 +1050,7 @@ func (l *Loaded) Service(name string) *Service {
 			h.t.Fatalf("rutistest: the plugin does not provide %s (now)", name)
 		}
 	}
-	kinds, declared := h.declared.Provides[name]
+	kinds, declared := l.declared.Provides[name]
 	if !declared {
 		h.mu.Lock()
 		kinds = h.announced[name]

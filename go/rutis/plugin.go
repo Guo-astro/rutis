@@ -35,13 +35,16 @@ import (
 	"strings"
 
 	"github.com/arcships/rutis/go/rutis/internal/convert"
+	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
 
 // Plugin declares a plugin whose configuration is C.
 type Plugin[C any] struct {
 	// Name is the plugin's name in its binary; rows name it `go:<Name>`.
-	// It is required, and is the `plugin` of its listeners' registrations
-	// and descriptors (Listener.Plugin).
+	// It is required of a plugin Serve serves, and is the `plugin` of its
+	// listeners' registrations and descriptors (Listener.Plugin). A
+	// definition only handed to a service as a value may leave it empty:
+	// its copies are then called by their row's id, as in other languages.
 	Name string
 	// Inject lists the services it uses: it runs only while all are there.
 	Inject []string
@@ -65,7 +68,10 @@ type NoConfig struct{}
 // Provides maps service names to their shapes.
 type Provides map[string]*Shape
 
-// Definition is a defined plugin, for Serve.
+// Definition is a defined plugin, for Serve. It is also a value: handed to
+// a rutis service as an argument or result, it crosses as a plugin
+// definition that rutis can mount (each copy running here, in this
+// process), as in Cordis.
 type Definition struct {
 	name     string
 	inject   []string
@@ -75,19 +81,38 @@ type Definition struct {
 	pkg      string
 	config   reflect.Type
 	apply    func(ctx *Ctx, config any) error
+	// Set instead of the rest for a definition another process handed
+	// over: what a test double receives in rutistest, which loads it in
+	// the runtime that defined it.
+	remote *peer.RemotePlugin
 }
 
 // Name is the plugin's name.
 func (d *Definition) Name() string { return d.name }
 
+// A *Definition handed to another process (a service method's argument or
+// result) crosses as a plugin definition, which rutis can mount: a `plugin`
+// reference (docs/design-plugin-values-2026-10-25.md §5).
+func init() {
+	convert.PluginType = reflect.TypeFor[*Definition]()
+	convert.PluginToPeer = func(value any) any {
+		def := value.(*Definition)
+		if def.remote != nil {
+			return def.remote
+		}
+		return peer.Plugin{Value: def}
+	}
+	convert.PluginFromPeer = func(remote *peer.RemotePlugin) any { return &Definition{remote: remote} }
+}
+
 // Define checks a plugin's declarations and makes it servable. It panics
 // on a declaration that cannot work, so a broken plugin fails at start.
 func Define[C any](p Plugin[C]) *Definition {
-	if p.Name == "" || strings.ContainsAny(p.Name, ":/\x00") {
+	if strings.ContainsAny(p.Name, ":/\x00") {
 		panic(fmt.Sprintf("rutis: invalid plugin name %q", p.Name))
 	}
 	if p.Apply == nil {
-		panic(fmt.Sprintf("rutis: plugin %s has no Apply", p.Name))
+		panic(fmt.Sprintf("rutis: plugin %q has no Apply", p.Name))
 	}
 	for name, shape := range p.Provides {
 		if shape == nil {

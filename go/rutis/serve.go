@@ -95,6 +95,10 @@ func checkDefinitions(defs []*Definition) error {
 		if def == nil {
 			return errors.New("a nil plugin definition")
 		}
+		// Rows name a served plugin `go:<Name>`.
+		if def.name == "" {
+			return fmt.Errorf("a plugin without a Name cannot be served (defined in %s): rows name it go:<Name>", def.pkg)
+		}
 		if other := seen[def.name]; other != nil {
 			return fmt.Errorf("two plugins are named %s: in %s and in %s", def.name, other.pkg, def.pkg)
 		}

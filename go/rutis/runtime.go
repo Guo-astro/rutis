@@ -22,8 +22,11 @@ import (
 // features are what this runtime supports of the runtime contract.
 // rows.announce: services rows provide without declaring them are announced
 // with their methods, to a host whose mount says `announce`. Events are the
-// capability events-v2 (#464), no longer a feature.
-var features = []string{"rows.v2", "hosts", "leaf", "scopes", "rows.announce"}
+// capability events-v2 (#464), no longer a feature. plugin-values: a plugin
+// definition this runtime handed over comes back to be described
+// (`plugins.read`) and loaded as a row's entry
+// (docs/design-plugin-values-2026-10-25.md §5).
+var features = []string{"rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values"}
 
 // Future is an asynchronous result of another process.
 type Future = convert.Future
@@ -100,8 +103,10 @@ type row struct {
 	key string
 	// The row's id in the configuration (rows.load's `id`; the key when
 	// not given): descriptors and reported lines call the row so.
-	name     string
-	entry    string
+	name string
+	// A plugin's name in this binary, or a plugin definition this runtime
+	// handed over (a *Definition back home).
+	entry    any
 	def      *Definition
 	config   any
 	exports  map[string]map[string]string
@@ -124,6 +129,15 @@ type row struct {
 	// Nil once it loaded.
 	pending []func() error
 	loading bool
+}
+
+// plugin is what descriptors call the row's plugin: its name, or, for a
+// nameless plugin definition handed over as a value, the row's id.
+func (r *row) plugin() string {
+	if r.def.name != "" {
+		return r.def.name
+	}
+	return r.name
 }
 
 func (r *row) id(name string) string {
@@ -267,6 +281,28 @@ func (rt *runtimeState) definition(entry string) (*Definition, error) {
 		return nil, fmt.Errorf("plugin %s needs plugin API %d; this runtime supports %d", entry, def.api, PluginAPI)
 	}
 	return def, nil
+}
+
+// entryDefinition is the plugin of a row's entry: a plugin's name in this
+// binary, or a plugin definition this runtime handed over, back home as
+// itself (docs/design-plugin-values-2026-10-25.md §5).
+func (rt *runtimeState) entryDefinition(entry any) (*Definition, error) {
+	switch e := entry.(type) {
+	case string:
+		return rt.definition(e)
+	case *Definition:
+		if e == nil {
+			break
+		}
+		if e.remote != nil {
+			return nil, errors.New("a plugin definition of another process cannot be loaded here: hand it back to the runtime that defined it")
+		}
+		if e.api > PluginAPI {
+			return nil, fmt.Errorf("plugin %s needs plugin API %d; this runtime supports %d", e.name, e.api, PluginAPI)
+		}
+		return e, nil
+	}
+	return nil, errors.New("not a plugin definition: expected a rutis.Define result")
 }
 
 // ── Services ─────────────────────────────────────────────────────
@@ -420,8 +456,10 @@ func (rt *runtimeState) load(ctx context.Context, key, entry string, config any,
 }
 
 // loadNamed loads row key, whose id in the configuration is name.
-func (rt *runtimeState) loadNamed(ctx context.Context, key, name, entry string, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
-	def, err := rt.definition(entry)
+// entry is a plugin's name in this binary, or a plugin definition this
+// runtime handed over.
+func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry any, config any, exports map[string]map[string]string, isolate map[string]string, scope []Scope) error {
+	def, err := rt.entryDefinition(entry)
 	if err != nil {
 		return err
 	}
@@ -676,9 +714,20 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 		if err != nil {
 			return nil, err
 		}
-		entry, err := argument[string](args, 1)
-		if err != nil {
-			return nil, err
+		// A plugin's name in this binary, or a plugin definition this
+		// runtime handed over.
+		var entry any
+		if len(args) > 1 {
+			if def, ok := args[1].(*Definition); ok {
+				entry = def
+			}
+		}
+		if entry == nil {
+			name, err := argument[string](args, 1)
+			if err != nil {
+				return nil, err
+			}
+			entry = name
 		}
 		var config any = peer.Undefined
 		if len(args) > 2 {
@@ -734,6 +783,28 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 			return nil, err
 		}
 		return def.describe(), nil
+	case "plugins.read":
+		// A plugin definition this runtime handed over, back home: what it
+		// declares, with its name.
+		var value any
+		if len(args) > 0 {
+			value = args[0]
+		}
+		def, ok := value.(*Definition)
+		if !ok || def == nil {
+			return nil, errors.New("not a plugin definition: expected a rutis.Define result")
+		}
+		if _, err := rt.entryDefinition(def); err != nil {
+			return nil, err
+		}
+		described := def.describe()
+		described["name"] = nil
+		if def.name != "" {
+			described["name"] = def.name
+		}
+		// A value has no package version of its own.
+		described["version"] = nil
+		return described, nil
 	case "hosts.provide":
 		name, err := argument[string](args, 0)
 		if err != nil {
