@@ -222,6 +222,7 @@ jobs:
               - crates/rutis-loader/src/runtime/swift.rs
               - crates/rutis-loader/tests/swift_rows.rs
               - crates/rutis-loader/tests/multilang_swift.rs
+              - crates/rutis-loader/tests/plugin_values.rs
               - crates/rutis-host/src/languages/swift.rs
               - crates/rutis-host/tests/swift.rs
               - crates/rutis-host/tests/swift_app.rs
@@ -1020,9 +1021,13 @@ jobs:
           cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
           cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
           cargo test -p rutis-host --features kotlin --test kotlin
-      # Kotlin rows among Node and Python ones (the multilang Kotlin column).
+      # Kotlin rows among Node and Python ones (the multilang Kotlin column),
+      # and their plugin definitions handed to Rust, from rows and from an
+      # app that dials in (the plugin-values Kotlin column).
       - name: cargo test (Kotlin rows)
-        run: cargo test -p rutis-loader --features node,python,kotlin --test multilang_kotlin
+        run: |
+          cargo test -p rutis-loader --features node,python,kotlin --test multilang_kotlin
+          cargo test -p rutis-loader --features kotlin --test plugin_values kotlin
       # The events conformance with X Kotlin, and Kotlin as Y of the others
       # (the written placements on pull requests, a sample in full runs).
       - name: cargo test (events conformance with Kotlin)
@@ -1109,6 +1114,7 @@ jobs:
         run: |
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
+          cargo test -p rutis-loader --features swift --test plugin_values swift::
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
       # author's loop: new --lang swift, swift test, check, dev rebuilding;
       # apps hosting plugins with RutisApp (an executable standing in for one).
