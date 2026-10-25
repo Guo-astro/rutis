@@ -33,6 +33,7 @@ fun describe(value: Any?): String = when (value) {
     is ByteArray -> "bytes"
     is Instant -> "an instant"
     is Exported, is ExportedObject, is arcships.rutis.RemoteFunction, is RemoteFuture -> "a reference"
+    is arcships.rutis.Plugin, is RemotePlugin -> "a plugin definition"
     else -> when (val tag = tagOf(value)) {
         null -> "a ${value.javaClass.name}"
         else -> "a $tag"
