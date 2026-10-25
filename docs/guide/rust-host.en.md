@@ -263,6 +263,33 @@ impl HostDispatch for Tools {
 - Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
 - It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
 
+### Receive plugin definitions
+
+Rows of other languages can hand plugin definitions to Rust services (the [plugin API](plugin-api.en.md#plugin-definitions)). Give the parameter the type `rutis::Definition`: before the method runs, the host reads the definition's declarations once from the runtime that defined it. Mount it with `ctx.plugin(def.at(&ctx, config)?)`:
+
+```rust,ignore
+use rutis::{Ctx, Definition};
+
+#[rutis::service]
+impl Parts {
+    pub fn register(&self, scope: String, def: Definition) {
+        self.add(scope, def); // drop it when def.ended() completes
+    }
+}
+
+// When a session opens, on the session's own ctx
+for def in parts.of("session") {
+    ctx.plugin(def.at(&ctx, config.clone())?);
+}
+```
+
+- Each copy runs in the runtime that defined it, like a row of that runtime: `def.at(&ctx, …)` computes the keys for the instance `ctx` is in, isolates shared names per instance, and gates the copy on its declared `inject`. Mounting needs rutis-loader in the tree.
+- A plugin definition belongs to the current generation of the row that handed it over (as an argument, the calling row): when that row unloads, reloads or ends, or the runtime's process exits, every copy mounted from it ends first; then `at` fails and `ended()` completes. It can only be mounted inside that row's instance, or deeper.
+- One value handed over several times is one definition: the two `Definition`s are equal.
+- When a service of another language returns a plugin definition, read it with `rutis_bridge::runtime::returned(&*service, value).await`; it belongs to the row that provides the service.
+- `Exports` in `build.rs` recognises `Definition` parameters too, and `rutis-host types` declares them as the TS plugin type.
+- A plugin definition only goes back to the runtime that defined it: a call handing it to a third runtime fails.
+
 ## Runtime and loader
 
 ```rust

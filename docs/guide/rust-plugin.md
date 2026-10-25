@@ -15,6 +15,7 @@ Rust 插件和 TypeScript、Python、Go 插件的规则相同（见 [插件 API]
 | `rutis::events::Mode` | 监听器里看这次分发的方式 |
 | `rutis::Disposer` | `provide`、`on`、`effect` 返回的句柄，用来提前撤销 |
 | `#[rutis::service]` | 让服务对其他语言公开 |
+| `rutis::Definition` | 插件定义：可以交出、挂很多次的插件，见[插件定义](#插件定义) |
 
 `Ctx` 上给插件用的方法：
 
@@ -198,6 +199,59 @@ plugin = define_plugin(apply, inject=["calendar"])
 ```
 
 没标注的类型不对外。能传什么、错误怎样抛、带 `&Ctx` 参数的方法，见 [在类型上标注 `#[rutis::service]`](rust-host.md#在类型上标注-rutisservice)。同一个服务要多份时，用 rutis-loader 的实例：每个实例里各装一份，实例里的行用自己那份。
+
+### 插件定义
+
+`Plugin` 是一个实例：配置写在字段里，交给 `ctx.plugin` 就用掉了。要把插件交给别处、由那边挂很多次（例如每个 Session 一份），用 `rutis::Definition`：`Definition::new(ctx, build)` 造一个定义，`build` 拿到挂载位置的 `ctx` 和这一份的配置，返回一个 `Plugin`；挂的一方写 `ctx.plugin(def.at(&ctx, config)?)`。
+
+```rust
+use std::sync::{Arc, Mutex};
+use rutis::{Ctx, Definition, Plugin, Result};
+
+/// 每个 Session 一份，`depth` 来自它自己的配置。
+struct Part {
+    depth: u32,
+}
+
+impl Plugin for Part {
+    type Deps = ();
+
+    async fn apply(&self, _: &Ctx, _: ()) -> Result {
+        println!("depth {}", self.depth);
+        Ok(())
+    }
+}
+
+/// 把 `Part` 的定义交给挂部件的一方（这里只是一个列表）。
+struct Git {
+    parts: Arc<Mutex<Vec<Definition>>>,
+}
+
+impl Plugin for Git {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        let pool = Arc::new(String::from("pool")); // apply 里准备好的东西
+        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
+            let _pool = pool.clone();
+            Ok(Part { depth })
+        });
+        self.parts.lock().unwrap().push(definition);
+        Ok(())
+    }
+}
+
+/// 挂的一方：每挂一次是一份，配置各自给。
+fn mount(at: &Ctx, definition: &Definition) -> Result {
+    at.plugin(definition.at(at, 3u32)?);
+    Ok(())
+}
+# fn main() {}
+```
+
+- 定义属于造它的插件的这一代：这个插件卸载、重启或结束时，先结束从它挂出的每一份，等它们清理完，再运行它自己的清理；之后 `at` 失败，`ended()` 完成。
+- 只能挂在造它的插件所在的实例里，或者更里面。
+- 其他语言交来的插件定义也是 `Definition`，挂法相同，见 [插件 API](plugin-api.md#插件定义)；Rust 造的定义不能交给其他语言。
 
 ### 事件
 

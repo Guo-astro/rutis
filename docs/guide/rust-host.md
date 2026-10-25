@@ -263,6 +263,33 @@ impl HostDispatch for Tools {
 - 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
 - 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里（另有与以前一样、所有行共享的那份注册），所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
 
+### 收插件定义
+
+其他语言的行可以把插件定义交给 Rust 服务（[插件 API](plugin-api.md#插件定义)）。参数类型写 `rutis::Definition`：方法运行前，宿主先向定义它的运行时读一次它的声明；挂的时候用 `ctx.plugin(def.at(&ctx, config)?)`：
+
+```rust,ignore
+use rutis::{Ctx, Definition};
+
+#[rutis::service]
+impl Parts {
+    pub fn register(&self, scope: String, def: Definition) {
+        self.add(scope, def); // def.ended() 完成时撤掉
+    }
+}
+
+// Session 打开时，在 Session 自己的 ctx 上挂
+for def in parts.of("session") {
+    ctx.plugin(def.at(&ctx, config.clone())?);
+}
+```
+
+- 每一份在定义它的运行时里运行，就像那个运行时里的一行：`def.at(&ctx, …)` 按 `ctx` 所在的实例算出键，共享名字按实例隔离，按它声明的 `inject` 门控。挂载需要树上有 rutis-loader。
+- 插件定义属于交出它的那一行的这一代（作为参数交出的，是调用方的行）：这一行卸载、重载或结束，或者运行时进程退出时，从它挂出的每一份先结束；之后 `at` 失败，`ended()` 完成。只能挂在那一行所在的实例里，或者更里面。
+- 同一个值交出几次都是同一个定义：两个 `Definition` 相等。
+- 其他语言的服务返回插件定义时，用 `rutis_bridge::runtime::returned(&*service, value).await` 读出它；它属于提供这个服务的行。
+- `build.rs` 的 `Exports` 也认 `Definition` 参数；`rutis-host types` 把它写成 TS 的插件类型。
+- 插件定义只交回定义它的运行时：把它交给第三个运行时的调用失败。
+
 ## 运行时与加载器
 
 ```rust

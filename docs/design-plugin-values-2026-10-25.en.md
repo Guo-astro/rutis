@@ -2,7 +2,7 @@
 
 [中文](design-plugin-values-2026-10-25.md)
 
-Status: design (2026-10-25), #642.
+Status: P1 implemented (2026-10-25, #642): the kernel, rutis-bridge, rutis-loader, Node, Bun. P2 (Python, Go) and P3 (Swift, Kotlin) are not done.
 
 ## 1. Goal
 
@@ -182,19 +182,19 @@ This section covers only definitions from other languages; definitions made in R
 1. **The type (rutis kernel):** `Definition` lives in the rutis kernel and is the tenth name at the crate root. It cannot live in rutis-bridge: dylib plugins depend only on `rutis-sdk`, which re-exports only rutis, and the code `#[rutis::service]` generates depends only on rutis too. The kernel holds only the type and one object-safe interface:
    - The kernel implements definitions made in Rust itself. `at` decodes the config, calls `build`, wraps the resulting plugin and records it in the definition's table of copies.
    - Definitions from other languages are implemented by rutis-bridge through a hook it installs into the kernel at load time, the same way as `Exposer` for `#[rutis::service]`.
-   - Ending with the origin: when the origin fiber stops, the kernel first ends the definition's copies and waits until they are cleaned up, and only then runs the origin's cleanup (R6). For a definition made in Rust, the origin is the fiber of the `ctx` given to `new`; for a definition from another language, rutis-loader handles it in the origin row's cleanup (item 4 below).
+   - Ending with the origin: when the origin fiber stops, the kernel first ends the definition's copies and waits until they are cleaned up, and only then runs the origin's cleanup (R6). For a definition made in Rust, the origin is the fiber of the `ctx` given to `new`; for a definition from another language, it is the fiber of the row that handed it over (item 4 below).
    - The position check (R4) compares the mount position's scope chain with the origin's (`ctx.scope()`), which the kernel can do on its own.
 2. **Decoding (rutis-bridge):** a `Definition` from another language holds the reference, the declarations read for it, and its origin: the key of the origin row's generation, or the process.
    - In generated services, the parameter kinds gain "plugin definition" next to "function" and "data" (the macro's `Param` and `Wire` in `rutis::service`), and `Exports` in `build.rs` recognises the type too.
-   - Decoding a `Definition` sends `plugins.read`. For a parameter, the generated dispatch code waits for it before calling the method. For a return value, when Rust calls a service in another language, the declarations are read after the far reply arrives and before the result is handed to the Rust caller.
+   - Decoding a `Definition` sends `plugins.read`. For a parameter, the generated dispatch code waits for it before calling the method. For a return value, when Rust calls a service in another language, it reads the definition from the reply with `rutis_bridge::runtime::returned(&*service, value).await`, which reads the declarations before it yields the `Definition`.
    - The origin is fixed at decoding time: `caller_row()` for an argument, the row providing the service for a return value.
    - Encoding a `Definition` checks the session it is going to: a definition from another language going back to its defining runtime is sent as the original reference; anything else makes the call fail (§5, item 2; R3).
 3. **Mounting a definition from another language (rutis-loader):** `at(&ctx, config)` finds the loader in the tree through an interface defined in rutis-bridge and provided by rutis-loader.
    - The loader walks up the parent fibers to find the row and the instance `ctx` belongs to (the same walk as `Loader::locate`), computes the instance chain and the keys, and builds the copy's plugin (a `DynPlugin`, whose dependencies are fixed at this point).
    - The copy starts through the same code as a row's copy in an instance (`JsRow::start`): leasing host services, publishing services, `rows.load`, handling `rows.ended`. There are only two differences: the runtime is the origin's process (`RowRuntime::Connection`), and the `entry` is the plugin definition.
-4. **Ending a definition from another language (rutis-loader):** the loader records, for each origin, the copies mounted from its definitions.
-   - When the origin row unloads (the cleanup of its `JsRow`), the loader first has those copies end themselves (`dispose_self`), waits until they are cleaned up, and only then withdraws the row's published services and sends `rows.unload`.
-   - When the process exits, the published services are withdrawn as the connection closes, and the copies end along the same path as `rows.ended`.
+4. **Ending a definition from another language:** its origin is the origin row's fiber (the calling `caller_row()`'s `ctx`), so the kernel ends it as it ends one made in Rust (item 1): when the origin row stops, its copies end first and are cleaned up, then the cleanup of its `JsRow` runs (withdrawing the row's published services, sending `rows.unload`). The loader records no copies.
+   - A definition that belongs to no row is ended by rutis-bridge when the process's session ends.
+   - When the process exits, the origin row stops with it (the runtime is gone and the row waits), and so its copies end.
    - Then `ended()` completes; the host drops the reference, and the runtime frees the value.
 5. **Each runtime:**
    - Node and Bun: implement `plugins.read` and `rows.load` with a plugin definition as `entry`; send `definePlugin` results as the `plugin` kind.

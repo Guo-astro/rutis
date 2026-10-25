@@ -57,6 +57,8 @@ The plugin depends only on `@arcships/rutis`. It does not need to know which hos
 
 `weather` needs no declaration: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions (here `today`), called as `async`. To mark a method `sync`, or to let `rutis-host check` know before running what the plugin provides, add `provides`, such as `provides: { weather: { unit: 'sync' } }` (a declared service offers only its declared methods).
 
+A plugin is itself a value: hand the result of `definePlugin(...)` to a service as an ordinary argument (the application's part registry, say), and the receiver can mount it elsewhere, each mount one copy using what your `apply` prepared. See the [plugin API](plugin-api.en.md#plugin-definitions).
+
 ## 3. Test
 
 `@arcships/rutis/testing` provides fake services and calls the services provided by the plugin without requiring a host:

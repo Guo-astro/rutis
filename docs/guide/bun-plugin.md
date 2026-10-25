@@ -37,6 +37,8 @@ test('greets', async () => {
 
 不用 SDK 时，模块也可以直接导出 `apply(ctx, config)`，以及 `inject`、`provides`（可选，每个方法写明 `'sync'` 或 `'async'`）、`config`（JSON Schema）。`provides` 不写也行：`ctx.provide` 提供的服务自动对外，方法取对象上的函数，按 `async` 调用，规则和 Node 相同（见 [插件 API](plugin-api.md)）。
 
+`definePlugin(...)` 的结果也可以照常作为参数交给一个服务，收的一方在别处挂它，和 Node 相同，见 [插件 API](plugin-api.md#插件定义)。
+
 ### 事件
 
 与 TypeScript 插件相同（[TypeScript 插件：事件](typescript-plugin.md#事件)）：`ctx.on` 监听，`ctx.emit` / `ctx.parallel` / `ctx.serial` / `ctx.waterfall` / `ctx.bail` 发出，`ctx.filter` 挑选监听器。监听器自动登记给宿主，Node、Python、Go 插件和宿主里的 Rust 代码发出的事件同样到达 Bun 里的监听器，反过来也一样。卸载时这一行的 `ctx.signal` 被中止，正在运行的监听器被等待。
