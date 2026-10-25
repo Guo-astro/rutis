@@ -20,6 +20,9 @@ pub(crate) enum Kind {
     Future,
     /// An object with methods and live properties, addressed by reference.
     Object,
+    /// A plugin definition: not called, only loaded by the runtime that
+    /// defined it (`docs/design-plugin-values-2026-10-25.md` §5).
+    Plugin,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -208,6 +208,30 @@ pub fn encode<T: Serialize + ?Sized>(value: &T) -> Reply {
     crate::session::arg(value)
 }
 
+/// The plugin definition passed as a parameter (`rutis::Definition`): the
+/// caller is read now, while the call starts; its declarations are read
+/// from its runtime when the future runs, before the method is called.
+#[doc(hidden)]
+pub fn definition(
+    value: Value,
+) -> rutis::host::BoxFuture<'static, Result<rutis::Definition, Error>> {
+    let (row, process) = (
+        crate::session::caller_row(),
+        crate::runtime::calling_process(),
+    );
+    Box::pin(async move {
+        let process = process.ok_or_else(|| {
+            Error::Value("a plugin definition can only come from a language runtime's call".into())
+        })?;
+        let Value::Reference(reference) = value else {
+            return Err(Error::Value(
+                "expected a plugin definition, received data".into(),
+            ));
+        };
+        crate::runtime::read_definition(process, reference, row).await
+    })
+}
+
 /// A function the caller passed, to call back.
 #[doc(hidden)]
 #[derive(Clone)]

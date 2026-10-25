@@ -677,6 +677,9 @@ impl Generator<'_> {
                 "{ secs_since_epoch: number | bigint; nanos_since_epoch: number }".into(),
             ));
         }
+        if is_rutis_definition(path) {
+            return Ok(Ty::Ts(DEFINITION_TS.into()));
+        }
         if krate == "serde_json" && last == "Value" {
             return Ok(Ty::Json);
         }
@@ -1294,6 +1297,8 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         let mut params_ts = Vec::new();
         let mut count = 0;
         let mut takes_ctx = false;
+        // Definitions being read when the call starts.
+        let mut pending: Vec<String> = Vec::new();
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(input) = input else {
                 unreachable!()
@@ -1321,6 +1326,24 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                     Type::Reference(_) => "&caller".to_owned(),
                     _ => "caller.clone()".to_owned(),
                 });
+                continue;
+            }
+            // A plugin definition: read before the method runs.
+            if is_definition(self, scope, &input.ty)? {
+                if matches!(input.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some())
+                {
+                    return Err("it takes a mutable reference".into());
+                }
+                params_ts.push(format!("{js}: {DEFINITION_TS}"));
+                decode.push_str(&format!(
+                    "let {local} = ::rutis_bridge::exports::definition(args.next().unwrap());\n"
+                ));
+                pending.push(local.clone());
+                call.push(match input.ty.as_ref() {
+                    Type::Reference(_) => format!("&{local}"),
+                    _ => local,
+                });
+                count += 1;
                 continue;
             }
             if let Some(callback) = self.callback(scope, &input.ty, &bounds)? {
@@ -1458,7 +1481,17 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         } else {
             String::new()
         };
-        let arm = if awaited {
+        let arm = if !pending.is_empty() {
+            // The arguments are taken now, the definitions read (and the
+            // method called) in the future.
+            let read: String = pending
+                .iter()
+                .map(|local| format!("let {local} = {local}.await?;\n"))
+                .collect();
+            format!(
+                "{{\n{caller}let mut args = ::rutis_bridge::exports::arguments(args, {count})?;\n{decode}Ok(::rutis_bridge::session::Value::future(async move {{\n{read}{returned}\n}}))\n}}"
+            )
+        } else if awaited {
             format!("{{\n{caller}Ok(::rutis_bridge::session::Value::future(async move {{\n{body}\n}}))\n}}")
         } else {
             format!("{{\n{caller}(|| -> ::rutis_bridge::session::Reply {{\n{body}\n}})()\n}}")
@@ -1969,6 +2002,34 @@ fn object(fields: &[Field], compact: bool) -> String {
 }
 
 /// Whether `ty` is `rutis::Ctx` (or a reference to it).
+/// The TypeScript of a plugin definition: a `definePlugin` result or a
+/// Cordis plugin.
+const DEFINITION_TS: &str = "import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }";
+
+/// `rutis::Definition` (as `rutis_sdk::rutis` re-exports it too), or a
+/// reference to one.
+fn is_definition(generator: &mut Generator<'_>, scope: &Scope, ty: &Type) -> Result<bool> {
+    let ty = match ty {
+        Type::Reference(reference) => reference.elem.as_ref(),
+        ty => ty,
+    };
+    let Type::Path(path) = ty else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        generator.sources.resolve(scope.module, &path.path)?,
+        Some(Res::External(found)) if is_rutis_definition(&found)
+    ))
+}
+
+fn is_rutis_definition(path: &[String]) -> bool {
+    match path {
+        [krate, last] => krate == "rutis" && last == "Definition",
+        [sdk, rutis, last] => sdk == "rutis_sdk" && rutis == "rutis" && last == "Definition",
+        _ => false,
+    }
+}
+
 fn is_ctx(generator: &mut Generator<'_>, scope: &Scope, ty: &Type) -> Result<bool> {
     let ty = match ty {
         Type::Reference(reference) => reference.elem.as_ref(),

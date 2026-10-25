@@ -33,6 +33,10 @@ impl Connection {
                 origin: import.origin.clone(),
             });
         }
+        // A plugin definition is never relayed to another runtime.
+        if import.kind == Kind::Plugin {
+            return Err(not_home());
+        }
         let identity = Arc::as_ptr(import) as usize;
         {
             let mut exports = self.0.exports.lock().unwrap();

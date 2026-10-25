@@ -126,6 +126,29 @@ struct Imports {
     /// The id of each row as its configuration names it, by row key
     /// ([`Process::name_row`]); a row not named is called by its key.
     names: Mutex<HashMap<String, String>>,
+    /// The process these calls come from, set once it is up: a plugin
+    /// definition passed in a call is that process's (see [`calling`]).
+    process: std::sync::OnceLock<std::sync::Weak<Process>>,
+}
+
+std::thread_local! {
+    /// The process whose call is being served on this thread.
+    static CALLING: std::cell::RefCell<Option<std::sync::Weak<Process>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` as serving a call of `process`.
+fn with_calling<R>(process: Option<std::sync::Weak<Process>>, f: impl FnOnce() -> R) -> R {
+    let previous = CALLING.with(|calling| calling.replace(process));
+    let result = f();
+    CALLING.with(|calling| calling.replace(previous));
+    result
+}
+
+/// The process whose call into a host service is being served, read while
+/// the call starts (as [`crate::session::caller_row`]).
+pub(crate) fn calling() -> Option<Arc<Process>> {
+    CALLING.with(|calling| calling.borrow().as_ref().and_then(std::sync::Weak::upgrade))
 }
 
 /// Run once when a row's plugin ends on its own.
@@ -472,7 +495,10 @@ impl Dispatch for Imports {
                 .get(name)
                 .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
                 .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
-            return crate::session::with_caller_row(row, || host.invoke(method, args));
+            let process = self.process.get().cloned();
+            return with_calling(process, || {
+                crate::session::with_caller_row(row, || host.invoke(method, args))
+            });
         }
         if target.is_empty() && method.starts_with("events.") {
             return match self.bus.get() {
@@ -625,6 +651,15 @@ pub struct Process {
     /// For a runtime on a session something else owns (a link): what routes
     /// the runtime's calls here. The session is not this process's to close.
     routed: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// The scope chain the process was mounted in: where a plugin definition
+    /// it hands over outside any row's call may be mounted.
+    scope: Vec<rutis::events::Scope>,
+    /// The plugin definitions it handed over, by the value's identity, so
+    /// one value is one definition.
+    definitions: Mutex<HashMap<usize, rutis::internal::definitions::WeakDefinition>>,
+    /// Those that belong to the process itself (handed over outside any
+    /// row's call): they end when its session does.
+    owned: Arc<Mutex<Vec<rutis::Definition>>>,
 }
 
 /// What a plugin module declares, for rutis-loader (see
@@ -654,6 +689,17 @@ pub struct RowSchema {
     /// Node runtime has them.
     #[serde(default)]
     pub cordis: bool,
+}
+
+/// What a plugin definition declares ([`Process::read_plugin`]): what a
+/// module does ([`RowSchema`]), and its name.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct PluginSchema {
+    /// Its declared name, if it has one.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(flatten)]
+    pub schema: RowSchema,
 }
 
 /// One row's use of a host service (see [`Process::lease_host`]). Give it
@@ -826,6 +872,7 @@ impl Process {
             bus: std::sync::OnceLock::new(),
             names: Mutex::default(),
             ended: Mutex::default(),
+            process: std::sync::OnceLock::new(),
         });
         let rest = MountRest {
             plugins,
@@ -873,6 +920,7 @@ impl Process {
             ctx,
             runtime,
         } = rest;
+        let scope = ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
         let process = Arc::new(Self {
             peer,
             imports,
@@ -884,11 +932,23 @@ impl Process {
             host_changes: tokio::sync::Mutex::new(()),
             _directory: directory,
             routed,
+            scope: scope.clone(),
+            definitions: Mutex::default(),
+            owned: Arc::default(),
+        });
+        let _ = process.imports.process.set(Arc::downgrade(&process));
+        // The plugin definitions the process owns end with its session.
+        let (connection, owned) = (process.peer.clone(), process.owned.clone());
+        tokio::spawn(async move {
+            connection.closed().await;
+            let owned = std::mem::take(&mut *owned.lock().unwrap());
+            for definition in owned {
+                rutis::internal::definitions::end(&definition).await;
+            }
         });
         // The session joins the logical bus before anything is mounted: the
         // runtime learns which names have listeners elsewhere first
         // (events protocol §4.5).
-        let scope = ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
         let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
         let events = crate::events::SessionEvents::join(
             ctx.as_ref(),
@@ -1027,6 +1087,7 @@ impl Process {
         observer: Arc<dyn ServiceEvents>,
         scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
+        let entry = RpcValue::Data(json!(entry));
         let loaded = self
             .load_exporting(
                 key, entry, config, isolate, inject, exports, observer, scope,
@@ -1040,11 +1101,102 @@ impl Process {
         loaded
     }
 
+    /// [`Process::load_row_exporting`] for one copy of a plugin definition
+    /// the runtime handed over (`definition`, a reference of this session):
+    /// the definition goes back to the runtime as the row's entry
+    /// (`docs/design-plugin-values-2026-10-25.md` §5).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn load_definition_exporting(
+        &self,
+        key: &str,
+        definition: &crate::session::Reference,
+        config: Value,
+        isolate: &[(String, String)],
+        inject: &[String],
+        exports: &serde_json::Map<String, Value>,
+        observer: Arc<dyn ServiceEvents>,
+        scope: &[rutis::events::Scope],
+    ) -> Result<(), Error> {
+        self.require_plugin_values()?;
+        let entry = RpcValue::Reference(definition.clone());
+        let loaded = self
+            .load_exporting(
+                key, entry, config, isolate, inject, exports, observer, scope,
+            )
+            .await;
+        if loaded.is_err() {
+            self.imports.ended.lock().unwrap().remove(key);
+            self.row_gone(key);
+        }
+        loaded
+    }
+
+    /// What the plugin definition `value` (a reference of this session)
+    /// declares, read from the runtime that defined it (`plugins.read`).
+    pub async fn read_plugin(
+        &self,
+        value: &crate::session::Reference,
+    ) -> Result<PluginSchema, Error> {
+        self.require_plugin_values()?;
+        let read = crate::runtime::rpc::settle(
+            self.peer
+                .invoke_async(
+                    "",
+                    "plugins.read",
+                    RpcValue::List(vec![RpcValue::Reference(value.clone())]),
+                )
+                .await?,
+        )
+        .await?;
+        crate::runtime::decode(read.json()?)
+    }
+
+    fn require_plugin_values(&self) -> Result<(), Error> {
+        match self.supports("plugin-values") {
+            true => Ok(()),
+            false => Err(Error::Value(
+                "the runtime's SDK is too old to hand over plugin definitions \
+                 (it lacks the feature plugin-values)"
+                    .into(),
+            )),
+        }
+    }
+
+    /// The scope chain the process was mounted in.
+    pub(crate) fn scope(&self) -> &[rutis::events::Scope] {
+        &self.scope
+    }
+
+    /// The definition already made for the value whose identity is
+    /// `identity`, if it is still held.
+    pub(crate) fn known_definition(&self, identity: usize) -> Option<rutis::Definition> {
+        let mut known = self.definitions.lock().unwrap();
+        known.retain(|_, weak| weak.upgrade().is_some());
+        known.get(&identity).and_then(|weak| weak.upgrade())
+    }
+
+    /// Remember `definition`, made for the value `identity`; one that
+    /// belongs to the process itself ends with its session.
+    pub(crate) fn remember_definition(
+        &self,
+        identity: usize,
+        definition: &rutis::Definition,
+        owned: bool,
+    ) {
+        self.definitions.lock().unwrap().insert(
+            identity,
+            rutis::internal::definitions::WeakDefinition::new(definition),
+        );
+        if owned {
+            self.owned.lock().unwrap().push(definition.clone());
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn load_exporting(
         &self,
         key: &str,
-        entry: &Path,
+        entry: RpcValue,
         config: Value,
         isolate: &[(String, String)],
         inject: &[String],
@@ -1083,13 +1235,19 @@ impl Process {
             .unwrap()
             .insert(key.to_owned(), RowExports { observer, ids });
         let id = self.row_loading(key, scope);
-        let loaded = self
-            .call_async(
-                "",
-                "rows.load",
-                json!([key, entry, config, isolate, inject, exports, { "scope": scope, "id": id }]),
-            )
-            .await;
+        let args = RpcValue::List(vec![
+            RpcValue::Data(json!(key)),
+            entry,
+            RpcValue::Data(config),
+            RpcValue::Data(json!(isolate)),
+            RpcValue::Data(json!(inject)),
+            RpcValue::Data(json!(exports)),
+            RpcValue::Data(json!({ "scope": scope, "id": id })),
+        ]);
+        let loaded = async {
+            crate::runtime::rpc::settle(self.peer.invoke_async("", "rows.load", args).await?).await
+        }
+        .await;
         if loaded.is_err() {
             self.forget_exports(key);
         }
@@ -1481,6 +1639,7 @@ mod tests {
             bus: std::sync::OnceLock::new(),
             names: Mutex::default(),
             ended: Mutex::default(),
+            process: std::sync::OnceLock::new(),
         }
     }
 

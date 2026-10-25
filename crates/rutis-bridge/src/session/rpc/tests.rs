@@ -1011,7 +1011,8 @@ mod endpoint_format {
         main.ready().await.unwrap();
         mac.ready().await.unwrap();
         assert_eq!(main.greeting().unwrap().endpoint, id("mac"));
-        assert!(main.supports("signals") && !main.supports("plugins"));
+        assert!(main.supports("signals") && main.supports(PLUGINS_CAPABILITY));
+        assert!(!main.supports("teleport"));
 
         let reply = main
             .invoke_async("x", "ping", Value::Undefined)
@@ -2363,4 +2364,107 @@ async fn a_refused_call_takes_its_id() {
         other => panic!("a transport error expected, got {other:?}"),
     }
     let _remote = remote.await.unwrap();
+}
+
+/// A plugin definition (`plugin` reference) goes back to the runtime that
+/// defined it as its own id, and is never relayed to another session: the
+/// call that would carry it there fails before anything is sent
+/// (`docs/design-plugin-values-2026-10-25.md` §5).
+#[tokio::test(flavor = "current_thread")]
+async fn a_plugin_definition_goes_home_and_is_never_relayed() {
+    let (a, ra) = pair();
+    let (b, rb) = pair();
+    let owner = std::thread::spawn(move || {
+        let mut a = Remote::start(ra);
+        let Frame::Invoke { id, .. } = a.read() else {
+            panic!("invoke expected")
+        };
+        a.ret(id, reference(1, Kind::Plugin, false));
+        // Sent home twice: as it came, and as a home-only reference.
+        for _ in 0..2 {
+            let Frame::Invoke {
+                id,
+                args: WireValue::List(args),
+                ..
+            } = a.read()
+            else {
+                panic!("invoke expected")
+            };
+            assert!(matches!(
+                args[0],
+                WireValue::Reference {
+                    id: 1,
+                    home: true,
+                    kind: Kind::Plugin,
+                    ..
+                }
+            ));
+            a.ret(id, WireValue::Undefined);
+        }
+        let Frame::Release { reference, count } = a.read() else {
+            panic!("release expected")
+        };
+        assert_eq!((reference, count), (1, 1));
+    });
+    let user = std::thread::spawn(move || {
+        let mut b = Remote::start(rb);
+        // Only the call after the refused ones arrives.
+        let Frame::Invoke {
+            id, method, args, ..
+        } = b.read()
+        else {
+            panic!("invoke expected")
+        };
+        assert_eq!(method, "done");
+        assert!(matches!(args, WireValue::Undefined));
+        b.ret(id, WireValue::Undefined);
+    });
+    a.ready().await.unwrap();
+    b.ready().await.unwrap();
+    let plugin = a
+        .invoke("", "definition", Value::Undefined)
+        .unwrap()
+        .reference()
+        .unwrap();
+    assert!(plugin.is_plugin() && !plugin.is_function() && !plugin.is_object());
+    let home = plugin.home_only().unwrap();
+    assert!(home.is_plugin() && home.is_from(&a) && !home.is_from(&b));
+    assert_eq!(plugin.identity(), home.identity());
+    for refused in [plugin.clone(), home.clone()] {
+        let error = b
+            .invoke("", "use", Value::List(vec![Value::Reference(refused)]))
+            .err()
+            .expect("refused");
+        assert!(
+            error
+                .to_string()
+                .contains("can only go back to the runtime that defined it"),
+            "{error}"
+        );
+    }
+    assert!(home.call(Value::Undefined).is_err());
+    b.invoke("", "done", Value::Undefined).unwrap();
+    for sent in [plugin.clone(), home.clone()] {
+        a.invoke("", "home", Value::List(vec![Value::Reference(sent)]))
+            .unwrap();
+    }
+    drop((plugin, home));
+    user.join().unwrap();
+    tokio::task::spawn_blocking(move || owner.join().unwrap())
+        .await
+        .unwrap();
+}
+
+/// Rust takes plugin definitions in both handshake formats.
+#[tokio::test(flavor = "current_thread")]
+async fn rust_declares_plugins_in_the_compat_format() {
+    let (peer, mut far) = pair();
+    let Frame::Hello { capabilities, .. } = read(&mut far) else {
+        panic!("hello expected")
+    };
+    assert!(capabilities
+        .unwrap_or_default()
+        .iter()
+        .any(|capability| capability == PLUGINS_CAPABILITY));
+    drop(peer);
 }
