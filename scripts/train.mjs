@@ -1,6 +1,6 @@
 // The release train: the packages released together at one version.
 //   node scripts/train.mjs            print the version; fail on a mismatch
-//   node scripts/train.mjs v0.16.0     also fail unless the version is 0.16.0
+//   node scripts/train.mjs v0.17.0     also fail unless the version is 0.17.0
 //   node scripts/train.mjs --crates   the crates, in publishing order
 //   node scripts/train.mjs --npm      the npm packages, the platform packages included
 import { readFileSync } from 'node:fs'
@@ -23,6 +23,8 @@ export const crates = [
   'rutis-dylib',
   'rutis-host',
   'rutis-dylib-launcher',
+  // The migration tool (`cargo install rutis-migrate`, docs/migration-0.17.md).
+  'rutis-migrate',
 ]
 const manifest = name => `crates/${name}/Cargo.toml`
 
