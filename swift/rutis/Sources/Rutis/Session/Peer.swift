@@ -96,6 +96,10 @@ package struct PeerOptions {
     /// its handshake when it does not, refused for the reason `refuse` gives.
     package var require: [String] = []
     package var refuse: ((String) -> String)?
+    /// A test host (RutisTest) in the runtime's process: the plugin
+    /// definition the runtime exported as `id`, so that a test double gets
+    /// the definition itself, as the runtime would take it back.
+    package var localPlugin: ((_ id: Int64) -> Rutis.Definition?)?
 
     package init() {}
 }
@@ -136,6 +140,7 @@ final class Imported: @unchecked Sendable {
     var released = false
     weak var function: FarFunction?
     weak var future: FarFuture?
+    weak var plugin: FarPlugin?
 
     init(id: Int64, kind: String, origin: [String]) {
         self.id = id
@@ -147,6 +152,7 @@ final class Imported: @unchecked Sendable {
 enum ExportedValue {
     case function(SessionFunction)
     case object(SessionObject)
+    case plugin(Rutis.Definition)
 }
 
 final class Exported {
@@ -189,6 +195,26 @@ package final class FarFunction: @unchecked Sendable {
 
     /// Gives the reference back now instead of when it goes.
     package func release() { peer.release(record) }
+}
+
+/// A plugin definition of the far end, held by a test host (RutisTest):
+/// it can only be handed back. `local` is the definition itself when the
+/// runtime is in this process.
+package final class FarPlugin: @unchecked Sendable {
+    let peer: Peer
+    let record: Imported
+    package let local: Rutis.Definition?
+
+    init(peer: Peer, record: Imported, local: Rutis.Definition?) {
+        self.peer = peer
+        self.record = record
+        self.local = local
+    }
+
+    deinit {
+        let peer = self.peer, record = self.record
+        DispatchQueue.global().async { peer.release(record) }
+    }
 }
 
 /// An asynchronous result of the far end.
@@ -382,7 +408,8 @@ package final class Peer: @unchecked Sendable {
             hello.append(("capabilities", .array((options.capabilities + endpoint.declare).map(JSON.string))))
         } else {
             hello.append(("version", .int(compatProtocol)))
-            hello.append(("capabilities", .array(compatCapabilities.map(JSON.string))))
+            // A test host takes plugin definitions, as rutis does.
+            hello.append(("capabilities", .array((compatCapabilities + (options.host ? ["plugins"] : [])).map(JSON.string))))
         }
         try send(.object(hello))
     }
@@ -635,6 +662,15 @@ package final class Peer: @unchecked Sendable {
                 throw ValueError("the far end cannot receive object references")
             }
             return export(.object(object), kind: "object", identity: object.identity, origin: origin, grants: &grants)
+        case let .plugin(definition):
+            // Only to a far end that takes them; only this call fails.
+            if !declared.contains("plugins") {
+                throw ValueError("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
+            }
+            return export(.plugin(definition), kind: "plugin", identity: ObjectIdentifier(definition), origin: origin, grants: &grants)
+        case let .remotePlugin(plugin):
+            if plugin.record.released { throw RutisError(name: "Error", message: "reference released") }
+            return homeReference(plugin.record)
         case let .remoteFunction(function):
             if function.record.released { throw RutisError(name: "Error", message: "reference released") }
             return homeReference(function.record)
@@ -720,7 +756,7 @@ package final class Peer: @unchecked Sendable {
               let id = JSONNumber.integer(idText), id > 0, id <= maxSafe,
               let kind = json["kind"]?.stringValue, let home = json["home"]?.boolValue,
               let originJSON = json["origin"]?.arrayValue else { throw invalid }
-        guard kind == "function" || kind == "future" || kind == "object" else { throw invalid }
+        guard kind == "function" || kind == "future" || kind == "object" || kind == "plugin" else { throw invalid }
         var origin: [String] = []
         for item in originJSON {
             guard let text = item.stringValue, validOrigin(text, endpoint: options.endpoint != nil) else { throw invalid }
@@ -733,12 +769,20 @@ package final class Peer: @unchecked Sendable {
             switch entry.value {
             case let .function(function): return .function(function)
             case let .object(object): return .object(object)
+            case let .plugin(definition): return .plugin(definition)
             }
         }
         if kind == "object" { throw Malformed("object references from the far end are not supported") }
+        // Only a test host takes the far end's plugin definitions; rutis
+        // never sends one that is not this side's.
+        if kind == "plugin", !options.host { throw Malformed("plugin definitions from the far end are not supported") }
         if let record = imports[id] {
-            let live: Value? = record.kind == "function"
-                ? record.function.map(Value.remoteFunction) : record.future.map(Value.remoteFuture)
+            let live: Value?
+            switch record.kind {
+            case "function": live = record.function.map(Value.remoteFunction)
+            case "plugin": live = record.plugin.map(Value.remotePlugin)
+            default: live = record.future.map(Value.remoteFuture)
+            }
             if let live {
                 guard record.kind == kind, record.origin == origin else { throw Malformed("invalid repeated grant") }
                 record.grants += 1
@@ -753,9 +797,22 @@ package final class Peer: @unchecked Sendable {
             record.function = proxy
             return .remoteFunction(proxy)
         }
+        if kind == "plugin" {
+            let proxy = FarPlugin(peer: self, record: record, local: options.localPlugin?(id))
+            record.plugin = proxy
+            return .remotePlugin(proxy)
+        }
         let proxy = FarFuture(peer: self, record: record)
         record.future = proxy
         return .remoteFuture(proxy)
+    }
+
+    /// The plugin definition exported as `id`, while the far end holds it.
+    package func exportedPlugin(_ id: Int64) -> Rutis.Definition? {
+        lock.lock()
+        defer { lock.unlock() }
+        if case let .plugin(definition) = exports[id]?.value { return definition }
+        return nil
     }
 
     /// Decodes a received value for a test or tool; lock is not held.
@@ -1184,6 +1241,9 @@ package final class Peer: @unchecked Sendable {
                         return .success(try await function.body(job.args))
                     case let .object(object):
                         return .success(try await object.call(method: job.method ?? "", args: job.args))
+                    case .plugin:
+                        // Never reached: a call names a function or object.
+                        throw RutisError(name: "Error", message: "a plugin definition cannot be called")
                     }
                 }
             } catch {

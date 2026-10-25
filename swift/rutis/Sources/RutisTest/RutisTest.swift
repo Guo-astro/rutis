@@ -48,6 +48,14 @@ public enum RutisTest {
     static var unloadWait: Double { Events.shutdownTimeout + 30 }
 }
 
+/// The runtime's session, held weakly: it ends with the runtime.
+final class WeakPeer: @unchecked Sendable {
+    private let lock = Lock()
+    private weak var peer: Peer?
+    func set(_ peer: Peer) { lock.withLock { self.peer = peer } }
+    func get() -> Peer? { lock.withLock { peer } }
+}
+
 /// A listener on the test side's bus: one of the runtime's (by its id) or
 /// one of the test's own.
 final class BusEntry: EventEntry, @unchecked Sendable {
@@ -225,11 +233,22 @@ final class Harness: @unchecked Sendable {
             throw RutisError(name: "Error", message: "RutisTest: the plugin injects \(name): give the test a service \(name)")
         }
         let (runtimeSide, hostSide) = try Channels.pair()
+        // The runtime's session: a plugin definition the plugin hands to a
+        // test double is the definition itself, as the runtime takes it
+        // back (plugin values, R10).
+        let runtimeSession = WeakPeer()
+        let started = Event()
         harness.served = Task.detached {
-            try? await Rutis.serveSession(channel: runtimeSide, project: FileManager.default.currentDirectoryPath, [plugin])
+            try? await Rutis.serveSession(channel: runtimeSide, project: FileManager.default.currentDirectoryPath, [plugin]) { peer in
+                runtimeSession.set(peer)
+                started.fire()
+            }
+            started.fire()
         }
+        await started.wait()
         var options = PeerOptions()
         options.host = true
+        options.localPlugin = { id in runtimeSession.get()?.exportedPlugin(id) }
         options.dispatch = { [weak harness] target, method, args in
             guard let harness else { throw RutisError(name: "Error", message: "the test host is closed") }
             return try await harness.dispatch(target, method, args)

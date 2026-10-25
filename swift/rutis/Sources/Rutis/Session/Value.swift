@@ -34,6 +34,12 @@ package indirect enum Value: @unchecked Sendable {
     case remoteFunction(FarFunction)
     /// An asynchronous result of the far end.
     case remoteFuture(FarFuture)
+    /// A plugin definition of this side (`Rutis.define`): the far end gets
+    /// a `plugin` reference, only to hand it back (plugin values, §5).
+    case plugin(Rutis.Definition)
+    /// A plugin definition of the far end: only a test host (RutisTest)
+    /// takes one, and holds the reference until it is handed back.
+    case remotePlugin(FarPlugin)
     /// The cancellation a call received as an argument.
     case signal(Signal)
 
@@ -73,6 +79,7 @@ package indirect enum Value: @unchecked Sendable {
         case .record: return "an object"
         case .instant: return "an instant"
         case .function, .object, .remoteFunction, .remoteFuture: return "a reference"
+        case .plugin, .remotePlugin: return "a plugin definition"
         case .signal: return "a signal"
         case .bytes: return "bytes"
         default: return "a " + (tag ?? "value")
