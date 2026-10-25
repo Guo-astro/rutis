@@ -121,7 +121,8 @@ let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
 
 - Each copy runs in this plugin's runtime, isolated by the instance it is mounted in, and gated by its `inject`.
 - It belongs to this generation of the row that handed it over: when the row unloads, reloads or ends, every copy mounted from it ends first, then the row unloads.
-- Handed to a test double of `RutisTest`, the double receives the definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it.
+- Handed to a test double of `RutisTest`, the double receives the definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
+- The parameter or result must be a `Rutis.Definition` (or `Rutis.Definition?`) itself. Plugin definitions inside an array, a dictionary or a struct (such as `[Rutis.Definition]`) are not supported: make one call per definition.
 - The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
 
 ### Events

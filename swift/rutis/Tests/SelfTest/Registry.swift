@@ -35,6 +35,7 @@ let registry: [(String, () async throws -> Void)] = [
     ("PluginValueTests.eachCopyLoadsWithItsConfig", { try await PluginValueTests().eachCopyLoadsWithItsConfig() }),
     ("PluginValueTests.aDefinitionGoesHomeAsItself", { try await PluginValueTests().aDefinitionGoesHomeAsItself() }),
     ("PluginValueTests.aDefinitionHandedToATestDoubleLoads", { try await PluginValueTests().aDefinitionHandedToATestDoubleLoads() }),
+    ("PluginValueTests.aTestDoubleHandsADefinitionBack", { try await PluginValueTests().aTestDoubleHandsADefinitionBack() }),
     ("AppTests.anUnloadedRowsHeldEmitLetsTheQueueGo", { try await AppTests().anUnloadedRowsHeldEmitLetsTheQueueGo() }),
     ("AppTests.aLetGoFilterThatFailsIsNotReported", { try await AppTests().aLetGoFilterThatFailsIsNotReported() }),
     ("AppTests.aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline", { try await AppTests().aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline() }),

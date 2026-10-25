@@ -1114,7 +1114,7 @@ jobs:
         run: |
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
-          cargo test -p rutis-loader --features swift --test plugin_values swift::
+          cargo test -p rutis-loader --features swift --test plugin_values swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
       # author's loop: new --lang swift, swift test, check, dev rebuilding;
       # apps hosting plugins with RutisApp (an executable standing in for one).

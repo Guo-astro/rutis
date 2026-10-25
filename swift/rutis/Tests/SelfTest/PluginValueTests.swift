@@ -12,6 +12,7 @@ import RutisTest
 @RutisClient
 protocol TestParts {
     func register(_ scope: String, _ definition: Rutis.Definition) async throws
+    func echo(_ definition: Rutis.Definition) async throws -> Rutis.Definition
 }
 
 /// A test double of a part registry: keeps what it is handed.
@@ -22,6 +23,9 @@ final class HandedParts: @unchecked Sendable {
     func register(_ scope: String, _ definition: Rutis.Definition) {
         lock.withLock { handed.append((scope, definition)) }
     }
+
+    /// Hands the definition back.
+    func echo(_ definition: Rutis.Definition) -> Rutis.Definition { definition }
 
     var all: [(String, Rutis.Definition)] { lock.withLock { handed } }
 }
@@ -95,7 +99,12 @@ struct PluginValueTests {
             runtime.close()
         }
         let given = try await host.call(target: "t", method: "give", args: [], sync: false)
-        guard case .remotePlugin = given else { return XCTFail("\(given)") }
+        guard case let .remotePlugin(first) = given else { return XCTFail("\(given)") }
+        // The same value handed over twice is one reference.
+        let twice = try await host.call(target: "t", method: "give", args: [], sync: false)
+        guard case let .remotePlugin(second) = twice else { return XCTFail("\(twice)") }
+        XCTAssertEqual(first.record.id, second.record.id)
+        XCTAssertTrue(first === second)
         _ = try await host.call(target: "t", method: "take", args: [given], sync: false)
         guard case let .plugin(home)? = back.value else { return XCTFail("\(String(describing: back.value))") }
         XCTAssertTrue(home === part)
@@ -140,6 +149,21 @@ struct PluginValueTests {
         XCTAssertEqual(second, "2 \(prepared)")
         await one.close()
         await two.close()
+    }
+
+    /// A test double hands a definition back: the plugin gets the same
+    /// definition, as rutis sends it home.
+    func aTestDoubleHandsADefinitionBack() async throws {
+        let parts = HandedParts()
+        let same = SavedValue()
+        let origin = Rutis.define(Plugin(name: "origin", inject: ["parts"]) { ctx in
+            let part = Rutis.define(Plugin(name: "part") { _ in })
+            let back = try await ctx.use("parts", TestPartsProxy.self).echo(part)
+            same.value = .data(.bool(back === part))
+        })
+        let loaded = try await RutisTest.load(origin, services: ["parts": parts])
+        XCTAssertEqual(same.value?.plainJSON, .bool(true))
+        await loaded.close()
     }
 }
 

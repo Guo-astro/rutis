@@ -27,6 +27,8 @@ data class Depth(val depth: Int)
 @RutisClient
 interface PartsClient {
     suspend fun register(scope: String, definition: Plugin)
+
+    suspend fun echo(definition: Plugin): Plugin
 }
 
 /** A test double of a part registry: keeps what it is handed. */
@@ -37,6 +39,9 @@ class HandedParts {
     fun register(scope: String, definition: Plugin) {
         handed.add(scope to definition)
     }
+
+    /** Hands the definition back. */
+    fun echo(definition: Plugin): Plugin = definition
 
     /** A nullable plugin parameter and result. */
     fun maybe(definition: Plugin?): Plugin? = definition
@@ -116,6 +121,11 @@ class PluginValuesTest {
         try {
             val given = host.callSuspend("t", "give", emptyList(), false)
             assertIs<RemotePlugin>(given)
+            // The same value handed over twice is one reference.
+            val twice = host.callSuspend("t", "give", emptyList(), false)
+            assertIs<RemotePlugin>(twice)
+            assertEquals(given.record.id, twice.record.id)
+            assertSame(given, twice)
             host.callSuspend("t", "take", listOf(given), false)
             assertSame(part, back.get())
             // The runtime's far end (the test host) takes them; the host's does not.
@@ -153,6 +163,19 @@ class PluginValuesTest {
                     assertEquals("2 $prepared", two.service("tag").call("text"))
                 }
             }
+        }
+    }
+
+    /** A test double hands a definition back: the plugin gets the same definition, as rutis sends it home. */
+    @Test
+    fun aTestDoubleHandsADefinitionBack() = runBlocking<Unit> {
+        val same = AtomicReference<Boolean>()
+        val origin = Rutis.define<Rutis.NoConfig>(name = "origin", inject = listOf("parts")) { ctx, _ ->
+            val part = Rutis.define<Rutis.NoConfig>(name = "part") { _, _ -> }
+            same.set(ctx.use<PartsClient>("parts").echo(part) === part)
+        }
+        RutisTest.load(origin, services = mapOf("parts" to HandedParts())).use {
+            assertEquals(true, same.get())
         }
     }
 

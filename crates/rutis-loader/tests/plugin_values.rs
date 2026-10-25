@@ -52,6 +52,18 @@ impl Parts {
     pub fn takes_data(&self, value: serde_json::Value) -> String {
         value.to_string()
     }
+
+    /// The definition registered last for `scope`, handed back: it goes
+    /// home as the original value (the Swift and Kotlin origins check it).
+    pub fn latest(&self, scope: String) -> Option<Definition> {
+        self.registered
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(of, _)| *of == scope)
+            .map(|(_, def)| def.clone())
+    }
 }
 
 impl Parts {
@@ -678,9 +690,23 @@ mod bun {
     }
 }
 
+/// The origin asked `parts.latest` for what it registered: a Rust
+/// parameter and result going home, decoded by the SDK's client.
+#[allow(dead_code)]
+async fn a_definition_comes_home_as_itself(lang: Lang) {
+    let fixture = fixture(lang).await;
+    fixture.probe.wait_for("part came home as itself").await;
+    fixture.root.shutdown().await.unwrap();
+}
+
 #[cfg(all(feature = "swift", target_os = "macos"))]
 mod swift {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_definition_comes_home_as_itself() {
+        super::a_definition_comes_home_as_itself(Lang::Swift).await
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dead_process_ends_its_copies() {
@@ -708,6 +734,11 @@ mod kotlin {
     use super::*;
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_definition_comes_home_as_itself() {
+        super::a_definition_comes_home_as_itself(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_dead_process_ends_its_copies() {
         super::a_dead_process_ends_its_copies(Lang::Kotlin).await
     }
@@ -730,10 +761,11 @@ mod kotlin {
 
 /// An application's runtime that dials in (R4): its connection is an
 /// instance of `phone`, and what its rows hand over mounts only in that
-/// instance. The Kotlin conformance jar, dialing over WebSocket as an app's
-/// `RutisApp` does.
-#[cfg(feature = "kotlin")]
-mod kotlin_app {
+/// instance. The Kotlin conformance jar and the Swift `RutisMultilang`
+/// binary, each dialing over WebSocket through `RutisApp` (Swift's on
+/// macOS: no system permission involved).
+#[cfg(any(feature = "kotlin", all(feature = "swift", target_os = "macos")))]
+mod dialed_in {
     use super::*;
     use common::runtimes::id;
     use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
@@ -750,11 +782,33 @@ mod kotlin_app {
             .unwrap_or_default()
     }
 
-    /// Dial the access point as the endpoint `name`.
-    fn dial(port: u16, name: &str, project: &std::path::Path) -> tokio::process::Child {
-        let mut child = tokio::process::Command::new("java")
+    /// The Kotlin conformance jar, served by `Rutis.serve`.
+    #[cfg(feature = "kotlin")]
+    fn kotlin() -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("java");
+        command
             .args(["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC", "-jar"])
-            .arg(common::runtimes::kotlin_jar())
+            .arg(common::runtimes::kotlin_jar());
+        command
+    }
+
+    /// The Swift `RutisMultilang` binary, served by `Rutis.serve`.
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    fn swift() -> tokio::process::Command {
+        tokio::process::Command::new(common::runtimes::swift_binary(
+            "RutisMultilang",
+            "multilang",
+        ))
+    }
+
+    /// Dial the access point as the endpoint `name`, with `command`.
+    fn dial(
+        mut command: tokio::process::Command,
+        port: u16,
+        name: &str,
+        project: &std::path::Path,
+    ) -> tokio::process::Child {
+        let mut child = command
             .arg(format!("dial:ws://127.0.0.1:{port}/rutis"))
             .args(["--id", name, "--peer", "main"])
             .arg(project)
@@ -762,7 +816,7 @@ mod kotlin_app {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .expect("java runs (a JDK 17 on PATH)");
+            .expect("the app starts");
         let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
         tokio::spawn(async move {
             while let Ok(Some(line)) = stderr.next_line().await {
@@ -787,8 +841,19 @@ mod kotlin_app {
         vec![Layer::new("rows", patches)]
     }
 
+    #[cfg(feature = "kotlin")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_dialed_in_app_s_definitions_mount_only_in_its_instance() {
+    async fn a_dialed_in_kotlin_app_s_definitions_mount_only_in_its_instance() {
+        mount_only_in_its_instance(kotlin()).await
+    }
+
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dialed_in_swift_app_s_definitions_mount_only_in_its_instance() {
+        mount_only_in_its_instance(swift()).await
+    }
+
+    async fn mount_only_in_its_instance(app: tokio::process::Command) {
         let dir = tempfile::tempdir().unwrap();
         let probe = Probe::default();
         let root = Ctx::root().unwrap();
@@ -861,7 +926,7 @@ mod kotlin_app {
         .accept(instances.accept(loader.clone(), root.clone()));
         (&root.plugin(access)).await.unwrap();
 
-        let mut pixel = dial(port, "pixel", dir.path());
+        let mut pixel = dial(app, port, "pixel", dir.path());
         parts.wait_for(1).await;
         let definition = parts.of("session").pop().unwrap();
         // Outside the connection's instance, it does not mount.

@@ -18,6 +18,8 @@ interface ValuesParts {
     suspend fun register(scope: String, definition: Plugin)
 
     suspend fun takesData(value: Plugin): String
+
+    suspend fun latest(scope: String): Plugin?
 }
 
 /** The instance's `tools`. */
@@ -49,7 +51,11 @@ val valuesOrigin = Rutis.define<Rutis.NoConfig>(name = "values_origin", inject =
     val probe = ctx.use<Probe>("probe")
     val parts = ctx.use<ValuesParts>("parts")
     val prepared = "prepared in apply"
-    parts.register("session", valuesPart("part", prepared))
+    val part = valuesPart("part", prepared)
+    parts.register("session", part)
+    // Handed back by Rust, it comes home as itself.
+    val back = parts.latest("session")
+    probe.record(if (back === part) "part came home as itself" else "part came home as another")
     try {
         parts.takesData(valuesPart("data", prepared))
         probe.record("data took a definition")

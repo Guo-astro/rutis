@@ -369,6 +369,10 @@ package final class Peer: @unchecked Sendable {
     private var exports: [Int64: Exported] = [:]
     private var identities: [ObjectIdentifier: Int64] = [:]
     private var imports: [Int64: Imported] = [:]
+    /// A test host's plugin definitions of the far end, by the definition
+    /// itself, held until the session ends: one handed back goes home as
+    /// the original reference, as rutis sends it.
+    private var heldPlugins: [ObjectIdentifier: FarPlugin] = [:]
     private var running: [String: Running] = [:]
     private var signals: [String: Signal] = [:]
     private var active = 0
@@ -514,6 +518,8 @@ package final class Peer: @unchecked Sendable {
         exports = [:]
         identities = [:]
         imports = [:]
+        let held = heldPlugins
+        heldPlugins = [:]
         let draining = self.draining
         self.draining = []
         let running = Array(self.running.values)
@@ -523,6 +529,7 @@ package final class Peer: @unchecked Sendable {
         for waiter in pending.values { waiter.resolve(.failure(failure)) }
         for event in draining { event.fire() }
         for call in running { call.task?.cancel() }
+        _ = held
         closedEvent.fire()
     }
 
@@ -663,6 +670,10 @@ package final class Peer: @unchecked Sendable {
             }
             return export(.object(object), kind: "object", identity: object.identity, origin: origin, grants: &grants)
         case let .plugin(definition):
+            // A test host hands a definition of the far end back home.
+            if let held = heldPlugins[ObjectIdentifier(definition)], !held.record.released {
+                return homeReference(held.record)
+            }
             // Only to a far end that takes them; only this call fails.
             if !declared.contains("plugins") {
                 throw ValueError("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
@@ -800,6 +811,7 @@ package final class Peer: @unchecked Sendable {
         if kind == "plugin" {
             let proxy = FarPlugin(peer: self, record: record, local: options.localPlugin?(id))
             record.plugin = proxy
+            if let local = proxy.local { heldPlugins[ObjectIdentifier(local)] = proxy }
             return .remotePlugin(proxy)
         }
         let proxy = FarFuture(peer: self, record: record)

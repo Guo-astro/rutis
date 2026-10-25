@@ -205,6 +205,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private val exports = HashMap<Long, Export>()
     private val identities = IdentityHashMap<Any, Long>()
     private val imports = HashMap<Long, Imported>()
+
+    /**
+     * A test host's plugin definitions of the far end, by the definition
+     * itself, held until the session ends: one handed back goes home as the
+     * original reference, as rutis sends it.
+     */
+    private val heldPlugins = java.util.IdentityHashMap<Plugin, RemotePlugin>()
     private val running = HashMap<String, Running>()
     private val signals = HashMap<String, Signal>()
 
@@ -352,6 +359,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             exports.clear()
             identities.clear()
             imports.clear()
+            heldPlugins.clear()
             drains = ArrayList(draining)
             draining.clear()
             cancelled = ArrayList(running.values)
@@ -456,6 +464,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
             // A plugin definition, only to a far end that takes them; only
             // this call fails (plugin values §5).
             is Plugin -> {
+                // A test host hands a definition of the far end back home.
+                val held = heldPlugins[value]
+                if (held != null && !held.record.released) return homeReference(held.record)
                 if (!supportsLocked("plugins")) {
                     throw ValueException("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
                 }
@@ -669,6 +680,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
         if (kind == "plugin") {
             val proxy = RemotePlugin(this, record, opts.localPlugin?.invoke(id))
             record.plugin = WeakReference(proxy)
+            proxy.local?.let { heldPlugins[it] = proxy }
             Collector.watch(proxy, this, record)
             return proxy
         }

@@ -11,6 +11,7 @@ import Rutis
 public protocol ValuesParts {
     func register(_ scope: String, _ definition: Rutis.Definition) async throws
     func takesData(_ value: Rutis.Definition) async throws -> String
+    func latest(_ scope: String) async throws -> Rutis.Definition?
 }
 
 /// The instance's `tools`.
@@ -47,7 +48,11 @@ public let valuesOrigin = Rutis.define(Plugin(name: "values_origin", inject: ["p
     let probe = try ctx.use("probe", ProbeProxy.self)
     let parts = try ctx.use("parts", ValuesPartsProxy.self)
     let prepared = "prepared in apply"
-    try await parts.register("session", valuesPart("part", prepared))
+    let part = valuesPart("part", prepared)
+    try await parts.register("session", part)
+    // Handed back by Rust, it comes home as itself.
+    let back = try await parts.latest("session")
+    try await probe.record(back === part ? "part came home as itself" : "part came home as another")
     do {
         _ = try await parts.takesData(valuesPart("data", prepared))
         try await probe.record("data took a definition")

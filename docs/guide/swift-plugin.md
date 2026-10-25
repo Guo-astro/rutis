@@ -121,7 +121,8 @@ let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
 
 - 每一份在这个插件的运行时里运行，挂在哪个实例里就按那个实例隔离，按它的 `inject` 门控。
 - 它属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，再卸载这一行。
-- 交给 `RutisTest` 的测试替身时，替身收到的就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样。
+- 交给 `RutisTest` 的测试替身时，替身收到的就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
+- 参数或返回值要直接是 `Rutis.Definition`（或 `Rutis.Definition?`）。放在数组、字典或结构体里的插件定义（比如 `[Rutis.Definition]`）不支持，要交几个就调用几次。
 - 规则见 [插件 API](plugin-api.md#插件定义)。
 
 ### 事件
