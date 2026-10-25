@@ -199,6 +199,82 @@ async fn next_outside_a_waterfall_is_an_error() {
     root.shutdown().await.unwrap();
 }
 
+/// A long waterfall (more listeners than one word of ended slots holds):
+/// every listener runs, in order, each through the one before it.
+#[tokio::test]
+async fn a_long_waterfall_passes_through_every_listener() {
+    let root = Ctx::root().unwrap();
+    for i in 0..70 {
+        root.on::<Ping>(move |_, call| async move {
+            let rest = call.next().await?.unwrap_or_default();
+            Ok(Some(format!("{i},{rest}")))
+        })
+        .unwrap();
+    }
+    let out = root
+        .waterfall(Ping(0))
+        .terminal(|_| async { Ok(Some("end".to_owned())) })
+        .await
+        .unwrap()
+        .unwrap();
+    let expected: Vec<String> = (0..70)
+        .map(|i| i.to_string())
+        .chain(["end".to_owned()])
+        .collect();
+    assert_eq!(out, expected.join(","));
+    root.shutdown().await.unwrap();
+}
+
+/// A listener's `next`, called once its call is over (from a task the
+/// listener left behind), is `Ended`: the waterfall already has its result.
+///
+/// guarantee: events/next-misuse
+#[tokio::test]
+async fn next_after_the_call_ended_is_an_error() {
+    let root = Ctx::root().unwrap();
+    let kept: Arc<Mutex<Option<Call<Ping>>>> = Arc::default();
+    let keep = kept.clone();
+    root.on::<Ping>(move |_, call| {
+        let keep = keep.clone();
+        async move {
+            *keep.lock().unwrap() = Some(call);
+            Ok(Some("first".to_owned()))
+        }
+    })
+    .unwrap();
+    let rest = log();
+    let heard = rest.clone();
+    root.on::<Ping>(move |_, _| {
+        let heard = heard.clone();
+        async move {
+            push(&heard, "second");
+            Ok(None)
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        root.waterfall(Ping(0)).await.unwrap(),
+        Some("first".to_owned())
+    );
+    let call = kept.lock().unwrap().take().expect("the call was kept");
+    let error = call.next().await.unwrap_err();
+    assert!(
+        matches!(
+            &*error,
+            ErrorKind::WaterfallNext {
+                misuse: NextMisuse::Ended,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        entries(&rest).is_empty(),
+        "the rest of the chain did not run"
+    );
+    root.shutdown().await.unwrap();
+}
+
 // ── emit ────────────────────────────────────────────────────────
 
 /// `emit` returns at once, starts every listener in registration order

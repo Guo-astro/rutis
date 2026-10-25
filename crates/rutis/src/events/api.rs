@@ -6,8 +6,6 @@ use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::oneshot;
-
 use super::wire::{Payload, Value};
 use super::{
     into_typed, typed_arc, ErasedAsync, ErasedSync, Event, EventOptions, ListenerInfo, Mode,
@@ -46,15 +44,14 @@ where
     type Fut = Fut;
 }
 
-type NextReply<E> = oneshot::Sender<Result<Option<<E as Event>::Value>, Error>>;
-
 /// One call of an async listener: which mode, under which name, and the
 /// rest of a waterfall.
 pub struct Call<E: Event> {
     mode: Mode,
     name: Arc<str>,
     ctx: Ctx,
-    next: Option<oneshot::Sender<NextReply<E>>>,
+    next: Option<AsyncNext>,
+    _event: PhantomData<fn() -> E>,
 }
 
 impl<E: Event> Call<E> {
@@ -77,24 +74,23 @@ impl<E: Event> Call<E> {
     /// `Err(WaterfallNext)`). Its value is the next listener's, as is:
     /// `None` when it had none.
     pub async fn next(self) -> Result<Option<E::Value>, Error> {
-        let ended = || {
-            Error::from(ErrorKind::WaterfallNext {
-                name: self.name.to_string(),
-                misuse: NextMisuse::Ended,
-            })
-        };
-        let Some(request) = self.next else {
+        let Some(next) = self.next else {
             return Err(ErrorKind::WaterfallNext {
                 name: self.name.to_string(),
                 misuse: NextMisuse::NotWaterfall(self.mode),
             }
             .into());
         };
-        let (reply, answer) = oneshot::channel();
-        if request.send(reply).is_err() {
-            return Err(ended());
+        // Called once the listener's call was over (from a task it left
+        // behind): its waterfall has its result already.
+        if next.ended() {
+            return Err(ErrorKind::WaterfallNext {
+                name: self.name.to_string(),
+                misuse: NextMisuse::Ended,
+            }
+            .into());
         }
-        answer.await.unwrap_or_else(|_| Err(ended()))
+        next.invoke_typed::<E::Value>().await
     }
 }
 
@@ -139,9 +135,8 @@ impl<E: Event> SyncCall<'_, E> {
     }
 }
 
-/// Runs an owned-`Call` listener on the bus's borrowed call: the
-/// listener's `call.next()` asks this adapter, which runs the rest of the
-/// chain while it keeps polling the listener.
+/// Runs an owned-`Call` listener: the call owns its `next`, which runs
+/// the rest of the waterfall when the listener asks for it.
 pub(crate) struct OwnedAsync<L, E>(pub L, pub PhantomData<fn(E) -> E>);
 
 impl<E: Event, L: Listener<E>> ErasedAsync for OwnedAsync<L, E> {
@@ -149,59 +144,21 @@ impl<E: Event, L: Listener<E>> ErasedAsync for OwnedAsync<L, E> {
         &'a self,
         ctx: &'a Ctx,
         inv: &'a Inv<'a>,
-        next: Option<AsyncNext<'a>>,
+        next: Option<AsyncNext>,
     ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         Box::pin(async move {
             let event = typed_arc::<E>(inv)?;
-            let Some(next) = next else {
-                // no rest of a chain (every mode but waterfall): the
-                // listener's own future, as it is
-                let call = Call {
-                    mode: inv.mode,
-                    name: inv.name.clone(),
-                    ctx: ctx.clone(),
-                    next: None,
-                };
-                return Ok((self.0)(event, call).await?.map(Value::new));
-            };
-            let next = Some(next);
-            let (request, requests) = oneshot::channel::<NextReply<E>>();
+            // When this call ends (returns, fails, panics or is dropped),
+            // its `next` is `Ended`.
+            let _ended = next.as_ref().map(AsyncNext::end_on_drop);
             let call = Call {
                 mode: inv.mode,
                 name: inv.name.clone(),
                 ctx: ctx.clone(),
-                next: Some(request),
+                next,
+                _event: PhantomData,
             };
-            let listener = (self.0)(event, call);
-            tokio::pin!(listener);
-            let mut next = next;
-            let mut requests = Some(requests);
-            let mut running: Option<BoxFuture<'a, Result<Option<Value>, Error>>> = None;
-            let mut reply: Option<NextReply<E>> = None;
-            loop {
-                tokio::select! {
-                    biased;
-                    out = &mut listener => return Ok(out?.map(Value::new)),
-                    asked = async { requests.as_mut().expect("guarded").await },
-                        if requests.is_some() =>
-                    {
-                        requests = None;
-                        if let (Ok(answer), Some(rest)) = (asked, next.take()) {
-                            reply = Some(answer);
-                            running = Some(rest.invoke());
-                        }
-                    }
-                    value = async { running.as_mut().expect("guarded").await },
-                        if running.is_some() =>
-                    {
-                        running = None;
-                        let typed = value.and_then(|value| into_typed::<E::Value>(inv, value));
-                        if let Some(answer) = reply.take() {
-                            let _ = answer.send(typed);
-                        }
-                    }
-                }
-            }
+            Ok((self.0)(event, call).await?.map(Value::new))
         })
     }
 }
@@ -571,13 +528,13 @@ impl<'c, E: Event> IntoFuture for Waterfall<'c, E> {
             let ctx = target.ctx;
             let name = name_of(&*event, target.named.as_ref())?;
             let payload = Payload::new(event);
-            let terminal: Box<dyn ErasedTerminal + Send + '_> = match terminal {
+            let terminal: Box<dyn ErasedTerminal + Send> = match terminal {
                 Some(terminal) => terminal,
                 None => Box::new(NoTerminal),
             };
             let out = ctx
                 .events()
-                .waterfall_erased(ctx, name, payload.as_ref(), terminal, target.opts())
+                .waterfall_erased(ctx, name, payload, terminal, target.opts())
                 .await?;
             typed_value(ctx, out)
         })

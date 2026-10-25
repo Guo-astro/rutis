@@ -833,30 +833,44 @@ impl EventBus {
         &self,
         ctx: &'a Ctx,
         name: Arc<str>,
-        event: PayloadRef<'a>,
-        terminal: Box<dyn ErasedTerminal + Send + 'a>,
+        payload: Payload,
+        terminal: Box<dyn ErasedTerminal + Send>,
         mut opts: Opts,
     ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
-            let entries = bus.snapshot(ctx, &name, Mode::Waterfall, event.as_any(), &mut opts)?;
+            let entries = bus.snapshot(
+                ctx,
+                &name,
+                Mode::Waterfall,
+                payload.as_ref().as_any(),
+                &mut opts,
+            )?;
             let entries = filter_any(&name, entries, opts.filter.take()).await?;
-            let inv = Inv {
-                bus: &bus,
-                emitter: ctx,
-                name: &name,
+            let dispatch = bus.dispatch_id();
+            if entries.is_empty() {
+                // No listener: the terminal alone, with no chain to share.
+                let inv = Inv {
+                    bus: &bus,
+                    emitter: ctx,
+                    name: &name,
+                    mode: Mode::Waterfall,
+                    event: payload.as_ref(),
+                    dispatch,
+                    origin: opts.origin,
+                };
+                return terminal.call(&inv).await;
+            }
+            let inv = OwnedInv {
+                bus,
+                emitter: ctx.clone(),
+                name,
                 mode: Mode::Waterfall,
-                event,
-                dispatch: bus.dispatch_id(),
+                payload,
+                dispatch,
                 origin: opts.origin,
             };
-            AsyncNext {
-                inv: &inv,
-                chain: &entries,
-                terminal: &*terminal,
-            }
-            .invoke()
-            .await
+            AsyncNext::start(inv, entries, terminal).invoke().await
         })
     }
 
@@ -969,7 +983,7 @@ impl EventBus {
                         Some(terminal) => Box::new(RawTerm(Mutex::new(Some(terminal)))),
                         None => Box::new(NoTerminal),
                     };
-                    bus.waterfall_erased(ctx, name, payload.as_ref(), terminal, opts)
+                    bus.waterfall_erased(ctx, name, payload, terminal, opts)
                         .await
                 })
             }
@@ -1057,11 +1071,18 @@ impl EventBus {
                         Some(next) => Box::new(RawTerm(Mutex::new(Some(next)))),
                         None => Box::new(NoTerminal),
                     };
-                    let next = AsyncNext {
-                        inv: &inv,
-                        chain: &[],
-                        terminal: &*terminal,
+                    // The rest of the far end's chain is its `next`: the
+                    // terminal of a chain of no entries here.
+                    let rest = OwnedInv {
+                        bus: bus.clone(),
+                        emitter: ctx.clone(),
+                        name: name.clone(),
+                        mode: call.mode,
+                        payload: call.payload.clone(),
+                        dispatch: call.dispatch,
+                        origin: call.origin,
                     };
+                    let next = AsyncNext::start(rest, Vec::new(), terminal);
                     run::call_async(&entry, &inv, Some(next)).await
                 }
                 Mode::Bail | Mode::WaterfallSync => Err(Error::from(ErrorKind::Validation {

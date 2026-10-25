@@ -213,7 +213,7 @@ pub(crate) trait ErasedAsync: Send + Sync + 'static {
         &'a self,
         ctx: &'a Ctx,
         inv: &'a Inv<'a>,
-        next: Option<AsyncNext<'a>>,
+        next: Option<AsyncNext>,
     ) -> BoxFuture<'a, Result<Option<Value>, Error>>;
 }
 
