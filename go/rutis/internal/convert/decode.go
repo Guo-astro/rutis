@@ -104,8 +104,11 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 		}
 		return reflect.Value{}, fmt.Errorf("an object cannot be decoded as %s", t)
 	case peer.Plugin:
-		// A plugin definition is its own value (within this process, or
-		// back home).
+		// A plugin definition is its own value within this process: a
+		// service of this process gets its arguments as peer values when
+		// the client's field type is not the method's, or through
+		// *rutis.Service (localService → Call; see
+		// TestALocalServiceGetsTheDefinitionItself).
 		if x.Value != nil && reflect.TypeOf(x.Value).AssignableTo(t) {
 			return valueOf(x.Value, t), nil
 		}

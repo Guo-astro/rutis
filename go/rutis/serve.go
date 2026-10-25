@@ -96,13 +96,13 @@ func checkDefinitions(defs []*Definition) error {
 			return errors.New("a nil plugin definition")
 		}
 		// Rows name a served plugin `go:<Name>`.
-		if def.name == "" {
+		if def.key() == "" {
 			return fmt.Errorf("a plugin without a Name cannot be served (defined in %s): rows name it go:<Name>", def.pkg)
 		}
-		if other := seen[def.name]; other != nil {
-			return fmt.Errorf("two plugins are named %s: in %s and in %s", def.name, other.pkg, def.pkg)
+		if other := seen[def.key()]; other != nil {
+			return fmt.Errorf("two plugins are named %s: in %s and in %s", def.key(), other.pkg, def.pkg)
 		}
-		seen[def.name] = def
+		seen[def.key()] = def
 	}
 	if len(defs) == 0 {
 		return errors.New("no plugins to serve")
@@ -115,7 +115,7 @@ func checkDefinitions(defs []*Definition) error {
 func Manifest(defs ...*Definition) ([]byte, error) {
 	plugins := map[string]any{}
 	for _, def := range defs {
-		plugins[def.name] = def.describe()
+		plugins[def.key()] = def.describe()
 	}
 	return json.Marshal(map[string]any{
 		"manifest":  1,

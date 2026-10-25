@@ -244,7 +244,7 @@ func oldHost(name string) string {
 func newRuntime(defs []*Definition) *runtimeState {
 	byName := map[string]*Definition{}
 	for _, def := range defs {
-		byName[def.name] = def
+		byName[def.key()] = def
 	}
 	return &runtimeState{
 		defs:     byName,

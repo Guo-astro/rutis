@@ -81,6 +81,10 @@ type Definition struct {
 	pkg      string
 	config   reflect.Type
 	apply    func(ctx *Ctx, config any) error
+	// The name it is served under when it has none of its own (rutistest
+	// serves such a definition alone): rows find it by it, while
+	// descriptors still call its rows by their ids.
+	served string
 	// Set instead of the rest for a definition another process handed
 	// over: what a test double receives in rutistest, which loads it in
 	// the runtime that defined it.
@@ -103,6 +107,19 @@ func init() {
 		return peer.Plugin{Value: def}
 	}
 	convert.PluginFromPeer = func(remote *peer.RemotePlugin) any { return &Definition{remote: remote} }
+	convert.PluginServedAs = func(value any, name string) any {
+		served := *value.(*Definition)
+		served.served = name
+		return &served
+	}
+}
+
+// key is the name rows find it by in its binary.
+func (d *Definition) key() string {
+	if d.name != "" {
+		return d.name
+	}
+	return d.served
 }
 
 // Define checks a plugin's declarations and makes it servable. It panics
@@ -112,17 +129,17 @@ func Define[C any](p Plugin[C]) *Definition {
 		panic(fmt.Sprintf("rutis: invalid plugin name %q", p.Name))
 	}
 	if p.Apply == nil {
-		panic(fmt.Sprintf("rutis: plugin %q has no Apply", p.Name))
+		panic(fmt.Sprintf("rutis: %s has no Apply", called(p.Name)))
 	}
 	for name, shape := range p.Provides {
 		if shape == nil {
-			panic(fmt.Sprintf("rutis: plugin %s: provides %s has no shape", p.Name, name))
+			panic(fmt.Sprintf("rutis: %s: provides %s has no shape", called(p.Name), name))
 		}
 		if shape.err != nil {
-			panic(fmt.Sprintf("rutis: plugin %s: provides %s: %v", p.Name, name, shape.err))
+			panic(fmt.Sprintf("rutis: %s: provides %s: %v", called(p.Name), name, shape.err))
 		}
 		if strings.ContainsAny(name, "#\x00") {
-			panic(fmt.Sprintf("rutis: plugin %s: service name %q cannot be projected", p.Name, name))
+			panic(fmt.Sprintf("rutis: %s: service name %q cannot be projected", called(p.Name), name))
 		}
 	}
 	configType := reflect.TypeFor[C]()
@@ -132,7 +149,7 @@ func Define[C any](p Plugin[C]) *Definition {
 	} else if configType != reflect.TypeFor[NoConfig]() {
 		derived, err := schemaOf(configType)
 		if err != nil {
-			panic(fmt.Sprintf("rutis: plugin %s: config: %v", p.Name, err))
+			panic(fmt.Sprintf("rutis: %s: config: %v", called(p.Name), err))
 		}
 		schema = derived
 	}
@@ -159,6 +176,15 @@ func Define[C any](p Plugin[C]) *Definition {
 			return apply(ctx, value.Interface().(C))
 		},
 	}
+}
+
+// called is how messages name a plugin: by its name, or, without one (a
+// definition only handed over as a value), as such.
+func called(name string) string {
+	if name == "" {
+		return "a plugin without a name"
+	}
+	return "plugin " + name
 }
 
 // packageOf is the package of a function's full name
