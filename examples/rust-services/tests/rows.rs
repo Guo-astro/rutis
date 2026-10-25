@@ -1,13 +1,13 @@
 //! TypeScript and Python rows using Rust services from a dependency crate
-//! by name, with the dispatchers and TypeScript the build generated: no
-//! `HostDispatch` written by the application (#440).
+//! by name, through the application's own types wrapping them, marked
+//! `#[rutis::service]`: no `HostDispatch` written by the application.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rust_services_calendar::{Calendar, Change, Entry, Kind, Notes};
-use rust_services_example::exports;
+use rust_services_calendar::{Change, Entry, Kind};
+use rust_services_example::{Calendar, Notes};
 use rutis::host::*;
 use rutis::{Ctx, Plugin};
 use rutis_bridge::runtime::LocalRuntime;
@@ -74,7 +74,7 @@ struct Title(String);
 struct NoConfig {}
 
 /// The Rust row providing a `session` instance's own `Notes`, as an
-/// application does: at the native type's key in the instance.
+/// application does: at its type's key in the instance.
 struct NotesRow {
     key: Key<Notes>,
     owner: String,
@@ -101,7 +101,8 @@ impl Plugin for NotesRow {
     }
 
     async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
-        ctx.provide_at(self.key.clone(), Arc::new(Notes::new(self.owner.clone())))?;
+        let notes = rust_services_calendar::Notes::new(self.owner.clone());
+        ctx.provide_at(self.key.clone(), Arc::new(Notes(notes)))?;
         Ok(())
     }
 }
@@ -142,14 +143,12 @@ async fn fixture(rows: Value) -> Fixture {
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
-    // The native service, provided as the application always did.
-    let calendar = Arc::new(Calendar::new());
+    // The wrapped service, provided as usual: that serves it by name.
+    let calendar = Arc::new(Calendar(rust_services_calendar::Calendar::new()));
     root.provide_as::<Calendar>(calendar.clone()).unwrap();
 
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");
-    // Every service build.rs exported, by name.
-    catalog.export_all(exports::all());
 
     let node = LocalRuntime::node(
         repo().join("node/rutis-runtime"),
@@ -204,7 +203,7 @@ async fn fixture(rows: Value) -> Fixture {
 /// and out, an async method, `Err(e)` thrown with its code, message and
 /// data, optional and `&str` parameters, a bigint beyond 2^53, a function
 /// passed by reference.
-/// guarantee: bridge/exported-services
+/// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_row_calls_a_rust_service_from_a_dependency_crate() {
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
@@ -228,7 +227,7 @@ async fn a_node_row_calls_a_rust_service_from_a_dependency_crate() {
 /// The row's handler is called for the calendar's changes: `publish` is
 /// done only once the handler's Promise settled, and fails when the handler
 /// throws.
-/// guarantee: bridge/exported-services
+/// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_rows_handler_settles_before_the_native_side_goes_on() {
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
@@ -262,8 +261,9 @@ async fn a_node_rows_handler_settles_before_the_native_side_goes_on() {
 
 /// `subscribe` takes the calling row's `Ctx` (hidden from TypeScript): the
 /// subscription is that row's, and goes when the row unloads while the
-/// runtime keeps running. Called from Rust, outside any row, it is refused.
-/// guarantee: bridge/exported-services
+/// runtime keeps running. Called by name from Rust, outside any row, it is
+/// refused.
+/// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subscription_goes_when_its_row_unloads() {
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
@@ -280,8 +280,11 @@ async fn a_subscription_goes_when_its_row_unloads() {
         "the row's subscription removed",
     )
     .await;
-    let direct = exports::DispatchCalendar(fixture.calendar.clone());
-    let refused = direct
+    let by_name = fixture
+        .root
+        .get_at::<dyn HostDispatch>(&host_key("calendar"))
+        .unwrap();
+    let refused = by_name
         .invoke("subscribe", RpcValue::List(Vec::new()))
         .unwrap_err();
     assert!(
@@ -291,9 +294,9 @@ async fn a_subscription_goes_when_its_row_unloads() {
     fixture.root.shutdown().await.unwrap();
 }
 
-/// A service exported inside `session` instances: each instance's row
-/// gets its own instance's `Notes`.
-/// guarantee: bridge/exported-services
+/// A service provided inside `session` instances: each instance's row gets
+/// its own instance's `Notes`.
+/// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_rows_get_their_own_instances_service() {
     let fixture = fixture(json!([
@@ -316,8 +319,8 @@ async fn each_instance_rows_get_their_own_instances_service() {
     fixture.root.shutdown().await.unwrap();
 }
 
-/// A Python row calls the same service through the same dispatcher.
-/// guarantee: bridge/exported-services
+/// A Python row calls the same service through the same dispatch.
+/// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_row_calls_the_same_service() {
     let fixture = fixture(json!([{ "id": "py", "name": "py:calendar_row" }])).await;
@@ -330,13 +333,17 @@ async fn a_python_row_calls_the_same_service() {
 }
 
 /// The generated declarations, and the rows written against them, pass
-/// `tsc --strict`; the copy in rows/ is what the build generates.
+/// `tsc --strict`; the copy in rows/ is what the build writes.
+/// guarantee: bridge/marked-services
 #[test]
 fn the_declarations_pass_tsc_strict() {
+    let written = rutis_bridge::build::Exports::new()
+        .declarations(here())
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(here().join("rows/services.d.ts")).unwrap(),
-        exports::TYPESCRIPT,
-        "rows/services.d.ts is not what the build generated: build again and commit it"
+        written,
+        "rows/services.d.ts is not what the build writes: build again and commit it"
     );
     let dir = rows();
     std::fs::write(

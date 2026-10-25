@@ -2,7 +2,7 @@
 
 [中文](design-rust-service-exposure-2026-10-21.md)
 
-Status: implemented (2026-10-21), #510, 0.15. Replaces the `build.rs` list as the main way a Rust service reaches other languages; `rutis_bridge::build::Exports` stays, only for types whose source you cannot change.
+Status: implemented (2026-10-21), #510, 0.15. Replaces the `build.rs` list as the way a Rust service reaches other languages. The list stayed in 0.15 for types whose source you cannot change (R10) and retired in 0.17 (#647): such a type is wrapped in a type of your own and marked; `rutis_bridge::build::Exports` is left writing TypeScript declarations only.
 
 ## 1. Goal
 
@@ -67,7 +67,7 @@ To rename it, use `#[service(name = "cal")]`. That is the only option.
 | R7 | **Diagnosing an unmarked service:** when a row depends on the name `x`, no service named `x` exists, but an unmarked Rust service the default rule would name `x` does, `Loader::waiting_for(&entry)` lists what the row waits for and says: "`x` is the Rust service `crate::X`, which is not exported: add `#[rutis::service]` to its impl". |
 | R8 | **dylib plugins:** marked types in a dylib are exported once it loads; the host does not need to know them (the plugin crate depends on `rutis-sdk` only, or, built against an sdk-bundle, on nothing written; it reaches the marker as `rutis_sdk::rutis::service`, whose generated code goes through `rutis_sdk::rutis`). On a version swap, the old generation's entry points go with its services, the new generation's appear when it provides them, and consumers reload under the existing rules. The host links `rutis-bridge`. |
 | R9 | **TypeScript declarations:** `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the source and writes the same declarations as today (same generator). To refresh them on every build, write one line in `build.rs`, `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`, with no type list. Calls themselves need no declarations. |
-| R10 | **Compatibility:** `build.rs` `.service(…)` / `.service_in(…)` keep working, for third-party types you cannot change. A type that is both marked and listed is a build error asking to remove the list entry. Hand-written `HostDispatch` keeps working. |
+| R10 | **Compatibility:** `build.rs` `.service(…)` / `.service_in(…)` keep working, for third-party types you cannot change. A type that is both marked and listed is a build error asking to remove the list entry. Hand-written `HostDispatch` keeps working.<br>**Retired (0.17, #647):** the list is removed; a type whose source you cannot change is wrapped in a type of your own, marked, its methods forwarded. Hand-written `HostDispatch` still works. |
 
 ## 5. Implementation
 

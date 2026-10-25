@@ -1,6 +1,6 @@
 [package]
 name = "rust-services-example"
-description = "An application exporting existing Rust services, from a dependency crate, to its TypeScript and Python rows"
+description = "An application wrapping the Rust services of a dependency crate in types marked #[rutis::service], for its TypeScript and Python rows"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ publish = false
 [dependencies]
 rust-services-calendar = { path = "calendar" }
 rutis = { path = "../../crates/rutis" }
-rutis-bridge = { path = "../../crates/rutis-bridge" }
 
 [build-dependencies]
 rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
 
 [dev-dependencies]
+rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
 rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
 rutis-test-support = { path = "../../crates/rutis-test-support" }
 schemars = "1"

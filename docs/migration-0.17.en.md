@@ -304,8 +304,62 @@ rutis_sdk::export_plugin! { id: "weather", build: Weather::new }
 
 `build:` takes the same constructor as `Builtins::register`, its parameter type decoded from the JSON config; `schema:` stays optional. `factory:` remains, for a `PluginFactory<ConfigValue>` whose dependencies are known only at run time. A dylib plugin is built with the SDK of its host anyway, so a 0.17 plugin is simply rebuilt.
 
+### The service list
+
+The service list in `build.rs` is removed ([#647](https://github.com/arcships/rutis/issues/647)): `Exports::service`, `Exports::service_in`, `rutis_bridge::include_exports!`, `ServiceCatalog::export`, `ServiceCatalog::export_all`, and what the generated code used in `rutis_bridge::exports` (`Export`, `ExportPlugin`, `FromCallback` and the like). Since 0.15 a Rust service is served with `#[rutis::service]` ([mark the type](guide/rust-host.en.md#mark-the-type-rutisservice)), and the list was left for types whose source you cannot change. The migration tool does not change these places; the compile errors point at them.
+
+Your own type: mark its `impl` `#[rutis::service]` and delete its line from the list. A type whose source you cannot change: wrap it in a type of your own, mark that, and forward each method you serve ([third-party types](guide/rust-host.en.md#third-party-types-wrap-them-in-a-type-of-your-own)):
+
+```rust
+// 0.16
+// build.rs
+rutis_bridge::build::Exports::new()
+    .service("calendar", "calendar_services::Calendar")
+    .service_in("notes", "calendar_services::Notes", "session")
+    .typescript("rows/services.d.ts")
+    .generate()
+    .expect("generate the exported services");
+// src/lib.rs
+rutis_bridge::include_exports!();
+catalog.export_all(exports::all());
+root.provide(calendar_services::Calendar::new())?;
+
+// 0.17
+// build.rs: the declarations only. If they need not follow every build, delete build.rs and use rutis-host types
+rutis_bridge::build::Exports::new()
+    .typescript("rows/services.d.ts")
+    .generate()
+    .expect("generate the service declarations");
+// src/lib.rs
+pub struct Calendar(pub calendar_services::Calendar);
+
+#[rutis::service]
+impl Calendar {
+    /// Add an entry; returns it with its id.
+    pub fn add(&self, entry: NewEntry) -> Result<Entry, CalendarError> {
+        self.0.add(entry)
+    }
+    // …the other methods you serve
+}
+
+root.provide(Calendar(calendar_services::Calendar::new()))?;
+```
+
+| 0.16 | 0.17 |
+| --- | --- |
+| `.service(name, path)` | Wrap and mark; a name other than the type's is `#[rutis::service(name = "…")]` |
+| `.service_in(name, path, group)` | Provide the wrapper inside the instance: `ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`; no group is written |
+| `include_exports!()`, `catalog.export_all(exports::all())`, `Export::plugin` | Delete them: providing serves |
+| The generated `exports::DispatchCalendar` and the like | By name: `ctx.get_at::<dyn HostDispatch>(&host_key("calendar"))` |
+| `exports::TYPESCRIPT` | `Exports::new().declarations(crate dir)`, or read the file `.typescript(…)` writes |
+| `.generate()` alone, without `.typescript(…)` | An error: name the declarations' file with `.typescript(…)` |
+| `.declared(path, typescript)`, `.typescript(file)` | Unchanged |
+
+- What crosses, how errors are thrown and the declarations do not change: with the wrapper named as the wrapped type, and the same method names and doc comments, the file `.typescript(…)` writes is the same byte for byte (`examples/rust-services` was migrated so).
+- The wrapper is provided, not the wrapped type. Rust code that depends on the wrapped type depends on the wrapper instead (`.0` is the wrapped value).
+
 ## What did not change
 
-- Gating, reloads, unloading, cleanups, the five event modes, scopes, filters, and every entry of the [guarantees](guarantees.en.md).
+- Gating, reloads, unloading, cleanups, the five event modes, scopes, filters, and every entry of the [guarantees](guarantees.en.md) but `bridge/exported-services`, withdrawn with the service list: its rules are all in `bridge/marked-services`.
 - The protocol and the wire; a rutis error thrown by a Rust service is still named `CordisError` in other languages.
 - The SDKs of other languages, the runtimes, `rutis.json` and rutis-host.

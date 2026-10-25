@@ -85,12 +85,23 @@ impl HostDispatch for Marked {
             .iter()
             .flat_map(|entry| entry.methods().iter().copied())
             .collect();
-        Some(crate::exports::shapes(&methods))
+        Some(shapes(&methods))
     }
 
     fn provider(&self) -> Option<String> {
         Some(self.type_name.to_owned())
     }
+}
+
+/// The method shapes of a marked service: every method is `async` (a
+/// Promise / awaitable in the caller's language).
+fn shapes(methods: &[&str]) -> serde_json::Value {
+    serde_json::Value::Object(
+        methods
+            .iter()
+            .map(|method| ((*method).to_owned(), serde_json::json!("async")))
+            .collect(),
+    )
 }
 
 fn short(type_name: &str) -> &str {
@@ -368,6 +379,40 @@ fn default_name(ident: &str) -> String {
 
 // ── The wire ────────────────────────────────────────────────────
 
+/// The `count` arguments of a call, those not passed being undefined.
+fn arguments(args: Value, count: usize) -> Result<std::vec::IntoIter<Value>, Error> {
+    let mut args = match args {
+        Value::Undefined => Vec::new(),
+        args => args.list()?,
+    };
+    if args.len() > count {
+        return Err(Error::Value(format!(
+            "expected at most {count} arguments, received {}",
+            args.len()
+        )));
+    }
+    args.resize(count, Value::Undefined);
+    Ok(args.into_iter())
+}
+
+/// The plugin definition passed as a parameter (`rutis::Definition`): the
+/// caller is read now, while the call starts; its declarations are read
+/// from its runtime when the future runs, before the method is called.
+fn definition(value: Value) -> BoxFuture<'static, Result<rutis::Definition, Error>> {
+    let (row, process) = (caller_row(), crate::runtime::calling_process());
+    Box::pin(async move {
+        let process = process.ok_or_else(|| {
+            Error::Value("a plugin definition can only come from a language runtime's call".into())
+        })?;
+        let Value::Reference(reference) = value else {
+            return Err(Error::Value(
+                "expected a plugin definition, received data".into(),
+            ));
+        };
+        crate::runtime::read_definition(process, reference, row).await
+    })
+}
+
 struct BridgeWire;
 static WIRE: BridgeWire = BridgeWire;
 
@@ -416,7 +461,7 @@ impl Function for Passed {
 
 impl Wire for BridgeWire {
     fn arguments(&self, args: Encoded, count: usize) -> Result<Vec<Encoded>, CallError> {
-        let args = crate::exports::arguments(value_of(args), count).map_err(call_error)?;
+        let args = arguments(value_of(args), count).map_err(call_error)?;
         Ok(args.map(|arg| Encoded(Box::new(arg))).collect())
     }
 
@@ -457,7 +502,7 @@ impl Wire for BridgeWire {
         value: Encoded,
     ) -> BoxFuture<'static, Result<rutis::Definition, CallError>> {
         // Who calls is read now, while the call starts.
-        let reading = crate::exports::definition(value_of(value));
+        let reading = definition(value_of(value));
         Box::pin(async move { reading.await.map_err(call_error) })
     }
 
@@ -488,6 +533,16 @@ impl Wire for BridgeWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arguments_not_passed_are_undefined() {
+        let args = arguments(Value::List(vec![serde_json::json!(1).into()]), 2).unwrap();
+        assert_eq!(
+            args.collect::<Vec<_>>(),
+            [serde_json::json!(1).into(), Value::Undefined]
+        );
+        assert!(arguments(Value::List(vec![Value::Undefined; 3]), 2).is_err());
+    }
 
     #[test]
     fn names_follow_the_macro() {

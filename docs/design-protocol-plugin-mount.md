@@ -236,6 +236,8 @@ Node 侧为每个导出的服务槽位维护一串**对象句柄**：
 
 ## 11. 已有的 Rust 服务给其他语言的行使用（#440）
 
+> 0.17 起本节的服务清单退休（#647）：Rust 服务用 `#[rutis::service]` 对外（[设计](design-rust-service-exposure-2026-10-21.md)），改不了源码的类型包一层自己的类型再标注。下面读源码和写 TypeScript 声明的部分留给 `rutis-host types` 和 `build.rs` 里的 `Exports::typescript`；生成 dispatcher、`exports::all()` 和 `ServiceCatalog::export` 已删除。
+
 0.12 之前，要让 TypeScript 或 Python 行使用 Rust 服务，唯一的形式是在 `host_key(name)` 下手写 `dyn HostDispatch`：解析参数、调用原生方法、序列化结果、映射错误。每个应用都要再写一遍（dim 的 `settings`、`sessions`、C4 的工具绑定、C5 的树绑定）。这层绑定应当对开发者无感：行在 `inject` 里写一个 Rust 服务名，就拿到它的方法。
 
 **声明。** 应用的 `build.rs` 列出要导出的东西：`Exports::new().service(name, path)` / `.service_in(name, path, group)`，别的什么都不写。路径按应用自己的写法写，可以是依赖 crate 的类型。

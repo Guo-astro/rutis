@@ -163,7 +163,7 @@ for def in parts.of("session") {
 | R6 | **跟着来源结束：** <br>· Rust 造的：属于造它的那个插件的这一代（`new` 的 `ctx`）。<br>· 其他语言的：属于交出它的那一行的这一代。作为调用参数交出的，属于调用方的行；作为返回值交出的，属于提供这个服务的行；不在任何行的调用里交出的，属于那个运行时进程。同一个定义属于第一次交出它的那一行。宿主只在定义被交出时才知道它，而交出通常就发生在造它的 `apply` 里，所以和 Rust 的规则效果相同。<br>来源卸载、重启、自己结束时：<br>1. 先结束从这个定义挂出的每一份，等它们清理完；<br>2. 再运行来源自己的清理、卸载来源；<br>3. 然后 `ended()` 完成，之后再调 `at` 会失败。<br>其他语言的运行时进程退出时，副本直接结束（连接已经断了），`ended()` 完成。这和 Cordis 重载插件时 `registry.delete` 结束全部副本一样。 |
 | R7 | **重载之后：** 新一代的 `apply` 交出的是新的定义，用的一方重新登记、重新挂；旧定义的副本这时已经结束（R6）。 |
 | R8 | **检查：** `rutis-host check` 不知道运行时才交出来的插件定义。挂上以后，如果门控条件不满足，只有那一份等待，和行一样。 |
-| R9 | **各语言的客户端：** <br>· Rust：参数、返回值直接写 `Definition`，`#[rutis::service]` 和 `build.rs` 的 `Exports` 都认它；dylib 插件经 `rutis-sdk` 拿到它；<br>· Go：函数字段直接传 `*rutis.Definition`，参数照常按值转换；<br>· Swift：`@RutisClient` 的参数类型写 `Rutis.Definition`；<br>· Kotlin：KSP 客户端接口的参数类型写 `Plugin`；<br>· TS：`rutis-host types` 把 `Definition` 写成 TS 的插件类型（`definePlugin` 的结果或 Cordis 插件）；<br>· Python、Node、Bun：不用声明。 |
+| R9 | **各语言的客户端：** <br>· Rust：参数、返回值直接写 `Definition`，`#[rutis::service]` 认它；dylib 插件经 `rutis-sdk` 拿到它；<br>· Go：函数字段直接传 `*rutis.Definition`，参数照常按值转换；<br>· Swift：`@RutisClient` 的参数类型写 `Rutis.Definition`；<br>· Kotlin：KSP 客户端接口的参数类型写 `Plugin`；<br>· TS：`rutis-host types` 把 `Definition` 写成 TS 的插件类型（`definePlugin` 的结果或 Cordis 插件）；<br>· Python、Node、Bun：不用声明。 |
 | R10 | **测试工具：** 插件定义交给测试替身时，替身收到的值可以直接交给测试工具的 `load` 装上，和真实运行时一致。Node 严格模式下，冻结的 `definePlugin` 结果也能这样交出（今天会在 Proxy 里报错）。Python 测试工具今天能交出 `Plugin`，真实运行时却会报错，这次两者一致。 |
 
 ## 五、线上格式与运行时契约
@@ -185,7 +185,7 @@ for def in parts.of("session") {
    - 来源结束：内核在来源 fiber 停下时，先结束这个定义的副本并等它们清理完，再运行来源的清理（R6）。Rust 造的定义，来源就是 `new` 的 `ctx` 所在的 fiber；其他语言的定义，来源是交出它的那一行的 fiber（下面第 4 条）。
    - 位置检查（R4）：比较挂载位置和来源的作用域链（`ctx.scope()`），内核就能做。
 2. **解码（rutis-bridge）：** 其他语言的 `Definition` 持有引用、读到的声明，以及来源（来源行这一代的 key，或者进程）。
-   - 生成的服务里，参数种类在"函数""数据"之外加一种"插件定义"（宏的 `Param` 和 `rutis::service` 的 `Wire`），`build.rs` 的 `Exports` 也认这个类型。
+   - 生成的服务里，参数种类在"函数""数据"之外加一种"插件定义"（宏的 `Param` 和 `rutis::service` 的 `Wire`）。`build.rs` 的服务清单（`Exports::service`）P1 时也认这个类型，0.17 随清单一起删除（#647）。
    - 解码出 `Definition` 时发 `plugins.read`。参数：生成的分发代码等它完成再调用方法。返回值：Rust 调用其他语言的服务，拿到回复后用 `rutis_bridge::runtime::returned(&*service, value).await` 读出定义，这一步读声明，读完才得到 `Definition`。
    - 来源在解码时确定：参数取 `caller_row()`，返回值取提供这个服务的行。
    - 编码 `Definition` 时检查要发往的会话：其他语言的定义发回定义它的运行时，就发原来的引用；其他情况都让这次调用失败（§五 第 2 条，R3）。

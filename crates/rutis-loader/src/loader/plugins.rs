@@ -107,22 +107,6 @@ impl DynPlugin for GroupPlugin {
             if self.slot.scope.is_some() {
                 ctx.mark_scope(&self.slot.row)?;
             }
-            // An instance serves its group's exported Rust services.
-            #[cfg(any(feature = "runtimes", feature = "peer"))]
-            {
-                let instanced = inner
-                    .state
-                    .lock()
-                    .unwrap()
-                    .desired
-                    .row(&self.slot.row)
-                    .is_some_and(|row| row.instanced);
-                if instanced {
-                    for export in inner.catalog.exports_in(Some(&self.slot.row)) {
-                        ctx.plugin(export.plugin(Some(rutis::host::CtxHost::instance(ctx))));
-                    }
-                }
-            }
             inner.attach(Some(self.slot.clone()), token, ctx);
             let weak = self.inner.clone();
             let slot = self.slot.clone();
@@ -181,11 +165,6 @@ impl DynPlugin for LoaderPlugin {
                     loader: self.loader.clone(),
                 },
             ))?;
-            // Exported Rust services outside instances, served from here.
-            #[cfg(any(feature = "runtimes", feature = "peer"))]
-            for export in self.loader.inner.catalog.exports_in(None) {
-                ctx.plugin(export.plugin(None));
-            }
             // A marked Rust service served in an instance makes its name
             // that instance's own: the copies there gating on it are rebuilt.
             #[cfg(feature = "runtimes")]

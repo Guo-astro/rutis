@@ -2,7 +2,7 @@
 
 [English](design-rust-service-exposure-2026-10-21.en.md)
 
-状态：已实现（2026-10-21），#510，0.15。取代 `build.rs` 清单作为 Rust 服务对外的主要方式；`rutis_bridge::build::Exports` 保留，只用于改不了源码的类型。
+状态：已实现（2026-10-21），#510，0.15。取代 `build.rs` 清单作为 Rust 服务对外的方式。清单在 0.15 保留给改不了源码的类型（R10），0.17 退休（#647）：这样的类型包一层自己的类型再标注；`rutis_bridge::build::Exports` 只留下写 TypeScript 声明。
 
 ## 一、目标
 
@@ -67,7 +67,7 @@ await calendar.add({ title: 'Standup', startsAt: new Date() })
 | R7 | **没标注的诊断：** 行按名字依赖 `x`，运行时里没有叫 `x` 的服务，但有一个按默认规则命名为 `x` 的未标注 Rust 服务时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并写明："`x` 是未对外的 Rust 服务 `crate::X`，在它的 `impl` 上加 `#[rutis::service]`"。 |
 | R8 | **dylib 插件：** dylib 里带标注的类型在加载后同样对外，宿主不需要知道它（插件 crate 只依赖 `rutis-sdk`，对着 sdk-bundle 构建时连依赖都不写；它经 `rutis_sdk::rutis::service` 拿到标注，那样生成的代码经 `rutis_sdk::rutis`）。换代时旧代的对外入口随旧代的服务一起撤销，新代提供时重新对外，消费者按现有规则重载。宿主要链接 `rutis-bridge`。 |
 | R9 | **TypeScript 声明：** `rutis-host types <crate 目录> -o services.d.ts` 从源码里找出全部带标注的类型，写出与今天相同的声明（同一个生成器）。想每次构建自动更新的，`build.rs` 里写一行 `rutis_bridge::build::Exports::new().typescript("services.d.ts").generate()`，不用列类型。调用本身不需要声明。 |
-| R10 | **兼容：** `build.rs` 的 `.service(…)` / `.service_in(…)` 继续可用，用于改不了源码的第三方类型。一个类型既有标注又在清单里，构建报错，提示删掉清单里那一行。手写 `HostDispatch` 继续可用。 |
+| R10 | **兼容：** `build.rs` 的 `.service(…)` / `.service_in(…)` 继续可用，用于改不了源码的第三方类型。一个类型既有标注又在清单里，构建报错，提示删掉清单里那一行。手写 `HostDispatch` 继续可用。<br>**已退休（0.17，#647）：** 清单删除；改不了源码的类型包一层自己的类型，标注，逐个转发方法。手写 `HostDispatch` 照旧可用。 |
 
 ## 五、怎么实现
 
