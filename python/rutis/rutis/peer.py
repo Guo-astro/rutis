@@ -33,6 +33,7 @@ import weakref
 from typing import Any, Callable
 
 from . import _eager, _values
+from .plugin import Plugin
 from .channel import SocketChannel
 
 PROTOCOL = 2
@@ -420,7 +421,7 @@ def _is_live(value: Any) -> bool:
 def _holds_reference(value: Any, seen: set | None = None, depth: int = 0) -> bool:
     """Whether `value` holds a reference. Not looked for past MAX_DEPTH
     levels: a value that deep fails as data, too deep (#279)."""
-    if isinstance(value, (RemoteFunction, RemoteFuture)):
+    if isinstance(value, (RemoteFunction, RemoteFuture, Plugin)):
         return True
     if callable(value) or _is_future(value) or _is_live(value):
         return True
@@ -841,14 +842,36 @@ class Peer:
             }
         if asyncio.iscoroutine(value):
             value = self._task(value)
-        if (callable(value) and not isinstance(value, type)) or asyncio.isfuture(value) or _is_live(value):
+        if isinstance(value, Plugin):
+            # A plugin definition (`define_plugin`) crosses as itself: a
+            # `plugin` reference, sent only to a far end that declared
+            # `plugins` (docs/design-plugin-values-2026-10-25.md §5).
+            if "plugins" not in self._declared:
+                raise ValueError(
+                    "cannot send a plugin definition: the far end does not accept plugin definitions "
+                    "(it did not declare the capability plugins)"
+                )
+        if (
+            (callable(value) and not isinstance(value, type))
+            or asyncio.isfuture(value)
+            or _is_live(value)
+            or isinstance(value, Plugin)
+        ):
             key = id(value)
             ref = self._identities.get(key)
             entry = self._exports.get(ref) if ref is not None else None
             if entry is None or entry.value is not value:
                 self._ref += 1
                 ref = self._ref
-                kind = "future" if asyncio.isfuture(value) else "function" if callable(value) else "object"
+                kind = (
+                    "future"
+                    if asyncio.isfuture(value)
+                    else "plugin"
+                    if isinstance(value, Plugin)
+                    else "function"
+                    if callable(value)
+                    else "object"
+                )
                 if kind == "object" and self._endpoint is not None and not self.supports("objects"):
                     raise ValueError("the far end cannot receive object references")
                 entry = _Export(value, kind, list(self._path()), business)
@@ -1042,7 +1065,7 @@ class Peer:
         if (
             not isinstance(ref, int)
             or not 0 < ref <= MAX_SAFE
-            or kind not in ("function", "future", "object")
+            or kind not in ("function", "future", "object", "plugin")
             or not isinstance(home, bool)
             or not isinstance(origin, list)
             or not all(isinstance(item, str) and self._origin_id.match(item) for item in origin)
@@ -1052,6 +1075,9 @@ class Peer:
             return self._export(ref, kind).value
         if kind == "object":
             raise ValueError("object references exported by Rust are not supported")
+        # Plugin definitions travel back home only: this side's own.
+        if kind == "plugin":
+            raise ValueError("plugin definitions exported by Rust are not supported")
         record = self._imports.get(ref)
         proxy = record.proxy() if record is not None else None
         if proxy is not None:
