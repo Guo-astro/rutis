@@ -2761,6 +2761,39 @@ mod tests {
         assert!(error.contains("exported twice"), "{error}");
     }
 
+    /// A plugin definition parameter is read before the method runs, and
+    /// both it and a returned one are declared as the TS plugin type.
+    #[test]
+    fn plugin_definitions_cross_as_the_plugin_type() {
+        let source = r#"
+pub struct Parts;
+impl Parts {
+    pub fn register(&self, scope: String, def: rutis::Definition) {}
+    pub fn first(&self) -> rutis::Definition { unimplemented!() }
+}
+"#;
+        let generated = generate(
+            Exports::new().service("parts", "dep_crate::Parts"),
+            &[("lib.rs", source)],
+        )
+        .unwrap();
+        let ts = &generated.typescript;
+        let plugin = "import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }";
+        assert!(
+            ts.contains(&format!(
+                "register(scope: string, def: {plugin}): Promise<void>"
+            )),
+            "{ts}"
+        );
+        assert!(ts.contains(&format!("first(): Promise<{plugin}>")), "{ts}");
+        let rust = &generated.rust;
+        assert!(
+            rust.contains("let a1 = ::rutis_bridge::exports::definition(args.next().unwrap());"),
+            "{rust}"
+        );
+        assert!(rust.contains("let a1 = a1.await?;"), "{rust}");
+    }
+
     fn store() -> Result<Generated> {
         generate(
             Exports::new().service("store", "dep_crate::Store"),

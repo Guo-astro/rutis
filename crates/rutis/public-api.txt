@@ -998,6 +998,29 @@ impl core::marker::Unpin for rutis::Ctx
 impl core::marker::UnsafeUnpin for rutis::Ctx
 impl !core::panic::unwind_safe::RefUnwindSafe for rutis::Ctx
 impl !core::panic::unwind_safe::UnwindSafe for rutis::Ctx
+pub struct rutis::Definition(_)
+impl rutis::Definition
+pub fn rutis::Definition::at(&self, &rutis::Ctx, impl serde_core::ser::Serialize) -> core::result::Result<impl rutis::host::DynPlugin, rutis::Error>
+pub fn rutis::Definition::ended(&self) -> impl core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub fn rutis::Definition::is_ended(&self) -> bool
+pub fn rutis::Definition::name(&self) -> &str
+pub fn rutis::Definition::new<C, P, B>(&rutis::Ctx, B) -> Self where C: serde_core::de::DeserializeOwned + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&rutis::Ctx, C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
+impl core::clone::Clone for rutis::Definition
+pub fn rutis::Definition::clone(&self) -> Self
+impl core::cmp::Eq for rutis::Definition
+impl core::cmp::PartialEq for rutis::Definition
+pub fn rutis::Definition::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::Definition
+pub fn rutis::Definition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for rutis::Definition
+pub fn rutis::Definition::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl core::marker::Freeze for rutis::Definition
+impl core::marker::Send for rutis::Definition
+impl core::marker::Sync for rutis::Definition
+impl core::marker::Unpin for rutis::Definition
+impl core::marker::UnsafeUnpin for rutis::Definition
+impl !core::panic::unwind_safe::RefUnwindSafe for rutis::Definition
+impl !core::panic::unwind_safe::UnwindSafe for rutis::Definition
 pub struct rutis::Disposer
 impl rutis::Disposer
 pub fn rutis::Disposer::dispose(self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>

@@ -2433,8 +2433,7 @@ async fn a_plugin_definition_goes_home_and_is_never_relayed() {
     for refused in [plugin.clone(), home.clone()] {
         let error = b
             .invoke("", "use", Value::List(vec![Value::Reference(refused)]))
-            .err()
-            .expect("refused");
+            .expect_err("refused");
         assert!(
             error
                 .to_string()

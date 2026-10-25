@@ -35,7 +35,7 @@ async fn a_session_runs_on_a_memory_channel() {
         assert_eq!(
             read(&mut remote),
             json!({ "op": "hello", "version": PROTOCOL, "capabilities": [
-                "sync-wait", "events-v2", "value-instant", "value-datetime", "value-date", "value-time",
+                "sync-wait", "events-v2", "plugins", "value-instant", "value-datetime", "value-date", "value-time",
                 "value-bytes", "value-map", "value-set", "value-bigint", "value-decimal",
                 "value-uuid",
             ] })

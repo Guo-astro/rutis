@@ -460,11 +460,7 @@ async fn a_returned_definition_belongs_to_the_row_providing_the_service(lang: La
     let fixture = fixture(lang).await;
     let key = host_key("maker");
     let maker = COLD
-        .eventually_with(
-            || fixture.root.get_at(&key),
-            "maker provided",
-            || String::new(),
-        )
+        .eventually_with(|| fixture.root.get_at(&key), "maker provided", String::new)
         .await;
     let made = rutis_bridge::session::settle(
         maker
