@@ -744,19 +744,22 @@ jobs:
 
   # The kernel's public API (its root, rutis::events and rutis::host) against
   # the snapshot in crates/rutis/public-api.txt (tools/public-api.sh, #617):
-  # a new name shows in review as a change to the snapshot.
+  # a new name shows in review as a change to the snapshot. The listing is
+  # built from the cargo-public-api libraries (tools/public-api), not its
+  # CLI: that has no prebuilt binary and needs OpenSSL's headers and
+  # pkg-config to build, which a runner may lack.
   public-api:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+      # rust-toolchain.toml's, which builds tools/public-api.
+      - uses: dtolnay/rust-toolchain@1.98.1
+      # The one that writes the rustdoc JSON.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-16
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-public-api@0.52.0
       - name: public API snapshot
         env:
           RUTIS_PUBLIC_API_TOOLCHAIN: nightly-2026-10-16
