@@ -54,6 +54,20 @@ You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and
 
 `ctx.use("llm")` gets the service. A service provided by a plugin in the same process is the object itself; services from another language or machine are proxies, whose methods return synchronously or produce awaitable results according to their declarations. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
+A plugin is itself a value: hand the result of `define_plugin(...)` to a service as an ordinary argument (an application's part registry, say), and the receiver can mount it elsewhere, one copy per mount, each running in this process with what your `apply` prepared:
+
+```python
+async def apply(ctx, config):
+    pool = await open_pool()
+
+    def session(ctx, config):
+        ctx.provide("gitStatus", GitStatus(pool, config["depth"]))
+
+    ctx.use("parts").register("session", define_plugin(session, inject=["history"]))
+```
+
+When this row unloads or reloads, every copy mounted from a definition it handed over ends first. In the testing tool, a definition a test double receives can be passed to `load` as it is. See [Plugin API](plugin-api.en.md#plugin-definitions).
+
 ## 3. Test
 
 `rutis.testing` does not require a host:

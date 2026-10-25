@@ -64,7 +64,7 @@ The first control operation from rutis. Reply:
 | `scopes` | Service ids may carry a scope label: `name`, or `name` + NUL + `label` |
 | `events` | rutis 0.12 only: leaf events (plugin API 2), `ctx.on` / `ctx.emit` and host events configured with `emits`. Removed in 0.13 together with the `mount` arguments `events` / `emits`; events are §6 |
 | `rows.announce` | Services a row provides without declaring them are announced to the host with their methods (see `service` below); only to a host whose `mount` arguments carry `announce: true` (rutis 0.12 and later). Every runtime of the repository does it (Node for Cordis and leaf rows, Bun, Python, Go) |
-| `plugin-values` | The runtime sends its SDK's plugin definitions as `plugin` references, answers `plugins.read`, and takes a plugin definition as the `entry` of `rows.load` (§4, §5; https://github.com/arcships/rutis/blob/main/docs/design-plugin-values-2026-10-25.en.md). Node, Bun, Swift and Kotlin today |
+| `plugin-values` | The runtime sends its SDK's plugin definitions as `plugin` references, answers `plugins.read`, and takes a plugin definition as the `entry` of `rows.load` (§4, §5; https://github.com/arcships/rutis/blob/main/docs/design-plugin-values-2026-10-25.en.md). Node, Bun, Python, Go, Swift and Kotlin today |
 
 Adding fields to the `mount` reply (such as `engine` or `plugins`) is not a protocol change.
 

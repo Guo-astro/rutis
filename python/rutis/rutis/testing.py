@@ -98,6 +98,11 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     if isinstance(value, dict):
         data = data or not _beyond_data(value)
         return {key: _cross(item, f"{where}.{key}", data, depth + 1) for key, item in value.items()}
+    # A plugin definition crosses as itself: what receives it hands it back
+    # to the runtime that defined it, which loads it as it is
+    # (docs/design-plugin-values-2026-10-25.md R10), so `load` takes it.
+    if isinstance(value, sdk.Plugin):
+        return value
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         try:
             fields = dataclasses.asdict(value)

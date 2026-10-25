@@ -87,7 +87,7 @@ func (l *listener) Info() Listener {
 	runtime := l.rt.runtimeName
 	l.rt.mu.Unlock()
 	// A copy of the scope: a filter changing it changes nothing else.
-	return Listener{Name: l.name, Plugin: l.row.def.name, Row: l.row.name, Runtime: runtime, Scope: slices.Clone(l.row.scope), Global: l.global}
+	return Listener{Name: l.name, Plugin: l.row.plugin(), Row: l.row.name, Runtime: runtime, Scope: slices.Clone(l.row.scope), Global: l.global}
 }
 
 // live reports whether invocations may start; rt.mu is held.
@@ -214,7 +214,7 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	if rt.session != nil && !rt.closing {
 		session, id, loading := rt.session, c.row.name, c.row.loading
 		registration := []any{map[string]any{
-			"id": l.id, "name": name, "row": c.row.key, "plugin": c.row.def.name,
+			"id": l.id, "name": name, "row": c.row.key, "plugin": c.row.plugin(),
 			"kind": "sync", "prepend": o.Prepend, "global": o.Global,
 		}}
 		answered := make(chan struct{})

@@ -72,6 +72,12 @@ type Object interface {
 	Get(ctx context.Context, property string) (any, error)
 }
 
+// Plugin is a plugin definition this side hands over (rutis.Define's
+// result, held in Value): it crosses as a `plugin` reference, only to a far
+// end that declared `plugins`, and comes back home as Value itself
+// (docs/design-plugin-values-2026-10-25.md §5). The far end cannot call it.
+type Plugin struct{ Value any }
+
 // Signal is the cancellation a call received as an argument: done once the
 // caller cancels.
 type Signal struct {
@@ -108,6 +114,11 @@ type Options struct {
 	// Host makes this side the host of a compat session (call ids `rust:`),
 	// for tests that drive a runtime.
 	Host bool
+	// Plugins makes this side take plugin definitions (`plugin`
+	// references), as a host does: it declares the capability `plugins`
+	// (both formats) and decodes the far end's as *RemotePlugin. For tests
+	// that act as the host.
+	Plugins bool
 	// Require lists capabilities the far end must declare: the session ends
 	// right after its handshake when it does not, with a *RefusedError
 	// whose reason Refuse gives (both formats).
@@ -157,6 +168,7 @@ type imported struct {
 	released bool
 	function weak.Pointer[RemoteFunction]
 	future   weak.Pointer[RemoteFuture]
+	plugin   weak.Pointer[RemotePlugin]
 }
 
 // Peer is one session.
@@ -233,16 +245,20 @@ func New(channel Channel, opts Options) (*Peer, error) {
 func (p *Peer) Start() error {
 	go p.read()
 	hello := map[string]any{"op": "hello"}
+	var capabilities []string
 	if p.opts.Endpoint == nil {
 		hello["version"] = Protocol
-		hello["capabilities"] = compatCapabilities
+		capabilities = append([]string{}, compatCapabilities...)
 	} else {
-		capabilities := append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
+		capabilities = append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
 		hello["version"] = EndpointProtocol
 		hello["endpoint"] = p.opts.Endpoint.Local
 		hello["implementation"] = p.opts.Implementation
-		hello["capabilities"] = capabilities
 	}
+	if p.opts.Plugins {
+		capabilities = append(capabilities, "plugins")
+	}
+	hello["capabilities"] = capabilities
 	return p.send(hello)
 }
 
@@ -415,6 +431,16 @@ type RemoteFunction struct {
 	record *imported
 }
 
+// RemotePlugin is a plugin definition of the far end (Options.Plugins): it
+// cannot be called, only sent back home, where it is the original value.
+type RemotePlugin struct {
+	peer   *Peer
+	record *imported
+}
+
+// Peer is the session it came from.
+func (r *RemotePlugin) Peer() *Peer { return r.peer }
+
 // RemoteFuture is an asynchronous result of the far end.
 type RemoteFuture struct {
 	peer   *Peer
@@ -527,7 +553,7 @@ func (p *Peer) release(record *imported) {
 // it crosses as a list or record rather than as data.
 func marked(value any) bool {
 	switch v := value.(type) {
-	case Func, Object, *RemoteFunction, *RemoteFuture:
+	case Func, Object, Plugin, *RemoteFunction, *RemoteFuture, *RemotePlugin:
 		return true
 	case []any:
 		for _, item := range v {
@@ -648,8 +674,26 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 			return nil, err
 		}
 		return homeReference(v.record), nil
+	case *RemotePlugin:
+		if v.peer != p {
+			return nil, valueErrorf("a plugin definition can only be handed back to the runtime that defined it")
+		}
+		if err := v.record.check(); err != nil {
+			return nil, err
+		}
+		return homeReference(v.record), nil
 	case Func:
 		return p.exportValue(v, "function", nil, grants, origin)
+	case Plugin:
+		if !p.supports("plugins") {
+			return nil, valueErrorf("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
+		}
+		// The same definition handed over again is the same reference.
+		var key any
+		if reflect.ValueOf(v.Value).Comparable() {
+			key = v
+		}
+		return p.exportValue(v.Value, "plugin", key, grants, origin)
 	case Object:
 		if p.opts.Endpoint != nil && !p.supports("objects") {
 			return nil, errors.New("the far end cannot receive object references")
@@ -883,7 +927,7 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	if err != nil || ref <= 0 || ref > MaxSafe {
 		return nil, invalid
 	}
-	if value.Kind != "function" && value.Kind != "future" && value.Kind != "object" {
+	if value.Kind != "function" && value.Kind != "future" && value.Kind != "object" && value.Kind != "plugin" {
 		return nil, invalid
 	}
 	origin := make([]string, len(value.Origin))
@@ -904,14 +948,26 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	if value.Kind == "object" {
 		return nil, errors.New("object references from the far end are not supported")
 	}
+	// Plugin definitions travel back home only (this side's own), but to a
+	// side that takes them, as a host does (Options.Plugins).
+	if value.Kind == "plugin" && !p.opts.Plugins {
+		return nil, errors.New("plugin definitions from the far end are not supported")
+	}
 	if record := p.imports[ref]; record != nil {
 		var proxy any
-		if record.kind == "function" {
+		switch record.kind {
+		case "function":
 			if live := record.function.Value(); live != nil {
 				proxy = live
 			}
-		} else if live := record.future.Value(); live != nil {
-			proxy = live
+		case "plugin":
+			if live := record.plugin.Value(); live != nil {
+				proxy = live
+			}
+		default:
+			if live := record.future.Value(); live != nil {
+				proxy = live
+			}
 		}
 		if proxy != nil {
 			if record.kind != value.Kind || !equal(record.origin, origin) {
@@ -927,6 +983,12 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	if value.Kind == "function" {
 		proxy := &RemoteFunction{peer: p, record: record}
 		record.function = weak.Make(proxy)
+		runtime.AddCleanup(proxy, func(r *imported) { go p.release(r) }, record)
+		return proxy, nil
+	}
+	if value.Kind == "plugin" {
+		proxy := &RemotePlugin{peer: p, record: record}
+		record.plugin = weak.Make(proxy)
 		runtime.AddCleanup(proxy, func(r *imported) { go p.release(r) }, record)
 		return proxy, nil
 	}
