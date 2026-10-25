@@ -43,11 +43,11 @@ pub fn rutis::events::Call<E>::ctx(&self) -> &rutis::Ctx
 pub fn rutis::events::Call<E>::mode(&self) -> rutis::events::Mode
 pub fn rutis::events::Call<E>::name(&self) -> &str
 pub async fn rutis::events::Call<E>::next(self) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
-impl<E> core::marker::Freeze for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Freeze
-impl<E> core::marker::Send for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Send
-impl<E> core::marker::Sync for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Sync
-impl<E> core::marker::Unpin for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::Unpin
-impl<E> core::marker::UnsafeUnpin for rutis::events::Call<E> where core::option::Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>>>>: core::marker::UnsafeUnpin
+impl<E> core::marker::Freeze for rutis::events::Call<E> where core::marker::PhantomData<fn() -> E>: core::marker::Freeze
+impl<E> core::marker::Send for rutis::events::Call<E> where core::marker::PhantomData<fn() -> E>: core::marker::Send
+impl<E> core::marker::Sync for rutis::events::Call<E> where core::marker::PhantomData<fn() -> E>: core::marker::Sync
+impl<E> core::marker::Unpin for rutis::events::Call<E> where core::marker::PhantomData<fn() -> E>: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for rutis::events::Call<E> where core::marker::PhantomData<fn() -> E>: core::marker::UnsafeUnpin
 impl<E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::Call<E>
 impl<E> !core::panic::unwind_safe::UnwindSafe for rutis::events::Call<E>
 pub struct rutis::events::Filtered<'c>

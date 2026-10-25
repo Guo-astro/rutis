@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -250,32 +251,129 @@ impl ErasedSyncTerminal for RawTerm {
     }
 }
 
-/// The rest of an async waterfall after one entry.
-pub(crate) struct AsyncNext<'a> {
-    pub inv: &'a Inv<'a>,
-    pub chain: &'a [Arc<Entry>],
-    pub terminal: &'a (dyn ErasedTerminal + 'a),
+/// An async waterfall, owned: what the rest of it needs after any entry,
+/// shared by every entry's `next`, so a listener's owned `Call` holds its
+/// `next` itself and runs the rest of the chain from there.
+pub(crate) struct Chain {
+    inv: OwnedInv,
+    entries: Vec<Arc<Entry>>,
+    terminal: Box<dyn ErasedTerminal + Send>,
+    /// Slot `i`: the call that holds the `next` starting at entry `i` has
+    /// ended, so that `next` is `Ended` (as when its waterfall was over).
+    ended: Ended,
 }
 
-impl<'a> AsyncNext<'a> {
-    pub fn invoke(self) -> BoxFuture<'a, Result<Option<Value>, Error>> {
-        Box::pin(async move {
-            for (index, entry) in self.chain.iter().enumerate() {
-                // Withdrawn since the snapshot: skipped, as if never selected.
-                let Some(flight) = self.inv.bus.start(entry) else {
-                    continue;
-                };
-                let next = AsyncNext {
-                    inv: self.inv,
-                    chain: &self.chain[index + 1..],
-                    terminal: self.terminal,
-                };
-                let out = call_async(entry, self.inv, Some(next)).await;
-                drop(flight);
-                return out;
+/// The ended slots of a [`Chain`]: bits of one word up to 64 slots (no
+/// allocation), a table beyond.
+enum Ended {
+    Few(AtomicU64),
+    Many(Box<[AtomicBool]>),
+}
+
+impl Ended {
+    fn new(slots: usize) -> Self {
+        if slots <= 64 {
+            Ended::Few(AtomicU64::new(0))
+        } else {
+            Ended::Many((0..slots).map(|_| AtomicBool::new(false)).collect())
+        }
+    }
+
+    fn set(&self, slot: usize) {
+        match self {
+            Ended::Few(bits) => {
+                bits.fetch_or(1 << slot, Ordering::SeqCst);
             }
-            self.terminal.call(self.inv).await
+            Ended::Many(slots) => slots[slot].store(true, Ordering::SeqCst),
+        }
+    }
+
+    fn get(&self, slot: usize) -> bool {
+        match self {
+            Ended::Few(bits) => bits.load(Ordering::SeqCst) & (1 << slot) != 0,
+            Ended::Many(slots) => slots[slot].load(Ordering::SeqCst),
+        }
+    }
+}
+
+/// The rest of an async waterfall from entry `from` on.
+pub(crate) struct AsyncNext {
+    chain: Arc<Chain>,
+    from: usize,
+}
+
+impl AsyncNext {
+    /// The whole chain: `entries`, then `terminal`.
+    pub fn start(
+        inv: OwnedInv,
+        entries: Vec<Arc<Entry>>,
+        terminal: Box<dyn ErasedTerminal + Send>,
+    ) -> Self {
+        let ended = Ended::new(entries.len() + 1);
+        AsyncNext {
+            chain: Arc::new(Chain {
+                inv,
+                entries,
+                terminal,
+                ended,
+            }),
+            from: 0,
+        }
+    }
+
+    /// The call holding it has ended.
+    pub fn ended(&self) -> bool {
+        self.chain.ended.get(self.from)
+    }
+
+    /// Marks it ended when dropped: held by the call it belongs to.
+    pub fn end_on_drop(&self) -> EndOnDrop {
+        EndOnDrop(self.chain.clone(), self.from)
+    }
+
+    pub fn invoke(self) -> BoxFuture<'static, Result<Option<Value>, Error>> {
+        Box::pin(async move { run_from(&self.chain, self.from).await })
+    }
+
+    /// [`invoke`](Self::invoke), its value as a `V` (a listener's `next`).
+    pub fn invoke_typed<V>(self) -> BoxFuture<'static, Result<Option<V>, Error>>
+    where
+        V: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        Box::pin(async move {
+            let value = run_from(&self.chain, self.from).await?;
+            crate::events::into_typed::<V>(&self.chain.inv.inv(), value)
         })
+    }
+}
+
+/// The rest of `chain` from entry `from` on: the first entry still there,
+/// with the rest after it as its `next`; the terminal when none is left.
+async fn run_from(chain: &Arc<Chain>, from: usize) -> Result<Option<Value>, Error> {
+    let inv = chain.inv.inv();
+    for index in from..chain.entries.len() {
+        let entry = &chain.entries[index];
+        // Withdrawn since the snapshot: skipped, as if never selected.
+        let Some(flight) = inv.bus.start(entry) else {
+            continue;
+        };
+        let next = AsyncNext {
+            chain: chain.clone(),
+            from: index + 1,
+        };
+        let out = call_async(entry, &inv, Some(next)).await;
+        drop(flight);
+        return out;
+    }
+    chain.terminal.call(&inv).await
+}
+
+/// See [`AsyncNext::end_on_drop`].
+pub(crate) struct EndOnDrop(Arc<Chain>, usize);
+
+impl Drop for EndOnDrop {
+    fn drop(&mut self) {
+        self.0.ended.set(self.1);
     }
 }
 
@@ -283,7 +381,7 @@ impl<'a> AsyncNext<'a> {
 pub(crate) fn call_async<'a>(
     entry: &'a Entry,
     inv: &'a Inv<'a>,
-    next: Option<AsyncNext<'a>>,
+    next: Option<AsyncNext>,
 ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
     match &entry.body {
         Body::Async(listener) => Box::pin(async move {
@@ -323,7 +421,7 @@ type NextReply = tokio::sync::oneshot::Sender<Result<Option<Value>, Error>>;
 fn remote_waterfall<'a>(
     remote: &'a dyn crate::events::RemoteListener,
     inv: &'a Inv<'a>,
-    next: AsyncNext<'a>,
+    next: AsyncNext,
 ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
     Box::pin(async move {
         let (requests, mut rx) = tokio::sync::mpsc::unbounded_channel::<NextReply>();
