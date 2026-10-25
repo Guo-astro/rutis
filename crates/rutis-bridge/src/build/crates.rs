@@ -1,5 +1,5 @@
 //! The source of the crates an application builds with, as the generator of
-//! exported services reads it: which crate a name in the application's
+//! service declarations reads it: which crate a name in the application's
 //! `build.rs` is (`cargo metadata`), the module tree of each crate read with
 //! syn from its entry file, and what a path written in a module names
 //! (its `use` items, globs, re-exports, the extern prelude and the standard

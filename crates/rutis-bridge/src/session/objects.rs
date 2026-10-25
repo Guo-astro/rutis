@@ -815,30 +815,11 @@ pub fn decode_value<T: de::DeserializeOwned + Serialize>(value: Value) -> Result
 }
 
 /// Decode an argument into a data type, which, unlike with
-/// [`decode_value`], need not be `Serialize` too: what generated service
-/// dispatch ([`crate::exports`]) decodes its parameters with. Tagged values
-/// decode into their types (an integer type takes a bigint that fits it);
-/// a function or object reference is refused, since data cannot hold one.
-pub(crate) fn decode_data<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
-    let mut taken = std::collections::HashSet::new();
-    value_keys(&value, &mut taken);
-    let keys = Keys::avoiding(&taken);
-    let mut references = Vec::new();
-    let mut tagged = Vec::new();
-    let json = marked(value, &keys, &mut references, &mut tagged);
-    if !references.is_empty() {
-        return Err(Error::Value(
-            "a function or object reference was passed where data is expected".into(),
-        ));
-    }
-    let previous = DECODING_TAGGED.with(|current| current.replace(tagged));
-    let result = with_keys(&keys, || serde_json::from_value::<T>(json));
-    DECODING_TAGGED.with(|current| current.replace(previous));
-    result.map_err(|error| Error::Value(error.to_string()))
-}
-
-/// [`decode_data`] with `consume`, which deserializes from the JSON it is
-/// given: how a `#[rutis::service]` dispatch decodes its parameters.
+/// [`decode_value`], need not be `Serialize` too: `consume` deserializes
+/// from the JSON it is given. How a `#[rutis::service]` dispatch decodes
+/// its parameters. Tagged values decode into their types (an integer type
+/// takes a bigint that fits it); a function or object reference is
+/// refused, since data cannot hold one.
 pub(crate) fn decode_data_with(
     value: Value,
     consume: impl FnOnce(Json) -> Result<(), String>,

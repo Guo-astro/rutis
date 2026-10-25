@@ -72,8 +72,8 @@ websocket = [
     "dep:tokio-tungstenite",
 ]
 # Cordis plugins mounted with Rust bindings generated at build time.
-# The export generator for build scripts (`build::Exports`): existing Rust
-# services for the rows of other languages.
+# The declaration generator for build scripts (`build::Exports`): the
+# TypeScript declarations of the `#[rutis::service]` types.
 exports = ["dep:proc-macro2", "dep:quote", "dep:syn"]
 cordis = ["node", "exports", "dep:toml"]
 # The channel contract tests, and the session, runtime and node conformance

@@ -1,11 +1,10 @@
 fn main() {
-    // The services the rows use, by name. The types are in a dependency
-    // crate; the generator reads their source and writes the dispatchers
-    // and the TypeScript declarations (copied to rows/services.d.ts).
+    // The TypeScript declarations of the marked services in src/lib.rs,
+    // read with the dependency crate's types they use, rewritten into
+    // rows/services.d.ts when they change. The services need no build step;
+    // `rutis-host types` writes the same file.
     rutis_bridge::build::Exports::new()
-        .service("calendar", "rust_services_calendar::Calendar")
-        .service_in("notes", "rust_services_calendar::Notes", "session")
         .typescript("rows/services.d.ts")
         .generate()
-        .expect("generate the exported services");
+        .expect("generate the service declarations");
 }

@@ -304,8 +304,62 @@ rutis_sdk::export_plugin! { id: "weather", build: Weather::new }
 
 `build:` 接受和 `Builtins::register` 相同的构造函数，配置从 JSON 解码成它的参数类型；`schema:` 照旧可选。`factory:` 保留，给依赖要到运行时才知道的 `PluginFactory<ConfigValue>` 用。dylib 插件本来就要用和宿主相同的 SDK 构建，0.17 的插件照常重新构建。
 
+### 服务清单
+
+`build.rs` 里列类型的服务清单删除了（[#647](https://github.com/arcships/rutis/issues/647)）：`Exports::service`、`Exports::service_in`、`rutis_bridge::include_exports!`、`ServiceCatalog::export`、`ServiceCatalog::export_all`，以及 `rutis_bridge::exports` 里给生成代码用的 `Export`、`ExportPlugin`、`FromCallback` 等。从 0.15 起，Rust 服务用 `#[rutis::service]` 对外（[在类型上标注](guide/rust-host.md#在类型上标注-rutisservice)），清单只剩给改不了源码的类型用。迁移工具不改这些地方，编译错误会指出它们。
+
+自己的类型：在 `impl` 上加 `#[rutis::service]`，删掉清单里的那一行。改不了源码的类型：包一层自己的类型，标注，要公开的方法逐个转发（[第三方类型](guide/rust-host.md#第三方类型包一层自己的类型)）：
+
+```rust
+// 0.16
+// build.rs
+rutis_bridge::build::Exports::new()
+    .service("calendar", "calendar_services::Calendar")
+    .service_in("notes", "calendar_services::Notes", "session")
+    .typescript("rows/services.d.ts")
+    .generate()
+    .expect("generate the exported services");
+// src/lib.rs
+rutis_bridge::include_exports!();
+catalog.export_all(exports::all());
+root.provide(calendar_services::Calendar::new())?;
+
+// 0.17
+// build.rs：只写声明。不需要每次构建都更新的，删掉 build.rs，改用 rutis-host types
+rutis_bridge::build::Exports::new()
+    .typescript("rows/services.d.ts")
+    .generate()
+    .expect("generate the service declarations");
+// src/lib.rs
+pub struct Calendar(pub calendar_services::Calendar);
+
+#[rutis::service]
+impl Calendar {
+    /// Add an entry; returns it with its id.
+    pub fn add(&self, entry: NewEntry) -> Result<Entry, CalendarError> {
+        self.0.add(entry)
+    }
+    // …其余要公开的方法
+}
+
+root.provide(Calendar(calendar_services::Calendar::new()))?;
+```
+
+| 0.16 | 0.17 |
+| --- | --- |
+| `.service(name, path)` | 包一层、标注；名字和类型名不同时写 `#[rutis::service(name = "…")]` |
+| `.service_in(name, path, group)` | 包好的类型在实例里提供：`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`，不用写组 |
+| `include_exports!()`、`catalog.export_all(exports::all())`、`Export::plugin` | 删掉：提供就对外 |
+| 生成的 `exports::DispatchCalendar` 等 | 按名字取：`ctx.get_at::<dyn HostDispatch>(&host_key("calendar"))` |
+| `exports::TYPESCRIPT` | `Exports::new().declarations(crate 目录)`，或者读 `.typescript(…)` 写出的文件 |
+| 只调用 `.generate()`，没有 `.typescript(…)` | 报错：用 `.typescript(…)` 指定声明写到哪里 |
+| `.declared(path, typescript)`、`.typescript(file)` | 不变 |
+
+- 能传什么、错误怎么抛、声明的内容都不变：包装类型的名字、方法名和文档注释与原类型相同时，`.typescript(…)` 写出的文件逐字相同（`examples/rust-services` 就是这样改的）。
+- 提供的是包装类型，不再是原类型。Rust 代码里按原类型依赖它的，改成依赖包装类型（`.0` 是原来的值）。
+
 ## 没有变化的
 
-- 门控、重载、卸载、清理、事件的五种方式、作用域、过滤，以及[保证](guarantees.md)里的每一条。
+- 门控、重载、卸载、清理、事件的五种方式、作用域、过滤，以及[保证](guarantees.md)里的每一条；只有 `bridge/exported-services` 随服务清单撤回，它的规则都在 `bridge/marked-services` 里。
 - 协议和线上格式；Rust 服务抛出的 rutis 错误在其他语言里仍叫 `CordisError`。
 - 其他语言的 SDK、运行时、`rutis.json` 和 rutis-host。

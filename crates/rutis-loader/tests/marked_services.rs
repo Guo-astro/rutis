@@ -1,6 +1,6 @@
 //! Rust services marked `#[rutis::service]` and provided as usual reach
-//! the rows of every language by name, with no list, no `export_all` and
-//! no `HostDispatch` (#510): Node, Python, Go and Bun rows call them; one
+//! the rows of every language by name, with no list and no
+//! `HostDispatch` (#510): Node, Python, Go and Bun rows call them; one
 //! provided in an instance is that instance's own; one that goes stops its
 //! users.
 #![cfg(all(feature = "node", feature = "python", feature = "go"))]

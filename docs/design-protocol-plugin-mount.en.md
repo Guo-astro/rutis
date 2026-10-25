@@ -236,6 +236,8 @@ Do not build: shared-memory version pages, commit-boundary auditing, a unified c
 
 ## 11. Existing Rust services for the rows of other languages (#440)
 
+> From 0.17 the service list of this section is retired (#647): a Rust service is served with `#[rutis::service]` ([design](design-rust-service-exposure-2026-10-21.en.md)), and a type whose source you cannot change is wrapped in a type of your own and marked. Reading the source and writing the TypeScript declarations, below, stay for `rutis-host types` and `Exports::typescript` in `build.rs`; the generated dispatchers, `exports::all()` and `ServiceCatalog::export` are removed.
+
 Before 0.12 the only way to give a TypeScript or Python row a Rust service was a hand-written `dyn HostDispatch` at `host_key(name)`: parse the arguments, call the native method, serialize the result, map the errors. Every application wrote that layer again (dim's `settings`, `sessions`, C4's tool bindings, C5's tree bindings). The binding should be invisible: a row names a Rust service in `inject` and gets its methods.
 
 **Declaration.** The application's `build.rs` lists what to export, `Exports::new().service(name, path)` / `.service_in(name, path, group)`, and nothing else. The path is the type as the application writes it, including a dependency crate's.

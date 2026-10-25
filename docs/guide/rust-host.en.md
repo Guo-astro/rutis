@@ -15,7 +15,7 @@ rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
 | `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
-| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) generates the dispatchers of [exported Rust services](#third-party-types-list-them-in-buildrs); `testing` enables compatibility tests. |
+| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) writes the TypeScript declarations of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`; `testing` enables compatibility tests. |
 
 Enable only the language features you use so the application compiles and starts only the required components.
 
@@ -122,7 +122,7 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 
 ### Mark the type `#[rutis::service]`
 
-Add `#[rutis::service]` to a Rust service's `impl` block and provide it as usual: the rows of every language call it by name ([#510](https://github.com/arcships/rutis/issues/510)). No list, no `build.rs`, no `export_all`, no `HostDispatch`; the crate that defines the service depends on `rutis` alone.
+Add `#[rutis::service]` to a Rust service's `impl` block and provide it as usual: the rows of every language call it by name ([#510](https://github.com/arcships/rutis/issues/510)). No `build.rs`, no `HostDispatch`; the crate that defines the service depends on `rutis` alone.
 
 ```rust
 use rutis::host::BoxFuture;
@@ -150,58 +150,50 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **Its name**: by default the type's name with the first word lowercased (`Calendar` is `calendar`, `TreeCommands` `treeCommands`, `HTTPClient` `httpClient`); `#[service(name = "cal")]` renames it.
 - **Provided means served**: `ctx.provide(value)` (and `provide_as::<T>` providing it as its own type) also serves it by name; one disposer removes both, and both go when the plugin unloads, stopping the rows that use it, as with any service. Provided with a `check()` predicate (a way of providing internal to rutis's own crates), the name is gated by it too: while it fails, the rows using the name stop as the native service's users do. A writable binding is not served, nor is a named one (`provide_at(Key::named(…), …)`): a second value of the type would take the same name. Each call by name reads the service through the providing context's strict read path, so read interceptors (`intercept_require_as`) deny or replace it as they would for a Rust reader in the calling row's place: those of the row's ancestors apply (the provider's when no row calls). The read serves only the value the entry was provided with: a reference kept after the service went, even once the slot is provided again, is refused. A `provide` refused because the native service or the name is already there serves nothing. The name is served after the native service and withdrawn before it (by the disposer and by the plugin unloading alike), so a row the name wakes can always call it.
 - **Its scope follows where it is provided**: provided inside an instance (`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`), it is that instance's own, and the rows in that instance get it; provided outside instances, it is global. Provided in an isolation scope (`ctx.isolate(Key::<Notes>::of(), "a")`), the name is served in the same scope (`isolate(host_key("notes"), "a")`), so two isolated scopes each serve their own. No instance group is written down. Once an instance provides it, the rows in that instance use that instance's own and do not fall back to a global one of the same name: when the instance's service goes, they wait for it to be provided there again (design R3, scope follows where it is provided).
-- **What crosses, how errors are thrown**: as for the third-party types below ([reference](#exported-services-reference)): serde parameters and results, callbacks by reference, the calling row's `&Ctx`, `Err(e)` thrown with `name`, `code`, `message` and `data`.
+- **What crosses, how errors are thrown**: see the [reference](#exported-services-reference): serde parameters and results, callbacks by reference, the calling row's `&Ctx`, `Err(e)` thrown with `name`, `code`, `message` and `data`.
 - **Errors at compile time**: a public method in a marked block that cannot be bound (`&mut self`, a borrowed result, a mutable reference parameter, a generic parameter that is not a function, …) is a compile error pointing at it; mark one you keep in Rust `#[service(skip)]`.
 - **Name conflicts**: when two types in one scope have the same name, the later `provide` fails, and the error names both; nothing of it is provided, the native service included.
 - **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waiting_for(&entry)` lists what the row waits for and says to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
 - **dylib plugins**: a marked type in a dylib (whose crate depends on `rutis-sdk` only and writes `#[rutis_sdk::rutis::service]`, or `use rutis_sdk::rutis::service`) is served once the plugin loads; the host need not know it. On a version swap the old generation's entry point goes with its services and the new one's appears when it provides them. A rebuild needs no new version: two builds of one plugin keep their types' `TypeId`s, and each value is served with the code of the build that provided it, so both can be loaded at once. A build that drops the marker serves its values by name no more, and names are those of the newest build. The host links `rutis-bridge`.
-- **TypeScript declarations**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their declarations (`Services['calendar']`, the data types, `<Name>Thrown`). To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs`, with no type list. Calls need no declarations.
+- **TypeScript declarations**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their declarations (`Services['calendar']`, the data types, `<Name>Thrown`). To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency). Calls need no declarations.
 
 A complete example: [`examples/marked-services`](../../examples/marked-services).
 
-### Third-party types: list them in `build.rs`
+### Third-party types: wrap them in a type of your own
 
-For a type whose source you cannot change (one of another crate), `build.rs` names its type, and the build generates its dispatcher and TypeScript declarations from the Rust definitions ([#440](https://github.com/arcships/rutis/issues/440)). Do not list a marked type as well: that is a build error.
-
-```toml
-[dependencies]
-rutis-bridge = "0.17"
-
-[build-dependencies]
-rutis-bridge = { version = "0.17", features = ["exports"] }
-```
+Rust does not let your crate write an `impl` for a type whose source you cannot change (one of another crate). Wrap it in a type of your own crate, mark that `#[rutis::service]`, and have each method you serve call the wrapped one:
 
 ```rust
-// build.rs
-fn main() {
-    rutis_bridge::build::Exports::new()
-        // A type of a dependency crate, by its path as the application writes it.
-        .service("calendar", "calendar_services::Calendar")
-        // Inside each instance of the instanced group `session`: each instance's rows get their own.
-        .service_in("notes", "calendar_services::Notes", "session")
-        // A copy of the declarations where the rows' TypeScript imports them (optional).
-        .typescript("rows/services.d.ts")
-        .generate()
-        .expect("generate the exported services");
+use rutis::service;
+
+/// The calendar.                          // doc comments go into the TypeScript declarations
+pub struct Calendar(pub calendar_services::Calendar);
+
+#[service]                                 // served as "calendar"
+impl Calendar {
+    /// Add an entry; returns it with its id.
+    pub fn add(&self, entry: NewEntry) -> Result<Entry, CalendarError> {
+        self.0.add(entry)
+    }
+
+    pub async fn get(&self, id: u64) -> Result<Entry, CalendarError> {
+        self.0.get(id).await
+    }
 }
+
+root.provide(Calendar(calendar_services::Calendar::new()))?;
 ```
 
-```rust
-rutis_bridge::include_exports!();          // the generated module `exports`
+- The wrapper is an ordinary marked type, and the rules above apply: its name is by default the wrapper's (`#[service(name = "…")]` renames it); provided inside an instance, it is that instance's own.
+- Parameters and results use the dependency crate's types as they are; for the TypeScript declarations the generator follows the `use` items into the dependency crate's source.
+- Forward only the methods you serve; the doc comments on the forwarding methods go into the declarations.
+- A complete example: [`examples/rust-services`](../../examples/rust-services): a dependency crate's `Calendar` for every row, and its `Notes`, one per `session` instance, with `build.rs` refreshing the declarations on every build.
 
-let mut catalog = ServiceCatalog::new();
-catalog.export_all(exports::all());         // the names, served by the loader
-// The native service, provided as usual: as its own type.
-root.provide(Calendar::new())?;
-// An instance's Notes: from a row inside the group, at Key::<Notes>::of().instance(build.instance("session")?).
-```
-
-- The loader serves an export while its native service is there: rows that inject the name wait for it and stop when it goes, as with any service. An instance export resolves as `register_shared_instance` does: a row gets the nearest enclosing instance of the group. Without the loader, mount `exports::calendar().plugin(None)` yourself.
-- Every public `&self` method is exported, by the same rules as marked ones; a method the generator cannot bind is left out with a build warning saying where and why. A complete example: [`examples/rust-services`](../../examples/rust-services).
+Listing types in `build.rs` (`Exports::service` / `service_in`), as 0.16 did, is removed in 0.17: see [Migrating to 0.17](../migration-0.17.en.md#the-service-list) for the change.
 
 ### Write a `HostDispatch` by hand
 
-In Rust, a service used by name from a plugin is a `dyn HostDispatch` registered under `host_key(name)`; the exports above generate one. For a service whose dispatch is its own business (such as one that hands each row its own object), write it by hand:
+In Rust, a service used by name from a plugin is a `dyn HostDispatch` registered under `host_key(name)`; the mark above generates one. For a service whose dispatch is its own business (such as one that hands each row its own object), write it by hand:
 
 ```rust
 use std::sync::Arc;
@@ -226,7 +218,7 @@ impl HostDispatch for Clock {
 root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key returns a Key<dyn HostDispatch>
 ```
 
-To give an error a code and data, as an exported service's `Err(e)` has, return `rutis_bridge::exports::failure(name, code, message, data)`: the caller's language throws an error named `name` with `message`, and `code` and `data` (a `serde_json::Value`, or `None`) beside them.
+To give an error a code and data, as a marked service's `Err(e)` has, return `rutis_bridge::exports::failure(name, code, message, data)`: the caller's language throws an error named `name` with `message`, and `code` and `data` (a `serde_json::Value`, or `None`) beside them.
 
 Services provided by plugins also appear in rutis under `host_key(name)`, so Rust plugins can use them by name.
 
@@ -287,7 +279,7 @@ for def in parts.of("session") {
 - A plugin definition belongs to the current generation of the row that handed it over (as an argument, the calling row): when that row unloads, reloads or ends, or the runtime's process exits, every copy mounted from it ends first; then `at` fails and `ended()` completes. It can only be mounted inside that row's instance, or deeper.
 - One value handed over several times is one definition: the two `Definition`s are equal.
 - When a service of another language returns a plugin definition, read it with `rutis_bridge::runtime::returned(&*service, value).await`; it belongs to the row that provides the service.
-- `Exports` in `build.rs` recognises `Definition` parameters too, and `rutis-host types` declares them as the TS plugin type.
+- `rutis-host types` declares `Definition` parameters and results as the TS plugin type.
 - A plugin definition only goes back to the runtime that defined it: a call handing it to a third runtime fails.
 
 ## Runtime and loader
@@ -450,19 +442,18 @@ Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx:
 
 ## Exported services: reference
 
-Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go). For a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); for a type whose source you cannot change, `build.rs` lists it with `rutis_bridge::build::Exports` (feature `exports` of the build dependency), the application declares the generated module with `rutis_bridge::include_exports!()` and registers `exports::all()` with `ServiceCatalog::export_all` ([above](#third-party-types-list-them-in-buildrs)). Both follow the rules below for what crosses and how errors are thrown; the generator writes the TypeScript declarations of both from the source. Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
+Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go): for a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); a type whose source you cannot change is wrapped in a type of your own and marked ([above](#third-party-types-wrap-them-in-a-type-of-your-own)). The rules below say what crosses and how errors are thrown. The generator writes the TypeScript declarations from the source: `rutis-host types`, or `rutis_bridge::build::Exports` in `build.rs` (feature `exports` of the build dependency). Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
 
 | `Exports` | Effect |
 | --- | --- |
-| `.service(name, path)` | Export the struct or enum at `path` as the service `name`, outside instances |
-| `.service_in(name, path, group)` | Inside each instance of the instanced group `group` (as `register_shared_instance`) |
+| `.typescript(file)` | Write the declarations to `file` (relative to `Cargo.toml`), only when they change |
 | `.declared(path, typescript)` | The TypeScript type to use for the Rust type at `path`, where the generator cannot derive it |
-| `.typescript(file)` | Also write the declarations to `file` (relative to `Cargo.toml`), only when they change |
-| `.generate()` | Write `OUT_DIR/rutis_exports.rs` and `rutis_exports.d.ts`; `exports::TYPESCRIPT` holds the declarations |
+| `.generate()` | Write the declarations from `build.rs` (after `.typescript(…)`); Cargo runs it again when the source changes |
+| `.declarations(crate dir)` | The declarations, outside a build script (what `rutis-host types` uses) |
 
 ### Where the source comes from
 
-`path` is written as the application writes it: `crate::…` for its own types, a dependency's crate name (as `Cargo.toml` names it, renames included) for a dependency's. The build script runs `cargo metadata` (for the target being built, offline first) to find each crate's entry file and the features Cargo resolved, and reads the module tree with syn: `mod` files (`#[path]` included), `use` items, globs and `pub use` re-exports (a type re-exported from a private module is found), type aliases (generic ones too). The methods are the public `&self` methods of the type's inherent `impl` blocks anywhere in its crate. `#[cfg]` is evaluated: `feature = "…"` from the features Cargo resolved, target `cfg`s from `CARGO_CFG_*`, `test` and `doc` as off. Stable Rust only: nothing is compiled or expanded for this.
+The generator finds the marked types in the crate and in the crates it uses that depend on rutis. The `path` of `.declared` is written as the application writes it: `crate::…` for its own types, a dependency's crate name (as `Cargo.toml` names it, renames included) for a dependency's. The generator runs `cargo metadata` (for the target being built, offline first) to find each crate's entry file and the features Cargo resolved, and reads the module tree with syn: `mod` files (`#[path]` included), `use` items, globs and `pub use` re-exports (a type re-exported from a private module is found), type aliases (generic ones too). The methods are the public `&self` methods of the type's marked inherent `impl` blocks (but those marked `#[service(skip)]`). `#[cfg]` is evaluated: `feature = "…"` from the features Cargo resolved, target `cfg`s from `CARGO_CFG_*`, `test` and `doc` as off. Stable Rust only: nothing is compiled or expanded for this.
 
 ### What crosses
 
@@ -481,9 +472,9 @@ Rust services, used by name from the rows of every language (TypeScript, JavaScr
 | `impl Fn(A, ..) -> BoxFuture<'static, Result<X, E>>`, a generic `F: Fn(..)`, `Arc<dyn Fn ..+ Send + Sync>`, `Box<dyn Fn .. + Send>` (aliases too) | `(arg0: A, ..) => X \| Promise<X>` | a function passed by reference; up to four arguments, taken by value |
 | `async fn`, or a return type `BoxFuture<'_, T>`, `Pin<Box<dyn Future<Output = T> ..>>`, `impl Future<Output = T>` | `Promise<T>` | every method is `Promise`-returning for the caller |
 
-Arguments are decoded with serde (any `Deserialize`), results encoded with serde (any `Serialize`); Cargo checks every generated call against the real signatures.
+Arguments are decoded with serde (any `Deserialize`), results encoded with serde (any `Serialize`); the compiler checks every call the macro generates against the real signatures.
 
-**Functions passed by reference:** the Rust side gets a function that calls the caller's: its future resolves once the function returned and the Promise it returned settled, so a subscriber has handled an event before the native side goes on; a throw or rejection is the future's `Err` (`E: From<rutis_bridge::session::Error>`, which `rutis::Error`, `anyhow::Error` and boxed errors are), so it takes the native failure path. What the function returns where Rust expects `()` is ignored.
+**Functions passed by reference:** the Rust side gets a function that calls the caller's: its future resolves once the function returned and the Promise it returned settled, so a subscriber has handled an event before the native side goes on; a throw or rejection is the future's `Err` (`E: From<rutis::host::CallError>`, which `rutis::Error`, `anyhow::Error` and boxed errors are), so it takes the native failure path. What the function returns where Rust expects `()` is ignored.
 
 **Cancellation:** a call the caller stops waiting for (an `AbortSignal`, a dropped future) drops the method's future on the Rust side, as for every call.
 
@@ -495,7 +486,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 
 | `E` | `name` | `code` | `data` |
 | --- | --- | --- | --- |
-| An enum with serde | its type name | its variant as serde writes it: the string it serializes to, the one key of an externally tagged variant, the `tag` field of an internally or adjacently tagged one (except, for a `#[rutis::service]` type, a tagged variant given its own `rename`: see [Limits](#limits)) | its serde value |
+| An enum with serde | its type name | its variant as serde writes it: the string it serializes to, the one key of an externally tagged variant, the `tag` field of an internally or adjacently tagged one (except an internally or adjacently tagged variant given its own `rename`: see [Limits](#limits)) | its serde value |
 | An enum without serde (or `untagged`) | its type name | the variant's Rust name (from its derived `Debug`) | its serde value if it has one |
 | A struct with serde | its type name | the string it serializes to, else its type name | its serde value |
 | `String` | `Error` | `Error` (the string is the `message`) | — |
@@ -507,18 +498,15 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 
 ### Declarations
 
-`rutis_exports.d.ts` (and the file `rutis-host types` writes) has an interface per service type, the data types it uses, `RustError`, the `<Name>Thrown` types, and `Services`, the services by name: `ctx.use<Services['calendar']>('calendar')`. It passes `tsc --strict` (`examples/rust-services` checks it). Commit the `.typescript(…)` copy: the build rewrites it when the Rust side changes.
+The file `rutis-host types` or `.typescript(…)` writes has an interface per service type, the data types it uses, `RustError`, the `<Name>Thrown` types, and `Services`, the services by name: `ctx.use<Services['calendar']>('calendar')`. It passes `tsc --strict` (both examples check it). Commit it: `build.rs` rewrites it when the Rust side changes; with `rutis-host types`, run it again.
 
 ### Limits
 
-- What a macro writes is not seen: types, `impl` blocks or methods written by a macro (other than derives) are not found. A service type must be a concrete struct or enum (not generic, not a trait object).
-- Methods taking `&mut self`, borrowing a reference out, taking a reference to a function's argument (`Fn(&A)`), a generic parameter other than a function, `impl Trait` other than `Fn`, or a function that does not return a future of a `Result` are left out with a warning.
-- A data type needs a serde derive the generator can read: a hand-written `Serialize`, `#[serde(with / serialize_with / into / remote)]`, or a type of a crate not read (other than `std`, `serde_json`, `chrono`, `uuid`, `url` and the tagged values) needs `.declared(path, typescript)`: until then the methods using it are left out, the warning naming the type.
-- `#[cfg]` is evaluated as above; a `cfg` the build script cannot see is taken as off.
+- The generator does not see what a macro writes: types, `impl` blocks or methods written by a macro (other than derives) are not found. A service type must be a concrete struct or enum (not generic, not a trait object).
+- Methods taking `&mut self`, borrowing a reference out, taking a reference to a function's argument (`Fn(&A)`), a generic parameter other than a function, `impl Trait` other than `Fn`, or a function that does not return a future of a `Result` cannot be bound: the macro fails the compile ([above](#mark-the-type-rutisservice)), and the generator leaves them out of the declarations with a warning.
+- A data type needs a serde derive the generator can read: a hand-written `Serialize`, `#[serde(with / serialize_with / into / remote)]`, or a type of a crate not read (other than `std`, `serde_json`, `chrono`, `uuid`, `url` and the tagged values) needs `.declared(path, typescript)`: until then the methods using it are left out of the declarations (calls are not affected), the warning naming the type.
+- `#[cfg]` is evaluated as above; a `cfg` the generator cannot see is taken as off.
 - A method's future must be `Send` (the compile fails otherwise).
-
-For types marked `#[rutis::service]`, also:
-
 - The macro sees only the `impl` block: decisions that depend on a type (is it a `Result`, how its error gets a `code`, does a parameter take a function) are left to the expanded, concrete code, so type aliases are recognized. Write an async method as `async fn`, or return `BoxFuture<'_, T>`, `Pin<Box<dyn Future<Output = T> + Send>>` or `impl Future<Output = T>`; an alias of a future as the return type is a compile error. A `&Ctx` parameter is recognized by the name `Ctx`.
 - An error's `code` is taken from the value when it is thrown, by the table above; for an internally or adjacently tagged enum whose variant `#[serde(rename = "...")]` gives a name unrelated to its Rust one, the `code` is the Rust name.
-- The generated code depends on `rutis` only (a dylib plugin writes `#[rutis_sdk::rutis::service]` or `use rutis_sdk::rutis::service`, and the code then goes through `rutis_sdk::rutis`: the path the marker is reached by decides, so a plugin built against an sdk-bundle, with no dependency written, works too; another path: `#[service(crate = "my::rutis")]`). Values are encoded by the `rutis-bridge` the host links, one more dynamic dispatch than the code `build.rs` generates, negligible next to crossing processes.
+- The generated code depends on `rutis` only (a dylib plugin writes `#[rutis_sdk::rutis::service]` or `use rutis_sdk::rutis::service`, and the code then goes through `rutis_sdk::rutis`: the path the marker is reached by decides, so a plugin built against an sdk-bundle, with no dependency written, works too; another path: `#[service(crate = "my::rutis")]`). Values are encoded by the `rutis-bridge` the host links.

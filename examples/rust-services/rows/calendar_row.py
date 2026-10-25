@@ -1,5 +1,5 @@
-"""A Python row using the same Rust `Calendar`: the generated dispatch is
-the same for every language."""
+"""A Python row using the same Rust `Calendar`: one dispatch serves every
+language."""
 
 from rutis import RemoteError
 

@@ -1,6 +1,6 @@
-//! Existing Rust services exported by name to the plugins of other
-//! languages: a dispatcher and TypeScript declarations generated from the
-//! Rust definitions, read from the source of the crates that define them.
+//! The TypeScript declarations of the Rust services marked
+//! `#[rutis::service]`, generated from their Rust definitions, read from the
+//! source of the crates that define them.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -16,70 +16,35 @@ use super::crates::{Res, Sources};
 
 type Result<T> = std::result::Result<T, String>;
 
-/// The Rust services to export by name, as an application's `build.rs`
-/// lists them; [`Exports::generate`] writes the generated module (declared
-/// with [`include_exports!`](crate::include_exports)) and TypeScript
-/// declarations into `OUT_DIR`.
+/// The TypeScript declarations of the services marked `#[rutis::service]`
+/// in a package and in every crate it uses that depends on rutis, written
+/// from an application's `build.rs` on every build:
 ///
 /// ```ignore
 /// rutis_bridge::build::Exports::new()
-///     .service("calendar", "calendar_services::Calendar")
-///     .service_in("notes", "calendar_services::Notes", "session")
 ///     .typescript("rows/services.d.ts")
 ///     .generate()
-///     .expect("generate the exported services");
+///     .expect("generate the service declarations");
 /// ```
 ///
-/// A type is named by a path from the application crate (`crate::...`, or
-/// a dependency's name): it may be a re-export, and its source is found
-/// through `cargo metadata`. Its public `&self` methods are exported, each
-/// `async` for the caller (a Promise / awaitable); one the generator cannot
-/// bind is left out with a build warning saying why.
+/// `rutis-host types` writes the same, outside a build script
+/// ([`Exports::declarations`]). Each marked type is an interface of the
+/// public `&self` methods of its marked blocks, each `async` for the caller
+/// (a Promise / awaitable); a method the generator cannot declare is left
+/// out with a build warning saying why. The source is found through
+/// `cargo metadata`.
 ///
-/// Types marked `#[rutis::service]` need no line here: they are served by
-/// name when provided. The declarations cover them too, found in the
-/// package and every crate it uses that depends on rutis, so
-/// `Exports::new().typescript("services.d.ts").generate()` keeps their
-/// declarations current; listing a marked type is an error. List only
-/// types whose source you cannot change.
+/// A type whose source you cannot change is wrapped in a type of your own,
+/// marked, whose methods call it.
 #[derive(Default)]
 pub struct Exports {
-    services: Vec<Wanted>,
     declared: Vec<(String, String)>,
     typescript: Option<PathBuf>,
-}
-
-struct Wanted {
-    name: String,
-    path: String,
-    group: Option<String>,
 }
 
 impl Exports {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Export the type at `path` as the service `name`, outside instances.
-    pub fn service(mut self, name: &str, path: &str) -> Self {
-        self.services.push(Wanted {
-            name: name.to_owned(),
-            path: path.to_owned(),
-            group: None,
-        });
-        self
-    }
-
-    /// Export it inside each instance of the instanced group `group`, as
-    /// `register_shared_instance` names a service: rows use their own
-    /// instance's.
-    pub fn service_in(mut self, name: &str, path: &str, group: &str) -> Self {
-        self.services.push(Wanted {
-            name: name.to_owned(),
-            path: path.to_owned(),
-            group: Some(group.to_owned()),
-        });
-        self
     }
 
     /// Declare the TypeScript type of the Rust type at `path` (from the
@@ -92,7 +57,7 @@ impl Exports {
         self
     }
 
-    /// Also write the TypeScript declarations to `path` (relative to the
+    /// Write the TypeScript declarations to `path` (relative to the
     /// package's `Cargo.toml`), where the rows' TypeScript finds them. It is
     /// written only when it changes.
     pub fn typescript(mut self, path: impl AsRef<Path>) -> Self {
@@ -100,7 +65,14 @@ impl Exports {
         self
     }
 
+    /// Write the declarations to the [`Exports::typescript`] file, and have
+    /// Cargo run the build script again when a source it read changes.
     pub fn generate(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let Some(path) = &self.typescript else {
+            return Err(
+                "nothing to generate: name the declarations' file with .typescript(path)".into(),
+            );
+        };
         println!("cargo:rerun-if-changed=build.rs");
         let mut sources = Sources::of_build()?;
         let generated = self.generate_from(&mut sources);
@@ -111,26 +83,21 @@ impl Exports {
         for warning in &generated.warnings {
             println!("cargo:warning={warning}");
         }
-        let output = PathBuf::from(std::env::var("OUT_DIR")?);
-        std::fs::write(output.join("rutis_exports.rs"), &generated.rust)?;
-        std::fs::write(output.join("rutis_exports.d.ts"), &generated.typescript)?;
-        if let Some(path) = &self.typescript {
-            let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
-            let path = root.join(path);
-            if std::fs::read_to_string(&path).ok().as_deref() != Some(&generated.typescript) {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&path, &generated.typescript)?;
+        let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+        let path = root.join(path);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(&generated.typescript) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
             }
+            std::fs::write(&path, &generated.typescript)?;
         }
         Ok(())
     }
 
-    /// The TypeScript declarations of the services of the crate in
-    /// `crate_dir` (its `Cargo.toml`): the types it lists here and those
-    /// marked `#[rutis::service]`. What `rutis-host types` writes, outside
-    /// a build script.
+    /// The TypeScript declarations of the services marked
+    /// `#[rutis::service]` in the crate in `crate_dir` (its `Cargo.toml`)
+    /// and in the crates it uses that depend on rutis. What `rutis-host
+    /// types` writes, outside a build script.
     pub fn declarations(
         self,
         crate_dir: impl AsRef<Path>,
@@ -164,106 +131,17 @@ impl Exports {
                 .ok_or_else(|| format!("declared type {path} is not found"))?;
             generator.declared.insert(res, typescript.clone());
         }
-        let mut rust = String::from(
-            "// Generated by rutis-bridge (build::Exports) from the Rust sources; do not edit.\n",
-        );
         let mut services_ts = String::new();
-        let mut interfaces: HashMap<(usize, usize), String> = HashMap::new();
-        let mut functions = HashSet::new();
-        let mut all = Vec::new();
-        let mut names = HashSet::new();
-        for wanted in &self.services {
-            if !names.insert(wanted.name.clone()) {
-                return Err(format!(
-                    "the service name {} is exported twice",
-                    wanted.name
-                ));
-            }
-            let parsed: syn::Path = syn::parse_str(&wanted.path)
-                .map_err(|error| format!("{}: {error}", wanted.path))?;
-            let (module, index) = match generator.sources.resolve(root, &parsed)? {
-                Some(Res::Item { module, index }) => (module, index),
-                Some(_) => {
-                    return Err(format!(
-                        "{} is not a struct or enum of a crate the generator reads",
-                        wanted.path
-                    ))
-                }
-                None => {
-                    return Err(format!(
-                        "{} is not found from the crate being built",
-                        wanted.path
-                    ))
-                }
-            };
-            let ident = match generator.sources.item(module, index) {
-                Item::Struct(item) if item.generics.params.is_empty() => item.ident.to_string(),
-                Item::Enum(item) if item.generics.params.is_empty() => item.ident.to_string(),
-                Item::Struct(_) | Item::Enum(_) => {
-                    return Err(format!(
-                        "{}: a generic type cannot be exported",
-                        wanted.path
-                    ))
-                }
-                _ => return Err(format!("{} is not a struct or enum", wanted.path)),
-            };
-            if generator.marked(module, index)?.is_some() {
-                return Err(format!(
-                    "{} is marked #[rutis::service], so it is served by name when provided: remove its .service(...) line from build.rs",
-                    wanted.path
-                ));
-            }
-            let interface = match interfaces.get(&(module, index)) {
-                Some(interface) => interface.clone(),
-                None => {
-                    let (interface, dispatch) =
-                        generator.service(module, index, &ident, &wanted.path, false)?;
-                    rust.push_str(&dispatch);
-                    interfaces.insert((module, index), interface.clone());
-                    interface
-                }
-            };
-            let function = rust_ident(&wanted.name);
-            if !functions.insert(function.clone()) {
-                return Err(format!(
-                    "service names collide as the Rust function {function}"
-                ));
-            }
-            let group = wanted
-                .group
-                .as_ref()
-                .map(|group| format!(".in_instances({group:?})"))
-                .unwrap_or_default();
-            rust.push_str(&format!(
-                "/// `{path}`, exported as `{name}`.\npub fn {function}() -> ::rutis_bridge::exports::Export {{\n    ::rutis_bridge::exports::Export::new::<{path}>({name:?}, |service| ::std::sync::Arc::new(Dispatch{interface}(service))){group}\n}}\n",
-                path = wanted.path,
-                name = wanted.name,
-            ));
-            all.push(format!("{function}()"));
-            services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&wanted.name)));
-        }
-        // The types marked `#[rutis::service]`: declarations only, since
-        // they are served when provided.
+        let mut names: HashMap<String, String> = HashMap::new();
         for (module, index, ident, name) in generator.marked_types()? {
-            if !names.insert(name.clone()) {
+            if let Some(first) = names.insert(name.clone(), ident.clone()) {
                 return Err(format!(
-                    "the service name {name} is exported twice (one of them is {ident}, marked #[rutis::service])"
+                    "the service name {name} is given twice: {first} and {ident} are both marked #[rutis::service] with it"
                 ));
             }
-            let interface = match interfaces.get(&(module, index)) {
-                Some(interface) => interface.clone(),
-                None => {
-                    let (interface, _) = generator.service(module, index, &ident, &ident, true)?;
-                    interfaces.insert((module, index), interface.clone());
-                    interface
-                }
-            };
+            let interface = generator.service(module, index, &ident)?;
             services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&name)));
         }
-        rust.push_str(&format!(
-            "/// Every export.\npub fn all() -> ::std::vec::Vec<::rutis_bridge::exports::Export> {{\n    vec![{}]\n}}\n/// The TypeScript declarations of the exported services.\npub const TYPESCRIPT: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/rutis_exports.d.ts\"));\n",
-            all.join(", ")
-        ));
         let mut typescript = String::from(
             "// Generated by rutis-bridge (build::Exports) from the Rust sources; do not edit.\n\n\
              /** What a method's `Err(e)` throws: named after `e`'s type, `code` its variant, `message` its `Display`, `data` its serde value. */\n\
@@ -283,7 +161,6 @@ impl Exports {
         let mut warnings = std::mem::take(&mut generator.sources.warnings);
         warnings.extend(generator.warnings);
         Ok(Generated {
-            rust,
             typescript,
             warnings,
         })
@@ -292,7 +169,6 @@ impl Exports {
 
 #[derive(Debug)]
 pub(super) struct Generated {
-    pub(super) rust: String,
     pub(super) typescript: String,
     pub(super) warnings: Vec<String>,
 }
@@ -379,32 +255,6 @@ impl Scope {
 struct Callback {
     args: Vec<Ty>,
     ok: Ty,
-    /// An `impl Fn` / generic `F: Fn` (a closure is passed), or else an
-    /// `Arc<dyn Fn>` / `Box<dyn Fn>` (built with `FromCallback`).
-    closure: bool,
-}
-
-/// How a method's `Err(e)` is thrown.
-enum Failure {
-    /// `e` has serde: data, and the code from its serde form.
-    Serde {
-        name: String,
-        tag: Option<String>,
-        /// An enum variant: its serde form names it. A struct's serde form
-        /// does not, even when it is one field.
-        variant: bool,
-    },
-    /// An enum serde does not name the variants of: the code from `Debug`.
-    Variant {
-        name: String,
-        data: bool,
-    },
-    Display {
-        name: String,
-    },
-    Str,
-    /// `rutis_bridge::session::Error`: thrown as it is.
-    Pass,
 }
 
 struct Generator<'a> {
@@ -1026,8 +876,6 @@ impl Generator<'_> {
 
     // ── Methods ──────────────────────────────────────────────────
 
-    /// The dispatcher and the TypeScript interface of the service type at
-    /// `(module, index)`; returns the interface's name and the Rust.
     /// The `#[rutis::service]` name of the type at `module`/`index`, when
     /// one of its blocks is marked: the name a block gives, or the derived
     /// one.
@@ -1122,17 +970,10 @@ impl Generator<'_> {
         Ok(found)
     }
 
-    /// The interface of the service type at `module`/`index` and its
-    /// dispatcher; `marked`: only its `#[rutis::service]` blocks, without
-    /// their `#[service(skip)]` methods.
-    fn service(
-        &mut self,
-        module: usize,
-        index: usize,
-        ident: &str,
-        path: &str,
-        marked: bool,
-    ) -> Result<(String, String)> {
+    /// The TypeScript interface of the marked service type at
+    /// `module`/`index`: the methods of its `#[rutis::service]` blocks,
+    /// without their `#[service(skip)]` ones. Returns the interface's name.
+    fn service(&mut self, module: usize, index: usize, ident: &str) -> Result<String> {
         let interface = self.unique(ident);
         let item = self.sources.item(module, index).clone();
         let item_attrs = match &item {
@@ -1141,8 +982,6 @@ impl Generator<'_> {
             _ => Vec::new(),
         };
         let mut methods_ts = String::new();
-        let mut arms = String::new();
-        let mut shapes = Vec::new();
         let mut seen = HashSet::new();
         for candidate in self.sources.crate_modules(module) {
             let impls: Vec<(usize, syn::ItemImpl)> = self.sources.modules[candidate]
@@ -1170,14 +1009,14 @@ impl Generator<'_> {
                 {
                     continue;
                 }
-                if marked && marker(&implementation.attrs)?.is_none() {
+                if marker(&implementation.attrs)?.is_none() {
                     continue;
                 }
                 for member in &implementation.items {
                     let ImplItem::Fn(method) = member else {
                         continue;
                     };
-                    if marked && marker(&method.attrs)?.is_some_and(|options| options.skip) {
+                    if marker(&method.attrs)?.is_some_and(|options| options.skip) {
                         continue;
                     }
                     if !matches!(method.vis, syn::Visibility::Public(_))
@@ -1208,12 +1047,8 @@ impl Generator<'_> {
                         ));
                     }
                     let scope = Scope::of(impl_module);
-                    match self.method(&scope, method, path) {
-                        Ok((arm, signature)) => {
-                            arms.push_str(&format!("            {js:?} => {arm},\n"));
-                            methods_ts.push_str(&signature);
-                            shapes.push(format!("{js:?}"));
-                        }
+                    match self.method(&scope, method) {
+                        Ok(signature) => methods_ts.push_str(&signature),
                         Err(reason) => {
                             seen.remove(&js);
                             self.warnings.push(format!(
@@ -1224,7 +1059,7 @@ impl Generator<'_> {
                 }
             }
         }
-        if shapes.is_empty() {
+        if seen.is_empty() {
             self.warnings.push(format!(
                 "{}: {ident} has no public &self method to export",
                 self.sources.location(module, &item)
@@ -1234,33 +1069,11 @@ impl Generator<'_> {
         self.declarations.push(format!(
             "{docs}export interface {interface} {{\n{methods_ts}}}\n"
         ));
-        let rust = format!(
-            r#"#[doc(hidden)]
-pub struct Dispatch{interface}(pub ::std::sync::Arc<{path}>);
-impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
-    fn invoke(&self, method: &str, args: ::rutis_bridge::session::Value) -> ::rutis_bridge::session::Reply {{
-        let service = self.0.clone();
-        match method {{
-{arms}            other => Err(::rutis_bridge::session::Error::Value(format!("{ident} has no method {{other}}"))),
-        }}
-    }}
-    fn methods(&self) -> ::std::option::Option<::rutis_bridge::exports::Json> {{
-        ::std::option::Option::Some(::rutis_bridge::exports::shapes(&[{shapes}]))
-    }}
-}}
-"#,
-            shapes = shapes.join(", ")
-        );
-        Ok((interface, rust))
+        Ok(interface)
     }
 
-    /// One method: its dispatch arm and its TypeScript signature.
-    fn method(
-        &mut self,
-        scope: &Scope,
-        method: &syn::ImplItemFn,
-        path: &str,
-    ) -> Result<(String, String)> {
+    /// One method's TypeScript signature, or why it cannot be declared.
+    fn method(&mut self, scope: &Scope, method: &syn::ImplItemFn) -> Result<String> {
         let sig = &method.sig;
         if sig.unsafety.is_some() {
             return Err("it is unsafe".into());
@@ -1292,13 +1105,8 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                 }
             }
         }
-        let mut decode = String::new();
-        let mut call = Vec::new();
         let mut params_ts = Vec::new();
         let mut count = 0;
-        let mut takes_ctx = false;
-        // Definitions being read when the call starts.
-        let mut pending: Vec<String> = Vec::new();
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(input) = input else {
                 unreachable!()
@@ -1313,7 +1121,6 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             } else {
                 name
             };
-            let local = format!("a{count}");
             let js = camel(name.strip_prefix("r#").unwrap_or(&name));
             // The calling row's context: not a parameter for the caller.
             if is_ctx(self, scope, &input.ty)? {
@@ -1321,28 +1128,15 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                 {
                     return Err("it takes a mutable reference".into());
                 }
-                takes_ctx = true;
-                call.push(match input.ty.as_ref() {
-                    Type::Reference(_) => "&caller".to_owned(),
-                    _ => "caller.clone()".to_owned(),
-                });
                 continue;
             }
-            // A plugin definition: read before the method runs.
+            // A plugin definition.
             if is_definition(self, scope, &input.ty)? {
                 if matches!(input.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some())
                 {
                     return Err("it takes a mutable reference".into());
                 }
                 params_ts.push(format!("{js}: {DEFINITION_TS}"));
-                decode.push_str(&format!(
-                    "let {local} = ::rutis_bridge::exports::definition(args.next().unwrap());\n"
-                ));
-                pending.push(local.clone());
-                call.push(match input.ty.as_ref() {
-                    Type::Reference(_) => format!("&{local}"),
-                    _ => local,
-                });
                 count += 1;
                 continue;
             }
@@ -1358,26 +1152,6 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                     "{js}: ({}) => {ok} | Promise<{ok}>",
                     args_ts.join(", ")
                 ));
-                decode.push_str(&format!(
-                    "let {local} = ::rutis_bridge::exports::callback(args.next().unwrap())?;\n"
-                ));
-                if callback.closure {
-                    let params: Vec<String> =
-                        (0..callback.args.len()).map(|i| format!("p{i}")).collect();
-                    let encoded: Vec<String> = params
-                        .iter()
-                        .map(|param| format!("::rutis_bridge::exports::encode(&{param})"))
-                        .collect();
-                    call.push(format!(
-                        "move |{}| {local}.invoke(vec![{}])",
-                        params.join(", "),
-                        encoded.join(", ")
-                    ));
-                } else {
-                    call.push(format!(
-                        "::rutis_bridge::exports::FromCallback::from_callback({local})"
-                    ));
-                }
                 count += 1;
                 continue;
             }
@@ -1386,11 +1160,6 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             }
             let ty = self.ty(scope, &input.ty)?;
             params_ts.push(format!("{js}: {}", ty.ts()));
-            let (binding, passed) = self.passing(scope, &input.ty, &local)?;
-            decode.push_str(&format!(
-                "let {local}{binding} = ::rutis_bridge::exports::decode(args.next().unwrap())?;\n"
-            ));
-            call.push(passed);
             count += 1;
         }
         // Trailing optional parameters may be left out.
@@ -1410,130 +1179,35 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             ReturnType::Default => None,
             ReturnType::Type(_, ty) => Some(ty.as_ref().clone()),
         };
-        let (awaited, output) = match output {
-            None => (sig.asyncness.is_some(), None),
+        let output = match output {
+            None => None,
             Some(ty) => match self.future_output(scope, &ty)? {
-                Some(inner) => (true, Some(inner)),
-                None => (sig.asyncness.is_some(), Some(ty)),
+                Some(inner) => Some(inner),
+                None => Some(ty),
             },
         };
-        let (ok, failure, error_ts) = match &output {
-            None => (Ty::Unit, None, None),
+        let (ok, error_ts) = match &output {
+            None => (Ty::Unit, None),
             Some(ty) => match self.result(scope, ty)? {
                 Some((ok, error, error_scope)) => {
                     let ok = self.ty(&error_scope, &ok)?;
-                    let (failure, thrown) = self.failure(&error_scope, &error)?;
-                    (ok, Some(failure), thrown)
+                    let thrown = self.thrown(&error_scope, &error)?;
+                    (ok, thrown)
                 }
-                None => (self.ty(scope, ty)?, None, None),
+                None => (self.ty(scope, ty)?, None),
             },
-        };
-        let rust_name = sig.ident.to_string();
-        let wait = if awaited { ".await" } else { "" };
-        let invoke = format!(
-            "<{path}>::{rust_name}(&*service{}{}){wait}",
-            if call.is_empty() { "" } else { ", " },
-            call.join(", ")
-        );
-        let encode_ok = match ok {
-            Ty::Unit => {
-                "{ let _ = result; Ok(::rutis_bridge::session::Value::Undefined) }".to_owned()
-            }
-            _ => "::rutis_bridge::exports::encode(&result)".to_owned(),
-        };
-        let returned = match &failure {
-            None => format!("let result = {invoke}; {encode_ok}"),
-            Some(failure) => {
-                let thrown = match failure {
-                    Failure::Serde { name, tag, variant } => format!(
-                        "::rutis_bridge::exports::serde_failure({name:?}, {}, {variant}, &error)",
-                        tag.as_ref()
-                            .map_or("None".to_owned(), |tag| format!("Some({tag:?})"))
-                    ),
-                    Failure::Variant { name, data } => format!(
-                        "::rutis_bridge::exports::variant_failure({name:?}, &error, {})",
-                        if *data {
-                            "::rutis_bridge::exports::data(&error)"
-                        } else {
-                            "None"
-                        }
-                    ),
-                    Failure::Display { name } => {
-                        format!("::rutis_bridge::exports::display_failure({name:?}, &error)")
-                    }
-                    Failure::Str => "::rutis_bridge::exports::string_failure(&error)".to_owned(),
-                    Failure::Pass => "error".to_owned(),
-                };
-                format!(
-                    "match {invoke} {{ Ok(result) => {encode_ok}, Err(error) => Err({thrown}) }}"
-                )
-            }
-        };
-        let body = format!(
-            "let mut args = ::rutis_bridge::exports::arguments(args, {count})?;\n{decode}{returned}"
-        );
-        // Read while `invoke` runs: the future it returns does not see it.
-        let caller = if takes_ctx {
-            format!(
-                "let caller = ::rutis_bridge::exports::caller_ctx({:?})?;\n",
-                camel(&sig.ident.to_string())
-            )
-        } else {
-            String::new()
-        };
-        let arm = if !pending.is_empty() {
-            // The arguments are taken now, the definitions read (and the
-            // method called) in the future.
-            let read: String = pending
-                .iter()
-                .map(|local| format!("let {local} = {local}.await?;\n"))
-                .collect();
-            format!(
-                "{{\n{caller}let mut args = ::rutis_bridge::exports::arguments(args, {count})?;\n{decode}Ok(::rutis_bridge::session::Value::future(async move {{\n{read}{returned}\n}}))\n}}"
-            )
-        } else if awaited {
-            format!("{{\n{caller}Ok(::rutis_bridge::session::Value::future(async move {{\n{body}\n}}))\n}}")
-        } else {
-            format!("{{\n{caller}(|| -> ::rutis_bridge::session::Reply {{\n{body}\n}})()\n}}")
         };
         let mut docs = doc_lines(&method.attrs);
         if let Some(thrown) = error_ts {
             docs.push(format!("@throws {{{thrown}}}"));
         }
         let docs = render_jsdoc(&docs, "  ");
-        let js = camel(&rust_name);
-        let signature = format!(
+        let js = camel(&sig.ident.to_string());
+        Ok(format!(
             "{docs}  {js}({}): Promise<{}>\n",
             params_ts.join(", "),
             ok.returned()
-        );
-        Ok((arm, signature))
-    }
-
-    /// How a parameter is decoded and passed: a type to decode into when
-    /// the parameter borrows one inference cannot name, and the argument.
-    fn passing(&mut self, scope: &Scope, ty: &Type, local: &str) -> Result<(String, String)> {
-        let Type::Reference(reference) = ty else {
-            return Ok((String::new(), local.to_owned()));
-        };
-        if reference.mutability.is_some() {
-            return Err("it takes a mutable reference".into());
-        }
-        Ok(match reference.elem.as_ref() {
-            Type::Slice(_) => (": ::std::vec::Vec<_>".into(), format!("&{local}")),
-            Type::Path(path) if path.qself.is_none() => {
-                match self.resolve_type(scope, &path.path)? {
-                    Some(Res::Primitive(name)) if name == "str" => {
-                        (": ::std::string::String".into(), format!("&{local}"))
-                    }
-                    Some(Res::External(found)) if path_is(&found, &[&["std", "path", "Path"]]) => {
-                        (": ::std::path::PathBuf".into(), format!("&{local}"))
-                    }
-                    _ => (String::new(), format!("&{local}")),
-                }
-            }
-            _ => (String::new(), format!("&{local}")),
-        })
+        ))
     }
 
     /// `X` of a future type: `BoxFuture<'_, X>`, `Pin<Box<dyn Future<Output
@@ -1662,19 +1336,15 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         }
     }
 
-    /// How `Err(e)` of type `error` is thrown, and its `<Name>Thrown`
-    /// TypeScript type.
-    fn failure(&mut self, scope: &Scope, error: &Type) -> Result<(Failure, Option<String>)> {
+    /// The `<Name>Thrown` TypeScript type of what a method returning
+    /// `Err(e)` of type `error` throws: none for an error that is not a
+    /// path, or for `rutis_bridge::session::Error` (thrown as it is).
+    fn thrown(&mut self, scope: &Scope, error: &Type) -> Result<Option<String>> {
         if let Some(Binding::Type(ty, scope)) = Self::binding(scope, error) {
-            return self.failure(&scope, &ty);
+            return self.thrown(&scope, &ty);
         }
         let Type::Path(path) = error else {
-            return Ok((
-                Failure::Display {
-                    name: "Error".into(),
-                },
-                None,
-            ));
+            return Ok(None);
         };
         let segment = path.path.segments.last().expect("a segment");
         let res = self.resolve_type(scope, &path.path)?;
@@ -1684,32 +1354,34 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             Some(Res::External(found)) if rutis_error(found) => "CordisError".to_owned(),
             _ => segment.ident.to_string(),
         };
-        let (failure, codes, data) = match &res {
-            Some(Res::External(found)) if path_is(found, &[&["std", "string", "String"]]) => {
-                (Failure::Str, "\"Error\"".to_owned(), "undefined".to_owned())
-            }
+        // `Err(message)`: named and coded `Error`, declared as `StringThrown`.
+        let string = matches!(&res, Some(Res::External(found)) if path_is(found, &[&["std", "string", "String"]]));
+        // The thrown error's name, its codes and its data.
+        let (name, codes, data) = match &res {
+            _ if string => (
+                "Error".to_owned(),
+                "\"Error\"".to_owned(),
+                "undefined".to_owned(),
+            ),
             Some(Res::External(found))
                 if found.first().is_some_and(|k| k == "rutis_bridge")
                     && found.last().is_some_and(|l| l == "Error") =>
             {
-                return Ok((Failure::Pass, None));
+                return Ok(None);
             }
             // rutis's error (0.16's `CordisError`): thrown as `CordisError`,
             // its code the kind's variant, as before
-            Some(Res::External(found)) if rutis_error(found) => (
-                Failure::Variant {
-                    name: "CordisError".into(),
-                    data: false,
-                },
-                "string".to_owned(),
-                "undefined".to_owned(),
-            ),
+            Some(Res::External(found)) if rutis_error(found) => {
+                (ident.clone(), "string".to_owned(), "undefined".to_owned())
+            }
             Some(Res::Item { module, index }) => {
                 let (module, index) = (*module, *index);
                 match self.sources.item(module, index).clone() {
                     Item::Enum(item) => {
                         let serde = SerdeAttrs::of(&item.attrs)?;
                         let serialized = derives(&item.attrs, "Serialize");
+                        // Codes as serde names the variants, or else their
+                        // Rust names.
                         let named = serialized && !serde.untagged;
                         let variant_scope = Scope::of(module);
                         let codes: Vec<String> = if named {
@@ -1736,30 +1408,10 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                         } else {
                             "undefined".to_owned()
                         };
-                        let failure = if named {
-                            Failure::Serde {
-                                name: ident.clone(),
-                                tag: serde.tag.clone(),
-                                variant: true,
-                            }
-                        } else if derives(&item.attrs, "Debug") {
-                            Failure::Variant {
-                                name: ident.clone(),
-                                data: serialized,
-                            }
-                        } else {
-                            Failure::Display {
-                                name: ident.clone(),
-                            }
-                        };
-                        (failure, codes, data)
+                        (ident.clone(), codes, data)
                     }
                     Item::Struct(item) if derives(&item.attrs, "Serialize") => (
-                        Failure::Serde {
-                            name: ident.clone(),
-                            tag: None,
-                            variant: false,
-                        },
+                        ident.clone(),
                         "string".to_owned(),
                         self.ty(scope, error)?.ts(),
                     ),
@@ -1771,40 +1423,14 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                             module,
                             params: Rc::new(params),
                         };
-                        return self.failure(&alias_scope, &alias.ty);
+                        return self.thrown(&alias_scope, &alias.ty);
                     }
-                    _ => (
-                        Failure::Display {
-                            name: ident.clone(),
-                        },
-                        format!("{ident:?}"),
-                        "undefined".to_owned(),
-                    ),
+                    _ => (ident.clone(), format!("{ident:?}"), "undefined".to_owned()),
                 }
             }
-            _ => (
-                Failure::Display {
-                    name: ident.clone(),
-                },
-                format!("{ident:?}"),
-                "undefined".to_owned(),
-            ),
+            _ => (ident.clone(), format!("{ident:?}"), "undefined".to_owned()),
         };
-        let name = match &failure {
-            Failure::Serde { name, .. }
-            | Failure::Variant { name, .. }
-            | Failure::Display { name } => name.clone(),
-            Failure::Str => "Error".to_owned(),
-            Failure::Pass => unreachable!(),
-        };
-        let thrown_name = format!(
-            "{}Thrown",
-            if matches!(failure, Failure::Str) {
-                "String"
-            } else {
-                &ident
-            }
-        );
+        let thrown_name = format!("{}Thrown", if string { "String" } else { &ident });
         let declaration = format!(
             "/** What a method returning `Err({ident})` throws. */\nexport type {thrown_name} = RustError<{name:?}, {codes}, {data}>\n"
         );
@@ -1816,7 +1442,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                 self.thrown.insert(thrown_name.clone(), declaration);
             }
         }
-        Ok((failure, Some(thrown_name)))
+        Ok(Some(thrown_name))
     }
 
     /// The function a parameter of type `ty` takes, if it takes one.
@@ -1829,9 +1455,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         if let Some(name) = single_ident(ty) {
             if let Some(list) = bounds.get(&name) {
                 return match fn_bound(list) {
-                    Some(bound) => self
-                        .callback_signature(scope, bound, bounds, true)
-                        .map(Some),
+                    Some(bound) => self.callback_signature(scope, bound, bounds).map(Some),
                     None => Ok(None),
                 };
             }
@@ -1839,9 +1463,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         match ty {
             Type::ImplTrait(implemented) => {
                 match fn_bound(&implemented.bounds.iter().cloned().collect::<Vec<_>>()) {
-                    Some(bound) => self
-                        .callback_signature(scope, bound, bounds, true)
-                        .map(Some),
+                    Some(bound) => self.callback_signature(scope, bound, bounds).map(Some),
                     None => Ok(None),
                 }
             }
@@ -1874,7 +1496,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
                                 if arc { " + Sync" } else { " (+ Sync)" }
                             ));
                         }
-                        let signature = self.callback_signature(scope, bound, bounds, false)?;
+                        let signature = self.callback_signature(scope, bound, bounds)?;
                         Ok(Some(signature))
                     }
                     Some(Res::Item { module, index }) => {
@@ -1908,7 +1530,6 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
         scope: &Scope,
         bound: &syn::TraitBound,
         bounds: &HashMap<String, Vec<TypeParamBound>>,
-        closure: bool,
     ) -> Result<Callback> {
         let segment = bound.path.segments.last().expect("a segment");
         let PathArguments::Parenthesized(arguments) = &segment.arguments else {
@@ -1939,7 +1560,7 @@ impl ::rutis_bridge::session::HostDispatch for Dispatch{interface} {{
             .result(scope, &inner)?
             .ok_or("the function it takes must return a future of a Result, for its failure to reach the caller")?;
         let ok = self.ty(&ok_scope, &ok)?;
-        Ok(Callback { args, ok, closure })
+        Ok(Callback { args, ok })
     }
 }
 
@@ -2001,7 +1622,6 @@ fn object(fields: &[Field], compact: bool) -> String {
     text
 }
 
-/// Whether `ty` is `rutis::Ctx` (or a reference to it).
 /// The TypeScript of a plugin definition: a `definePlugin` result or a
 /// Cordis plugin.
 const DEFINITION_TS: &str = "import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }";
@@ -2030,6 +1650,7 @@ fn is_rutis_definition(path: &[String]) -> bool {
     }
 }
 
+/// Whether `ty` is `rutis::Ctx` (or a reference to it).
 fn is_ctx(generator: &mut Generator<'_>, scope: &Scope, ty: &Type) -> Result<bool> {
     let ty = match ty {
         Type::Reference(reference) => reference.elem.as_ref(),
@@ -2394,51 +2015,6 @@ fn camel(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A Rust function name for a service name.
-fn rust_ident(name: &str) -> String {
-    let mut ident: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if ident.is_empty()
-        || ident.starts_with(|c: char| c.is_ascii_digit())
-        || matches!(
-            ident.as_str(),
-            "all"
-                | "self"
-                | "super"
-                | "crate"
-                | "type"
-                | "fn"
-                | "mod"
-                | "use"
-                | "struct"
-                | "enum"
-                | "impl"
-                | "trait"
-                | "move"
-                | "match"
-                | "loop"
-                | "ref"
-                | "static"
-                | "const"
-                | "where"
-                | "async"
-                | "await"
-                | "dyn"
-        )
-    {
-        ident.insert(0, '_');
-    }
-    ident
-}
-
 /// A property key in TypeScript: quoted unless it is an identifier.
 fn ts_key(key: &str) -> String {
     let identifier = key
@@ -2534,8 +2110,6 @@ mod tests {
         );
         assert_eq!(camel("list_items"), "listItems");
         assert_eq!(ts_key("due-at"), "\"due-at\"");
-        assert_eq!(rust_ident("calendar-v2"), "calendar_v2");
-        assert_eq!(rust_ident("all"), "_all");
     }
 
     /// An application crate `host` depending on `dep_crate` (whose files
@@ -2601,6 +2175,7 @@ mod tests {
         /// The store.
         pub struct Store;
 
+        #[rutis::service]
         impl Store {
             pub fn new() -> Self { Store }
             /// Put an item.
@@ -2619,6 +2194,7 @@ mod tests {
         }
 
         mod more {
+            #[rutis::service]
             impl super::Store {
                 pub fn count(&self) -> Result<usize, String> { Ok(0) }
             }
@@ -2690,11 +2266,10 @@ mod tests {
         }
     "#;
 
-    /// Types marked `#[rutis::service]` are declared with no list: only
-    /// their marked blocks, without their skipped methods, and no Rust is
-    /// generated for them (they are served when provided).
+    /// Types marked `#[rutis::service]` are declared: only their marked
+    /// blocks, without their skipped methods.
     #[test]
-    fn marked_types_are_declared_without_a_list() {
+    fn marked_types_are_declared() {
         let generated = generate(Exports::new(), &[("lib.rs", MARKED)]).unwrap();
         let ts = &generated.typescript;
         assert!(ts.contains("  clock: Clock\n"), "{ts}");
@@ -2705,78 +2280,40 @@ mod tests {
         assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
-        assert!(!generated.rust.contains("Clock"), "{}", generated.rust);
     }
 
-    /// Marking a type writes exactly the declarations listing it wrote
-    /// (§8): the same type, its blocks marked (the methods build.rs left
-    /// out skipped, as the marker requires), against `.service(..)`.
+    /// Two marked types given one name are an error naming both.
     #[test]
-    fn a_marked_type_is_declared_as_listing_it_was() {
-        let listed = store().unwrap().typescript;
-        let marked_inner = INNER
-            .replace(
-                "        impl Store {",
-                "        #[rutis::service(name = \"store\")]\n        impl Store {",
-            )
-            .replace(
-                "            impl super::Store {",
-                "            #[rutis::service]\n            impl super::Store {",
-            )
-            .replace(
-                "pub fn reset(&mut self)",
-                "#[service(skip)] pub fn reset(&mut self)",
-            )
-            .replace("pub fn borrowing(", "#[service(skip)] pub fn borrowing(");
-        let marked = generate(
+    fn two_marked_types_with_one_name_are_an_error() {
+        let error = generate(
             Exports::new(),
-            &[
-                ("lib.rs", LIB),
-                ("inner.rs", &marked_inner),
-                ("types.rs", TYPES),
-            ],
-        )
-        .unwrap()
-        .typescript;
-        assert_eq!(marked, listed);
-    }
-
-    /// A marked type listed in build.rs as well is an error naming the fix.
-    #[test]
-    fn a_marked_type_listed_too_is_an_error() {
-        let error = generate(
-            Exports::new().service("clock", "dep_crate::Clock"),
-            &[("lib.rs", MARKED)],
-        )
-        .unwrap_err();
-        assert!(error.contains("remove its .service(...) line"), "{error}");
-        let error = generate(
-            Exports::new().service("board", "dep_crate::Other"),
             &[(
                 "lib.rs",
-                &format!("{MARKED}\npub struct Other;\nimpl Other {{ pub fn a(&self) {{}} }}"),
+                &format!(
+                    "{MARKED}\npub struct Board;\n#[rutis::service]\nimpl Board {{ pub fn a(&self) {{}} }}"
+                ),
             )],
         )
         .unwrap_err();
-        assert!(error.contains("exported twice"), "{error}");
+        assert!(
+            error.contains("board") && error.contains("Named") && error.contains("Board"),
+            "{error}"
+        );
     }
 
-    /// A plugin definition parameter is read before the method runs, and
-    /// both it and a returned one are declared as the TS plugin type.
+    /// A plugin definition, as a parameter or returned, is declared as the
+    /// TS plugin type.
     #[test]
     fn plugin_definitions_cross_as_the_plugin_type() {
         let source = r#"
 pub struct Parts;
+#[rutis::service]
 impl Parts {
     pub fn register(&self, scope: String, def: rutis::Definition) {}
     pub fn first(&self) -> rutis::Definition { unimplemented!() }
 }
 "#;
-        let generated = generate(
-            Exports::new().service("parts", "dep_crate::Parts"),
-            &[("lib.rs", source)],
-        )
-        .unwrap();
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
         let ts = &generated.typescript;
         let plugin = "import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }";
         assert!(
@@ -2786,17 +2323,11 @@ impl Parts {
             "{ts}"
         );
         assert!(ts.contains(&format!("first(): Promise<{plugin}>")), "{ts}");
-        let rust = &generated.rust;
-        assert!(
-            rust.contains("let a1 = ::rutis_bridge::exports::definition(args.next().unwrap());"),
-            "{rust}"
-        );
-        assert!(rust.contains("let a1 = a1.await?;"), "{rust}");
     }
 
     fn store() -> Result<Generated> {
         generate(
-            Exports::new().service("store", "dep_crate::Store"),
+            Exports::new(),
             &[("lib.rs", LIB), ("inner.rs", INNER), ("types.rs", TYPES)],
         )
     }
@@ -2826,34 +2357,6 @@ impl Parts {
         for absent in ["missing", "private", "reset", "new(", "cache"] {
             assert!(!ts.contains(absent), "{absent}\n---\n{ts}");
         }
-        let rust = &generated.rust;
-        assert!(
-            rust.contains("<dep_crate::Store>::find(&*service, &a0, a1).await"),
-            "{rust}"
-        );
-        assert!(rust.contains("let a0: ::std::string::String"), "{rust}");
-        assert!(
-            rust.contains("serde_failure(\"Problem\", Some(\"kind\"), true, &error)"),
-            "{rust}"
-        );
-        assert!(
-            rust.contains("serde_failure(\"Single\", None, false, &error)"),
-            "{rust}"
-        );
-        assert!(rust.contains("string_failure(&error)"), "{rust}");
-        assert!(
-            rust.contains("let caller = ::rutis_bridge::exports::caller_ctx(\"tied\")?;"),
-            "{rust}"
-        );
-        assert!(
-            rust.contains("<dep_crate::Store>::tied(&*service, &caller, a0)"),
-            "{rust}"
-        );
-        assert!(rust.contains("move |p0, p1| a0.invoke("), "{rust}");
-        assert!(
-            rust.contains("Export::new::<dep_crate::Store>(\"store\""),
-            "{rust}"
-        );
     }
 
     /// What cannot be bound is left out, saying where and why.
@@ -2884,15 +2387,14 @@ impl Parts {
             "pub struct Store;\n pub struct Opaque;\n \
              #[derive(serde::Serialize)] pub struct Wrapper { pub inner: Opaque, pub other: Other }\n \
              #[derive(serde::Serialize)] pub struct Other { pub back: Option<Box<Wrapper>> }\n \
-             impl Store { pub fn opaque(&self) -> Opaque { Opaque } pub fn wrapped(&self) -> Wrapper { todo!() } }",
+             #[rutis::service] impl Store { pub fn opaque(&self) -> Opaque { Opaque } pub fn wrapped(&self) -> Wrapper { todo!() } }",
         );
         let files = [
             ("lib.rs", LIB),
             ("inner.rs", inner.as_str()),
             ("types.rs", TYPES),
         ];
-        let generated =
-            generate(Exports::new().service("store", "dep_crate::Store"), &files).unwrap();
+        let generated = generate(Exports::new(), &files).unwrap();
         for method in ["Store::opaque", "Store::wrapped"] {
             assert!(
                 generated
@@ -2912,9 +2414,7 @@ impl Parts {
             );
         }
         let generated = generate(
-            Exports::new()
-                .service("store", "dep_crate::Store")
-                .declared("dep_crate::Opaque", "import('./opaque').Opaque"),
+            Exports::new().declared("dep_crate::Opaque", "import('./opaque').Opaque"),
             &files,
         )
         .unwrap();
@@ -2925,28 +2425,6 @@ impl Parts {
             "{}",
             generated.typescript
         );
-    }
-
-    #[test]
-    fn names_that_are_not_services_are_refused() {
-        let files = [("lib.rs", LIB), ("inner.rs", INNER), ("types.rs", TYPES)];
-        let error =
-            generate(Exports::new().service("x", "dep_crate::Nothing"), &files).unwrap_err();
-        assert!(error.contains("not found"), "{error}");
-        let error = generate(
-            Exports::new().service("x", "dep_crate::types::Page"),
-            &files,
-        )
-        .unwrap_err();
-        assert!(error.contains("generic"), "{error}");
-        let error = generate(
-            Exports::new()
-                .service("x", "dep_crate::Store")
-                .service("x", "dep_crate::Store"),
-            &files,
-        )
-        .unwrap_err();
-        assert!(error.contains("twice"), "{error}");
     }
 
     // ── Cycles (#459) ───────────────────────────────────────────
@@ -2996,6 +2474,7 @@ impl Parts {
     const NAMES: &str = r#"
         use crate::*;
         pub struct Service;
+        #[rutis::service]
         impl Service {
             pub fn names(&self) -> Result<Vec<String>, String> { Ok(Vec::new()) }
             pub fn first(&self) -> Option<Item6> { None }
@@ -3009,8 +2488,6 @@ impl Parts {
             "{ts}"
         );
         assert!(ts.contains("first(): Promise<Item6 | null>"), "{ts}");
-        let rust = &generated.rust;
-        assert!(rust.contains("string_failure(&error)"), "{rust}");
         assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
     }
 
@@ -3037,10 +2514,7 @@ impl Parts {
                 .iter()
                 .map(|(path, text)| (path.as_str(), text.as_str())),
         );
-        let generated = generate_quickly(
-            Exports::new().service("service", "dep_crate::Service"),
-            &files,
-        );
+        let generated = generate_quickly(Exports::new(), &files);
         assert_names(&generated);
         assert!(
             generated
@@ -3055,7 +2529,7 @@ impl Parts {
     #[test]
     fn glob_imports_of_the_parent_end() {
         let generated = generate_quickly(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 ("lib.rs", "pub mod a; pub use a::*;"),
                 ("a.rs", "use super::*; pub mod b; pub use b::*;"),
@@ -3074,7 +2548,7 @@ impl Parts {
     #[test]
     fn a_longer_chain_of_globs_ends() {
         let generated = generate_quickly(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 ("lib.rs", "mod a; pub use a::*; mod b; mod m1;"),
                 ("a.rs", "pub use crate::b::*;"),
@@ -3116,20 +2590,18 @@ impl Parts {
                     lib("host", "host", "host/lib.rs"),
                     lib("a", "a_crate", "a/lib.rs"),
                     lib("b", "b_crate", "b/lib.rs"),
+                    lib("rutis", "rutis", "none.rs"),
                     lib("serde", "serde", "none.rs"),
                 ],
                 "resolve": { "root": "host", "nodes": [
                     { "id": "host", "deps": [{ "name": "a_crate", "pkg": "a" }], "features": [] },
-                    { "id": "a", "deps": [{ "name": "b_crate", "pkg": "b" }, { "name": "serde", "pkg": "serde" }], "features": [] },
+                    { "id": "a", "deps": [{ "name": "b_crate", "pkg": "b" }, { "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }], "features": [] },
                     { "id": "b", "deps": [{ "name": "a_crate", "pkg": "a" }, { "name": "serde", "pkg": "serde" }], "features": [] },
                 ] },
             });
             let mut sources = Sources::from_metadata(&metadata, "host").unwrap();
             let started = std::time::Instant::now();
-            let generated = Exports::new()
-                .service("service", "a_crate::Service")
-                .generate_from(&mut sources)
-                .unwrap();
+            let generated = Exports::new().generate_from(&mut sources).unwrap();
             let took = started.elapsed();
             assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
             generated
@@ -3142,7 +2614,7 @@ impl Parts {
     #[test]
     fn a_type_alias_that_refers_to_itself_is_a_warning() {
         let generated = generate_quickly(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 ("lib.rs", "mod m1; pub use m1::*;"),
                 (
@@ -3150,7 +2622,7 @@ impl Parts {
                     &format!(
                         "pub type A = B;\npub type B = A;\npub type Pair<T> = (T, T);\n\
                          #[derive(serde::Serialize)] pub struct Item6;\n\
-                         impl Service {{ pub fn bad(&self) -> A {{ todo!() }} \
+                         #[rutis::service] impl Service {{ pub fn bad(&self) -> A {{ todo!() }} \
                          pub fn pairs(&self) -> Pair<Pair<u8>> {{ todo!() }} }}\n{NAMES}"
                     ),
                 ),
@@ -3179,7 +2651,7 @@ impl Parts {
     #[test]
     fn an_alias_argument_is_read_at_its_use() {
         let generated = generate(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 ("lib.rs", "mod err; mod model; mod svc; pub use svc::*;"),
                 (
@@ -3198,7 +2670,7 @@ impl Parts {
                     "svc.rs",
                     "use crate::err::{More, Res, ResE}; use crate::model::{Problem, Thing};\n\
                      pub struct Service;\n\
-                     impl Service {\n\
+                     #[rutis::service] impl Service {\n\
                          pub fn one(&self) -> Res<Thing> { todo!() }\n\
                          pub fn many(&self) -> More<Thing> { todo!() }\n\
                          pub fn other(&self) -> ResE<Thing, Problem> { todo!() }\n\
@@ -3226,7 +2698,7 @@ impl Parts {
     #[test]
     fn an_alias_default_is_read_where_the_alias_is_defined() {
         let generated = generate(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 ("lib.rs", "mod err; mod model; mod svc; pub use svc::*;"),
                 (
@@ -3245,7 +2717,7 @@ impl Parts {
                     "svc.rs",
                     "use crate::err::Res; use crate::model::Thing;\n\
                      pub struct Service;\n\
-                     impl Service { pub fn one(&self) -> Res<Thing> { todo!() } }",
+                     #[rutis::service] impl Service { pub fn one(&self) -> Res<Thing> { todo!() } }",
                 ),
             ],
         )
@@ -3268,7 +2740,7 @@ impl Parts {
     #[test]
     fn a_module_path_back_to_its_own_file_is_a_warning() {
         let generated = generate_quickly(
-            Exports::new().service("service", "dep_crate::Service"),
+            Exports::new(),
             &[
                 (
                     "lib.rs",
