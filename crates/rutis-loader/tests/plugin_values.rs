@@ -4,22 +4,36 @@
 //! copy, which runs in the row's runtime with the instance's services; the
 //! row's unload ends the copies first; a reloaded row's new definition
 //! mounts again.
-#![cfg(all(unix, any(feature = "node", feature = "bun")))]
+#![cfg(all(
+    unix,
+    any(feature = "node", feature = "bun", feature = "python", feature = "go")
+))]
 
 mod common;
 
+#[cfg(any(feature = "node", feature = "bun"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{repo, title, NoConfig, Probe, Title, Tools, COLD};
+#[cfg(feature = "go")]
+use common::runtimes::go_binary;
+#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
+use common::runtimes::repo;
+use common::runtimes::{title, NoConfig, Probe, Title, Tools, COLD};
 use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::{Ctx, Definition, Error};
+#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
+#[cfg(feature = "go")]
+use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
-use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
+use rutis_loader::{
+    Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, Resolver, ServiceCatalog,
+};
 use serde_json::json;
 
 // ── The part registry (Dim's, in miniature) ─────────────────────
@@ -169,6 +183,7 @@ fn builtins(mounted: Arc<Mutex<Vec<FiberView>>>) -> Scoped {
 
 /// The origin: prepares a value, hands a session part using it to `parts`,
 /// and provides `maker`, whose `make` returns another one.
+#[cfg(any(feature = "node", feature = "bun"))]
 const ORIGIN: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
@@ -199,6 +214,7 @@ export default definePlugin({
 
 /// A Cordis plugin handing over Cordis plugins as they are written: an
 /// object with `apply`, a function and a class (Node only).
+#[cfg(feature = "node")]
 const CORDIS: &str = r#"
 export const inject = ['parts', 'probe']
 export async function apply(ctx) {
@@ -222,12 +238,68 @@ export async function apply(ctx) {
 /// Ends its runtime's process soon after it loads.
 const CRASH: &str = "export function apply() { setTimeout(() => process.exit(17), 200) }\n";
 
+/// ORIGIN in Python.
+#[cfg(feature = "python")]
+const PY_ORIGIN: &str = r#"
+import inspect
+
+from rutis import define_plugin
+
+inject = ["parts", "probe"]
+
+
+async def settle(value):
+    return await value if inspect.isawaitable(value) else value
+
+
+def part(tag, prepared):
+    def apply(ctx, config):
+        probe = ctx.use("probe")
+        title = ctx.use("tools").title()
+        probe.record(f"{tag} {config['n']} sees {title} with {prepared}")
+        ctx.effect(lambda: probe.record(f"{tag} {config['n']} down"))
+
+    return define_plugin(apply, inject=["tools", "probe"])
+
+
+class Maker:
+    def __init__(self, prepared):
+        self.prepared = prepared
+
+    def make(self):
+        return part("made", self.prepared)
+
+
+async def apply(ctx, config):
+    probe = ctx.use("probe")
+    prepared = "prepared in apply"
+    await settle(ctx.use("parts").register("session", part("part", prepared)))
+    try:
+        await settle(ctx.use("parts").takesData(part("data", prepared)))
+        probe.record("data took a definition")
+    except Exception as error:
+        probe.record(f"data refused: {error}")
+    ctx.provide("maker", Maker(prepared))
+    ctx.effect(lambda: probe.record("origin down"))
+"#;
+
+/// CRASH in Python.
+#[cfg(feature = "python")]
+const PY_CRASH: &str = "import os, threading\n\n\ndef apply(ctx, config):\n    threading.Timer(0.2, lambda: os._exit(17)).start()\n";
+
 #[derive(Clone, Copy, Debug)]
 enum Lang {
     #[cfg(feature = "node")]
     Node,
     #[cfg(feature = "bun")]
     Bun,
+    /// The origin is `py:origin`.
+    #[cfg(feature = "python")]
+    Python,
+    /// The origin and the crash are plugins of the Go fixture binary
+    /// (`tests/fixtures/go/plugins/values`).
+    #[cfg(feature = "go")]
+    Go,
 }
 
 struct Fixture {
@@ -240,22 +312,45 @@ struct Fixture {
     lang: Lang,
     /// Rows added besides the origin and the session group.
     extra: Mutex<Vec<serde_json::Value>>,
+    /// The rows' sources (or, for Go, the runtimes' directory), kept until
+    /// the fixture ends.
+    #[cfg_attr(
+        not(any(feature = "node", feature = "bun", feature = "python")),
+        allow(dead_code)
+    )]
     dir: tempfile::TempDir,
 }
 
-async fn fixture(lang: Lang) -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+/// What starts a runtime's rows, once the loader is mounted.
+type Start = Box<dyn FnOnce(&Ctx)>;
+
+/// Starts the rows of a runtime resolver, once the loader is mounted.
+#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
+fn rows_plugin(rows: Arc<RuntimeResolver>) -> Start {
+    Box::new(move |root: &Ctx| {
+        root.plugin(RuntimeRowsPlugin::new(rows));
+    })
+}
+
+/// The JavaScript origin, `origin.mjs` in `dir`.
+#[cfg(any(feature = "node", feature = "bun"))]
+fn js_origin(dir: &std::path::Path) -> PathBuf {
+    std::fs::write(dir.join("package.json"), "{}").unwrap();
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
         .canonicalize()
         .unwrap();
-    let file: PathBuf = dir.path().join("origin.mjs");
+    let file: PathBuf = dir.join("origin.mjs");
     std::fs::write(
         &file,
         ORIGIN.replace("PLUGIN", url::Url::from_file_path(&sdk).unwrap().as_str()),
     )
     .unwrap();
+    file
+}
+
+async fn fixture(lang: Lang) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
@@ -270,23 +365,48 @@ async fn fixture(lang: Lang) -> Fixture {
     catalog.register_shared_instance("tools", "session");
 
     let mounted = Arc::new(Mutex::new(Vec::new()));
-    let (rows, origin) = match lang {
+    // `start` starts what runs the rows, once the loader is mounted.
+    let (rows, origin, start): (Arc<dyn Resolver>, _, Start) = match lang {
         #[cfg(feature = "node")]
         Lang::Node => {
+            let file = js_origin(dir.path());
             let node = LocalRuntime::node(
                 repo().join("node/rutis-runtime"),
                 repo().join("node/rutis-runtime/package.json"),
             );
             let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
             root.plugin(node);
-            (rows, json!(file.to_string_lossy()))
+            let start = rows_plugin(rows.clone());
+            (rows, json!(file.to_string_lossy()), start)
         }
         #[cfg(feature = "bun")]
         Lang::Bun => {
+            js_origin(dir.path());
             let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
             let rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
             root.plugin(bun);
-            (rows, json!("bun:./origin.mjs"))
+            let start = rows_plugin(rows.clone());
+            (rows, json!("bun:./origin.mjs"), start)
+        }
+        #[cfg(feature = "python")]
+        Lang::Python => {
+            std::fs::write(dir.path().join("origin.py"), PY_ORIGIN).unwrap();
+            let python = LocalRuntime::python(dir.path()).python_path(repo().join("python/rutis"));
+            let rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+            root.plugin(python);
+            let start = rows_plugin(rows.clone());
+            (rows, json!("py:origin"), start)
+        }
+        #[cfg(feature = "go")]
+        Lang::Go => {
+            let go = Arc::new(
+                GoResolver::new(GoBinaries::new().file(go_binary())).with_catalog(&catalog),
+            );
+            let runtimes = GoRuntimes::new(go.clone(), dir.path()).idle(None);
+            let start: Start = Box::new(move |root: &Ctx| {
+                root.plugin(runtimes);
+            });
+            (go, json!("go:pv_origin"), start)
         }
     };
     let chain = Chain::new()
@@ -301,7 +421,7 @@ async fn fixture(lang: Lang) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    start(&root);
 
     let report = loader
         .reconcile(rows_with(Some(&origin), &[]), None)
@@ -351,15 +471,32 @@ impl Fixture {
         assert!(report.failures.is_empty(), "{report:?}");
     }
 
-    /// Add a row `id` running `source` in the fixture's runtime.
+    /// Add a row `id` running `source` (JavaScript) in the fixture's
+    /// runtime: CRASH there is the crash of each language.
     async fn add(&self, id: &str, source: &str) {
-        let file = self.dir.path().join(format!("{id}.mjs"));
-        std::fs::write(&file, source).unwrap();
         let name = match self.lang {
             #[cfg(feature = "node")]
-            Lang::Node => json!(file.to_string_lossy()),
+            Lang::Node => {
+                let file = self.dir.path().join(format!("{id}.mjs"));
+                std::fs::write(&file, source).unwrap();
+                json!(file.to_string_lossy())
+            }
             #[cfg(feature = "bun")]
-            Lang::Bun => json!(format!("bun:./{id}.mjs")),
+            Lang::Bun => {
+                std::fs::write(self.dir.path().join(format!("{id}.mjs")), source).unwrap();
+                json!(format!("bun:./{id}.mjs"))
+            }
+            #[cfg(feature = "python")]
+            Lang::Python => {
+                assert_eq!(source, CRASH, "only the crash has a Python version");
+                std::fs::write(self.dir.path().join(format!("{id}.py")), PY_CRASH).unwrap();
+                json!(format!("py:{id}"))
+            }
+            #[cfg(feature = "go")]
+            Lang::Go => {
+                assert_eq!(source, CRASH, "only the crash is in the Go binary");
+                json!("go:pv_crash")
+            }
         };
         self.extra
             .lock()
@@ -587,5 +724,55 @@ mod bun {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
         super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Bun).await
+    }
+}
+
+#[cfg(feature = "python")]
+mod python {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Python).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Python).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Python).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Python).await
+    }
+}
+
+#[cfg(feature = "go")]
+mod go {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Go).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Go).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Go).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Go).await
     }
 }
