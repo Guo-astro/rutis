@@ -51,6 +51,11 @@ struct DispatchObserver {
 
 type Watcher = Arc<dyn Fn(&TableChange) + Send + Sync>;
 
+/// A test hook called after a dispatch selected its listeners (feature
+/// `testing`).
+#[cfg(feature = "testing")]
+type SelectedHook = Arc<dyn Fn(&str, &(dyn std::any::Any + Send + Sync)) + Send + Sync>;
+
 /// A current registration, without its callback or fiber.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -81,6 +86,8 @@ struct Tail {
 struct BusState {
     table: Table,
     observers: Vec<Arc<DispatchObserver>>,
+    #[cfg(feature = "testing")]
+    selected: Vec<SelectedHook>,
     watchers: Vec<(u64, Watcher)>,
     next_watcher: u64,
     tails: HashMap<Arc<str>, Tail>,
@@ -640,7 +647,34 @@ impl EventBus {
             .into());
         }
         self.observe(ctx, name, mode, event);
-        Ok(self.core.state.lock().unwrap().table.select(name))
+        let state = self.core.state.lock().unwrap();
+        let entries = state.table.select(name);
+        #[cfg(feature = "testing")]
+        let hooks = state.selected.clone();
+        drop(state);
+        #[cfg(feature = "testing")]
+        for hook in hooks {
+            hook(name, event);
+        }
+        Ok(entries)
+    }
+
+    /// Test hook (feature `testing`): call `hook` with the name and event
+    /// of every dispatch on this bus, right after it selected its
+    /// listeners. A listener registered after the hook ran for a dispatch
+    /// is not in that dispatch. The hook stays as long as the bus.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn on_selected_for_testing(
+        &self,
+        hook: impl Fn(&str, &(dyn std::any::Any + Send + Sync)) + Send + Sync + 'static,
+    ) {
+        self.core
+            .state
+            .lock()
+            .unwrap()
+            .selected
+            .push(Arc::new(hook));
     }
 
     /// Begin a call of `entry` (§5.1 step 3): `None` skips it. A `once`

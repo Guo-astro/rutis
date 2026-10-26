@@ -447,13 +447,34 @@ struct Host {
     state: Mutex<State>,
     rust: rust_participant::Hooks,
     node: rust_participant::Node,
-    /// The last `rutis/row` state the host dispatched for each row (by its
-    /// label), seen by a dispatch observer as the dispatch takes its
-    /// snapshot: a row is settled once its own `rutis/row` went out, not
-    /// only once its fiber runs (#659).
-    said: Arc<Mutex<HashMap<String, RowState>>>,
-    _said: Mutex<rutis::Disposer>,
+    /// The last `rutis/row` state each row (its label, and whether it is at
+    /// the root) was dispatched with, recorded by the kernel's test hook
+    /// once that dispatch selected its listeners (#659). A step that loads,
+    /// updates or restarts a row clears its record first.
+    said: Said,
     _dir: tempfile::TempDir,
+}
+
+/// The last `rutis/row` state dispatched per row: by label and whether the
+/// row is at the root (the scope is empty there), as `Host::row_state`
+/// tells a row's copy apart.
+#[derive(Clone, Default)]
+struct Said(Arc<Mutex<HashMap<(String, bool), RowState>>>);
+
+impl Said {
+    fn key(row: &Row) -> (String, bool) {
+        (row.label.clone(), row.scope == "root")
+    }
+
+    fn of(&self, row: &Row) -> Option<RowState> {
+        self.0.lock().unwrap().get(&Self::key(row)).copied()
+    }
+
+    /// Before a step that makes the row run again: what it said before
+    /// does not count.
+    fn forget(&self, row: &Row) {
+        self.0.lock().unwrap().remove(&Self::key(row));
+    }
 }
 
 /// The runtime a location of the case is in.
@@ -479,20 +500,21 @@ impl Host {
         let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), tap.sink(print));
         tap.attach(&root).unwrap();
         // The loader emits a row's `rutis/row` from its fiber's status
-        // changes, after the state is visible: watch the dispatches
-        // themselves. An observer adds no entry to the bus, so no case's
-        // table or routes change.
-        let said: Arc<Mutex<HashMap<String, RowState>>> = Arc::default();
-        let said_observer = {
+        // changes, after the state is visible. The kernel's test hook runs
+        // once a dispatch has selected its listeners, without adding an
+        // entry to the bus (no case's table or routes change).
+        let said = Said::default();
+        {
             let said = said.clone();
-            root.events()
-                .observe_dispatch(&root, move |attempt| {
-                    if let Some(event) = attempt.event.downcast_ref::<RowEvent>() {
-                        said.lock().unwrap().insert(event.row.clone(), event.state);
-                    }
-                })
-                .unwrap()
-        };
+            root.events().on_selected_for_testing(move |_, event| {
+                if let Some(event) = event.downcast_ref::<RowEvent>() {
+                    said.0
+                        .lock()
+                        .unwrap()
+                        .insert((event.row.clone(), event.scope.is_empty()), event.state);
+                }
+            });
+        }
         root.provide_at(
             host_key("events-log"),
             Arc::new(EventsLogService(log.clone())),
@@ -560,7 +582,6 @@ impl Host {
             rust,
             node,
             said,
-            _said: Mutex::new(said_observer),
             _dir: dir,
         };
         host.reconcile().await.expect("the scopes");
@@ -711,10 +732,11 @@ impl Host {
         let deadline = tokio::time::Instant::now() + COLD.limit();
         loop {
             let state = self.row_state(&row.label, &row.scope);
-            // Its `rutis/row` too: a row loaded next must not be on the
-            // table yet when this one's goes out (§5.1 takes the listeners
-            // registered when the dispatch starts).
-            let said = self.said.lock().unwrap().get(&row.label).copied();
+            // And its `rutis/row` has selected its listeners: whatever the
+            // case does next (a row it loads registers later) is not in
+            // that dispatch (§5.1: the listeners registered when it
+            // selects).
+            let said = self.said.of(row);
             match &state {
                 Some((FiberState::Active, _)) if !fails && said == Some(RowState::Running) => {
                     return Ok(())
@@ -722,6 +744,8 @@ impl Host {
                 Some((FiberState::Failed, _)) if fails && said == Some(RowState::Failed) => {
                     return Ok(())
                 }
+                // Failed as it should, its `failed` not out yet: wait.
+                Some((FiberState::Failed, _)) if fails => {}
                 Some((FiberState::Failed, error)) => {
                     return Err(format!("row {} failed: {error:?}", row.label))
                 }
@@ -757,6 +781,17 @@ impl Host {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// After `row` unloaded: its `stopped` has selected its listeners too,
+    /// so no later step or case is in that dispatch. A row that never said
+    /// anything has nothing to wait for.
+    async fn said_stopped(&self, row: &Row) -> Result<(), String> {
+        until(
+            || matches!(self.said.of(row), None | Some(RowState::Stopped)),
+            &format!("{}'s rutis/row stopped", row.label),
+        )
+        .await
     }
 
     /// The listener of `row` is on the other node's bus too, when it is
@@ -889,10 +924,6 @@ impl Host {
     async fn restart_y(&self) -> Result<(), String> {
         let name = self.y_runtime();
         let runtime = &self.runtimes[&name];
-        tokio::time::timeout(COLD.limit(), runtime.view.restart())
-            .await
-            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.limit()))?
-            .map_err(|e| format!("restart {name}: {e}"))?;
         let rows: Vec<Row> = self
             .state
             .lock()
@@ -902,6 +933,13 @@ impl Host {
             .filter(|(row, _)| row.at == Location::Y)
             .map(|(row, _)| row.clone())
             .collect();
+        for row in &rows {
+            self.said.forget(row);
+        }
+        tokio::time::timeout(COLD.limit(), runtime.view.restart())
+            .await
+            .map_err(|_| format!("restart {name}: did not finish within {:?}", COLD.limit()))?
+            .map_err(|e| format!("restart {name}: {e}"))?;
         for row in rows {
             self.settled(&row).await?;
         }
@@ -926,6 +964,7 @@ impl World for Host {
                     return self.announced(row).await;
                 }
             }
+            self.said.forget(row);
             self.state.lock().unwrap().rows.push((row.clone(), 0));
             self.reconcile().await?;
             self.settled(row).await?;
@@ -951,7 +990,8 @@ impl World for Host {
                 || self.row_state(label, &row.scope).is_none(),
                 &format!("{label} to unload"),
             )
-            .await
+            .await?;
+            self.said_stopped(&row).await
         })
     }
 
@@ -976,6 +1016,7 @@ impl World for Host {
             // `update`): it runs again once its snapshot moved past the one
             // it had, with the new config.
             let before = self.row_generation(&row.label, &row.scope);
+            self.said.forget(&row);
             self.reconcile().await?;
             until(
                 || {
@@ -1070,6 +1111,7 @@ impl World for Host {
                     &format!("{} to unload", row.label),
                 )
                 .await?;
+                self.said_stopped(row).await?;
             }
             // Gone from the other node too: a case counting the entries
             // the far side imported must not count the last case's.
