@@ -187,6 +187,10 @@ impl<W: Write + Send> Sender for LineSender<W> {
         self.0.released_meanwhile();
         sent
     }
+
+    fn max_message(&self) -> Option<usize> {
+        Some(self.1.max_message)
+    }
 }
 
 /// `message` and its newline, on the writer's handle while it has one.

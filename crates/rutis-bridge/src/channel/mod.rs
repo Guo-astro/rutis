@@ -34,6 +34,13 @@ impl std::fmt::Debug for Channel {
 pub trait Sender: Send {
     /// Send one message; blocks under backpressure.
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError>;
+
+    /// The largest message this sender takes, if it has a limit: a longer
+    /// one ends the channel. A session checks what it would send against
+    /// it first, so that a message over it fails only its own call (#675).
+    fn max_message(&self) -> Option<usize> {
+        None
+    }
 }
 
 pub trait Receiver: Send {

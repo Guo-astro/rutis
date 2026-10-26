@@ -96,6 +96,10 @@ impl Sender for WsSender {
         }
         self.0.outgoing.push_blocking(message)
     }
+
+    fn max_message(&self) -> Option<usize> {
+        Some(self.0.max_message)
+    }
 }
 
 struct WsReceiver(Arc<Shared>);

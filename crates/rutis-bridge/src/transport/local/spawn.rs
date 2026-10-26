@@ -867,6 +867,10 @@ impl Sender for EndedSender {
             }
         })
     }
+
+    fn max_message(&self) -> Option<usize> {
+        self.sender.max_message()
+    }
 }
 
 /// How the process ended, once it has. Readable from the reader thread,

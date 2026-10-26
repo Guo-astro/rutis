@@ -37,6 +37,10 @@ impl Connection {
         if import.kind == Kind::Plugin {
             return Err(not_home());
         }
+        // An object goes only to a far end that can call its methods.
+        if import.kind == Kind::Object && !self.supports("objects") {
+            return Err(self.object_refused());
+        }
         let identity = Arc::as_ptr(import) as usize;
         {
             let mut exports = self.0.exports.lock().unwrap();

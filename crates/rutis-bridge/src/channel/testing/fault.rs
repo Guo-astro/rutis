@@ -121,6 +121,10 @@ impl Sender for FaultSender {
             Mode::HalfOpen => Ok(()),
         }
     }
+
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
 }
 
 struct FaultReceiver {
