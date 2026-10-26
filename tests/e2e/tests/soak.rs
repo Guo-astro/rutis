@@ -1390,12 +1390,12 @@ impl<'a> Run<'a> {
                 .watch
                 .call(&mut self.host, service, method, json!(["greeting"]))
                 .unwrap_err();
-            // `watch` declares nothing: told to, not that it is missing (#676).
+            // `watch` declares nothing: told what to declare (#676).
             assert_eq!(
                 error,
                 format!(
-                    "the plugin uses {service} without declaring it in inject: add '{service}' \
-                     to its inject (rutis gives a plugin only the services it declares, running or not)"
+                    "service {service} is not available to this plugin, which does not declare it \
+                     in inject: add '{service}' to its inject"
                 )
             );
         }

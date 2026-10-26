@@ -122,6 +122,11 @@ pub struct Runtimes {
     /// connection an instance of a group (`listen` and `instances`).
     #[serde(default)]
     pub remote: Vec<RemoteRuntime>,
+    /// The local runtimes (by key) that rows enabled with their defaults,
+    /// the file not declaring them ([`HostConfig::enable_used_runtimes`]):
+    /// one that cannot start is a warning, its rows fail, the host runs.
+    #[serde(skip)]
+    pub implicit: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -414,6 +419,7 @@ impl HostConfig {
                 .collect();
             if let Some(first) = rows.first() {
                 language.enable_default(&mut self.runtimes);
+                self.runtimes.implicit.push(key.to_owned());
                 said.push(format!(
                     "rows use the {key} runtime ({first}{}), which runtimes does not declare: \
                      it runs with its defaults; declare \"runtimes\": {{ \"{key}\": {{}} }} to say so",
@@ -478,7 +484,19 @@ impl HostConfig {
     /// Add `other`'s runtimes (where this has none), listeners and rows.
     pub fn merge(&mut self, mut other: HostConfig) {
         for language in LANGUAGES {
+            let taken = !language.configured(&self.runtimes);
             language.merge(&mut self.runtimes, &mut other.runtimes);
+            // Taken as rows of the other enabled it: still implicit.
+            let key = language.key();
+            if taken
+                && other
+                    .runtimes
+                    .implicit
+                    .iter()
+                    .any(|implicit| implicit == key)
+            {
+                self.runtimes.implicit.push(key.to_owned());
+            }
         }
         self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
@@ -776,10 +794,19 @@ mod tests {
         let config = HostConfig::parse(&declared, Path::new("/srv/app/rutis.json")).unwrap();
         assert!(config.warnings.is_empty(), "{:?}", config.warnings);
         assert!(config.runtimes.bun.is_none());
+        assert!(config.runtimes.implicit.is_empty());
         assert_eq!(
             config.runtimes.py.unwrap().python.unwrap(),
             Path::new("/usr/bin/python3")
         );
+        // A `bun:` row enables Bun; what rows enable is recorded as such.
+        let bun = json!({ "rows": [{ "id": "b", "name": "bun:b" }] }).to_string();
+        let config = HostConfig::parse(&bun, Path::new("/srv/app/rutis.json")).unwrap();
+        assert_eq!(
+            config.runtimes.bun.as_ref().unwrap().project,
+            Path::new("/srv/app/.")
+        );
+        assert_eq!(config.runtimes.implicit, ["bun"]);
     }
 
     #[test]

@@ -79,41 +79,53 @@ impl Loader {
     /// failed, waits for its own runtime, waits for a service of this row
     /// (they inject each other), and so on. Empty when it waits for
     /// nothing, or its fiber is gone. Read from a diagnostics snapshot:
-    /// best effort.
+    /// best effort. For several copies, [`Loader::waits_of`] reads it once.
     pub fn waits(&self, entry: &EntryInfo) -> Vec<Wait> {
-        let Some(plugin) = entry.plugin else {
-            return Vec::new();
-        };
-        let (root, rows, records) = {
+        self.waits_of(&[entry]).pop().unwrap_or_default()
+    }
+
+    /// [`Loader::waits`] of each of `entries`, in order, from one snapshot
+    /// of the rows and one of the diagnostics (a host following every
+    /// waiting row reads them once per look).
+    pub fn waits_of(&self, entries: &[&EntryInfo]) -> Vec<Vec<Wait>> {
+        if entries.iter().all(|entry| entry.plugin.is_none()) {
+            return vec![Vec::new(); entries.len()];
+        }
+        // Each entry's instance (`None` outside instances), and the rows as
+        // each of those sees them.
+        let (root, scopes, rows, records) = {
             let state = self.inner.state.lock().unwrap();
             let Some(root) = state.last_root.clone() else {
-                return Vec::new();
+                return vec![Vec::new(); entries.len()];
             };
-            let scope = entry.instance.as_ref().and_then(|instance| {
-                state
-                    .instances
-                    .iter()
-                    .find(|(_, record)| record.plugin == instance.plugin)
-                    .map(|(number, _)| *number)
-            });
-            let rows = read_rows(&state, scope);
+            let scopes: Vec<Option<u64>> = entries
+                .iter()
+                .map(|entry| {
+                    entry.instance.as_ref().and_then(|instance| {
+                        state
+                            .instances
+                            .iter()
+                            .find(|(_, record)| record.plugin == instance.plugin)
+                            .map(|(number, _)| *number)
+                    })
+                })
+                .collect();
+            let mut rows: HashMap<Option<u64>, Vec<Read>> = HashMap::new();
+            for scope in &scopes {
+                rows.entry(*scope)
+                    .or_insert_with(|| read_rows(&state, *scope));
+            }
             let records: HashMap<PluginId, String> = state
                 .running
                 .iter()
                 .map(|(slot, running)| (running.view.id, slot.row.clone()))
                 .collect();
-            (root, rows, records)
+            (root, scopes, rows, records)
         };
-        let facts = facts(rows);
-        let fact_of = |id: &str| {
-            facts
-                .iter()
-                .find(|(row, _)| row == id)
-                .map(|(_, fact)| fact)
-        };
-        let own = fact_of(&entry.id)
-            .map(|fact| fact.provides.clone())
-            .unwrap_or_default();
+        let facts: HashMap<Option<u64>, Vec<(String, Fact)>> = rows
+            .into_iter()
+            .map(|(scope, rows)| (scope, facts(rows)))
+            .collect();
         let diagnostics = root.diagnostics();
         let fibers: HashMap<PluginId, &PluginDiagnostics> = diagnostics
             .plugins
@@ -135,7 +147,8 @@ impl Loader {
         };
         // Every name known to be provided or declared, for a misspelt one.
         let mut known: Vec<String> = facts
-            .iter()
+            .values()
+            .flatten()
             .flat_map(|(_, fact)| fact.provides.iter().cloned())
             .collect();
         known.extend(
@@ -148,50 +161,72 @@ impl Loader {
         known.sort_unstable();
         known.dedup();
 
-        missing(plugin)
-            .into_iter()
-            .map(|(key, status)| {
-                let service = self.service_name(&key).unwrap_or_else(|| key.describe());
-                if own_runtime(&key) {
-                    return Wait {
-                        service,
-                        reason: WaitReason::OwnRuntime,
-                    };
-                }
-                let reason = match status {
-                    DependencyStatus::Missing => {
-                        if let Some(why) = unexported(&root, &service) {
-                            WaitReason::Explained(why)
-                        } else {
-                            match facts.iter().find(|(id, fact)| {
-                                **id != entry.id && fact.provides.contains(&service)
-                            }) {
-                                Some((row, fact)) => provider(row, fact, &own, &missing, |key| {
-                                    self.service_name(key)
-                                }),
-                                None => WaitReason::NoProvider {
-                                    like: closest(&service, &known),
-                                },
-                            }
-                        }
-                    }
-                    DependencyStatus::ProviderInactive(_) => {
-                        // The binding's provider, and the row it belongs to.
-                        let row = diagnostics
-                            .bindings
-                            .iter()
-                            .find(|binding| binding.key == key)
-                            .and_then(|binding| row_of(binding.provider, &records, &fibers));
-                        match row.and_then(|row| fact_of(&row).map(|fact| (row, fact))) {
-                            Some((row, fact)) => {
-                                provider(&row, fact, &own, &missing, |key| self.service_name(key))
-                            }
-                            None => WaitReason::Other(status.to_string()),
-                        }
-                    }
-                    other => WaitReason::Other(other.to_string()),
+        entries
+            .iter()
+            .zip(scopes)
+            .map(|(entry, scope)| {
+                let Some(plugin) = entry.plugin else {
+                    return Vec::new();
                 };
-                Wait { service, reason }
+                let facts = &facts[&scope];
+                let fact_of = |id: &str| {
+                    facts
+                        .iter()
+                        .find(|(row, _)| row == id)
+                        .map(|(_, fact)| fact)
+                };
+                let own = fact_of(&entry.id)
+                    .map(|fact| fact.provides.clone())
+                    .unwrap_or_default();
+                missing(plugin)
+                    .into_iter()
+                    .map(|(key, status)| {
+                        let service = self.service_name(&key).unwrap_or_else(|| key.describe());
+                        if own_runtime(&key) {
+                            return Wait {
+                                service,
+                                reason: WaitReason::OwnRuntime,
+                            };
+                        }
+                        let named = |key: &TypeKey| self.service_name(key);
+                        let reason = match status {
+                            DependencyStatus::Missing => {
+                                if let Some(why) = unexported(&root, &service) {
+                                    WaitReason::Explained(why)
+                                } else {
+                                    match facts.iter().find(|(id, fact)| {
+                                        *id != entry.id && fact.provides.contains(&service)
+                                    }) {
+                                        Some((row, fact)) => {
+                                            provider(row, fact, &own, &missing, named)
+                                        }
+                                        None => WaitReason::NoProvider {
+                                            like: closest(&service, &known),
+                                        },
+                                    }
+                                }
+                            }
+                            DependencyStatus::ProviderInactive(_) => {
+                                // The binding's provider, and its row.
+                                let row = diagnostics
+                                    .bindings
+                                    .iter()
+                                    .find(|binding| binding.key == key)
+                                    .and_then(|binding| {
+                                        row_of(binding.provider, &records, &fibers)
+                                    });
+                                match row.and_then(|row| fact_of(&row).map(|fact| (row, fact))) {
+                                    Some((row, fact)) => {
+                                        provider(&row, fact, &own, &missing, named)
+                                    }
+                                    None => WaitReason::Other(status.to_string()),
+                                }
+                            }
+                            other => WaitReason::Other(other.to_string()),
+                        };
+                        Wait { service, reason }
+                    })
+                    .collect()
             })
             .collect()
     }
@@ -337,6 +372,23 @@ fn row_of(
     None
 }
 
+/// How messages name `key`, when the loader knows it: a row's runtime as
+/// `runtime <name>`, a service by its catalog name or the name it crosses
+/// between languages under; `None` for other keys (Rust types).
+pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option<String> {
+    if own_runtime(key) {
+        return key.name().map(|name| format!("runtime {name}"));
+    }
+    if let Some(name) = catalog.name_of(key) {
+        return Some(name);
+    }
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    if key.type_id() == std::any::TypeId::of::<dyn rutis_bridge::session::HostDispatch>() {
+        return key.name().map(str::to_owned);
+    }
+    None
+}
+
 /// Whether `key` is a row's own runtime ([`RuntimeRows`](crate::runtime::RuntimeRows)).
 fn own_runtime(key: &TypeKey) -> bool {
     #[cfg(feature = "runtimes")]
@@ -418,5 +470,23 @@ mod tests {
         // Too short to guess.
         assert_eq!(closest("ll", &known), None);
         assert_eq!(distance("ab", "ba"), 1);
+    }
+
+    /// Reports name a row's runtime and a service as rows do, and leave
+    /// Rust types to be described.
+    #[cfg(feature = "runtimes")]
+    #[test]
+    fn keys_are_named_as_rows_name_them() {
+        use super::key_name;
+        let mut catalog = crate::ServiceCatalog::new();
+        catalog.register::<u32>("counter");
+        let runtime = crate::runtime::RuntimeRows::key("py");
+        assert_eq!(key_name(&catalog, &runtime).as_deref(), Some("runtime py"));
+        let llm = rutis_bridge::session::host_key("llm").erase();
+        assert_eq!(key_name(&catalog, &llm).as_deref(), Some("llm"));
+        let counter = rutis::host::TypeKey::of::<u32>();
+        assert_eq!(key_name(&catalog, &counter).as_deref(), Some("counter"));
+        let other = rutis::host::TypeKey::of::<String>();
+        assert_eq!(key_name(&catalog, &other), None);
     }
 }

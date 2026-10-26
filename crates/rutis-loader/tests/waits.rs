@@ -3,9 +3,10 @@
 //! disabled, two rows that inject each other.
 #![cfg(feature = "runtimes")]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use rutis::host::{CtxHost, FiberState};
+use rutis::host::{CtxHost, ErrorKind, ErrorSink, FiberState};
 use rutis::{Ctx, Error};
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_loader::report::{EntryInfo, EntryStatus, Wait, WaitReason};
@@ -59,6 +60,11 @@ fn names(config: &Value, field: &str) -> Vec<String> {
 /// A loader with the plugin `provider`, which declares what its config
 /// says it provides; every name is shared by name, as in rutis-host.
 async fn loader() -> (Ctx, Loader) {
+    loader_in(Ctx::root().unwrap()).await
+}
+
+/// [`loader`] mounted at `root`.
+async fn loader_in(root: Ctx) -> (Ctx, Loader) {
     let mut builtins = Builtins::new();
     builtins.register("provider", |config: &Value| {
         Ok(Provider {
@@ -77,7 +83,6 @@ async fn loader() -> (Ctx, Loader) {
     );
     let plugin = LoaderPlugin::new(builtins, LoaderOptions::default());
     let loader = plugin.handle();
-    let root = Ctx::root().unwrap();
     root.plugin(plugin).await.unwrap();
     (root, loader)
 }
@@ -231,6 +236,40 @@ async fn rows_that_inject_each_other_say_so() {
                 services: vec!["bsvc".into()]
             }
         )]
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// A long wait's report (the kernel's, for an application embedding the
+/// loader) names what a row waits for as rows do: the service, not the
+/// key's type.
+/// guarantee: core/features.still-waiting
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_wait_is_reported_by_service_name() {
+    let sunk: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink: ErrorSink = {
+        let sunk = sunk.clone();
+        Arc::new(move |error: Arc<ErrorKind>| {
+            if matches!(*error, ErrorKind::StillWaiting { .. }) {
+                sunk.lock().unwrap().push(error.to_string());
+            }
+        })
+    };
+    let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+    root.report_waiting_after(Some(Duration::from_millis(100)));
+    let (root, loader) = loader_in(root).await;
+    let rows = json!([{ "id": "weather", "name": "provider", "inject": ["lmm"] }]);
+    loader.reconcile(layer(rows), None).await.unwrap();
+    let said = Guard(HANG_GUARD)
+        .eventually_with(
+            || sunk.lock().unwrap().first().cloned(),
+            "the report",
+            || format!("{:?}", sunk.lock().unwrap()),
+        )
+        .await;
+    assert_eq!(
+        said,
+        "plugin provider is still waiting after 0.1s for lmm: it starts once that is provided"
     );
     root.shutdown().await.unwrap();
 }

@@ -84,6 +84,37 @@ async fn a_plugin_waiting_long_for_its_deps_is_reported_once() {
     ctx.shutdown().await.unwrap();
 }
 
+/// Waiting again (its service gone after it started) is a new wait,
+/// reported again.
+/// guarantee: core/features.still-waiting
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_again_is_reported_again() {
+    let (ctx, sunk) = root(Some(Duration::from_millis(100)));
+    let view = ctx.plugin(Printer);
+    let reports = |n: usize| {
+        let sunk = sunk.clone();
+        within("the reports", async move {
+            while reported(&sunk).len() < n {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+    };
+    reports(1).await;
+    let greeting = ctx.provide(Greeting).unwrap();
+    within("printer to start", async {
+        while view.state().state != FiberState::Active {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    greeting.dispose().await.unwrap();
+    reports(2).await;
+    assert_eq!(view.state().state, FiberState::Pending);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(reported(&sunk).len(), 2);
+    ctx.shutdown().await.unwrap();
+}
+
 /// A wait shorter than the delay, or with reports off, is not reported.
 /// guarantee: core/features.still-waiting
 #[tokio::test(flavor = "multi_thread")]

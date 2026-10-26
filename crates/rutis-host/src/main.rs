@@ -370,8 +370,20 @@ async fn check(args: &[String]) -> Result<(), String> {
                 if let rutis_loader::LoaderError::NotFound { name } = error {
                     // A compiled language's row with no runtime declared:
                     // its binaries have to be named (#666).
+                    // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
+                    // remote runtime's rows.)
+                    let remote = config
+                        .runtimes
+                        .remote
+                        .iter()
+                        .any(|remote| name.starts_with(&format!("{}:", remote.name)));
                     let undeclared = languages::LANGUAGES.iter().find(|language| {
-                        name.starts_with(&format!("{}:", language.key()))
+                        let key = language.key();
+                        let named = name.starts_with(&format!("{key}:"))
+                            || (name.starts_with(&format!("{key}-")) && name.contains(':'));
+                        matches!(key, "go" | "swift")
+                            && named
+                            && !remote
                             && !language.configured(&config.runtimes)
                     });
                     match undeclared {
@@ -411,13 +423,31 @@ async fn check(args: &[String]) -> Result<(), String> {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
                         failed += 1;
-                        let names: Vec<&str> = undeclared
-                            .iter()
-                            .map(|requirement| requirement.service.as_str())
-                            .collect();
+                        // What no row declares, and what only disabled
+                        // rows do.
+                        let names = |only_disabled: bool| -> Vec<&str> {
+                            undeclared
+                                .iter()
+                                .filter(|requirement| {
+                                    matches!(requirement.supply, Supply::OnlyDisabled { .. })
+                                        == only_disabled
+                                })
+                                .map(|requirement| requirement.service.as_str())
+                                .collect()
+                        };
+                        let mut why = Vec::new();
+                        if !names(false).is_empty() {
+                            why.push(format!("nothing declares {}", names(false).join(", ")));
+                        }
+                        if !names(true).is_empty() {
+                            why.push(format!(
+                                "only disabled rows declare {}",
+                                names(true).join(", ")
+                            ));
+                        }
                         outln!(
-                            "{id} ({name}): cannot run with --strict: nothing declares {}",
-                            names.join(", ")
+                            "{id} ({name}): cannot run with --strict: {}",
+                            why.join("; ")
                         )
                     }
                     (false, _) => outln!(

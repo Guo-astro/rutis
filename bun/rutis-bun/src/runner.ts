@@ -91,12 +91,11 @@ export function methodsOf(object: unknown): Set<string> {
 export const oldHost = (name: string) =>
   `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
 
-// What a plugin using `name`, which its `inject` does not declare, is told
-// when the service is not there for it: rutis gives a plugin only the
-// services it declares, whether or not the service runs. The same in every
-// runtime.
+// What a plugin using `name`, which neither its `inject` nor its row's
+// declares, is told when the service is not there for it: what to declare,
+// not that it is missing (#676). The same in every runtime and testing tool.
 export const undeclaredUse = (name: string) =>
-  `the plugin uses ${name} without declaring it in inject: add '${name}' to its inject (rutis gives a plugin only the services it declares, running or not)`
+  `service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`
 
 export function scopedId(name: string, label?: string | null): string {
   if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)

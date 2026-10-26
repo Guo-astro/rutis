@@ -45,6 +45,9 @@ mod sealed {
     impl Sealed for crate::Ctx {}
 }
 
+/// Names a key for messages ([`CtxHost::name_keys_with`]), when it knows it.
+pub type KeyNamer = dyn Fn(&TypeKey) -> Option<String> + Send + Sync;
+
 /// The [`Ctx`] methods of a host: `use rutis::host::*;` to call them.
 pub trait CtxHost: sealed::Sealed {
     /// Identity of the fiber owning this context. Isolated contexts retain it.
@@ -110,6 +113,12 @@ pub trait CtxHost: sealed::Sealed {
     /// whole tree of this context's root; a plugin already waiting keeps
     /// the setting it started waiting with.
     fn report_waiting_after(&self, after: Option<Duration>);
+
+    /// Name keys in those reports with `namer`, for the keys it names (a
+    /// loader names the services its rows wait for as their rows do); the
+    /// first namer added that names a key wins, the others are described
+    /// ([`TypeKey::describe`]). Kept while the caller holds `namer`.
+    fn name_keys_with(&self, namer: &Arc<KeyNamer>);
 
     /// Read-only, best-effort snapshot of live fibers and services.
     ///

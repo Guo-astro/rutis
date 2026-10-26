@@ -402,7 +402,7 @@ async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
     ];
     fixture.loader.reconcile(layer(rows), None).await.unwrap();
     fixture
-        .expect("sneak notes: the plugin uses notes without declaring it in inject: add 'notes' to its inject (rutis gives a plugin only the services it declares, running or not)")
+        .expect("sneak notes: service notes is not available to this plugin, which does not declare it in inject: add 'notes' to its inject")
         .await;
     let said = Guard(HANG_GUARD * 3)
         .eventually_with(

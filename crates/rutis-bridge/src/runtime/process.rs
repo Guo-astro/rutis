@@ -488,17 +488,27 @@ impl Dispatch for Imports {
 
     fn invoke(&self, connection: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
-            let (host, row) = self
-                .hosts
-                .lock()
-                .unwrap()
-                .get(name)
-                .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
-                .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
+            let (host, row, unleased) = {
+                let hosts = self.hosts.lock().unwrap();
+                let (host, row) = hosts
+                    .get(name)
+                    .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
+                    .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
+                // Through the registration rows share, of a service rows
+                // lease for themselves (#676): the calling plugin does not
+                // declare it, so a method that needs the calling row says
+                // what to declare. A service registered for the whole
+                // process (a mount's) is called so by design.
+                let service = name_of(name);
+                let leased = row.is_none()
+                    && hosts.keys().any(|id| {
+                        id.split_once('\0').is_some_and(|(other, label)| {
+                            other == service && label.contains("\u{1}row:")
+                        })
+                    });
+                (host, row, leased.then(|| service.to_owned()))
+            };
             let process = self.process.get().cloned();
-            // Through the registration rows share, not a row's own lease:
-            // a method that needs the calling row says what to declare.
-            let unleased = row.is_none().then(|| name_of(name).to_owned());
             return with_calling(process, || {
                 crate::session::with_caller_row(row, || {
                     crate::session::with_unleased(unleased, || host.invoke(method, args))

@@ -45,7 +45,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `waiting for lmm (no row provides it; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
 | `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
 | `waiting for llm (row model, which provides it, is disabled)` | 提供它的行被禁用 |
-| `waiting for llm (row model's runtime py is down)` / `… is not running yet` | 提供它的行在等自己的运行时 |
+| `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | 提供它的行在等自己的运行时（宿主不知道远程运行时的状态，只写在等它） |
 | `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
 | `waiting for llm (row model waits too, for x)` | 提供它的行自己也在等 |
 | `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如节点行的 link 断了） |
@@ -117,7 +117,7 @@ rutis-host: warning: <行>: <服务> is declared only by row <被禁用的行>, 
 
 缺的服务名和某个已声明的名字只差一两个字符时，上面的告警和缺服务的说明后面加 `; did you mean <名字>?`。
 
-`check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`，以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
+`check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`（只有被禁用的行声明的写 `only disabled rows declare <服务>`），以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
 
 下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 写告警（0.17 里只是告警，退出码不变，`--strict` 也一样；0.18 起改为错误）：
 
@@ -126,8 +126,8 @@ rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b w
 rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
 ```
 
-- 几行的 `inject` 互相等对方提供的服务（一个环）：谁也起不来。
-- 几行在同一个作用域里声明提供同一个服务：只有先起来的那行提供，其余的失败。用 `isolate` 把名字隔离到各自作用域的行不算。
+- 几行的 `inject` 互相等对方提供的服务（一个环）：谁也起不来。只看只有一行提供的服务：还有别的行提供时，可以先从那一行起来，不算环。
+- 几行在同一个作用域里声明提供同一个服务：只有先起来的那行提供，其余的失败。用 `isolate` 把名字隔离到各自作用域的行不算；永远起不来的行（等着没有任何行提供的服务）不算。
 
 行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
 
@@ -308,7 +308,9 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
 ```
 
-`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算；`runtimes.remote` 里有同名运行时（Node 是有 `language: node` 的远程运行时）时不启用。Go 和 Swift 需要写明二进制，不会自动启用：这样的行在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。
+`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算；`runtimes.remote` 里有同名运行时（Node 是有 `language: node` 的远程运行时）时不启用。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`、`go-<二进制>:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。
+
+这样启用的运行时按默认设置起不来时（例如没有 `package.json`、没装 `@arcships/rutis-runtime`，或 Python 环境里没有 `rutis`），宿主不退出：stderr 写一条告警，说明原因和该怎么做（`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`），它的行和以前一样失败（`unresolved: no plugin named …`），其他行照常运行。在 `runtimes` 里写明的运行时起不来时，仍然启动失败。
 
 `node`、`py`、`bun`、`go`、`swift` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办（`go`、`swift` 是其每个运行时各自的），见 [运行时结束时](#运行时结束时)。
 

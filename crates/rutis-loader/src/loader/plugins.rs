@@ -177,10 +177,21 @@ impl DynPlugin for LoaderPlugin {
             // (events protocol §8).
             #[cfg(any(feature = "runtimes", feature = "peer"))]
             let bus = rutis_bridge::events::join_bus(ctx).map_err(Error::from)?;
+            // A long wait's report names what rows wait for as they do: a
+            // service by its name, a runtime as `runtime <name>` (#676).
+            let namer: Arc<rutis::host::KeyNamer> = {
+                let loader = Arc::downgrade(&self.loader.inner);
+                Arc::new(move |key: &rutis::host::TypeKey| {
+                    let inner = loader.upgrade()?;
+                    super::waits::key_name(&inner.catalog, key)
+                })
+            };
+            rutis::host::CtxHost::name_keys_with(ctx, &namer);
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);
             Ok(Effect::Disposer(Box::new(move || {
+                drop(namer);
                 #[cfg(any(feature = "runtimes", feature = "peer"))]
                 drop(bus);
                 #[cfg(feature = "runtimes")]

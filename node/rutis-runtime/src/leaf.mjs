@@ -56,11 +56,11 @@ function emittable(name) {
   return name
 }
 
-// What a leaf plugin using a service it does not declare in `inject` is
-// told when the service is not there for it: rutis gives a plugin only the
-// services it declares, whether or not the service runs. The same in every
-// runtime (Python, Bun, Go).
-export const UNDECLARED = name => `the plugin uses ${name} without declaring it in inject: add '${name}' to its inject (rutis gives a plugin only the services it declares, running or not)`
+// What a leaf plugin using a service that neither its `inject` nor its
+// row's declares is told when the service is not there for it: not that
+// it is missing, but what to declare (#676). The same in every runtime
+// and testing tool.
+export const UNDECLARED = name => `service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`
 
 // What a leaf plugin providing a service its `provides` does not declare
 // is told when the host, older than 0.12, mounted the runtime without
@@ -81,8 +81,8 @@ export function oncePerName(write) {
 // The Cordis plugin that runs a leaf plugin. Events are the Context's:
 // `context.on` owns listener cleanup through the plugin's fiber.
 // `undeclared(name)`: the plugin provides `name`, which its `provides` does
-// not declare.
-export function toCordis(spec, undeclared) {
+// not declare. `rowInject`: the names its row's own `inject` adds.
+export function toCordis(spec, undeclared, rowInject = []) {
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
@@ -91,9 +91,9 @@ export function toCordis(spec, undeclared) {
         use(name) {
           const value = context.get(name)
           if (value === undefined) {
-            // A service the plugin does not declare is not given to it,
-            // even while it runs: say so, not that it is missing (#676).
-            if (!(spec.inject ?? []).includes(name)) throw new Error(UNDECLARED(name))
+            // One neither the plugin nor its row declares: say what to
+            // declare, not that it is missing (#676).
+            if (!(spec.inject ?? []).includes(name) && !rowInject.includes(name)) throw new Error(UNDECLARED(name))
             throw new Error(`service ${name} is not available`)
           }
           return value

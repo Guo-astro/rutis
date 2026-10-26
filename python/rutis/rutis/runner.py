@@ -93,13 +93,13 @@ def removed(field: str) -> str:
 
 
 def undeclared_use(name: str) -> str:
-    """What a plugin using `name`, which its `inject` does not declare, is
-    told when the service is not there for it: rutis gives a plugin only the
-    services it declares, whether or not the service runs. The same in every
-    runtime."""
+    """What a plugin using `name`, which neither its `inject` nor its row's
+    declares, is told when the service is not there for it: what to declare,
+    not that it is missing (#676). The same in every runtime and testing
+    tool."""
     return (
-        f"the plugin uses {name} without declaring it in inject: add '{name}' to its inject "
-        "(rutis gives a plugin only the services it declares, running or not)"
+        f"service {name} is not available to this plugin, which does not declare it "
+        f"in inject: add '{name}' to its inject"
     )
 
 

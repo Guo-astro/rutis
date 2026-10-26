@@ -94,7 +94,7 @@ export function apply(ctx) {
   const runtime = new Runtime(dir)
   await runtime.dispatch('', 'rows.load', ['s', './sneaky.ts', {}, [], [], null])
   expect((globalThis as any).undeclared).toBe(undeclaredUse('tsvc'))
-  expect(undeclaredUse('tsvc')).toBe("the plugin uses tsvc without declaring it in inject: add 'tsvc' to its inject (rutis gives a plugin only the services it declares, running or not)")
+  expect(undeclaredUse('tsvc')).toBe("service tsvc is not available to this plugin, which does not declare it in inject: add 'tsvc' to its inject")
   await runtime.dispatch('', 'rows.load', ['d', './declared.ts', {}, [], [], null])
   expect((globalThis as any).missing).toBe('service gone is not available')
 })

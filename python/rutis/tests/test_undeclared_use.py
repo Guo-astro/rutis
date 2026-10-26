@@ -1,5 +1,5 @@
-"""A service a plugin does not declare in `inject` is not given to it,
-running or not: `use` says so and how to fix it, not that the service does
+"""A service neither the plugin nor its row declares in `inject`, and that
+is not there for it: `use` says what to declare, not that the service does
 not exist (#676). guarantee: sdk/undeclared-use"""
 
 import asyncio
@@ -46,8 +46,8 @@ class UndeclaredUse(background.TestCase):
         asyncio.run(run())
         self.assertEqual(
             seen["sneaky"],
-            "the plugin uses tsvc without declaring it in inject: add 'tsvc' to its inject "
-            "(rutis gives a plugin only the services it declares, running or not)",
+            "service tsvc is not available to this plugin, which does not declare it "
+            "in inject: add 'tsvc' to its inject",
         )
         self.assertEqual(seen["sneaky"], undeclared_use("tsvc"))
         self.assertEqual(seen["declared"], "service gone is not available")

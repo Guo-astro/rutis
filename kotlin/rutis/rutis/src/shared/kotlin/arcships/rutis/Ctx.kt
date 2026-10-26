@@ -34,7 +34,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
      * service has.
      */
     fun <I : Any> use(name: String, type: Class<I>): I {
-        if (name !in row.plugin.inject) throw IllegalArgumentException("the plugin uses $name without declaring it in inject: add '$name' to its inject (rutis gives a plugin only the services it declares, running or not)")
+        if (name !in row.plugin.inject) throw IllegalArgumentException("service $name is not available to this plugin, which does not declare it in inject: add '$name' to its inject")
         val factory = Tables.clientFactory(type)
             ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)

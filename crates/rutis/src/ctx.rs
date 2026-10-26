@@ -39,6 +39,9 @@ pub(crate) struct Shared {
     /// How long a plugin waits for its services before the error sink is
     /// told which ones (`CtxHost::report_waiting_after`); `None`: never.
     pub waiting_report: Mutex<Option<std::time::Duration>>,
+    /// What names keys in those reports (`CtxHost::name_keys_with`), held
+    /// by whoever added them.
+    pub key_namers: Mutex<Vec<std::sync::Weak<crate::host::KeyNamer>>>,
 }
 
 pub(crate) struct CtxInner {
@@ -1051,6 +1054,7 @@ impl crate::host::CtxHost for Ctx {
             closing: AtomicBool::new(false),
             shutdown_task: Mutex::new(None),
             waiting_report: Mutex::new(Some(crate::fiber::waiting::DEFAULT_REPORT_AFTER)),
+            key_namers: Mutex::new(Vec::new()),
         });
         let root_fiber = spawn_fiber(&shared, None, None, true);
         root_fiber.ctx.clone()
@@ -1097,6 +1101,12 @@ impl crate::host::CtxHost for Ctx {
 
     fn report_waiting_after(&self, after: Option<std::time::Duration>) {
         *self.0.shared.waiting_report.lock().unwrap() = after;
+    }
+
+    fn name_keys_with(&self, namer: &Arc<crate::host::KeyNamer>) {
+        let mut namers = self.0.shared.key_namers.lock().unwrap();
+        namers.retain(|namer| namer.strong_count() > 0);
+        namers.push(Arc::downgrade(namer));
     }
 
     fn diagnostics(&self) -> RuntimeDiagnostics {

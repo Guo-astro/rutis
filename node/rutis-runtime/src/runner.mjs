@@ -364,24 +364,30 @@ const undeclared = name => {
   if (fibers && !announce) tellOldHost(name)
 }
 
-async function pluginOf(entry) {
+// `rowInject`: the names the row's own `inject` adds, which a leaf plugin
+// may use too.
+async function pluginOf(entry, rowInject = []) {
   entry = located(entry)
   const declared = await declaredOf(entry, described)
-  return isLeaf(declared) ? toCordis(declared, undeclared) : declared
+  return isLeaf(declared) ? toCordis(declared, undeclared, rowInject) : declared
 }
 
 // A plugin definition this runtime handed over, back as a row's entry (a
 // copy) or to be described: a leaf plugin, or a Cordis plugin by Cordis's
 // own rule, a function or a class, or an object with `apply`. A leaf one is
-// wrapped once, so its copies are one plugin in Cordis.
+// wrapped once per row `inject` (`rowInject`), so its copies are one plugin
+// in Cordis.
 const isCordisPlugin = value => typeof value === 'function' || (value !== null && typeof value === 'object' && typeof value.apply === 'function')
 const wrappedDefinitions = new WeakMap()
-function definedPlugin(value) {
+function definedPlugin(value, rowInject = []) {
   if (isLeaf(value)) {
-    let wrapped = wrappedDefinitions.get(value)
+    let wrappings = wrappedDefinitions.get(value)
+    if (!wrappings) wrappedDefinitions.set(value, wrappings = new Map())
+    const key = rowInject.join('\0')
+    let wrapped = wrappings.get(key)
     if (!wrapped) {
-      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared)
-      wrappedDefinitions.set(value, wrapped)
+      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared, rowInject)
+      wrappings.set(key, wrapped)
     }
     return wrapped
   }
@@ -477,7 +483,7 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     if (owner || slots.has(id)) throw new Error(`service ${id} is already exported${owner ? ` by row ${owner[0]}` : ''}`)
   }
   // A module's path, or a plugin definition this runtime handed over.
-  const plugin = typeof entry === 'string' ? await pluginOf(entry) : definedPlugin(entry)
+  const plugin = typeof entry === 'string' ? await pluginOf(entry, inject ?? []) : definedPlugin(entry, inject ?? [])
   let scope = ctx
   for (const [name, label] of isolate ?? []) {
     scopedId(name, label)

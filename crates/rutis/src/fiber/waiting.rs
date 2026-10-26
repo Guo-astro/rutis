@@ -117,10 +117,26 @@ fn report(fiber: &Arc<FiberInner>, generation: u64, after: Duration) {
     if missing.is_empty() {
         return;
     }
+    // By the names a namer gives them (a loader's services), else described.
+    let namers: Vec<Arc<crate::host::KeyNamer>> = shared
+        .key_namers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect();
     let error = ErrorKind::StillWaiting {
         plugin: fiber.name.clone(),
         seconds: after.as_secs_f64(),
-        missing: missing.iter().map(|key| key.describe()).collect(),
+        missing: missing
+            .iter()
+            .map(|key| {
+                namers
+                    .iter()
+                    .find_map(|namer| namer(key))
+                    .unwrap_or_else(|| key.describe())
+            })
+            .collect(),
     };
     (shared.error_sink)(Arc::new(error));
 }

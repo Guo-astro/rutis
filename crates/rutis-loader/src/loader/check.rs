@@ -347,14 +347,19 @@ impl Loader {
             }
         }
 
-        // Several rows that start declaring one name in one scope.
+        // Several rows that start declaring one name in one scope; a row
+        // waiting for a service nothing provides never starts.
         // (service, isolation label, instanced group) → rows.
         type Scope<'a> = (&'a str, Option<String>, Option<&'a str>);
         let mut declared_in: BTreeMap<Scope, Vec<&str>> = BTreeMap::new();
         for (id, wanted, declared) in &declared_by {
-            let starts = rows
-                .iter()
-                .any(|row| &row.id == id && matches!(row.status, RowStatus::Checked { .. }));
+            let starts = rows.iter().any(|row| {
+                &row.id == id
+                    && matches!(&row.status, RowStatus::Checked { requires, .. }
+                    if !requires.iter().any(|requirement| {
+                        matches!(requirement.supply, Supply::Missing { .. })
+                    }))
+            });
             let (true, true, Ok(declared)) = (*wanted, starts, declared) else {
                 continue;
             };
@@ -423,21 +428,16 @@ fn cycles(rows: &[RowCheck]) -> Vec<Vec<CycleLink>> {
             let Supply::Provided(by) = &requirement.supply else {
                 continue;
             };
-            let only_rows = by
-                .iter()
-                .all(|provider| matches!(provider, Provider::Row(_)));
-            if !only_rows {
+            // Only a service one row alone provides: with another provider
+            // the row may start from that one.
+            let [Provider::Row(id)] = by.as_slice() else {
                 continue;
-            }
-            for provider in by {
-                if let Provider::Row(id) = provider {
-                    if let Some(to) = index(id) {
-                        edges
-                            .entry(from)
-                            .or_default()
-                            .push((requirement.service.clone(), to));
-                    }
-                }
+            };
+            if let Some(to) = index(id) {
+                edges
+                    .entry(from)
+                    .or_default()
+                    .push((requirement.service.clone(), to));
             }
         }
     }

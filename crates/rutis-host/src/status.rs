@@ -12,7 +12,7 @@ use crate::outln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
 use rutis_loader::peer::PeerResolver;
-use rutis_loader::report::{EntryStatus, Wait, WaitReason};
+use rutis_loader::report::{EntryInfo, EntryStatus, Wait, WaitReason};
 use rutis_loader::Loader;
 
 use crate::languages::BinaryHost;
@@ -97,7 +97,9 @@ fn why(reason: &WaitReason, runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> S
         }
         WaitReason::ProviderRuntime { row, runtime: name } => match runtime(name) {
             Some(RuntimeState::Down(_)) => format!("row {row}'s runtime {name} is down"),
-            _ => format!("row {row}'s runtime {name} is not running yet"),
+            Some(_) => format!("row {row}'s runtime {name} is not running yet"),
+            // One the host does not run (a remote one): its state unknown.
+            None => format!("row {row} waits for its runtime {name}"),
         },
         WaitReason::Cycle { row, service } => {
             format!("row {row} waits for {service} from this row: they inject each other")
@@ -308,7 +310,16 @@ impl Shown {
         let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
         let mut links = BTreeMap::new();
-        for entry in loader.entries() {
+        let entries = loader.entries();
+        // What every waiting row waits for, from one snapshot per look.
+        let pending = |entry: &EntryInfo| matches!(&entry.status, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending);
+        let waiting: Vec<&EntryInfo> = entries.iter().filter(|entry| pending(entry)).collect();
+        let mut waits = match waiting.is_empty() {
+            true => Vec::new(),
+            false => loader.waits_of(&waiting),
+        }
+        .into_iter();
+        for entry in &entries {
             let key = match &entry.instance {
                 Some(instance) => format!("{} in {:?}", entry.id, instance.plugin),
                 None => entry.id.clone(),
@@ -331,11 +342,9 @@ impl Shown {
                 let ready = matches!(state, LinkState::Ready { .. });
                 links.insert(key.clone(), (ready, printed));
             }
-            let line = match &entry.status {
-                EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending => {
-                    describe_waits(&loader.waits(&entry), runtime)
-                }
-                status => describe(status),
+            let line = match pending(entry) {
+                true => describe_waits(&waits.next().unwrap_or_default(), runtime),
+                false => describe(&entry.status),
             };
             rows.insert(key, line);
         }
@@ -555,10 +564,13 @@ mod tests {
     /// guarantee: host/row-state-lines
     #[test]
     fn a_waiting_row_says_what_it_waits_for_and_why() {
-        let down = |name: &str| {
-            (name == "py").then(|| {
-                RuntimeState::Down("runtime process exited with signal: 9 (SIGKILL)".into())
-            })
+        // `py` down, `node` starting, others not the host's (remote).
+        let down = |name: &str| match name {
+            "py" => Some(RuntimeState::Down(
+                "runtime process exited with signal: 9 (SIGKILL)".into(),
+            )),
+            "node" => Some(RuntimeState::Starting),
+            _ => None,
         };
         let row = |row: &str| row.to_owned();
         let cases = [
@@ -604,6 +616,16 @@ mod tests {
                     },
                 )],
                 "waiting for llm (row model's runtime node is not running yet)",
+            ),
+            (
+                vec![Wait::new(
+                    "llm",
+                    WaitReason::ProviderRuntime {
+                        row: row("model"),
+                        runtime: "gpu".into(),
+                    },
+                )],
+                "waiting for llm (row model waits for its runtime gpu)",
             ),
             (
                 vec![Wait::new(

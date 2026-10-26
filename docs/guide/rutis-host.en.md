@@ -45,7 +45,7 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | `waiting for lmm (no row provides it; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
 | `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
 | `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled |
-| `waiting for llm (row model's runtime py is down)` / `… is not running yet` | The row that provides it waits for its own runtime |
+| `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | The row that provides it waits for its own runtime (a remote runtime's state the host does not know: it only says it waits) |
 | `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | Two rows `inject` each other's services; neither starts |
 | `waiting for llm (row model waits too, for x)` | The row that provides it waits itself |
 | `waiting for llm (row model is starting)` / `(row model has not provided it)` | The row that provides it is starting; or runs but has not provided it (a link row whose link is down, say) |
@@ -117,7 +117,7 @@ rutis-host: warning: <row>: <service> is declared only by row <disabled row>, wh
 
 When a missing name is a character or two from a declared one, the warnings above and the line saying what to do about a missing service end with `; did you mean <name>?`.
 
-`check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>`, and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
+`check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>` (`only disabled rows declare <service>` for one only disabled rows declare), and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
 
 In two more cases every row says `ok` but some rows will not start, and `check` warns on stderr (in 0.17 only a warning, the exit status unchanged, with `--strict` too; an error from 0.18):
 
@@ -126,8 +126,8 @@ rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b w
 rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
 ```
 
-- Rows whose `inject` wait for each other's services (a cycle): none of them starts.
-- Rows declaring the same service in one scope: only the first to start provides it, the others fail. Rows that `isolate` the name, each in a scope of its own, do not count.
+- Rows whose `inject` wait for each other's services (a cycle): none of them starts. Only services one row alone provides count: with another provider a row may start from that one, which is no cycle.
+- Rows declaring the same service in one scope: only the first to start provides it, the others fail. Rows that `isolate` the name, each in a scope of its own, do not count. Rows that can never start (waiting for a service no row provides) do not count either.
 
 Rows using a language whose runtime `runtimes` does not declare enable that runtime with its defaults, with a warning (see [`runtimes`](#runtimes)).
 
@@ -308,7 +308,9 @@ Rows using a language that `runtimes` does not declare (a `py:llmbox` row withou
 rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
 ```
 
-`py:` rows enable `py`, `bun:` rows `bun`, and JavaScript or TypeScript files named by a path or a `file:` URL (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`) `node`; an npm package name is not guessed (it may be another resolver's). Disabled rows do not count, and a runtime under `runtimes.remote` of that name (for Node, a remote runtime of `language: node`) keeps its rows. Go and Swift need their binaries named and are never enabled so: for such a row, `check` says to declare `runtimes.go` (`runtimes.swift`).
+`py:` rows enable `py`, `bun:` rows `bun`, and JavaScript or TypeScript files named by a path or a `file:` URL (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`) `node`; an npm package name is not guessed (it may be another resolver's). Disabled rows do not count, and a runtime under `runtimes.remote` of that name (for Node, a remote runtime of `language: node`) keeps its rows. Go and Swift need their binaries named and are never enabled so: for such a row (`go:<plugin>`, `go-<binary>:<plugin>`), `check` says to declare `runtimes.go` (`runtimes.swift`).
+
+A runtime enabled so that cannot start with its defaults (no `package.json`, `@arcships/rutis-runtime` not installed, or no `rutis` in the Python environment, say) does not stop the host: a warning on stderr says why and what to do (`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`), its rows fail as before (`unresolved: no plugin named …`), and the other rows run. A runtime declared under `runtimes` that cannot start still fails the start.
 
 `restart` of `node`, `py`, `bun`, `go` and `swift` (`"no"`, the default; `"on-failure"`; `"exit"`) says what happens when the runtime's process ends on its own (for `go` and `swift`, each of their runtimes'); see [When a runtime ends](#when-a-runtime-ends).
 

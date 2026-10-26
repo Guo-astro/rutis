@@ -369,6 +369,10 @@ async fn rows_that_inject_each_other_are_a_cycle() {
             { "id": "c", "name": "plain", "config": { "requires": ["asvc"], "provides": ["csvc"] } },
             { "id": "user", "name": "plain", "config": { "requires": ["asvc"] } },
             { "id": "clock-user", "name": "plain", "config": { "requires": ["clock"] } },
+            // `p` may start from `q2`, which needs nothing: no cycle.
+            { "id": "p", "name": "plain", "config": { "requires": ["qsvc"], "provides": ["psvc"] } },
+            { "id": "q", "name": "plain", "config": { "requires": ["psvc"], "provides": ["qsvc"] } },
+            { "id": "q2", "name": "plain", "config": { "provides": ["qsvc"] } },
         ])))
         .await;
     let cycles: Vec<Vec<(String, String, String)>> = report
@@ -415,6 +419,8 @@ async fn rows_declaring_one_service_in_one_scope_clash() {
             { "id": "two", "name": "plain", "config": { "provides": ["llm", "clock"] } },
             { "id": "own", "name": "plain", "isolate": { "clock": true }, "config": { "provides": ["clock"] } },
             { "id": "off", "name": "plain", "disabled": true, "config": { "provides": ["llm"] } },
+            // Waits for what nothing provides: it never starts.
+            { "id": "stuck", "name": "plain", "config": { "provides": ["llm"], "requires": ["nowhere"] } },
         ])))
         .await;
     let clashes: Vec<(String, Vec<String>)> = report
@@ -426,7 +432,9 @@ async fn rows_declaring_one_service_in_one_scope_clash() {
         clashes,
         [("llm".to_owned(), vec!["one".to_owned(), "two".to_owned()])]
     );
-    assert_eq!(report.failing().count(), 0);
+    // Only `stuck` fails: nothing provides what it waits for.
+    let failing: Vec<&str> = report.failing().map(|row| row.id.as_str()).collect();
+    assert_eq!(failing, ["stuck"]);
 }
 
 /// The only row declaring a service is disabled while rows that declare
