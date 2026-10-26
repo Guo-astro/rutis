@@ -90,6 +90,41 @@ impl Error {
         graph_root(graph.as_ref()?)?.get("stack")?.as_str()
     }
 
+    /// This error with `site` on its root node, unless it has one already
+    /// (the first hop that recorded it wins). Errors without an error graph
+    /// are returned as they are.
+    pub fn with_site(self, site: &Site) -> Self {
+        let Self::Remote {
+            name,
+            message,
+            graph: Some(mut graph),
+        } = self
+        else {
+            return self;
+        };
+        let root = graph
+            .get("root")
+            .filter(|root| root.get("type").and_then(|t| t.as_str()) == Some("reference"))
+            .and_then(|root| root.get("value"))
+            .and_then(|index| index.as_u64());
+        if let Some(node) = root
+            .and_then(|index| graph.get_mut("nodes")?.get_mut(index as usize))
+            .and_then(|node| node.as_object_mut())
+            .filter(|node| node.get("type").and_then(|t| t.as_str()) == Some("error"))
+        {
+            if !node.contains_key("site") {
+                if let Ok(site) = serde_json::to_value(site) {
+                    node.insert("site".into(), site);
+                }
+            }
+        }
+        Self::Remote {
+            name,
+            message,
+            graph: Some(graph),
+        }
+    }
+
     /// Which row the error came from and what it was doing, as rutis
     /// recorded it where the error crossed (`docs/design-diagnostics-2026-10-26.md`
     /// §4.1). For whoever reads the output and for the host; the SDKs do not
@@ -117,6 +152,32 @@ pub struct Site {
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
+}
+
+impl Site {
+    /// The row `row` doing `doing` (`apply`, `cleanup`).
+    pub fn new(row: impl Into<String>, doing: impl Into<String>) -> Self {
+        Self {
+            row: row.into(),
+            doing: doing.into(),
+            service: None,
+            method: None,
+            event: None,
+        }
+    }
+
+    /// The row `row` serving a call to `service.method`.
+    pub fn call(
+        row: impl Into<String>,
+        service: impl Into<String>,
+        method: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: Some(service.into()),
+            method: Some(method.into()),
+            ..Self::new(row, "call")
+        }
+    }
 }
 
 /// The node a graph's root refers to.

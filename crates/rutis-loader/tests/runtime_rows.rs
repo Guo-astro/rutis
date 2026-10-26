@@ -16,7 +16,7 @@ use rutis::host::{
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_bridge::session::{settle, Reply, Site, Value as RpcValue};
 use rutis_loader::report::{EntryStatus, LoaderChanged, RowStatus, Supply};
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 use rutis_loader::{
@@ -1244,6 +1244,55 @@ async fn a_failed_row_keeps_the_plugins_error() {
     );
     let stack = thrown.stack().expect("a stack");
     assert!(stack.contains("broken.mjs"), "{stack}");
+    assert_eq!(thrown.site(), Some(Site::new("b", "apply")));
+    root.shutdown().await.unwrap();
+}
+
+const THROWER: &str = r#"
+export const name = 'thrower'
+export function apply(ctx) {
+  ctx.provide('weather', {
+    async tomorrow() { throw new Error('no forecast') },
+    today() { throw new Error('no sky') },
+  })
+}
+"#;
+
+/// An error a row's service method throws records which row it came from
+/// and which `service.method` it was serving, for the output and the host;
+/// the plugin's own error stays as it was (#677).
+/// guarantee: loader/error-site
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_from_a_service_method_says_where_it_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let thrower = dir.path().join("thrower.mjs");
+    std::fs::write(&thrower, THROWER).unwrap();
+    let probe = Probe::default();
+    let (root, loader, _runtime) = interop_loader(&probe).await;
+    loader
+        .reconcile(
+            layer(vec![row("w", &thrower, json!({}), json!(null))]),
+            None,
+        )
+        .await
+        .unwrap();
+    let key = host_key("weather");
+    until(|| root.get_at(&key).is_some(), "the weather service").await;
+    let weather = root.get_at(&key).unwrap();
+    for (method, message) in [("tomorrow", "no forecast"), ("today", "no sky")] {
+        let reply = match weather.invoke(method, json!([]).into()) {
+            Ok(value) => settle(value).await,
+            Err(error) => Err(error),
+        };
+        let error = reply.expect_err("the method throws");
+        assert_eq!(error.to_string(), format!("Error: {message}"));
+        assert_eq!(
+            error.site(),
+            Some(Site::call("w", "weather", method)),
+            "{method}"
+        );
+    }
+    drop(weather);
     root.shutdown().await.unwrap();
 }
 

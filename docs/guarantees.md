@@ -340,6 +340,7 @@ PR 模板中有对应的检查项。
 | `loader/self-dispose` | loader §十三、§十六 P5 | 插件卸载自己（`dispose_self`）时，loader 把它的行设为 disabled、持久化，并发 `SelfDisposed`；loader 自己发起的卸载和分组级联不算；没有可编辑层时报告失败；Cordis 插件卸载自己同样结束它的行 | 契约行为 | 已验证 | `rutis-loader/tests/lifecycle.rs::a_plugin_that_disposes_itself_disables_its_row`、`::loader_disposals_are_not_self_disposals`、`::without_an_editable_layer_the_failure_is_reported`、`rutis-loader/tests/runtime_rows.rs::a_plugin_that_disposes_itself_ends_its_row` | 实例里的副本见 `loader/instance-copy-dispose-self` |
 | `loader/gated-row-failure` | 多语言 §四 | 带自己 `inject` 列表的行，插件 apply 失败时以该错误失败，与不带的同一行一致，各运行时皆然（Cordis 运行时把它放在门控 fiber 后运行；#584）；节点代对端托管的插件带 `inject` 列表时，装载同样以该错误失败 | 契约行为 | 已验证 | `rutis-loader/tests/runtime_rows.rs::a_gated_row_fails_with_its_plugins_error`、`node/rutis-runtime/test/rows-gated.test.mjs`、事件一致性用例 `rutis/row-failed-gated`（每个语言列）、节点一致性（`rutis_bridge::testing::node`，Cordis 与 rutis 节点） | |
 | `loader/row-failure-keeps-the-error` | [诊断设计](design-diagnostics-2026-10-26.md) §4.2 | 行失败时保存插件抛出的原错误，不转成字符串：显示的是插件自己的话（没有 `plugin failed: ` 前缀），宿主用 `rutis_bridge::thrown` 读出错误名、消息与插件自己的堆栈（#677） | 契约行为 | 已验证 | `rutis-loader/tests/runtime_rows.rs::a_failed_row_keeps_the_plugins_error` | Python、Go、Swift、Kotlin 的行与 `site` 随 #677 后续步骤补列 |
+| `loader/error-site` | [诊断设计](design-diagnostics-2026-10-26.md) §4.1 | 行的服务方法、`apply`、清理、监听器抛出的错误，由 rutis 在边界上记下它来自哪一行、在做什么（调用的 `服务.方法`、`apply`、`cleanup`、监听的事件），作为错误节点的 `site`；已有的不覆盖；插件自己的错误名与消息不变（#677） | 契约行为 | 已验证 | `rutis-loader/tests/runtime_rows.rs::an_error_from_a_service_method_says_where_it_came_from`、`::a_failed_row_keeps_the_plugins_error`、`rutis-bridge` 单元测试 `events::errors::tests::a_listener_error_records_its_row_and_event` | 实例里的行名（`weather in phone-1`）与各语言列随 #677 后续步骤补上 |
 | `loader/volatile-in-place` | loader §十六 P5 | 只改了 schema 中标 `x-volatile` 的字段时，loader 存下新配置、不重启，把变化交给插件（Rust 插件收到 `VolatileUpdate`，Cordis 插件就地收到）；变化不会丢 | 契约行为 | 已验证 | `rutis-loader/tests/lifecycle.rs::volatile_fields_change_in_place`、`rutis-loader/tests/runtime_rows.rs::volatile_changes_reach_cordis_in_place`、`::volatile_changes_are_never_dropped`、`rutis-loader/src/volatile.rs::tests::finds_paths_through_refs_and_compares` | |
 | `loader/closed-after-shutdown` | loader §七「失败语义」 | 宿主关闭后，loader 的修改和 `flush` 都返回 `Closed`，不再持久化；创建实例从调用 root 关闭起即返回 `Closed` | 契约行为 | 已验证 | `rutis-loader/tests/loader.rs::edits_after_shutdown_are_closed`、`rutis-loader/tests/regressions.rs::flush_after_shutdown_is_closed`、`rutis-loader/tests/instances.rs::creating_an_instance_is_closed_as_soon_as_root_shutdown_starts` | |
 | `loader/edits-serialized` | loader §六「锁规则」 | 修改串行执行：同一行上同时发起的 `update` 和 `remove` 结果确定（`update` 先执行，或找不到行），不死锁；插件在自己的 apply 里调用 loader（如 `create_instance`）不死锁 | 契约行为 | 已验证 | `rutis-loader/tests/loader.rs::concurrent_edits_do_not_deadlock`、`rutis-loader/tests/instances.rs::nested_instances_are_created_from_inside_and_read_outer_services` | |
@@ -405,9 +406,9 @@ PR 模板中有对应的检查项。
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 1 | 1 | 0 | 0 | 2 |
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
-| `loader/*`（§14） | 36 | 4 | 0 | 0 | 40 |
+| `loader/*`（§14） | 37 | 4 | 0 | 0 | 41 |
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 150 | 12 | 1 | 3 | 166 |
+| 合计 | 151 | 12 | 1 | 3 | 167 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 

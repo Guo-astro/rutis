@@ -37,8 +37,22 @@ pub fn to_session(error: &ErrorKind) -> Error {
     if let ErrorKind::ListenersFailed { name, errors } = error {
         return aggregate(name, errors);
     }
-    if let ErrorKind::ListenerFailed { error, .. } = error {
-        return to_session(error);
+    if let ErrorKind::ListenerFailed {
+        name,
+        listener,
+        error,
+    } = error
+    {
+        // The kernel labels a row's listener `row <id>`: the error records
+        // that row and the event it was listening to (#677).
+        let error = to_session(error);
+        return match listener.strip_prefix("row ") {
+            Some(row) => error.with_site(&crate::session::Site {
+                event: Some(name.clone()),
+                ..crate::session::Site::new(row, "listener")
+            }),
+            None => error,
+        };
     }
     if let ErrorKind::SyncEventPanicked(inner) = error {
         return to_session(inner);
@@ -203,5 +217,26 @@ mod tests {
         assert_eq!(second["code"], "Busy");
         // The child's data moved with it.
         assert_eq!(second["data"], json!({ "type": "data", "value": [1] }));
+    }
+
+    /// A row's listener that fails records the row and the event (#677).
+    #[test]
+    fn a_listener_error_records_its_row_and_event() {
+        let thrown = crate::exports::failure("KeyError", "KeyError", "'region'".into(), None);
+        let failed = |listener: &str| ErrorKind::ListenerFailed {
+            name: "weather/asked".into(),
+            listener: listener.into(),
+            error: Arc::new(to_cordis(thrown.clone()).into_kind()),
+        };
+        let site = to_session(&failed("row weather")).site().unwrap();
+        assert_eq!(
+            site,
+            crate::session::Site {
+                event: Some("weather/asked".into()),
+                ..crate::session::Site::new("weather", "listener")
+            }
+        );
+        // A listener that is not a row's records nothing.
+        assert_eq!(to_session(&failed("plugin printer")).site(), None);
     }
 }

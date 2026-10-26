@@ -23,6 +23,8 @@ pub struct RowService {
     methods: Value,
     provider: Option<String>,
     owner: Option<CallerRow>,
+    /// The service's name, for the site of the errors its methods throw.
+    service: Option<String>,
 }
 
 impl RowService {
@@ -33,7 +35,23 @@ impl RowService {
             methods,
             provider: None,
             owner: None,
+            service: None,
         }
+    }
+
+    /// The name it is provided under: an error a method throws records
+    /// the row and `service.method` it came from (`Site`, #677).
+    pub fn named(mut self, service: impl Into<String>) -> Self {
+        self.service = Some(service.into());
+        self
+    }
+
+    /// Where an error of `method` comes from, when the row and the service
+    /// are known.
+    fn site(&self, method: &str) -> Option<crate::session::Site> {
+        let row = self.owner.as_ref()?.id();
+        let service = self.service.as_deref()?;
+        Some(crate::session::Site::call(row, service, method))
     }
 
     /// Who provides it, for messages ("row storage"; see
@@ -70,24 +88,37 @@ impl HostDispatch for RowService {
         match self.methods.get(method).and_then(Value::as_str) {
             Some("async") => {
                 let connection = target.clone();
+                let site = self.site(method);
                 let (handle, method) = (self.handle.clone(), method.to_owned());
                 let call = async move {
-                    crate::runtime::rpc::settle(
-                        connection.invoke_async(&handle, &method, args).await?,
-                    )
-                    .await
+                    let settled = async {
+                        crate::runtime::rpc::settle(
+                            connection.invoke_async(&handle, &method, args).await?,
+                        )
+                        .await
+                    };
+                    settled.await.map_err(|error| match &site {
+                        Some(site) => error.with_site(site),
+                        None => error,
+                    })
                 };
                 Ok(match source {
                     Some(source) => RpcValue::future(target.forward_async(&source, call)),
                     None => RpcValue::future(call),
                 })
             }
-            Some(_) => match source {
-                Some(source) => {
-                    target.forward(&source, || target.invoke(&self.handle, method, args))
-                }
-                None => target.invoke(&self.handle, method, args),
-            },
+            Some(_) => {
+                let reply = match source {
+                    Some(source) => {
+                        target.forward(&source, || target.invoke(&self.handle, method, args))
+                    }
+                    None => target.invoke(&self.handle, method, args),
+                };
+                reply.map_err(|error| match self.site(method) {
+                    Some(site) => error.with_site(&site),
+                    None => error,
+                })
+            }
             None => Err(crate::runtime::Error::Value(format!(
                 "unknown service method {}.{method}",
                 self.handle
@@ -189,6 +220,7 @@ fn row_slot(
     methods: Arc<Mutex<Value>>,
 ) {
     let named = provider.to_owned();
+    let service = name.to_owned();
     let holder = key.clone();
     let owner = projection.weak();
     projection.service_keyed_occupied::<dyn HostDispatch>(
@@ -200,7 +232,8 @@ fn row_slot(
             Arc::new(
                 RowService::new(process, handle, methods)
                     .provided_by(named.clone())
-                    .owned_by(row),
+                    .owned_by(row)
+                    .named(service.clone()),
             )
         },
         provider.to_owned(),

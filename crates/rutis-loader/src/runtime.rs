@@ -72,6 +72,7 @@ use rutis_bridge::runtime::{
     row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
     RuntimeHandle,
 };
+use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
@@ -769,6 +770,7 @@ impl DynPlugin for JsRow {
                     return Err(error);
                 }
             };
+            let row = self.row_name(ctx);
             Ok(Effect::AsyncDisposer(Box::new(move || {
                 Box::pin(async move {
                     // The row's services go first, and their users stop,
@@ -781,7 +783,7 @@ impl DynPlugin for JsRow {
                     match unloaded {
                         // The process is gone, and the row with it.
                         Ok(()) | Err(rutis_bridge::session::Error::Transport(_)) => Ok(()),
-                        Err(e) => Err(failed(e)),
+                        Err(e) => Err(failed(e.with_site(&Site::new(row, "cleanup")))),
                     }
                 })
             })))
@@ -790,6 +792,18 @@ impl DynPlugin for JsRow {
 }
 
 impl JsRow {
+    /// The row's name in messages: the loader's id for it, the row that
+    /// handed over a copied definition, or the plugin's name.
+    fn row_name(&self, ctx: &Ctx) -> String {
+        if let Some(id) = &self.id {
+            return id.clone();
+        }
+        ctx.get::<Loader>()
+            .and_then(|loader| loader.row(ctx.instance()))
+            .map(|row| row.id)
+            .unwrap_or_else(|| self.name.clone())
+    }
+
     /// Lease the shared services the plugin injects into `leases`, then
     /// load it into the runtime. Returns its key there and the projection
     /// of its services; on failure nothing of the load remains, and the
@@ -934,7 +948,9 @@ impl JsRow {
         };
         if let Err(error) = loaded {
             projection.close();
-            return Err(failed(error));
+            return Err(failed(
+                error.with_site(&Site::new(self.row_name(ctx), "apply")),
+            ));
         }
         // A service another provider had first: this row, the later one,
         // fails.
