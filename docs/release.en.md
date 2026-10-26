@@ -73,7 +73,7 @@ The nightly stress workflow also runs two soak tests (repeated link disconnect/r
 
 ## 0.17.1
 
-0.17.1 is a patch release: plugin definitions gain Python, Go, Swift and Kotlin (P2 and P3 of #642: #654, #653), and it fixes #619, #620 (#652) and #621 (#651). All packages are at 0.17.1; see [the release notes](releases/0.17.1.en.md). There is no migration guide: no API is removed or renamed.
+0.17.1 is a patch release: plugin definitions gain Python, Go, Swift and Kotlin (P2 and P3 of #642: #654, #653), and it fixes #619, #620 (#652) and #621 (#651); the occasional failure of the events conformance case `rutis/row` (#659, seen in a release gate) was the test not waiting long enough, fixed in the test runner by #661. All packages are at 0.17.1; see [the release notes](releases/0.17.1.en.md). There is no migration guide: no API is removed or renamed.
 
 A patch release must stay compatible with 0.17.0: `cargo-semver-checks` compares with 0.17.0 and accepts no breaking Rust API change (this release's Rust changes are all internal). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.17.0 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol is unchanged; the release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.17.0. A 0.17.0 host already declares `plugins`, so 0.17.1's Python, Go, Swift and Kotlin runtimes can hand over plugin definitions under a 0.17.0 host too; the cross-version tests have no plugin-definition scenario and only decide by `events-v2`, so they need no change. The list of samples the `persisted` tests require gains 0.16.0, 0.17.0 and 0.17.1 (the two previous releases missed it).
 
