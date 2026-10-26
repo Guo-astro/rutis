@@ -143,13 +143,52 @@ func isNilOptional(_ value: Any?) -> Bool {
     return mirror.displayStyle == .optional && mirror.children.isEmpty
 }
 
+// ── Where a method threw ─────────────────────────────────────────────────
+
+/// Where the method a call ran threw (#677 §4.4): Swift errors carry no
+/// stack, so the generated method table records the declaration of the
+/// method that threw, and the error crosses with that one frame. The error
+/// itself is never wrapped: code catching it in process sees it as thrown.
+package final class ThrowSite: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: String?
+
+    package init() {}
+
+    /// The frame line, `    at Type.method (file:line)`, if a method threw.
+    package var frame: String? { lock.withLock { recorded } }
+
+    func record(_ frame: String) { lock.withLock { recorded = frame } }
+
+    /// The site of the call the running Task serves.
+    @TaskLocal package static var current: ThrowSite?
+}
+
+extension Rutis {
+    /// For generated code (`@RutisService`): runs `body`, a call of the
+    /// method `method` declared at `file`:`line`; what it throws is thrown
+    /// on unchanged, and the call being served records where.
+    public static func located<T>(_ method: String, _ file: String, _ line: Int,
+                                  _ body: () async throws -> T) async throws -> T
+    {
+        do {
+            return try await body()
+        } catch {
+            // The outermost method records last: the one the call ran.
+            ThrowSite.current?.record("    at \(method) (\(file):\(line))")
+            throw error
+        }
+    }
+}
+
 // ── Error graphs ─────────────────────────────────────────────────────────
 
 /// The wire form of an error: its name, message and error graph (an
 /// AggregateError's children in order). A RutisError thrown on crosses with
 /// the far end's graph spliced in (nodes appended, references shifted), as
-/// Node does.
-package func encodeError(_ error: Error, encodeData: (Any) throws -> Value) -> JSON {
+/// Node does. `frame`, where the method that threw was declared, follows
+/// "name: message" in the root's `stack`.
+package func encodeError(_ error: Error, frame: String? = nil, encodeData: (Any) throws -> Value) -> JSON {
     if let remote = error as? RutisError, remote.name == RutisError.Name.syncWaitCycle, remote.graph == nil {
         return .object([("name", .string(remote.name)), ("message", .string(remote.message))])
     }
@@ -181,7 +220,7 @@ package func encodeError(_ error: Error, encodeData: (Any) throws -> Value) -> J
         nodes.append(.null)
         var node: [(String, JSON)] = [
             ("type", .string("error")), ("name", .string(name)), ("message", .string(message)),
-            ("stack", .string("\(name): \(message)")),
+            ("stack", .string(depth == 0 && frame != nil ? "\(name): \(message)\n\(frame!)" : "\(name): \(message)")),
         ]
         let (code, data, hasData) = codeAndData(error)
         if let code { node.append(("code", .string(code))) }

@@ -1305,42 +1305,50 @@ package final class Peer: @unchecked Sendable {
             respond(job.id, .failure(refused), chain, described)
             return
         }
+        // Where a service method this call ran threw (#677 §4.4).
+        let site = ThrowSite()
         let result: Result<Value, Error> = await CallChain.$path.withValue(chain) {
-            do {
-                if let then = job.then { return .success(try await then()) }
-                switch job.op {
-                case "invoke":
-                    guard let dispatch = options.dispatch else {
-                        throw RutisError(name: "Error", message: "no target \(job.target)")
+            await ThrowSite.$current.withValue(site) {
+                do {
+                    if let then = job.then { return .success(try await then()) }
+                    switch job.op {
+                    case "invoke":
+                        guard let dispatch = options.dispatch else {
+                            throw RutisError(name: "Error", message: "no target \(job.target)")
+                        }
+                        return .success(try await dispatch(job.target, job.method!, job.args))
+                    case "await":
+                        throw RutisError(name: "Error", message: "this side exports no futures")
+                    case "get":
+                        guard case let .object(object) = job.entry!.value else { throw RutisError(name: "Error", message: "not an object") }
+                        return .success(try await object.get(property: job.property))
+                    default:
+                        switch job.entry!.value {
+                        case let .function(function):
+                            return .success(try await function.body(job.args))
+                        case let .object(object):
+                            return .success(try await object.call(method: job.method ?? "", args: job.args))
+                        case .plugin:
+                            // Never reached: a call names a function or object.
+                            throw RutisError(name: "Error", message: "a plugin definition cannot be called")
+                        }
                     }
-                    return .success(try await dispatch(job.target, job.method!, job.args))
-                case "await":
-                    throw RutisError(name: "Error", message: "this side exports no futures")
-                case "get":
-                    guard case let .object(object) = job.entry!.value else { throw RutisError(name: "Error", message: "not an object") }
-                    return .success(try await object.get(property: job.property))
-                default:
-                    switch job.entry!.value {
-                    case let .function(function):
-                        return .success(try await function.body(job.args))
-                    case let .object(object):
-                        return .success(try await object.call(method: job.method ?? "", args: job.args))
-                    case .plugin:
-                        // Never reached: a call names a function or object.
-                        throw RutisError(name: "Error", message: "a plugin definition cannot be called")
-                    }
+                } catch {
+                    return .failure(error)
                 }
-            } catch {
-                return .failure(error)
             }
         }
-        respond(job.id, result, chain, described)
+        // Only a service method's own call is located (an invoke, a method of
+        // an object passed by reference), not a function's.
+        var method = job.then == nil && job.op == "invoke"
+        if job.then == nil, job.op != "invoke", job.op != "await", job.op != "get", case .object = job.entry?.value { method = true }
+        respond(job.id, result, chain, described, frame: method ? site.frame : nil)
     }
 
     /// Answers call `id`, a call of `call` (for messages): a result that
     /// cannot be sent (a value the far end does not take, a message over the
     /// limit) is answered with an error saying why instead (#675).
-    private func respond(_ id: String, _ result: Result<Value, Error>, _ chain: [String], _ call: String?) {
+    private func respond(_ id: String, _ result: Result<Value, Error>, _ chain: [String], _ call: String?, frame: String? = nil) {
         lock.lock()
         running[id] = nil
         signals[id] = nil
@@ -1350,6 +1358,9 @@ package final class Peer: @unchecked Sendable {
         }
         var data: [UInt8]
         var failure: Error?
+        // Only the method's own failure is located: a result that cannot be
+        // sent is not where the method threw.
+        var failureFrame: String?
         switch result {
         case let .success(value):
             var grants: [Int64] = []
@@ -1372,10 +1383,11 @@ package final class Peer: @unchecked Sendable {
             }
         case let .failure(error):
             failure = error
+            failureFrame = frame
             data = []
         }
         if let failure {
-            let encoded = encodeError(failure) { value in try ValueCodec.encodeAny(value) }
+            let encoded = encodeError(failure, frame: failureFrame) { value in try ValueCodec.encodeAny(value) }
             data = JSONWriter.write(.object([("op", .string("throw")), ("id", .string(id)), ("error", encoded)]))
             // An error too large to send: a short one saying so.
             if data.count > maxMessage {
