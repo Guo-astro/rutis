@@ -765,6 +765,9 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         "the row again",
     )
     .await;
+    // As at the start: the row's service is announced after it is active.
+    COLD.eventually(|| service(&fixture.root, "ping"), "ping's service again")
+        .await;
     assert_eq!(
         call(&fixture.root, "ping", "echo", json!(["again"]))
             .await
