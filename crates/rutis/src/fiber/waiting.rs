@@ -89,14 +89,28 @@ pub(crate) fn watch(fiber: &Arc<FiberInner>, generation: u64) {
         return;
     };
     let watches = watches();
-    watches.pending.lock().unwrap().push(Watch {
-        due: Instant::now() + after,
-        after,
-        generation,
-        fiber: Arc::downgrade(fiber),
-    });
+    {
+        let mut pending = watches.pending.lock().unwrap();
+        // A fiber that is gone (its instance closed, say) is never
+        // reported, but its watch keeps the fiber's memory until it is due.
+        // Drop those now and then, so plugins started and stopped many
+        // times within the delay do not hold their memory that long.
+        if pending.len() % PURGE_EVERY == PURGE_EVERY - 1 {
+            pending.retain(|watch| watch.fiber.strong_count() > 0);
+        }
+        pending.push(Watch {
+            due: Instant::now() + after,
+            after,
+            generation,
+            fiber: Arc::downgrade(fiber),
+        });
+    }
     watches.changed.notify_one();
 }
+
+/// How many watches may be added between two purges of those whose fiber
+/// is gone.
+const PURGE_EVERY: usize = 32;
 
 /// Report `fiber` to its error sink when it still waits in `generation`
 /// for services nothing provides.
@@ -139,4 +153,52 @@ fn report(fiber: &Arc<FiberInner>, generation: u64, after: Duration) {
             .collect(),
     };
     (shared.error_sink)(Arc::new(error));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::host::CtxHost;
+    use crate::{Ctx, Plugin};
+
+    struct Missing;
+
+    struct Waiter;
+
+    impl Plugin for Waiter {
+        type Deps = (Arc<Missing>,);
+
+        async fn apply(&self, _: &Ctx, _: Self::Deps) -> crate::Result {
+            Ok(())
+        }
+    }
+
+    /// Plugins that wait and go, many times within the delay: the watches
+    /// of those gone are dropped as new ones come instead of when they are
+    /// due, which would hold each fiber's memory that long (seen as the
+    /// memory of tenants created and closed over and over, 0.17.2).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_watches_of_fibers_gone_do_not_pile_up() {
+        let root = Ctx::root().unwrap();
+        root.report_waiting_after(Some(Duration::from_secs(600)));
+        for _ in 0..300 {
+            let view = root.plugin(Waiter);
+            (&view).await.unwrap();
+            view.dispose().await.unwrap();
+        }
+        let gone = super::watches()
+            .pending
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|watch| watch.fiber.strong_count() == 0)
+            .count();
+        assert!(
+            gone < 100,
+            "{gone} watches of fibers that are gone are held"
+        );
+        root.shutdown().await.unwrap();
+    }
 }
