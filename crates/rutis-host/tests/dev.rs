@@ -342,6 +342,9 @@ fn the_dev_loop(lang: &Lang) {
             "plugin weather v2 applied city=Tromso in *",
             &llm,
             "weather: restarted (llm reloaded)",
+            // caller uses weather, not llm: weather is what it restarted
+            // with.
+            "caller: restarted (weather restarted)",
         ],
     );
 
@@ -390,6 +393,52 @@ fn the_dev_loop(lang: &Lang) {
     // Never the half-imported version (Python).
     assert_eq!(count("plugin weather v9"), 0, "{context}");
     assert!(!stderr.contains("cannot resolve row"), "{context}");
+    // Never a cause the row does not use.
+    assert_eq!(count("caller: restarted (llm"), 0, "{context}");
+    // The project's runtime is dev's own: no word of an undeclared one.
+    assert!(
+        !stderr.contains("which runtimes does not declare"),
+        "{context}"
+    );
+}
+
+/// A Python row the dev file of a Node project adds without declaring
+/// `runtimes.py`: the Python runtime runs with its defaults, which is said
+/// once, not again each time `rutis.dev.json` is read again (#666).
+/// guarantee: host/dev-reload
+#[test]
+fn dev_warns_of_an_undeclared_runtime_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let dev_file = project(dir.path(), &NODE);
+    edit(&dir.path().join("probe.py"), &python_source("probe", "v1"));
+    let text = std::fs::read_to_string(&dev_file).unwrap();
+    let mut dev: serde_json::Value = serde_json::from_str(&text).unwrap();
+    dev["rows"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "probe", "name": "py:probe" }));
+    std::fs::write(&dev_file, dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    expect(&mut host, &["weather: running", "probe: running"]);
+    for city in ["Bergen", "Tromso"] {
+        dev["rows"][0]["config"]["city"] = json!(city);
+        std::fs::write(&dev_file, dev.to_string()).unwrap();
+        expect(
+            &mut host,
+            &["rutis-host: reloaded rutis.dev.json (1 row changed)"],
+        );
+    }
+
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+    assert_eq!(status.code(), Some(0), "{context}");
+    assert_eq!(
+        stderr.matches("rows use the py runtime (py:probe)").count(),
+        1,
+        "{context}"
+    );
+    assert!(!stderr.contains("rows use the node runtime"), "{context}");
 }
 
 /// A Go project with a Python row its dev file adds (`dev/probe.py`):

@@ -63,7 +63,9 @@ fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, Stri
     };
     let extra = dir.join("rutis.dev.json");
     if extra.exists() {
-        let extra = HostConfig::read(&extra)?;
+        // Its rows also run in the project's own runtime, which this sets
+        // up: not a runtime the dev file leaves undeclared.
+        let extra = HostConfig::read_beside(&extra, &config.runtimes)?;
         // The dev file may configure the plugin's own rows.
         let (own, others): (Vec<Value>, Vec<Value>) = extra
             .rows
@@ -239,6 +241,48 @@ mod tests {
         assert_eq!(config.rows[0]["config"]["city"], "Oslo");
         assert_eq!(config.rows[1]["id"], "llm");
         assert!(config.runtimes.node.is_some());
+    }
+
+    /// The dev file's rows in the project's own runtime run in the runtime
+    /// `dev` sets up: no word of an undeclared runtime (#666). A row of
+    /// another language's runtime the file does not declare still has
+    /// one, and that runtime runs with its defaults.
+    #[test]
+    fn the_projects_own_runtime_is_not_undeclared() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{ "name": "weather" }"#).unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/index.ts"), "").unwrap();
+        let dev = |rows: &str| {
+            std::fs::write(
+                dir.path().join("rutis.dev.json"),
+                format!(r#"{{ "rows": [{{ "id": "weather" }}, {rows}] }}"#),
+            )
+            .unwrap();
+            dev_config(dir.path()).unwrap().0
+        };
+        let config = dev(r#"{ "id": "llm", "name": "./dev/fake-llm.ts" }"#);
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+        assert!(config.runtimes.implicit.is_empty());
+        let config = dev(r#"{ "id": "llm", "name": "py:fake_llm" }"#);
+        assert_eq!(config.warnings.len(), 1, "{:?}", config.warnings);
+        assert!(config.warnings[0].contains("rows use the py runtime (py:fake_llm)"));
+        assert_eq!(config.runtimes.implicit, ["py"]);
+
+        let python = tempfile::tempdir().unwrap();
+        std::fs::write(
+            python.path().join("pyproject.toml"),
+            "[project]\nname = \"weather\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            python.path().join("rutis.dev.json"),
+            r#"{ "rows": [{ "id": "weather" }, { "id": "llm", "name": "py:fake_llm" }] }"#,
+        )
+        .unwrap();
+        let config = dev_config(python.path()).unwrap().0;
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+        assert!(config.runtimes.implicit.is_empty());
     }
 
     #[test]
