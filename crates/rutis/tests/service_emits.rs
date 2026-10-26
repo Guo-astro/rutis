@@ -56,7 +56,7 @@ async fn a_service_emits_with_the_ctx_it_kept() {
     })
     .unwrap();
     let plugin = root.plugin(SessionsPlugin);
-    plugin.running().await.unwrap();
+    (&plugin).await.unwrap();
     let sessions = root.get::<Sessions>().unwrap();
     sessions.create_and_wait("a").await.unwrap();
     // `emit` returns at once; its listeners run after.

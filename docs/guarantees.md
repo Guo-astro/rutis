@@ -166,7 +166,6 @@ PR 模板中有对应的检查项。
 | `core/features.still-waiting` | 插件等的服务（`Deps`、`injects`）一直没有提供者、等了 10 秒（`report_waiting_after` 可改，`None` 不报）仍缺时，ErrorSink 收到一次 `ErrorKind::StillWaiting`，写明插件和缺的类型；插件照常继续等，每次重新开始等待最多报一次（重新等待再报），等的时间短于这个时长不报；挂着 rutis-loader 时缺的服务写名字、行的运行时写 `runtime <名字>`（`name_keys_with`） | 契约行为 | 已验证 | `rutis/tests/still_waiting.rs::a_plugin_waiting_long_for_its_deps_is_reported_once`、`::waiting_again_is_reported_again`、`::a_short_wait_or_reports_off_say_nothing`、`rutis-loader/tests/waits.rs::a_long_wait_is_reported_by_service_name`、`rutis-loader/src/loader/waits.rs::tests::keys_are_named_as_rows_name_them` | #676；rutis-host 关掉它（行状态已写明） |
 | `core/features.errors` | 丢弃等待 `restart` / `update` 的 future 不会停止已开始的清理：清理照常结束，插件进入下一代 | 核心承诺 | 已验证 | `rutis/tests/lifecycle_order.rs::a_restart_dropped_after_its_cleanup_started_still_completes`、`::an_update_dropped_after_its_cleanup_started_still_completes`、`::a_restart_dropped_before_its_first_poll_starts_nothing`、`::an_update_dropped_before_its_first_poll_changes_nothing` | 后两个测试还锁定了"第一次 poll 之前丢弃什么都不做"（`restart` / `update` 的 future 是惰性的）。这一点没有写进文档，属于实现细节（Q3.3）；以后改成调用时登记的话，这两个测试随之改 |
 | `core/features.errors.failed-retry` | 装载失败（构造、`validate` 或 `apply` 出错）的插件停在 Failed，只在依赖变化时重新装载；同一组依赖的重复通知（如提供者激活时逐键发出的通知）不让它重试；依赖已经不在时重启（或更新配置）停在 Failed 的插件，不开始新的装载、返回成功，插件等待依赖，不再报上一次装载的失败 | 契约行为 | 已验证 | `rutis/tests/failed_retry.rs::a_failed_apply_is_retried_only_when_its_dependencies_change`、`::a_failed_validate_is_retried_only_when_its_dependencies_change`、`::a_failed_build_is_retried_only_when_its_dependencies_change`、`::a_restart_that_waits_does_not_report_the_last_failure` | #327 |
-| `core/features.running` | `FiberView::running()` 在插件进入 Active 时返回，依赖缺着就一直等（直接等待视图在排队的事处理完后就返回，这样的插件还是 Pending）；插件以 Failed 结束时返回装载的错误，插件被卸载或根关闭时（等待期间或调用之前）返回 `InactiveEffect`（不是卸载时清理的错误，也不是 `Closed`） | 契约行为 | 已验证 | `rutis/tests/running.rs::running_waits_for_the_dependencies`、`::running_returns_the_load_error`、`::running_ends_when_the_plugin_never_will`、`::running_after_the_plugin_is_gone_says_so` | #667；用 `tokio::time::timeout` 限制；很快的 Failed→Pending 重试可能看不到，会继续等 |
 | `core/typed.lost-dependency-pending` | 门控通过后、读取前必需依赖失效（被摘除、提供者失活或 `check` 拒绝）时，插件回到 Pending 而不是 Failed，依赖恢复后重新装载；这一代没有失败的严格读取时按普通失败处理（防循环） | 核心承诺 | 已验证 | `rutis/tests/typed_plugin.rs::a_dependency_lost_before_it_is_read_returns_the_plugin_to_pending`、`::a_dependency_back_before_the_failure_is_handled_still_reloads`、`::a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending`、`::a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_it_recovers`、`::the_claim_without_a_failed_read_is_a_plain_failure` | 依赖门控（Q3.1） |
 | `core/typed.lost-dependency-silent` | 这种情况下这一代的 `InjectUnsatisfied` 不进 ErrorSink | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_lost_dependency_error_does_not_reach_the_error_sink` | |
 | `core/typed.lost-dependency-restart` | 落在这个窗口里的 `restart()` 返回 Ok，插件回到 Pending 或重新装载 | 契约行为 | 已验证 | `rutis/tests/typed_plugin.rs::a_restart_in_the_lost_dependency_window_returns_ok` | |
@@ -400,7 +399,7 @@ PR 模板中有对应的检查项。
 | 范围 | 已验证 | 部分验证 | 未验证 | 明确不保证 | 合计 |
 | --- | --- | --- | --- | --- | --- |
 | `core/D*`（不含 D20、D26、D27） | 26 | 3 | 0 | 1 | 30 |
-| `core/features.*`、`core/typed.*`、`events/*`（§7） | 23 | 0 | 0 | 0 | 23 |
+| `core/features.*`、`core/typed.*`、`events/*`（§7） | 22 | 0 | 0 | 0 | 22 |
 | `boundary/5.*`（不含已撤回的 5.2–5.5） | 3 | 1 | 0 | 0 | 4 |
 | `events/*`（§8a） | 16 | 0 | 0 | 0 | 16 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
@@ -410,10 +409,10 @@ PR 模板中有对应的检查项。
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 35 | 4 | 0 | 0 | 39 |
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 153 | 12 | 1 | 3 | 169 |
+| 合计 | 152 | 12 | 1 | 3 | 168 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 
-核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 129 条：已验证 119，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
+核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 128 条：已验证 118，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

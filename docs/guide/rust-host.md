@@ -34,11 +34,9 @@ use rutis_loader::Builtins;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // 用当前的 tokio 运行时
-    let printer = root.plugin(Printer);            // 等它的 Deps：Greeting
-    root.plugin(Greeter { lang: "Rust".into() });  // 提供 Greeting
-    printer.running().await?;                      // Printer 已经运行：打印 "hello from Rust"
+    root.plugin(Greeter { lang: "Rust".into() }).await?; // 提供 Greeting
+    root.plugin(Printer).await?;                   // 它的 Deps（Greeting）已经在：打印 "hello from Rust"
     let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.running().await?;
     weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 Weather::new 重建
 
     let mut builtins = Builtins::new();            // rutis-loader 的行按名字找到它
@@ -93,15 +91,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 读服务 | `get::<T>()`；按键 `get_at(&key)`、提供 `provide_at(key, arc)`，键是 `host::Key<T>`（见[按名字依赖](#按名字依赖)）；`require` / `require_at` 是严格读取，在 `DynPlugin` 的 `apply` 里读声明过的依赖 |
 | 停下 | `root.shutdown().await` 卸载全部并等清理，`shutdown_with_timeout(limit)` 限制等待；单个插件 `view.dispose()`、`view.restart()` |
 | 观察 | `view.state()`、`view.watch()`、`root.diagnostics()`、`root.subscriptions()` |
-| 等到它运行 | `view.running().await`，见下面 |
 
 等一个装上的插件，等的是什么：
 
 - `view.await`（以及 `update`、`restart`）在 fiber 处理完排给它的事（装载、这次更新、这次重启）后返回。`Deps` 没有到齐的插件不装载，停在 `Pending`，`view.await` 照样返回 `Ok(())`，插件并没有运行。
-- `view.running().await` 等到插件运行（`Active`：它的 `apply` 已经返回），依赖多久出现就等多久。插件失败时返回装载的错误（失败的插件在依赖变化时再试；马上又重试的可能看不到失败，会接着等），插件被卸载或根关闭时（调用之前也算）返回 `InactiveEffect`。
-- 依赖缺着时它一直等；用 `tokio::time::timeout(Duration::from_secs(10), view.running()).await` 限制，超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
+- 要等到插件运行，看它的状态：`view.watch()` 收到每一次状态变化，等到 `Active`（在运行）或 `Failed`（装载失败，错误在快照的 `error` 里）。依赖缺着时会一直等，用 `tokio::time::timeout` 限制；超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
 - 等了 10 秒还在等的插件向错误汇集报告一次：`ErrorKind::StillWaiting` 写明插件和它缺的服务（默认的 sink 打印 `[rutis] plugin printer is still waiting after 10s for app::Greeting: …`），插件照常继续等。`root.report_waiting_after(Some(时长))` 改这个时间，对整棵树生效，`None` 不报（[依赖诊断](../core-features.md#依赖诊断)）。
-- 装的顺序不要紧：先装的使用者会等后装的提供者。应用要用的插件，先等它们运行再往下走。
+- 装的顺序不影响结果：先装的使用者会等后装的提供者。上面的例子先装提供者，所以 `view.await` 返回时使用者已经在运行。
 
 ### 按名字依赖
 
@@ -147,7 +143,7 @@ impl DynPlugin for Router {
 
 - 所有签名里的错误都是 `rutis::Error`。宿主的函数返回 `Box<dyn Error>`（或 `Box<dyn Error + Send + Sync>`）时直接 `?`；打开 rutis 的 `anyhow` feature 后，返回 `anyhow::Result` 也直接 `?`。
 - `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等，就是 0.16 的 `CordisError` 改了名字，变体不变），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
-- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`（或它的 `running()`）、`dispose()`、`shutdown()` 得到的。
+- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`、`dispose()`、`shutdown()` 得到的。
 
 ```rust,no_run
 use std::sync::Arc;

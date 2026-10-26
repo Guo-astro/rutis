@@ -1417,7 +1417,7 @@ fn spawn_fiber_inner(
 /// Awaiting a view waits until what is already queued for the fiber has
 /// been handled, not until the plugin runs: a plugin waiting for a
 /// dependency that is not there is `Pending`, and the await returns
-/// `Ok(())`. To wait until it runs, await [`FiberView::running`].
+/// `Ok(())`. To wait until it runs, watch its state ([`FiberView::watch`]).
 pub struct FiberView {
     /// 插件身份(D10)。
     pub id: PluginId,
@@ -1507,65 +1507,6 @@ impl FiberView {
     /// 订阅状态变化(watch:last-value,晚订阅先 `borrow()` 再 `changed()`,D6)。
     pub fn watch(&self) -> watch::Receiver<Snapshot> {
         self.inner.snapshot_rx.clone()
-    }
-
-    /// Wait until the plugin runs: its state is [`FiberState::Active`]
-    /// (its `apply` has returned), however long its dependencies take.
-    ///
-    /// Awaiting the view itself (`view.await`) waits less: only until what
-    /// is already queued for the fiber (its first load, an update, a
-    /// restart) has been handled. A plugin whose dependencies are not there
-    /// yet stays [`FiberState::Pending`], and `view.await` then returns
-    /// `Ok(())` with the plugin not running. This waits for the
-    /// dependencies too: it returns `Ok(())` once the plugin is `Active`,
-    /// the load's error once it is [`FiberState::Failed`] (a failed plugin
-    /// is tried again when its dependencies change: call this again to
-    /// wait for that), and [`ErrorKind::InactiveEffect`] once it is
-    /// disposed, also when it was disposed (or its root shut down) before
-    /// the call. A fiber that stopped without reaching `Disposed` (its root
-    /// shutting down while the call starts, its driver gone) returns the
-    /// error it stopped with, such as [`ErrorKind::Closed`].
-    ///
-    /// It watches the states the fiber publishes: a plugin that fails and
-    /// is tried again at once (`Failed`, then `Pending`) may not be seen
-    /// failing, and this then keeps waiting for the retry.
-    ///
-    /// It waits as long as a dependency is missing: bound it with
-    /// `tokio::time::timeout(limit, view.running())`, and on `Elapsed` look
-    /// at [`FiberView::state`] and `Ctx::diagnostics()` for what it waits
-    /// for. Dropping the future only ends this wait.
-    pub fn running(&self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
-        // Behind what is queued: an `Active` from before a queued restart
-        // or update is not the plugin running with it.
-        let settled = settle(&self.inner);
-        let mut snapshots = self.inner.snapshot_rx.clone();
-        Box::pin(async move {
-            if let Err(error) = settled.await {
-                // A stopped fiber's settle reports how it stopped (the
-                // unload's cleanup error, `Closed`): disposed, it is not
-                // running, whatever its cleanups said.
-                return Err(match snapshots.borrow().state {
-                    FiberState::Disposed => Arc::new(ErrorKind::InactiveEffect),
-                    _ => error,
-                });
-            }
-            loop {
-                let snapshot = snapshots.borrow_and_update().clone();
-                match snapshot.state {
-                    FiberState::Active => return Ok(()),
-                    FiberState::Failed => {
-                        return Err(snapshot.error.unwrap_or_else(|| {
-                            Arc::new(ErrorKind::PluginFailed("the plugin failed to load".into()))
-                        }))
-                    }
-                    FiberState::Disposed => return Err(Arc::new(ErrorKind::InactiveEffect)),
-                    FiberState::Pending | FiberState::Loading | FiberState::Unloading => {}
-                }
-                if snapshots.changed().await.is_err() {
-                    return Err(Arc::new(ErrorKind::InactiveEffect));
-                }
-            }
-        })
     }
 
     /// dispose:恰好一次;重复/并发调用 join 同一 `Arc<ErrorKind>`(D6/D20)。

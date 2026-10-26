@@ -566,7 +566,7 @@ cargo test
 ```
 
 - 依赖别的服务的插件，在测试里先装一个提供假服务的插件，或在根上 `root.provide_as::<dyn Llm>(Arc::new(FakeLlm))?`。
-- `(&view).await` 在插件的装载处理完后返回：依赖缺着的插件这时还是 `Pending`，没有运行。`view.running().await` 等到它运行（或返回装载的错误），所以先装插件、后装假服务的测试用它等；用 `tokio::time::timeout` 限制等待。
+- `(&view).await` 在插件的装载处理完后返回：依赖缺着的插件这时还是 `Pending`，没有运行。所以测试里先装假服务、再装插件，`(&view).await` 返回时插件就已经在运行。
 - `emit` 的监听器失败进入根的错误汇集：用 `Ctx::root_with_sink(handle, sink)` 建根，把它们收集起来断言。
 - 别的语言的监听器、跨进程传值要用真实的运行时，与生产相同，见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
 

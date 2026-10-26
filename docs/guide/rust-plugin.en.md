@@ -566,7 +566,7 @@ cargo test
 ```
 
 - For a plugin that depends on other services, mount a plugin providing fakes first, or provide them on the root: `root.provide_as::<dyn Llm>(Arc::new(FakeLlm))?`.
-- `(&view).await` returns once the plugin's load was handled: a plugin whose dependency is missing is still `Pending` then, not running. `view.running().await` waits until it runs (or returns its load error), so a test that mounts the plugin before its fakes waits with it; bound it with `tokio::time::timeout`.
+- `(&view).await` returns once the plugin's load was handled: a plugin whose dependency is missing is still `Pending` then, not running. So a test mounts its fakes first and the plugin after: `(&view).await` then returns with the plugin running.
 - An `emit` listener's failure goes to the root's error sink: make the root with `Ctx::root_with_sink(handle, sink)` to collect and assert on them.
 - Listeners in other languages and values crossing processes need a real runtime, as in production: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
 

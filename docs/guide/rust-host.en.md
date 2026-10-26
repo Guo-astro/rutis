@@ -34,11 +34,9 @@ use rutis_loader::Builtins;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // on the current tokio runtime
-    let printer = root.plugin(Printer);            // waits for its Deps: Greeting
-    root.plugin(Greeter { lang: "Rust".into() });  // provides Greeting
-    printer.running().await?;                      // Printer has run: "hello from Rust"
+    root.plugin(Greeter { lang: "Rust".into() }).await?; // provides Greeting
+    root.plugin(Printer).await?;                   // its Deps (Greeting) are there: prints "hello from Rust"
     let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.running().await?;
     weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with Weather::new
 
     let mut builtins = Builtins::new();            // rutis-loader rows find it by name
@@ -93,15 +91,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Read services | `get::<T>()`; by key `get_at(&key)`, provide with `provide_at(key, arc)`, the key a `host::Key<T>` (see [depend on services by name](#depend-on-services-by-name)); `require` / `require_at` are strict reads, of declared dependencies in a `DynPlugin`'s `apply` |
 | Stop | `root.shutdown().await` unloads everything and waits for the cleanups, `shutdown_with_timeout(limit)` bounds the wait; one plugin: `view.dispose()`, `view.restart()` |
 | Observe | `view.state()`, `view.watch()`, `root.diagnostics()`, `root.subscriptions()` |
-| Wait until it runs | `view.running().await`, see below |
 
 What waiting on a mounted plugin waits for:
 
 - `view.await` (and `update`, `restart`) returns once the fiber has handled what was queued for it: its load, the update, the restart. A plugin whose `Deps` are not all there does not load: it stays `Pending`, and `view.await` returns `Ok(())` all the same, with the plugin not running.
-- `view.running().await` waits until the plugin runs (`Active`: its `apply` has returned), however long its dependencies take to appear. It returns the load's error when the plugin fails (a failed plugin is tried again when its dependencies change; one tried again at once may not be seen failing, and the wait goes on), and `InactiveEffect` when it is disposed or the root shuts down, also before the call.
-- It waits as long as a dependency is missing; bound it with `tokio::time::timeout(Duration::from_secs(10), view.running()).await`, and on a timeout `view.state()` and `root.diagnostics()` say what the plugin waits for.
+- To wait until the plugin runs, watch its state: `view.watch()` receives every change of state; wait for `Active` (running) or `Failed` (the load failed, its error in the snapshot's `error`). With a dependency missing this waits on; bound it with `tokio::time::timeout`, and on a timeout `view.state()` and `root.diagnostics()` say what the plugin waits for.
 - A plugin still waiting after 10 seconds is reported once to the error sink: `ErrorKind::StillWaiting` names it and the services it misses (the default sink prints `[rutis] plugin printer is still waiting after 10s for app::Greeting: …`), and it goes on waiting. `root.report_waiting_after(Some(duration))` changes the delay for the whole tree, `None` turns it off ([dependency diagnostics](../core-features.en.md#dependency-diagnostics)).
-- Mounting order does not matter: a consumer mounted before its provider waits for it. Wait for the plugins the application needs before it goes on.
+- Mounting order does not change the outcome: a consumer mounted before its provider waits for it. The example above mounts the provider first, so the consumer runs by the time `view.await` returns.
 
 ### Depend on services by name
 
@@ -147,7 +143,7 @@ impl DynPlugin for Router {
 
 - Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly; with rutis's `anyhow` feature, one returning `anyhow::Result` does too.
 - `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …: 0.16's `CordisError` renamed, the same variants), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
-- Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView` (or its `running()`), `dispose()` or `shutdown()`.
+- Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
 
 ```rust,no_run
 use std::sync::Arc;
