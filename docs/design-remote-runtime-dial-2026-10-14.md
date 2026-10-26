@@ -2,6 +2,8 @@
 
 [English](design-remote-runtime-dial-2026-10-14.en.md)
 
+> 已部分取代（2026-10-26）：rutis 一侧的部分（§四的接入点与"连接即实例"的实现、§五的接入点部分、§七的 Rust 侧工作）由 [远程连接分层](design-remote-connection-layering-2026-10-26.md) 取代：接入点改为内置的监听连接插件，一台还是多台由 `instances` 决定。两个方向都支持（R1）、身份过渡实现、拨出与重连规范（§六）和各语言运行时一侧的实现仍然有效。
+
 状态：定稿；R-P1（Rust 侧）、R-P2（Python 拨出）已实现，其余见 §七。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
 依据：[远程插件](design-remote-plugins-2026-10-03.md)（本文修订其 §4 运行时接入的连接方式）、[连接节点](guide/nodes.md)（link）、[按需创建实例](design-loader-instance-mounts-and-services-2026-10-07.md)、[实例内服务名](design-instance-services-2026-10-08.md)、[Go 插件运行时](design-go-runtime-2026-10-10.md)、[Bun 运行时](design-bun-runtime-2026-10-09.md)。
 使用者：[应用接入](design-app-integration-2026-10-14.md)、[Swift SDK](design-swift-sdk-2026-10-12.md)、[Android 应用托管](design-android-runtime-2026-10-12.md)。

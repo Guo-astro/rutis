@@ -2,6 +2,8 @@
 
 [中文](design-remote-runtime-dial-2026-10-14.md)
 
+> Partly superseded (2026-10-26): the rutis side (the access point and the "connection = instance" implementation of §4, the access point parts of §5, the Rust work of §7) is superseded by [Remote connection layering](design-remote-connection-layering-2026-10-26.en.md): the access point becomes the built-in listening connection plugin, and `instances` decides between one connection and many. Both directions (R1), the interim identity, the dial-out and reconnection rules (§6) and every language's runtime side still apply.
+
 Status: final; R-P1 (the Rust side) and R-P2 (Python dialing out) implemented, the rest in §7. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
 Based on: [remote plugins](design-remote-plugins-2026-10-03.en.md) (this document revises how runtimes connect in its §4), [Connect Nodes](guide/nodes.en.md) (link), [creating plugin instances on demand](design-loader-instance-mounts-and-services-2026-10-07.en.md), [service names inside instances](design-instance-services-2026-10-08.en.md), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md), [the Bun runtime](design-bun-runtime-2026-10-09.en.md).
 Used by: [app integration](design-app-integration-2026-10-14.en.md), [the Swift SDK](design-swift-sdk-2026-10-12.en.md), [Android app hosting](design-android-runtime-2026-10-12.en.md).
