@@ -664,6 +664,10 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
         ReturnType::Type(_, output) => output.span(),
         ReturnType::Default => rust.span(),
     };
+    // Where the method is declared, for the stack of its errors: `file!()`
+    // and `line!()` spanned at its name.
+    let method_name = format!("{}.{}", quote!(#ty).to_string().replace(' ', ""), rust);
+    let declared = quote_spanned! {rust.span()=> ::std::file!(), ::std::line!() };
     let reply = quote_spanned! {output_span=>
         {
             let returned = #rutis::internal::service::Returned::new(returned);
@@ -671,7 +675,12 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
                 ::std::result::Result::Ok(value) => #rutis::internal::service::encode_ok(wire, &value),
                 ::std::result::Result::Err(error) => ::std::result::Result::Err(
                     #rutis::internal::service::forwarded(wire, &error).unwrap_or_else(|| {
-                        (&&&&&#rutis::internal::service::Failure(&error)).__rutis_fail(wire)
+                        #rutis::internal::service::located(
+                            wire,
+                            (&&&&&#rutis::internal::service::Failure(&error)).__rutis_fail(wire),
+                            #method_name,
+                            #declared,
+                        )
                     }),
                 ),
             }

@@ -40,6 +40,38 @@ pub fn failure(name: &str, code: &str, message: String, data: Option<Json>) -> E
     }
 }
 
+/// `error`, a method's `Err` as [`failure`] made it, with the stack
+/// `Name: message` and one frame naming `method` and where it is declared
+/// (the diagnostics design §4.4). A stack already there is kept.
+pub fn located(error: Error, method: &str, file: &str, line: u32) -> Error {
+    let Error::Remote {
+        name,
+        message,
+        graph: Some(mut graph),
+    } = error
+    else {
+        return error;
+    };
+    let index = graph["root"]["value"].as_u64().unwrap_or(0) as usize;
+    if let Some(node) = graph["nodes"]
+        .get_mut(index)
+        .and_then(Json::as_object_mut)
+        .filter(|node| !node.contains_key("stack"))
+    {
+        node.insert(
+            "stack".into(),
+            json!(format!(
+                "{name}: {message}\n    at {method} ({file}:{line})"
+            )),
+        );
+    }
+    Error::Remote {
+        name,
+        message,
+        graph: Some(graph),
+    }
+}
+
 /// `data` as an error graph value: JSON as it is, unless it holds an
 /// integer beyond ±(2^53−1), which crosses as a bigint (design V6), its
 /// arrays and objects then as nodes.

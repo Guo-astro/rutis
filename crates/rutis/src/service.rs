@@ -647,6 +647,13 @@ pub trait Wire: Send + Sync + 'static {
     ) -> CallError;
     /// `error`, when it is the wire's own error type: thrown as it is.
     fn forwarded(&self, error: &dyn Any) -> Option<CallError>;
+    /// `error`, a method's `Err` as thrown, saying where it came from: the
+    /// method `method`, declared at `file:line` (the diagnostics design
+    /// §4.4). A wire without stacks returns it as it is.
+    fn located(&self, error: CallError, method: &str, file: &str, line: u32) -> CallError {
+        let _ = (method, file, line);
+        error
+    }
 }
 
 // ── What generated code calls ───────────────────────────────────
@@ -871,6 +878,18 @@ pub fn encode_ok<T: Returnable>(wire: &'static dyn Wire, value: &T) -> Result<En
 /// is; otherwise by [`Failure`].
 pub fn forwarded<E: Any>(wire: &'static dyn Wire, error: &E) -> Option<CallError> {
     wire.forwarded(error)
+}
+
+/// A method's `Err` as thrown, with the method and where it is declared
+/// (`file!()` and `line!()` at the method's name).
+pub fn located(
+    wire: &'static dyn Wire,
+    error: CallError,
+    method: &str,
+    file: &str,
+    line: u32,
+) -> CallError {
+    wire.located(error, method, file, line)
 }
 
 /// An error, classified at the call site by what its type implements: the
