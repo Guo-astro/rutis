@@ -2,18 +2,19 @@
 //! transport: sessions, peers, operations and offers, reconnection,
 //! takeover, failure categories and stopping.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::host::{CtxHost, FiberView};
+use rutis::host::{BoxFuture, CtxHost, FiberView};
 use rutis::Ctx;
-use rutis_bridge::channel::PeerId;
+use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::Error;
 use rutis_bridge::session::{Connection, Endpoint, Format, Value};
 use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, protocol, Credential, Dial, Failure, Identity, IdentityPlugin, LinkConfig,
-    LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
+    peer_key, protocol, transport_key, Credential, Dial, Failure, Identity, IdentityPlugin,
+    LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
 };
 use rutis_test_support::{eventually, scaled, HANG_GUARD};
 use serde_json::json;
@@ -448,6 +449,62 @@ async fn a_link_stops_with_its_identity() {
     )
     .await;
     assert_eq!(*mac.states.borrow(), LinkState::Idle);
+}
+
+/// A transport whose dial holds its thread for a while, as starting a
+/// local runtime's process does (fork and exec do not yield), then is
+/// refused: `dialing` once it has begun, `dialed` once it is over.
+#[derive(Default)]
+struct Blocking {
+    dialing: AtomicBool,
+    dialed: AtomicBool,
+}
+
+impl Transport for Blocking {
+    fn kind(&self) -> &str {
+        "blocking"
+    }
+
+    fn dial<'a>(&'a self, _dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
+        Box::pin(async move {
+            self.dialing.store(true, Ordering::SeqCst);
+            std::thread::sleep(scaled(Duration::from_millis(500)));
+            self.dialed.store(true, Ordering::SeqCst);
+            Err(ConnectError::Retryable {
+                reason: "blocking: refused".into(),
+            })
+        })
+    }
+}
+
+/// A link stopped while its dial is in the middle of something that does
+/// not yield: the stop returns once that is over. A local runtime's process
+/// started by such a dial is then recorded, and its channel closed, when
+/// the runtime has stopped; a reload that removed the runtime waits for it.
+/// guarantee: host/reload-config
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_stopped_while_it_dials_stops_once_the_dial_is_over() {
+    let root = Ctx::root().unwrap();
+    let blocking = Arc::new(Blocking::default());
+    let _transport = root
+        .provide_at(transport_key("blocking"), blocking.clone())
+        .unwrap();
+    root.plugin(IdentityPlugin::new("mac", StaticIdentity::new(id("mac"))));
+    let link = root.plugin(LinkPlugin::new(
+        LinkConfig::dial(id("main"), "blocking", "mac", "main-in").retry(quick()),
+    ));
+    eventually(
+        || blocking.dialing.load(Ordering::SeqCst).then_some(()),
+        "the dial",
+    )
+    .await;
+
+    link.dispose().await.unwrap();
+    assert!(
+        blocking.dialed.load(Ordering::SeqCst),
+        "the link stopped while its dial went on"
+    );
+    root.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
