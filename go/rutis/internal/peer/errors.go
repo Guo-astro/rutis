@@ -144,7 +144,10 @@ func encodeError(err error) map[string]any {
 	if remote, ok := err.(*RemoteError); ok && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
 		return map[string]any{"name": remote.Name, "message": remote.Message}
 	}
-	var nodes []any
+	// Never null on the wire, even when nothing is added to it (a thrown
+	// value relayed, its root plain data): JavaScript refuses such a graph
+	// (#675).
+	nodes := []any{}
 	seen := map[*AggregateError]int{}
 	var visit func(error) map[string]any
 	visit = func(err error) map[string]any {
@@ -159,7 +162,9 @@ func encodeError(err error) map[string]any {
 				Root  map[string]any
 				Nodes []any
 			}
-			if json.Unmarshal(remote.Graph, &graph) == nil && graph.Root != nil {
+			// A graph without its nodes (what Go sent before #675) is not
+			// spliced in: the error crosses as a node of its own.
+			if json.Unmarshal(remote.Graph, &graph) == nil && graph.Root != nil && graph.Nodes != nil {
 				offset := len(nodes)
 				var shift func(any) any
 				shift = func(value any) any {

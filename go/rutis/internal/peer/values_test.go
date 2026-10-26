@@ -164,7 +164,7 @@ func TestATaggedValueFailsOnlyItsCallToAFarEndThatDoesNotTakeIt(t *testing.T) {
 	})
 	ctx := context.Background()
 	_, err := a.Call(ctx, "x", "echo", []any{[]any{[]byte("x")}}, true)
-	if err == nil || err.Error() != "cannot send bytes: the far end does not take bytes values (it did not declare the capability value-bytes)" {
+	if err == nil || err.Error() != "argument 1 of x.echo: cannot send bytes: the far end does not take bytes values (it did not declare the capability value-bytes)" {
 		t.Fatalf("%v", err)
 	}
 	var refused *ValueError
