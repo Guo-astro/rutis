@@ -152,19 +152,19 @@ rutis-host: reload rejected: <原因>; nothing changed
 - Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
 - `rutis.dev.json` 的内容变了就重新读，规则同 `run --watch-config`（全有或全无；运行中改不了的部分被拒绝，提示重启；见 [运行中改配置](#运行中改配置)）；Unix 上 SIGUSR1 也会触发。条目改了的行带着新的内容重启，新增的行启动，删掉的行卸载。
 - 用到某一行所提供服务的行，在这一行重新加载时随它重启，和平时服务消失又回来时一样。
-- 本机运行时（`node`、`py`、`bun`）的进程结束、又没有谁重启它时（`restart` 是默认的 `"no"`，或者 `"on-failure"` 已经放弃），它的某一行下一次变化（文件，或它在 `rutis.dev.json` 里的条目）会重新启动这个运行时，用那时的代码；它的行随之回来。别的行变化不会启动它。
+- 本机运行时（`node`、`py`、`bun`）的进程结束、又没有谁重启它时（`restart` 是默认的 `"no"`，或者 `"on-failure"` 已经放弃），它的某一行下一次变化（文件，或它在 `rutis.dev.json` 里的条目）会重新启动这个运行时，用那时的代码；它的行随之回来。别的行变化不会启动它。`restart` 会重启它（`"on-failure"`，还没放弃）、或者它正在启动时，交给它自己：它的行用那时的代码启动。
 - 重新加载只重新导入这一行自己的模块，不重新导入它导入的其他模块；改了那些模块，要重启 `dev`。
-- 新代码加载不起来（语法错误、`apply` 失败）的重新加载不改变任何东西：这一行继续运行原来的版本，之后因为别的原因重启（它用到的服务重新加载）时也是原来的版本，直到改成能加载的代码。
+- 新代码导入不了（语法错误、导入时出错）的重新加载不改变任何东西：这一行继续运行原来的版本，之后因为别的原因重启（它用到的服务重新加载）时也是原来的版本，直到改成能导入的代码。新代码能导入、但 `apply` 失败时，这一行从此运行的就是新代码：它以那个错误失败，改好之前不运行。
 
 除了 [`run`](#run-打印什么) 的那些行，`dev` 还打印：
 
 | 输出 | 含义 |
 | --- | --- |
 | `<行 id>: reloaded (<文件> changed)` | 这一行运行新的代码；文件是相对项目的路径 |
-| `<行 id>: cannot reload: <原因>; the previous version keeps running` | 新代码加载不起来，这一行继续运行原来的版本。新代码让另一行失败时，原因先写那一行：`<另一行> failed with it: …`。没有 `; the previous version keeps running` 时，这一行现在没有运行 |
+| `<行 id>: cannot reload: <原因>; the previous version keeps running` | 新代码导入不了，这一行继续运行原来的版本。新代码让另一行失败时，原因先写那一行：`<另一行> failed with it: …`。没有 `; the previous version keeps running` 时（例如新代码的 `apply` 失败），这一行现在没有运行 |
 | `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）或 `<Go 或 Swift 运行时> restarted`；这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
-| `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)` |
+| `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
 
 ## 运行时结束时
