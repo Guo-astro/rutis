@@ -2608,7 +2608,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     let (local, rb) = far_pair();
     let b = Connection::open(local, held.clone()).unwrap();
     // A runtime's link names it: a compat far end does not name itself.
-    b.name_far_end(&PeerId::new("py").unwrap());
+    b.name_far_end("py");
     let owner = tokio::task::spawn_blocking(move || {
         let mut a = Remote::start(ra);
         let Frame::Invoke { id, .. } = a.read() else {
@@ -2631,12 +2631,22 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
             frame["method"], "after",
             "the call holding the object was sent"
         );
-        b.send_json(json!({ "op": "return", "id": frame["id"], "value": { "type": "undefined" } }));
+        // A function of the far end's, to call with the object inside.
+        b.send_json(json!({
+            "op": "return", "id": frame["id"],
+            "value": { "type": "reference", "value": { "id": 9, "kind": "function", "home": false, "origin": [] } },
+        }));
         b.send_json(json!({
             "op": "invoke", "id": "node:1", "path": [], "target": "host:svc", "method": "get",
             "args": { "type": "data", "value": [] },
         }));
-        let reply = b.read_json();
+        // The function's release may come first.
+        let reply = loop {
+            let frame = b.read_json();
+            if frame["op"] != "release" {
+                break frame;
+            }
+        };
         assert_eq!(reply["op"], "throw", "{reply}");
         // Kept open until the end of the test.
         (reply["error"]["message"].as_str().unwrap().to_owned(), b)
@@ -2650,7 +2660,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     assert!(object.clone().reference().unwrap().is_object());
     // What B returns when its far end calls it, right after `after`.
     *held.0.lock().unwrap() = Some(object.clone());
-    let call = Value::List(vec![Value::Data(json!(1)), object]);
+    let call = Value::List(vec![Value::Data(json!(1)), object.clone()]);
     match b.invoke_async("host:svc\0scope", "take", call).await {
         Err(Error::Value(message)) => assert_eq!(
             message,
@@ -2659,9 +2669,28 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
         ),
         other => panic!("a value error expected, got {other:?}"),
     }
-    b.invoke_async("svc", "after", Value::List(vec![]))
+    let function = b
+        .invoke_async("svc", "after", Value::List(vec![]))
         .await
+        .unwrap()
+        .reference()
         .unwrap();
+    // Inside a list or a record, as a function's argument: the same.
+    let nested = [
+        Value::List(vec![Value::Data(json!(1)), object.clone()]),
+        Value::Record([("o".to_owned(), object)].into_iter().collect()),
+    ];
+    for argument in nested {
+        match function.call_async(Value::List(vec![argument])).await {
+            Err(Error::Value(message)) => assert_eq!(
+                message,
+                "argument 1 of a function: an object with methods cannot cross to py; \
+                 pass plain data or a function instead"
+            ),
+            other => panic!("a value error expected, got {other:?}"),
+        }
+    }
+    drop(function);
     let (message, _runtime) = runtime.await.unwrap();
     assert_eq!(
         message,
@@ -2711,10 +2740,13 @@ async fn a_message_over_the_limit_fails_only_its_call() {
     struct Big;
     impl Dispatch for Big {
         fn invoke(&self, _: &Connection, _: &str, method: &str, _: Value) -> Reply {
-            Ok(Value::Data(match method {
-                "big" => json!("x".repeat(2048)),
-                _ => json!("small"),
-            }))
+            let big = json!("x".repeat(2048));
+            Ok(match method {
+                "big" => Value::Data(big),
+                // Its result is sent when the far end awaits it.
+                "later" => Value::future(async move { Ok(Value::Data(big)) }),
+                _ => Value::Data(json!("small")),
+            })
         }
     }
     let (local, far) = limited_pair(1024);
@@ -2736,8 +2768,21 @@ async fn a_message_over_the_limit_fails_only_its_call() {
         }));
         let after = far.read_json();
         assert_eq!(after["value"]["value"], "small", "{after}");
+        far.send_json(json!({
+            "op": "invoke", "id": "node:3", "path": [], "target": "host:svc", "method": "later",
+            "args": { "type": "data", "value": [] },
+        }));
+        let future = far.read_json();
+        assert_eq!(future["value"]["value"]["kind"], "future", "{future}");
+        far.send_json(json!({
+            "op": "await", "id": "node:4", "path": [], "reference": future["value"]["value"]["id"],
+        }));
+        let awaited = far.read_json();
+        assert_eq!(awaited["op"], "throw", "{awaited}");
+        let messages =
+            [&reply, &awaited].map(|reply| reply["error"]["message"].as_str().unwrap().to_owned());
         // Kept open until the end of the test.
-        (reply["error"]["message"].as_str().unwrap().to_owned(), far)
+        (messages, far)
     });
     peer.ready().await.unwrap();
     let args = Value::List(vec![
@@ -2762,10 +2807,15 @@ async fn a_message_over_the_limit_fails_only_its_call() {
             .unwrap(),
         Value::Data(json!("fine"))
     );
-    let (message, _far) = script.await.unwrap();
+    let ([message, awaited], _far) = script.await.unwrap();
     assert!(
         message.starts_with("the result of svc.big: the message would be "),
         "{message}"
+    );
+    // An async result names the call that returned it.
+    assert!(
+        awaited.starts_with("the result of svc.later: the message would be "),
+        "{awaited}"
     );
     assert!(peer.close_reason().is_none());
 }

@@ -97,16 +97,19 @@ impl Connection {
         if let Some(greeting) = self.greeting() {
             return greeting.endpoint.to_string();
         }
-        if let Some(peer) = self.0.verified.as_ref().or(self.0.named.get()) {
+        if let Some(peer) = &self.0.verified {
             return peer.to_string();
+        }
+        if let Some(name) = self.0.named.get() {
+            return name.clone();
         }
         "the far end".into()
     }
 
     /// Name the far end of a compat-format session, which does not name
     /// itself: whoever started it knows (a runtime's link).
-    pub(crate) fn name_far_end(&self, peer: &PeerId) {
-        let _ = self.0.named.set(peer.clone());
+    pub(crate) fn name_far_end(&self, name: &str) {
+        let _ = self.0.named.set(name.to_owned());
     }
 
     /// An object with methods goes only to a far end that declared

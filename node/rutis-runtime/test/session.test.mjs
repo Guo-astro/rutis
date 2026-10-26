@@ -476,3 +476,24 @@ test('an error graph not in its shape fails only its call', async () => {
   assert.equal(fault(), undefined)
   peer.close()
 })
+
+// A getter run while a value is encoded may throw, again and again, or a
+// frozen error: the call fails with a new error naming the argument (or the
+// result), the thrown one its cause, left as it was.
+test('an error thrown while a value is encoded is wrapped, not changed', async () => {
+  const frozen = Object.freeze(new Error('no access'))
+  const value = { get secret() { throw frozen } }
+  const { peer, sent, fault } = harness(() => value)
+  for (let i = 0; i < 2; i++) {
+    assert.throws(() => peer.invoke('host:svc', 'take', [value]), error =>
+      error.message === 'argument 1 of svc.take: no access' && error.cause === frozen)
+  }
+  assert.equal(frozen.message, 'no access')
+  assert.equal(sent.length, 0, 'nothing was sent')
+  peer.receive(invoke(1, 'get'))
+  await Promise.resolve()
+  assert.equal(sent.at(-1).error.message, 'the result of test.get: no access')
+  assert.equal(frozen.message, 'no access')
+  assert.equal(fault(), undefined)
+  peer.close()
+})

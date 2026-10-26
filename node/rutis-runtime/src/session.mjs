@@ -120,13 +120,20 @@ export function describeCall(op, { target, method, property } = {}) {
   if (op === 'get') return `the property ${property}`
   return 'an awaited result'
 }
-// `error`, thrown encoding argument `index` (or the result) of `call`, says
-// which. Errors made for this value only, so changing the message is safe.
+// `error`, thrown encoding argument `index` (or the result) of `call`, as a
+// new error saying which, the thrown one its cause. Never changed in place:
+// a getter run while encoding may throw one error many times, or a frozen
+// one.
 const ofArgument = (error, index, call) => prefixed(error, `argument ${index + 1} of ${call}`)
 const ofResult = (error, call) => prefixed(error, call ? `the result of ${call}` : 'the result')
+// The classes a value error of this side is: it keeps its class, any other
+// thrown value is wrapped in an Error.
+const VALUE_ERRORS = [ValueError, RangeError, TypeError]
 function prefixed(error, what) {
-  if (error instanceof Error) { error.message = `${what}: ${error.message}`; return error }
-  return new TypeError(`${what}: ${String(error)}`)
+  let reason
+  try { reason = error instanceof Error ? error.message : String(error) } catch { reason = 'a value that cannot be shown was thrown' }
+  const Class = VALUE_ERRORS.find(type => error?.constructor === type) ?? Error
+  return new Class(`${what}: ${reason}`, { cause: error })
 }
 // A class instance's class, for messages: none for a plain object.
 const className = value => {
@@ -480,8 +487,8 @@ export class Session {
         const items = frame.args?.type === 'list' ? frame.args.value : []
         const sizes = items.map(item => Buffer.byteLength(encode(item)))
         const largest = sizes.indexOf(Math.max(...sizes))
-        const reason = new RangeError(overLimit(size, this.#max))
-        throw largest < 0 ? prefixed(reason, `the arguments of ${call()}`) : ofArgument(reason, largest, call())
+        const what = largest < 0 ? `the arguments of ${call()}` : `argument ${largest + 1} of ${call()}`
+        throw new RangeError(`${what}: ${overLimit(size, this.#max)}`)
       }
       this.#pending.set(id, finish); this.#send(encoded)
     } catch (error) { this.#pending.delete(id); this.#rollback(grants); throw error }

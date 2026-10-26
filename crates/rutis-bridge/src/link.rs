@@ -355,7 +355,7 @@ impl Greet<'_> {
         let session = Connection::open_with(channel, operations.clone(), format)?;
         // A compat far end does not name itself: it is who its spawner said.
         if let (true, Some(expected)) = (self.compat, &self.expected) {
-            session.name_far_end(expected);
+            session.name_far_end(expected.as_str());
         }
         let ready = tokio::time::timeout(self.timeout, session.ready()).await;
         match ready {

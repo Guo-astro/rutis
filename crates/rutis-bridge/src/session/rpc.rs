@@ -1185,7 +1185,7 @@ struct SessionState {
     verified: Option<PeerId>,
     /// The far end of a compat-format session as whoever started it named
     /// it ([`Connection::name_far_end`]), for messages.
-    named: std::sync::OnceLock<PeerId>,
+    named: std::sync::OnceLock<String>,
     /// This side's call ids: `rust:` or `<endpoint>:`.
     local_prefix: String,
     /// The far end's: `node:`, or `<endpoint>:` once it greeted.
