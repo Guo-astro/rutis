@@ -446,11 +446,10 @@ fn failed(kind: Kind, host: &mut Host) -> String {
         ),
         _ => ("the failed reload", "demo: cannot reload: "),
     };
-    let line = match kind.compiled() {
+    match kind.compiled() {
         true => host.wait_for_within(build_guard(), what, |line| line.starts_with(prefix)),
         false => host.wait_for(what, |line| line.starts_with(prefix)),
-    };
-    line
+    }
 }
 
 fn dev_loop(kind: Kind) {
@@ -583,6 +582,16 @@ fn dev_loop(kind: Kind) {
         true => {
             let probe_file = format!("demo/{dir}/probe.py");
             let probe_source = std::fs::read(s.path(&probe_file)).expect(&probe_file);
+            // The probe alone first: it reloads, nothing is built (#665).
+            let builds = dev.count("demo: building");
+            s.replace(&probe_file, probe_source.clone());
+            dev.expect("probe: reloaded (");
+            probe.started(&mut dev);
+            assert_eq!(
+                dev.count("demo: building"),
+                builds,
+                "the probe's file rebuilt the plugin"
+            );
             s.replace(&source, kind.version(4));
             s.replace(&probe_file, probe_source);
             edited(kind, &mut dev, &probe);

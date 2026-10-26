@@ -513,8 +513,9 @@ fn runtime_state(host: &Host, name: &str) -> Option<RuntimeState> {
         .map(|(_, handle)| handle.state())
 }
 
-/// The local runtimes that are down and run rows of `plan`, each with
-/// those rows.
+/// The local runtimes that do not run (down, or starting again) and run
+/// rows of `plan`, each with those rows: reloading those rows would only
+/// describe them without their runtime.
 fn down_runtimes(host: &Host, plan: &[(String, Vec<PathBuf>)]) -> Vec<(String, Vec<String>)> {
     let names: Vec<String> = host.runtimes.iter().map(|(name, _)| name.clone()).collect();
     let mut down: Vec<(String, Vec<String>)> = Vec::new();
@@ -525,7 +526,10 @@ fn down_runtimes(host: &Host, plan: &[(String, Vec<PathBuf>)]) -> Vec<(String, V
         let Some(runtime) = runtime_of(&name, &names) else {
             continue;
         };
-        if !matches!(runtime_state(host, runtime), Some(RuntimeState::Down(_))) {
+        if !matches!(
+            runtime_state(host, runtime),
+            Some(RuntimeState::Down(_) | RuntimeState::Starting)
+        ) {
             continue;
         }
         match down.iter_mut().find(|(name, _)| name == runtime) {
@@ -536,11 +540,19 @@ fn down_runtimes(host: &Host, plan: &[(String, Vec<PathBuf>)]) -> Vec<(String, V
     down
 }
 
-/// Start the local runtime `runtime`, which is down, again for a change
-/// (`why`), unless its `restart` does (`on-failure`, not given up): its rows
-/// come back with it either way, their code as it is now.
+/// Start the local runtime `runtime`, which does not run, again for a
+/// change (`why`), unless it is starting already or its `restart` starts it
+/// (`on-failure`, not given up): its rows come back with it either way,
+/// their code as it is then.
 async fn start_again(host: &Host, runtime: &str, why: &str) {
+    if let Some(RuntimeState::Starting) = runtime_state(host, runtime) {
+        outln!("runtime {runtime}: starting; its rows start with the code as it is then ({why})");
+        return;
+    }
     if host.restarts_by_itself(runtime) {
+        outln!(
+            "runtime {runtime}: down; its restart starts it again, its rows with the code as it is then ({why})"
+        );
         return;
     }
     outln!("runtime {runtime}: starting again ({why})");
@@ -658,15 +670,22 @@ fn cannot_reload(id: &str, error: &LoaderError, running: bool) -> String {
     };
     let why = match error {
         LoaderError::ApplyFailed { failures } => failed(failures),
-        LoaderError::RollbackFailed { apply, rollback } => format!(
-            "{}; with the previous {id} back, {}",
-            failed(apply),
-            rollback
+        LoaderError::RollbackFailed { apply, rollback } => {
+            // The row itself failing on: its line says it does not run.
+            let others: Vec<String> = rollback
                 .iter()
+                .filter(|failure| failure.id != id)
                 .map(|failure| format!("{} still fails: {}", failure.id, failure.error))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
+                .collect();
+            match others.is_empty() {
+                true => failed(apply),
+                false => format!(
+                    "{}; with the previous {id} back, {}",
+                    failed(apply),
+                    others.join("; ")
+                ),
+            }
+        }
         error => error.to_string(),
     };
     match running {
@@ -773,6 +792,15 @@ mod tests {
         assert_eq!(
             cannot_reload("llm", &rollback, true),
             "llm: cannot reload: weather failed with it: SyntaxError; with the previous llm back, weather still fails: SyntaxError; the previous version keeps running"
+        );
+        // Its own apply failing, the row fails on: no more than its error.
+        let own = LoaderError::RollbackFailed {
+            apply: vec![failure("weather", "Error: boom")],
+            rollback: vec![failure("weather", "Error: boom")],
+        };
+        assert_eq!(
+            cannot_reload("weather", &own, false),
+            "weather: cannot reload: Error: boom"
         );
     }
 

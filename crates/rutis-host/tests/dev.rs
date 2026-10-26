@@ -1,15 +1,16 @@
 //! `rutis-host dev` following a project as it changes (#665): a changed file
 //! reloads only the rows whose file it is, the rows that use them restart
-//! by themselves and say why; `rutis.dev.json` is read again; a broken edit
-//! leaves the previous version running, also when a row it uses reloads; a
-//! runtime that ended starts again with the next change instead of rows
-//! said to reload while nothing runs. A Go project rebuilds only for its
-//! own sources.
+//! by themselves and say why; `rutis.dev.json` is read again (also on
+//! SIGUSR1); an edit that does not import leaves the previous version
+//! running, also when a row it uses reloads; one whose `apply` fails fails
+//! the row; a runtime that ended starts again with the next change instead
+//! of rows said to reload while nothing runs. A Go project rebuilds only
+//! for its own sources.
 //!
 //! The project: its own plugin `weather` (injects `llm`, provides
-//! `weather`), a fake `llm` and a `caller` that injects `weather`, in Node
-//! and in Python. Each plugin prints `plugin <row> <version> applied ... in
-//! <pid>` when it starts.
+//! `weather`), a fake `llm` and a `caller` that injects `weather`, in Node,
+//! Bun and Python. Each plugin prints `plugin <row> <version> applied ...
+//! in <pid>` when it starts.
 //!
 //! Unix only, as the signal tests: the host is stopped with kill(2).
 #![cfg(unix)]
@@ -25,39 +26,67 @@ use serde_json::json;
 
 /// A language's project: where its files are, and their sources.
 struct Lang {
-    /// The runtime's name in the lines (`node`, `py`).
+    /// The runtime's name in the lines (`node`, `bun`, `py`).
     runtime: &'static str,
     /// The project's own plugin, relative to the project.
     own: &'static str,
-    /// The fake `llm`'s file, relative to the project.
+    /// The fake `llm`'s file and the caller's, relative to the project.
     llm: &'static str,
+    caller: &'static str,
+    /// The row names of `llm` and `caller` in the dev file.
+    names: [&'static str; 2],
     /// The source of `row` at `version`.
     source: fn(row: &str, version: &str) -> String,
-    /// A source of the own plugin that does not parse.
-    broken: &'static str,
+    /// A source of the own plugin that does not import.
+    broken: fn() -> String,
+    /// A source of the own plugin whose `apply` throws `boom in apply`.
+    throws: fn() -> String,
 }
 
 const NODE: Lang = Lang {
     runtime: "node",
     own: "src/index.mjs",
     llm: "dev/fake-llm.mjs",
+    caller: "dev/caller.mjs",
+    names: ["./dev/fake-llm.mjs", "./dev/caller.mjs"],
     source: node_source,
-    broken: "export default definePlugin({ const const = 1\n",
+    broken: node_broken,
+    throws: node_throws,
+};
+
+const BUN: Lang = Lang {
+    runtime: "bun",
+    own: "src/index.ts",
+    llm: "dev/fake-llm.ts",
+    caller: "dev/caller.ts",
+    names: ["bun:./dev/fake-llm.ts", "bun:./dev/caller.ts"],
+    source: node_source,
+    broken: node_broken,
+    throws: node_throws,
 };
 
 const PYTHON: Lang = Lang {
     runtime: "py",
     own: "src/weather/__init__.py",
     llm: "src/fake_llm.py",
+    caller: "src/caller.py",
+    names: ["py:fake_llm", "py:caller"],
     source: python_source,
-    broken: "def broken(:\n",
+    broken: python_broken,
+    throws: python_throws,
 };
 
+/// The SDK of this checkout, as a module a plugin imports.
+fn sdk() -> String {
+    file_url(
+        &repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap(),
+    )
+}
+
 fn node_source(row: &str, version: &str) -> String {
-    let sdk = repo()
-        .join("node/rutis/src/index.mjs")
-        .canonicalize()
-        .unwrap();
     let (inject, provides) = match row {
         "weather" => ("['llm']", "{ weather: { now: 'async' } }"),
         "llm" => ("[]", "{ llm: { ask: 'async' } }"),
@@ -88,7 +117,23 @@ fn node_source(row: &str, version: &str) -> String {
              {service}\n\
            }},\n\
          }})\n",
-        file_url(&sdk)
+        sdk()
+    )
+}
+
+fn node_broken() -> String {
+    "export default definePlugin({ const const = 1\n".into()
+}
+
+fn node_throws() -> String {
+    format!(
+        "import {{ definePlugin }} from '{}'\n\
+         export default definePlugin({{\n\
+           inject: ['llm'],\n\
+           provides: {{ weather: {{ now: 'async' }} }},\n\
+           apply() {{ throw new Error('boom in apply') }},\n\
+         }})\n",
+        sdk()
     )
 }
 
@@ -128,6 +173,26 @@ fn python_source(row: &str, version: &str) -> String {
     )
 }
 
+/// A module that fails while importing, once it redefined its plugin: put
+/// back as it was, not left half updated (Python reloads in place).
+fn python_broken() -> String {
+    python_source("weather", "v9") + "\nraise RuntimeError(\"half way\")\n"
+}
+
+fn python_throws() -> String {
+    "from rutis import define_plugin\n\
+     \n\
+     class Service:\n\
+     \x20   async def now(self):\n\
+     \x20       return \"ok\"\n\
+     \n\
+     def apply(ctx, config):\n\
+     \x20   raise RuntimeError(\"boom in apply\")\n\
+     \n\
+     plugin = define_plugin(apply, inject=[\"llm\"], provides={\"weather\": Service})\n"
+        .into()
+}
+
 /// Write `text` to `path`, its modification time later than any before:
 /// two edits within one tick of the clock are two changes.
 fn edit(path: &Path, text: &str) {
@@ -146,25 +211,27 @@ fn edit(path: &Path, text: &str) {
 /// The project of `lang` in `dir`, with its dev file: `weather` (the
 /// project's own row, configured with a city), `llm` and `caller`.
 fn project(dir: &Path, lang: &Lang) -> PathBuf {
-    let caller = match lang.runtime {
-        "node" => "dev/caller.mjs",
-        _ => "src/caller.py",
+    // The runtime package of this checkout, where `dev` finds it.
+    let link = |package: &str, from: &str| {
+        let modules = dir.join("node_modules/@arcships");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::os::unix::fs::symlink(
+            repo().join(from).canonicalize().unwrap(),
+            modules.join(package),
+        )
+        .unwrap();
     };
+    let package = r#"{ "name": "weather", "type": "module" }"#;
     match lang.runtime {
         "node" => {
-            std::fs::write(
-                dir.join("package.json"),
-                r#"{ "name": "weather", "type": "module" }"#,
-            )
-            .unwrap();
-            // The runtime of this checkout, where `dev` finds it.
-            let runtimes = dir.join("node_modules/@arcships");
-            std::fs::create_dir_all(&runtimes).unwrap();
-            std::os::unix::fs::symlink(
-                repo().join("node/rutis-runtime").canonicalize().unwrap(),
-                runtimes.join("rutis-runtime"),
-            )
-            .unwrap();
+            std::fs::write(dir.join("package.json"), package).unwrap();
+            link("rutis-runtime", "node/rutis-runtime");
+        }
+        "bun" => {
+            std::fs::write(dir.join("package.json"), package).unwrap();
+            // Bun manages it: the project runs in Bun.
+            std::fs::write(dir.join("bun.lock"), "").unwrap();
+            link("rutis-bun", "bun/rutis-bun");
         }
         _ => std::fs::write(
             dir.join("pyproject.toml"),
@@ -174,16 +241,12 @@ fn project(dir: &Path, lang: &Lang) -> PathBuf {
     }
     edit(&dir.join(lang.own), &(lang.source)("weather", "v1"));
     edit(&dir.join(lang.llm), &(lang.source)("llm", "v1"));
-    edit(&dir.join(caller), &(lang.source)("caller", "v1"));
-    let (llm, caller) = match lang.runtime {
-        "node" => (format!("./{}", lang.llm), format!("./{caller}")),
-        _ => ("py:fake_llm".to_owned(), "py:caller".to_owned()),
-    };
+    edit(&dir.join(lang.caller), &(lang.source)("caller", "v1"));
     let dev = json!({
         "rows": [
             { "id": "weather", "config": { "city": "Oslo" } },
-            { "id": "llm", "name": llm },
-            { "id": "caller", "name": caller },
+            { "id": "llm", "name": lang.names[0] },
+            { "id": "caller", "name": lang.names[1] },
         ]
     });
     let file = dir.join("rutis.dev.json");
@@ -243,7 +306,7 @@ fn the_dev_loop(lang: &Lang) {
     );
 
     // 2. The dev file: weather's config changes, and weather restarts with
-    // it.
+    // it. SIGUSR1 reads it again too (nothing changed then).
     let text = std::fs::read_to_string(&dev_file).unwrap();
     std::fs::write(&dev_file, text.replace("Oslo", "Tromso")).unwrap();
     expect(
@@ -255,10 +318,16 @@ fn the_dev_loop(lang: &Lang) {
             "caller: restarted (weather updated)",
         ],
     );
+    signal(&host, libc::SIGUSR1, false);
+    expect(
+        &mut host,
+        &["rutis-host: reloaded rutis.dev.json (0 rows changed)"],
+    );
 
-    // 3. A broken edit: the row that broke says so, and keeps running; a
-    // reload of the row it uses restarts it on the version it ran.
-    edit(&own, lang.broken);
+    // 3. An edit that does not import: the row that broke says so, and
+    // keeps running; a reload of the row it uses restarts it on the version
+    // it ran.
+    edit(&own, &(lang.broken)());
     let failed = expect(&mut host, &["weather: cannot reload: *"]);
     assert!(
         failed[0].ends_with("; the previous version keeps running"),
@@ -276,7 +345,20 @@ fn the_dev_loop(lang: &Lang) {
         ],
     );
 
-    // 4. The runtime ends (`restart` is `no`): the next change starts it
+    // 4. An edit whose apply throws: it imports, so it is the code the row
+    // runs from now on, and the row fails with its error (not running).
+    edit(&own, &(lang.throws)());
+    let failed = expect(
+        &mut host,
+        &["weather: cannot reload: *", "weather: failed: *"],
+    );
+    assert!(failed[0].contains("boom in apply"), "{failed:?}");
+    assert!(
+        !failed[0].ends_with("; the previous version keeps running"),
+        "{failed:?}"
+    );
+
+    // 5. The runtime ends (`restart` is `no`): the next change starts it
     // again, with the code as it is now.
     // SAFETY: plain kill(2) of the runtime process this host started.
     unsafe { libc::kill(pid(&lines[1]), libc::SIGKILL) };
@@ -305,6 +387,8 @@ fn the_dev_loop(lang: &Lang) {
     assert_eq!(count("llm: reloaded"), 1, "{context}");
     // Nothing said to reload while the runtime was down.
     assert_eq!(count("weather: reloaded"), 1, "{context}");
+    // Never the half-imported version (Python).
+    assert_eq!(count("plugin weather v9"), 0, "{context}");
     assert!(!stderr.contains("cannot resolve row"), "{context}");
 }
 
@@ -419,6 +503,12 @@ fn dev_rebuilds_a_go_project_only_for_its_sources() {
 #[test]
 fn dev_follows_a_node_project() {
     the_dev_loop(&NODE);
+}
+
+/// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
+#[test]
+fn dev_follows_a_bun_project() {
+    the_dev_loop(&BUN);
 }
 
 /// guarantee: host/dev-reload, host/dev-failed-reload-keeps-old
