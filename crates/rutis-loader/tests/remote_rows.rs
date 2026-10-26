@@ -62,11 +62,20 @@ impl HostDispatch for Clock {
 
 /// Start the remote runtime: `gpu`, accepting `main` with a token.
 async fn remote_python(project: &Path) -> (tokio::process::Child, String) {
+    remote_python_on(project, 0).await
+}
+
+/// [`remote_python`] listening on `port` (any free one with 0).
+async fn remote_python_on(project: &Path, port: u16) -> (tokio::process::Child, String) {
     let python = std::env::var("RUTIS_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
     let mut child = tokio::process::Command::new(python)
-        .args(["-m", "rutis", "listen:ws://127.0.0.1:0/rutis"])
+        .args([
+            "-m",
+            "rutis",
+            &format!("listen:ws://127.0.0.1:{port}/rutis"),
+        ])
         .args(["--id", "gpu", "--peer", "main"])
         .arg(project)
         .env("PYTHONPATH", sdk)
@@ -177,6 +186,104 @@ async fn a_remote_python_runtime_runs_loader_rows() {
             .then_some(())
         },
         "the link retrying",
+    )
+    .await;
+    root.shutdown().await.unwrap();
+}
+
+/// `weather_plugin` with a config schema of `fields`.
+fn weather_with_schema(fields: &[&str]) -> String {
+    let properties: Vec<String> = fields
+        .iter()
+        .map(|field| format!("\"{field}\": {{\"type\": \"string\"}}"))
+        .collect();
+    format!(
+        "{WEATHER}\n\nConfig = {{\"type\": \"object\", \"properties\": {{{}}}}}\n",
+        properties.join(", ")
+    )
+}
+
+/// The remote runtime restarts with other code (a plugin upgraded over
+/// there, its config schema changed): once the link connects again, the
+/// rows resolved with the earlier session are resolved again with the new
+/// one, so the row's schema is the new plugin's (#701).
+/// guarantee: loader/remote-runtime-rows
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_runtime_running_again_describes_its_rows_again() {
+    let project = tempfile::tempdir().unwrap();
+    let plugin = project.path().join("weather_plugin.py");
+    std::fs::write(&plugin, weather_with_schema(&["city"])).unwrap();
+    // A port of its own, to start the runtime on again.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (mut first, address) = remote_python_on(project.path(), port).await;
+
+    let root = Ctx::root().unwrap();
+    root.provide_at(host_key("clock"), Arc::new(Clock::default()))
+        .unwrap();
+    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
+        .await
+        .unwrap();
+    root.plugin(IdentityPlugin::new(
+        "main",
+        StaticIdentity::new(id("main")).present(id("gpu"), Credential::Bearer("main-token".into())),
+    ));
+    root.plugin(LinkPlugin::new(
+        LinkConfig::dial(id("gpu"), "websocket", "main", &address).require("runtime"),
+    ));
+    root.plugin(RuntimeAccessPlugin::new(id("gpu"), "py"));
+    let python = RuntimePlugin::remote("py");
+    let handle = python.handle();
+    let rows = Arc::new(RuntimeResolver::modules(python.handle()));
+    root.plugin(python);
+    let plugin_loader = LoaderPlugin::new(
+        Chain::new().with_shared(rows.clone()),
+        LoaderOptions::default(),
+    );
+    let loader = plugin_loader.handle();
+    root.plugin(plugin_loader).await.unwrap();
+    root.plugin(RuntimeRowsPlugin::new(rows));
+    let patches: Vec<Patch> = serde_json::from_value(json!([{
+        "insert": [{ "id": "w", "name": "py:weather_plugin", "config": { "city": "Oslo" } }]
+    }]))
+    .unwrap();
+    loader
+        .reconcile(vec![Layer::new("rows", patches)], None)
+        .await
+        .unwrap();
+    let fields = |loader: &rutis_loader::Loader| -> Vec<String> {
+        loader
+            .get("w")
+            .and_then(|entry| entry.schema)
+            .and_then(|schema| schema["properties"].as_object().cloned())
+            .map(|properties| properties.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    COLD.until(|| fields(&loader) == ["city"], "the first schema")
+        .await;
+
+    // Over there, the plugin is upgraded and the runtime restarted.
+    first.start_kill().unwrap();
+    let _ = first.wait().await;
+    COLD.until(
+        || {
+            !matches!(
+                handle.state(),
+                rutis_bridge::runtime::RuntimeState::Ready(_)
+            )
+        },
+        "the runtime to go",
+    )
+    .await;
+    std::fs::write(&plugin, weather_with_schema(&["city", "units"])).unwrap();
+    let (_second, _) = remote_python_on(project.path(), port).await;
+    COLD.eventually_with(
+        || (fields(&loader) == ["city", "units"]).then_some(()),
+        "the row described again by the new session",
+        || format!("{:?}", fields(&loader)),
     )
     .await;
     root.shutdown().await.unwrap();

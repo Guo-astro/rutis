@@ -8,11 +8,16 @@ import { open } from './channel/index.mjs'
 import { frame } from './channel/unix.mjs'
 import { decode } from './codec.mjs'
 
-const { executable, channel: spec, port, signal } = workerData
+const { executable, channel: spec, port, signal, ended: endedFlag } = workerData
 function send(message) {
   port.postMessage(message)
   Atomics.add(signal, 0, 1)
   Atomics.notify(signal, 0)
+}
+// The channel ended: said at once, also to a main thread that never looks
+// at its messages again (a plugin keeps it busy), for a watchdog (#682).
+function channelEnded() {
+  if (endedFlag) { Atomics.store(endedFlag, 0, 1); Atomics.notify(endedFlag, 0) }
 }
 
 // Main-thread Worker error handlers cannot run during Atomics.wait(). Publish
@@ -41,7 +46,7 @@ try {
   }
   const handlers = {
     message: text => { if (early) early.push(text); else forward(text) },
-    closed: reason => { if (reason) failure = reason; ended() },
+    closed: reason => { if (reason) failure = reason; channelEnded(); ended() },
   }
   if (spec) {
     channel = await open(spec, handlers)
@@ -72,6 +77,7 @@ try {
 } catch (error) {
   failure = error.message
 } finally {
+  channelEnded()
   channel?.close()
   server?.close()
   if (child && child.exitCode === null && child.signalCode === null) child.kill()

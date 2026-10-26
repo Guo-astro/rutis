@@ -17,7 +17,9 @@ export class Client {
   // `worker`: the I/O worker's script; tests give one that misbehaves.
   // `inline` and `requires`: the session's (control methods run as their
   // frame arrives; capabilities the far end must declare).
-  constructor(channel: string, { dispatch, settled, endpoint, token, inline, requires, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint?: Endpoint, token?: string, inline?: string[], requires?: string[], worker?: URL }) {
+  // `ended`: an Int32Array on a SharedArrayBuffer whose first element the
+  // I/O worker sets to 1 once the channel ends, whatever this thread does.
+  constructor(channel: string, { dispatch, settled, endpoint, token, inline, requires, ended, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint?: Endpoint, token?: string, inline?: string[], requires?: string[], ended?: Int32Array, worker?: URL }) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -38,7 +40,7 @@ export class Client {
     })
     this.#port.on('message', message => this.#receive(message))
     this.#worker = new Worker(worker, {
-      workerData: { channel, token, port: port2, signal: this.#signal }, transferList: [port2],
+      workerData: { channel, token, port: port2, signal: this.#signal, ended }, transferList: [port2],
     } as any)
     this.#worker.on('error', error => this.#session.close(error))
     this.#exited = new Promise(resolve => this.#worker.once('exit', code => {

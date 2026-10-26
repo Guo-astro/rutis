@@ -70,7 +70,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, PluginFactor
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::{
     row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
-    RuntimeHandle,
+    RuntimeHandle, RuntimeState,
 };
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
@@ -192,6 +192,10 @@ pub struct RuntimeResolver {
     /// the set only once it is resolved with the runtime, so a refresh that
     /// is cut short is redone by the next one.
     offline: Mutex<HashSet<String>>,
+    /// A remote runtime's names, each with the session that described it:
+    /// nothing says when a plugin over there changed, so a name described
+    /// by an earlier session is resolved again with the current one (#701).
+    described: Mutex<HashMap<String, String>>,
 }
 
 impl RuntimeResolver {
@@ -209,6 +213,7 @@ impl RuntimeResolver {
             catalog: ServiceCatalog::default(),
             resolved: Mutex::new(HashMap::new()),
             offline: Mutex::new(HashSet::new()),
+            described: Mutex::new(HashMap::new()),
         }
     }
 
@@ -263,6 +268,16 @@ impl RuntimeResolver {
     /// dropped, so the next resolution asks the runtime again.
     pub(crate) fn take_stale(&self) -> HashSet<String> {
         let mut stale = self.offline.lock().unwrap();
+        // A remote runtime that runs again (a new session) may run other
+        // code: what an earlier session described is resolved again (#701).
+        if let RuntimeState::Ready(process) = self.runtime.state() {
+            let session = process.connection().tag();
+            for (name, by) in self.described.lock().unwrap().iter() {
+                if by != session {
+                    stale.insert(name.clone());
+                }
+            }
+        }
         self.resolved.lock().unwrap().retain(|name, found| {
             let current = Path::new(found.meta["entry"].as_str().unwrap_or_default());
             let recorded = found.meta.get("version").filter(|v| !v.is_null()).cloned();
@@ -359,6 +374,12 @@ impl Resolver for RuntimeResolver {
                 .cloned()
                 .collect();
             self.offline.lock().unwrap().remove(name);
+            if self.runtime.is_remote() {
+                self.described
+                    .lock()
+                    .unwrap()
+                    .insert(name.to_owned(), process.connection().tag().to_owned());
+            }
             let resolved = Arc::new(leaf_resolved(
                 name,
                 self.runtime.name(),
@@ -758,6 +779,13 @@ impl DynPlugin for JsRow {
                 Ok(started) => started,
                 Err(error) => {
                     release(leases).await;
+                    // The runtime's process ended while the row loaded:
+                    // not the row's failure, whichever row's code ended it.
+                    // The row waits for its runtime, as the others in it do
+                    // (#682).
+                    if let Some(ended) = process.connection().close_reason() {
+                        return wait_for_the_runtime(ctx, ended).await;
+                    }
                     return Err(error);
                 }
             };
@@ -1050,6 +1078,26 @@ impl PluginMounter for DefinitionMounter {
         .announcing(announced)
         .named(id.or_else(|| Some(plugin.name().to_owned())))
         .build(&config)
+    }
+}
+
+/// How long a row whose runtime ended while it loaded waits for that end to
+/// reach it (the runtime withdrawing its rows' service, which ends this
+/// generation) before it fails, saying the runtime ended.
+const RUNTIME_GONE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// End a generation whose runtime's session ended (`ended`) while it loaded:
+/// once the runtime's end reaches the row, which then waits for the
+/// runtime, with nothing of it registered.
+async fn wait_for_the_runtime(
+    ctx: &Ctx,
+    ended: rutis_bridge::session::Error,
+) -> Result<Effect, Error> {
+    tokio::select! {
+        () = ctx.cancelled() => Ok(Effect::Done),
+        () = tokio::time::sleep(RUNTIME_GONE) => Err(failed(format!(
+            "its runtime ended while it loaded: {ended}"
+        ))),
     }
 }
 
