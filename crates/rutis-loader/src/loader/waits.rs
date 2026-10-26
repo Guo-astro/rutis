@@ -29,6 +29,11 @@ pub enum WaitReason {
     /// No row declares it. `like` is a service name close to it that a
     /// row declares or something provides (a misspelt name).
     NoProvider { like: Option<String> },
+    /// No enabled row declares it, but rows that are disabled (themselves
+    /// or by a group) were never resolved, so what they provide is not
+    /// known: one of them may (`Loader::check` resolves them). `like` as
+    /// for [`WaitReason::NoProvider`].
+    NoEnabledProvider { like: Option<String> },
     /// rutis knows why, in a sentence (a Rust service of that name whose
     /// type is not marked `#[rutis::service]`).
     Explained(String),
@@ -70,6 +75,9 @@ struct Fact {
     status: EntryStatus,
     plugin: Option<PluginId>,
     provides: Vec<String>,
+    /// Disabled (itself or by a group), and what it provides not known: it
+    /// was never resolved.
+    unknown_off: bool,
 }
 
 impl Loader {
@@ -200,6 +208,16 @@ impl Loader {
                                         Some((row, fact)) => {
                                             provider(row, fact, &own, &missing, named)
                                         }
+                                        // Disabled rows never resolved may
+                                        // provide it: not "no row".
+                                        None if facts.iter().any(|(id, fact)| {
+                                            *id != entry.id && fact.unknown_off
+                                        }) =>
+                                        {
+                                            WaitReason::NoEnabledProvider {
+                                                like: closest(&service, &known),
+                                            }
+                                        }
                                         None => WaitReason::NoProvider {
                                             like: closest(&service, &known),
                                         },
@@ -241,13 +259,15 @@ impl Loader {
 }
 
 /// A row as read under the loader's lock: its id, status and fiber, its
-/// resolution and raw config, whose declarations are asked after.
+/// resolution and raw config, whose declarations are asked after, and
+/// whether it is enabled (itself and the groups around it).
 type Read = (
     String,
     EntryStatus,
     Option<PluginId>,
     Option<Arc<Resolved>>,
     serde_json::Value,
+    bool,
 );
 
 /// Each plugin row (for a row inside instances, its copy in instance
@@ -279,6 +299,7 @@ fn read_rows(state: &State, scope: Option<u64>) -> Vec<Read> {
                 info.plugin,
                 resolved,
                 row.config.clone(),
+                state.desired.wanted(row),
             )
         })
         .collect()
@@ -288,16 +309,17 @@ fn read_rows(state: &State, scope: Option<u64>) -> Vec<Read> {
 /// of its plugin outside the loader's lock.
 fn facts(rows: Vec<Read>) -> Vec<(String, Fact)> {
     rows.into_iter()
-        .map(|(id, status, plugin, resolved, config)| {
-            let provides = resolved
+        .map(|(id, status, plugin, resolved, config, wanted)| {
+            let declared = resolved
                 .and_then(|resolved| resolved.declares.as_ref().map(|declares| declares(&config)))
-                .and_then(Result::ok)
-                .map(|declared| declared.provides)
-                .unwrap_or_default();
+                .and_then(Result::ok);
             let fact = Fact {
                 status,
                 plugin,
-                provides,
+                unknown_off: !wanted && declared.is_none(),
+                provides: declared
+                    .map(|declared| declared.provides)
+                    .unwrap_or_default(),
             };
             (id, fact)
         })

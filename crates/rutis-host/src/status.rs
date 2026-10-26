@@ -87,6 +87,12 @@ fn why(reason: &WaitReason, runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> S
             format!("no row provides it; did you mean {like}?")
         }
         WaitReason::NoProvider { like: None } => "no row provides it".into(),
+        WaitReason::NoEnabledProvider { like } => format!(
+            "no enabled row provides it{}; rutis-host check says whether a disabled row does",
+            like.as_ref()
+                .map(|like| format!(", did you mean {like}?"))
+                .unwrap_or_default()
+        ),
         WaitReason::Explained(why) => first(why),
         WaitReason::ProviderDisabled { row } => {
             format!("row {row}, which provides it, is disabled")
@@ -643,6 +649,22 @@ mod tests {
                     WaitReason::ProviderDisabled { row: row("mailer") },
                 )],
                 "waiting for mail (row mailer, which provides it, is disabled)",
+            ),
+            (
+                vec![Wait::new(
+                    "mail",
+                    WaitReason::NoEnabledProvider { like: None },
+                )],
+                "waiting for mail (no enabled row provides it; rutis-host check says whether a disabled row does)",
+            ),
+            (
+                vec![Wait::new(
+                    "lmm",
+                    WaitReason::NoEnabledProvider {
+                        like: Some("llm".into()),
+                    },
+                )],
+                "waiting for lmm (no enabled row provides it, did you mean llm?; rutis-host check says whether a disabled row does)",
             ),
             (
                 vec![

@@ -81,6 +81,23 @@ async fn loader_in(root: Ctx) -> (Ctx, Loader) {
             })
         }),
     );
+    // The same plugin under a name only a disabled row uses: never
+    // resolved, as a disabled runtime row's module is not.
+    builtins.register("unused", |config: &Value| {
+        Ok(Provider {
+            provides: names(config, "provides"),
+            fail: false,
+        })
+    });
+    builtins.declare(
+        "unused",
+        Arc::new(|config: &Value| {
+            Ok(Declared {
+                provides: names(config, "provides"),
+                ..Declared::default()
+            })
+        }),
+    );
     let plugin = LoaderPlugin::new(builtins, LoaderOptions::default());
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
@@ -270,6 +287,26 @@ async fn a_long_wait_is_reported_by_service_name() {
     assert_eq!(
         said,
         "plugin provider is still waiting after 0.1s for lmm: it starts once that is provided"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// A disabled row that was never resolved may provide what a row waits
+/// for: not "no row provides it", but that no enabled row does. A disabled
+/// row whose plugin is known (another row resolved it) is named.
+/// guarantee: host/row-state-lines
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disabled_row_not_resolved_is_not_taken_for_no_provider() {
+    let (root, loader) = loader().await;
+    let rows = json!([
+        { "id": "off", "name": "unused", "disabled": true, "config": { "provides": ["mail"] } },
+        { "id": "reader", "name": "provider", "inject": ["mail"] },
+    ]);
+    loader.reconcile(layer(rows), None).await.unwrap();
+    let reader = waits(&loader, "reader", |waits| !waits.is_empty()).await;
+    assert_eq!(
+        reasons(&reader),
+        [("mail", &WaitReason::NoEnabledProvider { like: None })]
     );
     root.shutdown().await.unwrap();
 }

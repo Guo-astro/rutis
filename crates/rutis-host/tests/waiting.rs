@@ -73,3 +73,49 @@ fn a_waiting_row_says_what_it_waits_for_and_why() {
         "output: {output:#?}; stderr: {stderr}"
     );
 }
+
+/// A disabled row's plugin, which declares in its code what it provides,
+/// is never resolved while the host runs: the row waiting for that
+/// service is not told that no row provides it, but that no enabled row
+/// does, and where to look (acceptance of #676).
+#[test]
+fn a_disabled_provider_is_not_taken_for_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [
+        (
+            "package.json",
+            r#"{ "name": "waiting", "type": "module" }"#.to_owned(),
+        ),
+        ("model.mjs", plugin("[]", "{ llm: { ask: 'sync' } }", false)),
+        ("chat.mjs", plugin("['llm']", "{}", false)),
+    ];
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let config = json!({
+        "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
+        "rows": [
+            { "id": "model", "name": "./model.mjs", "disabled": true },
+            { "id": "chat", "name": "./chat.mjs" },
+        ]
+    });
+    let file = dir.path().join("rutis.json");
+    std::fs::write(&file, config.to_string()).unwrap();
+    let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+    host.wait_line(|line| {
+        line.starts_with("chat: waiting for llm (").then(|| {
+            assert_eq!(
+                line,
+                "chat: waiting for llm (no enabled row provides it; \
+                 rutis-host check says whether a disabled row does)"
+            );
+        })
+    });
+    signal(&host, libc::SIGTERM, false);
+    let (status, stderr, output) = host.exit();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "output: {output:#?}; stderr: {stderr}"
+    );
+}
