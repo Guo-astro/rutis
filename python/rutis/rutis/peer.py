@@ -325,6 +325,7 @@ def encode_error(thrown: BaseException) -> dict:
             nodes.extend(shift(graph["nodes"]))
             reference = shift(graph["root"])
             seen[id(error)] = reference
+            _append_rethrown(nodes, reference, error)
             return reference
         node = {
             "type": "error",
@@ -354,6 +355,35 @@ def encode_error(thrown: BaseException) -> dict:
         "message": message,
         "graph": {"root": root, "nodes": nodes},
     }
+
+
+_MAX_RETHROWN = 8
+
+
+def _append_rethrown(nodes: list, reference: Any, error: BaseException) -> None:
+    """A received error thrown on: its spliced root node gets this
+    process's frames for the rethrow as one more `rethrown` item
+    (design 2026-10-26 §4.4), at most 8; the received graph is kept as
+    it came (the node is replaced by a copy)."""
+    if error.__traceback__ is None:
+        return
+    if not isinstance(reference, dict) or reference.get("type") != "reference":
+        return
+    index = reference.get("value")
+    if not isinstance(index, int) or not 0 <= index < len(nodes):
+        return
+    root = nodes[index]
+    if not isinstance(root, dict) or root.get("type") != "error":
+        return
+    rethrown = root.get("rethrown")
+    if rethrown is None:
+        rethrown = []
+    if not isinstance(rethrown, list) or len(rethrown) >= _MAX_RETHROWN:
+        return
+    frames = "".join(traceback.format_tb(error.__traceback__)).rstrip("\n")
+    if not frames:
+        return
+    nodes[index] = {**root, "rethrown": [*rethrown, frames]}
 
 
 def _well_formed(graph: Any) -> dict | None:
