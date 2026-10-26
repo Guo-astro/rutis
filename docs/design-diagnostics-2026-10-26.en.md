@@ -55,7 +55,7 @@ Diagnostics are about "being able to see", not "deciding for others". Each of th
 | G8 | When a Node, Bun or Python runtime is held by synchronous code for 5 seconds, it prints which method of which row, without interrupting it | 6 |
 | G9 | Plugin output carries a name prefix: on by default in `dev`, off by default in `run` | 7 |
 | G10 | Rust embedding writes load failures and runtime exits to standard error by default; the output does not contain platform names | 7 |
-| G11 | Error type names and fields do not change, and loader types such as `Failure` do not change; what changes is the error text, the `plugin failed: ` prefix and Node's `error.stack` | 11 |
+| G11 | Each language's error type names and fields do not change, and loader types such as `Failure` do not change; what changes is the error text, the `plugin failed: ` prefix, Node's `error.stack`, and a new variant with a code in Rust's `session::Error` (§4.3) | 11 |
 
 ## 4. Errors
 
@@ -103,6 +103,8 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 | `peer-gone` | The runtime on the other side exited or disconnected during the call | `{runtime, reason}` |
 
 `SyncWaitCycle` and `AggregateError` already have their own type names and get no code. Codes are for programs and do not appear in the line of text meant for people. Rows can be added to the table during implementation; existing rows do not change.
+
+On the Rust side (decided during implementation, 2026-10-26): `rutis_bridge::session::Error` has a new variant, `Binding { code: Option<&'static str>, message, data }`, used when rutis refuses a call: a method that does not exist, wrong arguments and a service that is not there carry a code; protocol refusals (one end not keeping to the protocol) carry none. `Error::Value` now means only a value that cannot cross. On the wire both `Binding` and `Value` are `BindingError`s with a code (`bad-value` for `Value`), and a `Transport` error during a call is `peer-gone`; `Error::code()` gives the same code on this side. A Rust host that matches every variant of `session::Error` needs the new arm (incompatible, in the migration guide).
 
 ### 4.4 Locations across languages
 
@@ -299,7 +301,7 @@ The second half of #676: cycles of mutual `inject`, and several rows providing t
 
 Written into "Migrating to 0.18" (both languages):
 
-- **Rust hosts**: `ErrorKind::PluginFailed` is displayed without the `plugin failed: ` prefix; plugin errors are no longer strings, read the structure with `rutis_bridge::thrown()`. Code that matches on text must switch to error codes. Loader types (`Failure`, `ReconcileReport`) do not change.
+- **Rust hosts**: `ErrorKind::PluginFailed` is displayed without the `plugin failed: ` prefix; plugin errors are no longer strings, read the structure with `rutis_bridge::thrown()`. Code that matches on text must switch to error codes. Loader types (`Failure`, `ReconcileReport`) do not change. `session::Error` gains the `Binding` variant (§4.3).
 - **Rust embedding (behavior change)**: load failures and runtime exits are written to standard error by default (can be turned off); the default output no longer starts with `[rutis]`. `shutdown()` does not change.
 - **Node, Bun**: for cross-language errors received, `error.stack` becomes the caller's own stack (previously the other side's).
 - **All languages**: error type names and fields do not change. Error text will change.

@@ -119,10 +119,25 @@ impl HostDispatch for RowService {
                     None => error,
                 })
             }
-            None => Err(crate::runtime::Error::Value(format!(
-                "unknown service method {}.{method}",
-                self.handle
-            ))),
+            None => {
+                let mut methods: Vec<&str> = self
+                    .methods
+                    .as_object()
+                    .map(|methods| methods.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
+                methods.sort_unstable();
+                let service = self.service.as_deref().unwrap_or(&self.handle);
+                Err(crate::runtime::Error::binding(
+                    crate::session::code::NO_METHOD,
+                    format!(
+                        "{service} has no method {method} (methods: {})",
+                        methods.join(", ")
+                    ),
+                    Some(
+                        serde_json::json!({ "service": service, "method": method, "methods": methods }),
+                    ),
+                ))
+            }
         }
     }
 

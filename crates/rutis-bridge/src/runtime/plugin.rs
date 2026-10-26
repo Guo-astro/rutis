@@ -305,7 +305,7 @@ impl DynPlugin for RuntimePlugin {
                 let session = ctx
                     .get_key::<dyn crate::runtime::RuntimeSession>(self.session[0].clone())
                     .ok_or_else(|| {
-                        crate::runtime::Error::Value(format!(
+                        crate::runtime::Error::refused(format!(
                             "the session of the {} runtime is gone",
                             self.runtime
                         ))
@@ -349,7 +349,7 @@ impl DynPlugin for RuntimePlugin {
                 .filter(|feature| !process.supports(feature))
                 .collect();
             if !missing.is_empty() {
-                let error = crate::runtime::Error::Value(format!(
+                let error = crate::runtime::Error::refused(format!(
                     "the {} runtime lacks {}: @arcships/rutis-runtime 0.3.0 or later \
                      (or a runtime speaking its row contract) is required",
                     self.runtime,

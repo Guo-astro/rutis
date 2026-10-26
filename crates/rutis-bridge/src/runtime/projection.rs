@@ -237,7 +237,7 @@ impl Projection {
             let published = match binding.as_ref() {
                 Some((_, writer)) => writer
                     .set(ctx, proxy.clone())
-                    .map_err(|error| Error::Value(error.to_string())),
+                    .map_err(|error| Error::refused(error.to_string())),
                 None => match ctx.provide_mut_at(key.clone(), proxy.clone()) {
                     Ok(registered) => {
                         binding = Some(registered);
@@ -258,7 +258,7 @@ impl Projection {
                         }
                         Err(Error::Value(why))
                     }
-                    Err(error) => Err(Error::Value(error.to_string())),
+                    Err(error) => Err(Error::refused(error.to_string())),
                 },
             };
             if published.is_err() {

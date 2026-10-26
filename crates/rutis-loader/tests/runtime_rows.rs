@@ -1292,6 +1292,20 @@ async fn an_error_from_a_service_method_says_where_it_came_from() {
             "{method}"
         );
     }
+    // A method the service does not have: `no-method`, with the methods
+    // it has.
+    let missing = weather
+        .invoke("tomorow", json!([]).into())
+        .expect_err("no such method");
+    assert_eq!(missing.code(), Some("no-method"));
+    assert_eq!(
+        missing.to_string(),
+        "weather has no method tomorow (methods: today, tomorrow)"
+    );
+    assert_eq!(
+        missing.data().unwrap()["methods"],
+        json!(["today", "tomorrow"])
+    );
     drop(weather);
     root.shutdown().await.unwrap();
 }

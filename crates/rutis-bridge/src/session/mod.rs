@@ -55,22 +55,78 @@ pub enum Error {
     /// The session could not be established: see [`Handshake`].
     #[error("{0}")]
     Handshake(Handshake),
+    /// A call this side refused, other than for a value: with a stable
+    /// [`code`] when it is one a developer meets (a method that does not
+    /// exist, wrong arguments, a service that is not there; the
+    /// diagnostics design §4.3), without one for a far end that broke the
+    /// protocol. The far end gets a `BindingError` carrying the code and
+    /// `data`.
+    #[error("{message}")]
+    Binding {
+        code: Option<&'static str>,
+        message: String,
+        data: Option<serde_json::Value>,
+    },
+}
+
+/// The codes of the `BindingError`s rutis raises (the diagnostics design
+/// §4.3). A program decides by these, never by the text.
+pub mod code {
+    /// A service used without being declared in `inject`.
+    pub const NOT_DECLARED: &str = "not-declared";
+    /// A service with no provider now.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// A method the service does not have.
+    pub const NO_METHOD: &str = "no-method";
+    /// Arguments of the wrong number or type.
+    pub const BAD_ARGUMENT: &str = "bad-argument";
+    /// A value that cannot cross, or a message over the limit.
+    pub const BAD_VALUE: &str = "bad-value";
+    /// The far end's runtime ended or went away during the call.
+    pub const PEER_GONE: &str = "peer-gone";
 }
 
 impl Error {
+    /// A call refused with `code` (one of [`code`]), saying `message`, with
+    /// the details in `data`.
+    pub fn binding(code: &'static str, message: String, data: Option<serde_json::Value>) -> Self {
+        Self::Binding {
+            code: Some(code),
+            message,
+            data,
+        }
+    }
+
+    /// A call refused because the far end broke the protocol: no code.
+    pub fn refused(message: String) -> Self {
+        Self::Binding {
+            code: None,
+            message,
+            data: None,
+        }
+    }
+
     /// The `code` an error carries: one a Rust service method returned as
-    /// `Err(e)` ([`crate::exports`]), or any error whose graph names one
-    /// (a JavaScript error with a string `code`). `None` for others.
+    /// `Err(e)` ([`crate::exports`]), any error whose graph names one (a
+    /// JavaScript error with a string `code`), and rutis's own
+    /// ([`code`]: a value error is `bad-value`, a session that ended
+    /// during the call `peer-gone`). `None` for others.
     pub fn code(&self) -> Option<&str> {
-        let Self::Remote { graph, .. } = self else {
-            return None;
-        };
-        graph_root(graph.as_ref()?)?.get("code")?.as_str()
+        match self {
+            Self::Remote { graph, .. } => graph_root(graph.as_ref()?)?.get("code")?.as_str(),
+            Self::Binding { code, .. } => *code,
+            Self::Value(_) => Some(code::BAD_VALUE),
+            Self::Transport(_) => Some(code::PEER_GONE),
+            Self::SyncWaitCycle(_) | Self::Handshake(_) => None,
+        }
     }
 
     /// The `data` an error carries, as [`Error::code`]: the serde value of
     /// the `E` a Rust service method returned.
     pub fn data(&self) -> Option<serde_json::Value> {
+        if let Self::Binding { data, .. } = self {
+            return data.clone();
+        }
         let Self::Remote { graph, .. } = self else {
             return None;
         };

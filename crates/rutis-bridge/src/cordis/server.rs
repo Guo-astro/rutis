@@ -31,7 +31,7 @@ where
 {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if self.closing.load(Ordering::SeqCst) {
-            return Err(Error::Value("plugin is closing".into()));
+            return Err(Error::refused("plugin is closing".into()));
         }
         if target.is_empty() {
             match method {
@@ -41,7 +41,7 @@ where
                         .lock()
                         .unwrap()
                         .take()
-                        .ok_or_else(|| Error::Value("already mounted".into()))?;
+                        .ok_or_else(|| Error::refused("already mounted".into()))?;
                     let ctx = self.ctx.clone();
                     let exports = self.exports.clone();
                     let config = args.json()?["config"].clone();
@@ -62,7 +62,7 @@ where
                         Ok(Value::Null.into())
                     }))
                 }
-                _ => Err(Error::Value("unknown control method".into())),
+                _ => Err(Error::refused("unknown control method".into())),
             }
         } else {
             let exports = self
@@ -70,7 +70,7 @@ where
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or_else(|| Error::Value("plugin is not mounted".into()))?;
+                .ok_or_else(|| Error::refused("plugin is not mounted".into()))?;
             exports.invoke(target, method, args)
         }
     }

@@ -180,7 +180,7 @@ fn wait(result: rutis::host::BoxFuture<'static, Result<(), Arc<ErrorKind>>>) -> 
     Ok(Value::future(async move {
         result
             .await
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::refused(error.to_string()))?;
         Ok(Value::Undefined)
     }))
 }
@@ -192,7 +192,7 @@ impl Host {
             || name.starts_with('/')
             || std::path::Path::new(name).is_absolute()
         {
-            return Err(Error::Value(format!(
+            return Err(Error::refused(format!(
                 "{name}: a host loads installed plugins only, not files"
             )));
         }
@@ -234,7 +234,7 @@ impl Host {
         self.installed(&name)?;
         let key_of = |service: &str| {
             (self.services)(service).ok_or_else(|| {
-                Error::Value(format!("{service} is not a service {name} can use here"))
+                Error::refused(format!("{service} is not a service {name} can use here"))
             })
         };
         // The row's scope: each isolated service under its label, kept
@@ -257,7 +257,7 @@ impl Host {
             let view = {
                 let mut loaded = host.loaded.lock().unwrap();
                 if loaded.contains_key(&key) {
-                    return Err(Error::Value(format!("{key} is already loaded")));
+                    return Err(Error::refused(format!("{key} is already loaded")));
                 }
                 let view = scope.plugin_with(Shared::new(found.factory, extra), config);
                 loaded.insert(key, view.clone());
@@ -265,7 +265,7 @@ impl Host {
             };
             (&view)
                 .await
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::refused(error.to_string()))?;
             Ok(Value::Undefined)
         }))
     }
@@ -280,7 +280,7 @@ impl Host {
             .unwrap()
             .get(&key)
             .cloned()
-            .ok_or_else(|| Error::Value(format!("{key} is not loaded")))?;
+            .ok_or_else(|| Error::refused(format!("{key} is not loaded")))?;
         wait(view.update(config))
     }
 
@@ -309,7 +309,7 @@ impl crate::Handler for Hosting {
             "plugins.load" => host.load(args),
             "plugins.update" => host.update(args),
             "plugins.unload" => host.unload(args),
-            _ => Err(Error::Value(format!("{method} is not offered here"))),
+            _ => Err(Error::refused(format!("{method} is not offered here"))),
         }
     }
 }

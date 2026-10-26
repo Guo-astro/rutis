@@ -246,6 +246,7 @@ PR 模板中有对应的检查项。
 | `bridge/in-flight-call-fails-once` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §7；[requirements-protocol-plugins](requirements-protocol-plugins.md) §6 | 链路断开时，进行中的调用以传输错误显式失败（不报成功、不挂死）；对端只执行一次，重连后不重发 | 核心承诺 | 已验证 | `rutis-bridge/tests/fault_links.rs::a_call_in_flight_when_the_link_drops_fails_and_ran_once`、`tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | 中断时调用显式失败、不报假成功、不自动重试副作用（Q3.1）；本机运行时进程被 `kill -9`、会话随之结束时，经 rutis-host 二进制验证（S3）；两个容器之间经真实网络、链路因心跳超时断开时（`tests/e2e/tests/netem.rs`，每晚，#433） |
 | `bridge/no-call-on-a-dead-session` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §3.2、§7 | 链路断开和重连期间发起的调用要么显式失败，要么落在新会话上，不会落在旧会话；断开期间不提供 `Peer` 服务，旧会话的引用一直失败 | 核心承诺 | 已验证 | `rutis-bridge/tests/fault_links.rs::calls_while_a_link_reconnects_fail_or_reach_the_new_session` | |
 | `bridge/cancel-reaches-callee` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；[插件 API](guide/plugin-api.md)「取消」 | 调用方放弃等待时，取消到达被调方；结果被释放时释放也到达，被调方丢弃 future | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::under_delay_a_cancellation_and_a_release_reach_the_callee`、`rutis-bridge/tests/cancellation.rs` | Node 被调方收到 `AbortSignal` 由 `cancellation.rs` 覆盖 |
+| `bridge/error-codes` | [诊断设计](design-diagnostics-2026-10-26.md) §4.3 | rutis 自己产生的 `BindingError` 带稳定的错误码与 `data`，一路到对面：方法不存在 `no-method`（列出有哪些方法）、参数不对 `bad-argument`、服务不在 `unavailable`、值传不过去 `bad-value`、调用中对面结束 `peer-gone`；协议层面的拒绝不带码；Rust 一侧 `session::Error::code()` 给出同样的码（#677） | 契约行为 | 已验证 | `rutis-bridge` 单元测试 `session::protocol::tests::rutis_errors_cross_with_their_codes`、`rutis-loader/tests/runtime_rows.rs::an_error_from_a_service_method_says_where_it_came_from` | `not-declared` 与各语言 SDK 自己产生的错误随 #677 后续步骤补上 |
 | `bridge/multihop-cancel-and-release` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；质量规范 Q6.2.7 | 多跳转发（b → a → c）时取消和释放逐跳传递 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::cancellation_and_release_pass_hop_by_hop` | |
 | `bridge/call-chains-across-processes` | [会话标签设计](design-session-tags-2026-10-12.md) §五；[多语言 M1 设计](design-multilang-m1-2026-10-04.md) §7.2；质量规范 Q6.13.2 | 调用链经 link 跨任意多个进程、往返任意次时，每个进程只把自己会话的条目还原为原生调用号；另一个进程的调用不会被当成本进程的调用（不因此结束会话，不投错等待线程，不进入本进程的等待图） | 契约行为 | 已验证 | `rutis-bridge/tests/session_tags.rs::a_call_chain_crossing_processes_keeps_each_process_s_calls_apart`、`tests/e2e/tests/migration.rs::an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs` | #325。前者是两个子进程、确定性；后者经 rutis-host 与 fixture 宿主（S4）。标签唯一性是概率性的（进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有 #325 |
 | `bridge/replies-match-calls` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2 | 多个调用同时进行、以任意顺序返回时，每个回复交给它自己的调用 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::interleaved_replies_reach_their_own_calls` | 放行顺序按种子打乱（`RUTIS_SEED`） |
@@ -402,13 +403,13 @@ PR 模板中有对应的检查项。
 | `boundary/5.*`（不含已撤回的 5.2–5.5） | 3 | 1 | 0 | 0 | 4 |
 | `events/*`（§8a） | 16 | 0 | 0 | 0 | 16 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*`（不含已撤回的 `exported-services`） | 26 | 0 | 0 | 1 | 27 |
+| `bridge/*`（不含已撤回的 `exported-services`） | 27 | 0 | 0 | 1 | 28 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 1 | 1 | 0 | 0 | 2 |
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 37 | 4 | 0 | 0 | 41 |
 | `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 151 | 12 | 1 | 3 | 167 |
+| 合计 | 152 | 12 | 1 | 3 | 168 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 

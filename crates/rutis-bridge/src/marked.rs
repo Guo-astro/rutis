@@ -55,10 +55,23 @@ impl HostDispatch for Marked {
             .iter()
             .find(|entry| entry.methods().contains(&method))
         else {
-            return Err(Error::Value(format!(
-                "{} has no method {method}",
-                short(self.type_name)
-            )));
+            let mut methods: Vec<&str> = self
+                .entries
+                .iter()
+                .flat_map(|entry| entry.methods().iter().copied())
+                .collect();
+            methods.sort_unstable();
+            let service = short(self.type_name);
+            return Err(Error::binding(
+                crate::session::code::NO_METHOD,
+                format!(
+                    "{service} has no method {method} (methods: {})",
+                    methods.join(", ")
+                ),
+                Some(
+                    serde_json::json!({ "service": service, "method": method, "methods": methods }),
+                ),
+            ));
         };
         // Read interceptors apply with the calling row as the reader, as
         // for a Rust reader in its place; with no row (a Rust or peer
@@ -68,7 +81,12 @@ impl HostDispatch for Marked {
         let service = entry
             .resolve(&self.ctx, &self.native, &self.provision, actor)
             .map_err(|why| {
-                Error::Value(format!("{} is not available: {why}", short(self.type_name)))
+                let service = short(self.type_name);
+                Error::binding(
+                    crate::session::code::UNAVAILABLE,
+                    format!("{service} is not available: {why}"),
+                    Some(serde_json::json!({ "service": service, "reason": why.to_string() })),
+                )
             })?;
         match entry.invoke(&service, method, Encoded(Box::new(args)), &WIRE) {
             Ok(Answer::Ready(value)) => Ok(value_of(value)),
@@ -386,10 +404,14 @@ fn arguments(args: Value, count: usize) -> Result<std::vec::IntoIter<Value>, Err
         args => args.list()?,
     };
     if args.len() > count {
-        return Err(Error::Value(format!(
-            "expected at most {count} arguments, received {}",
-            args.len()
-        )));
+        return Err(Error::binding(
+            crate::session::code::BAD_ARGUMENT,
+            format!(
+                "expected at most {count} arguments, received {}",
+                args.len()
+            ),
+            Some(serde_json::json!({ "expected": count, "received": args.len() })),
+        ));
     }
     args.resize(count, Value::Undefined);
     Ok(args.into_iter())
@@ -402,7 +424,9 @@ fn definition(value: Value) -> BoxFuture<'static, Result<rutis::Definition, Erro
     let (row, process) = (caller_row(), crate::runtime::calling_process());
     Box::pin(async move {
         let process = process.ok_or_else(|| {
-            Error::Value("a plugin definition can only come from a language runtime's call".into())
+            Error::refused(
+                "a plugin definition can only come from a language runtime's call".into(),
+            )
         })?;
         let Value::Reference(reference) = value else {
             return Err(Error::Value(
