@@ -654,6 +654,13 @@ pub trait Wire: Send + Sync + 'static {
         let _ = (method, file, line);
         error
     }
+    /// `error`, received from the other side and returned again by the
+    /// method `method` declared at `file:line`: that frame recorded as a
+    /// rethrow. A wire without stacks returns it as it is.
+    fn rethrown(&self, error: CallError, method: &str, file: &str, line: u32) -> CallError {
+        let _ = (method, file, line);
+        error
+    }
 }
 
 // ── What generated code calls ───────────────────────────────────
@@ -878,6 +885,18 @@ pub fn encode_ok<T: Returnable>(wire: &'static dyn Wire, value: &T) -> Result<En
 /// is; otherwise by [`Failure`].
 pub fn forwarded<E: Any>(wire: &'static dyn Wire, error: &E) -> Option<CallError> {
     wire.forwarded(error)
+}
+
+/// An error received from the other side that a method returns again, with
+/// the method and where it is declared.
+pub fn rethrown(
+    wire: &'static dyn Wire,
+    error: CallError,
+    method: &str,
+    file: &str,
+    line: u32,
+) -> CallError {
+    wire.rethrown(error, method, file, line)
 }
 
 /// A method's `Err` as thrown, with the method and where it is declared

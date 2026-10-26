@@ -674,14 +674,17 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             match (&returned).__rutis_split() {
                 ::std::result::Result::Ok(value) => #rutis::internal::service::encode_ok(wire, &value),
                 ::std::result::Result::Err(error) => ::std::result::Result::Err(
-                    #rutis::internal::service::forwarded(wire, &error).unwrap_or_else(|| {
-                        #rutis::internal::service::located(
+                    match #rutis::internal::service::forwarded(wire, &error) {
+                        ::std::option::Option::Some(received) => {
+                            #rutis::internal::service::rethrown(wire, received, #method_name, #declared)
+                        }
+                        ::std::option::Option::None => #rutis::internal::service::located(
                             wire,
                             (&&&&&#rutis::internal::service::Failure(&error)).__rutis_fail(wire),
                             #method_name,
                             #declared,
-                        )
-                    }),
+                        ),
+                    },
                 ),
             }
         }

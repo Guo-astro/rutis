@@ -558,6 +558,15 @@ impl Wire for BridgeWire {
         }
     }
 
+    fn rethrown(&self, error: CallError, method: &str, file: &str, line: u32) -> CallError {
+        let (message, raw) = error.into_raw();
+        match raw.map(|raw| raw.downcast::<Error>()) {
+            Some(Ok(thrown)) => call_error(crate::exports::rethrown(*thrown, method, file, line)),
+            Some(Err(raw)) => CallError::with_raw(message, raw),
+            None => CallError::new(message),
+        }
+    }
+
     fn forwarded(&self, error: &dyn Any) -> Option<CallError> {
         error.downcast_ref::<Error>().cloned().map(call_error)
     }

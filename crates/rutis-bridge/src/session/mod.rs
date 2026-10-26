@@ -146,6 +146,28 @@ impl Error {
         graph_root(graph.as_ref()?)?.get("stack")?.as_str()
     }
 
+    /// Where callers threw this error on again, after receiving it: the
+    /// frames of each rethrow, the first caller first (the diagnostics
+    /// design §4.4). Empty when none recorded it.
+    pub fn rethrown(&self) -> Vec<String> {
+        let Self::Remote {
+            graph: Some(graph), ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        graph_root(graph)
+            .and_then(|root| root.get("rethrown"))
+            .and_then(|items| items.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// This error with `site` on its root node, unless it has one already
     /// (the first hop that recorded it wins). Errors without an error graph
     /// are returned as they are.

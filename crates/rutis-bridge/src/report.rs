@@ -48,15 +48,46 @@ pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
     if let Some(site) = thrown.site() {
         lines.push(printable(&doing(&site)));
     }
-    if let Some(stack) = thrown.stack() {
-        let mut frames = stack.lines().skip(1).filter(|line| !line.trim().is_empty());
-        for frame in frames.by_ref().take(MAX_FRAMES) {
+    // The other side's frames, then each caller's that threw it on, at
+    // most MAX_FRAMES in all.
+    let own = thrown.stack().map(|stack| {
+        stack
+            .lines()
+            .skip(1)
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    });
+    let callers = thrown.rethrown();
+    let mut budget = MAX_FRAMES;
+    let mut more = 0;
+    let mut frames = |lines: &mut Vec<String>, frames: Vec<String>| {
+        for frame in frames {
+            if budget == 0 {
+                more += 1;
+                continue;
+            }
+            budget -= 1;
             lines.push(printable(frame.trim()));
         }
-        let more = frames.count();
-        if more > 0 {
-            lines.push(format!("… ({more} more frames)"));
+    };
+    if let Some(own) = own {
+        frames(&mut lines, own);
+    }
+    for caller in callers {
+        let caller: Vec<String> = caller
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect();
+        if caller.is_empty() {
+            continue;
         }
+        lines.push("called from:".to_owned());
+        frames(&mut lines, caller);
+    }
+    if more > 0 {
+        lines.push(format!("… ({more} more frames)"));
     }
     lines
 }
@@ -160,6 +191,25 @@ mod tests {
         let long = printable(&"é".repeat(MAX_TEXT));
         assert!(long.ends_with(" … (truncated)"));
         assert!(long.len() <= MAX_TEXT + " … (truncated)".len() + 4);
+    }
+
+    /// The callers that threw the error on are printed under its own frames
+    /// (§4.4).
+    #[test]
+    fn the_callers_that_threw_it_on_follow_its_frames() {
+        let error = remote(json!({
+            "root": { "type": "reference", "value": 0 },
+            "nodes": [{
+                "type": "error", "name": "KeyError", "message": "'region'",
+                "stack": "KeyError: 'region'\n  File \"weather.py\", line 31, in tomorrow",
+                "site": { "row": "weather", "doing": "call", "service": "forecast", "method": "tomorrow" },
+                "rethrown": ["    at ask (src/chat.ts:14:36)", 3, "    at Chat.reply (chat.rs:9)"]
+            }]
+        }));
+        assert_eq!(
+            report(&error),
+            "KeyError: 'region'\n    in weather, serving forecast.tomorrow\n    File \"weather.py\", line 31, in tomorrow\n    called from:\n    at ask (src/chat.ts:14:36)\n    called from:\n    at Chat.reply (chat.rs:9)"
+        );
     }
 
     /// An error with no graph (rutis's own, or an older end's) prints as

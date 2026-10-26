@@ -72,6 +72,43 @@ pub fn located(error: Error, method: &str, file: &str, line: u32) -> Error {
     }
 }
 
+/// At most this many rethrows are recorded on an error (§4.4).
+pub const MAX_RETHROWN: usize = 8;
+
+/// `error`, received from the other side and thrown on by the method
+/// `method` declared at `file:line`: that frame appended to its root's
+/// `rethrown` (the diagnostics design §4.4), unless 8 are there already.
+pub fn rethrown(error: Error, method: &str, file: &str, line: u32) -> Error {
+    let Error::Remote {
+        name,
+        message,
+        graph: Some(mut graph),
+    } = error
+    else {
+        return error;
+    };
+    let index = graph["root"]["value"].as_u64().unwrap_or(0) as usize;
+    if let Some(node) = graph["nodes"]
+        .get_mut(index)
+        .and_then(Json::as_object_mut)
+        .filter(|node| node.get("type").and_then(Json::as_str) == Some("error"))
+    {
+        let frame = json!(format!("    at {method} ({file}:{line})"));
+        match node.get_mut("rethrown").and_then(Json::as_array_mut) {
+            Some(items) if items.len() < MAX_RETHROWN => items.push(frame),
+            Some(_) => {}
+            None => {
+                node.insert("rethrown".into(), json!([frame]));
+            }
+        }
+    }
+    Error::Remote {
+        name,
+        message,
+        graph: Some(graph),
+    }
+}
+
 /// `data` as an error graph value: JSON as it is, unless it holds an
 /// integer beyond ±(2^53−1), which crosses as a bigint (design V6), its
 /// arrays and objects then as nodes.
@@ -137,5 +174,26 @@ mod tests {
         let error = failure("Error", "Error", "no".into(), None);
         assert_eq!((error.code(), error.data()), (Some("Error"), None));
         assert_eq!(error.to_string(), "Error: no");
+    }
+
+    /// A received error returned again records where, at most 8 times;
+    /// its own stack and site are untouched (§4.4).
+    #[test]
+    fn a_rethrow_is_recorded_after_the_stack_up_to_eight_times() {
+        let mut error = located(
+            failure("E", "E", "boom".into(), None),
+            "Weather.tomorrow",
+            "weather.rs",
+            3,
+        );
+        let stack = error.stack().unwrap().to_owned();
+        for hop in 0..10 {
+            error = rethrown(error, &format!("Hop{hop}.call"), "hop.rs", hop);
+        }
+        assert_eq!(error.stack().unwrap(), stack);
+        let rethrown = error.rethrown();
+        assert_eq!(rethrown.len(), MAX_RETHROWN);
+        assert_eq!(rethrown[0], "    at Hop0.call (hop.rs:0)");
+        assert_eq!(rethrown[7], "    at Hop7.call (hop.rs:7)");
     }
 }
