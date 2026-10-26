@@ -29,7 +29,7 @@ pub fn describe(status: &EntryStatus) -> String {
             FiberState::Loading => "starting".into(),
             FiberState::Active => "running".into(),
             FiberState::Failed => match &snapshot.error {
-                Some(error) => format!("failed: {error}"),
+                Some(error) => format!("failed: {}", rutis_bridge::report::report(error)),
                 None => "failed".into(),
             },
             FiberState::Disposed => "stopped".into(),
@@ -291,6 +291,36 @@ pub fn listening(listening: &[(String, std::net::SocketAddr)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed row prints the plugin's own error, then which row and what
+    /// it was doing, then the plugin's frames (#677).
+    /// guarantee: host/row-failure-output
+    #[test]
+    fn a_failed_row_prints_where_its_error_came_from() {
+        let thrown = rutis_bridge::session::Error::Remote {
+            name: "KeyError".into(),
+            message: "'region'".into(),
+            graph: Some(serde_json::json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{
+                    "type": "error", "name": "KeyError", "message": "'region'",
+                    "stack": "KeyError: 'region'\n  File \"weather.py\", line 12, in apply",
+                    "site": { "row": "weather", "doing": "apply" }
+                }]
+            })),
+        };
+        let status = EntryStatus::Running(rutis::host::Snapshot {
+            generation: 1,
+            state: FiberState::Failed,
+            error: Some(std::sync::Arc::new(rutis::host::ErrorKind::PluginFailed(
+                Box::new(thrown),
+            ))),
+        });
+        assert_eq!(
+            describe(&status),
+            "failed: KeyError: 'region'\n    in weather, in apply\n    File \"weather.py\", line 12, in apply"
+        );
+    }
 
     fn waiting(failure: Failure, error: &str, retry_in: Duration) -> LinkState {
         LinkState::Waiting {

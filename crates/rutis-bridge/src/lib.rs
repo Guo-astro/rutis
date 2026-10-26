@@ -35,6 +35,7 @@ pub mod channel;
 pub mod cordis;
 pub mod events;
 pub mod exports;
+pub mod report;
 pub mod runtime;
 pub mod session;
 #[cfg(feature = "testing")]

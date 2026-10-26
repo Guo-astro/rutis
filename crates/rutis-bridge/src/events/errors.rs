@@ -90,10 +90,17 @@ pub fn report_line(error: &ErrorKind) -> Option<String> {
             name,
             listener,
             error,
-        } => Some(format!(
-            "rutis: listener of {name} in {listener} failed: {}",
-            named(error)
-        )),
+        } => {
+            let mut line = format!(
+                "rutis: listener of {name} in {listener} failed: {}",
+                crate::report::printable(&named(error))
+            );
+            for whereabout in crate::report::whereabouts(error) {
+                line.push_str("\n    ");
+                line.push_str(&whereabout);
+            }
+            Some(line)
+        }
         ErrorKind::FilterFailed {
             name,
             emitter,

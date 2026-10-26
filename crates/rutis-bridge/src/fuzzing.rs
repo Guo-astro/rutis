@@ -15,6 +15,34 @@ use crate::session::values::{base64_encode, check_keys};
 use crate::session::Value;
 use crate::transport::local::lines;
 
+/// An error graph from the far end, as a host reads and prints it
+/// (`crate::thrown`, `Error::site`, `Error::stack`, `Error::code`,
+/// [`crate::report`]): reading never panics, and what is printed starts
+/// with the error's own text, made printable (the diagnostics design §4.6).
+pub fn error_graph(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(graph) = serde_json::from_str::<Json>(text) else {
+        return;
+    };
+    let error = crate::session::Error::Remote {
+        name: "E".into(),
+        message: "m".into(),
+        graph: Some(graph),
+    };
+    let _ = (error.code(), error.data(), error.stack(), error.site());
+    let site = crate::session::Site::new("row", "call");
+    let error = error.with_site(&site);
+    let kind = rutis::host::ErrorKind::PluginFailed(Box::new(error));
+    let printed = crate::report::report(&kind);
+    assert!(printed.starts_with("E: m"), "{printed}");
+    assert!(
+        crate::report::whereabouts(&kind).len() <= crate::report::MAX_FRAMES + 2,
+        "bounded"
+    );
+}
+
 /// A frame as the session's reader takes it: the depth check, then the
 /// parse, then each value in it decoded as `Peer::decode` decodes it
 /// (references aside: they need a session). The decoder must never panic;

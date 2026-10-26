@@ -247,6 +247,7 @@ PR 模板中有对应的检查项。
 | `bridge/no-call-on-a-dead-session` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §3.2、§7 | 链路断开和重连期间发起的调用要么显式失败，要么落在新会话上，不会落在旧会话；断开期间不提供 `Peer` 服务，旧会话的引用一直失败 | 核心承诺 | 已验证 | `rutis-bridge/tests/fault_links.rs::calls_while_a_link_reconnects_fail_or_reach_the_new_session` | |
 | `bridge/cancel-reaches-callee` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；[插件 API](guide/plugin-api.md)「取消」 | 调用方放弃等待时，取消到达被调方；结果被释放时释放也到达，被调方丢弃 future | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::under_delay_a_cancellation_and_a_release_reach_the_callee`、`rutis-bridge/tests/cancellation.rs` | Node 被调方收到 `AbortSignal` 由 `cancellation.rs` 覆盖 |
 | `bridge/error-codes` | [诊断设计](design-diagnostics-2026-10-26.md) §4.3 | rutis 自己产生的 `BindingError` 带稳定的错误码与 `data`，一路到对面：方法不存在 `no-method`（列出有哪些方法）、参数不对 `bad-argument`、服务不在 `unavailable`、值传不过去 `bad-value`、调用中对面结束 `peer-gone`；协议层面的拒绝不带码；Rust 一侧 `session::Error::code()` 给出同样的码（#677） | 契约行为 | 已验证 | `rutis-bridge` 单元测试 `session::protocol::tests::rutis_errors_cross_with_their_codes`、`rutis-loader/tests/runtime_rows.rs::an_error_from_a_service_method_says_where_it_came_from` | `not-declared` 与各语言 SDK 自己产生的错误随 #677 后续步骤补上 |
+| `bridge/error-report-bounded` | [诊断设计](design-diagnostics-2026-10-26.md) §4.6 | 打印错误（`rutis_bridge::report`）不会失败：错误图缺节点、引用悬空或成环、字段类型不对时，退回错误自己的「名字: 消息」；消息与每行最多 4 KiB、堆栈最多 64 帧（截断处注明），控制字符写成转义；没有 `site` 的错误（旧版本的一端、rutis 自己的）照常打印 | 契约行为 | 已验证 | `rutis-bridge` 单元测试 `report::tests::*`、模糊测试 `fuzz/fuzz_targets/error_graph.rs`（stress 工作流） | 发布门的跨版本相遇随 #677 后续步骤加用例 |
 | `bridge/multihop-cancel-and-release` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2；质量规范 Q6.2.7 | 多跳转发（b → a → c）时取消和释放逐跳传递 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::cancellation_and_release_pass_hop_by_hop` | |
 | `bridge/call-chains-across-processes` | [会话标签设计](design-session-tags-2026-10-12.md) §五；[多语言 M1 设计](design-multilang-m1-2026-10-04.md) §7.2；质量规范 Q6.13.2 | 调用链经 link 跨任意多个进程、往返任意次时，每个进程只把自己会话的条目还原为原生调用号；另一个进程的调用不会被当成本进程的调用（不因此结束会话，不投错等待线程，不进入本进程的等待图） | 契约行为 | 已验证 | `rutis-bridge/tests/session_tags.rs::a_call_chain_crossing_processes_keeps_each_process_s_calls_apart`、`tests/e2e/tests/migration.rs::an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs` | #325。前者是两个子进程、确定性；后者经 rutis-host 与 fixture 宿主（S4）。标签唯一性是概率性的（进程随机数相等的概率约 10⁻¹⁵）；两个 0.9 及更早的进程之间仍有 #325 |
 | `bridge/replies-match-calls` | [design-remote-plugins](design-remote-plugins-2026-10-03.md) §6.2 | 多个调用同时进行、以任意顺序返回时，每个回复交给它自己的调用 | 契约行为 | 已验证 | `rutis-bridge/tests/fault_links.rs::interleaved_replies_reach_their_own_calls` | 放行顺序按种子打乱（`RUTIS_SEED`） |
@@ -391,6 +392,7 @@ PR 模板中有对应的检查项。
 | `host/credentials-from-env` | 「凭据」 | 凭据不写在文件里，在拨号和对端连进来时从环境变量读（重新读配置新增的节点行也有）：`RUTIS_TOKEN_<节点>`（大写，`-` 写作 `_`）优先于 `RUTIS_TOKEN`；`RUTIS_CA` 是额外信任的 CA，文件不存在或不是 PEM 时启动前报错 | 契约行为 | 已验证 | `rutis-host/tests/config.rs::a_peers_token_comes_before_the_shared_one`、`rutis-host/tests/errors.rs::a_certificate_that_is_wrong`、`rutis-host/src/host.rs::tests::tokens_are_read_when_links_need_them`、`rutis-host/tests/reload.rs::a_peer_row_a_reload_adds_presents_its_token` | 输出里不出现 token 见 `host/link-state-output` |
 | `host/env-tokens-not-revocable` | 「凭据」；[连接节点](guide/nodes.md)「安全」 | **明确不保证**：环境变量给的 token（`RUTIS_TOKEN_<节点>`、`RUTIS_TOKEN`，过渡实现）运行中不能吊销，`rutis-host` 没有吊销的命令或配置；要切断一个对端或连进来的运行时，换 token 后重启。运行中吊销是身份层的钩子（`bridge/revocation-closes-only-its-connections`），留给将来的管理服务 | 明确不保证 | 明确不保证 | — | #273 |
 | `host/row-state-lines` | 「run 打印什么」 | `run`、`dev` 在每一行的状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for its services`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`），只打印变化 | 契约行为 | 部分验证 | `tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers`、`tests/e2e/tests/nodes.rs::a_cut_fails_the_call_in_progress_once_and_the_link_comes_back`、`rutis-host/tests/signals.rs::run_with_a_go_row_ends_on_ctrl_c` | 只断言了 `running` 与 `waiting for its services`；`starting`、`failed: …`、`disabled`、`removed` 和实例副本的写法没有测试 |
+| `host/row-failure-output` | 「run 打印什么」；[诊断设计](design-diagnostics-2026-10-26.md) §4.4 | 行失败时，`rutis-host run` / `dev` 打印插件自己的错误，下面缩进写出它来自哪一行、在做什么（`in weather, in apply`），再写插件语言给出的出错位置 | 契约行为 | 已验证 | `rutis-host` 单元测试 `status::tests::a_failed_row_prints_where_its_error_came_from` | 调用方的位置随 #677 后续步骤 |
 | `host/go-add` | 「命令」 | `rutis-host go add <模块>@<版本> [rutis.json]` 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` | 契约行为 | 未验证 | — | |
 
 ---
@@ -404,13 +406,13 @@ PR 模板中有对应的检查项。
 | `boundary/5.*`（不含已撤回的 5.2–5.5） | 3 | 1 | 0 | 0 | 4 |
 | `events/*`（§8a） | 16 | 0 | 0 | 0 | 16 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
-| `bridge/*`（不含已撤回的 `exported-services`） | 27 | 0 | 0 | 1 | 28 |
+| `bridge/*`（不含已撤回的 `exported-services`） | 28 | 0 | 0 | 1 | 29 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 2 | 1 | 0 | 0 | 3 |
 | `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
 | `loader/*`（§14） | 37 | 4 | 0 | 0 | 41 |
-| `host/*`（§15） | 14 | 3 | 1 | 1 | 19 |
-| 合计 | 153 | 12 | 1 | 3 | 169 |
+| `host/*`（§15） | 15 | 3 | 1 | 1 | 20 |
+| 合计 | 155 | 12 | 1 | 3 | 171 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 
