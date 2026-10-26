@@ -8,6 +8,7 @@ package arcships.rutis.conformance
 import arcships.rutis.RemoteFunction
 import arcships.rutis.RutisException
 import arcships.rutis.internal.peer.Endpoint
+import arcships.rutis.internal.peer.ExportedObject
 import arcships.rutis.internal.peer.LocalChannels
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
@@ -17,6 +18,15 @@ import arcships.rutis.internal.peer.Undefined
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.system.exitProcess
+
+/** An object with methods: it crosses only to a far end that takes objects (#675). */
+private class Counter : ExportedObject {
+    private var n = 0
+    override val original: Any get() = this
+    override suspend fun call(method: String, args: List<Any?>): Any? =
+        if (method == "inc") ++n else throw IllegalArgumentException("no method $method")
+    override suspend fun get(property: String): Any? = if (property == "n") n else Undefined
+}
 
 private class Conformance {
     @Volatile
@@ -33,6 +43,8 @@ private class Conformance {
     private fun arg(args: List<Any?>, i: Int): Any? = if (i < args.size) args[i] else Undefined
 
     private fun text(value: Any?): String = (value as? JsonPrimitive)?.content ?: ""
+
+    private fun size(value: Any?): Int = (value as? JsonPrimitive)?.content?.toIntOrNull() ?: throw IllegalArgumentException("a size expected")
 
     private fun function(value: Any?, method: String): RemoteFunction =
         value as? RemoteFunction ?: throw IllegalArgumentException("$method needs a function")
@@ -77,6 +89,10 @@ private class Conformance {
             "wrap" -> listOf(arg(args, 0))
             "applyWrapped" -> session.callFunctionSuspend(function(arg(args, 0), method), listOf(listOf(arg(args, 1))))
             "reenter" -> session.callFunctionSuspend(function(arg(args, 0), method), emptyList())
+            // Past the message limit, this side's reply or call fails (#675).
+            "big" -> "x".repeat(size(arg(args, 0)))
+            "applyBig" -> session.callFunctionSuspend(function(arg(args, 0), method), listOf("x".repeat(size(arg(args, 1)))))
+            "object" -> Counter()
             else -> throw IllegalArgumentException("no method $method")
         }
     }

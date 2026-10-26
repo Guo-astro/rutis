@@ -6,6 +6,14 @@
 import Foundation
 import Rutis
 
+/// An object with methods: it crosses only to a far end that takes objects
+/// (#675).
+final class Counter: SessionObject, @unchecked Sendable {
+    var identity: ObjectIdentifier { ObjectIdentifier(self) }
+    func call(method: String, args: [Value]) async throws -> Value { .data(.int(1)) }
+    func get(property: String) async throws -> Value { .undefined }
+}
+
 final class Conformance: @unchecked Sendable {
     let lock = Lock()
     var held: FarFunction?
@@ -101,6 +109,14 @@ final class Conformance: @unchecked Sendable {
             return try await function(0).call([.list([arg(1)])], sync: true)
         case "reenter":
             return try await function(0).call([], sync: true)
+        // Past the message limit, this side's reply or call fails (#675).
+        case "big":
+            return .data(.string(String(repeating: "x", count: Int(try integer(0)))))
+        case "applyBig":
+            let text = String(repeating: "x", count: Int(try integer(1)))
+            return try await function(0).call([.data(.string(text))], sync: true)
+        case "object":
+            return .object(Counter())
         default:
             throw failure("no method \(method)")
         }

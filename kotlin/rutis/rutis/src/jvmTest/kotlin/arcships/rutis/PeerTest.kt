@@ -1,7 +1,10 @@
 package arcships.rutis
 
 import arcships.rutis.internal.peer.CallChain
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.Exported
+import arcships.rutis.internal.peer.ExportedObject
+import arcships.rutis.internal.peer.MAX_MESSAGE
 import arcships.rutis.internal.peer.MemoryChannel
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
@@ -19,6 +22,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.math.BigInteger
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -32,6 +37,13 @@ import kotlin.test.assertTrue
 
 /** An exception with a code and data, as a plugin writes one. */
 class Stormy(val code: String, val data: Any?) : RuntimeException("too windy")
+
+/** An object with methods: it crosses only to a far end that takes objects. */
+class Counter : ExportedObject {
+    override val original: Any get() = this
+    override suspend fun call(method: String, args: List<Any?>): Any? = 1
+    override suspend fun get(property: String): Any? = Undefined
+}
 
 /**
  * The session (design §4): a host and a runtime side over memory channels,
@@ -66,6 +78,9 @@ class PeerTest {
             delay(20)
             args.firstOrNull()
         }
+        "big" -> "x".repeat((args[0] as JsonPrimitive).content.toInt())
+        "applyBig" -> runtime.callFunctionSuspend(args[0] as RemoteFunction, listOf("x".repeat((args[1] as JsonPrimitive).content.toInt())))
+        "object" -> Counter()
         else -> throw IllegalArgumentException("no method $method")
     }
 
@@ -168,6 +183,84 @@ class PeerTest {
         repeat(65) { deep = listOf(deep, Instant.EPOCH) }
         val error = assertFailsWith<ValueException> { host.call("t", "echo", listOf(deep), true) }
         assertTrue(error.message!!.contains("64 levels"), error.message)
+        assertTrue(error.message!!.startsWith("argument 1 of t.echo: "), error.message)
+        assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
+    }
+
+    /**
+     * #675: a message over 16 MiB fails only its call, on the side that would
+     * send it, naming the call, the argument (or the result), the size and the
+     * limit; the session goes on.
+     */
+    @Test
+    fun aMessageOverTheLimitFailsOnlyItsCall() {
+        start()
+        val over = MAX_MESSAGE + 10
+        val limit = "over the limit of 16777216 bytes (16 MiB)"
+        // An argument this side would send.
+        val sent = assertFailsWith<ValueException> {
+            host.call("host:t\u0000scope", "echo", listOf(JsonPrimitive(1), "x".repeat(over)), true)
+        }
+        assertTrue(sent.message!!.startsWith("argument 2 of t.echo: the message would be "), sent.message)
+        assertTrue(sent.message!!.endsWith(limit), sent.message)
+        // A result the far end would send.
+        val result = assertFailsWith<RutisException> { host.call("t", "big", listOf(over.toLong()), true) }
+        assertTrue(result.message.startsWith("the result of t.big: the message would be "), result.message)
+        assertTrue(result.message.endsWith(limit), result.message)
+        // An argument the far end would send to a function of this side, which never runs.
+        val called = AtomicBoolean(false)
+        val callback = Exported("callback") { called.set(true) }
+        val argument = assertFailsWith<RutisException> { host.call("t", "applyBig", listOf(callback, over.toLong()), true) }
+        assertTrue(argument.message.startsWith("argument 1 of a function: the message would be "), argument.message)
+        assertTrue(!called.get(), "the function ran")
+        assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
+        assertEquals(null, host.error)
+        assertEquals(null, runtime.error)
+    }
+
+    /**
+     * #675: an object with methods crosses only to a far end that declared
+     * `objects`: to any other, only its call fails, naming the far end.
+     */
+    @Test
+    fun anObjectGoesOnlyToAFarEndThatTakesObjects() {
+        val (a, b) = MemoryChannel.pair()
+        runtime = Peer(a, Options(dispatch = ::serve, endpoint = Endpoint("kotlin", "main")))
+        host = Peer(b, Options(endpoint = Endpoint("main", "kotlin")))
+        runtime.start()
+        host.start()
+        host.readyFuture.get(5, TimeUnit.SECONDS)
+        runtime.readyFuture.get(5, TimeUnit.SECONDS)
+        val error = assertFailsWith<RutisException> { host.call("t", "object", emptyList(), true) }
+        assertEquals(
+            "the result of t.object: an object with methods (Counter) cannot cross to main; pass plain data or a function instead",
+            error.message,
+        )
+        assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
+        assertEquals(0, runtime.references().first, "the object is left exported")
+    }
+
+    /**
+     * #675: a thrown value that is not an error (a JavaScript `throw 'a string'`)
+     * crosses again whole when thrown on: its name, message and graph, whose
+     * nodes stay a list.
+     */
+    @Test
+    fun aRelayedNonErrorThrowKeepsItsGraph() {
+        start()
+        val graph = buildJsonObject {
+            put("root", buildJsonObject {
+                put("type", "data")
+                put("value", "a string")
+            })
+            put("nodes", JsonArray(emptyList()))
+        }
+        val thrown = RutisException("ThrownValue", "a string").also { it.graph = graph }
+        val thrower = Exported("thrower") { throw thrown }
+        val relayed = assertFailsWith<RutisException> { host.call("t", "rethrow", listOf(thrower), true) }
+        assertEquals("ThrownValue", relayed.name)
+        assertEquals("a string", relayed.message)
+        assertEquals(graph, relayed.graph)
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
     }
 }

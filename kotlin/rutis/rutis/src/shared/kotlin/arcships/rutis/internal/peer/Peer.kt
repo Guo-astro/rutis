@@ -479,7 +479,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             is Exported -> exportValue(value, "function", value.original, grants, origin)
             is ExportedObject -> {
-                if (opts.endpoint != null && !supportsLocked("objects")) throw ValueException("the far end cannot receive object references")
+                if (opts.endpoint != null && !supportsLocked("objects")) throw objectRefused(value.original, greeting?.endpoint)
                 exportValue(value, "object", value.original, grants, origin)
             }
             is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) {
@@ -663,7 +663,20 @@ class Peer(private val channel: Channel, private val opts: Options) {
             if (entry == null || entry.kind != kind) throw ProtocolException("unknown, released or mismatched reference")
             return entry.value
         }
-        if (kind == "object") throw ProtocolException("object references from the far end are not supported")
+        if (kind == "object") {
+            // Only this call fails (#675). Imported all the same, so that the
+            // refused call gives it back.
+            d.refuse(objectReceived())
+            val existing = imports[id]
+            if (existing != null && existing.kind == "object" && !existing.released) {
+                existing.grants++
+            } else {
+                val record = Imported(id, kind, origin)
+                imports[id] = record
+                d.fresh.add(record)
+            }
+            return Undefined
+        }
         // Only a test host takes the far end's plugin definitions; rutis
         // never sends one that is not this side's.
         if (kind == "plugin" && !opts.host) throw ProtocolException("plugin definitions from the far end are not supported")
@@ -739,12 +752,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
             frame["path"] = JsonArray(path.map(::JsonPrimitive))
             frame.putAll(fields)
             val grants = ArrayList<Long>()
+            // What cannot be sent fails only this call, here (#675).
             if (args != null) {
                 try {
                     frame["args"] = encode(args, grants, chain, -1)
                 } catch (e: Exception) {
                     rollback(grants)
-                    throw e
+                    throw if (e is ValueException) blame(e, args, chain, describe(op, fields)) else e
                 }
             }
             val data = try {
@@ -755,7 +769,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             if (data.size > MAX_MESSAGE) {
                 rollback(grants)
-                throw ValueException("message of ${data.size} bytes exceeds the limit of $MAX_MESSAGE")
+                throw tooLarge(data.size, frame["args"], describe(op, fields))
             }
             val waiter = CompletableFuture<Outcome>()
             // Attached before the frame goes out: it runs on the thread that
@@ -765,6 +779,42 @@ class Peer(private val channel: Channel, private val opts: Options) {
             outbox.offer(data)
             return id to waiter
         }
+    }
+
+    /** What an outgoing call is, for messages. */
+    private fun describe(op: String, fields: Map<String, JsonElement>): String {
+        fun field(name: String) = (fields[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        return when (op) {
+            "invoke" -> invocation(field("target") ?: "", field("method") ?: "")
+            "call" -> field("method")?.let { "the method $it" } ?: "a function"
+            else -> "an awaited result"
+        }
+    }
+
+    /**
+     * A value error of a call's arguments as one of the argument it is in,
+     * found by encoding each alone (granting nothing); `lock` is held.
+     */
+    private fun blame(error: ValueException, args: List<Any?>, chain: List<String>, call: String): ValueException {
+        for ((index, arg) in args.withIndex()) {
+            val scratch = ArrayList<Long>()
+            val failed = try {
+                encode(arg, scratch, chain, 0)
+                false
+            } catch (_: Exception) {
+                true
+            }
+            rollback(scratch)
+            if (failed) return ofArgument(error.message, index, call)
+        }
+        return ValueException("the arguments of $call: ${error.message}")
+    }
+
+    /** A call's message over the limit, blamed on its largest argument. */
+    private fun tooLarge(size: Int, args: JsonElement?, call: String): ValueException {
+        val items = (args as? JsonObject)?.get("value") as? JsonArray
+        val index = items?.indices?.maxByOrNull { compact(items[it]).size }
+        return if (index != null) ofArgument(overLimit(size), index, call) else ValueException("the arguments of $call: ${overLimit(size)}")
     }
 
     /** Gives up waiting for call `id`; an asynchronous one hears so. */
@@ -1161,6 +1211,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
             running[id] = call
         }
         val chain = path + id
+        // What it is, for a result that cannot be sent.
+        val described = when (op) {
+            "invoke" -> invocation(target, method ?: "")
+            "call" -> method?.let { "the method $it" } ?: "a function"
+            "get" -> "the property $property"
+            else -> null
+        }
         var then: (suspend () -> Any?)? = null
         val arrive = opts.arrive
         if (arrive != null && op == "invoke" && target == "" && refused == null) {
@@ -1174,7 +1231,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
         val runEntry = entry
         val thread = Thread({
             try {
-                execute(call, chain, refused, fresh) {
+                execute(call, chain, refused, fresh, described) {
                     when {
                         then != null -> then!!.invoke()
                         op == "invoke" -> (opts.dispatch ?: throw IllegalStateException("no target $target"))(target, runMethod!!, args)
@@ -1201,11 +1258,18 @@ class Peer(private val channel: Channel, private val opts: Options) {
         else -> listOf(decoded)
     }
 
-    private fun execute(call: Running, chain: List<String>, refused: Throwable?, fresh: List<Imported>, body: suspend () -> Any?) {
+    private fun execute(
+        call: Running,
+        chain: List<String>,
+        refused: Throwable?,
+        fresh: List<Imported>,
+        described: String?,
+        body: suspend () -> Any?,
+    ) {
         CallChain.local.set(chain)
         if (refused != null) {
             releaseAll(fresh)
-            respond(call.id, null, refused, chain)
+            respond(call.id, null, refused, chain, described)
             return
         }
         var value: Any? = null
@@ -1218,10 +1282,15 @@ class Peer(private val channel: Channel, private val opts: Options) {
             failure = e
         }
         Thread.interrupted()
-        respond(call.id, value, failure, chain)
+        respond(call.id, value, failure, chain, described)
     }
 
-    private fun respond(id: String, value: Any?, failure: Throwable?, chain: List<String>) {
+    /**
+     * Answers call `id`, a call of `described` (for messages): a result that
+     * cannot be sent (a value the far end does not take, a message over the
+     * limit) is answered with an error saying why instead (#675).
+     */
+    private fun respond(id: String, value: Any?, failure: Throwable?, chain: List<String>, described: String?) {
         val data: ByteArray
         synchronized(lock) {
             running.remove(id)
@@ -1232,34 +1301,47 @@ class Peer(private val channel: Channel, private val opts: Options) {
             if (error == null) {
                 val grants = ArrayList<Long>()
                 try {
-                    val frame = buildJsonObject {
+                    val wire = try {
+                        encode(value, grants, chain, 0)
+                    } catch (e: ValueException) {
+                        throw ofResult(e.message, described)
+                    }
+                    val bytes = compact(buildJsonObject {
                         put("op", "return")
                         put("id", id)
-                        put("value", encode(value, grants, chain, 0))
-                    }
-                    encoded = compact(frame)
-                    if (encoded.size > MAX_MESSAGE) throw ValueException("a reply of ${encoded.size} bytes exceeds the limit of $MAX_MESSAGE")
+                        put("value", wire)
+                    })
+                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described)
+                    encoded = bytes
                 } catch (e: Throwable) {
                     rollback(grants)
                     error = e
                     encoded = null
                 }
             }
+            fun short(message: String) = compact(buildJsonObject {
+                put("op", "throw")
+                put("id", id)
+                put("error", buildJsonObject {
+                    put("name", "Error")
+                    put("message", message)
+                })
+            })
             data = encoded ?: try {
-                compact(buildJsonObject {
+                val thrown = compact(buildJsonObject {
                     put("op", "throw")
                     put("id", id)
                     put("error", encodeError(error!!))
                 })
+                // An error too large to send: a short one saying so.
+                if (thrown.size > MAX_MESSAGE) {
+                    val what = "the error ${errorName(error!!)}" + (described?.let { " of $it" } ?: "")
+                    short("$what: ${overLimit(thrown.size)}")
+                } else {
+                    thrown
+                }
             } catch (_: Exception) {
-                compact(buildJsonObject {
-                    put("op", "throw")
-                    put("id", id)
-                    put("error", buildJsonObject {
-                        put("name", "Error")
-                        put("message", error?.message ?: "")
-                    })
-                })
+                short(error?.message ?: "")
             }
         }
         outbox.offer(data)
