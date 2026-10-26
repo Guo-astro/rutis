@@ -189,7 +189,7 @@ Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `
 
 Before publishing, give the package a name of your own: short names such as `weather` and `greeter` were taken on npm long ago. Use a scoped name: change `name` in `package.json`, for example to `"@your-name/weather"` (the scope is your npm user or organization; the first publish of a public scoped package needs `--access public`, which the template's workflow passes). A host's row names the plugin by this package name.
 
-Declare a version range such as `"@arcships/rutis": "^0.17.1"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
+Declare a version range such as `"@arcships/rutis": "^0.17.2"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
 
 ## 6. Use from a host
 

@@ -13,7 +13,7 @@ mkdir app && cd app
 npm init -y                                                # TypeScript 插件装进的 Node 项目
 npm install @arcships/rutis-host @your-name/weather        # rutis-host 带着 Node 运行时
 uv venv                                                    # .venv：Python 插件运行的环境
-uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-llm   # Python 运行时与 rutis-host 同版本，和插件
+uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-llm   # Python 运行时与 rutis-host 同版本，和插件
 ```
 
 2. 写 `rutis.json`：要启动的运行时，每个插件一行（`name` 是 npm 包名，或 `py:` 加入口点名；`config` 是插件的配置）：

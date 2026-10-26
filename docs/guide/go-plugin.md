@@ -309,7 +309,7 @@ plugin = define_plugin(apply, provides={"llm": FakeLlm})
 
 ```bash
 uv venv dev/.venv                                  # Python 运行时的环境：<project>/.venv
-uv pip install --python dev/.venv/bin/python "rutis==0.17.1"   # 和你的 rutis-host 同版本
+uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # 和你的 rutis-host 同版本
 ```
 
 Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找解释器，那个环境里要装 `rutis`；`dev/` 下没有 Go 代码，`go build ./...` 不受影响。用 TypeScript 写也一样：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行名写 `./dev/fake-llm.ts`。

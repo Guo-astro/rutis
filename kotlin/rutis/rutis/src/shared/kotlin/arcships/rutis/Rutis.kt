@@ -27,7 +27,7 @@ import kotlinx.serialization.json.JsonElement
  */
 object Rutis {
     /** This SDK's version: the runtime's implementation version (the release train checks it). */
-    const val VERSION: String = "0.17.1"
+    const val VERSION: String = "0.17.2"
 
     /** The plugin API this SDK writes plugins against and its runtime supports. */
     const val PLUGIN_API: Int = 3

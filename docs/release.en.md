@@ -71,6 +71,12 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.17.2
+
+0.17.2 is a patch release: it fixes the problems people using rutis run into that the developer-experience evaluation (#663) found: #665, #666, #667, #668, #672, #675, the first half of #676, #682 (its fourth item moved to 0.18) and #701 (#703–#707 and the fixes after acceptance). All packages are at 0.17.2; see [the release notes](releases/0.17.2.en.md). There is no migration guide: no API is removed or renamed.
+
+A patch release must stay compatible with 0.17.1: `cargo-semver-checks` compares with 0.17.1 and accepts no breaking Rust API change (this release only adds API). `format` of `rutis.json` stays 1 and no configuration changes: the persisted sample is copied from 0.17.1 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. The protocol is unchanged and there is no new capability; the release gate's cross-version tests meet 0.17.1, and a new case, `plugins_of_a_previous_sdk_under_the_current_runtimes`, checks that a plugin built with the previous SDK runs under the current runtimes. From this release, Python plugins declare only a lower bound on `rutis` (#672): while the plugin API version stays the same, Python's `rutis` does not remove or rename names plugins import; the `rutis==<version>` that the guides install for the Python runtime is updated at each release as usual.
+
 ## 0.17.1
 
 0.17.1 is a patch release: plugin definitions gain Python, Go, Swift and Kotlin (P2 and P3 of #642: #654, #653), and it fixes #619, #620 (#652) and #621 (#651); the occasional failure of the events conformance case `rutis/row` (#659, seen in a release gate) was the test not waiting long enough, fixed in the test runner by #661. All packages are at 0.17.1; see [the release notes](releases/0.17.1.en.md). There is no migration guide: no API is removed or renamed.

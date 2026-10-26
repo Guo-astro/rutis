@@ -368,7 +368,7 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 
 Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade; a newer runtime loads it. How a plugin depends on its SDK:
 
-- JavaScript, TypeScript: a caret range (`"@arcships/rutis": "^0.17.1"`). The plugin uses the SDK of the minor version it was written against; when the host has another version, npm installs the plugin a copy of its own, and several versions work side by side.
+- JavaScript, TypeScript: a caret range (`"@arcships/rutis": "^0.17.2"`). The plugin uses the SDK of the minor version it was written against; when the host has another version, npm installs the plugin a copy of its own, and several versions work side by side.
 - Python: a lower bound only (`rutis>=0.17`). The plugin and the Python runtime are one `rutis` package in the host's environment, so an upper bound (`<0.18`) would downgrade the runtime when the plugin is installed, or keep the host from upgrading. Therefore Python's `rutis` does not remove or change a name plugins import while the plugin API version stays: a name to be dropped stays, with a deprecation warning when used, until the plugin API version increases.
 - Go, Swift: the SDK is compiled into the binary (`require`, `from:`), whatever version the host installs.
 
