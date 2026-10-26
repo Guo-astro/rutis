@@ -111,10 +111,45 @@ type PanicError struct {
 func (e *PanicError) Error() string { return fmt.Sprintf("panic: %v", e.Value) }
 func (e *PanicError) Name() string  { return "Panic" }
 
+// located is an error a service method returned, with the frame of that
+// method's declaration (`    at Type.Method (file:line)`): it crosses with
+// that frame as its stack's second line (#677). Only the session sees it;
+// the error itself is unchanged.
+type located struct {
+	err   error
+	frame string
+}
+
+func (e *located) Error() string { return e.err.Error() }
+func (e *located) Unwrap() error { return e.err }
+
+// Locate marks err, returned by a service method, with the frame of the
+// method's declaration. A received error keeps its own graph, and a panic
+// its own stack: they are returned as they are.
+func Locate(err error, frame string) error {
+	if err == nil || frame == "" {
+		return err
+	}
+	switch err.(type) {
+	case *RemoteError, *PanicError, *located:
+		return err
+	}
+	return &located{err, frame}
+}
+
+// unlocated is err without the frame Locate gave it, and that frame.
+func unlocated(err error) (error, string) {
+	if l, ok := err.(*located); ok {
+		return l.err, l.frame
+	}
+	return err, ""
+}
+
 // ErrorName is the name an error crosses with: Name() when it has one, the
 // far end's name for a RemoteError, "Error" for the standard library's
 // plain errors, else its type name (*fs.PathError -> PathError).
 func ErrorName(err error) string {
+	err, _ = unlocated(err)
 	if remote, ok := err.(*RemoteError); ok {
 		return remote.Name
 	}
@@ -141,6 +176,7 @@ func ErrorName(err error) string {
 // in (nodes appended, references shifted), as Node does: it decodes into a
 // real Error whose re-encoding carries the whole graph.
 func encodeError(err error) map[string]any {
+	err, frame := unlocated(err)
 	if remote, ok := err.(*RemoteError); ok && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
 		return map[string]any{"name": remote.Name, "message": remote.Message}
 	}
@@ -194,7 +230,13 @@ func encodeError(err error) map[string]any {
 		}
 		name, message := ErrorName(err), wireMessage(err)
 		id := len(nodes)
-		node := map[string]any{"type": "error", "name": name, "message": message, "stack": name + ": " + message}
+		stack := name + ": " + message
+		if frame != "" {
+			// The method that returned it: the top-level error only.
+			stack += "\n" + frame
+			frame = ""
+		}
+		node := map[string]any{"type": "error", "name": name, "message": message, "stack": stack}
 		nodes = append(nodes, node)
 		// A code and its data cross, as from JavaScript and Rust (#440):
 		// an error with `Code() string` and `Data() any`. Data that cannot
@@ -233,6 +275,7 @@ func encodeError(err error) map[string]any {
 // wireMessage is the message an error crosses with: the far end's own for a
 // RemoteError, its Message for an AggregateError, else Error().
 func wireMessage(err error) string {
+	err, _ = unlocated(err)
 	switch err := err.(type) {
 	case *RemoteError:
 		return err.Message

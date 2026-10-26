@@ -327,18 +327,28 @@ func (s *Shape) Kinds() map[string]string {
 
 // method is the Go method of `value` behind the wire name `wire`.
 func (s *Shape) method(value reflect.Value, wire string) (reflect.Value, bool) {
-	if s != nil {
-		if m, ok := s.methods[wire]; ok {
-			found := value.MethodByName(m.goName)
-			return found, found.IsValid()
-		}
-		return reflect.Value{}, false
-	}
-	index, ok := convert.Methods(value.Type())[wire]
+	index, ok := s.index(value, wire)
 	if !ok {
 		return reflect.Value{}, false
 	}
 	return value.Method(index), true
+}
+
+// index is the index in value's method set of the Go method behind the
+// wire name `wire`.
+func (s *Shape) index(value reflect.Value, wire string) (int, bool) {
+	if !value.IsValid() {
+		return 0, false
+	}
+	if s != nil {
+		if m, ok := s.methods[wire]; ok {
+			found, ok := value.Type().MethodByName(m.goName)
+			return found.Index, ok
+		}
+		return 0, false
+	}
+	index, ok := convert.Methods(value.Type())[wire]
+	return index, ok
 }
 
 // wires lists the wire names of the methods `value` offers through `s`.

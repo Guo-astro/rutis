@@ -100,6 +100,13 @@ func (h *fakeHost) log() []string {
 
 func startFakeHost(t *testing.T, refuse func(string) error, defs ...*Definition) *fakeHost {
 	t.Helper()
+	return startFakeHostWith(t, nil, refuse, defs...)
+}
+
+// startFakeHostWith is startFakeHost whose host writes and reads through
+// wrap(its channel), when wrap is not nil.
+func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refuse func(string) error, defs ...*Definition) *fakeHost {
+	t.Helper()
 	runtimeSide, hostSide := net.Pipe()
 	h := &fakeHost{t: t, refuse: refuse, channel: &gated{Channel: peer.NewLines(runtimeSide)}}
 	// Each side's hello waits for the other to read (net.Pipe).
@@ -112,7 +119,11 @@ func startFakeHost(t *testing.T, refuse func(string) error, defs ...*Definition)
 		started <- s
 	}()
 	var err error
-	h.host, err = peer.New(peer.NewLines(hostSide), peer.Options{
+	var hostChannel peer.Channel = peer.NewLines(hostSide)
+	if wrap != nil {
+		hostChannel = wrap(hostChannel)
+	}
+	h.host, err = peer.New(hostChannel, peer.Options{
 		Host: true,
 		Dispatch: func(_ context.Context, target, method string, _ []any) (any, error) {
 			if target == "" && method == "events.dispatch" {

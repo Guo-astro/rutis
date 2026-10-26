@@ -526,7 +526,9 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 		return nil, peer.Aggregated(err)
 	}
 	if value, err = peer.Settle(ctx, value); err != nil {
-		return nil, err
+		// A host answers a dispatch it does not finish at once with a
+		// future: its failure is the dispatch's (#677).
+		return nil, peer.Aggregated(err)
 	}
 	if mode == events.ModeParallel {
 		return nil, nil

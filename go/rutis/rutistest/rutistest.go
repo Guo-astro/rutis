@@ -819,7 +819,7 @@ func (h *harness) dispatch(ctx context.Context, target, method string, args []an
 	if !ok {
 		return nil, fmt.Errorf("the test's %s has no method %s", name, method)
 	}
-	return convert.Call(ctx, value.Method(index), args)
+	return convert.CallMethod(ctx, value, index, args)
 }
 
 // remotes are the plugin definitions in `value`, a call's arguments.

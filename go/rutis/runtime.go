@@ -657,11 +657,12 @@ func (rt *runtimeState) dispatch(ctx context.Context, target, method string, arg
 	if entry.methods != nil && !entry.methods[method] {
 		return nil, fmt.Errorf("unknown service method %s.%s", printable(entry.id), method)
 	}
-	fn, ok := entry.shape.method(reflect.ValueOf(entry.object), method)
+	object := reflect.ValueOf(entry.object)
+	index, ok := entry.shape.index(object, method)
 	if !ok {
 		return nil, fmt.Errorf("unknown service method %s.%s", printable(entry.id), method)
 	}
-	return convert.Call(ctx, fn, args)
+	return convert.CallMethod(ctx, object, index, args)
 }
 
 func argument[T any](args []any, i int) (T, error) {
