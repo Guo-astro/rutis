@@ -132,7 +132,10 @@ if test "$dylib_os" = windows; then
   hold="$base/hold"
   # A name of this run's own: tasklist sees the whole machine, where other
   # runs of this script (other runner instances) may hold their copies.
-  hold_host="rutis-hold-$$-$RANDOM.exe"
+  # At most 25 characters: tasklist cuts longer image names short, and
+  # host_running would then never find it ("rutis-hold-24367-12980.exe",
+  # 26, failed the 0.17.2 release gate).
+  hold_host="rh-$$-$RANDOM.exe"
   mkdir -p "$hold"
   cp "$(cygpath -u "$SYSTEMROOT")/System32/PING.EXE" "$hold/$hold_host"
   cp "$bundle/$sdk_name" "$bundle/$std_name" "$hold/"
