@@ -145,4 +145,4 @@ This section follows from the claims above and is written mainly for contributor
 
 - [Writing a Python plugin](guide/python-plugin.en.md) · [Writing a TypeScript plugin](guide/typescript-plugin.en.md) · [Connecting nodes](guide/nodes.en.md) · [Embedding in a Rust application](guide/rust-host.en.md)
 - [Core design](design-rust-port.en.md) · [Parity check against Cordis](cordis-spec-parity-2026-08-18.en.md) · [Dual-core architecture](design-dual-core-2026-08-20.en.md)
-- [Multi-language decision record](decision-multilang-2026-10-03.en.md) · [Multi-language plugin design](design-multilang-runtimes-2026-10-03.en.md) · [Remote plugins](design-remote-plugins-2026-10-03.en.md)
+- [Multi-language decision record](decision-multilang-2026-10-03.en.md) · [Multi-language plugin design](design-multilang-runtimes-2026-10-03.en.md) · [Remote plugins](design-remote-plugins-2026-10-03.en.md) · [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md)

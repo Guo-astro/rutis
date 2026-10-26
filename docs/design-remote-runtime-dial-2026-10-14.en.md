@@ -2,6 +2,8 @@
 
 [中文](design-remote-runtime-dial-2026-10-14.md)
 
+> Revised (2026-10-26): the rule in §4 that `listen` together with `instances` means dynamic connections is replaced by §4 of [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md): the `dial`, `listen` and `instances` fields of a `runtimes.remote` entry are independent, and `listen` without `instances` is one connection. Everything else is unchanged.
+
 Status: final; R-P1 (the Rust side) and R-P2 (Python dialing out) implemented, the rest in §7. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
 Based on: [remote plugins](design-remote-plugins-2026-10-03.en.md) (this document revises how runtimes connect in its §4), [Connect Nodes](guide/nodes.en.md) (link), [creating plugin instances on demand](design-loader-instance-mounts-and-services-2026-10-07.en.md), [service names inside instances](design-instance-services-2026-10-08.en.md), [the Go plugin runtime](design-go-runtime-2026-10-10.en.md), [the Bun runtime](design-bun-runtime-2026-10-09.en.md).
 Used by: [app integration](design-app-integration-2026-10-14.en.md), [the Swift SDK](design-swift-sdk-2026-10-12.en.md), [Android app hosting](design-android-runtime-2026-10-12.en.md).
