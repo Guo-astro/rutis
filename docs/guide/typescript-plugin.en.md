@@ -152,7 +152,7 @@ The `t` that `load(plugin)` returns has the five methods and `filter` too, emitt
 npx rutis-host dev
 ```
 
-`dev` runs this project as a row using the source file `src/index.ts`, without a build, and reloads it when files change. Add other required services to `rutis.dev.json`, such as a fake `llm`:
+`dev` runs this project as a row using the source file `src/index.ts`, without a build, and reloads it when its files change; only the rows whose files changed reload, and a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). Add other required services to `rutis.dev.json`, such as a fake `llm`:
 
 <!-- example: typescript-en file=greeter/rutis.dev.json -->
 ```json
