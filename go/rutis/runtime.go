@@ -298,7 +298,7 @@ func (rt *runtimeState) entryDefinition(entry any) (*Definition, error) {
 			return nil, errors.New("a plugin definition of another process cannot be loaded here: hand it back to the runtime that defined it")
 		}
 		if e.api > PluginAPI {
-			return nil, fmt.Errorf("plugin %s needs plugin API %d; this runtime supports %d", e.name, e.api, PluginAPI)
+			return nil, fmt.Errorf("%s needs plugin API %d; this runtime supports %d", called(e.name), e.api, PluginAPI)
 		}
 		return e, nil
 	}
