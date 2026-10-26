@@ -370,8 +370,11 @@ package final class Peer: @unchecked Sendable {
     private var identities: [ObjectIdentifier: Int64] = [:]
     private var imports: [Int64: Imported] = [:]
     /// A test host's plugin definitions of the far end, by the definition
-    /// itself, held until the session ends: one handed back goes home as
-    /// the original reference, as rutis sends it.
+    /// itself, held until the session ends (or the reference is released):
+    /// one handed back goes home as the original reference, as rutis sends
+    /// it. So the test host never lets one go before the session ends, and
+    /// a test does not see rutis dropping a definition and the runtime
+    /// releasing it with it.
     private var heldPlugins: [ObjectIdentifier: FarPlugin] = [:]
     private var running: [String: Running] = [:]
     private var signals: [String: Signal] = [:]
@@ -555,8 +558,18 @@ package final class Peer: @unchecked Sendable {
         }
         record.released = true
         if imports[record.id] === record { imports[record.id] = nil }
+        // A released plugin definition is no longer held; dropped once the
+        // lock is released.
+        var dropped: [FarPlugin] = []
+        if record.kind == "plugin" {
+            for (key, held) in heldPlugins where held.record === record {
+                dropped.append(held)
+                heldPlugins[key] = nil
+            }
+        }
         let count = record.grants
         lock.unlock()
+        _ = dropped
         do {
             try send(.object([("op", .string("release")), ("reference", .int(record.id)), ("count", .int(count))]))
         } catch {

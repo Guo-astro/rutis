@@ -22,6 +22,12 @@ interface ValuesParts {
     suspend fun latest(scope: String): Plugin?
 }
 
+/** The registry through a blocking method: the calling thread waits for the answer. */
+@RutisClient
+interface ValuesPartsBlocking {
+    fun register(scope: String, definition: Plugin)
+}
+
 /** The instance's `tools`. */
 @RutisClient
 interface ValuesTools {
@@ -64,6 +70,16 @@ val valuesOrigin = Rutis.define<Rutis.NoConfig>(name = "values_origin", inject =
     }
     ctx.provide("maker", ValuesMaker { valuesPart("made", prepared) })
     ctx.effect { probe.record("origin down") }
+}
+
+/**
+ * Hands a definition over through a blocking call: rutis reads it
+ * (`plugins.read`) while this thread waits for the call's answer.
+ */
+val valuesBlocking = Rutis.define<Rutis.NoConfig>(name = "values_blocking", inject = listOf("parts", "probe")) { ctx, _ ->
+    val probe = ctx.use<Probe>("probe")
+    ctx.use<ValuesPartsBlocking>("parts").register("blocking", valuesPart("blocking", "prepared in apply"))
+    probe.record("blocking register answered")
 }
 
 /** Ends its runtime's process soon after it loads. */

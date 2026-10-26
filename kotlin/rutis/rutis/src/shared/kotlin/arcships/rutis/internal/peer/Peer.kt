@@ -208,8 +208,11 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /**
      * A test host's plugin definitions of the far end, by the definition
-     * itself, held until the session ends: one handed back goes home as the
-     * original reference, as rutis sends it.
+     * itself, held until the session ends (or the reference is released):
+     * one handed back goes home as the original reference, as rutis sends
+     * it. So the test host never lets one go before the session ends, and a
+     * test does not see rutis dropping a definition and the runtime
+     * releasing it with it.
      */
     private val heldPlugins = java.util.IdentityHashMap<Plugin, RemotePlugin>()
     private val running = HashMap<String, Running>()
@@ -398,6 +401,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             record.released = true
             if (imports[record.id] === record) imports.remove(record.id)
+            // A released plugin definition is no longer held.
+            if (record.kind == "plugin") heldPlugins.values.removeIf { it.record === record }
             count = record.grants
         }
         outbox.offer(compact(buildJsonObject {

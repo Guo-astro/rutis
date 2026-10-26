@@ -579,10 +579,11 @@ impl Fixture {
                 json!("swift:values_crash")
             }
             #[cfg(feature = "kotlin")]
-            Lang::Kotlin => {
-                assert_eq!(source, CRASH, "only the crash is in the Kotlin jar");
-                json!("kt:values_crash")
-            }
+            Lang::Kotlin => match source == CRASH {
+                true => json!("kt:values_crash"),
+                // The jar's other plugins, by their name: `values_<id>`.
+                false => json!(format!("kt:values_{id}")),
+            },
         };
         self.extra
             .lock()
@@ -868,7 +869,21 @@ mod go {
 #[cfg(any(all(feature = "swift", target_os = "macos"), feature = "kotlin"))]
 async fn a_definition_comes_home_as_itself(lang: Lang) {
     let fixture = fixture(lang).await;
-    fixture.probe.wait_for("part came home as itself").await;
+    // The origin records either line: a wrong value fails here at once.
+    let line = COLD
+        .eventually_with(
+            || {
+                fixture
+                    .probe
+                    .lines()
+                    .into_iter()
+                    .find(|line| line.starts_with("part came home as "))
+            },
+            "the origin told what came home",
+            || format!("{:?}", fixture.probe.lines()),
+        )
+        .await;
+    assert_eq!(line, "part came home as itself");
     fixture.root.shutdown().await.unwrap();
 }
 
@@ -905,6 +920,18 @@ mod swift {
 #[cfg(feature = "kotlin")]
 mod kotlin {
     use super::*;
+
+    /// A definition handed over through a blocking (not `suspend`) client
+    /// method: rutis reads it with `plugins.read` while the calling thread
+    /// waits, and the call is answered.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blocking_call_hands_over_a_definition() {
+        let fixture = fixture(Lang::Kotlin).await;
+        fixture.add("blocking", "").await;
+        fixture.probe.wait_for("blocking register answered").await;
+        assert_eq!(fixture.parts.of("blocking").len(), 1);
+        fixture.root.shutdown().await.unwrap();
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_definition_comes_home_as_itself() {
