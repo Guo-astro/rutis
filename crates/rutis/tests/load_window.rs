@@ -1,12 +1,19 @@
-//! The window at the start of a load: a dispose registered there must not
-//! let a new generation start (#619), and a dependency withdrawn there must
-//! stop the consumer (#620).
+//! The window at the start of a load: a dispose or restart registered
+//! there must reach the generation that starts (#619), and a dependency
+//! withdrawn or replaced there must stop the consumer (#620).
+//!
+//! The gate tests block a plugin callback (`check`, `validate`) on a worker
+//! thread, so they run on the multi-thread runtime only: on a single thread
+//! nothing else runs between the gate and the recording of dependencies.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, TypeKey};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, PluginFactory, TypeKey,
+};
+use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use tokio::sync::Notify;
 
@@ -116,9 +123,16 @@ async fn dispose_during_a_restart() {
         .await
         .expect("dispose returns")
         .unwrap();
-    let _ = tokio::time::timeout(LIMIT, restart)
+    // The dispose came first: the restart reports what `restart()` reports
+    // once a dispose is registered.
+    let restarted = tokio::time::timeout(LIMIT, restart)
         .await
-        .expect("restart ends");
+        .expect("restart ends")
+        .unwrap();
+    assert!(
+        matches!(&restarted, Err(e) if matches!(**e, ErrorKind::InactiveEffect)),
+        "{restarted:?}"
+    );
     assert_eq!(state.applies.load(Ordering::SeqCst), 1);
     assert_eq!(view.state().state, FiberState::Disposed);
 }
@@ -359,4 +373,416 @@ impl DynPlugin for RetryConsumer {
             Ok(Effect::Done)
         })
     }
+}
+
+// ── Replaced or withdrawn at the gate, seen by the second check ────────
+
+type Slot = Arc<Mutex<Option<rutis::Disposer>>>;
+
+/// A `check` that blocks its first call until released.
+fn blocking_check(gate: Arc<Gate>) -> impl Fn() -> bool + Send + Sync + 'static {
+    move || {
+        gate.pass();
+        true
+    }
+}
+
+/// Provides `Svc` with a `check` and hands the disposer of that one
+/// service out.
+struct CheckedProvider {
+    gate: Arc<Gate>,
+    disposer: Slot,
+}
+
+impl DynPlugin for CheckedProvider {
+    fn name(&self) -> &str {
+        "load-window-checked-provider"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let check = blocking_check(self.gate.clone());
+            let disposer = ctx.provide_checked(TypeKey::of::<Svc>(), Arc::new(Svc), check)?;
+            *self.disposer.lock().unwrap() = Some(disposer);
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Mounts a provider and returns the disposer of its service.
+async fn mounted<P: DynPlugin>(root: &Ctx, plugin: impl FnOnce(Slot) -> P) -> rutis::Disposer {
+    let disposer = Slot::default();
+    let view = root.plugin(plugin(disposer.clone()));
+    tokio::time::timeout(LIMIT, &view).await.unwrap().unwrap();
+    let taken = disposer.lock().unwrap().take();
+    taken.expect("provided")
+}
+
+/// Requires `Svc`, records its generations, waits for `ctx.cancelled()`.
+struct Waiter(Arc<AtomicUsize>);
+
+impl DynPlugin for Waiter {
+    fn name(&self) -> &str {
+        "load-window-waiter"
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![TypeKey::of::<Svc>()]
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            ctx.cancelled().await;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+async fn recv(rx: std::sync::mpsc::Receiver<()>) {
+    tokio::task::spawn_blocking(move || rx.recv_timeout(LIMIT))
+        .await
+        .unwrap()
+        .expect("the check is reached");
+}
+
+/// The binding a consumer passed the gate with is withdrawn and replaced
+/// before its dependencies are recorded: the generation does not run on
+/// the stale set, so a withdrawal of the new binding finds the consumer
+/// and stops it.
+///
+/// guarantee: core/D14
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dependency_replaced_at_the_gate_is_not_used_on_the_old_record() {
+    let root = Ctx::root().unwrap();
+    let (gate, entered, release) = Gate::new();
+    let first = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Waiter(applies.clone()));
+    recv(entered).await;
+    // Not bound yet: the withdrawal does not wait for the consumer.
+    tokio::time::timeout(LIMIT, first.dispose())
+        .await
+        .expect("first withdrawal returns")
+        .unwrap();
+    let second = mounted(&root, |disposer| Provider { disposer }).await;
+    release.send(()).unwrap();
+    // The consumer runs, bound to the second binding.
+    tokio::time::timeout(LIMIT, async {
+        while applies.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the consumer runs");
+    tokio::time::timeout(LIMIT, second.dispose())
+        .await
+        .expect("second withdrawal returns")
+        .unwrap();
+    assert_eq!(view.state().state, FiberState::Pending);
+    assert_eq!(applies.load(Ordering::SeqCst), 1);
+}
+
+/// The binding a consumer passed the gate with is withdrawn before its
+/// dependencies are recorded: the generation does not run.
+///
+/// guarantee: core/D14
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dependency_withdrawn_before_it_is_recorded_does_not_run_the_generation() {
+    let root = Ctx::root().unwrap();
+    let (gate, entered, release) = Gate::new();
+    let only = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Waiter(applies.clone()));
+    recv(entered).await;
+    tokio::time::timeout(LIMIT, only.dispose())
+        .await
+        .expect("withdrawal returns")
+        .unwrap();
+    release.send(()).unwrap();
+    tokio::time::timeout(LIMIT, &view).await.unwrap().unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(applies.load(Ordering::SeqCst), 0);
+    assert_eq!(view.state().state, FiberState::Pending);
+}
+
+// ── Restart and update called before the first load ────────────────────
+
+/// Polls `future` once, here, before anything else runs on this task, and
+/// returns it to be awaited later.
+async fn polled_once<T>(mut future: BoxFuture<'static, T>) -> BoxFuture<'static, T> {
+    let mut done = false;
+    std::future::poll_fn(|cx| {
+        done = future.as_mut().poll(cx).is_ready();
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(!done, "it waits for the driver");
+    future
+}
+
+/// Waits until `applies` generations have started.
+async fn started(state: &ProbeState, applies: usize) {
+    tokio::time::timeout(LIMIT, async {
+        while state.applies.load(Ordering::SeqCst) < applies {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the generation starts");
+}
+
+/// A restart right after mounting: the first generation starts cancelled,
+/// so the queued restart is taken up and starts the second one. The
+/// restart returns once that generation's `apply` does; here, on the
+/// dispose's cancellation.
+async fn restart_right_after_mounting() {
+    let root = Ctx::root().unwrap();
+    let state = Arc::new(ProbeState::default());
+    let view = root.plugin(Probe {
+        state: state.clone(),
+        hold: false,
+    });
+    // Called before the driver ran the first load.
+    let restart = tokio::spawn(polled_once(view.restart()).await);
+    started(&state, 2).await;
+    assert_eq!(state.applies.load(Ordering::SeqCst), 2);
+    assert_eq!(state.cancelled.load(Ordering::SeqCst), 1);
+    tokio::time::timeout(LIMIT, view.dispose())
+        .await
+        .expect("dispose returns")
+        .unwrap();
+    tokio::time::timeout(LIMIT, restart)
+        .await
+        .expect("restart returns")
+        .unwrap()
+        .unwrap();
+}
+
+/// guarantee: core/D7
+#[tokio::test]
+async fn a_restart_right_after_mounting_is_taken_up_on_current_thread() {
+    restart_right_after_mounting().await;
+}
+
+/// guarantee: core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_right_after_mounting_is_taken_up_on_multi_thread() {
+    restart_right_after_mounting().await;
+}
+
+/// Builds a [`Probe`] for any config.
+struct ProbeFactory(Arc<ProbeState>);
+
+impl PluginFactory<u32> for ProbeFactory {
+    fn name(&self) -> &str {
+        "load-window-probe-factory"
+    }
+
+    fn build(&self, _: &u32) -> Result<Box<dyn DynPlugin>, Error> {
+        Ok(Box::new(Probe {
+            state: self.0.clone(),
+            hold: false,
+        }))
+    }
+}
+
+/// An update right after mounting, like a restart.
+async fn update_right_after_mounting() {
+    let root = Ctx::root().unwrap();
+    let state = Arc::new(ProbeState::default());
+    let view = root.plugin_with(ProbeFactory(state.clone()), 1u32);
+    let update = tokio::spawn(polled_once(view.update(2u32)).await);
+    started(&state, 2).await;
+    assert_eq!(state.applies.load(Ordering::SeqCst), 2);
+    assert_eq!(state.cancelled.load(Ordering::SeqCst), 1);
+    assert_eq!(view.current_config::<u32>().as_deref(), Some(&2));
+    tokio::time::timeout(LIMIT, view.dispose())
+        .await
+        .expect("dispose returns")
+        .unwrap();
+    tokio::time::timeout(LIMIT, update)
+        .await
+        .expect("update returns")
+        .unwrap()
+        .unwrap();
+}
+
+/// guarantee: core/D7
+#[tokio::test]
+async fn an_update_right_after_mounting_is_taken_up_on_current_thread() {
+    update_right_after_mounting().await;
+}
+
+/// guarantee: core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_update_right_after_mounting_is_taken_up_on_multi_thread() {
+    update_right_after_mounting().await;
+}
+
+// ── A dispose registered behind a queued restart or refresh ────────────
+
+type Errors = Arc<Mutex<Vec<Arc<ErrorKind>>>>;
+
+fn root_collecting() -> (Ctx, Errors) {
+    let errors = Errors::default();
+    let to = errors.clone();
+    let root = Ctx::root_with_sink(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |e: Arc<ErrorKind>| to.lock().unwrap().push(e)),
+    );
+    (root, errors)
+}
+
+/// Its first generation waits for `go` (ignoring cancellation), then
+/// returns a cleanup that fails. With `needs`, it requires `Svc`.
+struct Held {
+    go: Arc<Notify>,
+    applies: Arc<AtomicUsize>,
+    needs: bool,
+}
+
+impl DynPlugin for Held {
+    fn name(&self) -> &str {
+        "load-window-held"
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        if self.needs {
+            vec![TypeKey::of::<Svc>()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            self.applies.fetch_add(1, Ordering::SeqCst);
+            self.go.notified().await;
+            Ok(Effect::Disposer(Box::new(|| {
+                Err(Error::from(ErrorKind::PluginFailed("cleanup boom".into())))
+            })))
+        })
+    }
+}
+
+async fn reach(view: &FiberView, state: FiberState) {
+    tokio::time::timeout(LIMIT, async {
+        let mut rx = view.watch();
+        rx.wait_for(|s| s.state == state).await.unwrap();
+    })
+    .await
+    .expect("state reached");
+}
+
+fn assert_cleanup_error(result: Result<(), Arc<ErrorKind>>) {
+    let error = result.expect_err("dispose reports the cleanup error");
+    assert!(error.to_string().contains("cleanup boom"), "{error}");
+}
+
+/// A restart queued behind the running load, then a dispose: the restart
+/// does not happen and reports `InactiveEffect`, and the cleanup error
+/// reaches `dispose()`, not the error sink.
+async fn restart_queued_before_a_dispose() {
+    let (root, errors) = root_collecting();
+    let go = Arc::new(Notify::new());
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Held {
+        go: go.clone(),
+        applies: applies.clone(),
+        needs: false,
+    });
+    reach(&view, FiberState::Loading).await;
+    // Polled once: it registers and queues its intent.
+    let restart = polled_once(view.restart()).await;
+    let dispose = view.dispose();
+    go.notify_one();
+    let restarted = tokio::time::timeout(LIMIT, restart)
+        .await
+        .expect("restart returns");
+    assert!(
+        matches!(&restarted, Err(e) if matches!(**e, ErrorKind::InactiveEffect)),
+        "{restarted:?}"
+    );
+    assert_cleanup_error(
+        tokio::time::timeout(LIMIT, dispose)
+            .await
+            .expect("dispose returns"),
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "{:?}",
+        errors.lock().unwrap()
+    );
+    assert_eq!(applies.load(Ordering::SeqCst), 1);
+    assert_eq!(view.state().state, FiberState::Disposed);
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test]
+async fn a_restart_queued_before_a_dispose_leaves_the_cleanup_to_it_on_current_thread() {
+    restart_queued_before_a_dispose().await;
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_queued_before_a_dispose_leaves_the_cleanup_to_it_on_multi_thread() {
+    restart_queued_before_a_dispose().await;
+}
+
+/// A dependency refresh queued behind the running load (a withdrawal of
+/// its service), then a dispose: the consumer stops before the withdrawal
+/// returns, and the cleanup error reaches `dispose()`, not the error sink.
+async fn refresh_queued_before_a_dispose() {
+    let (root, errors) = root_collecting();
+    let service = mounted(&root, |disposer| Provider { disposer }).await;
+    let go = Arc::new(Notify::new());
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Held {
+        go: go.clone(),
+        applies: applies.clone(),
+        needs: true,
+    });
+    reach(&view, FiberState::Loading).await;
+    let withdrawal = tokio::spawn(service.dispose());
+    tokio::time::timeout(LIMIT, async {
+        while root.get::<Svc>().is_some() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("service marked removed");
+    // The withdrawal queues the consumer's refresh right after marking.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let dispose = view.dispose();
+    go.notify_one();
+    tokio::time::timeout(LIMIT, withdrawal)
+        .await
+        .expect("withdrawal returns")
+        .unwrap()
+        .unwrap();
+    assert_cleanup_error(
+        tokio::time::timeout(LIMIT, dispose)
+            .await
+            .expect("dispose returns"),
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "{:?}",
+        errors.lock().unwrap()
+    );
+    assert_eq!(applies.load(Ordering::SeqCst), 1);
+    assert_eq!(view.state().state, FiberState::Disposed);
+}
+
+/// guarantee: core/D6, core/D14
+#[tokio::test]
+async fn a_refresh_queued_before_a_dispose_leaves_the_cleanup_to_it_on_current_thread() {
+    refresh_queued_before_a_dispose().await;
+}
+
+/// guarantee: core/D6, core/D14
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refresh_queued_before_a_dispose_leaves_the_cleanup_to_it_on_multi_thread() {
+    refresh_queued_before_a_dispose().await;
 }

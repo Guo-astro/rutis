@@ -782,6 +782,10 @@ impl DynPlugin for HandsOutLlm {
     }
 }
 
+/// The dependency is withdrawn while the plugin is validated, after the
+/// gate: the withdrawal waits for the plugin, which returns to Pending.
+///
+/// guarantee: core/typed.lost-dependency-pending, core/D14
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending() {
     let ctx = Ctx::root().unwrap();
