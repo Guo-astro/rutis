@@ -187,7 +187,8 @@ extension Rutis {
 /// AggregateError's children in order). A RutisError thrown on crosses with
 /// the far end's graph spliced in (nodes appended, references shifted), as
 /// Node does. `frame`, where the method that threw was declared, follows
-/// "name: message" in the root's `stack`.
+/// "name: message" in the root's `stack`; for a received error thrown on,
+/// it is appended to the root node's `rethrown` instead (at most 8 items).
 package func encodeError(_ error: Error, frame: String? = nil, encodeData: (Any) throws -> Value) -> JSON {
     if let remote = error as? RutisError, remote.name == RutisError.Name.syncWaitCycle, remote.graph == nil {
         return .object([("name", .string(remote.name)), ("message", .string(remote.message))])
@@ -212,7 +213,20 @@ package func encodeError(_ error: Error, frame: String? = nil, encodeData: (Any)
         {
             let offset = nodes.count
             nodes.append(contentsOf: received.map { shift($0, offset) })
-            return shift(root, offset)
+            let shifted = shift(root, offset)
+            // Thrown on by a method: its declaration joins the root's `rethrown`.
+            if depth == 0, let frame, let id = shifted["value"]?.int64Value, id >= 0, Int(id) < nodes.count,
+               case let .object(fields) = nodes[Int(id)], JSON.lookup(fields, "type") == .string("error")
+            {
+                var items = JSON.lookup(fields, "rethrown")?.arrayValue ?? []
+                if items.count < 8 {
+                    items.append(.string(frame))
+                    var updated = fields.filter { $0.0 != "rethrown" }
+                    updated.append(("rethrown", .array(items)))
+                    nodes[Int(id)] = .object(updated)
+                }
+            }
+            return shifted
         }
         let name = errorName(error)
         let message = errorMessage(error)
