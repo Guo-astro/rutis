@@ -55,6 +55,65 @@ pub fn host_key_in(name: &str, instance: rutis::host::InstanceId) -> Key<dyn Hos
     host_key(name).instance(instance)
 }
 
+/// Call `method` of the service provided by name as `name`, as `ctx` sees
+/// it (`host_key(name)`), and wait for its result: a `#[rutis::service]`
+/// type, a service a row of any language provides, a peer's, or a
+/// hand-written [`HostDispatch`]. For hosts and tests:
+///
+/// ```ignore
+/// let today: String = call_service(&root, "weather", "today", ("Oslo",)).await?;
+/// ```
+///
+/// `args` are the call's arguments as a tuple (`("Oslo", 3)`, `("Oslo",)`
+/// for one, `()` for none) or a list, encoded as a call from another
+/// language would be ([`arg`](crate::session::arg)); the result is
+/// decoded as `T` ([`decode_value`](crate::session::decode_value):
+/// `serde_json::Value` for any, `()` to ignore it). A method the service
+/// declares `sync` runs on a blocking thread. The call comes from no row
+/// ([`caller_row`] is `None`), so a method taking the calling row's `&Ctx`
+/// fails. Not provided, an unknown method or the method's own error: `Err`.
+pub async fn call_service<T>(
+    ctx: &rutis::Ctx,
+    name: &str,
+    method: &str,
+    args: impl serde::Serialize,
+) -> Result<T, crate::session::Error>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    use crate::session::Error;
+    let service = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name))
+        .ok_or_else(|| Error::Remote {
+            name: "ServiceNotFound".into(),
+            message: format!("no service named {name} is provided"),
+            graph: None,
+        })?;
+    let args = match crate::session::arg(&args)? {
+        RpcValue::Data(Value::Null) => RpcValue::List(Vec::new()),
+        args @ (RpcValue::Data(Value::Array(_)) | RpcValue::List(_)) => args,
+        _ => {
+            return Err(Error::Value(
+                "the arguments of a call are a tuple or a list: (\"Oslo\",), or () for none".into(),
+            ))
+        }
+    };
+    let sync = service
+        .methods()
+        .and_then(|methods| methods.get(method)?.as_str().map(|kind| kind == "sync"))
+        .unwrap_or(false);
+    let reply = if sync {
+        // A synchronous call waits for its answer: not on the async runtime.
+        let called = method.to_owned();
+        tokio::task::spawn_blocking(move || service.invoke(&called, args))
+            .await
+            .map_err(|error| Error::Value(format!("{name}.{method}: {error}")))?
+    } else {
+        service.invoke(method, args)
+    }?;
+    crate::session::decode_value(crate::session::settle(reply).await?)
+}
+
 /// The row a call into a [`HostDispatch`] comes from ([`caller_row`]): a
 /// plugin that rutis-loader runs as a row of a language runtime, whose
 /// fiber here (its [`Ctx`](rutis::Ctx)) lives exactly as long as the row.

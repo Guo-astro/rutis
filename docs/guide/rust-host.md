@@ -9,6 +9,9 @@
 rutis = "0.17"
 rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
 rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node 默认开
+schemars = "1"                     # Builtins::register 解码的配置类型派生 schemars::JsonSchema
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
 | crate / feature | 内容 |
@@ -21,7 +24,7 @@ rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node
 
 ## 装 Rust 插件
 
-Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Printer`、`Weather` 就是那里的例子。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
+Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 就是那里的例子。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
 
 ```rust
 use rutis::host::*;
@@ -31,17 +34,54 @@ use rutis_loader::Builtins;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // 用当前的 tokio 运行时
-    root.plugin(Printer);                          // 等它的 Deps 就绪
+    let printer = root.plugin(Printer);            // 等它的 Deps：Greeting
+    root.plugin(Greeter { lang: "Rust".into() });  // 提供 Greeting
+    printer.running().await?;                      // Printer 已经运行：打印 "hello from Rust"
     let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
+    weather.running().await?;
     weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 Weather::new 重建
 
     let mut builtins = Builtins::new();            // rutis-loader 的行按名字找到它
     builtins.register("weather", Weather::new);
-    // …加载器，见下面的“运行时与加载器”
+    // …放进加载器的 Chain，见下面的“运行时与加载器”
 
     root.shutdown().await?;                        // 等所有清理
     Ok(())
 }
+# use std::sync::Arc;
+# use rutis::Plugin;
+# pub struct Greeting(pub String);
+# pub struct Greeter { pub lang: String }
+# impl Plugin for Greeter {
+#     type Deps = ();
+#     async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+#         ctx.provide(Greeting(format!("hello from {}", self.lang)))?;
+#         Ok(())
+#     }
+# }
+# pub struct Printer;
+# impl Plugin for Printer {
+#     type Deps = Arc<Greeting>;
+#     async fn apply(&self, _: &Ctx, greeting: Arc<Greeting>) -> rutis::Result {
+#         println!("{}", greeting.0);
+#         Ok(())
+#     }
+# }
+# #[derive(serde::Deserialize, schemars::JsonSchema)]
+# pub struct WeatherConfig { pub city: String }
+# pub struct Weather { city: String }
+# impl Weather {
+#     pub fn new(config: &WeatherConfig) -> rutis::Result<Self> {
+#         Ok(Weather { city: config.city.clone() })
+#     }
+# }
+# impl Plugin for Weather {
+#     type Deps = ();
+#     async fn apply(&self, _: &Ctx, _: ()) -> rutis::Result {
+#         println!("weather in {}", self.city);
+#         Ok(())
+#     }
+# }
 ```
 
 | 要做的事 | 写法 |
@@ -53,6 +93,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 读服务 | `get::<T>()`；按键 `get_at(&key)`、提供 `provide_at(key, arc)`，键是 `host::Key<T>`（见[按名字依赖](#按名字依赖)）；`require` / `require_at` 是严格读取，在 `DynPlugin` 的 `apply` 里读声明过的依赖 |
 | 停下 | `root.shutdown().await` 卸载全部并等清理，`shutdown_with_timeout(limit)` 限制等待；单个插件 `view.dispose()`、`view.restart()` |
 | 观察 | `view.state()`、`view.watch()`、`root.diagnostics()`、`root.subscriptions()` |
+| 等到它运行 | `view.running().await`，见下面 |
+
+等一个装上的插件，等的是什么：
+
+- `view.await`（以及 `update`、`restart`）在 fiber 处理完排给它的事（装载、这次更新、这次重启）后返回。`Deps` 没有到齐的插件不装载，停在 `Pending`，`view.await` 照样返回 `Ok(())`，插件并没有运行。
+- `view.running().await` 等到插件运行（`Active`：它的 `apply` 已经返回），依赖多久出现就等多久。插件失败时返回装载的错误（失败的插件在依赖变化时再试），插件被卸载或根关闭时返回 `InactiveEffect`。
+- 依赖缺着时它一直等；用 `tokio::time::timeout(Duration::from_secs(10), view.running()).await` 限制，超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
+- 装的顺序不要紧：先装的使用者会等后装的提供者。应用要用的插件，先等它们运行再往下走。
 
 ### 按名字依赖
 
@@ -98,9 +146,9 @@ impl DynPlugin for Router {
 
 - 所有签名里的错误都是 `rutis::Error`。宿主的函数返回 `Box<dyn Error>`（或 `Box<dyn Error + Send + Sync>`）时直接 `?`；打开 rutis 的 `anyhow` feature 后，返回 `anyhow::Result` 也直接 `?`。
 - `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等，就是 0.16 的 `CordisError` 改了名字，变体不变），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
-- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`、`dispose()`、`shutdown()` 得到的。
+- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`（或它的 `running()`）、`dispose()`、`shutdown()` 得到的。
 
-```rust
+```rust,no_run
 use std::sync::Arc;
 use rutis::host::*;
 use rutis::Ctx;
@@ -124,7 +172,7 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 
 Rust 服务在它的 `impl` 块上加 `#[rutis::service]`，照常 `provide`，各语言的行就能按名字调用它（[#510](https://github.com/arcships/rutis/issues/510)）。不用 `build.rs`，不用写 `HostDispatch`；定义服务的 crate 只依赖 `rutis`。
 
-```rust
+```rust,ignore
 use rutis::host::BoxFuture;
 use rutis::service;
 
@@ -163,7 +211,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 改不了源码的类型（别人 crate 里的），Rust 不允许在你的 crate 里给它写 `impl`。在自己的 crate 里包一层新类型，标上 `#[rutis::service]`，要公开的方法逐个转发给被包的那个：
 
-```rust
+```rust,ignore
 use rutis::service;
 
 /// The calendar.                          // 文档注释写进 TypeScript 声明
@@ -196,6 +244,7 @@ root.provide(Calendar(calendar_services::Calendar::new()))?;
 插件按名字使用的服务，在 Rust 里是 `host_key(名字)` 下的 `dyn HostDispatch`；上面的标注就是生成它。分发方式由服务自己决定的（例如给每一行一个自己的对象），手写：
 
 ```rust
+# use rutis::host::CtxHost;
 use std::sync::Arc;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value};
 use serde_json::json;
@@ -215,12 +264,45 @@ impl HostDispatch for Clock {
     }
 }
 
+# fn demo(root: &rutis::Ctx) -> Result<(), Box<dyn std::error::Error>> {
 root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key 返回 Key<dyn HostDispatch>
+# Ok(())
+# }
 ```
 
 要让错误像标注服务的 `Err(e)` 那样带 code 和 data，返回 `rutis_bridge::exports::failure(name, code, message, data)`：调用方语言里抛出名为 `name`、消息为 `message` 的错误，附带 `code` 和 `data`（`serde_json::Value` 或 `None`）。
 
 插件提供的服务同样以 `host_key(名字)` 出现在 rutis 里，Rust 插件可以按名字使用它们。
+
+### 在 Rust 里按名字调用服务
+
+宿主或测试用 `rutis_bridge::session::call_service` 一行就能调用任何按名字提供的服务（标注类型、任何语言的行提供的服务、对端节点的、手写的 `HostDispatch`），和别的语言的行调用它一样：
+
+```rust
+# use rutis::host::*;
+# use rutis::Ctx;
+# pub struct Weather;
+# #[rutis::service]
+# impl Weather {
+#     pub async fn today(&self, city: String) -> String { format!("sunny in {city}") }
+# }
+use rutis_bridge::session::call_service;
+
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let root = Ctx::root()?;
+root.provide(Weather)?;                                          // 一个 #[rutis::service] 类型
+let today: String = call_service(&root, "weather", "today", ("Oslo",)).await?;
+assert_eq!(today, "sunny in Oslo");
+# root.shutdown().await?;
+# Ok(())
+# }
+```
+
+- 参数是元组（`("Oslo", 3)`；一个参数写 `("Oslo",)`，没有参数写 `()`）或列表，像别的语言的调用一样编码；结果解码成你写的类型（任意值用 `serde_json::Value`，不要结果用 `()`）。
+- 调用的是 `ctx` 按名字看到的那个服务（`host_key(名字)`）；服务声明为 `sync` 的方法在阻塞线程上执行，其余的按 async 等待。
+- 失败都是 `Err`（`rutis_bridge::session::Error`）：方法自己的错误，带 `code()` 和 `data()`；没有这个方法；没有提供这个名字的服务时是 `ServiceNotFound`（行还没运行：先等它，见下面的 `reconcile`）。
+- 调用不来自任何行：要调用方行的 `&Ctx` 的方法会失败。
 
 ### 调用方的行
 
@@ -228,6 +310,12 @@ root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key 返回 Key<dyn
 
 ```rust
 use rutis_bridge::session::{caller_row, native_error, HostDispatch, Reply, Value};
+# #[derive(Clone)]
+# struct Tools;
+# impl Tools {
+#     fn add(&self, _row: &str, _name: &str) {}
+#     fn remove(&self, _row: &str, _name: &str) {}
+# }
 
 impl HostDispatch for Tools {
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -284,11 +372,23 @@ for def in parts.of("session") {
 
 ## 运行时与加载器
 
-```rust
+```rust,no_run
+# use rutis::host::*;
+# use rutis::Ctx;
+# use rutis_loader::Builtins;
+# use serde_json::json;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let root = Ctx::root()?;
+# let mut builtins = Builtins::new();
+# builtins.register("weather", Weather::new);
 use std::sync::Arc;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
+
+// 写绝对路径：每个运行时的进程在它自己的目录里启动（见下面）。
+let app = std::env::current_dir()?.join("app");
 
 // 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。只共享登记为共享的名字
 // （register_shared、export）时调用 catalog.share_registered_only()。
@@ -296,16 +396,17 @@ let mut catalog = ServiceCatalog::new();
 
 // 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
 // 事件不用配置：运行时里的监听器自动登记到宿主的事件总线上（见下面的“事件”）。
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json");
+let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"));
 let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
-let python = LocalRuntime::python("app/plugins").interpreter("app/.venv/bin/python");
+let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
 let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
 root.plugin(node);
 root.plugin(python);
 
 let loader = LoaderPlugin::new(
-    Chain::new().with_shared(python_rows.clone()).with_shared(node_rows.clone()),
+    // 按顺序问：先是 `builtins` 里登记的 Rust 插件（上面的“装 Rust 插件”），再是各运行时。
+    Chain::new().with(builtins).with_shared(python_rows.clone()).with_shared(node_rows.clone()),
     LoaderOptions { catalog, ..LoaderOptions::default() },
 );
 let handle = loader.handle();
@@ -314,26 +415,48 @@ root.plugin(RuntimeRowsPlugin::new(node_rows));
 root.plugin(RuntimeRowsPlugin::new(python_rows));
 
 let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
-    { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" } },
+    { "id": "forecast", "name": "weather", "config": { "city": "Oslo" } },   // builtins 里的 Rust 插件
+    { "id": "web", "name": "weather-plugin", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "py:llm_gateway" }
 ] }]))?;
-handle.reconcile(vec![Layer::new("app", rows)], None).await?;
+// 每一行都装载过一遍才返回：见下面。
+let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
+for failure in &report.failures {
+    eprintln!("{failure}");                                                  // "<行 id>: <错误>"
+}
+# root.shutdown().await?;
+# Ok(())
+# }
+# #[derive(serde::Deserialize, schemars::JsonSchema)]
+# pub struct WeatherConfig { pub city: String }
+# pub struct Weather;
+# impl Weather {
+#     pub fn new(_: &WeatherConfig) -> rutis::Result<Self> { Ok(Weather) }
+# }
+# impl rutis::Plugin for Weather {
+#     type Deps = ();
+#     async fn apply(&self, _: &Ctx, _: ()) -> rutis::Result { Ok(()) }
+# }
 ```
 
+- `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waiting_for(&entry)` 说明它在等什么。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
+- 路径：每个运行时的进程在它自己的目录里启动（Python、Go：它的项目目录；Node：运行时的包目录），收到的路径照原样使用。相对路径会从那个目录算起，而不是应用的目录：照上面那样写绝对路径。
 - 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
 - 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
 - 设置 `RUTIS_TRACE` 时，运行时通道上的每条消息在 stderr 记一行（方向和长度，不含内容）。
 - 运行时进程默认没有标准输入，标准输出和标准错误用应用自己的。读终端的插件（终端界面、Python 的 `input()`）需要终端本身：它会检查输入是不是终端，并自己设置终端模式。用 `stdin(Stdio::Inherit)` 把本进程的输入交给它的运行时。这一设置作用于整个运行时进程，进程里的每个插件都能读到输入，所以把这类插件放进单独的运行时（`named`），并且终端最多交给一个运行时：多个进程读同一个终端，会争抢每一次按键。`stdout(Stdio::Null)` 和 `stderr(Stdio::Null)` 让其他运行时不往终端上写。`Launcher` 上有同样的设置。
 
-```rust
+```rust,no_run
+# use rutis_bridge::runtime::LocalRuntime;
+# let app = std::path::PathBuf::from("/srv/app");
 use rutis_bridge::runtime::Stdio;
 
 // 终端界面放在单独的运行时里，读键盘；插件所在的运行时不往终端写标准输出。
-let tui = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
+let tui = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
     .named("tui")
     .stdin(Stdio::Inherit);
-let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/package.json")
+let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
     .stdout(Stdio::Null);
 ```
 
@@ -341,18 +464,30 @@ let node = LocalRuntime::node("app/node_modules/@arcships/rutis-runtime", "app/p
 
 Go 插件是编译好的二进制，一个二进制一个运行时（features：`rutis-loader` 的 `go`）。`GoResolver` 读二进制的清单（`<二进制> --rutis-manifest`），把 `go:<插件>` 路由到含有它的二进制；`GoRuntimes` 在有行用到时启动它，空闲后停下：
 
-```rust
+```rust,no_run
+# use std::sync::Arc;
+# use std::time::Duration;
+# use rutis::host::*;
+# use rutis_loader::ServiceCatalog;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let root = rutis::Ctx::root()?;
+# let catalog = ServiceCatalog::new();
+# let app = std::env::current_dir()?.join("app");
 use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
 
 let go = Arc::new(
-    GoResolver::new(GoBinaries::new().dir("app/plugins/go").file("app/bin/netkit"))
+    GoResolver::new(GoBinaries::new().dir(app.join("plugins/go")).file(app.join("bin/netkit")))
         .with_catalog(&catalog)
         .reserve(["node", "py"]),              // 其他运行时的名字，Go 运行时不能用
 );
 // 放进加载器的 Chain：Chain::new().with_shared(go.clone())…，加载器挂载之后：
-let go_runtimes = GoRuntimes::new(go, "app").idle(Some(Duration::from_secs(60)));
+let go_runtimes = GoRuntimes::new(go, &app).idle(Some(Duration::from_secs(60)));
 let control = go_runtimes.handle();            // restart("go-netkit")、runtimes()
 root.plugin(go_runtimes).await?;
+# let _ = control;
+# Ok(())
+# }
 ```
 
 - 运行时名由文件名得出（`netkit` → `go-netkit`），两个二进制有同名插件时行写 `go-netkit:<插件>`。
@@ -364,7 +499,12 @@ root.plugin(go_runtimes).await?;
 
 ## 节点
 
-```rust
+```rust,no_run
+# use rutis::host::*;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let root = rutis::Ctx::root()?;
+# let token = std::env::var("RUTIS_TOKEN")?;
 use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
 use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
 
@@ -378,6 +518,8 @@ root.plugin(PeerPlugin::new(
     LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
     Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
 )?);
+# Ok(())
+# }
 ```
 
 用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
@@ -401,6 +543,7 @@ impl Event for Created {
     type Value = String;
 }
 
+# async fn demo(ctx: &rutis::Ctx) -> Result<(), Box<dyn std::error::Error>> {
 let off = ctx.on::<Created>(|event, call| async move {                // 监听器以这个 ctx 被调用
     if call.mode() == Mode::Waterfall {
         // 中间件：执行链上其余部分，再改写它的结果
@@ -425,6 +568,9 @@ let python_only = ctx
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
+# let _ = (first, out, sync, chain, python_only);
+# Ok(())
+# }
 ```
 
 | 事项 | 规则 |

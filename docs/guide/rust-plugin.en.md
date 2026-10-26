@@ -272,6 +272,15 @@ impl Event for Created {
     type Value = String; // what serial, bail and waterfall return
 }
 
+/// Only emitted, no result asked for: its listeners return Ok(None).
+#[derive(Serialize, Deserialize)]
+pub struct Closed(pub String);
+
+impl Event for Closed {
+    const NAME: &'static str = "session/closed";
+    type Value = ();
+}
+
 struct Audit;
 
 impl Plugin for Audit {
@@ -355,6 +364,47 @@ ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // filter
 ```
 
 Options chain, ending with `.on(…)` or `.on_sync(…)`. An event type with no fixed name (the value decides it) has an empty `NAME` and overrides `fn name(&self) -> &str` to return the value's name; listen to it with `.name(…)`.
+
+#### Emitting from a service
+
+A service whose methods emit keeps a clone of the plugin's `Ctx`; it then emits as that plugin, whoever calls the method:
+
+```rust
+# use rutis::Event;
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+use rutis::{Ctx, Plugin, Result};
+
+pub struct Sessions {
+    ctx: Ctx,                                         // the plugin's, kept by the service
+}
+
+impl Sessions {
+    pub async fn create(&self, id: String) -> Result {
+        self.ctx.parallel(Created(id, 1)).await       // waits for every listener
+    }
+}
+
+struct SessionsPlugin;
+
+impl Plugin for SessionsPlugin {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.provide(Sessions { ctx: ctx.clone() })?;
+        Ok(())
+    }
+}
+```
+
+- Keeping the clone is fine: it is a handle, and keeps nothing running. When the plugin stops, its services are withdrawn, so nobody reaches `Sessions` through rutis any more.
+- A caller that kept the service past the stop can still call it, and its events are still delivered: the bus does not ask whether the emitter still runs. What the kept `ctx` registers (`on`, `effect`, `provide`) is refused with `InactiveEffect`. A method that must not act after the stop checks for it: `ctx.cancelled()` completes once the plugin starts stopping.
+- Events of a type that are only emitted, with no result asked for, have `type Value = ();` (`Closed` above): the listeners return `Ok(None)`.
 
 ### Cleanup and background tasks
 
@@ -516,6 +566,7 @@ cargo test
 ```
 
 - For a plugin that depends on other services, mount a plugin providing fakes first, or provide them on the root: `root.provide_as::<dyn Llm>(Arc::new(FakeLlm))?`.
+- `(&view).await` returns once the plugin's load was handled: a plugin whose dependency is missing is still `Pending` then, not running. `view.running().await` waits until it runs (or returns its load error), so a test that mounts the plugin before its fakes waits with it; bound it with `tokio::time::timeout`.
 - An `emit` listener's failure goes to the root's error sink: make the root with `Ctx::root_with_sink(handle, sink)` to collect and assert on them.
 - Listeners in other languages and values crossing processes need a real runtime, as in production: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
 
@@ -567,14 +618,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-To mount it from configuration with rutis-loader (rows of `rutis.json`), register the same constructor under a name; the config is decoded as `WeatherConfig` and its JSON Schema generated from it, so it also derives `schemars::JsonSchema`:
+To mount it from configuration with rutis-loader (rows of `rutis.json`), register the same constructor under a name; the config is decoded as `WeatherConfig` and its JSON Schema generated from it, so it also derives `schemars::JsonSchema`. That is schemars 1, the version rutis-loader uses (it does not re-export it): add `schemars = "1"` to `[dependencies]`.
 
 ```rust,ignore
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WeatherConfig {
+    pub city: String,
+}
+
 let mut builtins = Builtins::new();
 builtins.register("weather", Weather::new); // row: { "id": "weather", "name": "weather", "config": { "city": "Oslo" } }
 ```
 
-For one copy per instance, `register_with(name, |build, config| …)`. The loader, runtimes and rows of other languages: [embed rutis in a Rust application](rust-host.en.md).
+For one copy per instance, `register_with(name, |build, config| …)`. The loader (with `builtins` in its `Chain`), runtimes and rows of other languages: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
 
 ### Dylib plugin
 

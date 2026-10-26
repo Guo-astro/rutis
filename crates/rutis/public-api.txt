@@ -701,6 +701,7 @@ pub fn rutis::host::FiberView::effects(&self) -> alloc::vec::Vec<rutis::host::Ef
 pub fn rutis::host::FiberView::instance(&self) -> rutis::host::InstanceId
 pub fn rutis::host::FiberView::name(&self) -> &str
 pub fn rutis::host::FiberView::restart(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
+pub fn rutis::host::FiberView::running(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::host::FiberView::sequenced_state(&self) -> (u64, rutis::host::Snapshot)
 pub fn rutis::host::FiberView::set_config<C: core::marker::Send + core::marker::Sync + 'static>(&self, C) -> core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::host::FiberView::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>

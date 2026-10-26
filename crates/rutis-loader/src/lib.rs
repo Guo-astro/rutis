@@ -28,6 +28,28 @@ mod resolver;
 pub mod runtime;
 mod volatile;
 
+/// The Rust host guide's examples compile against these crates (#667).
+#[cfg(all(
+    doctest,
+    feature = "node",
+    feature = "python",
+    feature = "go",
+    feature = "peer"
+))]
+#[doc = include_str!("../../../docs/guide/rust-host.md")]
+pub struct RustHostGuide;
+
+/// The English Rust host guide's examples compile against these crates.
+#[cfg(all(
+    doctest,
+    feature = "node",
+    feature = "python",
+    feature = "go",
+    feature = "peer"
+))]
+#[doc = include_str!("../../../docs/guide/rust-host.en.md")]
+pub struct RustHostGuideEn;
+
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;

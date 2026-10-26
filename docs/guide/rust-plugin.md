@@ -272,6 +272,15 @@ impl Event for Created {
     type Value = String; // serial、bail、waterfall 返回的结果
 }
 
+/// 只发出、不要结果：它的监听器返回 Ok(None)。
+#[derive(Serialize, Deserialize)]
+pub struct Closed(pub String);
+
+impl Event for Closed {
+    const NAME: &'static str = "session/closed";
+    type Value = ();
+}
+
 struct Audit;
 
 impl Plugin for Audit {
@@ -355,6 +364,47 @@ ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // 不经
 ```
 
 选项可以连着写，最后是 `.on(…)` 或 `.on_sync(…)`。没有固定名字的事件类型（名字由值决定）把 `NAME` 写成 `""`，重写 `fn name(&self) -> &str` 返回这个值的名字，监听时用 `.name(…)` 给出名字。
+
+#### 在服务方法里发事件
+
+方法里要发事件的服务，保存插件 `Ctx` 的一个克隆；这样它总是以这个插件的身份发出，不管谁调用这个方法：
+
+```rust
+# use rutis::Event;
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+use rutis::{Ctx, Plugin, Result};
+
+pub struct Sessions {
+    ctx: Ctx,                                         // 插件的 ctx，由服务保存
+}
+
+impl Sessions {
+    pub async fn create(&self, id: String) -> Result {
+        self.ctx.parallel(Created(id, 1)).await       // 等全部监听器
+    }
+}
+
+struct SessionsPlugin;
+
+impl Plugin for SessionsPlugin {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.provide(Sessions { ctx: ctx.clone() })?;
+        Ok(())
+    }
+}
+```
+
+- 保存克隆没有问题：它只是一个句柄，不让任何东西继续运行。插件停下时它的服务被撤下，之后没有人能经 rutis 拿到 `Sessions`。
+- 停下之前就拿着这个服务的调用方仍能调用它，它发出的事件照样送达：总线不问发出方是否还在运行。用保存的 `ctx` 登记的东西（`on`、`effect`、`provide`）以 `InactiveEffect` 被拒。停下之后不该再做事的方法自己检查：插件开始停下时 `ctx.cancelled()` 完成。
+- 只发出、不要结果的事件类型写 `type Value = ();`（上面的 `Closed`）：监听器返回 `Ok(None)`。
 
 ### 清理和后台任务
 
@@ -516,6 +566,7 @@ cargo test
 ```
 
 - 依赖别的服务的插件，在测试里先装一个提供假服务的插件，或在根上 `root.provide_as::<dyn Llm>(Arc::new(FakeLlm))?`。
+- `(&view).await` 在插件的装载处理完后返回：依赖缺着的插件这时还是 `Pending`，没有运行。`view.running().await` 等到它运行（或返回装载的错误），所以先装插件、后装假服务的测试用它等；用 `tokio::time::timeout` 限制等待。
 - `emit` 的监听器失败进入根的错误汇集：用 `Ctx::root_with_sink(handle, sink)` 建根，把它们收集起来断言。
 - 别的语言的监听器、跨进程传值要用真实的运行时，与生产相同，见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
 
@@ -567,14 +618,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-用 rutis-loader 按配置（`rutis.json` 的行）装时，把同一个构造函数登记成一个名字；配置按 `WeatherConfig` 解码，配置的 JSON Schema 从它生成，所以它还要派生 `schemars::JsonSchema`：
+用 rutis-loader 按配置（`rutis.json` 的行）装时，把同一个构造函数登记成一个名字；配置按 `WeatherConfig` 解码，配置的 JSON Schema 从它生成，所以它还要派生 `schemars::JsonSchema`。用的是 schemars 1，和 rutis-loader 用的版本相同（rutis-loader 不重新导出它）：在 `[dependencies]` 里加 `schemars = "1"`。
 
 ```rust,ignore
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WeatherConfig {
+    pub city: String,
+}
+
 let mut builtins = Builtins::new();
 builtins.register("weather", Weather::new); // 行：{ "id": "weather", "name": "weather", "config": { "city": "Oslo" } }
 ```
 
-每个实例各构造一份时用 `register_with(name, |build, config| …)`。加载器、运行时和其他语言的行见 [在 Rust 应用里嵌入](rust-host.md)。
+每个实例各构造一份时用 `register_with(name, |build, config| …)`。加载器（`Chain` 里放进 `builtins`）、运行时和其他语言的行见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
 
 ### dylib 插件
 
