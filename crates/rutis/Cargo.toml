@@ -24,6 +24,9 @@ anyhow = { version = "1.0.90", optional = true }
 
 [features]
 anyhow = ["dep:anyhow"]
+# Test hooks only (`EventBus::on_selected_for_testing`): what a conformance
+# runner needs to see of a dispatch. Never part of a product build.
+testing = []
 
 # The shuttle models (src/shuttle_tests.rs, #179): built with
 # `RUSTFLAGS="--cfg rutis_shuttle"` only, never by a plain build.
