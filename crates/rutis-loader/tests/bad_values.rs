@@ -351,13 +351,16 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     // And everything after them goes on.
     expect(&fixture, "js after: py ok / go ok", &[]).await;
     expect(&fixture, "py after: js ok", &[]).await;
+    // The callers record their last line from inside `apply`, so a row may
+    // still be Loading for a moment after it: wait for Active rather than
+    // read the state at once (that raced on a loaded CI runner).
     for id in ["pt", "jt", "gt", "jc", "pc"] {
-        assert_eq!(
-            row_state(&fixture.loader, id),
-            Some(FiberState::Active),
-            "{id} keeps running: {:#?}",
-            fixture.probe.lines()
-        );
+        Guard(HANG_GUARD * 3)
+            .until(
+                || row_state(&fixture.loader, id) == Some(FiberState::Active),
+                &format!("{id} keeps running: {:#?}", fixture.probe.lines()),
+            )
+            .await;
     }
     fixture.root.shutdown().await.unwrap();
 }
