@@ -215,7 +215,7 @@ go test ./...
 
 `Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
 
-测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置（这一行重新加载，监听器重新登记，排在其他监听器之后）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
+测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
 
 ```go
 func TestEvents(t *testing.T) {

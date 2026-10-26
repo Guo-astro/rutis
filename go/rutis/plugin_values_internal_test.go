@@ -38,6 +38,17 @@ func TestALocalServiceGetsTheDefinitionItself(t *testing.T) {
 	}
 }
 
+// A definition handed back that needs a newer plugin API is refused, a
+// nameless one without an empty name in the message.
+func TestANewerNamelessDefinitionIsRefusedSayingSo(t *testing.T) {
+	def := Define(Plugin[NoConfig]{Apply: func(*Ctx, NoConfig) error { return nil }})
+	def.api = PluginAPI + 1
+	_, err := (&runtimeState{}).entryDefinition(def)
+	if err == nil || !strings.HasPrefix(err.Error(), "a plugin without a name needs plugin API") {
+		t.Fatalf("%v", err)
+	}
+}
+
 // Messages about a plugin without a name do not print an empty one.
 func TestANamelessPluginIsCalledSoInPanics(t *testing.T) {
 	defer func() {

@@ -215,7 +215,7 @@ go test ./...
 
 `Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
 
-Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does (the row loads again, its listeners registered anew, after the others); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
+Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
 
 ```go
 func TestEvents(t *testing.T) {

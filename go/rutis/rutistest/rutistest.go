@@ -418,11 +418,9 @@ func loadCopy(t testing.TB, remote *peer.RemotePlugin, config any, services map[
 	}
 	// Descriptors call a copy's row as the host does: by the id of the row
 	// its definition belongs to (a copy of a copy, by the first one's), or,
-	// not known, by the definition's name, or "plugin".
-	id := "plugin"
-	if declared.Name != nil {
-		id = *declared.Name
-	}
+	// that not known or empty (a runtime takes an empty id for the copy's
+	// own key), by the definition's name, or "plugin".
+	id := ""
 	if known {
 		h.mu.Lock()
 		for _, row := range h.rows {
@@ -431,6 +429,12 @@ func loadCopy(t testing.TB, remote *peer.RemotePlugin, config any, services map[
 			}
 		}
 		h.mu.Unlock()
+	}
+	if id == "" && declared.Name != nil {
+		id = *declared.Name
+	}
+	if id == "" {
+		id = "plugin"
 	}
 	spec := &Loaded{declared: declared, copy: true, known: known, origin: from, id: id, entry: remote, exports: declared.Provides, own: services}
 	loaded := h.loadEntry(t, spec, config, opts)
@@ -645,8 +649,9 @@ func (h *harness) forgetRow(row string) {
 func (h *harness) forgetOwn(row string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// By the label at the end: a name may hold a NUL (and be refused).
 	for id := range h.own {
-		if _, label, _ := strings.Cut(id, "\x00"); label == leaseLabel(row) {
+		if strings.HasSuffix(id, "\x00"+leaseLabel(row)) {
 			delete(h.own, id)
 		}
 	}
@@ -1412,7 +1417,10 @@ func (h *harness) withdrawRow(row string) {
 // then the row (its listeners withdrawn, its cleanups run), and it loads
 // again under the same key with `config`: a new generation, so its
 // listeners register again, after every existing one, and the definitions
-// it handed over before have ended (R6).
+// it handed over before have ended (R6). rutis never sends a Go row
+// rows.update either: a change of config is a restart. The row's cleanups
+// run once it is no longer loaded, as under rutis: an event a cleanup
+// emits fails.
 func (l *Loaded) Update(config any) {
 	h := l.h
 	h.t.Helper()
