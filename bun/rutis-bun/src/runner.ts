@@ -365,7 +365,7 @@ export class Runtime {
 
   async #plugin(entry: unknown) {
     if (typeof entry !== 'string') return definition(entry)
-    return declared(await this.#modules.import(locate(entry, this.#project)), entry)
+    return declared(await this.#modules.described(locate(entry, this.#project)), entry)
   }
 
   // What a plugin definition declares (`plugins.read`), answered at once.

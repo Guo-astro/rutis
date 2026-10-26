@@ -366,7 +366,7 @@ const undeclared = name => {
 
 async function pluginOf(entry) {
   entry = located(entry)
-  const declared = await declaredOf(entry)
+  const declared = await declaredOf(entry, described)
   return isLeaf(declared) ? toCordis(declared, undeclared) : declared
 }
 
@@ -412,20 +412,24 @@ function describeDefinition(value) {
 }
 
 // The module's plugin as written: a leaf plugin (`definePlugin`), or a
-// Cordis plugin.
-async function declaredOf(entry) {
+// Cordis plugin. `version` picks the module URL: `fresh` describes the file
+// as it is now, `described` loads the module a row was described with.
+async function declaredOf(entry, version = fresh) {
   const own = cordisOf(entry)
   if (cordisPath && own && own !== cordisPath) {
     throw new Error(`${entry} resolves a different Cordis (${own}) than ${pluginPath} (${cordisPath})`)
   }
-  const module = await import(fresh(entry))
+  const href = version(entry)
+  const module = await import(href)
+  imported.set(entry, href)
   return supported(typeof module.apply === 'function' ? module : (module.default ?? module), entry)
 }
 
-// The module URL to import: the plain one the first time, and one that
+// The module URL to describe: the plain one the first time, and one that
 // bypasses the module cache once the file changed since (rutis-loader's
-// reload asks for the new code). Only the plugin's own module is imported
-// again, not the modules it imports, as for Python plugins.
+// reload describes the row again, asking for the new code). Only the
+// plugin's own module is imported again, not the modules it imports, as for
+// Python plugins.
 const stamps = new Map()
 function fresh(entry) {
   const href = pathToFileURL(entry).href
@@ -436,6 +440,17 @@ function fresh(entry) {
   if (seen === undefined) { stamps.set(entry, { stamp, href }); return href }
   if (seen.stamp !== stamp) stamps.set(entry, { stamp, href: `${href}?rutis-reload=${stamp}` })
   return stamps.get(entry).href
+}
+
+// The module URL a row loads: the last one imported without failing, which
+// its description imported. A row that loads again for another reason (a
+// service it uses came back, its config changed) runs the code it was
+// described with, not an edit made since, which may not even parse; the
+// edit runs once a reload describes it (#665). The file as it is now when
+// this process imported none of it yet.
+const imported = new Map()
+function described(entry) {
+  return imported.get(entry) ?? fresh(entry)
 }
 
 // `plugin()` returns a thenable `Object.create(fiber)`; state written through

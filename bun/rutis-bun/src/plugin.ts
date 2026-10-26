@@ -108,11 +108,21 @@ export function declared(module: any, entry: string): Plugin {
 }
 
 // Plugin modules, imported again when their file changed since (a reload
-// asks for the new code). Only the plugin module itself is imported again,
-// not the modules it imports.
+// describes the row again, asking for the new code). Only the plugin module
+// itself is imported again, not the modules it imports.
 export class Modules {
   #stamps = new Map<string, string>()
+  #imported = new Map<string, any>()
   #require = createRequire(import.meta.url)
+
+  // The module a row loads: the last one imported without failing, which
+  // its description imported. A row that loads again for another reason (a
+  // service it uses came back, its config changed) runs the code it was
+  // described with, not an edit made since, which may not even parse; the
+  // edit runs once a reload describes it (#665).
+  async described(file: string): Promise<any> {
+    return this.#imported.has(file) ? this.#imported.get(file) : this.import(file)
+  }
 
   async import(file: string): Promise<any> {
     let stamp: string | undefined
@@ -126,7 +136,9 @@ export class Modules {
     }
     if (stamp !== undefined) this.#stamps.set(file, stamp)
     try {
-      return await import(file)
+      const module = await import(file)
+      this.#imported.set(file, module)
+      return module
     } catch (error) {
       throw located(error)
     }

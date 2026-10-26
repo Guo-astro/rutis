@@ -484,10 +484,17 @@ class Runtime:
         await self.unload(key)
         await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id)
 
-    def module(self, name: str):
+    def module(self, name: str, fresh: bool = True):
         """The plugin module, imported again when its source file changed
-        since (rutis-loader's reload asks for the new code). Only the plugin
-        module itself is imported again, not the modules it imports.
+        since (rutis-loader's reload describes the row again, asking for the
+        new code). Only the plugin module itself is imported again, not the
+        modules it imports.
+
+        With `fresh` false (a row loading), the module as this process last
+        imported it, unchanged: a row that loads again for another reason (a
+        service it uses came back, its config changed) runs the code it was
+        described with, not an edit made since, which may not even parse;
+        the edit runs once a reload describes it (#665).
 
         `name` is an entry point of the group `rutis.plugins` (a packaged
         plugin), or else a module name."""
@@ -495,6 +502,8 @@ class Runtime:
         module = sys.modules.get(name)
         if module is None:
             module = importlib.import_module(name)
+        elif not fresh and name in self.stamps:
+            return module
         elif name in self.stamps and _stamp(module) != self.stamps[name]:
             importlib.invalidate_caches()
             module = importlib.reload(module)
@@ -505,7 +514,7 @@ class Runtime:
         """The plugin of a row: its module's, or a plugin definition this
         runtime handed over (sent back home as itself)."""
         if isinstance(entry, str):
-            return _supported(sdk.load(self.module(entry)), entry)
+            return _supported(sdk.load(self.module(entry, fresh=False)), entry)
         plugin = _definition(entry)
         return _supported(plugin, plugin.name or "plugin definition")
 
