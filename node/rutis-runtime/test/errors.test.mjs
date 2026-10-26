@@ -89,10 +89,10 @@ test('an error from the other side has this process\'s stack, not the other side
 test('an error from the other side thrown on crosses with the graph it came in (#677)', () => {
   const failure = remote()
   const sent = JSON.parse(JSON.stringify(encodeError(decodeError(failure))))
-  assert.deepEqual(sent, failure)
+  assert.deepEqual(withoutRethrown(sent), failure)
   // Its cause alone: the same nodes, rooted at the cause.
   const cause = encodeError(decodeError(remote()).cause)
-  assert.deepEqual(cause.graph, { root: { type: 'reference', value: 2 }, nodes: failure.graph.nodes })
+  assert.deepEqual(withoutRethrown(cause).graph, { root: { type: 'reference', value: 2 }, nodes: failure.graph.nodes })
   // Inside an error of this process: spliced in, references shifted.
   const outer = new Error('outer', { cause: decodeError(remote()) })
   const wrapped = encodeError(outer)
@@ -110,6 +110,39 @@ test('an error from the other side thrown on crosses with the graph it came in (
   assert.equal(back.cause.code, 'NotFound')
   assert.deepEqual(back.cause.data, { id: 7n })
   assert.equal(back.cause.cause.message, 'bad id')
+})
+
+// The encoded error with `rethrown` left out of its nodes.
+const withoutRethrown = ({ graph, ...rest }) => ({ ...rest, graph: { ...graph, nodes: graph.nodes.map(({ rethrown, ...node }) => node) } })
+const frameLines = text => text.split('\n').every(line => /^\s*at /.test(line))
+
+test('an error from the other side thrown on adds where it was thrown on to its root (#677)', () => {
+  const failure = remote()
+  const error = decodeError(failure)
+  const once = encodeError(error)
+  const root = once.graph.nodes[0]
+  assert.equal(root.rethrown.length, 1)
+  assert.match(root.rethrown[0], /errors\.test\.mjs/)
+  assert.ok(frameLines(root.rethrown[0]))
+  assert.doesNotMatch(root.rethrown[0], /CalendarError/)
+  // Only the root; the graph kept is not changed, so encoding again adds one again.
+  assert.equal('rethrown' in once.graph.nodes[2], false)
+  assert.equal('rethrown' in failure.graph.nodes[0], false)
+  assert.equal(encodeError(error).graph.nodes[0].rethrown.length, 1)
+  // Received and thrown on again: a second item, after the first.
+  const again = decodeError(JSON.parse(JSON.stringify(once)))
+  const twice = encodeError(again).graph.nodes[0].rethrown
+  assert.equal(twice.length, 2)
+  assert.equal(twice[0], root.rethrown[0])
+  assert.match(twice[1], /errors\.test\.mjs/)
+  // At 8 items nothing more is added.
+  const full = remote()
+  full.graph.nodes[0].rethrown = Array.from({ length: 8 }, (_, i) => `    at f${i} (x.js:1)`)
+  assert.deepEqual(encodeError(decodeError(full)).graph.nodes[0].rethrown, full.graph.nodes[0].rethrown)
+  // No frames, nothing added.
+  const bare = decodeError(remote())
+  Object.defineProperty(bare, 'stack', { value: 'CalendarError: no entry 7', configurable: true, writable: true })
+  assert.equal('rethrown' in encodeError(bare).graph.nodes[0], false)
 })
 
 test('errors made in this process encode as before (#677)', () => {

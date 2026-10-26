@@ -21,6 +21,11 @@ export function encodeError(thrown) {
       const offset = nodes.length
       seen.set(value, offset + graph.root.value)
       nodes.push(...(offset === 0 ? graph.nodes : graph.nodes.map(node => shiftNode(node, offset))))
+      // Where it was thrown on: one more `rethrown` item on its root, on a
+      // copy (the graph kept stays as received).
+      const at = frames(value.stack), root = nodes[offset + graph.root.value]
+      const rethrown = Array.isArray(root.rethrown) ? root.rethrown : []
+      if (at && rethrown.length < 8) nodes[offset + graph.root.value] = { ...root, rethrown: [...rethrown, at] }
       return { type: 'reference', value: offset + graph.root.value }
     }
     const id = nodes.length
@@ -54,6 +59,13 @@ export function encodeError(thrown) {
     }
   }
   return { name: thrown?.name ?? 'ThrownValue', message: String(thrown?.message ?? thrown), graph: { root: visit(thrown), nodes } }
+}
+
+// The frames of a stack, without its "Name: message" line(s); none, nothing.
+function frames(stack) {
+  if (typeof stack !== 'string') return undefined
+  const lines = stack.split('\n'), first = lines.findIndex(line => /^\s*at /.test(line))
+  return first < 0 ? undefined : lines.slice(first).join('\n')
 }
 
 const shift = (value, offset) => value?.type === 'reference' ? { type: 'reference', value: value.value + offset } : value
