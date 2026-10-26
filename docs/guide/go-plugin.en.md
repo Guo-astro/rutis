@@ -91,6 +91,23 @@ In short:
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
 
+**A plugin is itself a value.** The result of `rutis.Define(...)` (a `*rutis.Definition`) can be handed to a service as an ordinary argument (an application's part registry, say), the function field's parameter typed `*rutis.Definition`; the receiver can mount it elsewhere, one copy per mount, each running in this process with what `Apply` prepared. A definition only handed over may leave out `Name`:
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* use pool directly */ return nil },
+}))
+```
+
+When this row unloads or reloads, every copy mounted from a definition it handed over ends first. See [Plugin API](plugin-api.en.md#plugin-definitions).
+
 ### Events
 
 Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result.
@@ -198,7 +215,7 @@ go test ./...
 
 `Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
 
-Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does (the row loads again, its listeners registered anew, after the others); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
+Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
 
 ```go
 func TestEvents(t *testing.T) {
@@ -223,6 +240,8 @@ func TestEvents(t *testing.T) {
 ```
 
 `Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
+
+A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: like rutis mounting a copy, it loads another row in the runtime that defined it, with what the plugin's `Apply` prepared; the `services` given then are that copy's own, as the services of the instance it is in, and so are the services it declares in `Provides`: several copies of one definition can be loaded at once when they provide only declared services (an undeclared service's name is not known in advance and is not isolated). Descriptors and reported lines call a copy's row by the id of its origin row. A definition belongs to the row that handed it over (as an argument, as the result of a service it provides, or in an event it emitted): when that row unloads or is updated (a restart), its copies unload first, and loading the definition fails from then on. A copy's config is fixed when it is mounted: `Update` and `Load` on a copy fail. A definition without a `Name` can also be passed to `rutistest.Load` directly.
 
 ## 4. Run it in a local host
 

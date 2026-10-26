@@ -7,6 +7,10 @@ restarts and configuration. This process only runs what it is told:
   `rows.unload` withdraws what the row provided and runs its cleanup;
 - `rows.schema` reports what a module declares (config schema, injected
   services, provided services and their method kinds);
+- a plugin definition (`define_plugin`) handed to rutis crosses as a
+  `plugin` reference; back home, `plugins.read` describes it and
+  `rows.load` takes it as the row's entry instead of a module name
+  (`plugin-values`, docs/design-plugin-values-2026-10-25.md §5);
 - `hosts.provide` / `hosts.withdraw` register rutis services by name;
 - the services a row exports are reported with `service(id, handle,
   version)` notifications, and calls to a handle reach the object; one it
@@ -54,7 +58,10 @@ from .peer import UNDEFINED, AsyncListener, BindingError, Peer, RemoteFuture
 # rows.announce: services rows provide without declaring them are announced
 # with their methods, to a host whose mount says `announce`. Events are not
 # a feature any more: from rutis 0.13 they are the `events-v2` capability.
-FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "rows.announce"]
+# plugin-values: a plugin definition this runtime handed over comes back to
+# be described (`plugins.read`) and loaded as a row's entry
+# (docs/design-plugin-values-2026-10-25.md §5).
+FEATURES = ["rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values"]
 # Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
 # control method `inspect` reports what this runtime holds (rows, services,
 # host proxies, export slots, object handles, event listeners), so a test
@@ -167,7 +174,8 @@ class Slot:
 @dataclass
 class Row:
     key: str
-    module: str
+    # A module's name, or a plugin definition this runtime handed over.
+    module: Any
     config: Any
     exports: dict
     # Service name -> scope label.
@@ -372,7 +380,7 @@ class Runtime:
     async def load(
         self,
         key: str,
-        module: str,
+        module: Any,
         config: Any,
         exports: dict | None,
         isolate: dict | None = None,
@@ -396,7 +404,7 @@ class Runtime:
                 raise ValueError(
                     f"service {row.id(name)} is already exported by row {self.slots[row.id(name)].row}"
                 )
-        plugin = _supported(sdk.load(self.module(module)), module)
+        plugin = self._plugin(module)
         row.plugin = plugin.name
         self.rows[key] = row
         for name, methods in exports.items():
@@ -492,6 +500,27 @@ class Runtime:
             module = importlib.reload(module)
         self.stamps[name] = _stamp(module)
         return module
+
+    def _plugin(self, entry: Any) -> sdk.Plugin:
+        """The plugin of a row: its module's, or a plugin definition this
+        runtime handed over (sent back home as itself)."""
+        if isinstance(entry, str):
+            return _supported(sdk.load(self.module(entry)), entry)
+        plugin = _definition(entry)
+        return _supported(plugin, plugin.name or "plugin definition")
+
+    def describe_definition(self, value: Any) -> dict:
+        """What a plugin definition declares (`plugins.read`), as `describe`
+        says of a module, with its name."""
+        plugin = self._plugin(_definition(value))
+        return {
+            "name": plugin.name,
+            "config": plugin.config,
+            "inject": plugin.inject,
+            "provides": plugin.provides,
+            "announces": plugin.announces,
+            "version": None,
+        }
 
     def describe(self, module: str) -> dict:
         plugin = _supported(sdk.load(self.module(module)), module)
@@ -813,7 +842,9 @@ class Runtime:
             labels = {name: label for name, label in (isolate or [])}
             scope = row.get("scope") if isinstance(row, dict) else None
             id = row.get("id") if isinstance(row, dict) else None
-            return self.load(key, str(module), config, exports, labels, scope, id)
+            # A module's name, or a plugin definition this runtime handed over.
+            entry = module if isinstance(module, sdk.Plugin) else str(module)
+            return self.load(key, entry, config, exports, labels, scope, id)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)
@@ -821,6 +852,8 @@ class Runtime:
             return self.unload(args[0])
         if method == "rows.schema":
             return self.describe(str(args[0]))
+        if method == "plugins.read":
+            return self.describe_definition(args[0] if args else None)
         if method == "hosts.provide":
             # With a label, only rows isolating the name with it see it.
             name, methods, label, *_ = list(args) + [None]
@@ -882,6 +915,12 @@ def _entry_point(name: str) -> tuple[str, str | None]:
     for entry in importlib.metadata.entry_points(group="rutis.plugins", name=name):
         return entry.value.split(":")[0], entry.dist.version if entry.dist else None
     return name, None
+
+
+def _definition(value: Any) -> sdk.Plugin:
+    if not isinstance(value, sdk.Plugin):
+        raise TypeError("not a plugin definition: expected a define_plugin result")
+    return value
 
 
 def _supported(plugin, name: str):
