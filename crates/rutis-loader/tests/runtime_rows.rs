@@ -1210,6 +1210,43 @@ async fn a_gated_row_fails_with_its_plugins_error() {
     root.shutdown().await.unwrap();
 }
 
+/// A row whose plugin fails keeps the plugin's error as it was thrown: the
+/// host reads its name, message and the plugin's own stack, and no prefix
+/// of rutis's comes before the message (#677).
+/// guarantee: loader/row-failure-keeps-the-error
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_row_keeps_the_plugins_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.mjs");
+    std::fs::write(&broken, BROKEN).unwrap();
+    let probe = Probe::default();
+    let (root, loader, _runtime) = interop_loader(&probe).await;
+    loader
+        .reconcile(layer(vec![row("b", &broken, json!({}), json!(null))]), None)
+        .await
+        .unwrap();
+    let error = || match loader.get("b").map(|entry| entry.status) {
+        Some(EntryStatus::Running(snapshot)) if snapshot.state == FiberState::Failed => {
+            snapshot.error
+        }
+        _ => None,
+    };
+    until(|| error().is_some(), "the row to fail").await;
+    let error = error().unwrap();
+    assert_eq!(error.to_string(), "Error: broken on purpose");
+    let thrown = rutis_bridge::thrown(&error).expect("the plugin's own error");
+    let rutis_bridge::session::Error::Remote { name, message, .. } = thrown else {
+        unreachable!("thrown gives remote errors only")
+    };
+    assert_eq!(
+        (name.as_str(), message.as_str()),
+        ("Error", "broken on purpose")
+    );
+    let stack = thrown.stack().expect("a stack");
+    assert!(stack.contains("broken.mjs"), "{stack}");
+    root.shutdown().await.unwrap();
+}
+
 const QUIT: &str = r#"
 export const name = 'quit'
 export const inject = ['probe']

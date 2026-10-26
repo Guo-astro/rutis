@@ -578,6 +578,11 @@ impl CallError {
         &self.message
     }
 
+    /// The wire's own error this one carries, if any, without taking it.
+    pub fn raw(&self) -> Option<&(dyn Any + Send + Sync)> {
+        self.raw.as_deref()
+    }
+
     pub fn into_raw(self) -> (String, Option<Box<dyn Any + Send + Sync>>) {
         (self.message, self.raw)
     }

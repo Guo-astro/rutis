@@ -178,7 +178,7 @@ async fn a_port_another_program_holds() {
     let error = first_error(dir.path(), &text).await;
     assert_eq!(
         error.replace(&address.to_string(), "<address>").replace(&in_use, "<in use>"),
-        "the WebSocket transport: plugin failed: listener public: cannot bind <address>: <in use>: another program listens there: stop it, or change the address"
+        "the WebSocket transport: listener public: cannot bind <address>: <in use>: another program listens there: stop it, or change the address"
     );
 }
 

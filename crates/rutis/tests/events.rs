@@ -393,7 +393,7 @@ async fn parallel_aggregates_in_registration_order() {
         ErrorKind::ListenersFailed { name, errors } => {
             assert_eq!(name, "t/ping");
             let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-            assert_eq!(messages, ["plugin failed: a", "plugin failed: b"]);
+            assert_eq!(messages, ["a", "b"]);
         }
         other => panic!("{other:?}"),
     }

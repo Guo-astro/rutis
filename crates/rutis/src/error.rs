@@ -124,7 +124,9 @@ pub enum ErrorKind {
     ServiceRead(#[from] ServiceReadError),
     #[error("service {0:?} not found in scope")]
     ServiceNotFound(String),
-    #[error("plugin failed: {0}")]
+    /// Plugin code's own error, shown as it is: what the plugin said, with
+    /// no prefix of rutis's (#677).
+    #[error("{0}")]
     PluginFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("multiple errors: {errors:?}")]
     Aggregate {
@@ -520,10 +522,10 @@ mod tests {
     #[test]
     fn plugin_failure_display_and_sink_preserve_each_cause_once() {
         let error = ErrorKind::PluginFailed(Box::new(OuterCause { source: InnerCause }));
-        assert_eq!(error.to_string(), "plugin failed: outer cause");
+        assert_eq!(error.to_string(), "outer cause");
         assert_eq!(
             format_for_sink(&error),
-            "plugin failed: outer cause\n  caused by: inner cause"
+            "outer cause\n  caused by: inner cause"
         );
         assert_eq!(
             std::error::Error::source(&error).unwrap().to_string(),
@@ -541,7 +543,7 @@ mod tests {
         };
         assert_eq!(
             format_for_sink(&error),
-            "multiple errors:\n1. plugin failed: cleanup detail\n2. service \"missing\" not found in scope"
+            "multiple errors:\n1. cleanup detail\n2. service \"missing\" not found in scope"
         );
     }
 
@@ -553,7 +555,7 @@ mod tests {
         let error = ErrorKind::PluginFailed(Box::new(nested));
         assert_eq!(
             format_for_sink(&error),
-            "plugin failed: multiple errors:\n1. service \"nested\" not found in scope"
+            "multiple errors:\n1. service \"nested\" not found in scope"
         );
     }
 

@@ -80,6 +80,45 @@ impl Error {
     }
 }
 
+impl Error {
+    /// Where the error was thrown, as the language that threw it wrote it
+    /// (`file:line` frames). `None` when it carries none.
+    pub fn stack(&self) -> Option<&str> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        graph_root(graph.as_ref()?)?.get("stack")?.as_str()
+    }
+
+    /// Which row the error came from and what it was doing, as rutis
+    /// recorded it where the error crossed (`docs/design-diagnostics-2026-10-26.md`
+    /// §4.1). For whoever reads the output and for the host; the SDKs do not
+    /// hand it to the calling plugin's code.
+    pub fn site(&self) -> Option<Site> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        let site = graph_root(graph.as_ref()?)?.get("site")?;
+        serde_json::from_value(site.clone()).ok()
+    }
+}
+
+/// Which row an error came from and what it was doing (§4.1 of the
+/// diagnostics design): one optional field of an error node.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Site {
+    /// The row's name (`weather`, or `weather in phone-1` inside an instance).
+    pub row: String,
+    /// `call`, `apply`, `cleanup` or `listener`.
+    pub doing: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+}
+
 /// The node a graph's root refers to.
 fn graph_root(graph: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
     let root = graph.get("root")?;

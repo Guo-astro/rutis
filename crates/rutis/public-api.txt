@@ -608,6 +608,7 @@ impl rutis::host::CallError
 pub fn rutis::host::CallError::into_raw(self) -> (alloc::string::String, core::option::Option<alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>)
 pub fn rutis::host::CallError::message(&self) -> &str
 pub fn rutis::host::CallError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rutis::host::CallError::raw(&self) -> core::option::Option<&(dyn core::any::Any + core::marker::Send + core::marker::Sync)>
 pub fn rutis::host::CallError::with_raw(impl core::convert::Into<alloc::string::String>, alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
 impl core::error::Error for rutis::host::CallError
 impl core::fmt::Debug for rutis::host::CallError

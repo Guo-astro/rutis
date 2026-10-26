@@ -715,8 +715,16 @@ struct JsRow {
     refused: Refused,
 }
 
-fn failed(error: impl std::fmt::Display) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+/// The row failed with `error`, kept as it is: a plugin's error from the
+/// runtime keeps its name, code, data and stack for whoever reads it
+/// (`rutis_bridge::thrown`, #677).
+fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.into()))
+}
+
+/// The row failed for a reason rutis states.
+fn refused(reason: String) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(reason.into()))
 }
 
 impl DynPlugin for JsRow {
@@ -732,8 +740,8 @@ impl DynPlugin for JsRow {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
-            if let Some(refused) = self.refused.take(ctx.instance()) {
-                return Err(failed(refused));
+            if let Some(refused_reason) = self.refused.take(ctx.instance()) {
+                return Err(refused(refused_reason));
             }
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
@@ -930,10 +938,10 @@ impl JsRow {
         }
         // A service another provider had first: this row, the later one,
         // fails.
-        if let Some(refused) = projection.take_refused() {
+        if let Some(refused_reason) = projection.take_refused() {
             projection.withdraw().await;
             let _ = process.unload_row(&key).await;
-            return Err(failed(refused));
+            return Err(refused(refused_reason));
         }
         // Volatile-only changes go to Cordis, which commits them in place.
         let forward = Arc::new(Forward {
