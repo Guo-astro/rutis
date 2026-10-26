@@ -124,17 +124,50 @@ func (e *located) Error() string { return e.err.Error() }
 func (e *located) Unwrap() error { return e.err }
 
 // Locate marks err, returned by a service method, with the frame of the
-// method's declaration. A received error keeps its own graph, and a panic
-// its own stack: they are returned as they are.
+// method's declaration. A panic keeps its own stack and is returned as it
+// is. A received error keeps its own graph: the frame is appended to its
+// root node's `rethrown` when it crosses, its stack left as it came.
 func Locate(err error, frame string) error {
 	if err == nil || frame == "" {
 		return err
 	}
 	switch err.(type) {
-	case *RemoteError, *PanicError, *located:
+	case *PanicError, *located:
 		return err
 	}
 	return &located{err, frame}
+}
+
+// maxRethrown is how many rethrows a received error's root node records.
+const maxRethrown = 8
+
+// rethrow appends frame to the `rethrown` of the error node root refers to,
+// at most maxRethrown items. nodes are a decoded copy: the received graph
+// itself is never changed.
+func rethrow(root map[string]any, nodes []any, frame string) {
+	if frame == "" || root["type"] != "reference" {
+		return
+	}
+	id, ok := root["value"].(float64)
+	if !ok || id < 0 || int(id) >= len(nodes) || id != math.Trunc(id) {
+		return
+	}
+	node, ok := nodes[int(id)].(map[string]any)
+	if !ok || node["type"] != "error" {
+		return
+	}
+	var items []any
+	switch existing := node["rethrown"].(type) {
+	case nil:
+	case []any:
+		items = existing
+	default:
+		return
+	}
+	if len(items) >= maxRethrown {
+		return
+	}
+	node["rethrown"] = append(items, frame)
 }
 
 // unlocated is err without the frame Locate gave it, and that frame.
@@ -225,8 +258,18 @@ func encodeError(err error) map[string]any {
 				for _, node := range graph.Nodes {
 					nodes = append(nodes, shift(node))
 				}
-				return shift(graph.Root).(map[string]any)
+				root := shift(graph.Root).(map[string]any)
+				// Thrown on by the method that returned it: the
+				// top-level error only.
+				rethrow(root, nodes, frame)
+				frame = ""
+				return root
 			}
+		}
+		if _, ok := err.(*RemoteError); ok {
+			// A received error that cannot be spliced in crosses as it
+			// came, without the method's frame.
+			frame = ""
 		}
 		name, message := ErrorName(err), wireMessage(err)
 		id := len(nodes)
