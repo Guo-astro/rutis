@@ -17,6 +17,13 @@ impl Greeting {
     pub fn text(&self) -> String {
         self.0.to_owned()
     }
+
+    /// A plugin definition as a parameter (#642): a dylib plugin that
+    /// depends on rutis-sdk only takes `rutis::Definition` like any Rust
+    /// plugin.
+    pub fn part_name(&self, part: rutis_sdk::rutis::Definition) -> String {
+        part.name().to_owned()
+    }
 }
 
 impl Drop for Greeter {
