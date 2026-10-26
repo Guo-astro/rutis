@@ -64,7 +64,7 @@ public final class Weather: @unchecked Sendable {
 public let plugin = Rutis.define(Plugin(
     name: "weather",
     inject: ["llm"],                                            // runs only while all are there
-    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // optional: marks unit sync; methods are async by default
+    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // declares what it provides (check knows before running); unit sync, the rest async
     config: Config.self,
     apply: { ctx, config in
         ctx.provide("weather", Weather(llm: try ctx.use("llm", LLMProxy.self), city: config.city))

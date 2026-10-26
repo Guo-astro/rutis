@@ -366,6 +366,6 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 
 ## Versions
 
-Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade. Depend on the SDK's major version range; it does not need to match the host version.
+Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade; a newer runtime loads it. So a plugin depends on the SDK with a lower bound only (`"@arcships/rutis": ">=0.17.0"`, `rutis>=0.17`; Go's `require` and Swift's `from:` already are one), and need not be released again when the host upgrades rutis: the plugin API version decides, not the release train's version number. An upper bound (`^0.17.0`, `<0.18`) would hold the host back: in Python the plugin and the runtime are one package in one environment.
 
 Plugin API 3 (rutis 0.13) adds `parallel`, `serial`, `waterfall`, `bail` and `filter`, and events become one logical bus; 0.13 runtimes still load API 2 plugins, and an older runtime refuses an API 3 plugin with the existing message. The 0.13 event protocol does not mix with runtimes or nodes of 0.12 and earlier (see [mixing with 0.12 and earlier](#mixing-with-012-and-earlier) above). Plugin API 2 added leaf events; API 1 plugins still load.

@@ -2,6 +2,59 @@
 
 `rutis-host` 是不需要写 Rust 的宿主：它把内核、插件加载、本机的 Node / Python / Go / Swift 运行时和网络连接组装好，由一份 `rutis.json` 驱动。插件作者用它在本地开发，也可以直接用它部署。需要自定义 Rust 服务的应用见 [在 Rust 应用里嵌入](rust-host.md)。
 
+## 快速上手
+
+给别人发布的两个插件做一个宿主：一个 TypeScript 插件，npm 上的 `@your-name/weather`，它用 `llm` 服务；一个 Python 插件，PyPI 上的 `your-name-llm`，它的入口点 `llm` 提供这个服务。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
+
+1. 在宿主自己的目录里装 `rutis-host` 和两个插件：
+
+```bash
+mkdir app && cd app
+npm init -y                                                # TypeScript 插件装进的 Node 项目
+npm install @arcships/rutis-host @your-name/weather        # rutis-host 带着 Node 运行时
+uv venv                                                    # .venv：Python 插件运行的环境
+uv pip install --python .venv/bin/python your-name-llm     # 插件，连同 Python 运行时（rutis）
+```
+
+2. 写 `rutis.json`：要启动的运行时，每个插件一行（`name` 是 npm 包名，或 `py:` 加入口点名；`config` 是插件的配置）：
+
+```json
+{
+  "format": 1,
+  "runtimes": { "node": {}, "py": {} },
+  "rows": [
+    { "id": "llm", "name": "py:llm" },
+    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
+  ]
+}
+```
+
+3. 先检查，再运行：
+
+```bash
+npx rutis-host check --strict        # 每一行 ok，每一行用到的服务都有别的行声明；以 0 退出
+npx rutis-host run --watch-config
+```
+
+```text
+llm: running
+weather: running
+```
+
+每一行的状态变化时打印一行（还有 `starting`、`waiting for its services` 等，见 [run 打印什么](#run-打印什么)）。
+
+4. 运行中改配置：把 `rutis.json` 里的 `"Oslo"` 改成 `"Bergen"` 并保存。有 `--watch-config` 时宿主重新读这个文件，只重启变了的那一行：
+
+```text
+rutis-host: reloaded rutis.json (1 row changed)
+```
+
+Unix 上不加 `--watch-config`，发 SIGUSR1 也一样，见 [运行中改配置](#运行中改配置)。
+
+5. Ctrl-C 停止：每个插件的清理都运行，运行时退出，`rutis-host` 以 0 退出。
+
+还没发布的插件也这样从文件装：`npm install ../weather/your-name-weather-0.1.0.tgz`（插件项目里 `npm pack` 打出的包），`uv pip install --python .venv/bin/python ../llm`（插件的项目目录）。其他语言见 [宿主怎样装插件](#宿主怎样装插件)。
+
 ## 安装
 
 | 方式 | 命令 |
@@ -13,6 +66,23 @@
 
 npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自带 Python 运行时（`rutis`）：项目里没有自己的运行时时用它们。Go 与 Swift 插件是编译好的二进制，运行它们不需要别的包，也不需要 Go 或 Swift 工具链（Swift 插件在 macOS 上运行）。
 
+## 宿主怎样装插件
+
+每种语言的插件装到它的运行时找得到的地方，再由一行写出插件名：
+
+| 插件 | 用什么装 | 装到哪里 | 行的 `name` |
+| --- | --- | --- | --- |
+| TypeScript、JavaScript（npm） | `npm install <包名>` | Node 项目（`runtimes.node.project`，默认是 `rutis.json` 所在目录），和 `@arcships/rutis-runtime` 在一处（或用 npm 版 `rutis-host` 自带的那份） | 包名（`@your-name/weather`）或它的子路径；单个文件写 `./plugins/tool.ts` |
+| Bun | `bun add @arcships/rutis-bun <包名>` | Bun 项目（`runtimes.bun.project`） | `bun:<包名>`（[Bun 插件](bun-plugin.md#3-在宿主里运行)） |
+| Python | 先 `uv venv` 一次，再 `uv pip install --python .venv/bin/python <分发包名>`（用 pip：`.venv/bin/python -m pip install <分发包名>`） | `runtimes.py.python` 的环境（默认先 `$VIRTUAL_ENV`，再 `<runtimes.py.project>/.venv`）；插件依赖 `rutis`，运行时随它装上 | `py:<入口点名>`（`py:llm`），`runtimes.py.project` 里的模块文件写 `py:<模块名>` |
+| Go | `rutis-host go add <模块>/cmd/<二进制>@<版本>`（用本机的 Go 工具链），或从插件的 release 下载本平台的二进制 | `runtimes.go.dir` | `go:<插件名>`（[Go 插件](go-plugin.md#6-被宿主使用)） |
+| Swift（macOS） | 从插件的 release 下载二进制 | `runtimes.swift.dir` | `swift:<插件名>`（[Swift 插件](swift-plugin.md#7-被宿主使用)） |
+| Rust | 不用 `rutis-host`：Rust 应用自己挂它的 Rust 插件 | | [在 Rust 应用里嵌入](rust-host.md) |
+
+- 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。每个插件对 SDK 的依赖只写下限，所以装插件不会把 rutis 降级，新的 rutis 也能加载用旧版本做的插件（[插件 API：版本](plugin-api.md#版本)）。
+- 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）。
+- 装好后，`rutis-host check --strict` 告诉你每一行能不能运行、每一行用到的服务是否都有别的行声明；放进 CI，不满足时失败。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -22,6 +92,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
+| `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
 
 ## run 打印什么
 

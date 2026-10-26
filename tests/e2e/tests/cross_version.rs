@@ -34,6 +34,7 @@
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; events both ways (`export` / `import`); tagged values; a JS error with `code` and `data` reaches the old node as a failed call, and the session goes on |
 //! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it is announced and reaches rows of either runtime; the current `check` warns |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
+//! | `@arcships/rutis` (the SDK a plugin was built against) | the current host, Node and Bun runtimes | its plugins run and are called (#672: plugins depend on the SDK with a lower bound only) |
 //!
 //! "Events both ways": a listener on the old side answers a `serial` the
 //! current side emits, and a listener on the current side answers one the
@@ -855,6 +856,56 @@ fn a_previous_bun_runtime_under_the_current_host() {
         );
         values(&mut host, &probe);
         events(&mut host, &probe, "greeter", "bun");
+        stop(host);
+        s.finish();
+    });
+}
+
+/// Plugins built against the previous release's SDK (its `@arcships/rutis`
+/// in the project) under the current host and the current Node and Bun
+/// runtimes: they run and are called (#672). A plugin depends on the SDK
+/// with a lower bound only, and the runtime loads it by its plugin API,
+/// not by the release it was made with. (A Python plugin has no SDK of its
+/// own: it runs with the runtime's `rutis`, whatever version its lower
+/// bound let the environment have.)
+///
+/// risk: J2
+/// guarantee: bridge/cross-version-meetings
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn plugins_of_a_previous_sdk_under_the_current_runtimes() {
+    each("prev-sdk", Meeting::Works, |release, s| {
+        link_sdk(&s, "", &release.node_sdk());
+        s.write("greeter.ts", GREETER_TS);
+        s.write("bunny.ts", GREETER_TS.replace("greeter", "bunny"));
+        let probe = s.probe("probe", Lang::Python, &["greeter", "bunny"]);
+        s.write_json(
+            "rutis.json",
+            &json!({
+                "runtimes": {
+                    "node": {},
+                    "bun": { "runtime": repo().join("bun/rutis-bun") },
+                    "py": {}
+                },
+                "rows": [
+                    { "id": "greeter", "name": "./greeter.ts" },
+                    { "id": "bunny", "name": "bun:./bunny.ts" },
+                    probe.row(),
+                ],
+            }),
+        );
+        let mut host = s.host(["run", "rutis.json"]);
+        host.expect("greeter: running");
+        host.expect("bunny: running");
+        probe.started(&mut host);
+        assert_eq!(
+            probe.call(&mut host, "greeter", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (node)"))
+        );
+        assert_eq!(
+            probe.call(&mut host, "bunny", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (bun)"))
+        );
         stop(host);
         s.finish();
     });

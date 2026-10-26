@@ -6,6 +6,8 @@ Go 插件和 TypeScript、Python 插件的写法与规则相同（见 [插件 AP
 
 ## 1. 创建项目
 
+下面的 `rutis-host`（建项目、在本地宿主里运行、检查）要先装好，任选 [rutis-host：安装](rutis-host.md#安装) 里的一种，例如 `npm install -g @arcships/rutis-host`，或把 GitHub Releases 上的二进制放进 `PATH`；不想装的话，每条命令写成 `npx @arcships/rutis-host …`。
+
 ```bash
 rutis-host new weather --lang go
 cd weather
@@ -24,6 +26,8 @@ go mod tidy
 | `.github/workflows/release.yml` | 打 `v*` tag 时测试，并把各平台的二进制发布到 GitHub Release |
 
 ## 2. 写插件
+
+生成的 `plugin.go` 是一个不用任何服务的 `greeter`，`plugin_test.go` 是它的测试。下面把它换成一个用到 `llm` 服务的 `weather`：`plugin.go` 换成这段，`plugin_test.go` 同时换成 §3 的那段（两个文件一起换）。
 
 ```go
 package weather
@@ -63,13 +67,17 @@ func (w *Weather) Unit() string { return "celsius" }
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"llm"},                                                       // 都就绪才启动，任何一个撤销就停下
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // 可选：把 Unit 标成 sync；方法默认 async
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // 声明提供什么（check 运行前就知道）；Unit 标成 sync，其余 async
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var llm LLM
 		if err := ctx.Use("llm", &llm); err != nil {
 			return err
 		}
-		ctx.Provide("weather", &Weather{llm: llm, city: config.City})
+		city := config.City
+		if city == "" {
+			city = "Oslo" // 行里没写的字段是零值：默认值在这里给
+		}
+		ctx.Provide("weather", &Weather{llm: llm, city: city})
 		ctx.Effect(func(context.Context) error { return nil }) // 清理，可以没有
 		return nil
 	},
@@ -83,6 +91,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 | 方法名 | 导出方法的线上名字是首字母小写的形式（`Today` → `today`，`URLFor` → `urlFor`，`HTTPServer` → `httpServer`）；`rutis.Rename` 可以改 |
 | 同步还是异步 | 默认 `async`；`rutis.Sync("Unit")` 标出同步方法。同步方法会让 Node 调用方阻塞事件循环，做 I/O 的方法保持 `async` |
 | 方法签名 | `func (T) M([ctx context.Context,] 参数...) ([结果,] [error])` |
+| 配置 | JSON Schema 由配置类型生成（字段名按 `json` 标签，`doc` 标签是说明）；行的 `config` 里没写的字段是零值，默认值在 `Apply` 里给（上面的 `city`）；要分清「没写」和「写了空值」，用指针字段（`*string`）。`Schema` 字段可以换成手写的 JSON Schema，`rutis-host check` 打印它，但不会替你填默认值 |
 | 使用服务 | 函数字段的结构体可以只写用到的方法；或用 `*rutis.Service` 按名字调用：`svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` 是一个 `context.Context`，插件卸载时取消；插件自己起的 goroutine 用 `ctx.Go(...)` 或看 `ctx.Done()` |
 | 并发 | 每个进来的调用在自己的 goroutine 上执行：提供的对象要能被并发调用，调用别的服务时不要持有锁 |
@@ -200,11 +209,28 @@ Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就
 `rutistest` 不需要宿主，但插件在它真正的运行时里跑、值经过真正的会话传递：
 
 ```go
+package weather
+
+import (
+	"context"
+	"testing"
+
+	"github.com/arcships/rutis/go/rutis/rutistest"
+)
+
+// 假的 llm：一个 Go 值，导出的方法就是服务的方法（Ask 是 ask）。
+type fakeLLM struct{}
+
+func (fakeLLM) Ask(ctx context.Context, question string) (string, error) { return "sunny", nil }
+
 func TestToday(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, Config{City: "Oslo"}, map[string]any{"llm": fakeLLM{}})
 	var today string
 	if err := loaded.Service("weather").Call(context.Background(), "today", &today); err != nil {
 		t.Fatal(err)
+	}
+	if today != "sunny in Oslo" {
+		t.Fatalf("got %q", today)
 	}
 }
 ```
@@ -213,7 +239,7 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
-`Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
+`Provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了就按声明（`Sync` 标出同步方法、`Rename` 改名）。不写也能运行：`ctx.Provide` 提供的服务照样自动对外，方法取值的导出方法，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
 测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
 
@@ -249,7 +275,46 @@ func TestEvents(t *testing.T) {
 rutis-host dev
 ```
 
-`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。插件需要的其他服务写在 `rutis.dev.json` 里，可以是 Python 或 TypeScript 插件（同时写上对应的 `runtimes`）；它们的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
+`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。
+
+`rutis.dev.json` 里，和插件 id 相同的那一行（这里是 `weather`）不写 `name`，它给插件本身加配置；其他行是一起运行的插件。插件需要的其他服务就写成这样的行，可以是 Python 或 TypeScript 插件，同时在 `runtimes` 里写上它们的语言。例如用 Python 写一个假的 `llm`，放在项目的 `dev/` 里：
+
+```json
+{
+  "format": 1,
+  "runtimes": { "py": { "project": "dev" } },
+  "rows": [
+    { "id": "weather", "config": { "city": "Oslo" } },
+    { "id": "llm", "name": "py:fake_llm" }
+  ]
+}
+```
+
+```python
+# dev/fake_llm.py
+from rutis import define_plugin
+
+
+class FakeLlm:
+    async def ask(self, question):
+        return "sunny"
+
+
+def apply(ctx, config):
+    ctx.provide("llm", FakeLlm())
+
+
+plugin = define_plugin(apply, provides={"llm": FakeLlm})
+```
+
+```bash
+uv venv dev/.venv                                  # Python 运行时的环境：<project>/.venv
+uv pip install --python dev/.venv/bin/python rutis
+```
+
+Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找解释器，那个环境里要装 `rutis`；`dev/` 下没有 Go 代码，`go build ./...` 不受影响。用 TypeScript 写也一样：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行名写 `./dev/fake-llm.ts`。
+
+这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
 
 ## 5. 发布
 

@@ -15,7 +15,7 @@ bun install
 | `src/index.ts` | The plugin |
 | `test/index.test.ts` | Unit tests (`bun test`), no host needed |
 | `rutis.dev.json` | Local runtime configuration and other plugins for testing |
-| `package.json` | Depends on `@arcships/rutis`; dev dependencies `@arcships/rutis-bun`, `@arcships/rutis-host` |
+| `package.json` | Depends on `@arcships/rutis` (a lower bound only, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)); dev dependencies `@arcships/rutis-bun`, `@arcships/rutis-host`; builds before `npm pack` and `npm publish` (`prepack`) |
 | `tsconfig.json` | `bun run check` type checks: Bun runs TypeScript without checking types |
 | `.github/workflows/publish.yml` | Tests and publishes to npm on a `v*` tag |
 
@@ -113,7 +113,7 @@ A host's `rutis.json`:
 
 ## 5. Publish
 
-As for TypeScript plugins: `npm publish` (the template's workflow publishes on a `v*` tag). A host installs it with `bun add` and adds a row `{ "id": "greeter", "name": "bun:greeter" }`.
+As for TypeScript plugins: `npm publish` (it runs `prepack`, the build, first; the template's workflow publishes on a `v*` tag; give the package a scoped name, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)). A host installs it with `bun add` and adds a row `{ "id": "greeter", "name": "bun:greeter" }`.
 
 ## 6. Run on another machine
 

@@ -16,10 +16,10 @@
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "rutis-host dev",
     "check": "rutis-host check",
-    "prepublishOnly": "npm run build"
+    "prepack": "npm run build"
   },
   "dependencies": {
-    "@arcships/rutis": "^{{version}}"
+    "@arcships/rutis": ">={{version}}"
   },
   "devDependencies": {
     "@arcships/rutis-host": "^{{version}}",

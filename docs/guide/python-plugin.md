@@ -18,10 +18,12 @@ uv sync
 | `src/weather/__init__.py` | 插件本身 |
 | `tests/test_plugin.py` | 单元测试，不需要宿主 |
 | `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `pyproject.toml` | 依赖 `rutis`；开发依赖 `rutis-host`；入口点 `rutis.plugins` |
+| `pyproject.toml` | 依赖 `rutis`（只写下限，见 §5）；开发依赖 `rutis-host`；入口点 `rutis.plugins` |
 | `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 PyPI |
 
 ## 2. 写插件
+
+生成的 `src/weather/__init__.py` 是一个不用任何服务的 `greeter`，`tests/test_plugin.py` 是它的测试。下面把它换成一个用到 `llm` 服务的 `weather`：`__init__.py` 换成这段，`tests/test_plugin.py` 同时换成 §3 的那段（两个文件一起换）。
 
 <!-- example: python file=weather/src/weather/__init__.py -->
 ```python
@@ -44,13 +46,14 @@ def apply(ctx, config):
 plugin = define_plugin(
     apply,
     inject=["llm"],                       # 用到的服务：都就绪才启动，任何一个撤销就停下
+    provides={"weather": Weather},        # 提供的服务：check 运行前就知道
     config={"type": "object", "properties": {"city": {"type": "string"}}},
 )
 ```
 
 也可以不用 `define_plugin`，直接在模块里写 `apply`、`inject`、`provides`、`Config`。`apply` 可以是 `async def`。
 
-`weather` 不用声明：`ctx.provide` 提供的服务自动对外，方法取对象上不以 `_` 开头的可调用属性，按 `async` 调用。要把方法标成 `sync`，或让 `rutis-host check` 在运行前知道插件提供什么，写 `provides`：`provides={"weather": Weather}` 从类里读（`async def` 为 async，其余为 sync），或 `{"weather": {"unit": "sync"}}`。
+`provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。`provides={"weather": Weather}` 从类里读方法：不以 `_` 开头的方法，`async def` 为 async，其余为 sync；也可以写 `{"weather": {"today": "async"}}`。不写也能运行：`ctx.provide` 提供的服务照样自动对外，方法取对象上不以 `_` 开头的可调用属性，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
 `ctx.use("llm")` 拿到的服务：同一个进程里的插件提供的，就是对象本身；其他语言或其他机器提供的，是代理，方法按声明同步返回或返回可 await 的结果。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
 
@@ -272,18 +275,21 @@ uv publish
 weather = "weather"
 ```
 
-依赖写 `rutis>=0.17,<0.18` 这样的范围。`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时会明确报错。
+对 `rutis` 的依赖只写下限：`rutis>=0.17`（`rutis-host new` 写的是它自己的版本）。插件和 Python 运行时是同一个 `rutis` 包，装在宿主的同一个环境里；写了上限（`<0.18`），宿主装插件时 rutis 会被降级，或者以后升级 rutis 时解析失败。能不能加载由插件 API 版本决定：`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载。
+
+发布前给分发包起一个你自己的名字：`weather` 这样的短名字在 PyPI 上多半已被占用。改 `pyproject.toml` 的 `name`，例如 `your-name-weather`；入口点名（上面的 `weather`）不用改，宿主的行名仍是 `py:weather`。
 
 ## 6. 被宿主使用
 
-宿主把插件装进它运行 Python 插件的环境（rutis.json 里 `py.python` 指向的解释器），然后加一行 `py:<入口点名>`：
+宿主把插件装进它运行 Python 插件的环境（rutis.json 里 `runtimes.py.python` 指向的解释器；默认是激活的虚拟环境的，再是 `<runtimes.py.project>/.venv/bin/python`），然后加一行 `py:<入口点名>`。环境还没有时先建一个；插件依赖 `rutis`，运行时随它装上：
 
 ```bash
-uv pip install --python .venv/bin/python weather
+uv venv                                                         # 建 .venv
+uv pip install --python .venv/bin/python your-name-weather      # 插件，连同 rutis
 ```
 
 ```json
 { "id": "weather", "name": "py:weather", "config": { "city": "Oslo" } }
 ```
 
-见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。

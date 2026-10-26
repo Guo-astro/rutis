@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A rutis plugin"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rutis>={{version}},<{{next}}"]
+# A lower bound only: the host's runtime checks the plugin API when it
+# loads the plugin, so the host can upgrade rutis without a new release of
+# this plugin.
+dependencies = ["rutis>={{version}}"]
 keywords = ["rutis-plugin"]
 
 # A host names this plugin py:{{id}}.

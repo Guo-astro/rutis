@@ -6,8 +6,8 @@ This guide covers creating a project, publishing it, and using it from a host. J
 
 <!-- example: typescript-en run -->
 ```bash
-npx @arcships/rutis-host new greeter --lang node
-cd greeter
+npx @arcships/rutis-host new weather --lang node
+cd weather
 npm install
 ```
 
@@ -18,12 +18,14 @@ The generated project contains:
 | `src/index.ts` | The plugin itself. |
 | `test/index.test.ts` | Unit tests that do not need a host. |
 | `rutis.dev.json` | Local runtime configuration and other plugins used for testing. |
-| `package.json` | Depends on `@arcships/rutis`; development dependencies include `@arcships/rutis-host` and `@arcships/rutis-runtime`. |
+| `package.json` | Depends on `@arcships/rutis` (a lower bound only, see §5); development dependencies include `@arcships/rutis-host` and `@arcships/rutis-runtime`; builds before `npm pack` and `npm publish` (`prepack`). |
 | `.github/workflows/publish.yml` | Tests and publishes to npm when a `v*` tag is pushed. |
 
 ## 2. Write the plugin
 
-<!-- example: typescript-en file=greeter/src/index.ts -->
+The generated `src/index.ts` is a `greeter` that uses no service, `test/index.test.ts` is its test, and `npm test` passes as generated. Here it becomes a `weather` that uses an `llm` service: replace `src/index.ts` with the code below, and `test/index.test.ts` with the one in §3 at the same time (the two files go together; replacing only one makes the template's own test fail).
+
+<!-- example: typescript-en file=weather/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
@@ -45,6 +47,7 @@ class Weather {
 
 export default definePlugin<Config>({
   inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
+  provides: { weather: { today: 'async' } },      // What it provides: check knows before running; only declared methods are callable
   config: { type: 'object', properties: { city: { type: 'string' } } },  // Configuration JSON Schema
   apply(ctx, config) {
     ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
@@ -55,7 +58,7 @@ export default definePlugin<Config>({
 
 The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
-`weather` needs no declaration: what `ctx.provide` provides reaches rutis by itself, its methods the object's functions (here `today`), called as `async`. To mark a method `sync`, or to let `rutis-host check` know before running what the plugin provides, add `provides`, such as `provides: { weather: { unit: 'sync' } }` (a declared service offers only its declared methods).
+`provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). A declared service follows its declaration: only the declared methods can be called, so add each new method here too; `'sync'` marks a method synchronous. It also runs without one: what `ctx.provide` provides still reaches rutis by itself, its methods the object's functions, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
 A plugin is itself a value: hand the result of `definePlugin(...)` to a service as an ordinary argument (the application's part registry, say), and the receiver can mount it elsewhere, each mount one copy using what your `apply` prepared. See the [plugin API](plugin-api.en.md#plugin-definitions).
 
@@ -63,7 +66,7 @@ A plugin is itself a value: hand the result of `definePlugin(...)` to a service 
 
 `@arcships/rutis/testing` provides fake services and calls the services provided by the plugin without requiring a host:
 
-<!-- example: typescript-en file=greeter/test/index.test.ts -->
+<!-- example: typescript-en file=weather/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -93,7 +96,7 @@ npm test
 
 The two plugins below share one bus on the test tool's `host()`: `greeter` takes the first result with `serial`, lets other plugins rewrite the greeting with `waterfall` and notifies with `emit`; `shout` is a link of the waterfall and listens to the notification.
 
-<!-- example: typescript-en file=greeter/test/events.test.ts order=2 -->
+<!-- example: typescript-en file=weather/test/events.test.ts order=2 -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -147,24 +150,24 @@ The `t` that `load(plugin)` returns has the five methods and `filter` too, emitt
 
 ## 4. Run in a local host
 
-<!-- example: typescript-en run until="greeter: running" order=99 -->
+<!-- example: typescript-en run until="weather: running" order=99 -->
 ```bash
 npx rutis-host dev
 ```
 
 `dev` runs this project as a row using the source file `src/index.ts`, without a build, and reloads it when its files change; only the rows whose files changed reload, and a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). Add other required services to `rutis.dev.json`, such as a fake `llm`:
 
-<!-- example: typescript-en file=greeter/rutis.dev.json -->
+<!-- example: typescript-en file=weather/rutis.dev.json -->
 ```json
 {
   "rows": [
-    { "id": "greeter", "config": { "city": "Oslo" } },
+    { "id": "weather", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "./dev/fake-llm.ts" }
   ]
 }
 ```
 
-<!-- example: typescript-en file=greeter/dev/fake-llm.ts -->
+<!-- example: typescript-en file=weather/dev/fake-llm.ts -->
 ```ts
 // dev/fake-llm.ts
 import { definePlugin } from '@arcships/rutis'
@@ -179,27 +182,28 @@ The row with the same ID as the plugin supplies its configuration; the other row
 ## 5. Publish
 
 ```bash
-npm run build      # tsc generates dist/
-npm publish
+npm publish --access public   # runs prepack first: tsc generates dist/
 ```
 
-Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `check`, and publishes (the repository needs an `NPM_TOKEN` secret).
+Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `check`, and publishes (the repository needs an `NPM_TOKEN` secret). `npm pack` and `npm publish` both run `prepack` (`npm run build`) first, so the package always has `dist/`.
 
-Declare a version range such as `"@arcships/rutis": "^0.17.1"`. The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
+Before publishing, give the package a name of your own: short names such as `weather` and `greeter` were taken on npm long ago. Use a scoped name: change `name` in `package.json`, for example to `"@your-name/weather"` (the scope is your npm user or organization; the first publish of a public scoped package needs `--access public`, which the template's workflow passes). A host's row names the plugin by this package name.
+
+Depend on the SDK with a lower bound only: `"@arcships/rutis": ">=0.17.0"` (`rutis-host new` writes its own version). Whether a runtime can load the plugin is decided by the plugin API version, not by rutis's version number: `definePlugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it. So a host can upgrade rutis without waiting for every plugin to be released again, and npm can share one copy of the SDK between the plugins. A range such as `^0.17.0` accepts only 0.17.x under 0.x: do not write one.
 
 ## 6. Use from a host
 
 Install the plugin in the host's Node project, alongside `@arcships/rutis-runtime`, then add a row named after the package:
 
 ```bash
-npm install greeter
+npm install @your-name/weather
 ```
 
 ```json
-{ "id": "greeter", "name": "greeter", "config": { "city": "Oslo" } }
+{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
 ```
 
-See [rutis-host and rutis.json](rutis-host.en.md), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
 
 ## Existing Cordis plugins
 

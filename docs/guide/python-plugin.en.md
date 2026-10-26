@@ -18,10 +18,12 @@ The generated project contains:
 | `src/weather/__init__.py` | The plugin itself. |
 | `tests/test_plugin.py` | Unit tests that do not need a host. |
 | `rutis.dev.json` | Local runtime configuration and other plugins used for testing. |
-| `pyproject.toml` | Depends on `rutis`; development dependency `rutis-host`; entry point under `rutis.plugins`. |
+| `pyproject.toml` | Depends on `rutis` (a lower bound only, see §5); development dependency `rutis-host`; entry point under `rutis.plugins`. |
 | `.github/workflows/publish.yml` | Tests and publishes to PyPI when a `v*` tag is pushed. |
 
 ## 2. Write the plugin
+
+The generated `src/weather/__init__.py` is a `greeter` that uses no service, and `tests/test_plugin.py` is its test. Here it becomes a `weather` that uses an `llm` service: replace `__init__.py` with the code below, and `tests/test_plugin.py` with the one in §3 at the same time (the two files go together).
 
 <!-- example: python-en file=weather/src/weather/__init__.py -->
 ```python
@@ -44,13 +46,14 @@ def apply(ctx, config):
 plugin = define_plugin(
     apply,
     inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
+    provides={"weather": Weather},        # What it provides: check knows before running
     config={"type": "object", "properties": {"city": {"type": "string"}}},
 )
 ```
 
 You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
 
-`weather` needs no declaration: what `ctx.provide` provides reaches rutis by itself, its methods the object's callable attributes not starting with `_`, called as `async`. To mark methods `sync`, or to let `rutis-host check` know before running what the plugin provides, declare `provides`: `provides={"weather": Weather}` reads the class (`async def` methods async, the others sync), or `{"weather": {"unit": "sync"}}`.
+`provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). `provides={"weather": Weather}` reads the methods from the class: those not starting with `_`, `async def` ones async, the others sync; `{"weather": {"today": "async"}}` works too. It also runs without one: what `ctx.provide` provides still reaches rutis by itself, its methods the object's callable attributes not starting with `_`, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
 `ctx.use("llm")` gets the service. A service provided by a plugin in the same process is the object itself; services from another language or machine are proxies, whose methods return synchronously or produce awaitable results according to their declarations. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
@@ -272,18 +275,21 @@ The entry point in `pyproject.toml` lets the host find the plugin by name:
 weather = "weather"
 ```
 
-Declare a version range such as `rutis>=0.17,<0.18`. `define_plugin` tags the plugin with its plugin API version. If the host runtime is older, it reports the problem clearly.
+Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it.
+
+Before publishing, give the distribution a name of your own: a short name such as `weather` is most likely taken on PyPI. Change `name` in `pyproject.toml`, for example to `your-name-weather`; the entry point name (`weather` above) stays, and a host's row is still `py:weather`.
 
 ## 6. Use from a host
 
-Install the plugin in the Python environment used to run Python plugins (the interpreter named by `py.python` in `rutis.json`), then add a row named `py:<entry-point-name>`:
+Install the plugin in the Python environment used to run Python plugins (the interpreter named by `runtimes.py.python` in `rutis.json`; by default the active virtual environment's, then `<runtimes.py.project>/.venv/bin/python`), then add a row named `py:<entry-point-name>`. Create the environment first if there is none; the plugin depends on `rutis`, so the runtime comes with it:
 
 ```bash
-uv pip install --python .venv/bin/python weather
+uv venv                                                         # creates .venv
+uv pip install --python .venv/bin/python your-name-weather      # the plugin, and rutis with it
 ```
 
 ```json
 { "id": "weather", "name": "py:weather", "config": { "city": "Oslo" } }
 ```
 
-See [rutis-host and rutis.json](rutis-host.en.md), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
