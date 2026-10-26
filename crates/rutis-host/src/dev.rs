@@ -14,7 +14,7 @@
 //! - A local runtime whose process ended is started again by the next
 //!   change to one of its rows, instead of reloading rows nothing runs.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use rutis_host::host::{Host, RowChange};
 use rutis_host::languages::{self, DevBuild};
 use rutis_host::{errln, outln, project, status};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::{Loader, LoaderError};
+use rutis_loader::LoaderError;
 
 use crate::reload::Triggers;
 use crate::stop::{self, Ended, Stopped};
@@ -107,6 +107,8 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         compiled,
         build: 1,
         stale: Vec::new(),
+        // Printed at the start (`warn`).
+        warned: config.warnings.iter().cloned().collect(),
     };
     let stopped = 'dev: loop {
         remove_builds(&mut project.stale);
@@ -188,6 +190,9 @@ struct Project {
     /// Builds no runtime runs any more, still to delete: Windows refuses
     /// while it still holds the image of a process that just ended.
     stale: Vec<PathBuf>,
+    /// The configuration's warnings printed so far: reading `rutis.dev.json`
+    /// again prints a warning once, not on every reload.
+    warned: HashSet<String>,
 }
 
 impl Project {
@@ -217,7 +222,7 @@ impl Project {
             project.name(),
             started.elapsed().as_secs_f64()
         );
-        let before = Rows::of(&host.loader);
+        let before = Rows::of(host);
         running.replace(project.runtime(), &binary);
         match running.restart_runtime(project.runtime()).await {
             Ok(()) => {
@@ -231,8 +236,16 @@ impl Project {
                 let own = |id: &str| {
                     row_name(host, id).is_some_and(|name| owns(project.runtime(), &name))
                 };
-                let cause = [(project.runtime().to_owned(), "restarted")];
-                for line in Rows::of(&host.loader).restarted(&before, &cause, &|id| own(id)) {
+                // Its rows restarted with it: a row using one says so.
+                let said = format!("{} restarted", project.runtime());
+                let causes: Vec<(String, String)> = host
+                    .loader
+                    .entries()
+                    .into_iter()
+                    .filter(|entry| own(&entry.id))
+                    .map(|entry| (entry.id, said.clone()))
+                    .collect();
+                for line in Rows::of(host).restarted(&before, &causes, &|id| own(id)) {
                     outln!("{line}");
                 }
             }
@@ -275,16 +288,17 @@ impl Project {
             if skip.contains(id) {
                 continue;
             }
-            let before = Rows::of(&host.loader);
+            let before = Rows::of(host);
             match host.loader.reload(id).await {
                 Ok(_) => {
                     host.loader.settled().await;
                     outln!("{id}: reloaded ({} changed)", self.files(files));
                     reloaded.insert(id.clone());
-                    affected.add(&before, &Rows::of(&host.loader), id, "reloaded");
+                    let cause = [(id.clone(), format!("{id} reloaded"))];
+                    affected.add(&before, &Rows::of(host), &cause);
                 }
                 Err(error) => {
-                    let running = Rows::of(&host.loader).active(id);
+                    let running = Rows::of(host).active(id);
                     outln!("{}", cannot_reload(id, &error, running));
                 }
             }
@@ -367,7 +381,7 @@ impl Project {
     /// ([`rutis_host::host::Host::reload`]): `rutis-host: reloaded
     /// rutis.dev.json (<n> rows changed)` and a line for each row that
     /// changed, or `rutis-host: reload rejected: <why>; nothing changed`.
-    async fn reconfigure(&self, host: &mut Host, triggers: &mut Triggers) {
+    async fn reconfigure(&mut self, host: &mut Host, triggers: &mut Triggers) {
         let path = self.dir.join(DEV_FILE);
         if let Ok(text) = read_text(&path) {
             triggers.read(&text);
@@ -381,11 +395,13 @@ impl Project {
         };
         let changes = rutis_host::host::row_changes(&host.config().rows, &new.rows);
         let warnings = new.warnings.clone();
-        let before = Rows::of(&host.loader);
+        let before = Rows::of(host);
         match host.reload(new).await {
             Ok(reloaded) => {
                 for warning in warnings {
-                    errln!("rutis-host: warning: {warning}");
+                    if self.warned.insert(warning.clone()) {
+                        errln!("rutis-host: warning: {warning}");
+                    }
                 }
                 outln!("rutis-host: reloaded {DEV_FILE} ({reloaded})");
                 for warning in &reloaded.warnings {
@@ -401,7 +417,7 @@ impl Project {
                     }
                 }
                 host.loader.settled().await;
-                let causes: Vec<(String, &str)> = changes
+                let causes: Vec<(String, String)> = changes
                     .iter()
                     .map(|(id, change)| {
                         let verb = match change {
@@ -409,13 +425,11 @@ impl Project {
                             RowChange::Removed => "removed",
                             RowChange::Changed => "updated",
                         };
-                        (id.clone(), verb)
+                        (id.clone(), format!("{id} {verb}"))
                     })
                     .collect();
                 let changed: HashSet<&str> = changes.iter().map(|(id, _)| id.as_str()).collect();
-                for line in
-                    Rows::of(&host.loader).restarted(&before, &causes, &|id| changed.contains(id))
-                {
+                for line in Rows::of(host).restarted(&before, &causes, &|id| changed.contains(id)) {
                     outln!("{line}");
                 }
                 // Rows that changed, of a runtime that is down: it starts
@@ -566,13 +580,18 @@ async fn start_again(host: &Host, runtime: &str, why: &str) {
 
 /// Each row's fiber, its generation and its state, for the rows whose
 /// fiber exists (copies in instances apart): a row that restarted has a new
-/// generation, or a new fiber.
-struct Rows(BTreeMap<String, (Option<PluginId>, u64, FiberState)>);
+/// generation, or a new fiber. And the rows each uses
+/// ([`Host::row_dependencies`]).
+struct Rows {
+    states: BTreeMap<String, (Option<PluginId>, u64, FiberState)>,
+    uses: BTreeMap<String, BTreeSet<String>>,
+}
 
 impl Rows {
-    fn of(loader: &Loader) -> Self {
-        Self(
-            loader
+    fn of(host: &Host) -> Self {
+        Self {
+            states: host
+                .loader
                 .entries()
                 .into_iter()
                 .filter(|entry| entry.instance.is_none())
@@ -584,46 +603,52 @@ impl Rows {
                     _ => None,
                 })
                 .collect(),
-        )
+            uses: host.row_dependencies(),
+        }
     }
 
     /// Whether the row `id` runs.
     fn active(&self, id: &str) -> bool {
-        self.0
+        self.states
             .get(id)
             .is_some_and(|(_, _, state)| *state == FiberState::Active)
     }
 
     /// The rows that restarted, started or stopped since `before`, but
-    /// those `skip` takes: one line each, saying `causes` did it.
+    /// those `skip` takes: one line each, naming what of `causes` it uses
+    /// ([`Affected::add`]).
     fn restarted(
         &self,
         before: &Rows,
-        causes: &[(String, &str)],
+        causes: &[(String, String)],
         skip: &dyn Fn(&str) -> bool,
     ) -> Vec<String> {
         let mut affected = Affected::default();
-        for (cause, verb) in causes {
-            affected.add(before, self, cause, verb);
-        }
+        affected.add(before, self, causes);
         affected.lines(skip)
     }
 }
 
 /// The rows that restarted, started or stopped because other rows changed,
-/// and which.
+/// each with the changes it uses.
 #[derive(Default)]
 struct Affected(BTreeMap<String, (&'static str, Vec<String>)>);
 
 impl Affected {
-    /// Note the rows that differ between `before` and `after`, `cause`
-    /// (which `verb`: reloaded, updated, ...) having done it.
-    fn add(&mut self, before: &Rows, after: &Rows, cause: &str, verb: &str) {
-        for (id, (plugin, generation, state)) in &before.0 {
-            if id == cause {
+    /// Note the rows that differ between `before` and `after`, but the
+    /// changed rows `causes` (each with what to say of it: `weather
+    /// reloaded`). Each is said to have restarted for the changed rows it
+    /// uses, else for the rows noted with it that it uses (`greeter
+    /// restarted`: through it), else for nothing: a row whose dependency is
+    /// not known here (inside a runtime, between Cordis rows) names no
+    /// cause rather than a wrong one.
+    fn add(&mut self, before: &Rows, after: &Rows, causes: &[(String, String)]) {
+        let mut noted: Vec<(&String, &'static str)> = Vec::new();
+        for (id, (plugin, generation, state)) in &before.states {
+            if causes.iter().any(|(cause, _)| cause == id) {
                 continue;
             }
-            let now = after.0.get(id);
+            let now = after.states.get(id);
             let restarted = now.is_some_and(|(p, g, _)| (p, g) != (plugin, generation));
             let active = now.is_some_and(|(_, _, s)| *s == FiberState::Active);
             let was_active = *state == FiberState::Active;
@@ -633,22 +658,49 @@ impl Affected {
                 (_, true, false) => "stopped",
                 _ => continue,
             };
-            let entry = self.0.entry(id.clone()).or_insert((what, Vec::new()));
+            noted.push((id, what));
+        }
+        for (id, what) in &noted {
+            // Used before the change or after it: a removed row, or one a
+            // stopped row no longer reaches, counts.
+            let uses = |other: &str| {
+                [before, after]
+                    .iter()
+                    .any(|rows| rows.uses.get(*id).is_some_and(|uses| uses.contains(other)))
+            };
+            let mut said: Vec<String> = causes
+                .iter()
+                .filter(|(cause, _)| uses(cause))
+                .map(|(_, said)| said.clone())
+                .collect();
+            if said.is_empty() {
+                said = noted
+                    .iter()
+                    .filter(|(other, _)| other != id && uses(other))
+                    .map(|(other, what)| format!("{other} {what}"))
+                    .collect();
+            }
+            let entry = self.0.entry((*id).clone()).or_insert((what, Vec::new()));
             entry.0 = what;
-            let cause = format!("{cause} {verb}");
-            if !entry.1.contains(&cause) {
-                entry.1.push(cause);
+            for cause in said {
+                if !entry.1.contains(&cause) {
+                    entry.1.push(cause);
+                }
             }
         }
     }
 
     /// A line for each row noted but those `skip` takes: `caller:
-    /// restarted (weather reloaded)`.
+    /// restarted (weather reloaded)`, or `caller: restarted` when what it
+    /// uses is not known.
     fn lines(&self, skip: &dyn Fn(&str) -> bool) -> Vec<String> {
         self.0
             .iter()
             .filter(|(id, _)| !skip(id))
-            .map(|(id, (what, causes))| format!("{id}: {what} ({})", causes.join(", ")))
+            .map(|(id, (what, causes))| match causes.is_empty() {
+                true => format!("{id}: {what}"),
+                false => format!("{id}: {what} ({})", causes.join(", ")),
+            })
             .collect()
     }
 }
@@ -804,49 +856,101 @@ mod tests {
         );
     }
 
-    /// A row restarted by two changes says both, once; one that stopped
-    /// says so; the changed rows themselves are not counted.
+    /// A row restarted by a change names the changed rows it uses, else
+    /// the restarted rows it uses, through which the change reached it,
+    /// else nothing: never a row it does not use (#665: `caller` uses
+    /// `greeter`, which uses `llm`). One that stopped says so; the changed
+    /// rows themselves are not counted.
     #[test]
-    fn rows_restarted_by_a_change_say_which() {
-        let rows = |list: &[(&str, u64, FiberState)]| {
-            Rows(
-                list.iter()
-                    .map(|(id, generation, state)| {
-                        (id.to_string(), (Some(PluginId(1)), *generation, *state))
-                    })
-                    .collect(),
-            )
+    fn rows_restarted_by_a_change_name_what_they_use() {
+        let rows = |list: &[(&str, u64, FiberState)], uses: &[(&str, &[&str])]| Rows {
+            states: list
+                .iter()
+                .map(|(id, generation, state)| {
+                    (id.to_string(), (Some(PluginId(1)), *generation, *state))
+                })
+                .collect(),
+            uses: uses
+                .iter()
+                .map(|(id, used)| (id.to_string(), used.iter().map(|u| u.to_string()).collect()))
+                .collect(),
         };
-        let before = rows(&[
-            ("weather", 1, FiberState::Active),
-            ("llm", 1, FiberState::Active),
-            ("caller", 1, FiberState::Active),
-            ("audit", 1, FiberState::Active),
-            ("idle", 1, FiberState::Active),
-        ]);
-        let middle = rows(&[
-            ("weather", 2, FiberState::Active),
-            ("llm", 1, FiberState::Active),
-            ("caller", 2, FiberState::Active),
-            ("audit", 1, FiberState::Pending),
-            ("idle", 1, FiberState::Active),
-        ]);
-        let after = rows(&[
-            ("weather", 2, FiberState::Active),
-            ("llm", 2, FiberState::Active),
-            ("caller", 3, FiberState::Active),
-            ("audit", 1, FiberState::Pending),
-            ("idle", 1, FiberState::Active),
-        ]);
+        let uses: &[(&str, &[&str])] = &[
+            ("greeter", &["llm"]),
+            ("caller", &["greeter"]),
+            ("audit", &["greeter"]),
+        ];
+        let before = rows(
+            &[
+                ("greeter", 1, FiberState::Active),
+                ("llm", 1, FiberState::Active),
+                ("caller", 1, FiberState::Active),
+                ("audit", 1, FiberState::Active),
+                ("idle", 1, FiberState::Active),
+                ("loose", 1, FiberState::Active),
+            ],
+            uses,
+        );
+        // audit does not come back; loose restarted, what it uses unknown.
+        let after = rows(
+            &[
+                ("greeter", 2, FiberState::Active),
+                ("llm", 2, FiberState::Active),
+                ("caller", 2, FiberState::Active),
+                ("audit", 1, FiberState::Pending),
+                ("idle", 1, FiberState::Active),
+                ("loose", 2, FiberState::Active),
+            ],
+            &uses[..2],
+        );
         let mut affected = Affected::default();
-        affected.add(&before, &middle, "weather", "reloaded");
-        affected.add(&middle, &after, "llm", "reloaded");
+        affected.add(&before, &after, &[("llm".into(), "llm reloaded".into())]);
+        assert_eq!(
+            affected.lines(&|id| id == "llm"),
+            [
+                "audit: stopped (greeter restarted)",
+                "caller: restarted (greeter restarted)",
+                "greeter: restarted (llm reloaded)",
+                "loose: restarted",
+            ]
+        );
+
+        // Two changes, one after the other, both used: both named, once.
+        let uses: &[(&str, &[&str])] = &[("caller", &["weather", "llm"])];
+        let before = rows(
+            &[
+                ("weather", 1, FiberState::Active),
+                ("llm", 1, FiberState::Active),
+                ("caller", 1, FiberState::Active),
+            ],
+            uses,
+        );
+        let middle = rows(
+            &[
+                ("weather", 2, FiberState::Active),
+                ("llm", 1, FiberState::Active),
+                ("caller", 2, FiberState::Active),
+            ],
+            uses,
+        );
+        let after = rows(
+            &[
+                ("weather", 2, FiberState::Active),
+                ("llm", 2, FiberState::Active),
+                ("caller", 3, FiberState::Active),
+            ],
+            uses,
+        );
+        let mut affected = Affected::default();
+        affected.add(
+            &before,
+            &middle,
+            &[("weather".into(), "weather reloaded".into())],
+        );
+        affected.add(&middle, &after, &[("llm".into(), "llm reloaded".into())]);
         assert_eq!(
             affected.lines(&|id| id == "llm" || id == "weather"),
-            [
-                "audit: stopped (weather reloaded)",
-                "caller: restarted (weather reloaded, llm reloaded)",
-            ]
+            ["caller: restarted (weather reloaded, llm reloaded)"]
         );
     }
 }

@@ -366,13 +366,27 @@ impl HostConfig {
 
     /// The configuration `text`, read from `path` ([`HostConfig::read`]).
     pub fn parse(text: &str, path: &Path) -> Result<Self, String> {
+        Self::parse_beside(text, path, &Runtimes::default())
+    }
+
+    /// [`HostConfig::read`] of a file whose rows also run in the runtimes
+    /// `provided`, which something else configures: `rutis.dev.json` beside
+    /// the plugin project's own runtime, which `rutis-host dev` sets up. A
+    /// runtime `provided` has is not one the file leaves undeclared.
+    pub fn read_beside(path: &Path, provided: &Runtimes) -> Result<Self, String> {
+        Self::parse_beside(&read_text(path)?, path, provided)
+    }
+
+    /// [`HostConfig::parse`], beside the runtimes `provided`
+    /// ([`HostConfig::read_beside`]).
+    pub fn parse_beside(text: &str, path: &Path, provided: &Runtimes) -> Result<Self, String> {
         check_newer_format(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();
         check_rows(&config.rows, "rows", &mut ignored)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        ignored.extend(config.enable_used_runtimes());
+        ignored.extend(config.enable_used_runtimes_beside(provided));
         config.warnings = ignored
             .into_iter()
             .map(|warning| format!("{}: {warning}", path.display()))
@@ -399,6 +413,13 @@ impl HostConfig {
     /// as if it declared `"py": {}` (#666); one line each, saying so.
     /// Before [`HostConfig::rebase`]: the defaults are relative to the file.
     pub fn enable_used_runtimes(&mut self) -> Vec<String> {
+        self.enable_used_runtimes_beside(&Runtimes::default())
+    }
+
+    /// [`HostConfig::enable_used_runtimes`], but for the runtimes
+    /// `provided` (configured elsewhere, [`HostConfig::read_beside`]),
+    /// which are neither enabled here nor said to be undeclared.
+    pub fn enable_used_runtimes_beside(&mut self, provided: &Runtimes) -> Vec<String> {
         let mut names = Vec::new();
         rows_named(&self.rows, &mut names);
         let mut said = Vec::new();
@@ -409,7 +430,7 @@ impl HostConfig {
                 self.runtimes.remote.iter().any(|remote| {
                     remote.name == key || (key == "node" && remote.language == "node")
                 });
-            if language.configured(&self.runtimes) || remote {
+            if language.configured(&self.runtimes) || language.configured(provided) || remote {
                 continue;
             }
             let rows: Vec<&str> = names

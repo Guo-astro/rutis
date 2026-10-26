@@ -761,6 +761,53 @@ impl Host {
         }
     }
 
+    /// For each row, the other rows whose services it uses now, as rutis
+    /// resolved them: a service its fiber (or a fiber under it) depends on,
+    /// provided by another row's fiber (or one under it). A dependency
+    /// resolved inside a runtime only (between Cordis rows), or one not
+    /// resolved now, is not known here.
+    pub fn row_dependencies(
+        &self,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        use std::collections::{BTreeMap, BTreeSet, HashMap};
+        let rows: HashMap<rutis::host::PluginId, String> = self
+            .loader
+            .entries()
+            .into_iter()
+            .filter_map(|entry| Some((entry.plugin?, entry.id)))
+            .collect();
+        let plugins = self.root.diagnostics().plugins;
+        let parents: HashMap<rutis::host::PluginId, Option<rutis::host::PluginId>> = plugins
+            .iter()
+            .map(|plugin| (plugin.id, plugin.parent))
+            .collect();
+        // The row a fiber belongs to: its own, or the nearest above it.
+        let row_of = |mut id: rutis::host::PluginId| -> Option<&String> {
+            for _ in 0..parents.len() {
+                if let Some(row) = rows.get(&id) {
+                    return Some(row);
+                }
+                id = (*parents.get(&id)?)?;
+            }
+            None
+        };
+        let mut dependencies: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for plugin in &plugins {
+            let Some(row) = row_of(plugin.id) else {
+                continue;
+            };
+            for dependency in &plugin.resolved_dependencies {
+                if let Some(provider) = row_of(dependency.provider).filter(|other| *other != row) {
+                    dependencies
+                        .entry(row.clone())
+                        .or_default()
+                        .insert(provider.clone());
+                }
+            }
+        }
+        dependencies
+    }
+
     /// What has not stopped yet: the plugins stopping (or still starting),
     /// and how many others wait for them to stop first.
     pub fn still_running(&self) -> (Vec<String>, usize) {
