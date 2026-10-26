@@ -80,7 +80,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | Rust | 不用 `rutis-host`：Rust 应用自己挂它的 Rust 插件 | | [在 Rust 应用里嵌入](rust-host.md) |
 
 - 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。Python 插件对 `rutis` 只写下限，所以装插件不会把运行时降级；TypeScript 插件各自带着它写时那个版本的 SDK，几份可以并存（[插件 API：版本](plugin-api.md#版本)）。
-- 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）。
+- 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）；没写的按默认设置启用，并给出告警（见 [runtimes](#runtimes)）。
 - 装好后，`rutis-host check --strict` 告诉你每一行能不能运行、每一行用到的服务是否都有别的行声明；放进 CI，不满足时失败。
 
 ## 命令

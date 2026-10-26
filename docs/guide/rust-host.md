@@ -100,6 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `view.await`（以及 `update`、`restart`）在 fiber 处理完排给它的事（装载、这次更新、这次重启）后返回。`Deps` 没有到齐的插件不装载，停在 `Pending`，`view.await` 照样返回 `Ok(())`，插件并没有运行。
 - `view.running().await` 等到插件运行（`Active`：它的 `apply` 已经返回），依赖多久出现就等多久。插件失败时返回装载的错误（失败的插件在依赖变化时再试；马上又重试的可能看不到失败，会接着等），插件被卸载或根关闭时（调用之前也算）返回 `InactiveEffect`。
 - 依赖缺着时它一直等；用 `tokio::time::timeout(Duration::from_secs(10), view.running()).await` 限制，超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
+- 等了 10 秒还在等的插件向错误汇集报告一次：`ErrorKind::StillWaiting` 写明插件和它缺的服务（默认的 sink 打印 `[rutis] plugin printer is still waiting after 10s for app::Greeting: …`），插件照常继续等。`root.report_waiting_after(Some(时长))` 改这个时间，对整棵树生效，`None` 不报（[依赖诊断](../core-features.md#依赖诊断)）。
 - 装的顺序不要紧：先装的使用者会等后装的提供者。应用要用的插件，先等它们运行再往下走。
 
 ### 按名字依赖
