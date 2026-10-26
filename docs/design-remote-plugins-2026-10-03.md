@@ -1,7 +1,5 @@
 # 远程插件：运行时接入与节点互联
 
-> 已部分取代（2026-10-26）：运行时接入的连接方式与管理（会话来源、连接方向、§4.4 的连接方式、§8 远程语言插件一行）由 [远程连接分层](design-remote-connection-layering-2026-10-26.md) 取代。运行时契约、两段就绪、租约的清理顺序、节点互联、会话与兼容、生命周期与安全仍然有效。
-
 > 包结构已调整（2026-10-06）：`rutis-channel`、`rutis-interop`、`rutis-transport-*`、`rutis-runtime-local` 合并为 `rutis-bridge` 的模块（`channel`、`session`、`runtime`、`transport::*`、`cordis`），见 [面向开发者的包、工具与流程](design-developer-packages-2026-10-06.md)。下文保留设计时的 crate 名。
 
 

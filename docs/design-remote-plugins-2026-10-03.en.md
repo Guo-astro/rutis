@@ -1,7 +1,5 @@
 # Remote Plugins: Runtime Integration and Node Interconnection
 
-> Partly superseded (2026-10-26): how runtimes connect and are managed (the session source, the connection direction, how §4.4 connects, the remote language plugin line of §8) is superseded by [Remote connection layering](design-remote-connection-layering-2026-10-26.en.md). The runtime contract, two-phase readiness, the lease's cleanup order, node interconnection, sessions and compatibility, and lifecycle and security still apply.
-
 > Package structure updated (2026-10-06): `rutis-channel`, `rutis-interop`, `rutis-transport-*`, and `rutis-runtime-local` were merged into modules of `rutis-bridge` (`channel`, `session`, `runtime`, `transport::*`, `cordis`); see [Packages, Tools, and Workflow for Developers](design-developer-packages-2026-10-06.en.md). The crate names below are retained from the original design.
 
 Status: remote-capability design; not implemented. Updated 2026-10-05.

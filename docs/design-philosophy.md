@@ -145,4 +145,4 @@ rutis 从 Cordis 继承了生命周期模型，核心语义一致，见 [逐条�
 
 - [写一个 Python 插件](guide/python-plugin.md) · [写一个 TypeScript 插件](guide/typescript-plugin.md) · [连接节点](guide/nodes.md) · [在 Rust 应用里嵌入](guide/rust-host.md)
 - [内核设计](design-rust-port.md) · [与 Cordis 的逐条对拍](cordis-spec-parity-2026-08-18.md) · [双核架构](design-dual-core-2026-08-20.md)
-- [多语言决策记录](decision-multilang-2026-10-03.md) · [多语言插件设计](design-multilang-runtimes-2026-10-03.md) · [远程插件](design-remote-plugins-2026-10-03.md) · [远程连接分层](design-remote-connection-layering-2026-10-26.md)
+- [多语言决策记录](decision-multilang-2026-10-03.md) · [多语言插件设计](design-multilang-runtimes-2026-10-03.md) · [远程插件](design-remote-plugins-2026-10-03.md) · [远程运行时一致性](design-remote-runtime-consistency-2026-10-26.md)

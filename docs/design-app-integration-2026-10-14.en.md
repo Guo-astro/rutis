@@ -2,8 +2,6 @@
 
 [中文](design-app-integration-2026-10-14.md)
 
-> Update (2026-10-26): how rutis admits app connections now follows [Remote connection layering](design-remote-connection-layering-2026-10-26.en.md): the access point becomes the built-in listening connection plugin. Nothing changes on the app and SDK side.
-
 Status: final, not implemented. Date: 2026-10-14. Baseline: `main` `a763cdc` (0.10.0).
 Based on: [Remote runtimes: dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md) (how apps connect), [the multilingual design](design-multilang-runtimes-2026-10-03.en.md), [remote plugins](design-remote-plugins-2026-10-03.en.md), [the plugin API](guide/plugin-api.en.md).
 Per platform: [the Swift SDK](design-swift-sdk-2026-10-12.en.md) §7 (iOS / iPadOS / macOS apps), [Android app hosting](design-android-runtime-2026-10-12.en.md) (Kotlin).

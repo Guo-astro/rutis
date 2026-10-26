@@ -2,8 +2,6 @@
 
 [English](design-app-integration-2026-10-14.en.md)
 
-> 更新（2026-10-26）：rutis 一侧接纳应用连接的方式改按 [远程连接分层](design-remote-connection-layering-2026-10-26.md)：接入点改为内置的监听连接插件。应用与 SDK 一侧不变。
-
 状态：定稿，未实现。日期：2026-10-14。基准：`main` `a763cdc`（0.10.0）。
 依据：[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md)（连接方式）、[多语言总体稿](design-multilang-runtimes-2026-10-03.md)、[远程插件](design-remote-plugins-2026-10-03.md)、[插件 API](guide/plugin-api.md)。
 各平台：[Swift SDK](design-swift-sdk-2026-10-12.md) §七（iOS / iPadOS / macOS 应用）、[Android 应用托管](design-android-runtime-2026-10-12.md)（Kotlin）。

@@ -1,7 +1,5 @@
 # 网络栈：协议与通道解耦（设计稿）
 
-> 已部分取代（2026-10-26）：link 作为运行时会话来源的说法由 [远程连接分层](design-remote-connection-layering-2026-10-26.md) 取代（运行时的连接改由连接插件交给远程插件层）。通道契约、分帧、连接器、共享监听器注册与 WebSocket 绑定仍然有效。
-
 > 包结构已调整（2026-10-06）：`rutis-channel`、`rutis-interop`、`rutis-transport-*`、`rutis-runtime-local` 合并为 `rutis-bridge` 的模块（`channel`、`session`、`runtime`、`transport::*`、`cordis`），见 [面向开发者的包、工具与流程](design-developer-packages-2026-10-06.md)。下文保留设计时的 crate 名。
 
 

@@ -1,7 +1,5 @@
 # Network Stack: Decoupling Protocol and Channel (Design)
 
-> Partly superseded (2026-10-26): the link as the source of a runtime's session is superseded by [Remote connection layering](design-remote-connection-layering-2026-10-26.en.md) (connection plugins hand runtimes' connections to the remote plugin layer). The channel contract, framing, connectors, shared listener registration and the WebSocket binding still apply.
-
 > Package structure changed on 2026-10-06: `rutis-channel`, `rutis-interop`, `rutis-transport-*`, and `rutis-runtime-local` were merged as modules (`channel`, `session`, `runtime`, `transport::*`, `cordis`) in `rutis-bridge`; see [Packages, Tools, and Workflows for Developers](design-developer-packages-2026-10-06.md). The crate names below are retained as they were at design time.
 
 Status: design, not implemented. Revised: 2026-10-05.
