@@ -13,7 +13,7 @@ mkdir app && cd app
 npm init -y                                                # the Node project TypeScript plugins go in
 npm install @arcships/rutis-host @your-name/weather        # rutis-host brings the Node runtime
 uv venv                                                    # .venv: the environment Python plugins run in
-uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-llm   # the Python runtime at rutis-host's version, and the plugin
+uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-llm   # the Python runtime at rutis-host's version, and the plugin
 ```
 
 2. Write `rutis.json`: the runtimes to start, and a row per plugin (its `name` is the npm package, or `py:` and the entry point; `config` is the plugin's configuration):

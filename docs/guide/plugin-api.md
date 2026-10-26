@@ -368,7 +368,7 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 
 插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；比插件新时照常加载。插件对 SDK 的依赖：
 
-- JavaScript、TypeScript：`^` 范围（`"@arcships/rutis": "^0.17.1"`）。插件用它写时那个次版本的 SDK，宿主里装着别的版本时 npm 给它装自己的一份，几个版本可以并存。
+- JavaScript、TypeScript：`^` 范围（`"@arcships/rutis": "^0.17.2"`）。插件用它写时那个次版本的 SDK，宿主里装着别的版本时 npm 给它装自己的一份，几个版本可以并存。
 - Python：只写下限（`rutis>=0.17`）。插件和 Python 运行时是宿主环境里的同一个 `rutis` 包，写了上限（`<0.18`），装插件会把运行时降级，或者让宿主升级不了。所以 Python 的 `rutis` 在插件 API 版本不变时，不删、不改插件导入的名字：要去掉的名字保留下来，用到时给出弃用警告，到插件 API 版本增加时才删。
 - Go、Swift：SDK 编进二进制（`require`、`from:`），与宿主装的版本无关。
 

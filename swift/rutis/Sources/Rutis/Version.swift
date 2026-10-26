@@ -3,7 +3,7 @@
 public enum Rutis {
     /// This SDK's version: the runtime's implementation version and the
     /// manifest's `sdk`. The release train checks it (scripts/train.mjs).
-    public static let sdkVersion = "0.17.1"
+    public static let sdkVersion = "0.17.2"
 
     /// The plugin API this SDK writes plugins against and its runtime
     /// supports.

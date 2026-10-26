@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "rutis"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "erased-serde",
  "rutis-macros",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-bridge"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "futures-util",
  "getrandom 0.2.17",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "rutis-macros"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "proc-macro2",
  "quote",
