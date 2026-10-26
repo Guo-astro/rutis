@@ -69,7 +69,10 @@ async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
         .json()
         .unwrap();
     assert_eq!(returned["inspected"], native);
-    assert_eq!(returned["local"], true, "the caught error has the caller's stack");
+    assert_eq!(
+        returned["local"], true,
+        "the caught error has the caller's stack"
+    );
     for field in ["aggregate", "type", "nested", "shared", "cycle"] {
         assert_eq!(returned["inspected"][field], true);
     }

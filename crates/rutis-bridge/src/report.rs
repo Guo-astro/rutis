@@ -74,7 +74,12 @@ pub fn report(error: &ErrorKind) -> String {
 
 /// What a site says, as a line: `in weather, calling forecast.tomorrow`.
 fn doing(site: &Site) -> String {
-    let what = match (site.doing.as_str(), &site.service, &site.method, &site.event) {
+    let what = match (
+        site.doing.as_str(),
+        &site.service,
+        &site.method,
+        &site.event,
+    ) {
         ("call", Some(service), Some(method), _) => format!("serving {service}.{method}"),
         ("listener", _, _, Some(event)) => format!("listening to {event}"),
         ("apply", ..) => "in apply".to_owned(),
@@ -127,7 +132,11 @@ mod tests {
             json!({ "root": { "type": "reference", "value": 0 }, "nodes": [{ "type": "error", "site": { "row": 1 } }] }),
             json!({ "root": { "type": "reference", "value": 0 }, "nodes": [{ "type": "error", "cause": { "type": "reference", "value": 0 } }] }),
         ] {
-            assert_eq!(report(&remote(graph.clone())), "KeyError: 'region'", "{graph}");
+            assert_eq!(
+                report(&remote(graph.clone())),
+                "KeyError: 'region'",
+                "{graph}"
+            );
         }
     }
 
@@ -135,7 +144,10 @@ mod tests {
     fn printing_is_bounded_and_escapes_control_characters() {
         let stack = format!(
             "E: x\n{}",
-            (0..100).map(|i| format!("  at f{i}")).collect::<Vec<_>>().join("\n")
+            (0..100)
+                .map(|i| format!("  at f{i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         let error = remote(json!({
             "root": { "type": "reference", "value": 0 },
