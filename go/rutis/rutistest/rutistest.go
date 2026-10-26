@@ -108,15 +108,28 @@ type Loaded struct {
 	// What its plugin declares: the harness's plugin's, or, for a copy of
 	// a plugin definition the plugin handed over, that definition's.
 	declared declaration
-	// A copy of a plugin definition (loadCopy), and the row that handed
-	// the definition over ("" when not known: one a test service call
-	// returned).
+	// A copy of a plugin definition (loadCopy), and, when known, the row
+	// (and its generation) the definition belongs to.
 	copy   bool
-	origin string
+	known  bool
+	origin belonging
+	// What descriptors and reported lines call the row: its key, or, for
+	// a copy, the id of the row its definition belongs to (as the host
+	// calls a copy, R5).
+	id string
 	// The labels the row uses names under: what it injects under its
 	// lease (leaseLabel), and, for a copy, what it declares it provides
 	// under a label of the copy's own (copyLabel).
 	isolated map[string]string
+	// What it is loaded from, to load it again (Update): the plugin's
+	// name or the definition, the services it exports, the services
+	// given to a copy alone, and its options.
+	entry   any
+	exports map[string]map[string]string
+	own     map[string]any
+	options options
+	// Where its failures go: the TB it was loaded with.
+	t testing.TB
 }
 
 // harness is the runtime under test and the host side of its session.
@@ -215,7 +228,9 @@ func hook() {
 // rutis mounts a copy in; a name it injects that `services` leaves out is
 // the runtime's, given to the plugin that handed it over. As under rutis:
 //   - the copy's rows are called by the id of the row the definition
-//     belongs to in descriptors and reported lines;
+//     belongs to in descriptors and reported lines (a copy of a copy: by
+//     the first row's; a row not known: by the definition's name, or
+//     "plugin");
 //   - the services the copy declares in Provides are its own, so several
 //     copies of a definition can be loaded at once when they provide only
 //     declared services (an undeclared one's name is not known in
@@ -401,13 +416,24 @@ func loadCopy(t testing.TB, remote *peer.RemotePlugin, config any, services map[
 			t.Fatalf("rutistest: the plugin definition injects %s: give the test a service %s", name, name)
 		}
 	}
-	// Descriptors call a copy's row as the host does: by its origin row's
-	// id, or, not known, by the definition's name.
-	id := from.row
-	if !known && declared.Name != nil {
+	// Descriptors call a copy's row as the host does: by the id of the row
+	// its definition belongs to (a copy of a copy, by the first one's), or,
+	// not known, by the definition's name, or "plugin".
+	id := "plugin"
+	if declared.Name != nil {
 		id = *declared.Name
 	}
-	loaded := h.loadEntry(t, remote, declared, declared.Provides, services, true, from.row, id, config, opts)
+	if known {
+		h.mu.Lock()
+		for _, row := range h.rows {
+			if row.row == from.row {
+				id = row.id
+			}
+		}
+		h.mu.Unlock()
+	}
+	spec := &Loaded{declared: declared, copy: true, known: known, origin: from, id: id, entry: remote, exports: declared.Provides, own: services}
+	loaded := h.loadEntry(t, spec, config, opts)
 	t.Cleanup(loaded.Unload)
 	return loaded
 }
@@ -428,12 +454,10 @@ func leaseLabel(row string) string { return "\x01row:" + row }
 func copyLabel(row string) string { return "rutistest/copy/" + row }
 
 // remember records that the plugin definitions in `value` belong to `row`
-// (now in its current generation), unless they already belong to a row;
-// h.mu is held.
+// in its current generation, unless they already belong to a row; h.mu is
+// held. A row unloading (handing one over in its cleanup) is still in that
+// generation, which has ended: loadCopy refuses it.
 func (h *harness) remember(value any, row string) {
-	if _, loaded := h.scope[row]; !loaded {
-		return
-	}
 	for _, remote := range remotes(value, nil) {
 		if _, seen := h.origins[remote]; !seen {
 			h.origins[remote] = belonging{row, h.generations[row]}
@@ -461,47 +485,62 @@ func (h *harness) load(config any, list []Option) *Loaded {
 		exports = h.declared.Provides
 	}
 	h.mu.Unlock()
-	return h.loadEntry(h.t, h.entry, h.declared, exports, nil, false, "", "", config, list)
+	return h.loadEntry(h.t, &Loaded{declared: h.declared, entry: h.entry, exports: exports}, config, list)
 }
 
-// loadEntry loads a row of `entry`: the plugin's name, or a plugin
-// definition it handed over (`copy`, belonging to row `origin`, its rows
-// called `id` in descriptors). Failures are `t`'s: the caller's.
+// loadEntry loads a row of `spec.entry`: the plugin's name, or a plugin
+// definition it handed over (spec.copy). Failures are `t`'s: the
+// caller's.
 //
 // As a host leases services per row, each row uses the services it
 // injects under a label of its own (leaseLabel): the test side knows from
-// it which row a call came from. `own` are the services given to a copy
-// alone. A copy also isolates the services it declares it provides, so
-// two copies of a definition providing only declared services can be
+// it which row a call came from. spec.own are the services given to a
+// copy alone. A copy also isolates the services it declares it provides,
+// so two copies of a definition providing only declared services can be
 // loaded at once, as in two instances; what a copy provides without
 // declaring it is not known in advance and is not isolated.
-func (h *harness) loadEntry(t testing.TB, entry any, declared declaration, declaredExports map[string]map[string]string, own map[string]any, copy bool, origin, id string, config any, list []Option) *Loaded {
+func (h *harness) loadEntry(t testing.TB, spec *Loaded, config any, list []Option) *Loaded {
 	t.Helper()
 	h.mu.Lock()
 	o := options{row: firstRow}
 	if n := len(h.rows); n > 0 {
 		o.row = firstRow + "-" + strconv.Itoa(n+1)
 	}
+	h.mu.Unlock()
 	for _, option := range list {
 		option(&o)
 	}
-	if _, taken := h.scope[o.row]; taken {
-		h.mu.Unlock()
-		t.Fatalf("rutistest: a row %s is already loaded", o.row)
+	spec.h, spec.t, spec.options = h, t, o
+	spec.row, spec.scope = o.row, o.scope
+	if !spec.copy {
+		spec.id = o.row
 	}
-	loaded := &Loaded{h: h, row: o.row, scope: o.scope, declared: declared, copy: copy, origin: origin, isolated: map[string]string{}}
-	h.scope[o.row] = o.scope
-	h.rows = append(h.rows, loaded)
-	h.generations[o.row]++
+	h.start(spec, config)
+	return spec
+}
+
+// start loads row `l` with `config`: a new generation of its key.
+func (h *harness) start(l *Loaded, config any) {
+	t := l.t
+	t.Helper()
+	h.mu.Lock()
+	if _, taken := h.scope[l.row]; taken {
+		h.mu.Unlock()
+		t.Fatalf("rutistest: a row %s is already loaded", l.row)
+	}
+	h.scope[l.row] = l.scope
+	h.rows = append(h.rows, l)
+	h.generations[l.row]++
 	type lease struct {
 		name  string
 		kinds map[string]string
 	}
 	var leases []lease
 	isolate := []any{}
-	label := leaseLabel(o.row)
-	for _, name := range declared.Inject {
-		service, given := own[name]
+	label := leaseLabel(l.row)
+	l.isolated = map[string]string{}
+	for _, name := range l.declared.Inject {
+		service, given := l.own[name]
 		if given {
 			h.own[name+"\x00"+label] = service
 		} else {
@@ -513,60 +552,79 @@ func (h *harness) loadEntry(t testing.TB, entry any, declared declaration, decla
 		}
 		leases = append(leases, lease{name, kinds})
 		isolate = append(isolate, []any{name, label})
-		loaded.isolated[name] = label
+		l.isolated[name] = label
 	}
-	if copy {
-		for name := range declared.Provides {
-			if _, injected := loaded.isolated[name]; !injected {
-				isolate = append(isolate, []any{name, copyLabel(o.row)})
-				loaded.isolated[name] = copyLabel(o.row)
+	if l.copy {
+		for name := range l.declared.Provides {
+			if _, injected := l.isolated[name]; !injected {
+				isolate = append(isolate, []any{name, copyLabel(l.row)})
+				l.isolated[name] = copyLabel(l.row)
 			}
 		}
 	}
 	exports := map[string]any{}
-	for name, kinds := range declaredExports {
+	for name, kinds := range l.exports {
 		exports[name] = kinds
-		h.providers[loaded.id(name)] = o.row
+		h.providers[l.serviceID(name)] = l.row
 	}
 	h.mu.Unlock()
+	// A row that fails to load forgets every service given to it alone,
+	// and gives back the leases it took.
+	var leased []string
+	failed := func(format string, args ...any) {
+		h.forgetRow(l.row)
+		h.forgetOwn(l.row)
+		h.withdraw(t, l.row, leased)
+		t.Fatalf(format, args...)
+	}
 	configValue, err := convert.ToPeer(config)
 	if err != nil {
-		h.forgetRow(o.row)
-		t.Fatalf("rutistest: config: %v", err)
+		failed("rutistest: config: %v", err)
 	}
 	if configValue == nil {
 		configValue = json.RawMessage("null")
 	}
-	scope := make([]any, len(o.scope))
-	for i, s := range o.scope {
+	scope := make([]any, len(l.scope))
+	for i, s := range l.scope {
 		scope[i] = map[string]any{"id": s.ID, "group": s.Group}
 	}
-	placed := map[string]any{"scope": scope}
-	if id != "" {
-		placed["id"] = id
-	}
+	placed := map[string]any{"scope": scope, "id": l.id}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var leased []string
 	for _, lease := range leases {
-		if _, err := h.session.Call(ctx, "", "hosts.provide", []any{lease.name, lease.kinds, leaseLabel(o.row)}, false); err != nil {
-			h.forgetRow(o.row)
-			h.release(o.row, leased)
-			t.Fatalf("rutistest: provide %s: %v", lease.name, err)
+		if _, err := h.session.Call(ctx, "", "hosts.provide", []any{lease.name, lease.kinds, label}, false); err != nil {
+			failed("rutistest: provide %s: %v", lease.name, err)
 		}
 		leased = append(leased, lease.name)
 	}
-	if _, err := h.session.Call(ctx, "", "rows.load", []any{o.row, entry, configValue, isolate, []any{}, exports, placed}, false); err != nil {
-		h.forgetRow(o.row)
-		h.release(o.row, leased)
-		t.Fatalf("rutistest: load %s: %v", o.row, err)
+	if _, err := h.session.Call(ctx, "", "rows.load", []any{l.row, l.entry, configValue, isolate, []any{}, exports, placed}, false); err != nil {
+		failed("rutistest: load %s: %v", l.row, err)
 	}
-	return loaded
 }
 
-// id is the id the row uses the service `name` by: scoped by the label it
+// stop unloads row `l`, as a host does: the copies of the definitions it
+// handed over first (R6), its listeners withdrawn, the row unloaded, then
+// its leases given back (its cleanups still use them).
+func (h *harness) stop(l *Loaded) {
+	h.unloadCopiesOf(l.row)
+	h.forgetRow(l.row)
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if !closed {
+		ctx, cancel := context.WithTimeout(context.Background(), unloadWait())
+		defer cancel()
+		if _, err := h.session.Call(ctx, "", "rows.unload", []any{l.row}, false); err != nil {
+			l.t.Errorf("rutistest: unload %s: %v", l.row, err)
+		}
+	}
+	h.forgetOwn(l.row)
+	h.withdraw(l.t, l.row, l.declared.Inject)
+}
+
+// serviceID is the id the row uses the service `name` by: scoped by the label it
 // isolates it under, if any.
-func (l *Loaded) id(name string) string {
+func (l *Loaded) serviceID(name string) string {
 	if label, ok := l.isolated[name]; ok {
 		return name + "\x00" + label
 	}
@@ -583,14 +641,22 @@ func (h *harness) forgetRow(row string) {
 	h.rows = slices.DeleteFunc(h.rows, func(l *Loaded) bool { return l.row == row })
 }
 
-// release gives back the leases of row `row` on the services `names`, and
-// forgets the services given to it alone, once the runtime unloaded it.
-func (h *harness) release(row string, names []string) {
+// forgetOwn forgets the services given to row `row` alone.
+func (h *harness) forgetOwn(row string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id := range h.own {
+		if _, label, _ := strings.Cut(id, "\x00"); label == leaseLabel(row) {
+			delete(h.own, id)
+		}
+	}
+}
+
+// withdraw gives back the leases of row `row` on the services `names`;
+// failures are `t`'s.
+func (h *harness) withdraw(t testing.TB, row string, names []string) {
 	h.mu.Lock()
 	closed := h.closed
-	for _, name := range names {
-		delete(h.own, name+"\x00"+leaseLabel(row))
-	}
 	h.mu.Unlock()
 	if closed {
 		return
@@ -599,7 +665,7 @@ func (h *harness) release(row string, names []string) {
 	defer cancel()
 	for _, name := range names {
 		if _, err := h.session.Call(ctx, "", "hosts.withdraw", []any{name + "\x00" + leaseLabel(row)}, false); err != nil {
-			h.t.Errorf("rutistest: withdraw %s: %v", name, err)
+			t.Errorf("rutistest: withdraw %s: %v", name, err)
 		}
 	}
 }
@@ -1263,7 +1329,7 @@ func (l *Loaded) Service(name string) *Service {
 	deadline := time.NewTimer(testwait.HangGuard)
 	defer deadline.Stop()
 	var handle string
-	id := l.id(name)
+	id := l.serviceID(name)
 	for {
 		h.mu.Lock()
 		found, ok := h.handles[id]
@@ -1310,35 +1376,16 @@ func unloadWait() time.Duration { return events.ShutdownTimeout() + 30*time.Seco
 // it reports so (Reported) and unloads anyway. It runs when the test
 // ends; calling it earlier is allowed.
 func (l *Loaded) Unload() {
-	l.unload.Do(func() {
-		h := l.h
-		// Copies of the definitions it handed over end first (R6).
-		h.unloadCopiesOf(l.row)
-		// The host withdraws the row's listeners as it unloads it (§7.1).
-		h.forgetRow(l.row)
-		h.mu.Lock()
-		closed := h.closed
-		h.mu.Unlock()
-		if !closed {
-			ctx, cancel := context.WithTimeout(context.Background(), unloadWait())
-			defer cancel()
-			if _, err := h.session.Call(ctx, "", "rows.unload", []any{l.row}, false); err != nil {
-				h.t.Errorf("rutistest: unload: %v", err)
-			}
-		}
-		// Its leases go after it: its cleanups still use them, and a row of
-		// the same key may load again.
-		h.release(l.row, l.declared.Inject)
-	})
+	l.unload.Do(func() { l.h.stop(l) })
 }
 
 // unloadCopiesOf unloads the copies of the definitions row `row` handed
-// over, latest first.
+// over (those whose row is known to be it), latest first.
 func (h *harness) unloadCopiesOf(row string) {
 	h.mu.Lock()
 	var copies []*Loaded
 	for _, other := range h.rows {
-		if other.copy && other.origin == row {
+		if other.copy && other.known && other.origin.row == row {
 			copies = append(copies, other)
 		}
 	}
@@ -1360,22 +1407,20 @@ func (h *harness) withdrawRow(row string) {
 	})
 }
 
-// Update changes the row's config, as a host's rows.update: the host
-// withdraws the row's listeners and the runtime unloads the row and loads
-// it again with `config`, so its listeners register again, after every
-// existing one (protocol §4.3).
+// Update changes the row's config as rutis does for a leaf row: it
+// restarts it. The copies of the definitions it handed over unload first,
+// then the row (its listeners withdrawn, its cleanups run), and it loads
+// again under the same key with `config`: a new generation, so its
+// listeners register again, after every existing one, and the definitions
+// it handed over before have ended (R6).
 func (l *Loaded) Update(config any) {
 	h := l.h
 	h.t.Helper()
 	if l.copy {
-		h.t.Fatalf("rutistest: row %s is a copy of a plugin definition, whose config is fixed when it is mounted (rutis sends a copy no rows.update): unload it and load the definition again", l.row)
+		h.t.Fatalf("rutistest: row %s is a copy of a plugin definition, whose config is fixed when it is mounted (rutis never updates a copy): unload it and load the definition again", l.row)
 	}
-	configValue, err := convert.ToPeer(config)
-	if err != nil {
+	if _, err := convert.ToPeer(config); err != nil {
 		h.t.Fatalf("rutistest: config: %v", err)
-	}
-	if configValue == nil {
-		configValue = json.RawMessage("null")
 	}
 	h.mu.Lock()
 	if _, loaded := h.scope[l.row]; !loaded || h.closed {
@@ -1383,18 +1428,8 @@ func (l *Loaded) Update(config any) {
 		h.t.Fatalf("rutistest: row %s is not loaded", l.row)
 	}
 	h.mu.Unlock()
-	// A restart of the row: the copies of the definitions it handed over
-	// end first, and those definitions with this generation (R6).
-	h.unloadCopiesOf(l.row)
-	h.mu.Lock()
-	h.withdrawRow(l.row)
-	h.generations[l.row]++
-	h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), unloadWait())
-	defer cancel()
-	if _, err := h.session.Call(ctx, "", "rows.update", []any{l.row, configValue}, false); err != nil {
-		h.t.Fatalf("rutistest: update %s: %v", l.row, err)
-	}
+	h.stop(l)
+	h.start(l, config)
 }
 
 // close unloads every row, latest first, and ends the runtime.

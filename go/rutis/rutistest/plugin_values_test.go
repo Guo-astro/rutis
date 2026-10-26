@@ -329,7 +329,7 @@ func TestACopyIsNotUpdatedOrLoadedAgain(t *testing.T) {
 		copy.h.t = tb
 		defer func() { copy.h.t = t }()
 		copy.Update(partConfig{N: "B"})
-	}, t); !strings.Contains(message, "no rows.update") {
+	}, t); !strings.Contains(message, "never updates a copy") {
 		t.Fatalf("%q", message)
 	}
 	if message := fatalOf(func(tb testing.TB) {
