@@ -63,6 +63,48 @@ private fun dataOf(error: Throwable): Pair<Boolean, Any?> {
     }
 }
 
+/** Frames of the SDK's own dispatch: where a plugin's method was called from. */
+private fun isDispatch(frame: StackTraceElement): Boolean {
+    val c = frame.className
+    return c.startsWith("arcships.rutis.internal.") ||
+        c.startsWith("arcships.rutis.ServiceObject") ||
+        c.startsWith("arcships.rutis.LocalHandle") ||
+        c.startsWith("arcships.rutis.HostHandle") ||
+        c.startsWith("arcships.rutis.ServiceTable") ||
+        c.contains("_RutisService")
+}
+
+/** Frames of the runtime under any call: coroutine resumption, reflection, threads. */
+private fun isMachinery(frame: StackTraceElement): Boolean {
+    val c = frame.className
+    return isDispatch(frame) ||
+        c.startsWith("kotlin.coroutines.") || c.startsWith("kotlinx.coroutines.") ||
+        c.startsWith("java.lang.reflect.") || c.startsWith("jdk.internal.reflect.") ||
+        c.startsWith("sun.reflect.") || c.startsWith("java.util.concurrent.") ||
+        c == "java.lang.Thread" || c.startsWith("kotlin.reflect.")
+}
+
+/**
+ * The `stack` an error crosses with: "Name: message" and the throwable's
+ * frames as `    at <frame>` lines, as the JVM prints them, without the
+ * SDK's dispatch below the plugin's method and the runtime under it.
+ */
+internal fun stackOf(name: String, message: String, error: Throwable): String {
+    val frames = error.stackTrace.toList()
+    var end = frames.size
+    // The first dispatch frame below a frame of the plugin's own.
+    val firstOwn = frames.indexOfFirst { !isMachinery(it) }
+    if (firstOwn >= 0) {
+        val cut = (firstOwn + 1 until frames.size).firstOrNull { isDispatch(frames[it]) }
+        if (cut != null) end = cut
+        while (end > firstOwn + 1 && isMachinery(frames[end - 1])) end--
+    }
+    return buildString {
+        append(name).append(": ").append(message)
+        for (i in 0 until end) append("\n    at ").append(frames[i])
+    }
+}
+
 private fun reference(id: Int): JsonObject = buildJsonObject {
     put("type", "reference")
     put("value", id)
@@ -114,7 +156,7 @@ fun encodeError(error: Throwable): JsonObject {
         node["type"] = JsonPrimitive("error")
         node["name"] = JsonPrimitive(name)
         node["message"] = JsonPrimitive(message)
-        node["stack"] = JsonPrimitive("$name: $message")
+        node["stack"] = JsonPrimitive(stackOf(name, message, error))
         // A code and its data cross, as from JavaScript and Rust (#440): data
         // that cannot cross is left out, nothing of it kept.
         codeOf(error)?.let { node["code"] = JsonPrimitive(it) }

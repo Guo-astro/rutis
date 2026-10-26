@@ -12,6 +12,7 @@ import arcships.rutis.internal.peer.Signal
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.ValueException
 import arcships.rutis.internal.peer.WireSet
+import arcships.rutis.internal.peer.encodeError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -23,6 +24,10 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.math.BigInteger
 import java.time.Instant
@@ -175,6 +180,36 @@ class PeerTest {
         assertEquals("Stormy", again.code)
         assertEquals(error.data, again.data)
     }
+
+    /**
+     * #677: an error crosses with its real JVM stack, "Name: message" and its
+     * frames, the first the function that threw it, without the SDK's
+     * dispatch below the plugin's method.
+     */
+    @Test
+    fun errorsCrossWithTheirJvmStack() {
+        val thrown = assertFailsWith<IllegalStateException> { throwHere() }
+        val encoded = encodeError(thrown)
+        val graph = encoded["graph"]!!.jsonObject
+        val rootId = graph["root"]!!.jsonObject["value"]!!.jsonPrimitive.int
+        val stack = graph["nodes"]!!.jsonArray[rootId].jsonObject["stack"]!!.jsonPrimitive.content
+        val lines = stack.lines()
+        assertEquals("IllegalStateException: broken here", lines[0])
+        assertTrue(lines[1].startsWith("    at arcships.rutis.PeerTest.throwHere(PeerTest.kt:"), stack)
+
+        // Across a session: the plugin's method first, no SDK frames under it.
+        start()
+        val error = assertFailsWith<RutisException> { host.call("t", "fail", emptyList(), true) }
+        val far = error.graph!!
+        val farRoot = far["root"]!!.jsonObject["value"]!!.jsonPrimitive.int
+        val farStack = far["nodes"]!!.jsonArray[farRoot].jsonObject["stack"]!!.jsonPrimitive.content
+        val farLines = farStack.lines()
+        assertEquals("Stormy: too windy", farLines[0])
+        assertTrue(farLines[1].startsWith("    at arcships.rutis.PeerTest.serve(PeerTest.kt:"), farStack)
+        assertTrue(farLines.none { it.contains("arcships.rutis.internal.") }, farStack)
+    }
+
+    private fun throwHere(): Nothing = throw IllegalStateException("broken here")
 
     @Test
     fun aValueTooDeepFailsOnlyItsCall() {
