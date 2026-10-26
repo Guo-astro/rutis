@@ -56,33 +56,39 @@ jobs:
       specs: ${{ steps.plan.outputs.specs }}
       sdk_repro: ${{ steps.plan.outputs.sdk_repro }}
       events: ${{ steps.plan.outputs.events }}
+    # Only curl, jq and git, no gh: a self-hosted Linux runner that also
+    # carries the label ubuntu-24.04 can take this job, and it has no gh.
     steps:
+      # The whole history: the changed files come from git, not the compare
+      # API (which lists at most 300).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.ref_name }}
           FORCE: ${{ inputs.force }}
         run: |
-          base=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch "$BRANCH" \
-            --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+          set -o pipefail
+          # The commit of the last successful nightly run on this branch.
+          base=$(curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=$BRANCH&status=success&per_page=1" |
+            jq -r '.workflow_runs[0].head_sha // ""')
           run=true
           if [ "$base" = "$GITHUB_SHA" ] && [ "$FORCE" != true ]; then run=false; fi
 
-          # Monday, and the first run (no base) or one whose comparison the
-          # API truncated, check everything.
+          # Monday, the first run (no base) and a base this history does not
+          # have (main rewritten) check everything.
           weekly=false
           if [ "$(date -u +%u)" = 1 ]; then weekly=true; fi
           everything=$weekly
           changed=""
-          if [ -n "$base" ]; then
-            if ! changed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$base...$GITHUB_SHA" \
-              --jq '.files[].filename'); then
-              changed=""
-              everything=true
-            fi
-            # The compare API lists at most 300 files.
-            files=$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')
-            if [ "$files" -ge 300 ]; then everything=true; fi
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            # What this commit changed since its common ancestor with the
+            # base, as the compare API's base...head.
+            changed=$(git diff --name-only "$base...$GITHUB_SHA")
           else
             everything=true
           fi
@@ -287,19 +293,33 @@ jobs:
       actions: read
       issues: write
     steps:
+      # curl and jq, no gh, as in plan.
       - name: open an issue or comment on the open one
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ needs.plan.outputs.base }}
           SERVER: ${{ github.server_url }}
         run: |
+          set -o pipefail
+          api() {
+            curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" "$@"
+          }
+          repo="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
           run_url="$SERVER/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           # Every job of this run, those of the called workflows included
           # ("ci / rust"), but the report-only ones (`cordis-latest`,
-          # `netem / …`), which never fail the run.
-          failed=$(gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name != "cordis-latest" and (.name | startswith("netem / ") | not)) | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))：\(.conclusion)"')
+          # `netem / …`), which never fail the run. 100 a page.
+          failed=""
+          page=1
+          while :; do
+            jobs=$(api "$repo/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100&page=$page")
+            lines=$(jq -r '.jobs[] | select(.name != "cordis-latest" and (.name | startswith("netem / ") | not)) | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))：\(.conclusion)"' <<< "$jobs")
+            failed="$failed$lines"$'\n'
+            [ "$(jq '.jobs | length' <<< "$jobs")" -lt 100 ] && break
+            page=$((page + 1))
+          done
+          failed=$(sed '/^$/d' <<< "$failed")
           if [ -n "$BASE" ]; then
             range="[\`${BASE:0:10}..${GITHUB_SHA:0:10}\`]($SERVER/$GITHUB_REPOSITORY/compare/$BASE...$GITHUB_SHA)（上一次成功的每晚运行到这次）"
           else
@@ -316,12 +336,15 @@ jobs:
             echo
             echo "处理方式见 docs/ci.md §7。"
           } > "$RUNNER_TEMP/body.md"
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci --state open \
-            --search 'nightly in:title' --json number,title \
-            --jq '[.[] | select(.title | startswith("nightly:"))][0].number // empty')
+          # The open issue labelled ci whose title starts with "nightly:"
+          # (the issues API lists pull requests too: left out).
+          number=$(api "$repo/issues?labels=ci&state=open&per_page=100" |
+            jq -r '[.[] | select(.pull_request == null and (.title | startswith("nightly:")))][0].number // empty')
           if [ -n "$number" ]; then
-            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+            jq -Rs '{body: .}' "$RUNNER_TEMP/body.md" |
+              api -X POST "$repo/issues/$number/comments" --data-binary @- > /dev/null
           else
-            gh issue create --repo "$GITHUB_REPOSITORY" --label ci --assignee eric8810 \
-              --title "nightly: $(date -u +%F) 失败" --body-file "$RUNNER_TEMP/body.md"
+            jq -Rs --arg title "nightly: $(date -u +%F) 失败" \
+              '{title: $title, body: ., labels: ["ci"], assignees: ["eric8810"]}' "$RUNNER_TEMP/body.md" |
+              api -X POST "$repo/issues" --data-binary @- > /dev/null
           fi
