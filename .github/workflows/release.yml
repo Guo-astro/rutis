@@ -153,10 +153,16 @@ jobs:
       # change in a patch release) fails here, before publishing. Crates not
       # yet on crates.io have nothing to compare with, and rutis-host has no
       # library.
+      # `rust-toolchain: manual`: the toolchain above (rust-toolchain.toml),
+      # not another stable one. rustup cannot replace a toolchain baked into
+      # a container image (rename across filesystem layers, os error 18), and
+      # self-hosted Linux runners that also carry the label ubuntu-24.04 are
+      # such containers.
       - name: Check semver against the latest crates.io release
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: rutis,rutis-bridge,rutis-loader
+          rust-toolchain: manual
       - name: Package (each crate built from its package, against the others)
         run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
       - name: Publish what crates.io does not have, each after those it depends on
@@ -231,9 +237,11 @@ jobs:
           name: packages
           path: packages
       - run: mkdir dist && cp packages/wheels/* dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
+      # uv, not pypa/gh-action-pypi-publish: that action is a Docker image,
+      # and a self-hosted Linux runner carrying the label ubuntu-24.04 may
+      # have no Docker. --check-url skips the files PyPI already has.
+      - uses: astral-sh/setup-uv@v6
+      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
 
   pypi-host:
     needs: [verify, ci, install, dylib-windows]
@@ -249,9 +257,9 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
+      # uv, as in the job pypi: no Docker.
+      - uses: astral-sh/setup-uv@v6
+      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
 
   # Maven Central: the Kotlin SDK, io.github.arcships:rutis (jvm and
   # android) and io.github.arcships:rutis-ksp, under the namespace
