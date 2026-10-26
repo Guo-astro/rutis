@@ -248,13 +248,17 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.RemoteError`，`name` 是原来的类名；Go 中是 `*rutis.RemoteError`）。任何语言抛出的错误都可以带 code 和 data：TypeScript 中是字符串属性 `code` 和属性 `data`，Python 中是字符串属性 `code` 和属性 `data`，Go 中是方法 `Code() string` 和 `Data() any`，Rust 中是 [`rutis_bridge::exports::failure`](rust-host.md#手写-hostdispatch)（[导出的 Rust 服务](rust-host.md#导出服务参考)的 `Err(e)` 就变成它）。收到的一方从 `code`、`data` 读到它们（Go：`Code`、`Data`；Rust：`Error::code()`、`Error::data()`），再次抛出时继续传。`data` 按数据传（大整数为 bigint）；传不过去的 data 被略去，错误的其余部分照常传。其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
-| 带方法的对象、类的实例 | 按引用：另一端拿到代理，调用的是原对象 |
+| 带方法的对象、类的实例 | 只传给 Rust，按引用：另一端拿到代理，调用的是原对象。传给其他语言（Node、Bun、Python、Go、Swift、Kotlin）时这次调用失败，错误说明原因；改传普通数据或函数。所有语言按引用传见 [#687](https://github.com/arcships/rutis/issues/687)（0.18） |
 | 插件定义（`definePlugin` 的结果；Node 里的 Cordis 插件；Python 的 `define_plugin` 结果；Go 的 `*rutis.Definition`；Swift、Kotlin 的 `Rutis.define` 结果） | 按引用，只交回定义它的运行时：Rust 服务把参数或返回值类型写成 `rutis::Definition`，收到的就是一个可以挂的插件定义，见下面的[插件定义](#插件定义)。Node、Bun、Python、Go、Swift、Kotlin 都能交出 |
 | 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |
+| 数组的空位（`[1, , 3]`） | 与 `undefined` 相同 |
 | Go 的结构体、切片、map | 复制：结构体字段、切片和 map 的元素逐个按本节的规则传，字段名遵循 `json` 标签；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。`map[string]T` 是对象，键不是字符串的 map 是 Map，`map[K]struct{}` 是 Set |
 | 超出 ±(2^53−1) 的整数 | 自动按大整数传，见[十种值](#十种值) |
 | symbol、循环引用、`NaN` / `Infinity`、JS 的其他类型化数组（如 `Int16Array`）、带时区的 Python `time`、Go 的 channel | 不能跨进程（调用失败） |
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
+| 编码后超过 16 MiB 的调用或返回值 | 不能跨进程（这次调用失败，见下） |
+
+不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 `argument 2 of weather.store: an object with methods (Counter) cannot cross to py; pass plain data or a function instead`。会话、运行时、同一会话上的其他调用和其他行都不受影响。
 
 嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 
@@ -263,6 +267,8 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 - 会话继续，同一会话上的其他调用（包括同时进行的）不受影响。
 
 五个运行时（Rust、Node、Bun、Python、Go）和测试工具的严格模式都按这个上限在发送时检查。上限约束的是发送：接收的 Rust 一侧为不遵守上限的对端（例如更早的版本）留了余量，线上不超过 208 层的帧照常读取，所以从这样的对端**收到**的值可能超过 64 层（最多约 100 层含引用的数组、约 206 层数据）；这部分余量不保证，插件不要依赖。帧更深、Rust 一侧不读时：能看出它属于哪个调用，就只让那个调用失败（对端的调用收到错误；对本侧调用的回复让本侧的调用失败），其中的引用直到会话结束才释放；看不出属于哪个调用时，结束会话并说明原因。见 [#279](https://github.com/arcships/rutis/issues/279)。
+
+消息大小：一次调用（连同它的参数）或一个返回值编码后最多 **16 MiB**（16777216 字节，本地通道和 WebSocket 的默认上限）。**要发送它的一方**在发出之前拒绝更大的消息，只让这次调用失败，错误写明方法、第几个参数（最大的那个）或返回值、大小和上限（`argument 1 of store.put: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`）：作为参数时调用方的这次调用失败，对端不执行它；作为返回值时调用方收到这个错误；会话继续，其他调用不受影响。Rust、Node、Bun、Python、Go、Swift、Kotlin 都在发送前检查。更早版本的对端仍可能发来超过上限的消息：接收方像以前一样关闭这条连接，这个会话结束（本地运行时随之退出），其他会话不受影响。大的数据分块传，或者只传它的位置（路径、地址）。
 
 数字有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
 
@@ -331,6 +337,7 @@ export default definePlugin({
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
 | 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：TypeScript `host({ deadline })` / `load(…, { deadline, runtime })`（毫秒），Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
 | TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具没有 Cordis 的插件模型、服务与依赖门控 |
+| 带方法的对象、类的实例总是按引用传，不检查 16 MiB 的消息上限 | 测试工具不知道服务由哪种语言提供，值也不编码成消息；真实运行时只把这样的对象传给 Rust，消息超过上限时这次调用失败（见[值怎样传递](#值怎样传递)） |
 | 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（TypeScript `host()` 的 `scope`、Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 
 十种值在两边按同样的规则传递，这不是差异。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
