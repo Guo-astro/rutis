@@ -99,12 +99,48 @@ export function greetingOf(frame, endpoint) {
 export const MAX_DEPTH = 64
 const tooDeep = () => new RangeError(`value nested deeper than ${MAX_DEPTH} levels, the most a value crossing a session may nest`)
 
+// The largest message either way, as the channels take it: 16 MiB. A frame
+// over it fails its own call here, before it is sent; the channel would
+// end on it (#675).
+export const MAX_MESSAGE = 16 * 1024 * 1024
+const MIB = 1024 * 1024
+export const overLimit = (size, limit) => `the message would be ${size} bytes, over the limit of ${limit} bytes${limit % MIB === 0 ? ` (${limit / MIB} MiB)` : ''}`
+// A frame's size in UTF-8, counted only when it may be over `limit`: a
+// UTF-16 code unit takes at most 3 bytes.
+const sizeOver = (text, limit) => text.length * 3 <= limit ? 0 : Buffer.byteLength(text)
+// What a call is, for messages: `service.method` for an invocation (its
+// target without a `host:` prefix or a scope label), the method alone for a
+// control call, `a function` for a call of a function reference.
+export function describeCall(op, { target, method, property } = {}) {
+  if (op === 'invoke') {
+    const service = String(target).replace(/^host:/, '').split('\0')[0]
+    return service ? `${service}.${method}` : method
+  }
+  if (op === 'call') return method === undefined ? 'a function' : `the method ${method}`
+  if (op === 'get') return `the property ${property}`
+  return 'an awaited result'
+}
+// `error`, thrown encoding argument `index` (or the result) of `call`, says
+// which. Errors made for this value only, so changing the message is safe.
+const ofArgument = (error, index, call) => prefixed(error, `argument ${index + 1} of ${call}`)
+const ofResult = (error, call) => prefixed(error, call ? `the result of ${call}` : 'the result')
+function prefixed(error, what) {
+  if (error instanceof Error) { error.message = `${what}: ${error.message}`; return error }
+  return new TypeError(`${what}: ${String(error)}`)
+}
+// A class instance's class, for messages: none for a plain object.
+const className = value => {
+  const prototype = Object.getPrototypeOf(value)
+  const name = prototype && prototype !== Object.prototype ? prototype.constructor?.name : undefined
+  return typeof name === 'string' && name && name !== 'Object' ? ` (${name})` : ''
+}
+
 function checkData(value, seen = new Set(), depth = 0) {
-  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') throw new TypeError('value requires an unsupported binding')
+  if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError(`a ${typeof value} cannot cross between processes`)
   if (value === null || typeof value !== 'object') return
   if (depth >= MAX_DEPTH) throw tooDeep()
-  if (seen.has(value)) throw new TypeError('cyclic data requires an object binding')
-  if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError('object binding not implemented')
+  if (seen.has(value)) throw new TypeError('a value that holds itself (a cycle) cannot cross between processes')
+  if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError(`a ${value.constructor?.name ?? 'value'} cannot cross between processes: pass plain data instead`)
   seen.add(value)
   for (const item of Object.values(value)) checkData(item, seen, depth + 1)
   seen.delete(value)
@@ -137,6 +173,9 @@ export class Session {
   // A signal lives until the call's result settles: a returned Promise keeps
   // it (via its future export), and an `await` frame maps back to the call.
   #signals = new Map(); #decodingFor; #promiseCalls = new WeakMap(); #awaits = new Map()
+  // The call a returned Promise is the result of (`service.method`): an
+  // await of it whose result cannot be sent names it. And the message limit.
+  #resultOf = new WeakMap(); #max
   // `settled` runs after a call or property read on an exported reference
   // returns (or its Promise settles): the owner may have changed state that
   // invoke dispatch would otherwise observe, such as replaced services.
@@ -145,8 +184,9 @@ export class Session {
   // the contract); without it the session speaks the compat protocol.
   // `report(line, details?)`: where a session-end loss is reported (local
   // emits still queued, #546); a no-op when not configured.
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds, report = () => {} }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds, report = () => {}, maxMessage = MAX_MESSAGE }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
+    this.#max = maxMessage
     this.#report = typeof report === 'function' ? report : () => {}
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
@@ -243,7 +283,8 @@ export class Session {
         id = ++this.#ref
         if (!Number.isSafeInteger(id)) throw new Error('reference identifiers exhausted')
         const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : isPluginDefinition(value) ? 'plugin' : 'object'
-        if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new Error('the far end cannot receive object references')
+        // An object goes only to a far end that can call its methods.
+        if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead`)
         if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
         entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined }
         this.#identities.set(value, id); this.#exports.set(id, entry)
@@ -263,7 +304,8 @@ export class Session {
     // typed array's element type would be lost.
     if (ArrayBuffer.isView(value)) throw new ValueError(`cannot send ${describe(value)}: binary data crosses as a Uint8Array (or Buffer), an ArrayBuffer or a DataView`)
     if (value !== null && typeof value === 'object' && depth >= MAX_DEPTH) throw tooDeep()
-    if (Array.isArray(value)) return { type: 'list', value: value.map(value => this.#encode(value, grants, business, depth + 1)) }
+    // An empty slot of an array is undefined, as when it is read (#675).
+    if (Array.isArray(value)) return { type: 'list', value: Array.from(value, value => this.#encode(value, grants, business, depth + 1)) }
     // An Error passed as a value (e.g. to a callback) crosses as data.
     if (value instanceof Error) return { type: 'data', value: { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) } }
     if (value !== null && typeof value === 'object' && needsRecord(value)) {
@@ -373,9 +415,14 @@ export class Session {
         const { id, home, kind, origin } = wire.value
         if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // Rust does not export objects or plugin definitions; only this
-        // side's travel back home.
-        if (kind === 'object') throw new Error('object references exported by Rust are not supported')
+        // This side cannot call an object's methods: only the call it came
+        // in fails (an older host may send one, #675), and it is released.
+        if (kind === 'object') {
+          this.#decoding?.imported.push({ id, kind, grants: 1, released: false })
+          return this.#refuse(new ValueError('received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
+        }
+        // Rust does not export plugin definitions; only this side's travel
+        // back home.
         if (kind === 'plugin') throw new Error('plugin definitions exported by Rust are not supported')
         let proxy = this.#imports.get(id)?.deref()
         if (proxy) {
@@ -421,14 +468,32 @@ export class Session {
   #request(op, fields, args, finish, origin = [], sync = false) {
     const id = this.#allocate(), grants = []
     try {
-      const frame = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encode(args, grants, true, -1) }) }
+      const call = () => describeCall(op, fields)
+      const frame = { op, id, path: [...new Set([...this.#path(), ...origin])], ...fields, ...(op === 'await' ? {} : { args: this.#encodeArgs(args, grants, call) }) }
       // This thread waits for the reply: a host that checks for wait
       // cycles needs to know (#228); older hosts would refuse the field.
       if (sync && this.#declared.includes('sync-wait')) frame.sync = true
       const encoded = encode(frame)
+      // Over the limit, only this call fails, before it is sent (#675).
+      const size = sizeOver(encoded, this.#max)
+      if (size > this.#max) {
+        const items = frame.args?.type === 'list' ? frame.args.value : []
+        const sizes = items.map(item => Buffer.byteLength(encode(item)))
+        const largest = sizes.indexOf(Math.max(...sizes))
+        const reason = new RangeError(overLimit(size, this.#max))
+        throw largest < 0 ? prefixed(reason, `the arguments of ${call()}`) : ofArgument(reason, largest, call())
+      }
       this.#pending.set(id, finish); this.#send(encoded)
     } catch (error) { this.#pending.delete(id); this.#rollback(grants); throw error }
     return id
+  }
+  // A call's arguments, each nested at most MAX_DEPTH deep: what cannot be
+  // sent says which argument of `call` it is.
+  #encodeArgs(args, grants, call) {
+    if (!Array.isArray(args)) return this.#encode(args, grants, true, -1)
+    return { type: 'list', value: Array.from(args, (arg, index) => {
+      try { return this.#encode(arg, grants, true, 0) } catch (error) { throw ofArgument(error, index, call()) }
+    }) }
   }
   #requestSync(op, fields, args) {
     let result
@@ -573,13 +638,16 @@ export class Session {
     const path = [...frame.path, frame.id]
     const previous = this.#syncPath
     this.#syncPath = path
+    // The call answered, for messages: an await's is the call that
+    // returned the Promise, when it was one of the far end's.
+    const call = frame.op === 'await' ? this.#resultOf.get(entry.value) : describeCall(frame.op, frame)
     try {
       this.#context.run(path, () => {
         if (frame.op === 'await') {
           if (entry.call) this.#awaits.set(frame.id, entry.call)
-          if (entry.result) this.#respond(frame.id, entry.result, business)
+          if (entry.result) this.#respond(frame.id, entry.result, business, call)
           else if (this.#waiting.length) this.#respond(frame.id, { ok: false, value: Object.assign(new Error(`await requires the Node thread occupied by its parent synchronous call; path: ${path.join(' -> ')}`), { name: 'SyncWaitCycle' }) }, business)
-          else entry.value.then(value => this.#respond(frame.id, { ok: true, value }, business), value => this.#respond(frame.id, { ok: false, value }, business))
+          else entry.value.then(value => this.#respond(frame.id, { ok: true, value }, business, call), value => this.#respond(frame.id, { ok: false, value }, business, call))
           return
         }
         try {
@@ -593,18 +661,22 @@ export class Session {
             if (frame.op !== 'invoke' && !(value instanceof Promise)) this.#settled?.()
           }
           if (frame.op !== 'invoke' && value instanceof Promise) value.then(() => this.#settled?.(), () => this.#settled?.())
+          if (value instanceof Promise) this.#resultOf.set(value, call)
           // A returned Promise keeps the call's signal until it settles.
           if (value instanceof Promise && this.#signals.has(frame.id)) {
             const call = frame.id
             this.#promiseCalls.set(value, call)
             value.then(() => this.#signals.delete(call), () => this.#signals.delete(call))
           }
-          this.#respond(frame.id, { ok: true, value }, business)
-        } catch (value) { this.#respond(frame.id, { ok: false, value }, business) }
+          this.#respond(frame.id, { ok: true, value }, business, call)
+        } catch (value) { this.#respond(frame.id, { ok: false, value }, business, call) }
       })
     } finally { this.#syncPath = previous }
   }
-  #respond(id, result, business) {
+  // Answer the far end's call `id` (of `call`, for messages): a result that
+  // cannot be sent (a value the far end does not take, a message over the
+  // limit) is answered with an error saying why instead (#675).
+  #respond(id, result, business, call) {
     this.#awaits.delete(id)
     if (!(result.ok && result.value instanceof Promise && this.#promiseCalls.has(result.value))) this.#signals.delete(id)
     const grants = []
@@ -614,7 +686,16 @@ export class Session {
       try {
         frame = result.ok ? { op: 'return', id, value: this.#encode(result.value, grants, business) } : { op: 'throw', id, error: encodeError(result.value) }
         frame = encode(frame)
-      } catch (error) { this.#rollback(grants); grants.length = 0; frame = encode({ op: 'throw', id, error: encodeError(error) }) }
+      } catch (error) {
+        this.#rollback(grants); grants.length = 0
+        frame = encode({ op: 'throw', id, error: encodeError(result.ok ? ofResult(error, call) : error) })
+      }
+      const size = sizeOver(frame, this.#max)
+      if (size > this.#max) {
+        this.#rollback(grants); grants.length = 0
+        const what = result.ok ? 'the result' : `the error ${result.value?.name ?? 'ThrownValue'}`
+        frame = encode({ op: 'throw', id, error: encodeError(new RangeError(`${call ? `${what} of ${call}` : what}: ${overLimit(size, this.#max)}`)) })
+      }
       this.#send(frame)
     } catch (error) { this.#fault(error) }
     finally { if (business) this.#finish() }

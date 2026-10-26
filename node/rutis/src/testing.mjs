@@ -114,7 +114,8 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
   }
   seen.add(value)
   try {
-    if (Array.isArray(value)) return value.map((item, i) => cross(item, `${where}[${i}]`, seen, data, depth + 1))
+    // An empty slot is undefined, as the runtimes send it (#675).
+    if (Array.isArray(value)) return Array.from(value, (item, i) => cross(item, `${where}[${i}]`, seen, data, depth + 1))
     const inData = data || !holdsSpecial(value)
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, `${where}.${key}`, seen, inData, depth + 1)]))
   } finally {

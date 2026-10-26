@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { Session, ENDPOINT_PROTOCOL } from '../src/session.mjs'
+import { Session, ENDPOINT_PROTOCOL, MAX_MESSAGE, overLimit } from '../src/session.mjs'
 import { decode } from '../src/codec.mjs'
 
 const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
@@ -254,7 +254,7 @@ test('unsupported nested references fail explicitly and roll back partial grants
   const callback = () => 42
   const { peer, sent, incoming, fault } = harness(() => {})
   // An object with methods crosses as an object reference; a symbol cannot cross.
-  assert.throws(() => peer.invoke('test', 'bad', [callback, { nested: Symbol('x') }]), /unsupported binding/)
+  assert.throws(() => peer.invoke('test', 'bad', [callback, { nested: Symbol('x') }]), { message: 'argument 2 of test.bad: a symbol cannot cross between processes' })
   // Failed encoding consumes the invocation id, but publishes no reference.
   incoming.push({ op: 'return', id: 'node:2', value: data(7) })
   assert.equal(peer.invoke('test', 'good', []), 7)
@@ -338,7 +338,7 @@ test('an object reference goes only to a far end that declared objects', async (
     await Promise.resolve()
     const reply = sent.at(-1)
     assert.equal(reply.op, expected, JSON.stringify(reply))
-    if (expected === 'throw') assert.match(reply.error.message, /cannot receive object references/)
+    if (expected === 'throw') assert.equal(reply.error.message, 'the result of svc.get: an object with methods cannot cross to main; pass plain data or a function instead')
     else assert.equal(reply.value.value.kind, 'object')
     session.close()
   }
@@ -377,5 +377,102 @@ test('malformed and dangling frames close the session', async () => {
   await Promise.resolve()
   assert.equal(fault(), undefined)
   assert.equal(sent.at(-1).value.value, 'served')
+  peer.close()
+})
+
+// ── What a call cannot send (#675) ───────────────────────────────────
+
+// guarantee: bridge/bad-values
+// A call or a result whose message would be over the limit (16 MiB; here a
+// smaller one) fails on this side before it is sent, naming the call, the
+// argument (the largest) or the result, the size and the limit; references
+// it would grant are given back and the session goes on.
+test('a message over the limit fails only its call, either way', async () => {
+  assert.equal(MAX_MESSAGE, 16 * 1024 * 1024)
+  assert.equal(overLimit(30889096, MAX_MESSAGE), 'the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)')
+  const big = 'x'.repeat(2048)
+  const { peer, sent, incoming, fault } = harness((_, method) => {
+    if (method === 'big') return big
+    if (method === 'later') return Promise.resolve(big)
+    if (method === 'boom') throw new Error(big)
+    return 'small'
+  }, { maxMessage: 1024 })
+  assert.throws(() => peer.invoke('host:svc\0row', 'take', [() => 1, big]), {
+    name: 'RangeError', message: /^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$/,
+  })
+  assert.equal(sent.length, 0, 'nothing was sent')
+  assert.deepEqual(peer.references(), { exports: 0, imports: 0 }, 'the callback is not left granted')
+  peer.receive(invoke(1, 'big'))
+  await Promise.resolve()
+  assert.match(sent.at(-1).error.message, /^the result of test\.big: the message would be \d+ bytes, over the limit of 1024 bytes$/)
+  peer.receive(invoke(2, 'boom'))
+  await Promise.resolve()
+  assert.match(sent.at(-1).error.message, /^the error Error of test\.boom: the message would be \d+ bytes/)
+  // A Promise's result, awaited later, names the call that returned it.
+  peer.receive(invoke(3, 'later'))
+  await Promise.resolve()
+  const future = sent.at(-1).value.value.id
+  peer.receive({ op: 'await', id: 'rust:4', path: [], reference: future })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.match(sent.at(-1).error.message, /^the result of test\.later: the message would be/)
+  incoming.push({ op: 'return', id: 'node:2', value: data('fine') })
+  assert.equal(peer.invoke('t', 'after', []), 'fine')
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// guarantee: bridge/bad-values
+// An object reference the far end sends (an older host relaying one) is
+// refused as a value this side does not take: only the call it came in
+// fails, and it is released; the session goes on.
+test('an object reference from the far end fails only the call it came in', async () => {
+  const ran = []
+  const { peer, sent, incoming, fault } = harness((_, method) => { ran.push(method); return 'ok' })
+  const object = { type: 'reference', value: { id: 5, kind: 'object', home: false, origin: [] } }
+  const message = 'received an object with methods, which JavaScript cannot take; pass plain data or a function instead'
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [data(1), object] } })
+  await Promise.resolve()
+  assert.deepEqual(sent.find(frame => frame.op === 'release'), { op: 'release', reference: 5, count: 1 })
+  const reply = sent.find(frame => frame.op === 'throw')
+  assert.deepEqual([reply.id, reply.error.message], ['rust:1', message])
+  assert.deepEqual(ran, [], 'the method did not run')
+  // In a reply: the call waiting for it fails.
+  incoming.push({ op: 'return', id: 'node:1', value: object })
+  assert.throws(() => peer.invoke('t', 'get', []), { message })
+  peer.receive(invoke(2, 'after'))
+  await Promise.resolve()
+  assert.equal(sent.at(-1).value.value, 'ok')
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// An empty slot of an array is undefined, as when it is read; it used to
+// cross as a null in place of a value, which ended the session (#675).
+test('an array with empty slots crosses with undefined in them', async () => {
+  // eslint-disable-next-line no-sparse-arrays
+  const sparse = () => [1, , 3]
+  const { peer, sent, incoming, fault } = harness(sparse)
+  peer.receive(invoke(1, 'sparse'))
+  await Promise.resolve()
+  const crossed = { type: 'list', value: [data(1), { type: 'undefined' }, data(3)] }
+  assert.deepEqual(sent.at(-1).value, crossed)
+  incoming.push({ op: 'return', id: 'node:1', value: data(null) })
+  peer.invoke('t', 'take', [sparse()])
+  assert.deepEqual(sent.at(-1).args.value[0], crossed)
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// A thrown error whose graph is not in its shape (from an older far end:
+// Go's `nodes: null`) fails the call with its name and message; it used to
+// end the session (`invalid error graph`, #675).
+test('an error graph not in its shape fails only its call', async () => {
+  const { peer, incoming, fault } = harness(() => {})
+  incoming.push({ op: 'throw', id: 'node:1', error: { name: 'ThrownValue', message: 'a string', graph: { root: { type: 'data', value: 'a string' }, nodes: null } } })
+  assert.throws(() => peer.invoke('t', 'm', []), error => error.name === 'ThrownValue' && error.message === 'a string')
+  // A thrown string relayed with an empty graph is the string again.
+  incoming.push({ op: 'throw', id: 'node:2', error: { name: 'ThrownValue', message: 'a string', graph: { root: { type: 'data', value: 'a string' }, nodes: [] } } })
+  assert.throws(() => peer.invoke('t', 'm', []), thrown => thrown === 'a string')
+  assert.equal(fault(), undefined)
   peer.close()
 })

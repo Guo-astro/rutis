@@ -24,6 +24,11 @@ const conformance: Record<string, (...args: any[]) => unknown> = {
   // depth limit, this side's call or reply fails (#279).
   wrap: value => [value],
   applyWrapped: (fn, value) => fn([value]),
+  // What cannot be sent fails only its call (#675): a result or a
+  // callback's argument over the message limit, an object with methods.
+  big: size => 'x'.repeat(size),
+  applyBig: (fn, size) => fn('x'.repeat(size)),
+  object: () => new (class Counter { n = 0; inc() { return ++this.n } })(),
 }
 session = await Client.connect(channel, {
   dispatch: (target, method, args: any) => {
