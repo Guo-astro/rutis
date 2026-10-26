@@ -152,9 +152,38 @@ impl Host {
     /// [`Host::start`], with the signal `ignored` ignored, as `nohup` (or
     /// a shell starting a script's background job) does.
     pub fn start_ignoring(args: &[&str], dir: &Path, ignored: Option<i32>) -> Self {
+        Self::start_with(&[], args, dir, ignored, &[])
+    }
+
+    /// [`Host::start`], with these environment variables set.
+    pub fn start_in_env(args: &[&str], dir: &Path, env: &[(&str, &str)]) -> Self {
+        Self::start_with(&[], args, dir, None, env)
+    }
+
+    /// The binary as `program` runs it: `program` (its first item, given
+    /// the rest first) instead of the binary, as npm's launcher does.
+    pub fn start_through(program: &[&str], args: &[&str], dir: &Path) -> Self {
+        Self::start_with(program, args, dir, None, &[])
+    }
+
+    fn start_with(
+        program: &[&str],
+        args: &[&str],
+        dir: &Path,
+        ignored: Option<i32>,
+        env: &[(&str, &str)],
+    ) -> Self {
         use std::os::unix::process::CommandExt;
-        let mut command = Command::new(env!("CARGO_BIN_EXE_rutis-host"));
+        let mut command = match program {
+            [] => Command::new(env!("CARGO_BIN_EXE_rutis-host")),
+            [program, first @ ..] => {
+                let mut command = Command::new(program);
+                command.args(first);
+                command
+            }
+        };
         command
+            .envs(env.iter().copied())
             .args(args)
             .current_dir(dir)
             // The repository's rutis package, for an interpreter without it.

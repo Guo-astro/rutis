@@ -82,6 +82,12 @@ impl BinaryHost {
         self.side.states()
     }
 
+    /// [`BinaryHost::states`], each with a number that grows whenever the
+    /// runtime starts again.
+    pub fn states_started(&self) -> Vec<(String, RuntimeState, u64)> {
+        self.side.states_started()
+    }
+
     /// Every runtime: those that run, and the binaries not started.
     pub fn runtimes(&self) -> Vec<BinaryRuntimeInfo> {
         self.side.runtimes()
@@ -100,6 +106,7 @@ trait Side: Send + Sync {
     fn supervise(&self, policy: RestartPolicy, report: Box<dyn Fn(RuntimeEnd) + Send + Sync>);
     fn unsupervise(&self);
     fn states(&self) -> Vec<(String, RuntimeState)>;
+    fn states_started(&self) -> Vec<(String, RuntimeState, u64)>;
     fn runtimes(&self) -> Vec<BinaryRuntimeInfo>;
 }
 
@@ -143,6 +150,10 @@ impl<L: BinaryLanguage> Side for Of<L> {
 
     fn states(&self) -> Vec<(String, RuntimeState)> {
         self.runtimes.states()
+    }
+
+    fn states_started(&self) -> Vec<(String, RuntimeState, u64)> {
+        self.runtimes.states_started()
     }
 
     fn runtimes(&self) -> Vec<BinaryRuntimeInfo> {

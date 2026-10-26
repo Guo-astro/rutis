@@ -433,47 +433,98 @@ impl Host {
     /// one could not start.
     pub async fn runtimes_ready(&self) -> Result<(), Error> {
         for (name, handle) in &self.runtimes {
-            loop {
-                match handle.state() {
-                    RuntimeState::Ready(_) => break,
-                    RuntimeState::Down(reason) => {
-                        return Err(format!("the {name} runtime did not start: {reason}"))
-                    }
-                    _ => handle.changed().await,
-                }
-            }
-            // A running runtime releases its rows ([`RuntimeRows`]) once it
-            // has resolved again those resolved before it ran. Rows loaded
-            // before then wait for it, and the host would say it runs while
-            // they do (#314). A plugin injecting it applies once it is there.
-            let (released, rows) = tokio::sync::oneshot::channel();
-            // Disposed however the wait ends, a signal dropping it included:
-            // left mounted, it would count among what still runs.
-            let mut waiter = Unmount(Some(self.root.plugin(Released {
-                injects: [RuntimeRows::key(name)],
-                released: std::sync::Mutex::new(Some(released)),
-            })));
-            let down = async {
-                loop {
-                    if let RuntimeState::Down(reason) = handle.state() {
-                        return reason;
-                    }
-                    handle.changed().await;
-                }
-            };
-            let result = tokio::select! {
-                released = rows => released.map_err(|_| {
-                    // Only a plugin that never applied drops its sender.
-                    format!("the {name} runtime did not start: its rows were never released")
-                }),
-                reason = down => Err(format!("the {name} runtime did not start: {reason}")),
-            };
-            if let Some(waiter) = waiter.0.take() {
-                let _ = waiter.dispose().await;
-            }
-            result?;
+            self.runtime_ready(name, handle).await?;
         }
         Ok(())
+    }
+
+    /// Whether the local runtime `name` is started again by its `restart`
+    /// when it ends: `on-failure`, not given up yet ([`Host::supervise`]).
+    pub fn restarts_by_itself(&self, name: &str) -> bool {
+        let restarts = self
+            .restarts
+            .iter()
+            .any(|(runtime, restart)| runtime == name && *restart == Restart::OnFailure);
+        restarts
+            && self
+                .supervisors
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(runtime, task)| runtime == name && !task.is_finished())
+    }
+
+    /// Start the local runtime `name` (`node`, `py`, `bun`) again, one
+    /// whose process ended and that nothing restarts (`restart` is `no`, or
+    /// `on-failure` gave up), and wait until it runs and its rows may start
+    /// ([`Host::runtimes_ready`]), or say why it did not start. Its rows
+    /// come back by themselves, resolved again first when
+    /// [`Host::invalidate`] was called: their code as it is now.
+    pub async fn start_runtime_again(&self, name: &str) -> Result<(), Error> {
+        let fiber = self
+            .fibers
+            .iter()
+            .find(|(runtime, _)| runtime == name)
+            .map(|(_, fiber)| fiber.clone())
+            .ok_or_else(|| format!("no {name} runtime runs"))?;
+        let handle = self
+            .runtimes
+            .iter()
+            .find(|(runtime, _)| runtime == name)
+            .map(|(_, handle)| handle.clone())
+            .ok_or_else(|| format!("no {name} runtime runs"))?;
+        if let Err(error) = fiber.restart().await {
+            // Down again: its state says why in the runtime's words.
+            let why = match handle.state() {
+                RuntimeState::Down(reason) => reason,
+                _ => error.to_string(),
+            };
+            return Err(format!("the {name} runtime did not start: {why}"));
+        }
+        self.runtime_ready(name, &handle).await
+    }
+
+    /// Wait until the runtime `name` runs and its rows may start.
+    async fn runtime_ready(&self, name: &str, handle: &RuntimeHandle) -> Result<(), Error> {
+        loop {
+            match handle.state() {
+                RuntimeState::Ready(_) => break,
+                RuntimeState::Down(reason) => {
+                    return Err(format!("the {name} runtime did not start: {reason}"))
+                }
+                _ => handle.changed().await,
+            }
+        }
+        // A running runtime releases its rows ([`RuntimeRows`]) once it
+        // has resolved again those resolved before it ran. Rows loaded
+        // before then wait for it, and the host would say it runs while
+        // they do (#314). A plugin injecting it applies once it is there.
+        let (released, rows) = tokio::sync::oneshot::channel();
+        // Disposed however the wait ends, a signal dropping it included:
+        // left mounted, it would count among what still runs.
+        let mut waiter = Unmount(Some(self.root.plugin(Released {
+            injects: [RuntimeRows::key(name)],
+            released: std::sync::Mutex::new(Some(released)),
+        })));
+        let down = async {
+            loop {
+                if let RuntimeState::Down(reason) = handle.state() {
+                    return reason;
+                }
+                handle.changed().await;
+            }
+        };
+        let result = tokio::select! {
+            released = rows => released.map_err(|_| {
+                // Only a plugin that never applied drops its sender.
+                format!("the {name} runtime did not start: its rows were never released")
+            }),
+            reason = down => Err(format!("the {name} runtime did not start: {reason}")),
+        };
+        if let Some(waiter) = waiter.0.take() {
+            let _ = waiter.dispose().await;
+        }
+        result
     }
 
     /// Load `rows` (replacing what was loaded before).
@@ -924,36 +975,73 @@ pub fn restart_needed(old: &HostConfig, new: &HostConfig) -> Result<(), Error> {
 /// How many rows differ between `old` and `new`, by id: added, removed or
 /// changed. A group's rows are counted, the group itself is not.
 fn changed_rows(old: &[serde_json::Value], new: &[serde_json::Value]) -> usize {
-    fn flat(
-        rows: &[serde_json::Value],
-        into: &mut std::collections::BTreeMap<String, serde_json::Value>,
-    ) {
+    row_changes(old, new).len()
+}
+
+/// How a row differs between two configurations ([`row_changes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowChange {
+    Added,
+    Removed,
+    /// Any of its fields (its config, its name, `disabled`, ...).
+    Changed,
+}
+
+/// The rows that differ between `old` and `new`, by id, in the order of
+/// `old` then the rows `new` adds: a group's rows each, the group itself
+/// not.
+pub fn row_changes(
+    old: &[serde_json::Value],
+    new: &[serde_json::Value],
+) -> Vec<(String, RowChange)> {
+    fn flat(rows: &[serde_json::Value], into: &mut Vec<(String, serde_json::Value)>) {
         for row in rows {
             let id = row["id"].as_str().unwrap_or_default().to_owned();
             if row["group"] == true {
                 let mut own = row.clone();
                 own["config"] = serde_json::Value::Null;
-                into.insert(id, own);
+                into.push((id, own));
                 if let Some(children) = row["config"].as_array() {
                     flat(children, into);
                 }
             } else {
-                into.insert(id, row.clone());
+                into.push((id, row.clone()));
             }
         }
     }
-    let (mut before, mut after) = Default::default();
+    let (mut before, mut after) = (Vec::new(), Vec::new());
     flat(old, &mut before);
     flat(new, &mut after);
-    let groups = |rows: &std::collections::BTreeMap<String, serde_json::Value>, id: &str| {
-        rows.get(id).is_some_and(|row| row["group"] == true)
+    let find = |rows: &[(String, serde_json::Value)], id: &str| {
+        rows.iter()
+            .find(|(row, _)| row == id)
+            .map(|(_, value)| value.clone())
     };
-    before
-        .keys()
-        .chain(after.keys().filter(|id| !before.contains_key(*id)))
-        .filter(|id| !groups(&before, id) && !groups(&after, id))
-        .filter(|id| before.get(*id) != after.get(*id))
-        .count()
+    let group =
+        |row: &Option<serde_json::Value>| row.as_ref().is_some_and(|row| row["group"] == true);
+    let mut ids: Vec<&String> = before.iter().map(|(id, _)| id).collect();
+    ids.extend(
+        after
+            .iter()
+            .map(|(id, _)| id)
+            .filter(|id| !before.iter().any(|(row, _)| row == *id)),
+    );
+    ids.dedup();
+    ids.into_iter()
+        .filter_map(|id| {
+            let (was, is) = (find(&before, id), find(&after, id));
+            if group(&was) || group(&is) {
+                return None;
+            }
+            let change = match (&was, &is) {
+                (None, Some(_)) => RowChange::Added,
+                (Some(_), None) => RowChange::Removed,
+                (Some(was), Some(is)) if was != is => RowChange::Changed,
+                _ => return None,
+            };
+            Some((id.clone(), change))
+        })
+        .collect()
 }
 
 /// The peers of `config`'s peer rows that listen: their links are

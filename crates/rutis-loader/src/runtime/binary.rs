@@ -1689,6 +1689,28 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
         states.sort_by(|a, b| a.0.cmp(&b.0));
         states
     }
+
+    /// [`BinaryRuntimesHandle::states`], each with a number that grows
+    /// whenever the runtime starts again (0 for one that did not start): a
+    /// runtime seen down twice, with a larger number the second time, came
+    /// back and went down again, however short it ran.
+    pub fn states_started(&self) -> Vec<(String, RuntimeState, u64)> {
+        let slots = self.inner.slots.lock().unwrap();
+        let mut states: Vec<(String, RuntimeState, u64)> = slots
+            .running
+            .iter()
+            .map(|(name, slot)| (name.clone(), slot.handle.state(), slot.generation))
+            .collect();
+        states.extend(
+            slots
+                .failed
+                .iter()
+                .filter(|(name, _)| !slots.running.contains_key(*name))
+                .map(|(name, failed)| (name.clone(), RuntimeState::Down(failed.why.clone()), 0)),
+        );
+        states.sort_by(|a, b| a.0.cmp(&b.0));
+        states
+    }
 }
 
 /// Stop a runtime taken out of the slots, and return once its process is

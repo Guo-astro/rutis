@@ -70,6 +70,7 @@ pub struct RuntimeHandle {
     anchor: PathBuf,
     remote: bool,
     state: watch::Receiver<RuntimeState>,
+    starts: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RuntimeHandle {
@@ -86,6 +87,14 @@ impl RuntimeHandle {
 
     pub fn state(&self) -> RuntimeState {
         self.state.borrow().clone()
+    }
+
+    /// How many times the runtime has started (each generation of its
+    /// plugin), counted as it happens: a runtime seen down twice with a
+    /// count between says it came back and went down again, however short
+    /// it ran.
+    pub fn starts(&self) -> u64 {
+        self.starts.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Resolves at the next change of [`RuntimeHandle::state`].
@@ -147,6 +156,8 @@ pub struct RuntimePlugin {
     anchor: PathBuf,
     hosts: Arc<HashMap<String, Value>>,
     state: Arc<watch::Sender<RuntimeState>>,
+    /// How many generations have started ([`RuntimeHandle::starts`]).
+    starts: Arc<std::sync::atomic::AtomicU64>,
     /// `rutis/runtime` follows the state (once started, [`RuntimePlugin::announce`]).
     announcing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -204,6 +215,7 @@ impl RuntimePlugin {
             anchor,
             hosts: Arc::default(),
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
+            starts: Arc::default(),
             announcing: Arc::default(),
         }
     }
@@ -267,6 +279,7 @@ impl RuntimePlugin {
             anchor: self.anchor.clone(),
             remote: self.remote,
             state: self.state.subscribe(),
+            starts: self.starts.clone(),
         }
     }
 }
@@ -283,6 +296,8 @@ impl DynPlugin for RuntimePlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             self.announce(ctx);
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.state.send_replace(RuntimeState::Starting);
             // The runtime may hang before it answers; dispose or restart
             // cancels this generation.
