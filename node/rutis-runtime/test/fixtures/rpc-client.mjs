@@ -35,7 +35,9 @@ catch (crossed) {
   assert.ok(crossed instanceof AggregateError)
   assert.ok(crossed.errors[0] instanceof TypeError)
   assert.equal(crossed.cause, crossed.errors[0].cause)
-  assert.equal(crossed.stack, error.stack)
+  // Its stack is this side's own, not the one it was thrown with (#677).
+  assert.notEqual(crossed.stack, error.stack)
+  assert.match(crossed.stack, /^AggregateError: outer\n/)
 }
 // Closing is explicit even while a remote-owned callback remains reachable.
 peer.call('rpc', 'save', [saved])

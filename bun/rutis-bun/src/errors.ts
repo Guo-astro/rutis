@@ -1,6 +1,10 @@
 // Error graphs preserve AggregateError order, shared causes, cycles and thrown
 // values. They are data; decoding never selects an arbitrary global constructor.
 const constructors = { Error, TypeError, RangeError, ReferenceError, SyntaxError, URIError, EvalError }
+// The graph each error received from the other side came in, rooted at that
+// error. Kept out of sight of the plugin's code: the error it gets has its
+// own `stack`, and thrown on it crosses with the graph as received (§4.4).
+const received = new WeakMap()
 
 export function encodeError(thrown) {
   const nodes = [], seen = new Map()
@@ -11,6 +15,14 @@ export function encodeError(thrown) {
     if (typeof value === 'number' && !Number.isFinite(value)) return { type: 'number', value: String(value) }
     if (value === null || typeof value !== 'object') return { type: 'data', value }
     if (seen.has(value)) return { type: 'reference', value: seen.get(value) }
+    const graph = received.get(value)
+    if (graph) {
+      // Spliced in as received: nodes appended, references shifted.
+      const offset = nodes.length
+      seen.set(value, offset + graph.root.value)
+      nodes.push(...(offset === 0 ? graph.nodes : graph.nodes.map(node => shiftNode(node, offset))))
+      return { type: 'reference', value: offset + graph.root.value }
+    }
     const id = nodes.length
     seen.set(value, id); nodes.push(null)
     if (value instanceof Error) {
@@ -44,6 +56,17 @@ export function encodeError(thrown) {
   return { name: thrown?.name ?? 'ThrownValue', message: String(thrown?.message ?? thrown), graph: { root: visit(thrown), nodes } }
 }
 
+const shift = (value, offset) => value?.type === 'reference' ? { type: 'reference', value: value.value + offset } : value
+function shiftNode(node, offset) {
+  if (node.type === 'array') return { ...node, values: node.values.map(value => shift(value, offset)) }
+  if (node.type === 'object') return { ...node, values: node.values.map(([key, value]) => [key, shift(value, offset)]) }
+  const shifted = { ...node }
+  if ('cause' in node) shifted.cause = shift(node.cause, offset)
+  if (node.errors !== undefined) shifted.errors = node.errors.map(value => shift(value, offset))
+  if (node.data !== undefined) shifted.data = shift(node.data, offset)
+  return shifted
+}
+
 export function decodeError({ name, message, graph }) {
   const make = node => node.errors !== undefined ? new AggregateError([], node.message)
     : new (Object.hasOwn(constructors, node.name) ? constructors[node.name] : Error)(node.message)
@@ -56,7 +79,8 @@ export function decodeError({ name, message, graph }) {
 function decodeGraph(graph, make) {
   if (!Array.isArray(graph.nodes)) throw new TypeError('invalid error graph')
   const nodes = graph.nodes.map(node => {
-    if (node.type === 'error') return Object.assign(make(node), { name: node.name, ...(node.stack === undefined ? {} : { stack: node.stack }) })
+    // `stack` stays this process's own; the other side's is in the graph.
+    if (node.type === 'error') return own(Object.assign(make(node), { name: node.name }))
     if (node.type === 'array') return []
     if (node.type === 'object') return {}
     throw new TypeError('invalid error node')
@@ -84,5 +108,15 @@ function decodeGraph(graph, make) {
     } else if (node.type === 'array') target.push(...node.values.map(read))
     else for (const [key, value] of node.values) Object.defineProperty(target, key, { value: read(value), enumerable: true, configurable: true, writable: true })
   })
-  return read(graph.root)
+  const root = read(graph.root)
+  graph.nodes.forEach((node, id) => {
+    if (node.type === 'error') received.set(nodes[id], { root: { type: 'reference', value: id }, nodes: graph.nodes })
+  })
+  return root
+}
+
+// The stack from where the error is decoded, without the decoding's frames.
+function own(error) {
+  if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(error, decodeError)
+  return error
 }
