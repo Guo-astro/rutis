@@ -204,7 +204,7 @@ rutis-host: warning: rows one, two all provide llm: only the first to start prov
 
 行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
 
-插件自己的配置由它的运行时在加载时校验，`check` 只打印它的 Schema。
+rutis-host 目前不按插件的 Schema 检查它的配置（0.18 起检查，[#669](https://github.com/arcships/rutis/issues/669)），`check` 只打印 Schema。配置有没有被检查，取决于插件的语言怎样读它：例如 Rust 插件把配置解码成类型 `C`，解码不了时这一行装载失败。
 
 ## 停止与退出码
 

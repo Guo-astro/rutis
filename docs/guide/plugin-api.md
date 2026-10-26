@@ -8,7 +8,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | --- | --- | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | `inject = listOf("llm")` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
 | 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | `provides = mapOf("weather" to service<Weather>(sync = setOf("unit")))`（`@RutisService` 类的 public 成员函数，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
-| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema；宿主据此校验和展示配置 |
+| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema；`rutis-host check` 打印它，目前不按它检查配置（0.18 起检查，#669） |
 | 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }`（`async throws`） | `{ ctx, config -> }`，可以挂起；抛异常即装载失败 | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
 
 ## ctx

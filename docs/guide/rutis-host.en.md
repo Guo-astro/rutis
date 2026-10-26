@@ -204,7 +204,7 @@ rutis-host: warning: rows one, two all provide llm: only the first to start prov
 
 Rows using a language whose runtime `runtimes` does not declare enable that runtime with its defaults, with a warning (see [`runtimes`](#runtimes)).
 
-A plugin's own config is validated by its runtime when it loads; `check` prints its schema.
+rutis-host does not yet check a plugin's config against its schema (it does from 0.18, [#669](https://github.com/arcships/rutis/issues/669)); `check` only prints the schema. Whether a config is checked depends on how the plugin's language reads it: a Rust plugin, for example, decodes it into its type `C`, and the row fails to load when it cannot.
 
 ## Stopping and exit status
 
