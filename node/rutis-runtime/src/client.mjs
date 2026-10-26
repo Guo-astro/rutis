@@ -8,7 +8,9 @@ export class Process {
   #exited
   #session
 
-  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds, report } = {}) {
+  // `ended`: an Int32Array on a SharedArrayBuffer whose first element the
+  // I/O worker sets to 1 once the channel ends, whatever this thread does.
+  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds, report, ended } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -30,7 +32,7 @@ export class Process {
     })
     this.#port.on('message', message => this.#receive(message))
     this.#worker = new Worker(new URL('./io-worker.mjs', import.meta.url), {
-      workerData: { executable, channel, port: port2, signal: this.#signal }, transferList: [port2],
+      workerData: { executable, channel, port: port2, signal: this.#signal, ended }, transferList: [port2],
     })
     this.#worker.on('error', error => this.#session.close(error))
     this.#exited = new Promise(resolve => this.#worker.once('exit', code => {

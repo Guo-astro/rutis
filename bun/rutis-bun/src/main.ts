@@ -16,6 +16,7 @@
 // endpoint format, as `--id`, expecting `--peer` as the controller when
 // given. Plugin modules resolve from <project>.
 import { resolve } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { Client } from './client.ts'
 import { takeToken } from './channel.ts'
 import { dialOut, serve } from './remote.ts'
@@ -89,11 +90,17 @@ const runtime = new Runtime(project)
 // there (exiting normally, mid-session); a timer keeps it, and leaving
 // before the session ended is said.
 const alive = setInterval(() => {}, 1 << 30)
+// The channel's end, seen by the I/O worker and by the watchdog, which
+// ends this process a second after the deadline should a plugin keep it
+// from exiting (watchdog.ts).
+const channelEnded = new Int32Array(new SharedArrayBuffer(4))
+const watchdog = new Worker(new URL('./watchdog.ts', import.meta.url), { workerData: { ended: channelEnded, after: shutdownDeadline() + 1000 } } as any)
+watchdog.unref()
 let client: Client
 try {
   // The logical bus (#464): `events.elsewhere` runs as its frame arrives;
   // a host older than 0.13 (no events-v2) is refused (protocol §2.2).
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2] })
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2], ended: channelEnded })
 } catch (error: any) {
   if (error?.message === NO_EVENTS_V2) {
     process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)

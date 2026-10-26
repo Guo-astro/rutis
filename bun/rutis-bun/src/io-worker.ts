@@ -5,11 +5,16 @@ import { workerData } from 'node:worker_threads'
 import { open, type Channel } from './channel.ts'
 import { decode } from './codec.ts'
 
-const { channel: spec, token, port, signal } = workerData
+const { channel: spec, token, port, signal, ended: endedFlag } = workerData
 function send(message: unknown) {
   port.postMessage(message)
   Atomics.add(signal, 0, 1)
   Atomics.notify(signal, 0)
+}
+// The channel ended: said at once, also to a main thread that never looks
+// at its messages again (a plugin keeps it busy), for a watchdog (#682).
+function channelEnded() {
+  if (endedFlag) { Atomics.store(endedFlag, 0, 1); Atomics.notify(endedFlag, 0) }
 }
 
 // The main thread cannot run a Worker 'error' handler while it waits in
@@ -40,7 +45,7 @@ try {
   }
   channel = await open(spec, {
     message: text => { if (early) early.push(text); else forward(text) },
-    closed: reason => { if (reason) failure = reason; ended() },
+    closed: reason => { if (reason) failure = reason; channelEnded(); ended() },
   }, token)
   send({ ready: true })
   for (const text of early) forward(text)
@@ -49,6 +54,7 @@ try {
 } catch (error: any) {
   failure = error.message
 } finally {
+  channelEnded()
   clearInterval(alive)
   channel?.close()
   send({ closed: failure })

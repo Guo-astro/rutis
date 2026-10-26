@@ -133,6 +133,8 @@ rutis-host: listening on <监听器名> <地址:端口>
 
 一个运行时停在 `down` 时只打印一次；重新启动后又结束的，再打印一次，不论它运行了多久。括号里的原因是给人看的，不保证措辞。
 
+运行时结束后，它的各行只是在等它，不管是哪个插件让进程退出的；运行时结束时还在启动的行不会报成 `failed`。正在进行的、对这些行的调用失败时写明进程怎样结束。运行时自己写出的内容（例如错误和调用栈）和以前一样在输出里。
+
 节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
 
 | 输出 | 含义 |
@@ -210,7 +212,7 @@ rutis-host: warning: rows one, two all provide llm: only the first to start prov
 
 清理的总时长有截止时间，默认 10 秒，用 `--shutdown-timeout <秒>` 或环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 修改（命令行优先，可以是小数，必须大于 0）。超过截止时间，或在停止过程中再收到一次信号（再按一次 Ctrl-C），`rutis-host` 打印还在停止的插件，结束运行时进程和它们启动的进程（不再等它们的清理），立即退出。启动失败时，已经起来的部分也按同样的规则关闭。
 
-`rutis-host` 把截止时间传给它启动的运行时进程（环境变量 `RUTIS_SHUTDOWN_TIMEOUT`）。`rutis-host` 自己没来得及停止它们就结束了（`kill -9`、崩溃）时，每个运行时发现连接断开，在这个截止时间内自己卸载各行，然后退出，不管插件留下了什么；Windows 上它们随 `rutis-host` 一起结束（Job Object），清理不执行。
+`rutis-host` 把截止时间传给它启动的运行时进程（环境变量 `RUTIS_SHUTDOWN_TIMEOUT`）。`rutis-host` 自己没来得及停止它们就结束了（`kill -9`、崩溃）时，每个运行时发现连接断开，在这个截止时间内自己卸载各行，然后退出，不管插件留下了什么；Windows 上它们随 `rutis-host` 一起结束（Job Object），清理不执行。插件让运行时一直在忙（处理函数不返回，运行时别的什么都做不了）时也一样：截止时间过后再过一秒，运行时自己结束，跑不了的清理不再执行。截止时间从运行时发现连接断开时算起，它在一个单独的线程上发现这件事（Node 和 Bun 运行时是负责读写的线程，再告诉一个看门狗线程；Python 运行时是读连接的线程）。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -295,6 +297,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 其他说明：
 
 - 进程内存里的状态随崩溃丢失，重启不会多丢；正在进行的调用已经显式失败，不会自动重试。会再执行一次的是插件启动时做的事（`apply`），和手动重启宿主一样。
+- 运行时结束不算到别的行头上：结束时还在启动的行和其他行一样等它，和它们一起再运行。
 - 宿主停止时（收到终止信号、`exit` 策略）不再重启任何运行时；[运行中改配置](#运行中改配置)删掉的运行时也不会重启。
 - `restart` 是运行时的设置，运行中改它要重启宿主。
 - `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"`、`"swift"` 等）（项目自己的那个运行时只取 `restart`）。在 `dev` 里停着的运行时，它的某一行下一次变化时也会重新启动（见 [用 dev 开发插件](#用-dev-开发插件)）。
@@ -454,4 +457,4 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 
 用 npm 安装时（`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`），`MAINPID` 是启动器 `bin/rutis-host.mjs`，一个运行 `rutis-host` 二进制的 Node 进程。它把 SIGTERM 和 SIGUSR1 转发给二进制，所以 `systemctl stop`、`systemctl reload` 和直接运行二进制时一样，二进制怎样退出它就怎样退出。SIGINT 和 SIGHUP 它不转发（终端会直接发给二进制）：单独发给启动器的 SIGINT 不起作用，停止时发 SIGTERM。GitHub Releases、crates.io 的二进制，以及用 PyPI 安装时放进环境里的那个（`.venv/bin/rutis-host`），都没有启动器。
 
-停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出。
+停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出；被插件占着一直在忙的运行时，在清理截止时间过后一秒结束。

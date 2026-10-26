@@ -133,6 +133,8 @@ A local runtime (`node`, `py`, `bun`, Go's `go-<binary>`, Swift's `swift-<binary
 
 A runtime that stays down prints once; one that starts again and goes down again prints the line again, however briefly it ran. The reason in parentheses is for people, and its wording is not guaranteed.
 
+The rows of a runtime that ended only wait for it, whichever plugin made its process exit; one that was still starting when the runtime ended is not reported as `failed`. A call in progress to one of them fails saying how the process ended. What the runtime itself wrote about it (an error and its stack, say) is in the output as before.
+
 A node row's (`rutis-bridge/peer`) state only says that the row runs; whether its link is connected is printed on a line of its own, when the link's state changes:
 
 | Output | Meaning |
@@ -210,7 +212,7 @@ When `run` or `dev` receives a termination signal (SIGINT (Ctrl-C), SIGTERM or S
 
 Cleanups have a deadline, 10 seconds by default. Change it with `--shutdown-timeout <seconds>` or the `RUTIS_SHUTDOWN_TIMEOUT` environment variable (the flag takes precedence; fractions are allowed; it must be above 0). When the deadline passes, or a second signal arrives while stopping (pressing Ctrl-C again), `rutis-host` prints the plugins that are still stopping, ends the runtime processes and the processes they started without waiting for their cleanups, and exits at once. When starting fails, what did start is stopped the same way.
 
-`rutis-host` passes the deadline to the runtime processes it starts (in `RUTIS_SHUTDOWN_TIMEOUT`). When `rutis-host` itself is ended without stopping them (`kill -9`, a crash), each runtime sees its connection close, unloads its rows itself within that deadline, and exits, whatever its plugins left running; on Windows they end with `rutis-host` (a Job Object), without their cleanups.
+`rutis-host` passes the deadline to the runtime processes it starts (in `RUTIS_SHUTDOWN_TIMEOUT`). When `rutis-host` itself is ended without stopping them (`kill -9`, a crash), each runtime sees its connection close, unloads its rows itself within that deadline, and exits, whatever its plugins left running; on Windows they end with `rutis-host` (a Job Object), without their cleanups. Also when a plugin keeps a runtime busy (a handler that never returns, so the runtime can run nothing else): a second after the deadline the runtime ends itself, without the cleanups it could not run. The deadline counts from when the runtime sees its connection close, which it sees on a thread of its own (the Node and Bun runtimes' I/O thread, which tells a watchdog thread; the Python runtime's thread that reads its connection).
 
 | Exit status | Meaning |
 | --- | --- |
@@ -295,6 +297,7 @@ The waits and the limit of `on-failure` are fixed, not configurable:
 Also:
 
 - What the process held in memory is lost with the crash; a restart loses nothing more. Calls in progress have already failed explicitly and are not retried. What runs again is what plugins do as they start (`apply`), as when the host is restarted by hand.
+- A row is not blamed for its runtime ending: one that was still starting in it waits for it as the others do, and runs again with them.
 - Once the host stops (a termination signal, the `exit` policy), no runtime is restarted; nor is one removed by [changing the configuration while it runs](#changing-the-configuration-while-it-runs).
 - `restart` is a runtime setting: changing it while the host runs needs a restart.
 - `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` (or `"go"`, `"swift"`, …) in `rutis.dev.json` (for the project's own runtime, only `restart` is taken). A runtime that stays down there also starts again at the next change to one of its rows (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)).
@@ -454,4 +457,4 @@ To apply a changed `rutis.json`, use `systemctl reload` (`ExecReload=/bin/kill -
 
 Installed with npm (`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`), `MAINPID` is the launcher `bin/rutis-host.mjs`, a Node process that runs the `rutis-host` binary. It passes SIGTERM and SIGUSR1 on to the binary, so `systemctl stop` and `systemctl reload` work as with the binary, and it exits as the binary does. It does not pass on SIGINT and SIGHUP (a terminal sends them to the binary itself): a SIGINT sent to the launcher alone does nothing, so stop it with SIGTERM. The binary from GitHub Releases or crates.io, and the one a PyPI install puts in the environment (`.venv/bin/rutis-host`), have no launcher.
 
-When stopping, have the process manager send SIGTERM to `rutis-host` alone and let it unload the rows. By default (`KillMode=control-group`), systemd also sends SIGTERM to the runtime processes, which then exit before their cleanups run; set `KillMode=mixed`, and set `TimeoutStopSec` longer than the cleanup deadline. If `rutis-host` is killed (SIGKILL, or ending the process on Windows), it cannot unload the rows: on Windows, the runtime processes are ended with it; on Unix, they notice that their channel closed, unload their rows themselves, and exit.
+When stopping, have the process manager send SIGTERM to `rutis-host` alone and let it unload the rows. By default (`KillMode=control-group`), systemd also sends SIGTERM to the runtime processes, which then exit before their cleanups run; set `KillMode=mixed`, and set `TimeoutStopSec` longer than the cleanup deadline. If `rutis-host` is killed (SIGKILL, or ending the process on Windows), it cannot unload the rows: on Windows, the runtime processes are ended with it; on Unix, they notice that their channel closed, unload their rows themselves, and exit; one a plugin keeps busy ends a second after the cleanup deadline.
