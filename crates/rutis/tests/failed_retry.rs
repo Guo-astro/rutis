@@ -148,3 +148,33 @@ async fn a_failed_validate_is_retried_only_when_its_dependencies_change() {
 async fn a_failed_build_is_retried_only_when_its_dependencies_change() {
     retried_only_on_change(Failure::Build).await;
 }
+
+/// A restart of a Failed fiber whose dependencies are gone starts no
+/// generation: the fiber waits for them, and the restart does not report
+/// the failure of the generation before it (a Go plugin fixed and rebuilt
+/// while its runtime restarts, #665).
+/// guarantee: core/features.errors.failed-retry
+#[tokio::test]
+async fn a_restart_that_waits_does_not_report_the_last_failure() {
+    let root = Ctx::root().unwrap();
+    let release = Arc::new(Notify::new());
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let provider = root.plugin(Provider(release.clone()));
+    let consumer: FiberView = root.plugin_with(
+        ConsumerFactory(Failure::Apply, attempts.clone(), injects()),
+        (),
+    );
+    release.notify_one();
+    (&provider).await.unwrap();
+    assert!((&consumer).await.is_err());
+    assert_eq!(consumer.state().state, FiberState::Failed);
+
+    provider.dispose().await.unwrap();
+    consumer.restart().await.unwrap();
+    assert_eq!(consumer.state().state, FiberState::Pending);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    consumer.update(()).await.unwrap();
+    assert_eq!(consumer.state().state, FiberState::Pending);
+
+    root.shutdown().await.unwrap();
+}

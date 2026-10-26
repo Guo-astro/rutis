@@ -1009,6 +1009,13 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                         task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
                         return;
                     }
+                    if !started {
+                        // Waiting for its dependencies: no generation ran,
+                        // so none failed. The error a Failed fiber keeps is
+                        // the last generation's, not this restart's (#665).
+                        task.complete(None);
+                        return;
+                    }
                     complete_task(&this, task);
                 }
                 Intent::Dispose => {
