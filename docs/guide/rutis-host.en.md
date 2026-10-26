@@ -33,13 +33,31 @@ At start, each [`listen`](#listen) listener prints once the address it is actual
 rutis-host: listening on <listener name> <address:port>
 ```
 
-Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for its services`, `starting`, `failed: …`, `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
+Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for …`, `starting`, `failed: …`, `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
+
+A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for its own runtime, it names only the runtime; otherwise each missing service is `<service> (<why>)`, several joined by `; `:
+
+| Output | Meaning |
+| --- | --- |
+| `waiting for runtime <name> (starting)` | The row's runtime is still starting (restarting too) |
+| `waiting for runtime <name> (down: <reason>)` | The row's runtime ended, the reason as in `runtime <name>: down` |
+| `waiting for runtime <name> (stopped)` / `waiting for runtime <name>` | The host stopped the runtime; or it runs and is resolving its rows again (a remote runtime is written so too) |
+| `waiting for lmm (no row provides it; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
+| `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
+| `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled |
+| `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | The row that provides it waits for its own runtime (a remote runtime's state the host does not know: it only says it waits) |
+| `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | Two rows `inject` each other's services; neither starts |
+| `waiting for llm (row model waits too, for x)` | The row that provides it waits itself |
+| `waiting for llm (row model is starting)` / `(row model has not provided it)` | The row that provides it is starting; or runs but has not provided it (a link row whose link is down, say) |
+| `waiting for its services` | When rutis cannot say what it waits for |
+
+When the reason changes (the provider going from starting to failed, say), another line is printed.
 
 A local runtime (`node`, `py`, `bun`, Go's `go-<binary>`, Swift's `swift-<binary>`) whose process ends on its own, or that cannot start, prints a line, and another when it runs again; one that `rutis-host` stops (the host stopping, a Go or Swift runtime stopping when idle) prints none:
 
 | Output | Meaning |
 | --- | --- |
-| `runtime <name>: down (<reason>)` | The runtime process ended; the reason says how, such as `exited with signal: 9 (SIGKILL)` or `exited with exit status: 1`; or it could not start, and the reason is the error. Its rows go back to `waiting for its services`; other runtimes and their rows go on. |
+| `runtime <name>: down (<reason>)` | The runtime process ended; the reason says how, such as `exited with signal: 9 (SIGKILL)` or `exited with exit status: 1`; or it could not start, and the reason is the error. Its rows go back to `waiting for runtime <name> (down: …)`; other runtimes and their rows go on. |
 | `runtime <name>: running` | A runtime that printed `down` runs again (a Go or Swift runtime rebuilt by `dev`). |
 
 A runtime that stays down prints once; one that starts again and goes down again prints the line again, however briefly it ran. The reason in parentheses is for people, and its wording is not guaranteed.
@@ -91,7 +109,27 @@ rutis-host: warning: <row>: nothing declares <service>; it may be provided at ru
 
 At most three rows are named, the rest as `and N more`; when the row and one of those rows are Cordis rows, the line goes on with `; between Cordis rows of one runtime it resolves in Cordis`: dependencies between Cordis rows of one Node runtime resolve in Cordis. A declared name counts as provided, as before.
 
-`check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>`, and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
+When the only row declaring a service is disabled, the warning names that row, not the rows that may provide it at runtime:
+
+```
+rutis-host: warning: <row>: <service> is declared only by row <disabled row>, which is disabled: enable it, or add a row that provides <service>
+```
+
+When a missing name is a character or two from a declared one, the warnings above and the line saying what to do about a missing service end with `; did you mean <name>?`.
+
+`check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>` (`only disabled rows declare <service>` for one only disabled rows declare), and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
+
+In two more cases every row says `ok` but some rows will not start, and `check` warns on stderr (in 0.17 only a warning, the exit status unchanged, with `--strict` too; an error from 0.18):
+
+```
+rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+```
+
+- Rows whose `inject` wait for each other's services (a cycle): none of them starts. Only services one row alone provides count: with another provider a row may start from that one, which is no cycle.
+- Rows declaring the same service in one scope: only the first to start provides it, the others fail. Rows that `isolate` the name, each in a scope of its own, do not count. Rows that can never start (waiting for a service no row provides) do not count either.
+
+Rows using a language whose runtime `runtimes` does not declare enable that runtime with its defaults, with a warning (see [`runtimes`](#runtimes)).
 
 A plugin's own config is validated by its runtime when it loads; `check` prints its schema.
 
@@ -173,7 +211,7 @@ When a local runtime's (`node`, `py`, `bun`, each Go or Swift runtime) process e
 
 | `restart` | What happens |
 | --- | --- |
-| `"no"` (the default) | Nothing: its rows go back to `waiting for its services`, other runtimes and their rows go on; restart the host to bring it back. |
+| `"no"` (the default) | Nothing: its rows go back to `waiting for runtime <name> (down: …)`, other runtimes and their rows go on; restart the host to bring it back. |
 | `"on-failure"` | After a wait, it starts the runtime again, and its rows run again (loaded anew: the plugins' `apply` runs once more); prints `runtime <name>: restarting`, then `runtime <name>: running` once it runs. |
 | `"exit"` | Unloads every other row (each cleanup runs once) and exits with 3, for systemd, Kubernetes or the like to restart the whole host; prints `rutis-host: runtime <name> ended (<reason>), and its restart is "exit": stopping; …` on stderr. |
 
@@ -262,7 +300,17 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
 | `remote` | `name`, `language`, `listen`, `instances` | A runtime on another machine: connected through a node row with `"runtime": "<name>"`, see [Connect nodes](nodes.en.md); or, with `listen` and `instances`, one that connects in, see below. |
 
-If a runtime package is missing, startup fails and prints an installation command.
+If a runtime package is missing, startup fails and prints an installation command. When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
+
+Rows using a language that `runtimes` does not declare (a `py:llmbox` row without `runtimes.py`, say) enable that runtime with its defaults, as if the file said `"py": {}`, with a warning on stderr:
+
+```
+rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
+```
+
+`py:` rows enable `py`, `bun:` rows `bun`, and JavaScript or TypeScript files named by a path or a `file:` URL (`.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`) `node`; an npm package name is not guessed (it may be another resolver's). Disabled rows do not count, and a runtime under `runtimes.remote` of that name (for Node, a remote runtime of `language: node`) keeps its rows. Go and Swift need their binaries named and are never enabled so: for such a row (`go:<plugin>`, `go-<binary>:<plugin>`), `check` says to declare `runtimes.go` (`runtimes.swift`).
+
+A runtime enabled so that cannot start with its defaults (no `package.json`, `@arcships/rutis-runtime` not installed, or no `rutis` in the Python environment, say) does not stop the host: a warning on stderr says why and what to do (`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`), its rows fail as before (`unresolved: no plugin named …`), and the other rows run. A runtime declared under `runtimes` that cannot start still fails the start.
 
 `restart` of `node`, `py`, `bun`, `go` and `swift` (`"no"`, the default; `"on-failure"`; `"exit"`) says what happens when the runtime's process ends on its own (for `go` and `swift`, each of their runtimes'); see [When a runtime ends](#when-a-runtime-ends).
 

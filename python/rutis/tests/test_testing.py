@@ -80,7 +80,7 @@ class Testing(background.TestCase):
             async with load(sneaky, services={"llm": Llm()}):
                 pass
 
-        with self.assertRaisesRegex(PluginTestError, "without declaring it in inject"):
+        with self.assertRaisesRegex(PluginTestError, "is not available to this plugin, which does not declare it in inject"):
             run(undeclared())
 
     def test_strict_mode_crosses_values_as_between_processes(self):

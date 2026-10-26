@@ -29,6 +29,19 @@ impl Language for Bun {
         runtimes.bun.as_ref().map_or(Restart::No, |bun| bun.restart)
     }
 
+    fn runs_by_default(&self, name: &str) -> bool {
+        name.starts_with("bun:")
+    }
+
+    fn enable_default(&self, runtimes: &mut Runtimes) {
+        runtimes.bun = Some(BunRuntime {
+            project: PathBuf::from("."),
+            runtime: None,
+            program: None,
+            restart: Restart::No,
+        });
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(bun) = &mut runtimes.bun {
             at(&mut bun.project);

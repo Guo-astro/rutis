@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FEATURES, handleOf, methodsOf, oldHost, Runtime, scopedId } from '../src/runner.ts'
+import { FEATURES, handleOf, methodsOf, oldHost, Runtime, scopedId, undeclaredUse } from '../src/runner.ts'
 import type { Context } from '../../../node/rutis/src/index.d.ts'
 
 function project(files: Record<string, string>) {
@@ -71,6 +71,32 @@ export function apply(ctx) { ctx.effect(() => { globalThis.cleaned = true }); th
   // The key is free again.
   writeFileSync(join(dir, 'ok.ts'), 'export function apply() {}')
   await runtime.dispatch('', 'rows.load', ['f', './ok.ts', {}, [], [], null])
+})
+
+// A service the plugin does not declare in `inject` is not given to it,
+// running or not: `use` says so and how to fix it (#676); one it declares
+// that is missing is still "not available".
+// guarantee: sdk/undeclared-use
+test('a plugin using a service it does not inject is told to declare it', async () => {
+  const dir = project({
+    'sneaky.ts': `
+export function apply(ctx) {
+  try { ctx.use('tsvc') } catch (error) { globalThis.undeclared = error.message }
+}
+`,
+    'declared.ts': `
+export const inject = ['gone']
+export function apply(ctx) {
+  try { ctx.use('gone') } catch (error) { globalThis.missing = error.message }
+}
+`,
+  })
+  const runtime = new Runtime(dir)
+  await runtime.dispatch('', 'rows.load', ['s', './sneaky.ts', {}, [], [], null])
+  expect((globalThis as any).undeclared).toBe(undeclaredUse('tsvc'))
+  expect(undeclaredUse('tsvc')).toBe("service tsvc is not available to this plugin, which does not declare it in inject: add 'tsvc' to its inject")
+  await runtime.dispatch('', 'rows.load', ['d', './declared.ts', {}, [], [], null])
+  expect((globalThis as any).missing).toBe('service gone is not available')
 })
 
 test('host services expose their declared methods only', () => {

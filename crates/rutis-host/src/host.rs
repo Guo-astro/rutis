@@ -174,6 +174,9 @@ impl Host {
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
         );
+        // Each row's line says what it waits for (`status`): the kernel's
+        // report of a long wait would say it again.
+        root.report_waiting_after(None);
         let mut catalog = ServiceCatalog::new();
         catalog.share_by_name();
 
@@ -227,7 +230,25 @@ impl Host {
         };
         // In reverse: Node's resolver, which takes bare npm names, last.
         for language in LANGUAGES.iter().rev() {
-            language.start(config, &mut mount)?;
+            let key = language.key();
+            match language.start(config, &mut mount) {
+                // A runtime the file does not declare, which rows enabled
+                // with its defaults (#666): as before 0.17.2 its rows fail,
+                // and the host runs the others, saying why.
+                Err(error)
+                    if config
+                        .runtimes
+                        .implicit
+                        .iter()
+                        .any(|implicit| implicit == key) =>
+                {
+                    errln!(
+                        "rutis-host: warning: the {key} runtime, which rows use but runtimes does not declare, \
+                         cannot run with its defaults: {error}; its rows do not run"
+                    );
+                }
+                started => started?,
+            }
         }
 
         for remote in &config.runtimes.remote {

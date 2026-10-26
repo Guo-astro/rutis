@@ -14,6 +14,7 @@ mod desired;
 mod instances;
 mod plugins;
 mod reconcile;
+mod waits;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -31,10 +32,13 @@ use crate::persist::{NoPersist, Persist, Version};
 use crate::resolver::{Resolved, Resolver, Values};
 use crate::LoaderError;
 
-pub use check::{CheckReport, Provider, Requirement, RowCheck, RowStatus, Supply, Unknown};
+pub use check::{
+    CheckReport, Clash, CycleLink, Provider, Requirement, RowCheck, RowStatus, Supply, Unknown,
+};
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
+pub use waits::{Wait, WaitReason};
 
 pub struct LoaderOptions {
     pub persist: Arc<dyn Persist>,

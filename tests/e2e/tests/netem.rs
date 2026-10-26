@@ -690,7 +690,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
         Ok(json!(null)),
         "B's listener is withdrawn while the link is down"
     );
-    a.expect("infer: waiting for its services");
+    a.expect("infer: waiting for ");
     probe.event(&mut a, "stopped");
     // B's own heartbeat ends its session: one state line (#434), then it
     // unloads the plugin.

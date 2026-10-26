@@ -92,6 +92,17 @@ def removed(field: str) -> str:
     )
 
 
+def undeclared_use(name: str) -> str:
+    """What a plugin using `name`, which neither its `inject` nor its row's
+    declares, is told when the service is not there for it: what to declare,
+    not that it is missing (#676). The same in every runtime and testing
+    tool."""
+    return (
+        f"service {name} is not available to this plugin, which does not declare it "
+        f"in inject: add '{name}' to its inject"
+    )
+
+
 def old_host(name: str) -> str:
     """What a plugin providing the undeclared service `name` is told when
     the host, older than 0.12, mounted without `announce`: such a host
@@ -190,6 +201,10 @@ class Row:
     provided: list = field(default_factory=list)
     # Ids of the slots of services it announced.
     announced: list = field(default_factory=list)
+    # The names it declares it uses: its plugin's `inject`, and its row's.
+    inject: set = field(default_factory=set)
+    # The row's own `inject` (extra names it waits for).
+    row_inject: list = field(default_factory=list)
     # Announcements and registrations the host has yet to answer, while
     # the row loads: those sent from the session's loop, and from other
     # threads; (sent, whether it is a registration).
@@ -218,7 +233,13 @@ class Context(sdk.Context):
         self._emitter = Emitter(lambda *request: runtime.send(row, *request))
 
     def use(self, name: str) -> Any:
-        return self._runtime.lookup(self._row.id(name))
+        try:
+            return self._runtime.lookup(self._row.id(name))
+        except LookupError:
+            # Not given to it, though it may run: say so (#676).
+            if name not in self._row.inject:
+                raise LookupError(undeclared_use(name)) from None
+            raise
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         return self._runtime.provide(self._row, name, value)
@@ -386,6 +407,7 @@ class Runtime:
         isolate: dict | None = None,
         scope: list | None = None,
         id: str | None = None,
+        inject: list | None = None,
     ) -> None:
         if key in self.rows:
             raise ValueError(f"row {key} is already loaded")
@@ -406,6 +428,8 @@ class Runtime:
                 )
         plugin = self._plugin(module)
         row.plugin = plugin.name
+        row.row_inject = [name for name in inject or [] if isinstance(name, str)]
+        row.inject = set(plugin.inject) | set(row.row_inject)
         self.rows[key] = row
         for name, methods in exports.items():
             self.slots[row.id(name)] = Slot(key, set(methods), name)
@@ -482,7 +506,7 @@ class Runtime:
             raise ValueError(f"row {key} is not loaded")
         id = self.bus.row_id(key)
         await self.unload(key)
-        await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id)
+        await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id, row.row_inject)
 
     def module(self, name: str, fresh: bool = True, check: Callable[[Any], Any] | None = None):
         """The plugin module, imported again when its source file changed
@@ -865,13 +889,14 @@ class Runtime:
             return self._dispose_and_drain()
         if method == "rows.load":
             # From rutis 0.13 the seventh argument is `{ scope, id }`.
-            key, module, config, isolate, _inject, exports, row = (list(args) + [None] * 7)[:7]
+            key, module, config, isolate, inject, exports, row = (list(args) + [None] * 7)[:7]
             labels = {name: label for name, label in (isolate or [])}
             scope = row.get("scope") if isinstance(row, dict) else None
             id = row.get("id") if isinstance(row, dict) else None
             # A module's name, or a plugin definition this runtime handed over.
             entry = module if isinstance(module, sdk.Plugin) else str(module)
-            return self.load(key, entry, config, exports, labels, scope, id)
+            injected = inject if isinstance(inject, list) else None
+            return self.load(key, entry, config, exports, labels, scope, id, injected)
         if method == "rows.update":
             key, config = args
             return self.update(key, config)

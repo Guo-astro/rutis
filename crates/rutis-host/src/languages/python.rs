@@ -36,6 +36,18 @@ impl Language for Python {
         }
     }
 
+    fn runs_by_default(&self, name: &str) -> bool {
+        name.starts_with("py:")
+    }
+
+    fn enable_default(&self, runtimes: &mut Runtimes) {
+        runtimes.py = Some(PythonRuntime {
+            project: PathBuf::from("."),
+            python: None,
+            restart: Restart::No,
+        });
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(py) = &mut runtimes.py {
             at(&mut py.project);
@@ -107,11 +119,13 @@ impl Language for Python {
 /// The Python runtime of `py.project`, with an interpreter that has the
 /// `rutis` package.
 fn runtime(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
-    let interpreter = py
+    let named = py
         .python
         .clone()
         .or_else(|| std::env::var_os("VIRTUAL_ENV").map(|venv| venv_python(Path::new(&venv))))
-        .or_else(|| Some(venv_python(&py.project.join(".venv"))).filter(|venv| venv.exists()))
+        .or_else(|| Some(venv_python(&py.project.join(".venv"))).filter(|venv| venv.exists()));
+    let interpreter = named
+        .clone()
         .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON));
     // A source checkout of the rutis package (tests, development of rutis).
     let source = std::env::var_os("RUTIS_PYTHON_PATH");
@@ -121,24 +135,113 @@ fn runtime(py: &PythonRuntime) -> Result<LocalRuntime, Error> {
         check.env("PYTHONPATH", source);
     }
     let found = check.output().map_err(|error| {
-        format!(
-            "the Python runtime cannot run its interpreter {} ({error}): install Python, \
-             or set runtimes.py.python to an interpreter that has the rutis package",
-            interpreter.display()
-        )
+        not_there(&interpreter).unwrap_or_else(|| {
+            format!(
+                "the Python runtime cannot run its interpreter {} ({error}): install Python, \
+                 or set runtimes.py.python to an interpreter that has the rutis package",
+                interpreter.display()
+            )
+        })
     })?;
     if !found.status.success() {
-        return Err(format!(
-            "the Python runtime needs the rutis package in {}: run `{} -m pip install rutis` (or `uv add rutis`)",
-            interpreter.display(),
-            interpreter.display()
-        ));
+        return Err(match named {
+            Some(interpreter) => missing_rutis(&interpreter),
+            None => no_environment(&py.project),
+        });
     }
     let mut runtime = LocalRuntime::python(&py.project).interpreter(interpreter);
     if let Some(source) = source {
         runtime = runtime.python_path(source);
     }
     Ok(runtime)
+}
+
+/// The `rutis` package of this host's version, as pip names it.
+fn package() -> String {
+    format!("rutis=={}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The interpreter `interpreter` without the rutis package: how to add it.
+fn missing_rutis(interpreter: &Path) -> String {
+    let python = quoted(interpreter);
+    format!(
+        "the Python runtime needs the rutis package in {}: run `uv pip install --python {python} {package}` \
+         (or `{python} -m pip install {package}`)",
+        interpreter.display(),
+        package = package()
+    )
+}
+
+/// No environment named or found, and `python3` without rutis: the
+/// project's own, which the host then uses by itself.
+fn no_environment(project: &Path) -> String {
+    let venv = project.join(".venv");
+    format!(
+        "the Python runtime found no environment (runtimes.py.python, $VIRTUAL_ENV or {}), \
+         and {DEFAULT_PYTHON} has no rutis package: create the project's environment with {}",
+        venv.display(),
+        create_venv(&venv)
+    )
+}
+
+/// An interpreter named that is not there, in a virtual environment's
+/// place: the environment is to be created (it is not there), or created
+/// again (it lacks its interpreter). `None` for any other interpreter.
+fn not_there(interpreter: &Path) -> Option<String> {
+    if interpreter.exists() {
+        return None;
+    }
+    let venv = venv_of(interpreter)?;
+    if !venv.exists() {
+        return Some(format!(
+            "the Python runtime's environment {} does not exist: create it with {}",
+            venv.display(),
+            create_venv(&venv)
+        ));
+    }
+    venv.join("pyvenv.cfg").exists().then(|| {
+        format!(
+            "the Python runtime's environment {} has no interpreter {}: create it again with {}",
+            venv.display(),
+            interpreter.display(),
+            create_venv(&venv)
+        )
+    })
+}
+
+/// The commands that create the virtual environment `venv` with the
+/// rutis package in it.
+fn create_venv(venv: &Path) -> String {
+    let python = quoted(&venv_python(venv));
+    format!(
+        "`uv venv {venv}` and `uv pip install --python {python} {package}` \
+         (or `{DEFAULT_PYTHON} -m venv {venv}` and `{python} -m pip install {package}`)",
+        venv = quoted(venv),
+        package = package()
+    )
+}
+
+/// `path` as a shell takes it: quoted when it has a space or a character
+/// the shell would read.
+fn quoted(path: &Path) -> String {
+    let text = path.display().to_string();
+    let plain = text
+        .chars()
+        .all(|c| c.is_alphanumeric() || "/\\._-:+=@%,~".contains(c));
+    match (plain, cfg!(windows)) {
+        (true, _) => text,
+        (false, true) => format!("\"{text}\""),
+        (false, false) => format!("'{}'", text.replace('\'', "'\\''")),
+    }
+}
+
+/// The virtual environment whose interpreter `interpreter` is, by its
+/// place (`<venv>/bin/python`, on Windows `<venv>\Scripts\python.exe`).
+fn venv_of(interpreter: &Path) -> Option<PathBuf> {
+    let dir = interpreter.parent()?;
+    let bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    let named = interpreter.file_name()?.to_str()?.starts_with("python");
+    (named && dir.file_name()? == bin).then(|| dir.parent().map(Path::to_path_buf))?
 }
 
 /// The first entry under `[project.entry-points."rutis.plugins"]`: its name
@@ -214,3 +317,65 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/python/.github/workflows/publish.yml"),
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An interpreter's environment is known by its place.
+    #[cfg(unix)]
+    #[test]
+    fn an_interpreter_in_an_environment_names_it() {
+        assert_eq!(
+            venv_of(Path::new("/app/.venv/bin/python")),
+            Some(PathBuf::from("/app/.venv"))
+        );
+        assert_eq!(
+            venv_of(Path::new("/app/env/bin/python3.12")),
+            Some(PathBuf::from("/app/env"))
+        );
+        assert_eq!(venv_of(Path::new("/usr/local/python")), None);
+        assert_eq!(venv_of(Path::new("python3")), None);
+        // A system interpreter that is not there is not an environment to
+        // create: its directory is there, and is no environment.
+        assert_eq!(not_there(Path::new("/usr/bin/python-not-here")), None);
+        let dir = std::env::temp_dir().join("rutis-not-there-test");
+        assert!(not_there(&dir.join("absent/.venv/bin/python"))
+            .unwrap()
+            .contains("does not exist: create it with `uv venv"));
+    }
+
+    /// Paths with spaces are quoted in the commands given.
+    #[cfg(unix)]
+    #[test]
+    fn paths_with_spaces_are_quoted() {
+        assert_eq!(quoted(Path::new("/app/.venv")), "/app/.venv");
+        assert_eq!(quoted(Path::new("/my app/.venv")), "'/my app/.venv'");
+        assert!(create_venv(Path::new("/my app/.venv"))
+            .starts_with("`uv venv '/my app/.venv'` and `uv pip install --python '/my app/.venv/bin/python' rutis=="));
+    }
+
+    /// What creates an environment, and what adds the package to one: the
+    /// package of this host's version (#666).
+    /// guarantee: host/error-messages
+    #[cfg(unix)]
+    #[test]
+    fn the_python_messages_give_the_commands() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            create_venv(Path::new("/app/.venv")),
+            format!(
+                "`uv venv /app/.venv` and `uv pip install --python /app/.venv/bin/python rutis=={version}` \
+                 (or `python3 -m venv /app/.venv` and `/app/.venv/bin/python -m pip install rutis=={version}`)"
+            )
+        );
+        assert_eq!(
+            missing_rutis(Path::new("/usr/bin/python3")),
+            format!(
+                "the Python runtime needs the rutis package in /usr/bin/python3: run \
+                 `uv pip install --python /usr/bin/python3 rutis=={version}` \
+                 (or `/usr/bin/python3 -m pip install rutis=={version}`)"
+            )
+        );
+    }
+}

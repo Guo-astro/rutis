@@ -159,7 +159,9 @@ func TestAPluginMayUseOnlyWhatItInjects(t *testing.T) {
 			return ctx.Use("llm", &llm)
 		},
 	})
-	if message := loadFails(t, sneaky, map[string]any{"llm": fakeLLM{}}); !strings.Contains(message, "without declaring it in Inject") {
+	// guarantee: sdk/undeclared-use
+	want := `service llm is not available to this plugin, which does not declare it in Inject: add "llm" to its Inject`
+	if message := loadFails(t, sneaky, map[string]any{"llm": fakeLLM{}}); !strings.Contains(message, want) {
 		t.Fatal(message)
 	}
 }

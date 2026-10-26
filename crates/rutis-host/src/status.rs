@@ -12,7 +12,7 @@ use crate::outln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
 use rutis_loader::peer::PeerResolver;
-use rutis_loader::report::EntryStatus;
+use rutis_loader::report::{EntryInfo, EntryStatus, Wait, WaitReason};
 use rutis_loader::Loader;
 
 use crate::languages::BinaryHost;
@@ -36,6 +36,81 @@ pub fn describe(status: &EntryStatus) -> String {
             _ => format!("{:?}", snapshot.state).to_lowercase(),
         },
         status => format!("{status:?}").to_lowercase(),
+    }
+}
+
+/// What a waiting row's line says: `waiting for runtime <name> (…)` while
+/// its own runtime is not there ([`own_runtime_line`]); otherwise
+/// `waiting for <service> (<why>)`, one per service it waits for, joined
+/// by `; `; `waiting for its services` when rutis cannot say which.
+/// `runtime(name)`: the state of the local runtime `name`.
+pub fn describe_waits(waits: &[Wait], runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> String {
+    if let Some(own) = waits
+        .iter()
+        .find(|wait| matches!(wait.reason, WaitReason::OwnRuntime))
+    {
+        return own_runtime_line(&own.service, runtime(&own.service).as_ref());
+    }
+    if waits.is_empty() {
+        return "waiting for its services".into();
+    }
+    let each: Vec<String> = waits
+        .iter()
+        .map(|wait| format!("{} ({})", wait.service, why(&wait.reason, runtime)))
+        .collect();
+    format!("waiting for {}", each.join("; "))
+}
+
+/// A row waiting for its own runtime `name`, in the state `state` (`None`:
+/// one the host does not run, a remote one): starting, down and how its
+/// process ended, stopped, or running while its rows are resolved again.
+pub fn own_runtime_line(name: &str, state: Option<&RuntimeState>) -> String {
+    match state {
+        Some(RuntimeState::Starting) => format!("waiting for runtime {name} (starting)"),
+        Some(RuntimeState::Down(reason)) => {
+            format!(
+                "waiting for runtime {name} (down: {})",
+                how_it_ended(reason)
+            )
+        }
+        Some(RuntimeState::Idle) => format!("waiting for runtime {name} (stopped)"),
+        _ => format!("waiting for runtime {name}"),
+    }
+}
+
+/// Why a service a row waits for is not there, in a few words.
+fn why(reason: &WaitReason, runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> String {
+    // An error's first line: the status line is one line.
+    let first = |error: &str| error.lines().next().unwrap_or_default().to_owned();
+    match reason {
+        WaitReason::NoProvider { like: Some(like) } => {
+            format!("no row provides it; did you mean {like}?")
+        }
+        WaitReason::NoProvider { like: None } => "no row provides it".into(),
+        WaitReason::Explained(why) => first(why),
+        WaitReason::ProviderDisabled { row } => {
+            format!("row {row}, which provides it, is disabled")
+        }
+        WaitReason::ProviderFailed { row, error } => format!("row {row} failed: {}", first(error)),
+        WaitReason::ProviderInactive { row } => {
+            format!("row {row}, which provides it, is not running")
+        }
+        WaitReason::ProviderRuntime { row, runtime: name } => match runtime(name) {
+            Some(RuntimeState::Down(_)) => format!("row {row}'s runtime {name} is down"),
+            Some(_) => format!("row {row}'s runtime {name} is not running yet"),
+            // One the host does not run (a remote one): its state unknown.
+            None => format!("row {row} waits for its runtime {name}"),
+        },
+        WaitReason::Cycle { row, service } => {
+            format!("row {row} waits for {service} from this row: they inject each other")
+        }
+        WaitReason::ProviderWaiting { row, services } => {
+            format!("row {row} waits too, for {}", services.join(", "))
+        }
+        WaitReason::ProviderStarting { row } => format!("row {row} is starting"),
+        WaitReason::ProviderRunning { row } => format!("row {row} has not provided it"),
+        WaitReason::Other(said) => first(said),
+        _ => "not there yet".into(),
     }
 }
 
@@ -188,8 +263,15 @@ impl Shown {
     /// The lines for what changed since the last call: runtimes' states,
     /// then rows' states, then links' states.
     pub fn changes(&mut self, followed: &Followed) -> Vec<String> {
-        let mut out = self.runtime_changes(&followed.runtime_states());
-        out.extend(self.row_changes(&followed.loader, &followed.peers));
+        let states = followed.runtime_states();
+        let mut out = self.runtime_changes(&states);
+        let runtime = |name: &str| {
+            states
+                .iter()
+                .find(|(runtime, _, _)| runtime == name)
+                .map(|(_, state, _)| state.clone())
+        };
+        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime));
         out
     }
 
@@ -219,11 +301,25 @@ impl Shown {
         out
     }
 
-    fn row_changes(&mut self, loader: &Loader, peers: &PeerResolver) -> Vec<String> {
+    fn row_changes(
+        &mut self,
+        loader: &Loader,
+        peers: &PeerResolver,
+        runtime: &dyn Fn(&str) -> Option<RuntimeState>,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
         let mut links = BTreeMap::new();
-        for entry in loader.entries() {
+        let entries = loader.entries();
+        // What every waiting row waits for, from one snapshot per look.
+        let pending = |entry: &EntryInfo| matches!(&entry.status, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending);
+        let waiting: Vec<&EntryInfo> = entries.iter().filter(|entry| pending(entry)).collect();
+        let mut waits = match waiting.is_empty() {
+            true => Vec::new(),
+            false => loader.waits_of(&waiting),
+        }
+        .into_iter();
+        for entry in &entries {
             let key = match &entry.instance {
                 Some(instance) => format!("{} in {:?}", entry.id, instance.plugin),
                 None => entry.id.clone(),
@@ -246,7 +342,11 @@ impl Shown {
                 let ready = matches!(state, LinkState::Ready { .. });
                 links.insert(key.clone(), (ready, printed));
             }
-            rows.insert(key, describe(&entry.status));
+            let line = match pending(entry) {
+                true => describe_waits(&waits.next().unwrap_or_default(), runtime),
+                false => describe(&entry.status),
+            };
+            rows.insert(key, line);
         }
         let mut out = Vec::new();
         for (id, line) in &rows {
@@ -458,6 +558,126 @@ mod tests {
             .runtime_changes(&[("node".to_owned(), RuntimeState::Starting, 3)])
             .is_empty());
         assert_eq!(shown.runtime_changes(&down(3)), line);
+    }
+
+    /// A waiting row says what it waits for and why (#676).
+    /// guarantee: host/row-state-lines
+    #[test]
+    fn a_waiting_row_says_what_it_waits_for_and_why() {
+        // `py` down, `node` starting, others not the host's (remote).
+        let down = |name: &str| match name {
+            "py" => Some(RuntimeState::Down(
+                "runtime process exited with signal: 9 (SIGKILL)".into(),
+            )),
+            "node" => Some(RuntimeState::Starting),
+            _ => None,
+        };
+        let row = |row: &str| row.to_owned();
+        let cases = [
+            (vec![], "waiting for its services"),
+            (
+                vec![Wait::new(
+                    "lmm",
+                    WaitReason::NoProvider {
+                        like: Some("llm".into()),
+                    },
+                )],
+                "waiting for lmm (no row provides it; did you mean llm?)",
+            ),
+            (
+                vec![
+                    Wait::new(
+                        "llm",
+                        WaitReason::ProviderFailed {
+                            row: row("model"),
+                            error: "plugin failed: boom\n    at apply".into(),
+                        },
+                    ),
+                    Wait::new("blob", WaitReason::NoProvider { like: None }),
+                ],
+                "waiting for llm (row model failed: plugin failed: boom); blob (no row provides it)",
+            ),
+            (
+                vec![Wait::new(
+                    "llm",
+                    WaitReason::ProviderRuntime {
+                        row: row("model"),
+                        runtime: "py".into(),
+                    },
+                )],
+                "waiting for llm (row model's runtime py is down)",
+            ),
+            (
+                vec![Wait::new(
+                    "llm",
+                    WaitReason::ProviderRuntime {
+                        row: row("model"),
+                        runtime: "node".into(),
+                    },
+                )],
+                "waiting for llm (row model's runtime node is not running yet)",
+            ),
+            (
+                vec![Wait::new(
+                    "llm",
+                    WaitReason::ProviderRuntime {
+                        row: row("model"),
+                        runtime: "gpu".into(),
+                    },
+                )],
+                "waiting for llm (row model waits for its runtime gpu)",
+            ),
+            (
+                vec![Wait::new(
+                    "bsvc",
+                    WaitReason::Cycle {
+                        row: row("b"),
+                        service: "asvc".into(),
+                    },
+                )],
+                "waiting for bsvc (row b waits for asvc from this row: they inject each other)",
+            ),
+            (
+                vec![Wait::new(
+                    "mail",
+                    WaitReason::ProviderDisabled { row: row("mailer") },
+                )],
+                "waiting for mail (row mailer, which provides it, is disabled)",
+            ),
+            (
+                vec![
+                    Wait::new("llm", WaitReason::NoProvider { like: None }),
+                    Wait::new("py", WaitReason::OwnRuntime),
+                ],
+                "waiting for runtime py (down: exited with signal: 9 (SIGKILL))",
+            ),
+        ];
+        for (waits, line) in cases {
+            assert_eq!(describe_waits(&waits, &down), line, "{waits:?}");
+        }
+    }
+
+    /// A row waiting for its own runtime names it and its state.
+    /// guarantee: host/row-state-lines
+    #[test]
+    fn a_row_waiting_for_its_runtime_names_it() {
+        let cases = [
+            (
+                Some(RuntimeState::Starting),
+                "waiting for runtime py (starting)",
+            ),
+            (
+                Some(RuntimeState::Down(
+                    "runtime ended: the process exited with exit status: 1".into(),
+                )),
+                "waiting for runtime py (down: exited with exit status: 1)",
+            ),
+            (Some(RuntimeState::Idle), "waiting for runtime py (stopped)"),
+            (None, "waiting for runtime py"),
+        ];
+        for (state, line) in cases {
+            assert_eq!(own_runtime_line("py", state.as_ref()), line);
+        }
     }
 
     #[test]

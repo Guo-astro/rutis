@@ -40,6 +40,26 @@ impl Language for Node {
         }
     }
 
+    /// A JavaScript or TypeScript file, named by a path or a `file:` URL
+    /// (an npm name may be another resolver's: not guessed).
+    fn runs_by_default(&self, name: &str) -> bool {
+        let file = ["./", "../", "/", "file:"]
+            .iter()
+            .any(|start| name.starts_with(start));
+        let script = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]
+            .iter()
+            .any(|end| name.ends_with(end));
+        file && script
+    }
+
+    fn enable_default(&self, runtimes: &mut Runtimes) {
+        runtimes.node = Some(NodeRuntime {
+            project: PathBuf::from("."),
+            runtime: None,
+            restart: Restart::No,
+        });
+    }
+
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf)) {
         if let Some(node) = &mut runtimes.node {
             at(&mut node.project);

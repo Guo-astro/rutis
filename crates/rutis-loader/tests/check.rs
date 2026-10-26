@@ -354,3 +354,126 @@ async fn a_marked_type_serves_its_name_once_provided() {
         "{by:?}"
     );
 }
+
+/// Rows that inject each other's services make a cycle: the check names
+/// it, link by link, once; a row waiting on the cycle is not part of it.
+/// guarantee: loader/check
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_that_inject_each_other_are_a_cycle() {
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "a", "name": "plain", "config": { "requires": ["bsvc"], "provides": ["asvc"] } },
+            { "id": "b", "name": "plain", "config": { "requires": ["csvc"], "provides": ["bsvc"] } },
+            { "id": "c", "name": "plain", "config": { "requires": ["asvc"], "provides": ["csvc"] } },
+            { "id": "user", "name": "plain", "config": { "requires": ["asvc"] } },
+            { "id": "clock-user", "name": "plain", "config": { "requires": ["clock"] } },
+            // `p` may start from `q2`, which needs nothing: no cycle.
+            { "id": "p", "name": "plain", "config": { "requires": ["qsvc"], "provides": ["psvc"] } },
+            { "id": "q", "name": "plain", "config": { "requires": ["psvc"], "provides": ["qsvc"] } },
+            { "id": "q2", "name": "plain", "config": { "provides": ["qsvc"] } },
+        ])))
+        .await;
+    let cycles: Vec<Vec<(String, String, String)>> = report
+        .cycles
+        .iter()
+        .map(|cycle| {
+            cycle
+                .iter()
+                .map(|link| {
+                    (
+                        link.row.clone(),
+                        link.service.clone(),
+                        link.provider.clone(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let link = |row: &str, service: &str, provider: &str| {
+        (row.to_owned(), service.to_owned(), provider.to_owned())
+    };
+    assert_eq!(
+        cycles,
+        [vec![
+            link("a", "bsvc", "b"),
+            link("b", "csvc", "c"),
+            link("c", "asvc", "a")
+        ]]
+    );
+    // A warning: nothing more fails than before.
+    assert_eq!(report.failing().count(), 0);
+}
+
+/// Two rows declaring one service in one scope clash; in scopes of their
+/// own (`isolate`) they do not.
+/// guarantee: loader/check
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_declaring_one_service_in_one_scope_clash() {
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "one", "name": "plain", "config": { "provides": ["llm"] } },
+            { "id": "two", "name": "plain", "config": { "provides": ["llm", "clock"] } },
+            { "id": "own", "name": "plain", "isolate": { "clock": true }, "config": { "provides": ["clock"] } },
+            { "id": "off", "name": "plain", "disabled": true, "config": { "provides": ["llm"] } },
+            // Waits for what nothing provides: it never starts.
+            { "id": "stuck", "name": "plain", "config": { "provides": ["llm"], "requires": ["nowhere"] } },
+        ])))
+        .await;
+    let clashes: Vec<(String, Vec<String>)> = report
+        .clashes
+        .iter()
+        .map(|clash| (clash.service.clone(), clash.rows.clone()))
+        .collect();
+    assert_eq!(
+        clashes,
+        [("llm".to_owned(), vec!["one".to_owned(), "two".to_owned()])]
+    );
+    // Only `stuck` fails: nothing provides what it waits for.
+    let failing: Vec<&str> = report.failing().map(|row| row.id.as_str()).collect();
+    assert_eq!(failing, ["stuck"]);
+}
+
+/// The only row declaring a service is disabled while rows that declare
+/// nothing may provide it: that row is named (#666), not those; a
+/// misspelt name gets the one it meant.
+/// guarantee: loader/check
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disabled_provider_is_named_and_a_misspelt_name_corrected() {
+    let applied = Arc::new(AtomicUsize::new(0));
+    let (_root, loader) = loader(&applied).await;
+    let report = loader
+        .check(&layers(json!([
+            { "id": "llm", "name": "plain", "disabled": true, "config": { "provides": ["llm"] } },
+            { "id": "probe", "name": "plain", "config": { "announces": true } },
+            { "id": "weather", "name": "plain", "config": { "requires": ["llm", "lmm"] } },
+        ])))
+        .await;
+    assert_eq!(
+        supplies(&report, "weather"),
+        [
+            (
+                "llm".into(),
+                Supply::OnlyDisabled {
+                    disabled: vec!["llm".into()],
+                    announced: vec!["probe".into()],
+                }
+            ),
+            ("lmm".into(), Supply::Announced(vec!["probe".into()])),
+        ]
+    );
+    let row = report.rows.iter().find(|row| row.id == "weather").unwrap();
+    let RowStatus::Checked { requires, .. } = &row.status else {
+        panic!("{:?}", row.status)
+    };
+    let likes: Vec<Option<&str>> = requires
+        .iter()
+        .map(|requirement| requirement.like.as_deref())
+        .collect();
+    assert_eq!(likes, [None, Some("llm")]);
+    // As before: a warning, not a failure.
+    assert_eq!(report.failing().count(), 0);
+}
