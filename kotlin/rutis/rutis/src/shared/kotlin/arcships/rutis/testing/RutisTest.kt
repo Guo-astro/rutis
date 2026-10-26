@@ -123,6 +123,10 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
                 host = true,
                 dispatch = ::dispatch,
                 arrive = ::arrive,
+                // A plugin definition the plugin hands to a test double is
+                // the definition itself, as the runtime takes it back
+                // (plugin values, R10).
+                localPlugin = { id -> served.peer.exportedPlugin(id) },
             ),
         )
         session.start()

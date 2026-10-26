@@ -185,6 +185,11 @@ pub(crate) struct Trans {
     pub seq: u64,
     pub status_queue: Vec<FiberStatusChanged>,
     pub terminal_task: Option<Arc<TransitionTask>>,
+    /// Restarts (and updates) called and not yet taken up by the driver.
+    /// They cancel when called; a generation that starts before the
+    /// driver reaches them starts cancelled (as a dispose stops it from
+    /// starting), so its `apply` does not keep them waiting.
+    pub pending_restarts: usize,
 }
 
 pub(crate) struct FiberInner {
@@ -497,6 +502,22 @@ impl FiberInner {
         self.transition.lock().unwrap().state
     }
 
+    /// Whether a dispose of this (non-root) fiber is registered: its
+    /// queued Dispose ends the fiber, so nothing starts or reloads it.
+    fn terminal_registered(&self) -> bool {
+        !self.is_root && self.transition.lock().unwrap().terminal_task.is_some()
+    }
+
+    /// Unload for a registered dispose ahead of its queued Dispose: a
+    /// withdrawal waiting for this fiber sees it stop now, and cleanup
+    /// errors reach `dispose()` (the Dispose reports `tr.error`) instead
+    /// of the error sink of an `unload(Pending)`.
+    async fn unload_for_dispose(this: &Arc<Self>) {
+        if this.state() != FiberState::Disposed {
+            Self::unload(this, NextState::Disposed).await;
+        }
+    }
+
     pub(crate) fn sequenced_snapshot(&self) -> (u64, Snapshot) {
         let tr = self.transition.lock().unwrap();
         let snapshot = Snapshot {
@@ -614,6 +635,10 @@ impl FiberInner {
         if this.state() == FiberState::Disposed {
             return;
         }
+        if this.terminal_registered() {
+            Self::unload_for_dispose(this).await;
+            return;
+        }
         let (satisfied, missing) = this.resolve_deps();
         // 被取消的 Loading 代视同"已装载":排干后再定去留
         let loaded = !matches!(this.state(), FiberState::Pending | FiberState::Disposed);
@@ -649,17 +674,49 @@ impl FiberInner {
         if this.closing.load(Ordering::SeqCst) || shared.closing.load(Ordering::SeqCst) {
             return;
         }
-        this.new_generation_token();
-        this.accesses.lock().unwrap().clear();
+        // The terminal check and the new token share the lock
+        // `register_dispose` takes (#619): a dispose registered before this
+        // point stops the generation from starting (its queued Dispose
+        // runs next); one registered after it cancels the new token.
         let generation = {
             let mut tr = this.transition.lock().unwrap();
+            if tr.terminal_task.is_some() {
+                return;
+            }
+            let token = this.new_generation_token();
+            if tr.pending_restarts > 0 {
+                token.cancel();
+            }
             tr.generation += 1;
             tr.error = None;
             Self::set_state(this, &mut tr, FiberState::Loading);
             tr.generation
         };
+        this.accesses.lock().unwrap().clear();
         this.flush_status();
         drop(_admission);
+
+        // 依赖快照(D21:装载窗口内即"绑定中",驱逐判定读它)。Recorded
+        // before any plugin callback, after the new token, then the gate is
+        // checked again (#620): a withdrawal marks the binding removed and
+        // then reads `last_deps`, this side writes `last_deps` and then
+        // resolves, so at least one sees the other. A withdrawal that finds
+        // this fiber cancels the token of this generation.
+        *this.last_deps.lock().unwrap() = Some(deps.clone());
+        let (now, missing) = this.resolve_deps();
+        if !missing.is_empty() || now != deps {
+            // Not run: back to Pending, as if the first check had refused.
+            // A binding replaced in between counts too: a later withdrawal
+            // of the new one would not find this fiber in `last_deps`.
+            // A withdrawal, a replacement or a provider leaving notifies
+            // the key, so a refresh is queued (a `check` that refuses
+            // waits for the next notification, as when the first check
+            // refused); the unload clears `last_deps`, so that refresh is
+            // not skipped as unchanged.
+            Self::unload(this, NextState::Pending).await;
+            this.flush_status();
+            return;
+        }
 
         // 当前代实例(D32):静态模式既有实例;工厂模式从当前 config 构造,
         // 构造失败按装载失败回滚(fail_load 保持装配原子性)。
@@ -684,9 +741,6 @@ impl FiberInner {
                 return;
             }
         }
-
-        // 依赖快照(D21:装载窗口内即"绑定中",驱逐判定读它)
-        *this.last_deps.lock().unwrap() = Some(deps.clone());
 
         // apply:直接等待退出(D7 第③步"等 apply 退出",不中止)。
         // 预取消(dispose/restart/驱逐)使观察 token 的插件经 ctx.cancelled()
@@ -901,10 +955,29 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                     task.complete(err);
                 }
                 Intent::Restart(task) => {
+                    // Taken up: generations from here on start with a live
+                    // token unless another restart is still pending.
+                    {
+                        let mut tr = this.transition.lock().unwrap();
+                        tr.pending_restarts = tr.pending_restarts.saturating_sub(1);
+                    }
                     if this.closing.load(Ordering::SeqCst)
                         || this.ctx.shared().closing.load(Ordering::SeqCst)
                     {
                         task.complete(Some(Arc::new(ErrorKind::Closed)));
+                        return;
+                    }
+                    // A dispose registered first wins: this restart does not
+                    // happen and reports what `restart()` reports once a
+                    // dispose is registered. Checked before the Disposed
+                    // branch: a restart queued behind a second restart or
+                    // a refresh that already unloaded for the dispose finds
+                    // the fiber Disposed and must not report the dispose's
+                    // result as its own. (A non-root fiber is Disposed only
+                    // with a dispose registered.)
+                    if this.terminal_registered() {
+                        FiberInner::unload_for_dispose(&this).await;
+                        task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
                         return;
                     }
                     let state = this.state();
@@ -927,7 +1000,15 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                     if !matches!(state, FiberState::Pending) {
                         FiberInner::unload(&this, NextState::Pending).await;
                     }
+                    let before = this.transition.lock().unwrap().generation;
                     FiberInner::refresh_deps(&this).await;
+                    let started = this.transition.lock().unwrap().generation != before;
+                    if !started && this.terminal_registered() {
+                        // Registered while this restart was unloading: no
+                        // new generation started (`load()` checks it).
+                        task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
+                        return;
+                    }
                     complete_task(&this, task);
                 }
                 Intent::Dispose => {
@@ -1255,6 +1336,7 @@ fn spawn_fiber_inner(
                 seq: 0,
                 status_queue: Vec::new(),
                 terminal_task: closed_task,
+                pending_restarts: 0,
             }),
             snapshot_tx: snapshot_tx.clone(),
             snapshot_rx,
@@ -1495,7 +1577,7 @@ impl FiberView {
         let this = self.inner.clone();
         Box::pin(async move {
             {
-                let tr = this.transition.lock().unwrap();
+                let mut tr = this.transition.lock().unwrap();
                 if this.ctx.shared().closing.load(Ordering::SeqCst)
                     || this.closing.load(Ordering::SeqCst)
                 {
@@ -1506,8 +1588,12 @@ impl FiberView {
                 {
                     return Err(Arc::new(ErrorKind::InactiveEffect));
                 }
+                // 预取消:运行中的 apply 协作退出。Counted under the same
+                // lock: a generation `load()` starts before the driver takes
+                // this restart up starts cancelled too.
+                tr.pending_restarts += 1;
+                this.cancel_current();
             }
-            this.cancel_current(); // 预取消:运行中的 apply 协作退出
             let task = TransitionTask::new();
             this.post_join(task.clone(), Intent::Restart);
             join_task(&task).await
@@ -1579,7 +1665,7 @@ impl FiberView {
             // 并完成卸载——此时不存,现状交由 dispose 收敛(评审 3 探针:dry-run
             // 后存 config 会落进已死 fiber)。
             {
-                let tr = this.transition.lock().unwrap();
+                let mut tr = this.transition.lock().unwrap();
                 if this.ctx.shared().closing.load(Ordering::SeqCst)
                     || this.closing.load(Ordering::SeqCst)
                 {
@@ -1590,9 +1676,11 @@ impl FiberView {
                 {
                     return Err(Arc::new(ErrorKind::InactiveEffect));
                 }
+                // 预取消(同 restart),counted under the same lock.
+                tr.pending_restarts += 1;
+                this.cancel_current();
             }
             *this.config.lock().unwrap() = Some(boxed);
-            this.cancel_current(); // 预取消:运行中的 apply 协作退出(同 restart)
             let task = TransitionTask::new();
             this.post_join(task.clone(), Intent::Restart);
             join_task(&task).await

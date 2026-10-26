@@ -117,6 +117,9 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
 
     private fun isAny(type: KSType): Boolean = expand(type).declaration.qualifiedName?.asString() == "kotlin.Any"
 
+    /** A plugin definition: it crosses as a `plugin` reference, not by a serializer. */
+    private fun isPlugin(type: KSType): Boolean = expand(type).declaration.qualifiedName?.asString() == "arcships.rutis.Plugin"
+
     private fun isUnit(type: KSType): Boolean = expand(type).declaration.qualifiedName?.asString() == "kotlin.Unit" && !type.isMarkedNullable
 
     /** `type` as Kotlin source. */
@@ -153,6 +156,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         isUnit(type) -> "Unit"
         isAny(type) -> if (type.isMarkedNullable) "$G.toNative($value)" else "($G.toNative($value) ?: throw IllegalArgumentException(\"null where a value was expected\"))"
         isFunction(type) -> remoteFunction(type, "$G.remoteResult($value)")
+        isPlugin(type) -> if (type.isMarkedNullable) "$G.pluginResult($value, true)" else "$G.pluginResult($value, false)!!"
         else -> "$G.decode(${serializer(type)}, $value)"
     }
 
@@ -161,6 +165,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         isUnit(type) -> "null"
         isAny(type) -> "$G.nativeResult($value)"
         isFunction(type) -> if (type.isMarkedNullable) "$value?.let { f -> ${exportFunction(type.makeNotNullable(), "f")} }" else exportFunction(type, value)
+        isPlugin(type) -> "$G.plugin($value)"
         else -> "$G.encode(${serializer(type)}, $value)"
     }
 
@@ -220,6 +225,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
                         val remote = remoteFunction(type, "$G.remote(args, $i, \"$method\")")
                         if (type.isMarkedNullable) "($local ?: if ($i < args.size && args[$i] is arcships.rutis.RemoteFunction) $remote else null)" else "($local ?: $remote)"
                     }
+                    isPlugin(type) -> if (type.isMarkedNullable) "$G.pluginArg(args, $i, \"$method\", true)" else "$G.pluginArg(args, $i, \"$method\", false)!!"
                     else -> "$G.arg(args, $i, ${serializer(type)}, \"$method\")"
                 }
             }

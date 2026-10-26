@@ -747,7 +747,10 @@ impl Plugin for WithdrawnWhileValidating {
             let runtime = tokio::runtime::Handle::current();
             let withdrawal = std::thread::spawn(move || runtime.block_on(disposer.dispose()));
             *self.withdrawal.lock().unwrap() = Some(withdrawal);
-            // The removal is marked as soon as the withdrawal starts.
+            // Only until the removal is marked: the withdrawal waits for this
+            // consumer to stop (core/D14), so it cannot end in here. The
+            // provider is a child plugin, so this read is not a cleanup-time
+            // self-access and fails as soon as the removal is marked.
             let start = std::time::Instant::now();
             while self.ctx.get::<Llm>().is_some() {
                 assert!(start.elapsed() < Duration::from_secs(10), "never withdrawn");
@@ -763,10 +766,35 @@ impl Plugin for WithdrawnWhileValidating {
     }
 }
 
+/// Provides `Llm` and hands out the disposer of that one service.
+struct HandsOutLlm(u32, Arc<Mutex<Option<rutis::Disposer>>>);
+
+impl DynPlugin for HandsOutLlm {
+    fn name(&self) -> &str {
+        "hands-out-llm"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            *self.1.lock().unwrap() = Some(ctx.provide(Llm(self.0))?);
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The dependency is withdrawn while the plugin is validated, after the
+/// gate: the withdrawal waits for the plugin, which returns to Pending.
+///
+/// guarantee: core/typed.lost-dependency-pending, core/D14
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pending() {
     let ctx = Ctx::root().unwrap();
-    let first = ctx.provide(Llm(1)).unwrap();
+    let slot = Arc::new(Mutex::new(None));
+    let provider = ctx.plugin(HandsOutLlm(1, slot.clone()));
+    within("the provider", (&provider).into_future())
+        .await
+        .unwrap();
+    let first = slot.lock().unwrap().take().expect("provided");
     let seen = Seen::default();
     let withdrawal = Withdrawal::default();
     let view = ctx.plugin(WithdrawnWhileValidating {

@@ -47,6 +47,24 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 - A plugin that needs a `Context` is a function taking it, as above, given the `applicationContext`.
 - `provides` is not needed: the services a plugin provides reach rutis by themselves, and rutis-side rows in the same instance use them as they are.
 - A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) cannot be made on the main thread: it throws `IllegalStateException`. Call the `suspend` method from a coroutine, or call from another thread. What rutis calls in the application runs on background threads already.
+- A plugin is a value too: the result of `Rutis.define(...)` (a `Plugin`) can be handed to a service as an ordinary argument, and the receiver mounts it elsewhere, one copy per mount. In a `@RutisClient` interface or a `@RutisService` class, the parameter or result type is `Plugin`:
+
+  ```kotlin
+  @RutisClient
+  interface Parts {
+      suspend fun register(scope: String, part: Plugin)
+  }
+
+  val git = Rutis.define<Rutis.NoConfig>(name = "git", inject = listOf("parts")) { ctx, _ ->
+      val pool = openPool()
+      val status = Rutis.define<StatusConfig>(name = "git_status", inject = listOf("history")) { ctx, config ->
+          ctx.provide("gitStatus", GitStatus(pool, config.depth))
+      }
+      ctx.use<Parts>("parts").register("session", status)
+  }
+  ```
+
+  Each copy runs in the application's process; when the application dials in, it mounts only in that connection's instance (or deeper). It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
 
 ## 3. Connecting to rutis
 

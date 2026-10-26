@@ -120,6 +120,10 @@ pub trait CtxInternal: sealed::Sealed {
     ) -> Result<Disposer, Error>;
 
     /// 带 `check()` 谓词的注册(§四:check 门控保留)。
+    ///
+    /// `check` runs whenever a consumer's gate is evaluated, so at least
+    /// twice per load: at the gate and again once the consumer's
+    /// dependencies are recorded, before its plugin callbacks run.
     fn provide_checked<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,

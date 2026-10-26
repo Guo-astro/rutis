@@ -91,6 +91,23 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 
 **一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。
 
+**插件本身也是一个值。** `rutis.Define(...)` 的结果（`*rutis.Definition`）可以照常作为参数交给一个服务（比如应用的部件登记处），函数字段的参数类型直接写 `*rutis.Definition`；收的一方就能在别处挂它，每挂一次是一份，每一份在这个进程里运行，用的是 `Apply` 里准备好的东西。只用来交出的定义可以不写 `Name`：
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* 直接用 pool */ return nil },
+}))
+```
+
+这一行卸载、重载时，从它交出的定义挂出的每一份先结束。见 [插件 API](plugin-api.md#插件定义)。
+
 ### 事件
 
 一个宿主上所有语言、所有进程的监听器都在一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。
@@ -198,7 +215,7 @@ go test ./...
 
 `Provides` 可以不写：`ctx.Provide` 提供的服务自动对外，方法取值的导出方法，都按 `async` 调用。写了就按声明（`Sync` 标出同步方法、`Rename` 改名），`rutis-host check` 也能在运行前知道插件提供什么。
 
-测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置（这一行重新加载，监听器重新登记，排在其他监听器之后）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
+测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
 
 ```go
 func TestEvents(t *testing.T) {
@@ -223,6 +240,8 @@ func TestEvents(t *testing.T) {
 ```
 
 `Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
+
+插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务；它在 `Provides` 里声明的服务也只属于这一份。所以只提供声明过的服务时，同一个定义的几份可以同时加载；没声明的服务名提前不知道，不隔离。描述和报告里，副本的行用来源行的 id。定义属于交出它（作为参数、作为它提供的服务的返回值，或在它发出的事件里）的那一行：这一行卸载或被 `Update`（重启）时，这些副本先卸载，之后再 `Load` 这个定义会失败。副本的配置挂上后不变：在副本上调用 `Update` 或 `Load` 会失败。没有 `Name` 的定义也可以直接 `rutistest.Load`。
 
 ## 4. 在本地宿主里运行
 

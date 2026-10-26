@@ -73,6 +73,8 @@ public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("de
 
 插件的测试照插件指南 §3 用 `RutisTest`，在 iOS 模拟器里同样能跑。
 
+插件交给服务的插件定义（[Swift 插件](swift-plugin.md#把插件交给服务)）在应用的进程里运行；应用连进来时，它只能挂在这个连接所在的实例里（或更里面），应用 `stop()` 或断开时，从它挂出的每一份结束。
+
 ## 3. 开始与停止
 
 ```swift

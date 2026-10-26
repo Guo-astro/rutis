@@ -277,7 +277,7 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 	// A service the plugin does not declare: its methods inferred, all
 	// asynchronous.
 	undeclared := expected.Undeclared
-	if _, declared := describe(t, weather.Plugin).Provides[undeclared.Service]; declared {
+	if _, declared := describe(t, weather.Plugin, weather.Plugin.Name()).Provides[undeclared.Service]; declared {
 		t.Fatalf("the plugin declares %s", undeclared.Service)
 	}
 	forecast := loaded.Service(undeclared.Service)

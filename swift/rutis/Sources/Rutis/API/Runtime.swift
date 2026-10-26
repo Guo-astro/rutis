@@ -6,8 +6,11 @@ import Foundation
 
 /// What this runtime supports of the runtime contract. `rows.announce`:
 /// services rows provide without declaring them are announced with their
-/// methods, to a host whose mount says `announce`.
-let runtimeFeatures = ["rows.v2", "hosts", "leaf", "scopes", "rows.announce"]
+/// methods, to a host whose mount says `announce`. `plugin-values`: a plugin
+/// definition this runtime handed over comes back to be described
+/// (`plugins.read`) and loaded as a row's entry
+/// (docs/design-plugin-values-2026-10-25.md §5).
+let runtimeFeatures = ["rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values"]
 
 /// The Swift compiler this SDK was built with (the mount's `engine`).
 let swiftVersion: String = {
@@ -373,8 +376,13 @@ final class Runtime: @unchecked Sendable {
         guard let definition = definitions[entry] else {
             throw RutisError(name: "NotFound", message: "plugin \(entry) is not in this binary; it has: \(definitions.keys.sorted().joined(separator: ", "))")
         }
+        return try supported(definition)
+    }
+
+    /// `definition`, unless it needs a newer plugin API than this runtime's.
+    func supported(_ definition: Rutis.Definition) throws -> Rutis.Definition {
         if definition.api > Rutis.pluginAPI {
-            throw RutisError(name: "Error", message: "plugin \(entry) needs plugin API \(definition.api); this runtime supports \(Rutis.pluginAPI)")
+            throw RutisError(name: "Error", message: "plugin \(definition.name) needs plugin API \(definition.api); this runtime supports \(Rutis.pluginAPI)")
         }
         return definition
     }
@@ -503,10 +511,20 @@ final class Runtime: @unchecked Sendable {
 
     // ── Rows ─────────────────────────────────────────────────────────
 
+    /// Loads the row `key` running the plugin `entry` names in this binary.
     func load(key: String, name: String?, entry: String, config: Value, exports: [String: [String: String]],
               isolate: [String: String], scope: [Rutis.Scope]) async throws
     {
-        let definition = try definition(entry)
+        try await load(key: key, name: name, entry: entry, definition: try definition(entry), config: config,
+                       exports: exports, isolate: isolate, scope: scope)
+    }
+
+    /// Loads the row `key` running `definition`: the plugin `entry` names in
+    /// this binary, or a plugin definition this runtime handed over (a
+    /// copy, `entry` its name).
+    func load(key: String, name: String?, entry: String, definition: Rutis.Definition, config: Value,
+              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope]) async throws
+    {
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
                       isolate: isolate, scope: scope, settings: settings)
@@ -606,7 +624,7 @@ final class Runtime: @unchecked Sendable {
         }
         // Leaf plugins have no volatile fields: a new config restarts the row.
         try await unload(key)
-        try await load(key: key, name: row.name, entry: row.entry, config: config, exports: row.exports,
+        try await load(key: key, name: row.name, entry: row.entry, definition: row.definition, config: config, exports: row.exports,
                        isolate: row.isolate, scope: row.scope)
     }
 
@@ -682,7 +700,17 @@ final class Runtime: @unchecked Sendable {
             return .undefined
         case "rows.load":
             let key: String = try argument(args, 0)
-            let entry: String = try argument(args, 1)
+            // A plugin's name in this binary, or a plugin definition this
+            // runtime handed over, back as the entry of a copy.
+            let entry: String
+            let plugin: Rutis.Definition
+            if args.count > 1, case let .plugin(handed) = args[1] {
+                plugin = try supported(handed)
+                entry = handed.name
+            } else {
+                entry = try argument(args, 1)
+                plugin = try definition(entry)
+            }
             let config = args.count > 2 ? args[2] : .undefined
             // args[4], the row's `inject`, names services a Cordis row waits
             // for in Cordis; a leaf runtime's rows wait in rutis.
@@ -696,7 +724,7 @@ final class Runtime: @unchecked Sendable {
                 var id: String?
             }
             let placed = (try argument(args, 6, Placed?.self)) ?? Placed()
-            try await load(key: key, name: placed.id, entry: entry, config: config, exports: exports, isolate: isolate,
+            try await load(key: key, name: placed.id, entry: entry, definition: plugin, config: config, exports: exports, isolate: isolate,
                            scope: placed.scope ?? [])
             return .undefined
         case "rows.update":
@@ -710,6 +738,14 @@ final class Runtime: @unchecked Sendable {
         case "rows.schema":
             let entry: String = try argument(args, 0)
             return .data(try definition(entry).described)
+        case "plugins.read":
+            // What a plugin definition this runtime handed over declares, as
+            // rows.schema describes one of the binary's, with its name.
+            guard let value = args.first, case let .plugin(handed) = value else {
+                throw RutisError(name: "TypeError", message: "not a plugin definition: expected a Rutis.define result, got \((args.first ?? .undefined).described)")
+            }
+            guard case let .object(fields) = try supported(handed).described else { return .undefined }
+            return .data(.object([("name", .string(handed.name))] + fields))
         case "hosts.provide":
             let name: String = try argument(args, 0)
             let methods: [String: String] = (try argument(args, 1, [String: String]?.self)) ?? [:]

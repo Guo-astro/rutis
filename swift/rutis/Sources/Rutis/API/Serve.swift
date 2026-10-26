@@ -76,8 +76,13 @@ extension Rutis {
         if let error = ended.block() { throw error }
     }
 
-    package static func serveSession(channel: Channel, project: String, _ plugins: [Definition]) async throws {
+    /// `started` sees the session once it starts (RutisTest reads the
+    /// plugin definitions it exports).
+    package static func serveSession(channel: Channel, project: String, _ plugins: [Definition],
+                                     started: ((Peer) -> Void)? = nil) async throws
+    {
         let (session, runtime) = try startSession(channel: channel, project: project, plugins)
+        started?(session)
         await session.closed()
         if let ended = session.error as? SessionEnded, ended.kind == .refused {
             channel.close()

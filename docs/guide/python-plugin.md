@@ -54,6 +54,20 @@ plugin = define_plugin(
 
 `ctx.use("llm")` 拿到的服务：同一个进程里的插件提供的，就是对象本身；其他语言或其他机器提供的，是代理，方法按声明同步返回或返回可 await 的结果。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
 
+插件本身也是一个值：把 `define_plugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，每一份在这个进程里运行，用的是你在 `apply` 里准备好的东西：
+
+```python
+async def apply(ctx, config):
+    pool = await open_pool()
+
+    def session(ctx, config):
+        ctx.provide("gitStatus", GitStatus(pool, config["depth"]))
+
+    ctx.use("parts").register("session", define_plugin(session, inject=["history"]))
+```
+
+这一行卸载、重载时，从它交出的定义挂出的每一份先结束。测试工具里，替身收到的定义可以直接交给 `load` 装上。见 [插件 API](plugin-api.md#插件定义)。
+
 ## 3. 测试
 
 `rutis.testing` 不需要宿主：
