@@ -120,8 +120,7 @@ async fn check_passes_what_can_run() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
-         greeter (file://<dir>/plugins/greeter.mjs): ok\n  \
+        "greeter (file://<dir>/plugins/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {\"greeter\":{\"hello\":\"sync\"}}\n\
          geo (py:geo): ok\n  \
@@ -170,8 +169,7 @@ async fn check_fails_what_cannot_run() {
     .await;
     assert_eq!(
         checked.stdout,
-        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
-         greeter (file://<dir>/greeter.mjs): ok\n  \
+        "greeter (file://<dir>/greeter.mjs): ok\n  \
          inject: []\n  \
          provides: {}\n\
          future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 4; this runtime supports 3: upgrade @arcships/rutis-runtime where the host runs\n\
@@ -214,8 +212,7 @@ async fn check_refuses_a_configuration_that_is_not_valid() {
     let checked = check(dir.path(), &["rutis.json"], &[]).await;
     assert_eq!(
         checked.stdout,
-        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
-         w (weather): no plugin named \"weather\"\n  \
+        "w (weather): no plugin named \"weather\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n"
     );
     assert_eq!(
@@ -257,8 +254,7 @@ async fn check_without_a_configuration_checks_the_project() {
     assert_eq!(checked.stderr, "");
     assert_eq!(
         checked.stdout,
-        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)\n\
-         weather (file://<dir>/src/index.mjs): ok\n  \
+        "weather (file://<dir>/src/index.mjs): ok\n  \
          inject: []\n  \
          provides: {\"weather\":{\"now\":\"async\"}}\n"
     );
@@ -323,7 +319,6 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): cannot run: nothing provides index, llm",
             "  inject: [\"llm\",\"index\",\"calendar\"]",
             "  provides: {}",
@@ -361,10 +356,10 @@ async fn check_fails_on_a_service_nothing_provides() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"llm\",\"index\",\"calendar\"]",
             "  provides: {}",
+            "  index: only disabled rows provide it (indexer): enable one, or add a row that provides it",
             "indexer (file://<dir>/indexer.mjs): disabled",
             "office (rutis-bridge/peer): ok",
             "notes (file://<dir>/notes.mjs): ok",
@@ -372,10 +367,92 @@ async fn check_fails_on_a_service_nothing_provides() {
             "  provides: {}",
         ]
     );
+    // The disabled row that declares `index` is named, not `notes` (#666).
     assert_eq!(
         checked.stderr,
-        "rutis-host: warning: chat: nothing declares index; it may be provided at runtime by notes\n\
+        "rutis-host: warning: chat: index is declared only by row indexer, which is disabled: enable it, or add a row that provides index\n\
          rutis-host: warning: chat: nothing declares llm; it may be provided at runtime by notes\n"
+    );
+    assert_eq!(checked.status, 0);
+}
+
+/// Rows that inject each other, rows that declare one service, and a
+/// misspelt name: check warns of the first two and suggests the name meant
+/// (#676); the exit status is what it was (a cycle and a clash are
+/// warnings in 0.17). Rows of a language whose runtime is not declared
+/// enable it with its defaults, saying so (#666).
+/// risk: A6
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_warns_of_cycles_clashes_and_misspelt_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
+        "rows": [
+            { "id": "a", "name": "./a.mjs" },
+            { "id": "b", "name": "./b.mjs" },
+            { "id": "one", "name": "./llm.mjs" },
+            { "id": "two", "name": "./llm.mjs" },
+            { "id": "weather", "name": "./weather.mjs" },
+            { "id": "geo", "name": "py:geo" },
+        ]
+    });
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            ("a.mjs", &injecting("['bsvc']", "{ asvc: { get: 'sync' } }")),
+            ("b.mjs", &injecting("['asvc']", "{ bsvc: { get: 'sync' } }")),
+            ("llm.mjs", &injecting("[]", "{ llm: { ask: 'sync' } }")),
+            ("weather.mjs", &injecting("['lmm']", "{}")),
+            (
+                "geo.py",
+                "provides = {'geo': {'find': 'sync'}}\ndef apply(ctx, config):\n    pass\n",
+            ),
+            ("rutis.json", &config.to_string()),
+        ],
+    );
+    let python = repo().join("python/rutis");
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_PYTHON_PATH", &python)],
+    )
+    .await;
+    let stdout: Vec<&str> = checked
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("  config: "))
+        .collect();
+    assert_eq!(
+        stdout,
+        [
+            "a (file://<dir>/a.mjs): ok",
+            "  inject: [\"bsvc\"]",
+            "  provides: {\"asvc\":{\"get\":\"sync\"}}",
+            "b (file://<dir>/b.mjs): ok",
+            "  inject: [\"asvc\"]",
+            "  provides: {\"bsvc\":{\"get\":\"sync\"}}",
+            "one (file://<dir>/llm.mjs): ok",
+            "  inject: []",
+            "  provides: {\"llm\":{\"ask\":\"sync\"}}",
+            "two (file://<dir>/llm.mjs): ok",
+            "  inject: []",
+            "  provides: {\"llm\":{\"ask\":\"sync\"}}",
+            "weather (file://<dir>/weather.mjs): ok",
+            "  inject: [\"lmm\"]",
+            "  provides: {}",
+            "geo (py:geo): ok",
+            "  inject: []",
+            "  provides: {\"geo\":{\"find\":\"sync\"}}",
+        ]
+    );
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: warning: rutis.json: rows use the py runtime (py:geo), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"py\": {} } to say so\n\
+         rutis-host: warning: weather: nothing declares lmm; it may be provided at runtime by a, b, one and 2 more; did you mean llm?\n\
+         rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject\n\
+         rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n"
     );
     assert_eq!(checked.status, 0);
 }
@@ -447,7 +524,6 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "storage (file://<dir>/storage.mjs): ok",
             "  inject: []",
             "  provides: {}",
@@ -493,7 +569,6 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "storage (file://<dir>/storage.mjs): ok",
             "domain (file://<dir>/domain.mjs): cannot run with --strict: nothing declares storage",
             "workspace (file://<dir>/workspace.mjs): cannot run with --strict: nothing declares storageDomain",
@@ -547,7 +622,6 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
     assert_eq!(
         stdout,
         [
-            "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)",
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"embeddings\"]",
             "  provides: {}",

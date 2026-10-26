@@ -174,6 +174,9 @@ impl Host {
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
         );
+        // Each row's line says what it waits for (`status`): the kernel's
+        // report of a long wait would say it again.
+        root.report_waiting_after(None);
         let mut catalog = ServiceCatalog::new();
         catalog.share_by_name();
 

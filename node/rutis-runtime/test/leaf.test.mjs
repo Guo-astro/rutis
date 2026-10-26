@@ -91,3 +91,21 @@ test('a leaf plugin providing an undeclared service is told once per name', asyn
     'rutis: service weather is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host\n',
   ])
 })
+
+// A service the plugin does not declare in `inject` is not given to it,
+// running or not: `use` says so and how to fix it, not that the service
+// does not exist (#676).
+// guarantee: sdk/undeclared-use
+test('a leaf plugin using a service it does not inject is told to declare it', async () => {
+  const root = new Context()
+  let error
+  const spec = definePlugin({
+    apply(ctx) {
+      try { ctx.use('tsvc') } catch (caught) { error = caught }
+    },
+  })
+  const plugin = root.plugin(toCordis(supported(spec, 'sneaky')))
+  await plugin.await()
+  assert.equal(error?.message, "the plugin uses tsvc without declaring it in inject: add 'tsvc' to its inject (rutis gives a plugin only the services it declares, running or not)")
+  await plugin.dispose()
+})

@@ -259,7 +259,7 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
     // wait for it; nothing failed.
     let waiting: Vec<&str> = rows().into_iter().chain(["probe"]).collect();
     for row in &waiting {
-        host.expect(&format!("{row}: waiting for its services"));
+        host.expect(&format!("{row}: waiting for "));
     }
     probe.event(&mut host, "stopped");
     // Later calls fail, naming the service, instead of hanging.
@@ -267,7 +267,14 @@ fn a_killed_runtime_fails_its_calls_and_a_restart_recovers() {
         let error = watch
             .call(&mut host, service, method, json!(["greeting"]))
             .unwrap_err();
-        assert_eq!(error, format!("service {service} is not available"));
+        // `watch` declares nothing: told to, not that it is missing (#676).
+        assert_eq!(
+            error,
+            format!(
+                "the plugin uses {service} without declaring it in inject: add '{service}' \
+                 to its inject (rutis gives a plugin only the services it declares, running or not)"
+            )
+        );
     }
     // The other runtimes are the same processes (C3), and the Python
     // runtime is gone.

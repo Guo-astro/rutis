@@ -1357,7 +1357,7 @@ impl<'a> Run<'a> {
                 self.host.skip_written();
                 self.project.proxy.cut();
                 self.host.expect("gpu: link down (");
-                self.host.expect("infer: waiting for its services");
+                self.host.expect("infer: waiting for ");
                 self.project.far.event(&mut self.host, "stopped");
                 self.project.proxy.restore();
                 self.host.expect("gpu: link connected");
@@ -1376,11 +1376,10 @@ impl<'a> Run<'a> {
     fn kill_for_good(&mut self) {
         assert!(!self.restart);
         self.kill(Runtime::Py);
-        self.host.expect("store: waiting for its services");
+        self.host.expect("store: waiting for ");
         for (slot, row) in self.model.slots.iter().enumerate() {
             if let Some((Runtime::Py, _)) = row {
-                self.host
-                    .expect(&format!("x{}: waiting for its services", slot + 1));
+                self.host.expect(&format!("x{}: waiting for ", slot + 1));
                 self.project.slots[slot].event(&mut self.host, "stopped");
             }
         }
@@ -1391,7 +1390,14 @@ impl<'a> Run<'a> {
                 .watch
                 .call(&mut self.host, service, method, json!(["greeting"]))
                 .unwrap_err();
-            assert_eq!(error, format!("service {service} is not available"));
+            // `watch` declares nothing: told to, not that it is missing (#676).
+            assert_eq!(
+                error,
+                format!(
+                    "the plugin uses {service} without declaring it in inject: add '{service}' \
+                     to its inject (rutis gives a plugin only the services it declares, running or not)"
+                )
+            );
         }
         self.record.op("python runtime killed for good".into());
     }

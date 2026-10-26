@@ -91,6 +91,13 @@ export function methodsOf(object: unknown): Set<string> {
 export const oldHost = (name: string) =>
   `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
 
+// What a plugin using `name`, which its `inject` does not declare, is told
+// when the service is not there for it: rutis gives a plugin only the
+// services it declares, whether or not the service runs. The same in every
+// runtime.
+export const undeclaredUse = (name: string) =>
+  `the plugin uses ${name} without declaring it in inject: add '${name}' to its inject (rutis gives a plugin only the services it declares, running or not)`
+
 export function scopedId(name: string, label?: string | null): string {
   if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
   if (label === '') throw new Error(`service ${JSON.stringify(name)} has an empty scope label`)
@@ -118,6 +125,8 @@ interface Row {
   announced: string[]
   // Announcements the host has yet to answer, while the row loads.
   pending: Array<Promise<unknown>> | null
+  // The row's own `inject` (extra names it waits for).
+  inject: string[] | null
 }
 const idIn = (row: Row, name: string) => scopedId(name, row.isolate.get(name))
 
@@ -263,11 +272,11 @@ export class Runtime {
 
   // ── Rows ──────────────────────────────────────────────────────
 
-  async load(key: string, entry: unknown, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown, id?: unknown) {
+  async load(key: string, entry: unknown, config: unknown, isolate: Array<[string, string]> | null, exports: Row['exports'] | null, scope?: unknown, id?: unknown, inject?: string[] | null) {
     if (this.#rows.has(key)) throw new Error(`row ${key} is already loaded`)
     // Descriptors and reported lines call the row by its id (protocol §4.2).
     this.#bus.nameRow(key, id)
-    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [] }
+    const row: Row = { key, entry, config, exports: exports ?? {}, isolate: new Map(), cleanups: [], chain: chainOf(scope), abort: new AbortController(), provided: [], announced: [], pending: [], inject: inject ?? null }
     for (const [name, label] of isolate ?? []) { scopedId(name, label); row.isolate.set(name, label) }
     for (const name of Object.keys(row.exports)) {
       if (name.includes('#')) throw new Error(`service name ${name} cannot be projected`)
@@ -279,8 +288,18 @@ export class Runtime {
     for (const [name, methods] of Object.entries(row.exports)) {
       this.#slots.set(idIn(row, name), { row: key, methods: new Set(Object.keys(methods ?? {})), object: undefined, handle: null, generation: 0 })
     }
+    // What it declares it uses: its plugin's `inject`, and its row's.
+    const declares = new Set([...plugin.inject, ...(inject ?? [])])
     const ctx = {
-      use: (name: string) => this.lookup(idIn(row, name)),
+      use: (name: string) => {
+        try {
+          return this.lookup(idIn(row, name))
+        } catch (error) {
+          // Not given to it, though it may run: say so (#676).
+          if (!declares.has(name)) throw new Error(undeclaredUse(name))
+          throw error
+        }
+      },
       provide: (name: string, value: unknown) => this.provide(row, name, value),
       effect: (cleanup: () => unknown) => {
         if (typeof cleanup !== 'function') throw new TypeError('effect needs a cleanup function')
@@ -360,7 +379,7 @@ export class Runtime {
     if (!row) throw new Error(`row ${key} is not loaded`)
     const id = this.#bus.rowId(key)
     await this.unload(key)
-    return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain, id)
+    return this.load(key, row.entry, config, [...row.isolate], row.exports, row.chain, id, row.inject)
   }
 
   async #plugin(entry: unknown) {
@@ -424,9 +443,9 @@ export class Runtime {
       case 'events.elsewhere': this.#bus.elsewhere(args[0] ?? {}); return undefined
       case 'events.call': return this.#bus.call(args[0] ?? {})
       case 'rows.load': {
-        const [key, entry, config, isolate, _inject, exports, place] = args
+        const [key, entry, config, isolate, inject, exports, place] = args
         // A module's name, or a plugin definition this runtime handed over.
-        return this.load(key, typeof entry === 'string' ? entry : entry ?? String(entry), config, isolate, exports, place?.scope, place?.id)
+        return this.load(key, typeof entry === 'string' ? entry : entry ?? String(entry), config, isolate, exports, place?.scope, place?.id, Array.isArray(inject) ? inject : null)
       }
       case 'rows.update': return this.update(args[0], args[1])
       case 'rows.unload': return this.unload(args[0])

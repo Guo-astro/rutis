@@ -510,6 +510,19 @@ impl Wire for BridgeWire {
         caller_row().map(|row| row.ctx().clone())
     }
 
+    fn no_caller(&self, method: &str) -> String {
+        match crate::session::unleased() {
+            // A plugin using the service it does not declare (#676).
+            Some(name) => format!(
+                "{method} needs the calling row's context, which a call carries only when the \
+                 calling plugin declares {name} in its inject: add '{name}' to its inject"
+            ),
+            None => format!(
+                "{method} needs the calling row's context: only a row of a language runtime can call it"
+            ),
+        }
+    }
+
     fn error(&self, message: String) -> CallError {
         call_error(Error::Value(message))
     }

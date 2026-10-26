@@ -348,6 +348,19 @@ impl ServiceCatalog {
         None
     }
 
+    /// Every name registered (global or inside instances).
+    pub(crate) fn names(&self) -> impl Iterator<Item = String> + '_ {
+        self.services.keys().cloned()
+    }
+
+    /// The name a global key is registered under.
+    pub(crate) fn name_of(&self, key: &TypeKey) -> Option<String> {
+        self.services
+            .iter()
+            .find(|(_, service)| matches!(&service.key, NameKey::Global(global) if global == key))
+            .map(|(name, _)| name.clone())
+    }
+
     /// The key of a global name; `None` for unknown names and for names
     /// inside instances (see [`ServiceCatalog::key_in`]).
     pub fn key(&self, name: &str) -> Option<TypeKey> {

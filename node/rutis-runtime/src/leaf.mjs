@@ -56,6 +56,12 @@ function emittable(name) {
   return name
 }
 
+// What a leaf plugin using a service it does not declare in `inject` is
+// told when the service is not there for it: rutis gives a plugin only the
+// services it declares, whether or not the service runs. The same in every
+// runtime (Python, Bun, Go).
+export const UNDECLARED = name => `the plugin uses ${name} without declaring it in inject: add '${name}' to its inject (rutis gives a plugin only the services it declares, running or not)`
+
 // What a leaf plugin providing a service its `provides` does not declare
 // is told when the host, older than 0.12, mounted the runtime without
 // `announce`: such a host does not take the service, which stays in this
@@ -84,7 +90,12 @@ export function toCordis(spec, undeclared) {
       const ctx = {
         use(name) {
           const value = context.get(name)
-          if (value === undefined) throw new Error(`service ${name} is not available`)
+          if (value === undefined) {
+            // A service the plugin does not declare is not given to it,
+            // even while it runs: say so, not that it is missing (#676).
+            if (!(spec.inject ?? []).includes(name)) throw new Error(UNDECLARED(name))
+            throw new Error(`service ${name} is not available`)
+          }
           return value
         },
         provide: (name, value) => {

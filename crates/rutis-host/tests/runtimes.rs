@@ -54,7 +54,11 @@ fn a_killed_runtime_is_reported_with_how_it_ended() {
         line.starts_with("runtime py: down (exited with signal: 9"),
         "{line}"
     );
-    host.wait_line(|line| (line == "py-row: waiting for its services").then_some(()));
+    // The row names the runtime it waits for, and how that one ended.
+    host.wait_line(|line| {
+        line.starts_with("py-row: waiting for runtime py (down: exited with signal: 9")
+            .then_some(())
+    });
     assert!(alive(node), "the Node runtime ended too");
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();

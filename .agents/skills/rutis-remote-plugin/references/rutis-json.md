@@ -54,7 +54,7 @@ When a local runtime's (`node`, `py`, `bun`) process ends on its own (a crash, `
 
 | `restart` | What happens |
 | --- | --- |
-| `"no"` (the default) | Nothing: its rows go back to `waiting for its services`, other runtimes and their rows go on; restart the host to bring it back. |
+| `"no"` (the default) | Nothing: its rows go back to `waiting for runtime <name> (down: …)`, other runtimes and their rows go on; restart the host to bring it back. |
 | `"on-failure"` | After a wait, it starts the runtime again, and its rows run again (loaded anew: the plugins' `apply` runs once more); prints `runtime <name>: restarting`, then `runtime <name>: running` once it runs. |
 | `"exit"` | Unloads every other row (each cleanup runs once) and exits with 3, for systemd, Kubernetes or the like to restart the whole host; prints `rutis-host: runtime <name> ended (<reason>), and its restart is "exit": stopping; …` on stderr. |
 

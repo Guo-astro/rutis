@@ -786,7 +786,7 @@ final class Runtime: @unchecked Sendable {
     /// The service `name` as `row` uses it: by its own id.
     func client(_ row: Row, _ name: String) throws -> (Rutis.Client, RutisExportable?) {
         guard row.definition.inject.contains(name) else {
-            throw RutisError(name: "Error", message: "the plugin uses \(name) without declaring it in inject")
+            throw RutisError(name: "Error", message: "the plugin uses \(name) without declaring it in inject: add '\(name)' to its inject (rutis gives a plugin only the services it declares, running or not)")
         }
         let id = row.id(name)
         let (local, host) = lock.withLock { (services[id], hosts[id]) }

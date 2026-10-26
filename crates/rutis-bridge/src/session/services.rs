@@ -140,6 +140,30 @@ impl std::fmt::Debug for CallerRow {
 
 thread_local! {
     static CALLER_ROW: RefCell<Option<CallerRow>> = const { RefCell::new(None) };
+    /// The service a runtime called through its shared registration, which
+    /// carries no row: one a row leases for itself does ([`unleased`]).
+    static UNLEASED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The host service whose call is being dispatched on this thread when a
+/// runtime made it through the registration rows share, not through a
+/// row's own lease: code of a plugin that does not declare the service in
+/// its `inject` (#676). Read while the call starts, as [`caller_row`].
+pub(crate) fn unleased() -> Option<String> {
+    UNLEASED.with(|name| name.borrow().clone())
+}
+
+/// Run `f` with `name` as [`unleased`], the previous one restored after.
+pub(crate) fn with_unleased<R>(name: Option<String>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            UNLEASED.with(|name| *name.borrow_mut() = previous);
+        }
+    }
+    let _restore = Restore(UNLEASED.with(|current| current.replace(name)));
+    f()
 }
 
 /// The row whose call into a [`HostDispatch`] is being dispatched on this

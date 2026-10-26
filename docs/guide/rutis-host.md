@@ -33,13 +33,31 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 rutis-host: listening on <监听器名> <地址:端口>
 ```
 
-之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for its services`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+
+等待的行写明在等什么、为什么（0.17.2 起，#676）。在等自己的运行时时只写运行时；否则每个缺的服务写成 `<服务> (<原因>)`，多个用 `; ` 隔开：
+
+| 输出 | 含义 |
+| --- | --- |
+| `waiting for runtime <名字> (starting)` | 这一行的运行时还在启动（重启中也是） |
+| `waiting for runtime <名字> (down: <原因>)` | 这一行的运行时结束了，原因同 `runtime <名字>: down` |
+| `waiting for runtime <名字> (stopped)` / `waiting for runtime <名字>` | 运行时被宿主停下；或运行时已运行、正在重新解析它的行（远程运行时也这样写） |
+| `waiting for lmm (no row provides it; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
+| `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
+| `waiting for llm (row model, which provides it, is disabled)` | 提供它的行被禁用 |
+| `waiting for llm (row model's runtime py is down)` / `… is not running yet` | 提供它的行在等自己的运行时 |
+| `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
+| `waiting for llm (row model waits too, for x)` | 提供它的行自己也在等 |
+| `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如节点行的 link 断了） |
+| `waiting for its services` | rutis 说不出在等什么时 |
+
+原因变化时（例如提供者从 `starting` 变成失败）再打印一行。
 
 本机的运行时（`node`、`py`、`bun`、Go 的 `go-<二进制>`、Swift 的 `swift-<二进制>`）进程自己结束或起不来时打印一行，恢复运行时再打印一行；`rutis-host` 停止它们（停止宿主、Go 或 Swift 运行时空闲停下）时不打印：
 
 | 输出 | 含义 |
 | --- | --- |
-| `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for its services`，其他运行时和它们的行不受影响 |
+| `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for runtime <名字> (down: …)`，其他运行时和它们的行不受影响 |
 | `runtime <名字>: running` | 打印过 `down` 的运行时重新运行了（`dev` 里重新构建的 Go 或 Swift 运行时） |
 
 一个运行时停在 `down` 时只打印一次；重新启动后又结束的，再打印一次，不论它运行了多久。括号里的原因是给人看的，不保证措辞。
@@ -91,7 +109,27 @@ rutis-host: warning: <行>: nothing declares <服务>; it may be provided at run
 
 最多列三行，多的写成 `and N more`；这一行和可能提供它的行里有 Cordis 行时，后面再加 `; between Cordis rows of one runtime it resolves in Cordis`——同一个 Node 运行时里的 Cordis 行之间的依赖在 Cordis 里解析。声明了的名字照常算作提供者。
 
+唯一声明某个服务的行被禁用时，告警指出这一行，而不是那些可能在运行时提供它的行：
+
+```
+rutis-host: warning: <行>: <服务> is declared only by row <被禁用的行>, which is disabled: enable it, or add a row that provides <服务>
+```
+
+缺的服务名和某个已声明的名字只差一两个字符时，上面的告警和缺服务的说明后面加 `; did you mean <名字>?`。
+
 `check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`，以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
+
+下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 写告警（0.17 里只是告警，退出码不变，`--strict` 也一样；0.18 起改为错误）：
+
+```
+rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+```
+
+- 几行的 `inject` 互相等对方提供的服务（一个环）：谁也起不来。
+- 几行在同一个作用域里声明提供同一个服务：只有先起来的那行提供，其余的失败。用 `isolate` 把名字隔离到各自作用域的行不算。
+
+行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
 
 插件自己的配置由它的运行时在加载时校验，`check` 只打印它的 Schema。
 
@@ -173,7 +211,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 
 | `restart` | 做法 |
 | --- | --- |
-| `"no"`（默认） | 不处理：它的行回到 `waiting for its services`，其他运行时和它们的行照常运行；要让它回来，重启宿主 |
+| `"no"`（默认） | 不处理：它的行回到 `waiting for runtime <名字> (down: …)`，其他运行时和它们的行照常运行；要让它回来，重启宿主 |
 | `"on-failure"` | 等一会儿后重新启动它，它的行随之恢复运行（重新加载，插件的 `apply` 再执行一次）；打印 `runtime <名字>: restarting`，起来后打印 `runtime <名字>: running` |
 | `"exit"` | 卸载其他所有行（每个清理执行一次）后以 3 退出，由 systemd、Kubernetes 等重启整个宿主；stderr 打印 `rutis-host: runtime <名字> ended (<原因>), and its restart is "exit": stopping; …` |
 
@@ -262,7 +300,15 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
-缺少运行时包时，启动失败并给出安装命令。
+缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
+
+行用到某种语言、`runtimes` 里却没有声明它时（例如有 `py:llmbox` 行、没有 `runtimes.py`），宿主按默认设置启用这个运行时，等于写了 `"py": {}`，并在 stderr 写一条告警：
+
+```
+rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
+```
+
+`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算；`runtimes.remote` 里有同名运行时（Node 是有 `language: node` 的远程运行时）时不启用。Go 和 Swift 需要写明二进制，不会自动启用：这样的行在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。
 
 `node`、`py`、`bun`、`go`、`swift` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办（`go`、`swift` 是其每个运行时各自的），见 [运行时结束时](#运行时结束时)。
 

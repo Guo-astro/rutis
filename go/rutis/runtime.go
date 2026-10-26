@@ -902,7 +902,7 @@ type Ctx struct {
 // last result, after at most one value.
 func (c *Ctx) Use(name string, target any) error {
 	if !contains(c.row.def.inject, name) {
-		return fmt.Errorf("the plugin uses %s without declaring it in Inject", name)
+		return fmt.Errorf("the plugin uses %s without declaring it in Inject: add %q to its Inject (rutis gives a plugin only the services it declares, running or not)", name, name)
 	}
 	id := c.row.id(name)
 	c.rt.mu.Lock()

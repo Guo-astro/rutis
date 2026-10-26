@@ -216,6 +216,21 @@ pub enum ErrorKind {
     /// sink.
     #[error("listeners of {listeners} still running after {seconds}s; unloading anyway")]
     ListenersStillRunning { listeners: String, seconds: f64 },
+    /// The plugin `plugin` has waited `seconds` for the services `missing`
+    /// (its `Deps`, its `injects`), which nothing provides: reported once to
+    /// the error sink each time it starts waiting, after
+    /// [`CtxHost::report_waiting_after`](crate::host::CtxHost::report_waiting_after)
+    /// (10 s by default). It goes on waiting: the report is all that
+    /// happens.
+    #[error(
+        "plugin {plugin} is still waiting after {seconds}s for {}: it starts once that is provided",
+        missing.join(", ")
+    )]
+    StillWaiting {
+        plugin: String,
+        seconds: f64,
+        missing: Vec<String>,
+    },
 }
 
 /// How a waterfall's `next` was misused (protocol spec §11 `WaterfallNext`).

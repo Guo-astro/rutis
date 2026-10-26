@@ -496,8 +496,13 @@ impl Dispatch for Imports {
                 .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
                 .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
             let process = self.process.get().cloned();
+            // Through the registration rows share, not a row's own lease:
+            // a method that needs the calling row says what to declare.
+            let unleased = row.is_none().then(|| name_of(name).to_owned());
             return with_calling(process, || {
-                crate::session::with_caller_row(row, || host.invoke(method, args))
+                crate::session::with_caller_row(row, || {
+                    crate::session::with_unleased(unleased, || host.invoke(method, args))
+                })
             });
         }
         if target.is_empty() && method.starts_with("events.") {

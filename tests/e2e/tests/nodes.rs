@@ -218,7 +218,7 @@ fn a_cut_fails_the_call_in_progress_once_and_the_link_comes_back() {
         .expect_err("a call cut off by the network fails, it does not succeed");
     assert!(!error.is_empty(), "the failure says why");
     // The row on B waits for its runtime; what uses it stops.
-    a.expect("infer: waiting for its services");
+    a.expect("infer: waiting for ");
     probe.event(&mut a, "stopped");
 
     // 3. The network comes back: the link redials, the row runs again.
@@ -266,7 +266,7 @@ fn a_node_killed_and_started_again_gives_a_new_lease() {
     a.skip_written();
     b.kill();
     b.wait_exit();
-    a.expect("infer: waiting for its services");
+    a.expect("infer: waiting for ");
     probe.event(&mut a, "stopped");
 
     let (mut b2, port) = node(&s, &token, None);

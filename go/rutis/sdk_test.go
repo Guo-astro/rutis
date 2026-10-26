@@ -159,7 +159,9 @@ func TestAPluginMayUseOnlyWhatItInjects(t *testing.T) {
 			return ctx.Use("llm", &llm)
 		},
 	})
-	if message := loadFails(t, sneaky, map[string]any{"llm": fakeLLM{}}); !strings.Contains(message, "without declaring it in Inject") {
+	// guarantee: sdk/undeclared-use
+	want := `the plugin uses llm without declaring it in Inject: add "llm" to its Inject (rutis gives a plugin only the services it declares, running or not)`
+	if message := loadFails(t, sneaky, map[string]any{"llm": fakeLLM{}}); !strings.Contains(message, want) {
 		t.Fatal(message)
 	}
 }

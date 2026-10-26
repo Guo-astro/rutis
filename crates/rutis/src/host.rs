@@ -102,6 +102,15 @@ pub trait CtxHost: sealed::Sealed {
     /// collecting a diagnostic snapshot.
     fn is_shutting_down(&self) -> bool;
 
+    /// After how long a plugin waiting for services nothing provides (its
+    /// `Deps`, its `injects`) is reported: once each time it starts
+    /// waiting, the error sink gets [`ErrorKind::StillWaiting`] naming them
+    /// (by default a `[rutis] plugin … is still waiting after 10s for …`
+    /// line on stderr). 10 s by default; `None` reports nothing. For the
+    /// whole tree of this context's root; a plugin already waiting keeps
+    /// the setting it started waiting with.
+    fn report_waiting_after(&self, after: Option<Duration>);
+
     /// Read-only, best-effort snapshot of live fibers and services.
     ///
     /// This scans fibers and bindings under separate locks. Concurrent lifecycle

@@ -158,8 +158,40 @@ async fn an_interpreter_without_the_rutis_package() {
     std::fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(
-        first_error(dir.path(), r#"{ "runtimes": { "py": { "python": "./python" } } }"#).await,
-        "the Python runtime needs the rutis package in <dir>/python: run `<dir>/python -m pip install rutis` (or `uv add rutis`)"
+        first_error(
+            dir.path(),
+            r#"{ "runtimes": { "py": { "python": "./python" } } }"#
+        )
+        .await,
+        format!(
+            "the Python runtime needs the rutis package in <dir>/python: run \
+             `uv pip install --python <dir>/python rutis=={version}` \
+             (or `<dir>/python -m pip install rutis=={version}`)",
+            version = env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+/// An environment named that is not there: the commands that create it,
+/// with the rutis package of this host's version (#666).
+/// guarantee: host/error-messages
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_environment_that_is_not_there_says_how_to_create_it() {
+    let _environment = environment();
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        first_error(
+            dir.path(),
+            r#"{ "runtimes": { "py": { "python": ".venv/bin/python" } } }"#
+        )
+        .await,
+        format!(
+            "the Python runtime's environment <dir>/.venv does not exist: create it with \
+             `uv venv <dir>/.venv` and `uv pip install --python <dir>/.venv/bin/python rutis=={version}` \
+             (or `python3 -m venv <dir>/.venv` and `<dir>/.venv/bin/python -m pip install rutis=={version}`)",
+            version = env!("CARGO_PKG_VERSION")
+        )
     );
 }
 

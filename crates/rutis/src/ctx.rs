@@ -36,6 +36,9 @@ pub(crate) struct Shared {
     pub next_plugin_id: AtomicU64,
     pub closing: AtomicBool,
     pub shutdown_task: Mutex<Option<Arc<TransitionTask>>>,
+    /// How long a plugin waits for its services before the error sink is
+    /// told which ones (`CtxHost::report_waiting_after`); `None`: never.
+    pub waiting_report: Mutex<Option<std::time::Duration>>,
 }
 
 pub(crate) struct CtxInner {
@@ -1047,6 +1050,7 @@ impl crate::host::CtxHost for Ctx {
             next_plugin_id: AtomicU64::new(1),
             closing: AtomicBool::new(false),
             shutdown_task: Mutex::new(None),
+            waiting_report: Mutex::new(Some(crate::fiber::waiting::DEFAULT_REPORT_AFTER)),
         });
         let root_fiber = spawn_fiber(&shared, None, None, true);
         root_fiber.ctx.clone()
@@ -1089,6 +1093,10 @@ impl crate::host::CtxHost for Ctx {
 
     fn is_shutting_down(&self) -> bool {
         self.0.shared.closing.load(Ordering::SeqCst)
+    }
+
+    fn report_waiting_after(&self, after: Option<std::time::Duration>) {
+        *self.0.shared.waiting_report.lock().unwrap() = after;
     }
 
     fn diagnostics(&self) -> RuntimeDiagnostics {

@@ -20,6 +20,31 @@ pub struct CheckReport {
     /// What composing the layers skipped (rows without an id, duplicate
     /// ids) and its warnings.
     pub issues: Vec<String>,
+    /// Rows that wait for each other's services (their `inject` makes a
+    /// cycle): none of them starts. Each cycle as its links, in order.
+    pub cycles: Vec<Vec<CycleLink>>,
+    /// Services that several rows that start declare in one scope: only
+    /// one of them can provide it, the others fail.
+    pub clashes: Vec<Clash>,
+}
+
+/// One link of a cycle ([`CheckReport::cycles`]): `row` waits for
+/// `service`, which `provider` provides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CycleLink {
+    pub row: String,
+    pub service: String,
+    pub provider: String,
+}
+
+/// A service several rows declare in one scope ([`CheckReport::clashes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Clash {
+    pub service: String,
+    /// In tree order.
+    pub rows: Vec<String>,
 }
 
 impl CheckReport {
@@ -70,6 +95,9 @@ pub enum RowStatus {
 pub struct Requirement {
     pub service: String,
     pub supply: Supply,
+    /// When it is not known to be provided: a name close to it that a row
+    /// declares or the application registered (a misspelt name).
+    pub like: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +117,12 @@ pub enum Supply {
     /// a published Cordis plugin, say). A Cordis row's dependency on
     /// another row of its runtime resolves in Cordis.
     Announced(Vec<String>),
+    /// Only the disabled rows `disabled` declare it; the rows `announced`,
+    /// which do not say all they provide, may provide it once they run.
+    OnlyDisabled {
+        disabled: Vec<String>,
+        announced: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +246,16 @@ impl Loader {
         }
 
         let catalog = &inner.catalog;
+        // Every name a row declares or the application registered, for a
+        // misspelt one.
+        let mut known: Vec<String> = providers
+            .keys()
+            .chain(disabled.keys())
+            .map(|name| (*name).to_owned())
+            .chain(catalog.names())
+            .collect();
+        known.sort_unstable();
+        known.dedup();
         let supplies: Vec<Vec<Requirement>> = rows
             .iter()
             .map(|check| {
@@ -264,22 +308,34 @@ impl Loader {
                             .filter(|id| **id != check.id)
                             .map(|id| (*id).to_owned())
                             .collect();
+                        let disabled: Vec<String> = disabled
+                            .get(service)
+                            .into_iter()
+                            .flatten()
+                            .map(|id| (*id).to_owned())
+                            .collect();
                         let supply = match (by.is_empty(), others.is_empty()) {
                             (false, _) => Supply::Provided(by),
+                            // Declared by disabled rows only: those are
+                            // named, not the rows that declare nothing.
+                            (true, _) if !announced.is_empty() && !disabled.is_empty() => {
+                                Supply::OnlyDisabled {
+                                    disabled,
+                                    announced,
+                                }
+                            }
                             (true, _) if !announced.is_empty() => Supply::Announced(announced),
                             (true, false) => Supply::Unknown(others),
-                            (true, true) => Supply::Missing {
-                                disabled: disabled
-                                    .get(service)
-                                    .into_iter()
-                                    .flatten()
-                                    .map(|id| (*id).to_owned())
-                                    .collect(),
-                            },
+                            (true, true) => Supply::Missing { disabled },
+                        };
+                        let like = match supply {
+                            Supply::Provided(_) => None,
+                            _ => super::waits::closest(service, &known),
                         };
                         Requirement {
                             service: service.to_owned(),
                             supply,
+                            like,
                         }
                     })
                     .collect()
@@ -290,6 +346,169 @@ impl Loader {
                 *requires = supplied;
             }
         }
-        CheckReport { rows, issues }
+
+        // Several rows that start declaring one name in one scope.
+        // (service, isolation label, instanced group) → rows.
+        type Scope<'a> = (&'a str, Option<String>, Option<&'a str>);
+        let mut declared_in: BTreeMap<Scope, Vec<&str>> = BTreeMap::new();
+        for (id, wanted, declared) in &declared_by {
+            let starts = rows
+                .iter()
+                .any(|row| &row.id == id && matches!(row.status, RowStatus::Checked { .. }));
+            let (true, true, Ok(declared)) = (*wanted, starts, declared) else {
+                continue;
+            };
+            let row = desired.row(id).expect("a row of the tree");
+            let group = desired.instanced_group(row).map(|group| group.id.as_str());
+            for name in &declared.provides {
+                declared_in
+                    .entry((name, isolated_in(&desired, row, name), group))
+                    .or_default()
+                    .push(id);
+            }
+        }
+        let clashes = declared_in
+            .into_iter()
+            .filter(|(_, ids)| ids.len() > 1)
+            .map(|((service, ..), ids)| Clash {
+                service: service.to_owned(),
+                rows: ids.into_iter().map(str::to_owned).collect(),
+            })
+            .collect();
+
+        let cycles = cycles(&rows);
+        CheckReport {
+            rows,
+            issues,
+            cycles,
+            clashes,
+        }
     }
+}
+
+/// The scope `row` provides `name` in: the label of the nearest `isolate`
+/// of it, on the row or a group around it; `None` outside any.
+fn isolated_in(
+    desired: &super::desired::Desired,
+    row: &super::desired::Row,
+    name: &str,
+) -> Option<String> {
+    let mut current = Some(row);
+    while let Some(row) = current {
+        if let Some((_, label)) = row
+            .raw_scope
+            .isolate
+            .iter()
+            .find(|(isolated, _)| isolated == name)
+        {
+            return Some(label.clone());
+        }
+        current = row.parent.as_deref().and_then(|id| desired.row(id));
+    }
+    None
+}
+
+/// The cycles of rows waiting for each other: a row waits for a row when
+/// it requires a service only rows provide, that one among them. One cycle
+/// per set of rows that reach each other, from its first row in tree order.
+fn cycles(rows: &[RowCheck]) -> Vec<Vec<CycleLink>> {
+    // row → (service, provider), in tree order.
+    let mut edges: BTreeMap<usize, Vec<(String, usize)>> = BTreeMap::new();
+    let index = |id: &str| rows.iter().position(|row| row.id == id);
+    for (from, row) in rows.iter().enumerate() {
+        let RowStatus::Checked { requires, .. } = &row.status else {
+            continue;
+        };
+        for requirement in requires {
+            let Supply::Provided(by) = &requirement.supply else {
+                continue;
+            };
+            let only_rows = by
+                .iter()
+                .all(|provider| matches!(provider, Provider::Row(_)));
+            if !only_rows {
+                continue;
+            }
+            for provider in by {
+                if let Provider::Row(id) = provider {
+                    if let Some(to) = index(id) {
+                        edges
+                            .entry(from)
+                            .or_default()
+                            .push((requirement.service.clone(), to));
+                    }
+                }
+            }
+        }
+    }
+    // Which rows each row reaches.
+    let reach = |start: usize| -> Vec<bool> {
+        let mut seen = vec![false; rows.len()];
+        let mut stack = vec![start];
+        while let Some(at) = stack.pop() {
+            for (_, to) in edges.get(&at).into_iter().flatten() {
+                if !seen[*to] {
+                    seen[*to] = true;
+                    stack.push(*to);
+                }
+            }
+        }
+        seen
+    };
+    let reached: Vec<Vec<bool>> = (0..rows.len()).map(reach).collect();
+    let mut placed = vec![false; rows.len()];
+    let mut out = Vec::new();
+    for start in 0..rows.len() {
+        if placed[start] || !reached[start][start] {
+            continue;
+        }
+        // The rows of its cycle set: those it reaches that reach it.
+        let members: Vec<bool> = (0..rows.len())
+            .map(|other| reached[start][other] && reached[other][start])
+            .collect();
+        for (other, member) in members.iter().enumerate() {
+            if *member {
+                placed[other] = true;
+            }
+        }
+        // A path back to `start` within the set, shortest first.
+        let mut back: Vec<Option<(usize, String)>> = vec![None; rows.len()];
+        let mut queue = std::collections::VecDeque::from([start]);
+        let mut found = false;
+        'search: while let Some(at) = queue.pop_front() {
+            for (service, to) in edges.get(&at).into_iter().flatten() {
+                if !members[*to] {
+                    continue;
+                }
+                if *to == start {
+                    back[start] = Some((at, service.clone()));
+                    found = true;
+                    break 'search;
+                }
+                if back[*to].is_none() {
+                    back[*to] = Some((at, service.clone()));
+                    queue.push_back(*to);
+                }
+            }
+        }
+        if !found {
+            continue;
+        }
+        let mut links = Vec::new();
+        let mut to = start;
+        while let Some((from, service)) = back[to].take() {
+            links.push(CycleLink {
+                row: rows[from].id.clone(),
+                service,
+                provider: rows[to].id.clone(),
+            });
+            to = from;
+            if to == start {
+                break;
+            }
+        }
+        links.reverse();
+        out.push(links);
+    }
+    out
 }
