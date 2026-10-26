@@ -114,14 +114,32 @@ export class Modules {
   #stamps = new Map<string, string>()
   #imported = new Map<string, any>()
   #require = createRequire(import.meta.url)
+  #development: boolean
 
-  // The module a row loads: the last one imported without failing, which
-  // its description imported. A row that loads again for another reason (a
-  // service it uses came back, its config changed) runs the code it was
-  // described with, not an edit made since, which may not even parse; the
-  // edit runs once a reload describes it (#665).
-  async described(file: string): Promise<any> {
-    return this.#imported.has(file) ? this.#imported.get(file) : this.import(file)
+  // `development`: under `rutis-host dev` (RUTIS_DEV=1), a row loads the
+  // module it was last described with (`described`).
+  constructor(development = process.env.RUTIS_DEV === '1') {
+    this.#development = development
+  }
+
+  // The plugin `entry` names, from its file as it is now (a description);
+  // the module is recorded for `described` once it declares a plugin.
+  async plugin(file: string, entry: string): Promise<Plugin> {
+    const module = await this.import(file)
+    const plugin = declared(module, entry)
+    this.#imported.set(file, module)
+    return plugin
+  }
+
+  // The plugin a row loads. Under `dev`, the module its last description
+  // recorded: a row that loads again for another reason (a service it uses
+  // came back, its config changed) runs the code it was described with,
+  // not an edit made since, which may not even import; the edit runs once
+  // a reload describes it (#665). Outside `dev`, and before any
+  // description, the file as it is now.
+  async described(file: string, entry: string): Promise<Plugin> {
+    if (this.#development && this.#imported.has(file)) return declared(this.#imported.get(file), entry)
+    return this.plugin(file, entry)
   }
 
   async import(file: string): Promise<any> {
@@ -136,9 +154,7 @@ export class Modules {
     }
     if (stamp !== undefined) this.#stamps.set(file, stamp)
     try {
-      const module = await import(file)
-      this.#imported.set(file, module)
-      return module
+      return await import(file)
     } catch (error) {
       throw located(error)
     }

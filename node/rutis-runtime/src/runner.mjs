@@ -421,8 +421,9 @@ async function declaredOf(entry, version = fresh) {
   }
   const href = version(entry)
   const module = await import(href)
+  const plugin = supported(typeof module.apply === 'function' ? module : (module.default ?? module), entry)
   imported.set(entry, href)
-  return supported(typeof module.apply === 'function' ? module : (module.default ?? module), entry)
+  return plugin
 }
 
 // The module URL to describe: the plain one the first time, and one that
@@ -442,15 +443,17 @@ function fresh(entry) {
   return stamps.get(entry).href
 }
 
-// The module URL a row loads: the last one imported without failing, which
-// its description imported. A row that loads again for another reason (a
-// service it uses came back, its config changed) runs the code it was
-// described with, not an edit made since, which may not even parse; the
-// edit runs once a reload describes it (#665). The file as it is now when
-// this process imported none of it yet.
+// The module URL a row loads. Under `rutis-host dev` (RUTIS_DEV=1), the last
+// one imported as a plugin without failing, which its description imported:
+// a row that loads again for another reason (a service it uses came back,
+// its config changed) runs the code it was described with, not an edit made
+// since, which may not even import; the edit runs once a reload describes it
+// (#665). The file as it is now when this process imported none of it yet,
+// and always outside `dev`, where an edited file is what a restart runs.
 const imported = new Map()
+const development = process.env.RUTIS_DEV === '1'
 function described(entry) {
-  return imported.get(entry) ?? fresh(entry)
+  return (development && imported.get(entry)) || fresh(entry)
 }
 
 // `plugin()` returns a thenable `Object.create(fiber)`; state written through

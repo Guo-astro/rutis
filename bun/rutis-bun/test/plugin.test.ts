@@ -58,24 +58,33 @@ test('an edited module is imported again; an unchanged one is not', async () => 
   expect((await modules.import(locate('./edited.ts', dir))).value).toBe(22)
 })
 
-// A row that loads again for another reason (a service it uses came back)
-// runs the module its description imported, not an edit made since that
-// does not parse; a description imports the edit once it does (#665).
-test('a row loads the module last imported, not a broken edit', async () => {
+// Under `rutis-host dev`, a row that loads again for another reason (a
+// service it uses came back) runs the module its description recorded, not
+// an edit made since that does not import, nor one that declares no plugin;
+// a description records the edit once it does (#665). Outside `dev`, a row
+// loads the file as it is.
+test('under dev a row loads the module last described, not a broken edit', async () => {
   const dir = project()
-  const modules = new Modules()
-  const file = locate('./kept.ts', (writeFileSync(join(dir, 'kept.ts'), 'export const value = 1'), dir))
-  expect((await modules.import(file)).value).toBe(1)
+  const file = locate('./kept.ts', (writeFileSync(join(dir, 'kept.ts'), "export const name = 'v1'\nexport function apply() {}\n"), dir))
+  const modules = new Modules(true)
+  expect((await modules.plugin(file, './kept.ts')).name).toBe('v1')
   writeFileSync(file, 'export const const = 2\n')
-  const error: any = await modules.import(file).catch(error => error)
+  const error: any = await modules.plugin(file, './kept.ts').catch(error => error)
   expect(error).toBeInstanceOf(Error)
-  expect((await modules.described(file)).value).toBe(1)
-  writeFileSync(file, 'export const value = 333')
-  expect((await modules.described(file)).value).toBe(1)
-  expect((await modules.import(file)).value).toBe(333)
-  expect((await modules.described(file)).value).toBe(333)
-  const fresh = new Modules()
-  expect((await fresh.described(file)).value).toBe(333)
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  writeFileSync(file, "export const name = 'v2'\n")
+  expect(await modules.plugin(file, './kept.ts').catch(error => error)).toBeInstanceOf(Error)
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  writeFileSync(file, "export const name = 'v333'\nexport function apply() {}\n")
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  expect((await modules.plugin(file, './kept.ts')).name).toBe('v333')
+  expect((await modules.described(file, './kept.ts')).name).toBe('v333')
+
+  // Outside dev, the file as it is now.
+  const run = new Modules(false)
+  expect((await run.plugin(file, './kept.ts')).name).toBe('v333')
+  writeFileSync(file, "export const name = 'v4444'\nexport function apply() {}\n")
+  expect((await run.described(file, './kept.ts')).name).toBe('v4444')
 })
 
 test('a module that does not parse fails with its file and line', async () => {

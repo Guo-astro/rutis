@@ -28,7 +28,7 @@
 // the name, a NUL and the label inside one.
 import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
-import { declared, definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
+import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
@@ -365,7 +365,7 @@ export class Runtime {
 
   async #plugin(entry: unknown) {
     if (typeof entry !== 'string') return definition(entry)
-    return declared(await this.#modules.described(locate(entry, this.#project)), entry)
+    return this.#modules.described(locate(entry, this.#project), entry)
   }
 
   // What a plugin definition declares (`plugins.read`), answered at once.
@@ -376,7 +376,7 @@ export class Runtime {
 
   async describe(entry: string) {
     const file = locate(entry, this.#project)
-    const plugin = declared(await this.#modules.import(file), entry)
+    const plugin = await this.#modules.plugin(file, entry)
     return { config: plugin.config, inject: plugin.inject, provides: plugin.provides, announces: plugin.announces, version: versionOf(entry, file) }
   }
 
