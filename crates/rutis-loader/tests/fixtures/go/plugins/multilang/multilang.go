@@ -245,3 +245,28 @@ var CalendarUser = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		return p.Record(ctx, fmt.Sprintf("go calendar: %t %v / %s %s %s", count >= 1, entry["title"], remote.Name, remote.Code, remote.Message))
 	},
 })
+
+// Taker is the `go_taker` service of the bad-value cases
+// (crates/rutis-loader/tests/bad_values.rs, #675).
+type Taker struct{}
+
+// Take says what it received: a value that cannot reach Go fails before.
+func (Taker) Take(ctx context.Context, value any) string { return fmt.Sprintf("%T", value) }
+
+// Relay calls the caller back and fails as the callback failed: it throws
+// on what it caught, whatever was thrown (`return err`).
+func (Taker) Relay(ctx context.Context, callback func(ctx context.Context) (any, error)) (any, error) {
+	return callback(ctx)
+}
+
+func (Taker) Ping() string { return "go ok" }
+
+// GoTaker provides `go_taker`.
+var GoTaker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:     "go_taker",
+	Provides: rutis.Provides{"go_taker": rutis.MethodsOf[*Taker](rutis.Sync("Take", "Relay", "Ping"))},
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+		ctx.Provide("go_taker", &Taker{})
+		return nil
+	},
+})
