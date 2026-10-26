@@ -568,15 +568,19 @@ async fn a_restart_right_after_mounting_is_taken_up_on_current_thread() {
 /// guarantee: core/D7
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restart_right_after_mounting_is_taken_up_on_multi_thread() {
-    restart_right_after_mounting().await;
+    called_before_the_first_load(false).await;
 }
 
 /// Builds a [`Probe`] for any config.
-struct ProbeFactory(Arc<ProbeState>);
+struct ProbeFactory(Arc<ProbeState>, Vec<TypeKey>);
 
 impl PluginFactory<u32> for ProbeFactory {
     fn name(&self) -> &str {
         "load-window-probe-factory"
+    }
+
+    fn injects(&self) -> Vec<TypeKey> {
+        self.1.clone()
     }
 
     fn build(&self, _: &u32) -> Result<Box<dyn DynPlugin>, Error> {
@@ -591,7 +595,7 @@ impl PluginFactory<u32> for ProbeFactory {
 async fn update_right_after_mounting() {
     let root = Ctx::root().unwrap();
     let state = Arc::new(ProbeState::default());
-    let view = root.plugin_with(ProbeFactory(state.clone()), 1u32);
+    let view = root.plugin_with(ProbeFactory(state.clone(), Vec::new()), 1u32);
     let update = tokio::spawn(polled_once(view.update(2u32)).await);
     started(&state, 2).await;
     assert_eq!(state.applies.load(Ordering::SeqCst), 2);
@@ -617,7 +621,42 @@ async fn an_update_right_after_mounting_is_taken_up_on_current_thread() {
 /// guarantee: core/D7
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_update_right_after_mounting_is_taken_up_on_multi_thread() {
-    update_right_after_mounting().await;
+    called_before_the_first_load(true).await;
+}
+
+/// A restart or update called while the first load waits in its gate (a
+/// blocking `check`), so it is registered before that load starts on any
+/// runtime: the first generation starts cancelled and the call is taken
+/// up.
+async fn called_before_the_first_load(update: bool) {
+    let root = Ctx::root().unwrap();
+    let (gate, entered, release) = Gate::new();
+    let _service = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
+    let state = Arc::new(ProbeState::default());
+    let view = root.plugin_with(
+        ProbeFactory(state.clone(), vec![TypeKey::of::<Svc>()]),
+        1u32,
+    );
+    recv(entered).await;
+    let call = if update {
+        view.update(2u32)
+    } else {
+        view.restart()
+    };
+    let call = tokio::spawn(polled_once(call).await);
+    release.send(()).unwrap();
+    started(&state, 2).await;
+    assert_eq!(state.applies.load(Ordering::SeqCst), 2);
+    assert_eq!(state.cancelled.load(Ordering::SeqCst), 1);
+    tokio::time::timeout(LIMIT, view.dispose())
+        .await
+        .expect("dispose returns")
+        .unwrap();
+    tokio::time::timeout(LIMIT, call)
+        .await
+        .expect("the call returns")
+        .unwrap()
+        .unwrap();
 }
 
 // ── A dispose registered behind a queued restart or refresh ────────────
@@ -785,4 +824,144 @@ async fn a_refresh_queued_before_a_dispose_leaves_the_cleanup_to_it_on_current_t
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refresh_queued_before_a_dispose_leaves_the_cleanup_to_it_on_multi_thread() {
     refresh_queued_before_a_dispose().await;
+}
+
+// ── More than one thing queued ahead of the dispose ────────────────────
+
+/// A dispose registered while the consumer's gate runs (in its `check`),
+/// after the refresh's own check for a registered dispose: the load that
+/// follows starts no generation, so the dispose ends.
+///
+/// guarantee: core/D6, core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dispose_registered_in_the_gate_starts_no_generation() {
+    let root = Ctx::root().unwrap();
+    let (gate, entered, release) = Gate::new();
+    let _service = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Waiter(applies.clone()));
+    recv(entered).await;
+    let dispose = view.dispose();
+    release.send(()).unwrap();
+    tokio::time::timeout(LIMIT, dispose)
+        .await
+        .expect("dispose returns")
+        .unwrap();
+    assert_eq!(applies.load(Ordering::SeqCst), 0);
+    assert_eq!(view.state().state, FiberState::Disposed);
+}
+
+/// Two restarts queued behind the running load, then a dispose: neither
+/// restart happens, both report `InactiveEffect` (the second finds the
+/// fiber already Disposed), and the cleanup error reaches `dispose()`.
+async fn two_restarts_queued_before_a_dispose() {
+    let (root, errors) = root_collecting();
+    let go = Arc::new(Notify::new());
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Held {
+        go: go.clone(),
+        applies: applies.clone(),
+        needs: false,
+    });
+    reach(&view, FiberState::Loading).await;
+    let first = polled_once(view.restart()).await;
+    let second = polled_once(view.restart()).await;
+    let dispose = view.dispose();
+    go.notify_one();
+    for restart in [first, second] {
+        let restarted = tokio::time::timeout(LIMIT, restart)
+            .await
+            .expect("restart returns");
+        assert!(
+            matches!(&restarted, Err(e) if matches!(**e, ErrorKind::InactiveEffect)),
+            "{restarted:?}"
+        );
+    }
+    assert_cleanup_error(
+        tokio::time::timeout(LIMIT, dispose)
+            .await
+            .expect("dispose returns"),
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "{:?}",
+        errors.lock().unwrap()
+    );
+    assert_eq!(applies.load(Ordering::SeqCst), 1);
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test]
+async fn two_restarts_queued_before_a_dispose_both_report_it_on_current_thread() {
+    two_restarts_queued_before_a_dispose().await;
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_restarts_queued_before_a_dispose_both_report_it_on_multi_thread() {
+    two_restarts_queued_before_a_dispose().await;
+}
+
+/// A restart queued behind a refresh that unloads for a dispose: the
+/// restart finds the fiber Disposed and reports `InactiveEffect`, not the
+/// dispose's cleanup error.
+async fn restart_behind_a_refresh_that_disposes() {
+    let (root, errors) = root_collecting();
+    let service = mounted(&root, |disposer| Provider { disposer }).await;
+    let go = Arc::new(Notify::new());
+    let applies = Arc::new(AtomicUsize::new(0));
+    let view = root.plugin(Held {
+        go: go.clone(),
+        applies: applies.clone(),
+        needs: true,
+    });
+    reach(&view, FiberState::Loading).await;
+    let withdrawal = tokio::spawn(service.dispose());
+    tokio::time::timeout(LIMIT, async {
+        while root.get::<Svc>().is_some() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("service marked removed");
+    // The withdrawal queues the consumer's refresh right after marking.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let restart = polled_once(view.restart()).await;
+    let dispose = view.dispose();
+    go.notify_one();
+    tokio::time::timeout(LIMIT, withdrawal)
+        .await
+        .expect("withdrawal returns")
+        .unwrap()
+        .unwrap();
+    let restarted = tokio::time::timeout(LIMIT, restart)
+        .await
+        .expect("restart returns");
+    assert!(
+        matches!(&restarted, Err(e) if matches!(**e, ErrorKind::InactiveEffect)),
+        "{restarted:?}"
+    );
+    assert_cleanup_error(
+        tokio::time::timeout(LIMIT, dispose)
+            .await
+            .expect("dispose returns"),
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "{:?}",
+        errors.lock().unwrap()
+    );
+    assert_eq!(applies.load(Ordering::SeqCst), 1);
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test]
+async fn a_restart_behind_a_refresh_that_disposes_reports_it_on_current_thread() {
+    restart_behind_a_refresh_that_disposes().await;
+}
+
+/// guarantee: core/D6, core/D7
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_behind_a_refresh_that_disposes_reports_it_on_multi_thread() {
+    restart_behind_a_refresh_that_disposes().await;
 }

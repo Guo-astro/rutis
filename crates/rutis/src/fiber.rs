@@ -967,6 +967,19 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                         task.complete(Some(Arc::new(ErrorKind::Closed)));
                         return;
                     }
+                    // A dispose registered first wins: this restart does not
+                    // happen and reports what `restart()` reports once a
+                    // dispose is registered. Checked before the Disposed
+                    // branch: a restart queued behind a second restart or
+                    // a refresh that already unloaded for the dispose finds
+                    // the fiber Disposed and must not report the dispose's
+                    // result as its own. (A non-root fiber is Disposed only
+                    // with a dispose registered.)
+                    if this.terminal_registered() {
+                        FiberInner::unload_for_dispose(&this).await;
+                        task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
+                        return;
+                    }
                     let state = this.state();
                     if state == FiberState::Disposed {
                         // 仅 root 可重启(§五 root_restart);换新代 token,
@@ -982,14 +995,6 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
                             this.flush_status();
                         }
                         complete_task(&this, task);
-                        return;
-                    }
-                    // A dispose registered first wins: this restart does not
-                    // happen and reports what `restart()` reports once a
-                    // dispose is registered.
-                    if this.terminal_registered() {
-                        FiberInner::unload_for_dispose(&this).await;
-                        task.complete(Some(Arc::new(ErrorKind::InactiveEffect)));
                         return;
                     }
                     if !matches!(state, FiberState::Pending) {
