@@ -2,7 +2,7 @@
 
 [中文](design-plugin-values-2026-10-25.md)
 
-Status: P1 implemented (2026-10-25, #642): the kernel, rutis-bridge, rutis-loader, Node, Bun. P2 implemented (2026-10-26): Python, Go. P3 (Swift, Kotlin) is not done.
+Status: P1 implemented (2026-10-25, #642): the kernel, rutis-bridge, rutis-loader, Node, Bun. P2 implemented (2026-10-26): Python, Go. P3 implemented (2026-10-26): Swift, Kotlin. P2 and P3 leave the host and the protocol unchanged.
 
 ## 1. Goal
 

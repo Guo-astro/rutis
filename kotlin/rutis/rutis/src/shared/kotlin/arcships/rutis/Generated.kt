@@ -4,6 +4,7 @@ import arcships.rutis.internal.Native
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.ExportedObject
+import arcships.rutis.internal.peer.RemotePlugin
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.ValueException
 import arcships.rutis.internal.peer.describe
@@ -172,6 +173,27 @@ object Generated {
 
     /** A Kotlin function exported: the far end calls `body` with session values. */
     fun export(function: Any, body: suspend (List<Any?>) -> Any?): Any = Exported(function, body)
+
+    /**
+     * Argument `i`, a plugin definition (a parameter of type [Plugin]): one
+     * of this process's, back home, or the definition itself handed to a
+     * test double; null for none when [nullable].
+     */
+    fun pluginArg(args: List<Any?>, i: Int, method: String, nullable: Boolean): Plugin? =
+        plugin(if (i < args.size) args[i] else Undefined, nullable) { "$method: argument ${i + 1}: $it" }
+
+    /** A result, a plugin definition. */
+    fun pluginResult(value: Any?, nullable: Boolean): Plugin? = plugin(value, nullable) { it }
+
+    private fun plugin(value: Any?, nullable: Boolean, where: (String) -> String): Plugin? = when (value) {
+        is Plugin -> value
+        is RemotePlugin -> value.local ?: throw ValueException(where("a plugin definition of another process can only be handed back to it"))
+        null, Undefined, kotlinx.serialization.json.JsonNull -> if (nullable) null else throw ValueException(where("expected a plugin definition, got null"))
+        else -> throw ValueException(where("expected a plugin definition, got ${describe(value)}"))
+    }
+
+    /** A plugin definition as a session value: it crosses as a `plugin` reference. */
+    fun plugin(value: Plugin?): Any? = value
 
     /** The chain of the code running now, for proxies that block. */
     fun chain(): List<String> = CallChain.current()

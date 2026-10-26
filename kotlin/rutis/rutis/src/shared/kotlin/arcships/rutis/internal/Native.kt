@@ -9,6 +9,7 @@ import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.ExportedObject
 import arcships.rutis.internal.peer.JsonValues
 import arcships.rutis.internal.peer.RemoteFuture
+import arcships.rutis.internal.peer.RemotePlugin
 import arcships.rutis.internal.peer.Signal
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.ValueException
@@ -68,6 +69,8 @@ object Native {
         is Decimal -> BigDecimal(value.text)
         is Exported -> value.original
         is ExportedObject -> value.original
+        // A plugin definition of this process, handed to a test double.
+        is RemotePlugin -> value.local ?: value
         else -> value
     }
 
@@ -79,7 +82,7 @@ object Native {
         return when (value) {
             null, Undefined -> value
             is String, is Boolean, is JsonElement, is WireMap, is WireSet, is Decimal,
-            is RemoteFunction, is RemoteFuture, is Exported, is ExportedObject, is Signal,
+            is RemoteFunction, is RemoteFuture, is Exported, is ExportedObject, is Signal, is arcships.rutis.Plugin, is RemotePlugin,
             is Instant, is LocalDateTime, is LocalDate, is LocalTime, is ByteArray, is BigInteger, is UUID,
             -> value
             is Char -> value.toString()

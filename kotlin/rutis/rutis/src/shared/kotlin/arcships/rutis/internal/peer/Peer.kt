@@ -1,5 +1,6 @@
 package arcships.rutis.internal.peer
 
+import arcships.rutis.Plugin
 import arcships.rutis.RemoteFunction
 import arcships.rutis.RutisException
 import kotlinx.coroutines.CancellationException
@@ -102,6 +103,12 @@ class Options(
      * the call.
      */
     val arrive: ((method: String, args: List<Any?>) -> (suspend () -> Any?)?)? = null,
+    /**
+     * A test host (RutisTest) in the runtime's process: the plugin definition
+     * the runtime exported as `id`, so that a test double gets the definition
+     * itself, as the runtime would take it back.
+     */
+    val localPlugin: ((id: Long) -> Plugin?)? = null,
 )
 
 /** What the far end said of itself (endpoint format). */
@@ -119,7 +126,15 @@ class Imported internal constructor(val id: Long, val kind: String, val origin: 
     internal var released = false
     internal var function: WeakReference<RemoteFunction>? = null
     internal var future: WeakReference<RemoteFuture>? = null
+    internal var plugin: WeakReference<RemotePlugin>? = null
 }
+
+/**
+ * A plugin definition of the far end, held by a test host (RutisTest): it
+ * can only be handed back. [local] is the definition itself when the runtime
+ * is in this process.
+ */
+class RemotePlugin internal constructor(internal val peer: Peer, internal val record: Imported, val local: Plugin?)
 
 /** An asynchronous result of the far end. */
 class RemoteFuture internal constructor(internal val peer: Peer, internal val record: Imported) {
@@ -190,6 +205,16 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private val exports = HashMap<Long, Export>()
     private val identities = IdentityHashMap<Any, Long>()
     private val imports = HashMap<Long, Imported>()
+
+    /**
+     * A test host's plugin definitions of the far end, by the definition
+     * itself, held until the session ends (or the reference is released):
+     * one handed back goes home as the original reference, as rutis sends
+     * it. So the test host never lets one go before the session ends, and a
+     * test does not see rutis dropping a definition and the runtime
+     * releasing it with it.
+     */
+    private val heldPlugins = java.util.IdentityHashMap<Plugin, RemotePlugin>()
     private val running = HashMap<String, Running>()
     private val signals = HashMap<String, Signal>()
 
@@ -231,7 +256,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
             val endpoint = opts.endpoint
             if (endpoint == null) {
                 put("version", PROTOCOL)
-                put("capabilities", JsonArray(SESSION_CAPABILITIES.map(::JsonPrimitive)))
+                // A test host takes plugin definitions, as rutis does.
+                put("capabilities", JsonArray((SESSION_CAPABILITIES + if (opts.host) listOf("plugins") else emptyList()).map(::JsonPrimitive)))
             } else {
                 put("version", ENDPOINT_PROTOCOL)
                 put("endpoint", endpoint.local)
@@ -252,6 +278,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     /** Whether the far end declared `capability`. */
     fun supports(capability: String): Boolean = synchronized(lock) { capability in declared }
+
+    /** The plugin definition exported as `id`, while the far end holds it. */
+    fun exportedPlugin(id: Long): Plugin? = synchronized(lock) { exports[id]?.value as? Plugin }
 
     /** What the far end said of itself, once it greeted (endpoint format). */
     fun greeting(): Greeting? = synchronized(lock) { greeting }
@@ -333,6 +362,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             exports.clear()
             identities.clear()
             imports.clear()
+            heldPlugins.clear()
             drains = ArrayList(draining)
             draining.clear()
             cancelled = ArrayList(running.values)
@@ -371,6 +401,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             record.released = true
             if (imports[record.id] === record) imports.remove(record.id)
+            // A released plugin definition is no longer held.
+            if (record.kind == "plugin") heldPlugins.values.removeIf { it.record === record }
             count = record.grants
         }
         outbox.offer(compact(buildJsonObject {
@@ -389,7 +421,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     /** Whether `value` holds a reference, a tagged value or undefined, so it crosses as a list or record. */
     private fun marked(value: Any?): Boolean = when (value) {
         is JsonElement -> false
-        is Exported, is ExportedObject, is RemoteFunction, is RemoteFuture, SignalArgument, Undefined -> true
+        is Exported, is ExportedObject, is RemoteFunction, is RemoteFuture, is Plugin, is RemotePlugin, SignalArgument, Undefined -> true
         is Long -> value > MAX_SAFE || value < -MAX_SAFE
         is List<*> -> value.any(::marked)
         is Map<*, *> -> value.values.any(::marked)
@@ -429,6 +461,21 @@ class Peer(private val channel: Channel, private val opts: Options) {
             is RemoteFuture -> {
                 check(value.record)
                 homeReference(value.record)
+            }
+            is RemotePlugin -> {
+                check(value.record)
+                homeReference(value.record)
+            }
+            // A plugin definition, only to a far end that takes them; only
+            // this call fails (plugin values §5).
+            is Plugin -> {
+                // A test host hands a definition of the far end back home.
+                val held = heldPlugins[value]
+                if (held != null && !held.record.released) return homeReference(held.record)
+                if (!supportsLocked("plugins")) {
+                    throw ValueException("cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)")
+                }
+                exportValue(value, "plugin", value, grants, origin)
             }
             is Exported -> exportValue(value, "function", value.original, grants, origin)
             is ExportedObject -> {
@@ -604,7 +651,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
         val id = idElement.content.toLongOrNull() ?: throw invalid()
         if (id <= 0 || id > MAX_SAFE) throw invalid()
         val kind = (value["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (kind != "function" && kind != "future" && kind != "object") throw invalid()
+        if (kind != "function" && kind != "future" && kind != "object" && kind != "plugin") throw invalid()
         val pattern = if (opts.endpoint == null) compatOrigin else endpointOrigin
         val origin = originElement.map {
             val text = (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: throw invalid()
@@ -617,8 +664,15 @@ class Peer(private val channel: Channel, private val opts: Options) {
             return entry.value
         }
         if (kind == "object") throw ProtocolException("object references from the far end are not supported")
+        // Only a test host takes the far end's plugin definitions; rutis
+        // never sends one that is not this side's.
+        if (kind == "plugin" && !opts.host) throw ProtocolException("plugin definitions from the far end are not supported")
         imports[id]?.let { record ->
-            val proxy: Any? = if (record.kind == "function") record.function?.get() else record.future?.get()
+            val proxy: Any? = when (record.kind) {
+                "function" -> record.function?.get()
+                "plugin" -> record.plugin?.get()
+                else -> record.future?.get()
+            }
             if (proxy != null) {
                 if (record.kind != kind || record.origin != origin) throw ProtocolException("invalid repeated grant")
                 record.grants++
@@ -628,6 +682,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
         val record = Imported(id, kind, origin)
         imports[id] = record
         d.fresh.add(record)
+        if (kind == "plugin") {
+            val proxy = RemotePlugin(this, record, opts.localPlugin?.invoke(id))
+            record.plugin = WeakReference(proxy)
+            proxy.local?.let { heldPlugins[it] = proxy }
+            Collector.watch(proxy, this, record)
+            return proxy
+        }
         return if (kind == "function") {
             val proxy = RemoteFunction(this, record)
             record.function = WeakReference(proxy)

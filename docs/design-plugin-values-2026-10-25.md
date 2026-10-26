@@ -2,7 +2,7 @@
 
 [English](design-plugin-values-2026-10-25.en.md)
 
-状态：P1 已实现（2026-10-25，#642）：内核、rutis-bridge、rutis-loader、Node、Bun。P2 已实现（2026-10-26）：Python、Go。P3（Swift、Kotlin）未做。
+状态：P1 已实现（2026-10-25，#642）：内核、rutis-bridge、rutis-loader、Node、Bun。P2 已实现（2026-10-26）：Python、Go。P3 已实现（2026-10-26）：Swift、Kotlin。P2、P3 的宿主和协议不变。
 
 ## 一、目标
 

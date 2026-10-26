@@ -28,9 +28,11 @@ import java.util.concurrent.CompletableFuture
  * What this runtime supports of the runtime contract. `rows.announce`:
  * services rows provide without declaring them are announced with their
  * methods, to a host whose mount says `announce`. Events are the capability
- * `events-v2` (#464), not a feature.
+ * `events-v2` (#464), not a feature. `plugin-values`: a plugin definition
+ * this runtime handed over comes back to be described (`plugins.read`) and
+ * loaded as a row's entry (docs/design-plugin-values-2026-10-25.md §5).
  */
-val FEATURES: List<String> = listOf("rows.v2", "hosts", "leaf", "scopes", "rows.announce")
+val FEATURES: List<String> = listOf("rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values")
 
 /** Where a plugin is told that the host does not take an undeclared service. */
 @Volatile
@@ -182,9 +184,12 @@ class RuntimeState(plugins: List<Plugin>) {
 
     private fun names(): String = plugins.keys.sorted().joinToString(", ")
 
-    internal fun definition(entry: String): Plugin {
-        val plugin = plugins[entry] ?: throw RutisException("NotFound", "plugin $entry is not in this runtime; it has: ${names()}")
-        if (plugin.api > Rutis.PLUGIN_API) throw IllegalStateException("plugin $entry needs plugin API ${plugin.api}; this runtime supports ${Rutis.PLUGIN_API}")
+    internal fun definition(entry: String): Plugin =
+        supported(plugins[entry] ?: throw RutisException("NotFound", "plugin $entry is not in this runtime; it has: ${names()}"))
+
+    /** `plugin`, unless it needs a newer plugin API than this runtime's. */
+    internal fun supported(plugin: Plugin): Plugin {
+        if (plugin.api > Rutis.PLUGIN_API) throw IllegalStateException("plugin ${plugin.name} needs plugin API ${plugin.api}; this runtime supports ${Rutis.PLUGIN_API}")
         return plugin
     }
 
@@ -282,7 +287,11 @@ class RuntimeState(plugins: List<Plugin>) {
 
     // ── Rows ─────────────────────────────────────────────────────
 
-    /** Loads row `key`, whose id in the configuration is `name`. */
+    /**
+     * Loads row `key`, whose id in the configuration is `name`, running
+     * `plugin`: the one `entry` names in this runtime, or a plugin definition
+     * this runtime handed over (a copy, `entry` its name).
+     */
     internal suspend fun load(
         key: String,
         name: String,
@@ -291,8 +300,8 @@ class RuntimeState(plugins: List<Plugin>) {
         exports: Map<String, Map<String, String>>,
         isolate: Map<String, String>,
         scope: List<Scope>,
+        plugin: Plugin = definition(entry),
     ) {
-        val plugin = definition(entry)
         val row = Row(key, name.ifEmpty { key }, entry, plugin, config, exports, isolate, scope, CallChain.current())
         synchronized(lock) {
             if (rows.containsKey(key)) throw IllegalStateException("row $key is already loaded")
@@ -456,7 +465,7 @@ class RuntimeState(plugins: List<Plugin>) {
         val row = synchronized(lock) { rows[key] } ?: throw IllegalStateException("row $key is not loaded")
         // Leaf plugins have no volatile fields: a new config restarts the row.
         unload(key)
-        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope)
+        load(key, row.name, row.entry, config, row.exports, row.isolate, row.scope, row.plugin)
     }
 
     /** Registers a cleanup if `row` is still the loaded row with `key`. */
@@ -533,6 +542,12 @@ class RuntimeState(plugins: List<Plugin>) {
     internal fun property(handle: String, property: String): Any? {
         val entry = synchronized(lock) { handles[handle] } ?: throw IllegalArgumentException("unknown or released service object ${printable(handle)}")
         throw IllegalArgumentException("no property $property of ${printable(entry.id)}: a service's methods cross, not its fields")
+    }
+
+    /** What a plugin definition this runtime handed over declares (`plugins.read`), with its name. */
+    internal fun describeDefinition(value: Any?): Map<String, Any?> {
+        val plugin = value as? Plugin ?: throw IllegalArgumentException("not a plugin definition: expected a Rutis.define result, got ${arcships.rutis.internal.peer.describe(value)}")
+        return linkedMapOf<String, Any?>("name" to plugin.name) + describe(supported(plugin))
     }
 
     /** The plugin's declarations, as `rows.schema` answers them. */

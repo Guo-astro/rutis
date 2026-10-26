@@ -100,6 +100,31 @@ Swift 的值怎样跨过去（[传递值](plugin-api.md#传递值)）：
 | 十进制数 | `Decimal`：至多 38 位，不保留末尾的零（`1.10` 收到是 `1.1`）；要原样保留文本时把参数声明为 `String` |
 | UUID | `UUID` |
 
+### 把插件交给服务
+
+插件本身也是一个值：`Rutis.define(...)` 的结果可以照常作为参数交给一个服务（比如应用的部件登记处），收的一方在别处挂它，每挂一次是一份，用的是你在 `apply` 里准备好的东西。`@RutisClient` 的参数或返回值类型写 `Rutis.Definition`：
+
+```swift
+@RutisClient
+protocol Parts {
+    func register(_ scope: String, _ part: Rutis.Definition) async throws
+}
+
+let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
+    let pool = try await openPool()
+    let status = Rutis.define(Plugin(name: "git_status", inject: ["history"], config: StatusConfig.self) { ctx, config in
+        ctx.provide("gitStatus", GitStatus(pool: pool, depth: config.depth))
+    })
+    try await ctx.use("parts", PartsProxy.self).register("session", status)
+})
+```
+
+- 每一份在这个插件的运行时里运行，挂在哪个实例里就按那个实例隔离，按它的 `inject` 门控。
+- 它属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，再卸载这一行。
+- 交给 `RutisTest` 的测试替身时，替身收到的就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
+- 参数或返回值要直接是 `Rutis.Definition`（或 `Rutis.Definition?`）。放在数组、字典或结构体里的插件定义（比如 `[Rutis.Definition]`）不支持，要交几个就调用几次。
+- 规则见 [插件 API](plugin-api.md#插件定义)。
+
 ### 事件
 
 一个宿主上所有语言、所有进程的监听器都在同一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。监听器的参数就是事件的参数，按声明的类型解码（缺的为 `nil`，多的忽略）；waterfall 里最后一个参数是 `Rutis.Next<R>`。

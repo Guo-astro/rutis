@@ -1,5 +1,6 @@
 package arcships.rutis.internal
 
+import arcships.rutis.Plugin
 import arcships.rutis.Rutis
 import arcships.rutis.Scope
 import arcships.rutis.internal.peer.Undefined
@@ -43,7 +44,10 @@ internal object Control {
         }
         "rows.load" -> {
             val key = string(args, 0, "rows.load key")
-            val entry = string(args, 1, "rows.load entry")
+            // A plugin's name in this runtime, or a plugin definition this
+            // runtime handed over, back as the entry of a copy.
+            val handed = args.getOrNull(1) as? Plugin
+            val entry = handed?.name ?: string(args, 1, "rows.load entry")
             val config = if (args.size > 2) args[2] else Undefined
             // args[4], the row's own `inject`, names services a Cordis row
             // waits for in Cordis; a leaf runtime's rows wait in rutis, which
@@ -64,7 +68,8 @@ internal object Control {
                 val s = record(it)
                 Scope(s["id"] as? String ?: "", s["group"] as? String ?: "")
             }
-            rt.load(key, placed["id"] as? String ?: "", entry, config, exports, isolate, scope)
+            val plugin = handed?.let(rt::supported) ?: rt.definition(entry)
+            rt.load(key, placed["id"] as? String ?: "", entry, config, exports, isolate, scope, plugin)
             null
         }
         "rows.update" -> {
@@ -76,6 +81,7 @@ internal object Control {
             null
         }
         "rows.schema" -> rt.describe(rt.definition(string(args, 0, "rows.schema entry")))
+        "plugins.read" -> rt.describeDefinition(args.getOrNull(0))
         "hosts.provide" -> {
             val name = string(args, 0, "hosts.provide name")
             val methods = record(arg(args, 1)).mapValues { it.value as? String ?: "async" }

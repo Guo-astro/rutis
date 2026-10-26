@@ -170,6 +170,9 @@ package enum ValueCodec {
         case let value as Rutis.TimeOfDay: return .time(value)
         case let value as Rutis.BigInt: return .bigint(value)
         case let function as Rutis.RemoteFunction: return function.value
+        // A plugin definition crosses as one (a `plugin` reference), to be
+        // mounted by what receives it (plugin values, R1).
+        case let definition as Rutis.Definition: return .plugin(definition)
         case let service as RutisExportable: return .object(ServiceObject(service))
         case let error as Error:
             return .data(.object([("name", .string(errorName(error))), ("message", .string(errorMessage(error)))]))
@@ -224,7 +227,8 @@ package enum ValueCodec {
     /// Whether `decodeAny` takes `type`: Any, Decodable types, Optionals of
     /// them, and the session's own.
     static func decodes(_ type: Any.Type) -> Bool {
-        if type == Any.self || type == Value.self || type == Rutis.RemoteFunction.self || type is Decodable.Type { return true }
+        if type == Any.self || type == Value.self || type == Rutis.RemoteFunction.self || type == Rutis.Definition.self
+            || type is Decodable.Type { return true }
         if let optional = type as? OptionalProtocol.Type { return decodes(optional.wrappedType) }
         return false
     }
@@ -246,6 +250,15 @@ package enum ValueCodec {
         if type == Rutis.RemoteFunction.self {
             if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
             if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
+        }
+        if type == Rutis.Definition.self {
+            switch value {
+            case let .plugin(definition): return definition
+            case let .remotePlugin(far):
+                guard let local = far.local else { throw ValueError("a plugin definition of another process can only be handed back to it") }
+                return local
+            default: throw ValueError("expected a plugin definition, got \(value.described)")
+            }
         }
         throw ValueError("a value cannot be decoded into \(type): it is not Decodable")
     }
@@ -290,6 +303,8 @@ package enum ValueCodec {
         case .remoteFuture: return nil
         case let .function(function): return Rutis.RemoteFunction(local: function)
         case let .object(object): return (object as? ServiceObject)?.service ?? object
+        case let .plugin(definition): return definition
+        case let .remotePlugin(far): return far.local
         case .signal: return nil
         }
     }

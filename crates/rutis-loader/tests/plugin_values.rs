@@ -3,10 +3,21 @@
 //! Rust service in `apply`; Rust host parts in two instances each mount a
 //! copy, which runs in the row's runtime with the instance's services; the
 //! row's unload ends the copies first; a reloaded row's new definition
-//! mounts again.
+//! mounts again. Python, Go, Swift and Kotlin run the same origin, written in
+//! their SDK (Go's, Swift's and Kotlin's compiled into their fixtures:
+//! `tests/fixtures/go/plugins/values`,
+//! `swift/rutis/Sources/RutisFixturePlugins/PluginValues.swift`,
+//! `kotlin/rutis/rutis-conformance/.../plugins/PluginValues.kt`).
 #![cfg(all(
     unix,
-    any(feature = "node", feature = "bun", feature = "python", feature = "go")
+    any(
+        feature = "node",
+        feature = "bun",
+        feature = "python",
+        feature = "go",
+        all(feature = "swift", target_os = "macos"),
+        feature = "kotlin"
+    )
 ))]
 
 mod common;
@@ -23,13 +34,23 @@ use common::runtimes::{title, NoConfig, Probe, Title, Tools, COLD};
 use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::{Ctx, Definition, Error};
-#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
+#[cfg(any(
+    feature = "node",
+    feature = "bun",
+    feature = "python",
+    feature = "kotlin"
+))]
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
 #[cfg(feature = "go")]
 use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
-#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
+#[cfg(any(
+    feature = "node",
+    feature = "bun",
+    feature = "python",
+    feature = "kotlin"
+))]
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{
     Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, Resolver, ServiceCatalog,
@@ -53,6 +74,18 @@ impl Parts {
     /// A data parameter: a plugin definition is refused here, as before.
     pub fn takes_data(&self, value: serde_json::Value) -> String {
         value.to_string()
+    }
+
+    /// The definition registered last for `scope`, handed back: it goes
+    /// home as the original value (the Swift and Kotlin origins check it).
+    pub fn latest(&self, scope: String) -> Option<Definition> {
+        self.registered
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(of, _)| *of == scope)
+            .map(|(_, def)| def.clone())
     }
 }
 
@@ -300,6 +333,14 @@ enum Lang {
     /// (`tests/fixtures/go/plugins/values`).
     #[cfg(feature = "go")]
     Go,
+    /// The origin and the crash are plugins of the Swift package's
+    /// `RutisMultilang` binary: `values_origin`, `values_crash`.
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    Swift,
+    /// The origin and the crash are plugins of the Kotlin conformance jar:
+    /// `values_origin`, `values_crash`.
+    #[cfg(feature = "kotlin")]
+    Kotlin,
 }
 
 struct Fixture {
@@ -325,7 +366,12 @@ struct Fixture {
 type Start = Box<dyn FnOnce(&Ctx)>;
 
 /// Starts the rows of a runtime resolver, once the loader is mounted.
-#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
+#[cfg(any(
+    feature = "node",
+    feature = "bun",
+    feature = "python",
+    feature = "kotlin"
+))]
 fn rows_plugin(rows: Arc<RuntimeResolver>) -> Start {
     Box::new(move |root: &Ctx| {
         root.plugin(RuntimeRowsPlugin::new(rows));
@@ -407,6 +453,36 @@ async fn fixture(lang: Lang) -> Fixture {
                 root.plugin(runtimes);
             });
             (go, json!("go:pv_origin"), start)
+        }
+        #[cfg(all(feature = "swift", target_os = "macos"))]
+        Lang::Swift => {
+            use rutis_loader::runtime::swift::{SwiftBinaries, SwiftResolver, SwiftRuntimes};
+            let plugins = dir.path().join("plugins");
+            std::fs::create_dir_all(&plugins).unwrap();
+            std::fs::copy(
+                common::runtimes::swift_binary("RutisMultilang", "multilang"),
+                plugins.join("multilang"),
+            )
+            .unwrap();
+            let swift = Arc::new(
+                SwiftResolver::new(SwiftBinaries::new().dir(&plugins)).with_catalog(&catalog),
+            );
+            let runtimes = SwiftRuntimes::new(swift.clone(), dir.path()).eager();
+            let start: Start = Box::new(move |root: &Ctx| {
+                root.plugin(runtimes);
+            });
+            (swift, json!("swift:values_origin"), start)
+        }
+        #[cfg(feature = "kotlin")]
+        Lang::Kotlin => {
+            let project = dir.path().join("kt");
+            std::fs::create_dir_all(&project).unwrap();
+            let kt =
+                LocalRuntime::launcher("kt", common::runtimes::kotlin_launcher(&project), &project);
+            let rows = Arc::new(RuntimeResolver::modules(kt.handle()).with_catalog(&catalog));
+            root.plugin(kt);
+            let start = rows_plugin(rows.clone());
+            (rows, json!("kt:values_origin"), start)
         }
     };
     let chain = Chain::new()
@@ -497,6 +573,17 @@ impl Fixture {
                 assert_eq!(source, CRASH, "only the crash is in the Go binary");
                 json!("go:pv_crash")
             }
+            #[cfg(all(feature = "swift", target_os = "macos"))]
+            Lang::Swift => {
+                assert_eq!(source, CRASH, "only the crash is in the Swift binary");
+                json!("swift:values_crash")
+            }
+            #[cfg(feature = "kotlin")]
+            Lang::Kotlin => match source == CRASH {
+                true => json!("kt:values_crash"),
+                // The jar's other plugins, by their name: `values_<id>`.
+                false => json!(format!("kt:values_{id}")),
+            },
         };
         self.extra
             .lock()
@@ -774,5 +861,297 @@ mod go {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
         super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Go).await
+    }
+}
+
+/// The origin asked `parts.latest` for what it registered: a Rust
+/// parameter and result going home, decoded by the SDK's client.
+#[cfg(any(all(feature = "swift", target_os = "macos"), feature = "kotlin"))]
+async fn a_definition_comes_home_as_itself(lang: Lang) {
+    let fixture = fixture(lang).await;
+    // The origin records either line: a wrong value fails here at once.
+    let line = COLD
+        .eventually_with(
+            || {
+                fixture
+                    .probe
+                    .lines()
+                    .into_iter()
+                    .find(|line| line.starts_with("part came home as "))
+            },
+            "the origin told what came home",
+            || format!("{:?}", fixture.probe.lines()),
+        )
+        .await;
+    assert_eq!(line, "part came home as itself");
+    fixture.root.shutdown().await.unwrap();
+}
+
+#[cfg(all(feature = "swift", target_os = "macos"))]
+mod swift {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_definition_comes_home_as_itself() {
+        super::a_definition_comes_home_as_itself(Lang::Swift).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Swift).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Swift).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Swift).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Swift).await
+    }
+}
+
+#[cfg(feature = "kotlin")]
+mod kotlin {
+    use super::*;
+
+    /// A definition handed over through a blocking (not `suspend`) client
+    /// method: rutis reads it with `plugins.read` while the calling thread
+    /// waits, and the call is answered.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blocking_call_hands_over_a_definition() {
+        let fixture = fixture(Lang::Kotlin).await;
+        fixture.add("blocking", "").await;
+        fixture.probe.wait_for("blocking register answered").await;
+        assert_eq!(fixture.parts.of("blocking").len(), 1);
+        fixture.root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_definition_comes_home_as_itself() {
+        super::a_definition_comes_home_as_itself(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_process_ends_its_copies() {
+        super::a_dead_process_ends_its_copies(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_instance_mounts_its_own_copy() {
+        super::each_instance_mounts_its_own_copy(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_origin_s_unload_ends_its_copies_first() {
+        super::the_origin_s_unload_ends_its_copies_first(Lang::Kotlin).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_returned_definition_belongs_to_the_row_providing_the_service() {
+        super::a_returned_definition_belongs_to_the_row_providing_the_service(Lang::Kotlin).await
+    }
+}
+
+/// An application's runtime that dials in (R4): its connection is an
+/// instance of `phone`, and what its rows hand over mounts only in that
+/// instance. The Kotlin conformance jar and the Swift `RutisMultilang`
+/// binary, each dialing over WebSocket through `RutisApp` (Swift's on
+/// macOS: no system permission involved).
+#[cfg(any(feature = "kotlin", all(feature = "swift", target_os = "macos")))]
+mod dialed_in {
+    use super::*;
+    use common::runtimes::id;
+    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::{AccessPointConfig, AccessPointPlugin, AdmissionPlugin, SharedToken};
+    use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
+    use rutis_test_support::{scaled, HANG_GUARD};
+    use tokio::io::AsyncBufReadExt;
+
+    /// The connection's id: the title of its instance's `tools`.
+    fn connection(build: &rutis_loader::resolve::Build) -> String {
+        build
+            .value::<RuntimeConnection>()
+            .map(|connection| connection.id().to_string())
+            .unwrap_or_default()
+    }
+
+    /// The Kotlin conformance jar, served by `Rutis.serve`.
+    #[cfg(feature = "kotlin")]
+    fn kotlin() -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("java");
+        command
+            .args(["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC", "-jar"])
+            .arg(common::runtimes::kotlin_jar());
+        command
+    }
+
+    /// The Swift `RutisMultilang` binary, served by `Rutis.serve`.
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    fn swift() -> tokio::process::Command {
+        tokio::process::Command::new(common::runtimes::swift_binary(
+            "RutisMultilang",
+            "multilang",
+        ))
+    }
+
+    /// Dial the access point as the endpoint `name`, with `command`.
+    fn dial(
+        mut command: tokio::process::Command,
+        port: u16,
+        name: &str,
+        project: &std::path::Path,
+    ) -> tokio::process::Child {
+        let mut child = command
+            .arg(format!("dial:ws://127.0.0.1:{port}/rutis"))
+            .args(["--id", name, "--peer", "main"])
+            .arg(project)
+            .env("RUTIS_TOKEN", "shared")
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("the app starts");
+        let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = stderr.next_line().await {
+                eprintln!("[app] {line}");
+            }
+        });
+        child
+    }
+
+    /// The `phone` group: the origin, then `tools`, then the host parts
+    /// `hosts` names (mounting every registered part).
+    fn rows(hosts: &[&str]) -> Vec<Layer> {
+        let mut config = vec![
+            json!({ "id": "origin", "name": "phone:values_origin" }),
+            json!({ "id": "tools", "name": "tools" }),
+        ];
+        config.extend(hosts.iter().map(|id| json!({ "id": id, "name": "host" })));
+        let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": [{
+            "id": "phone", "group": true, "instanced": true, "config": config
+        }] }]))
+        .unwrap();
+        vec![Layer::new("rows", patches)]
+    }
+
+    #[cfg(feature = "kotlin")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dialed_in_kotlin_app_s_definitions_mount_only_in_its_instance() {
+        mount_only_in_its_instance(kotlin()).await
+    }
+
+    #[cfg(all(feature = "swift", target_os = "macos"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dialed_in_swift_app_s_definitions_mount_only_in_its_instance() {
+        mount_only_in_its_instance(swift()).await
+    }
+
+    async fn mount_only_in_its_instance(app: tokio::process::Command) {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = Probe::default();
+        let root = Ctx::root().unwrap();
+        root.provide_at(host_key("probe"), Arc::new(probe.clone()))
+            .unwrap();
+        root.provide(Parts::default()).unwrap();
+        let parts = root.get::<Parts>().unwrap();
+
+        let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
+            "public",
+            ([127, 0, 0, 1], 0).into(),
+            id("main"),
+        )))
+        .unwrap();
+        let transport = websocket.clone();
+        (&root.plugin(websocket)).await.unwrap();
+        let port = transport
+            .transport()
+            .unwrap()
+            .local_addr("public")
+            .unwrap()
+            .port();
+        (&root.plugin(AdmissionPlugin::new(
+            "phone",
+            SharedToken::new(id("main"), "shared"),
+        )))
+            .await
+            .unwrap();
+
+        let mut catalog = ServiceCatalog::new();
+        catalog.register_shared("probe");
+        catalog.register_shared("parts");
+        catalog.register_shared("maker");
+        catalog.register_shared_instance("tools", "phone");
+        let mounted = Arc::new(Mutex::new(Vec::new()));
+        let mut builtins = Scoped::new();
+        {
+            let mounted = mounted.clone();
+            builtins.register::<NoConfig, _, _>("host", move |build| {
+                Ok(HostFactory {
+                    title: connection(build),
+                    mounted: mounted.clone(),
+                })
+            });
+        }
+        builtins.register::<NoConfig, _, _>("tools", |build| {
+            let instance = build.instance("phone")?;
+            Ok(ToolsFactory(
+                host_key_in("tools", instance),
+                connection(build),
+            ))
+        });
+        let instances = RuntimeInstances::new("phone", "phone", &catalog);
+        let plugin = LoaderPlugin::new(
+            Chain::new().with(builtins).with(instances.clone()),
+            LoaderOptions {
+                catalog,
+                ..LoaderOptions::default()
+            },
+        );
+        let loader = plugin.handle();
+        (&root.plugin(plugin)).await.unwrap();
+        let report = loader.reconcile(rows(&[]), None).await.unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        let access = AccessPointPlugin::new(
+            AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
+                .require("runtime")
+                .handshake(scaled(HANG_GUARD)),
+        )
+        .accept(instances.accept(loader.clone(), root.clone()));
+        (&root.plugin(access)).await.unwrap();
+
+        let mut pixel = dial(app, port, "pixel", dir.path());
+        parts.wait_for(1).await;
+        let definition = parts.of("session").pop().unwrap();
+        // Outside the connection's instance, it does not mount.
+        let refused = definition
+            .at(&root, json!({ "n": "root" }))
+            .err()
+            .expect("outside the app's instance");
+        assert!(
+            refused.to_string().contains("inside instance phone "),
+            "{refused}"
+        );
+        // A host part in the instance mounts it there.
+        let report = loader.reconcile(rows(&["host"]), None).await.unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        probe
+            .wait_for("part pixel sees pixel with prepared in apply")
+            .await;
+        // The app goes: its copies end with it.
+        pixel.kill().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), definition.ended())
+            .await
+            .expect("ended with the app's connection");
+        for copy in mounted.lock().unwrap().iter() {
+            assert_eq!(copy.state().state, FiberState::Disposed);
+        }
+        root.shutdown().await.unwrap();
     }
 }

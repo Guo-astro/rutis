@@ -100,6 +100,31 @@ How Swift values cross ([Passing values](plugin-api.en.md#passing-values)):
 | Decimal | `Decimal`: at most 38 digits, and trailing zeros are not kept (`1.10` arrives as `1.1`); declare the parameter `String` to keep the text as it was sent |
 | UUID | `UUID` |
 
+### Handing a plugin to a service
+
+A plugin is a value too: hand the result of `Rutis.define(...)` to a service as an ordinary argument (an application's part registry, say), and the receiver mounts it elsewhere, one copy per mount, using what you prepared in `apply`. In a `@RutisClient` protocol, the parameter or result type is `Rutis.Definition`:
+
+```swift
+@RutisClient
+protocol Parts {
+    func register(_ scope: String, _ part: Rutis.Definition) async throws
+}
+
+let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
+    let pool = try await openPool()
+    let status = Rutis.define(Plugin(name: "git_status", inject: ["history"], config: StatusConfig.self) { ctx, config in
+        ctx.provide("gitStatus", GitStatus(pool: pool, depth: config.depth))
+    })
+    try await ctx.use("parts", PartsProxy.self).register("session", status)
+})
+```
+
+- Each copy runs in this plugin's runtime, isolated by the instance it is mounted in, and gated by its `inject`.
+- It belongs to this generation of the row that handed it over: when the row unloads, reloads or ends, every copy mounted from it ends first, then the row unloads.
+- Handed to a test double of `RutisTest`, the double receives the definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
+- The parameter or result must be a `Rutis.Definition` (or `Rutis.Definition?`) itself. Plugin definitions inside an array, a dictionary or a struct (such as `[Rutis.Definition]`) are not supported: make one call per definition.
+- The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+
 ### Events
 
 Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result. A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored); in a waterfall its last parameter is a `Rutis.Next<R>`.
