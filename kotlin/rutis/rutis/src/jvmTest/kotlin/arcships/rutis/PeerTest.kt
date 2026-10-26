@@ -12,6 +12,7 @@ import arcships.rutis.internal.peer.Signal
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.ValueException
 import arcships.rutis.internal.peer.WireSet
+import arcships.rutis.internal.peer.decodeError
 import arcships.rutis.internal.peer.encodeError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -22,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -78,6 +80,7 @@ class PeerTest {
         }
         "fail" -> throw Stormy("Stormy", mapOf("wind" to (1L shl 60), "gusts" to listOf(1, 2)))
         "rethrow" -> runtime.callFunctionSuspend(args[0] as RemoteFunction, emptyList())
+        "rethrowBlocking" -> runtime.callFunction(args[0] as RemoteFunction, emptyList())
         "function" -> Exported("double") { a -> ((a[0] as JsonPrimitive).content.toLong() * 2) }
         "slow" -> {
             delay(20)
@@ -297,5 +300,94 @@ class PeerTest {
         assertEquals("a string", relayed.message)
         assertEquals(graph, relayed.graph)
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
+    }
+
+    private fun rootNode(graph: JsonObject): JsonObject {
+        val id = graph["root"]!!.jsonObject["value"]!!.jsonPrimitive.int
+        return graph["nodes"]!!.jsonArray[id].jsonObject
+    }
+
+    private fun rethrownOf(encoded: JsonObject): List<String> =
+        rootNode(encoded["graph"]!!.jsonObject)["rethrown"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+
+    /**
+     * #677: a received error thrown on crosses with the received graph as it
+     * came, plus one `rethrown` item on its root: the frames where it was
+     * thrown on, without "Name: message". The kept graph is not changed.
+     */
+    @Test
+    fun aReceivedErrorThrownOnCarriesWhereItWasThrownOn() {
+        start()
+        val error = assertFailsWith<RutisException> { host.call("t", "fail", emptyList(), true) }
+        val kept = error.graph!!
+        assertEquals(null, rootNode(kept)["rethrown"])
+
+        // Once: thrown on here, from this test.
+        val once = rethrownOf(encodeError(error))
+        assertEquals(1, once.size)
+        assertTrue(once[0].startsWith("    at "), once[0])
+        assertTrue(!once[0].contains("Stormy"), once[0])
+        assertTrue(once[0].contains("PeerTest.aReceivedErrorThrownOnCarriesWhereItWasThrownOn(PeerTest.kt:"), once[0])
+        assertTrue(once[0].lines().none { it.contains("arcships.rutis.internal.") }, once[0])
+        assertEquals(kept, error.graph)
+        assertEquals(null, rootNode(error.graph!!)["rethrown"])
+
+        // Twice: thrown on by the host's function, received by the runtime
+        // (from a blocking call in `serve`) and thrown on again.
+        val thrower = Exported("thrower") { throw error }
+        val again = assertFailsWith<RutisException> { host.call("t", "rethrowBlocking", listOf(thrower), true) }
+        val twice = rootNode(again.graph!!)["rethrown"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(2, twice.size, twice.toString())
+        assertTrue(twice[0].contains("PeerTest.aReceivedErrorThrownOnCarriesWhereItWasThrownOn(PeerTest.kt:"), twice[0])
+        assertTrue(twice[1].startsWith("    at arcships.rutis.PeerTest.serve(PeerTest.kt:"), twice[1])
+        assertEquals("Stormy", again.name)
+        assertEquals(error.data, again.data)
+        assertEquals(kept, error.graph)
+
+        // From a suspend function: its frames are the suspended callers'.
+        val suspended = assertFailsWith<RutisException> { host.call("t", "rethrow", listOf(thrower), true) }
+        val viaSuspend = rootNode(suspended.graph!!)["rethrown"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(2, viaSuspend.size, viaSuspend.toString())
+        assertTrue(viaSuspend[1].startsWith("    at arcships.rutis.PeerTest.serve(PeerTest.kt:"), viaSuspend[1])
+        assertTrue(viaSuspend[1].lines().none { it.contains("arcships.rutis.internal.") }, viaSuspend[1])
+    }
+
+    /** At most 8 `rethrown` items: a ninth is not appended. */
+    @Test
+    fun rethrownStopsAtEightItems() {
+        fun received(items: Int) = decodeError(buildJsonObject {
+            put("name", "Stormy")
+            put("message", "too windy")
+            put("graph", buildJsonObject {
+                put("root", buildJsonObject {
+                    put("type", "reference")
+                    put("value", 0)
+                })
+                put("nodes", JsonArray(listOf(buildJsonObject {
+                    put("type", "error")
+                    put("name", "Stormy")
+                    put("message", "too windy")
+                    put("stack", "Stormy: too windy")
+                    put("rethrown", JsonArray((1..items).map { JsonPrimitive("    at caller$it") }))
+                })))
+            })
+        })
+        val seven = received(7)
+        val before = seven.graph
+        val eight = rethrownOf(encodeError(seven))
+        assertEquals(8, eight.size)
+        assertEquals("    at caller7", eight[6])
+        assertTrue(eight[7].contains("PeerTest.rethrownStopsAtEightItems"), eight[7])
+        assertEquals(before, seven.graph)
+        assertEquals(7, rootNode(seven.graph!!)["rethrown"]!!.jsonArray.size)
+        val full = rethrownOf(encodeError(received(8)))
+        assertEquals((1..8).map { "    at caller$it" }, full)
+    }
+
+    /** A locally thrown error has no `rethrown`. */
+    @Test
+    fun aLocalErrorHasNoRethrown() {
+        val thrown = assertFailsWith<IllegalStateException> { throwHere() }
+        assertEquals(emptyList(), rethrownOf(encodeError(thrown)))
     }
 }

@@ -25,6 +25,8 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
+import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 
 // One session of the rutis protocol: the compat format (version 2) local
 // channels speak, and the endpoint format (version 3) network channels speak.
@@ -829,7 +831,12 @@ class Peer(private val channel: Channel, private val opts: Options) {
     }
 
     private fun result(outcome: Outcome): Any? {
-        outcome.error?.let { throw it }
+        outcome.error?.let {
+            // A received error's frames are where it reaches the caller here,
+            // what it crosses with when thrown on (its `rethrown`).
+            if (it is RutisException && it.graph != null) it.fillInStackTrace()
+            throw it
+        }
         return outcome.value
     }
 
@@ -853,7 +860,28 @@ class Peer(private val channel: Channel, private val opts: Options) {
             abandon(id, cancellable)
             throw e
         }
+        val error = outcome.error
+        if (error is RutisException && error.graph != null) {
+            // Resumed, the thread's stack no longer holds the suspended
+            // callers: the coroutine's own frames are where it reaches them.
+            val frames = suspendedFrames()
+            if (frames.isNotEmpty()) {
+                error.stackTrace = frames.toTypedArray()
+                throw error
+            }
+        }
         return result(outcome)
+    }
+
+    /** The frames of the suspend functions waiting on this one, innermost first. */
+    private suspend fun suspendedFrames(): List<StackTraceElement> = suspendCoroutineUninterceptedOrReturn { continuation ->
+        val frames = ArrayList<StackTraceElement>()
+        var frame = continuation as? CoroutineStackFrame
+        while (frame != null && frames.size < 256) {
+            frame.getStackTraceElement()?.let(frames::add)
+            frame = frame.callerFrame
+        }
+        frames
     }
 
     /**
