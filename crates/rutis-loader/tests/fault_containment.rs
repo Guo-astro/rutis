@@ -531,6 +531,13 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
         .await
         .unwrap();
     probe.wait_for("worker: started").await;
+    // Its service reaches the host after its `apply` has returned, a moment
+    // after the line it prints there.
+    COLD.until(
+        || root.get_at::<dyn HostDispatch>(&host_key("work")).is_some(),
+        "the worker's service",
+    )
+    .await;
     let work = root
         .get_at::<dyn HostDispatch>(&host_key("work"))
         .expect("the worker's service");
