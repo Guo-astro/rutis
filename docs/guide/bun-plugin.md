@@ -84,7 +84,7 @@ test('greets through events', async () => {
 bunx --bun rutis-host dev
 ```
 
-`rutis-host dev` 看到 `bun.lock`、`rutis.dev.json` 里的 `runtimes.bun`，或依赖 `@arcships/rutis-bun`，就用 Bun 运行这个项目，文件变化时重新加载。
+`rutis-host dev` 看到 `bun.lock`、`rutis.dev.json` 里的 `runtimes.bun`，或依赖 `@arcships/rutis-bun`，就用 Bun 运行这个项目，它的文件变化时重新加载；只有文件变了的行重新加载（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。
 
 宿主的 `rutis.json`：
 

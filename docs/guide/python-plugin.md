@@ -220,7 +220,7 @@ plugin = define_plugin(apply)
 uv run rutis-host dev
 ```
 
-`dev` 用项目的 `.venv` 运行这个插件，改了文件就重新导入它。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`（行名 `py:fake_llm` 指项目 `src/` 里的模块 `fake_llm`，内容在后面）：
+`dev` 用项目的 `.venv` 运行这个插件，改了它的文件就重新导入它；只有文件变了的行重新加载，`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`（行名 `py:fake_llm` 指项目 `src/` 里的模块 `fake_llm`，内容在后面）：
 
 <!-- example: python file=weather/rutis.dev.json -->
 ```json

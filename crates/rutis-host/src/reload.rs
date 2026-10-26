@@ -72,7 +72,7 @@ impl Triggers {
 
     /// The file was read as `text` for a reload: the watch takes it as
     /// seen, so the same content does not trigger again.
-    fn read(&mut self, text: &str) {
+    pub fn read(&mut self, text: &str) {
         if let Some(watch) = &mut self.watch {
             watch.seen = Some(text.to_owned());
             watch.settling = None;

@@ -708,6 +708,67 @@ mod sigusr1 {
     use super::*;
     use common::process::{alive, cleanups, run_project, signal, Host, HANGING_PLUGIN};
 
+    /// `run` restarting a Node row runs its file as it is now: a plugin
+    /// file edited (no reload asked for), then the row's config changed and
+    /// the configuration read again, runs the edit, as in 0.17.1. Only
+    /// `dev` keeps a row on the version it last described (#665).
+    /// guarantee: host/reload-config
+    #[test]
+    fn a_node_row_restarted_by_a_reload_runs_its_edited_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "edited", "type": "module" }"#,
+        )
+        .unwrap();
+        let sdk = common::process::file_url(
+            &common::repo()
+                .join("node/rutis/src/index.mjs")
+                .canonicalize()
+                .unwrap(),
+        );
+        let module = dir.path().join("plugin.mjs");
+        let write = |version: &str, later: u64| {
+            std::fs::write(
+                &module,
+                format!(
+                    "import {{ definePlugin }} from '{sdk}'\n\
+                     export default definePlugin({{ apply(ctx, config) {{ console.log(`plugin {version} applied tag=${{config.tag}}`) }} }})\n"
+                ),
+            )
+            .unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&module)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() + Duration::from_secs(later))
+                .unwrap();
+        };
+        write("v1", 0);
+        let file = dir.path().join("rutis.json");
+        let config = |tag: &str| {
+            json!({
+                "runtimes": { "node": { "project": ".", "runtime": common::repo().join("node/rutis-runtime") } },
+                "rows": [{ "id": "edited", "name": "./plugin.mjs", "config": { "tag": tag } }],
+            })
+            .to_string()
+        };
+        std::fs::write(&file, config("a")).unwrap();
+        let mut host = Host::start(&["run", file.to_str().unwrap()], dir.path());
+        host.wait_lines(&["plugin v1 applied tag=a", "edited: running"]);
+
+        write("v2", 5);
+        std::fs::write(&file, config("b")).unwrap();
+        signal(&host, libc::SIGUSR1, false);
+        let reloaded = format!("rutis-host: reloaded {} (1 row changed)", file.display());
+        host.wait_lines(&[&reloaded, "plugin v2 applied tag=b"]);
+
+        signal(&host, libc::SIGTERM, false);
+        let (status, stderr, output) = host.exit();
+        let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
+        assert_eq!(status.code(), Some(0), "{context}");
+    }
+
     /// guarantee: host/reload-config
     #[test]
     fn sigusr1_reloads_and_the_host_runs_on() {

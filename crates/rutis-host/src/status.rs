@@ -158,15 +158,15 @@ pub struct Followed {
 
 impl Followed {
     /// Each local runtime's state by name, the compiled languages' among
-    /// them.
-    fn runtime_states(&self) -> Vec<(String, RuntimeState)> {
-        let mut states: Vec<(String, RuntimeState)> = self
+    /// them, with a number that grows whenever it starts again.
+    fn runtime_states(&self) -> Vec<(String, RuntimeState, u64)> {
+        let mut states: Vec<(String, RuntimeState, u64)> = self
             .runtimes
             .iter()
-            .map(|(name, handle)| (name.clone(), handle.state()))
+            .map(|(name, handle)| (name.clone(), handle.state(), handle.starts()))
             .collect();
         for binaries in &self.binaries {
-            states.extend(binaries.states());
+            states.extend(binaries.states_started());
         }
         states
     }
@@ -179,8 +179,9 @@ pub struct Shown {
     /// Per peer row: whether its link was last seen ready, and the last
     /// line printed for it.
     links: BTreeMap<String, (bool, Option<String>)>,
-    /// Per runtime: the last line printed for it.
-    runtimes: BTreeMap<String, String>,
+    /// Per runtime: the last line printed for it, and how many times it
+    /// had started then.
+    runtimes: BTreeMap<String, (String, u64)>,
 }
 
 impl Shown {
@@ -192,18 +193,25 @@ impl Shown {
         out
     }
 
-    /// The lines for the runtimes `states` whose state changed. A runtime
-    /// gone from `states` keeps its last line: one of Go or Swift stops when idle, and
-    /// one the host stops goes on to `Idle`, neither printed.
-    pub fn runtime_changes(&mut self, states: &[(String, RuntimeState)]) -> Vec<String> {
+    /// The lines for the runtimes `states` (name, state, how many times it
+    /// has started) whose state changed. A runtime down again after it
+    /// started again is a change, however short it ran between two looks:
+    /// each time it goes down has its line. A runtime gone from `states`
+    /// keeps its last line: one of Go or Swift stops when idle, and one the
+    /// host stops goes on to `Idle`, neither printed.
+    pub fn runtime_changes(&mut self, states: &[(String, RuntimeState, u64)]) -> Vec<String> {
         let mut out = Vec::new();
-        for (name, state) in states {
+        for (name, state, starts) in states {
             let printed = self.runtimes.get(name);
-            let was_down = printed.is_some_and(|line| line.starts_with("down"));
+            let was_down = printed.is_some_and(|(line, _)| line.starts_with("down"));
+            let started_since = printed.is_some_and(|(_, then)| starts > then);
             match describe_runtime(state.into(), was_down) {
-                Some(line) if printed != Some(&line) => {
+                Some(line)
+                    if printed.map(|(line, _)| line) != Some(&line)
+                        || (line.starts_with("down") && started_since) =>
+                {
                     out.push(format!("runtime {name}: {line}"));
-                    self.runtimes.insert(name.clone(), line);
+                    self.runtimes.insert(name.clone(), (line, *starts));
                 }
                 _ => {}
             }
@@ -404,7 +412,7 @@ mod tests {
     #[test]
     fn a_runtime_line_is_printed_once_per_change() {
         let mut shown = Shown::default();
-        let state = |name: &str, state: RuntimeState| vec![(name.to_owned(), state)];
+        let state = |name: &str, state: RuntimeState| vec![(name.to_owned(), state, 1)];
         assert!(shown
             .runtime_changes(&state("py", RuntimeState::Starting))
             .is_empty());
@@ -427,6 +435,29 @@ mod tests {
         assert!(shown
             .runtime_changes(&state("node", RuntimeState::Idle))
             .is_empty());
+    }
+
+    /// A runtime that starts again and goes down the same way between two
+    /// looks (it ran less than one) has the line again: each time it goes
+    /// down, once (#665).
+    /// guarantee: host/runtime-state-lines
+    #[test]
+    fn a_runtime_down_again_after_it_started_again_has_the_line_again() {
+        let mut shown = Shown::default();
+        let down = |starts| {
+            let why = "runtime process exited with exit status: 1".to_owned();
+            vec![("node".to_owned(), RuntimeState::Down(why), starts)]
+        };
+        let line = ["runtime node: down (exited with exit status: 1)"];
+        assert_eq!(shown.runtime_changes(&down(1)), line);
+        assert!(shown.runtime_changes(&down(1)).is_empty());
+        assert_eq!(shown.runtime_changes(&down(2)), line);
+        assert!(shown.runtime_changes(&down(2)).is_empty());
+        // Seen starting in between: no line for that, one for the end.
+        assert!(shown
+            .runtime_changes(&[("node".to_owned(), RuntimeState::Starting, 3)])
+            .is_empty());
+        assert_eq!(shown.runtime_changes(&down(3)), line);
     }
 
     #[test]

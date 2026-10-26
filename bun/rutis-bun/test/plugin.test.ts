@@ -58,6 +58,35 @@ test('an edited module is imported again; an unchanged one is not', async () => 
   expect((await modules.import(locate('./edited.ts', dir))).value).toBe(22)
 })
 
+// Under `rutis-host dev`, a row that loads again for another reason (a
+// service it uses came back) runs the module its description recorded, not
+// an edit made since that does not import, nor one that declares no plugin;
+// a description records the edit once it does (#665). Outside `dev`, a row
+// loads the file as it is.
+test('under dev a row loads the module last described, not a broken edit', async () => {
+  const dir = project()
+  const file = locate('./kept.ts', (writeFileSync(join(dir, 'kept.ts'), "export const name = 'v1'\nexport function apply() {}\n"), dir))
+  const modules = new Modules(true)
+  expect((await modules.plugin(file, './kept.ts')).name).toBe('v1')
+  writeFileSync(file, 'export const const = 2\n')
+  const error: any = await modules.plugin(file, './kept.ts').catch(error => error)
+  expect(error).toBeInstanceOf(Error)
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  writeFileSync(file, "export const name = 'v2'\n")
+  expect(await modules.plugin(file, './kept.ts').catch(error => error)).toBeInstanceOf(Error)
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  writeFileSync(file, "export const name = 'v333'\nexport function apply() {}\n")
+  expect((await modules.described(file, './kept.ts')).name).toBe('v1')
+  expect((await modules.plugin(file, './kept.ts')).name).toBe('v333')
+  expect((await modules.described(file, './kept.ts')).name).toBe('v333')
+
+  // Outside dev, the file as it is now.
+  const run = new Modules(false)
+  expect((await run.plugin(file, './kept.ts')).name).toBe('v333')
+  writeFileSync(file, "export const name = 'v4444'\nexport function apply() {}\n")
+  expect((await run.described(file, './kept.ts')).name).toBe('v4444')
+})
+
 test('a module that does not parse fails with its file and line', async () => {
   const dir = project()
   const file = join(dir, 'broken.ts')

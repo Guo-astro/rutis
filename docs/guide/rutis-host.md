@@ -18,7 +18,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | 命令 | 作用 |
 | --- | --- |
 | `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
-| `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），文件变化时重新加载；Go、Swift 项目重新构建（`go build`、`swift build`），只重启它的运行时 |
+| `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
@@ -42,7 +42,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for its services`，其他运行时和它们的行不受影响 |
 | `runtime <名字>: running` | 打印过 `down` 的运行时重新运行了（`dev` 里重新构建的 Go 或 Swift 运行时） |
 
-一个运行时停在 `down` 时只打印一次；括号里的原因是给人看的，不保证措辞。
+一个运行时停在 `down` 时只打印一次；重新启动后又结束的，再打印一次，不论它运行了多久。括号里的原因是给人看的，不保证措辞。
 
 节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
 
@@ -116,9 +116,10 @@ Unix 上，`rutis-host` 启动时就被忽略的信号（比如用 `nohup` 启�
 
 ## 运行中改配置
 
-`run` 运行时可以改 `rutis.json`，不用重启宿主：
+`run` 运行时可以改 `rutis.json`，不用重启宿主（`dev` 用同样的方式重新读 `rutis.dev.json`，见 [用 dev 开发插件](#用-dev-开发插件)）：
 
 - Unix 上给 `rutis-host` 发 SIGUSR1，它重新读一次文件。systemd 里写 `ExecReload=/bin/kill -USR1 $MAINPID`，`systemctl reload` 就会触发。SIGHUP 仍是终止信号（终端关闭时宿主随之停止），不用来重新读配置。
+- 用 npm 安装时，启动的进程（`npx rutis-host run`，也就是 systemd 的 `MAINPID`）是启动器 `bin/rutis-host.mjs`，由它运行 `rutis-host` 二进制。Unix 上它把 SIGUSR1 和 SIGTERM 转发给二进制，所以上面的重新读取和停止都和直接运行二进制一样（SIGUSR1 也不会让 Node 打开调试端口）。SIGINT 和 SIGHUP 它不转发：终端把这两个信号发给整个进程组，二进制自己也会收到，转发会让它收到两次。所以单独发给启动器的 SIGINT（`kill -INT <启动器的 pid>`）不起作用；脚本要停止它时发 SIGTERM，或者把 SIGINT 发给整个进程组。
 - 加上 `--watch-config`（默认关闭），文件内容变了就重新读：在内容变化后、连续 500 毫秒不再变化时读一次，内容和上次读到的相同时不读，文件暂时不存在（编辑器先删后建）不算变化。Windows 上没有 SIGUSR1，这是唯一的方式；Kubernetes 更新 ConfigMap 时改的是挂载的文件，也用它。
 
 两种方式走同一个重新读取，全有或全无：
@@ -143,6 +144,29 @@ rutis-host: reload rejected: <原因>; nothing changed
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 
+## 用 dev 开发插件
+
+`rutis-host dev [目录]` 把目录（默认当前目录）里的插件项目作为几行运行：项目自己的插件（由 `rutis.dev.json` 里同 id 的那一行配置），加上这个文件里的其他行（插件用到的服务的假实现、其他插件）。它每 0.4 秒看一次项目里的文件（不看 `node_modules`、`.venv`、`venv`、`target`、`dist`、`build`、`__pycache__` 和除 `.env` 以外的隐藏文件、目录），跟着变化：
+
+- 变了的文件是某一行的模块时（`./dev/fake-llm.ts`；Python 的行 `py:fake_llm` 的模块文件，即 Python 运行时项目里的 `fake_llm.py` 或 `fake_llm/__init__.py`），重新加载这一行。项目里其他文件变了（插件的其他模块、`package.json`、`pyproject.toml`），重新加载项目自己的那一行。文件没变的行不动。
+- Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
+- `rutis.dev.json` 的内容变了就重新读，规则同 `run --watch-config`（全有或全无；运行中改不了的部分被拒绝，提示重启；见 [运行中改配置](#运行中改配置)）；Unix 上 SIGUSR1 也会触发。条目改了的行带着新的内容重启，新增的行启动，删掉的行卸载。
+- 用到某一行所提供服务的行，在这一行重新加载时随它重启，和平时服务消失又回来时一样。
+- 本机运行时（`node`、`py`、`bun`）的进程结束、又没有谁重启它时（`restart` 是默认的 `"no"`，或者 `"on-failure"` 已经放弃），它的某一行下一次变化（文件，或它在 `rutis.dev.json` 里的条目）会重新启动这个运行时，用那时的代码；它的行随之回来。别的行变化不会启动它。`restart` 会重启它（`"on-failure"`，还没放弃）、或者它正在启动时，交给它自己：它的行用那时的代码启动。
+- 重新加载只重新导入这一行自己的模块，不重新导入它导入的其他模块；改了那些模块，要重启 `dev`。
+- 新代码导入不了（语法错误、导入时出错）的重新加载不改变任何东西：这一行继续运行原来的版本，之后因为别的原因重启（它用到的服务重新加载）时也是原来的版本，直到改成能导入的代码。新代码能导入、但 `apply` 失败时，这一行从此运行的就是新代码：它以那个错误失败，改好之前不运行。
+
+除了 [`run`](#run-打印什么) 的那些行，`dev` 还打印：
+
+| 输出 | 含义 |
+| --- | --- |
+| `<行 id>: reloaded (<文件> changed)` | 这一行运行新的代码；文件是相对项目的路径 |
+| `<行 id>: cannot reload: <原因>; the previous version keeps running` | 新代码导入不了，这一行继续运行原来的版本。新代码让另一行失败时，原因先写那一行：`<另一行> failed with it: …`。没有 `; the previous version keeps running` 时（例如新代码的 `apply` 失败），这一行现在没有运行 |
+| `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）或 `<Go 或 Swift 运行时> restarted`；这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
+| `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
+| `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
+| `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
+
 ## 运行时结束时
 
 本机运行时（`node`、`py`、`bun`、每个 Go 或 Swift 运行时）的进程自己结束（崩溃、被 `kill -9`、插件让进程退出）时，`rutis-host` 按这个运行时的 `restart` 处理：
@@ -164,7 +188,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 - 进程内存里的状态随崩溃丢失，重启不会多丢；正在进行的调用已经显式失败，不会自动重试。会再执行一次的是插件启动时做的事（`apply`），和手动重启宿主一样。
 - 宿主停止时（收到终止信号、`exit` 策略）不再重启任何运行时；[运行中改配置](#运行中改配置)删掉的运行时也不会重启。
 - `restart` 是运行时的设置，运行中改它要重启宿主。
-- `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"`、`"swift"` 等）（项目自己的那个运行时只取 `restart`）。
+- `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"`、`"swift"` 等）（项目自己的那个运行时只取 `restart`）。在 `dev` 里停着的运行时，它的某一行下一次变化时也会重新启动（见 [用 dev 开发插件](#用-dev-开发插件)）。
 
 - Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。`runtimes.swift.restart` 对 Swift 运行时相同（打印 `runtime swift-<名字>: restarting`）。
 - 远程运行时和节点行的 link 自己重连，不受它影响。
@@ -308,5 +332,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 把 `rutis.json`、Node 项目（装好插件和 `@arcships/rutis-runtime`）、Python 环境（装好 `rutis` 和插件）、Go 与 Swift 插件目录（对应平台的二进制）放在一起，用进程管理器（systemd 等）运行 `rutis-host run /srv/app/rutis.json`。`rutis-host` 结束时，它启动的运行时进程随之结束。
 
 改了 `rutis.json` 要生效时用 `systemctl reload`（`ExecReload=/bin/kill -USR1 $MAINPID`），或者用 `--watch-config` 运行，见 [运行中改配置](#运行中改配置)。
+
+用 npm 安装时（`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`），`MAINPID` 是启动器 `bin/rutis-host.mjs`，一个运行 `rutis-host` 二进制的 Node 进程。它把 SIGTERM 和 SIGUSR1 转发给二进制，所以 `systemctl stop`、`systemctl reload` 和直接运行二进制时一样，二进制怎样退出它就怎样退出。SIGINT 和 SIGHUP 它不转发（终端会直接发给二进制）：单独发给启动器的 SIGINT 不起作用，停止时发 SIGTERM。GitHub Releases、crates.io 的二进制，以及用 PyPI 安装时放进环境里的那个（`.venv/bin/rutis-host`），都没有启动器。
 
 停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出。

@@ -18,7 +18,7 @@ The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and 
 | Command | Purpose |
 | --- | --- |
 | `rutis-host run [rutis.json]` | Runs the configuration (reading it again while it runs on SIGUSR1 on Unix, or with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)) and prints each row's status changes, the state of node rows' links and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
-| `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and reloads it when files change; a Go or Swift project is rebuilt (`go build`, `swift build`), restarting only its runtime. |
+| `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
@@ -42,7 +42,7 @@ A local runtime (`node`, `py`, `bun`, Go's `go-<binary>`, Swift's `swift-<binary
 | `runtime <name>: down (<reason>)` | The runtime process ended; the reason says how, such as `exited with signal: 9 (SIGKILL)` or `exited with exit status: 1`; or it could not start, and the reason is the error. Its rows go back to `waiting for its services`; other runtimes and their rows go on. |
 | `runtime <name>: running` | A runtime that printed `down` runs again (a Go or Swift runtime rebuilt by `dev`). |
 
-A runtime that stays down prints once; the reason in parentheses is for people, and its wording is not guaranteed.
+A runtime that stays down prints once; one that starts again and goes down again prints the line again, however briefly it ran. The reason in parentheses is for people, and its wording is not guaranteed.
 
 A node row's (`rutis-bridge/peer`) state only says that the row runs; whether its link is connected is printed on a line of its own, when the link's state changes:
 
@@ -116,9 +116,10 @@ On Unix, a signal `rutis-host` was started ignoring (SIGHUP under `nohup`, for e
 
 ## Changing the configuration while it runs
 
-While `run` runs, `rutis.json` can change without restarting the host:
+While `run` runs, `rutis.json` can change without restarting the host (`dev` reads `rutis.dev.json` again the same way; see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)):
 
 - On Unix, send `rutis-host` SIGUSR1 and it reads the file again. Under systemd, `ExecReload=/bin/kill -USR1 $MAINPID` makes `systemctl reload` do so. SIGHUP is still a termination signal (the host stops when its terminal closes); it does not reload.
+- Installed with npm, the process you start (`npx rutis-host run`, and so systemd's `MAINPID`) is the launcher `bin/rutis-host.mjs`, which runs the `rutis-host` binary: on Unix it passes SIGUSR1 and SIGTERM on to it, so the reload above and stopping work as with the binary (and Node opens no debugger for SIGUSR1). It does not pass on SIGINT and SIGHUP: a terminal sends those to the whole process group, the binary included, which would otherwise get them twice. A SIGINT sent to the launcher alone (`kill -INT <its pid>`) therefore does nothing; to stop it from a script, send SIGTERM, or SIGINT to the process group.
 - With `--watch-config` (off by default), it reads the file again when its content changes: once the content has stayed the same for 500 milliseconds after a change; content the same as last read is not read again, and a file that is briefly not there (an editor deleting and creating it) is no change. Windows has no SIGUSR1, so this is the only way there; it is also the way for a Kubernetes ConfigMap update, which changes the mounted file.
 
 Both run the same reload, all or nothing:
@@ -143,6 +144,29 @@ Refused, the old configuration runs on; the reason names the row and what is wro
 
 Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 
+## Developing a plugin with `dev`
+
+`rutis-host dev [directory]` runs the plugin project in the directory (the current one by default) as rows: the project's own plugin, configured by the row of `rutis.dev.json` with the same id, and the other rows that file adds (fakes of the services the plugin uses, other plugins). It looks at the project's files every 0.4 seconds (not `node_modules`, `.venv`, `venv`, `target`, `dist`, `build`, `__pycache__`, nor hidden files and directories other than `.env`) and follows them:
+
+- A changed file that is a row's module (`./dev/fake-llm.ts`; for a Python row `py:fake_llm`, the module's file `fake_llm.py` or `fake_llm/__init__.py` in the Python runtime's project) reloads that row. Any other changed file of the project (the plugin's other modules, `package.json`, `pyproject.toml`) reloads the project's own row. Rows whose files did not change are left alone.
+- In a Go or Swift project, a change to its sources (`.go`, `go.mod`, `go.sum`; Swift sources, `Package.swift`, `Package.resolved`) rebuilds it and restarts its runtime on the new build; a failed build keeps the last one running. A change to the module of another row (a Python or TypeScript row of `rutis.dev.json`) reloads that row without a rebuild; a change to any other file does nothing.
+- `rutis.dev.json` is read again when its content changes, by the rules of `run --watch-config` (all or nothing; what a running host cannot change is refused, saying to restart; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)); on Unix, SIGUSR1 does so too. Rows whose entry changed restart with it, added rows start, removed rows unload.
+- Rows that use a service of a row that reloaded restart with it, as they always do when a service they use goes and comes back.
+- A local runtime (`node`, `py`, `bun`) whose process ended and that nothing restarts (`restart` is `"no"`, the default, or `"on-failure"` gave up) starts again at the next change to one of its rows (a file or its entry in `rutis.dev.json`), with the code as it is then; its rows come back with it. A change to other rows does not start it. One that its `restart` starts again (`"on-failure"`, not given up), or that is starting, is left to it: its rows start with the code as it is then.
+- A reload imports again only the row's own module, not the modules it imports: after changing one of those, restart `dev`.
+- A reload whose new code does not import (a syntax error, an error while importing it) changes nothing: the row runs the version it ran, also when it restarts later for another reason (a service it uses reloading), until a change that imports. New code that imports but whose `apply` fails is the code the row runs from then on: the row fails with that error and does not run until a change fixes it.
+
+Besides the lines of [`run`](#what-run-prints), `dev` prints:
+
+| Output | Meaning |
+| --- | --- |
+| `<row id>: reloaded (<files> changed)` | The row runs the new code; the files are relative to the project. |
+| `<row id>: cannot reload: <reason>; the previous version keeps running` | The new code does not import; the row runs on the version it ran. When the new code made another row fail, the reason names that row first: `<other row> failed with it: …`. Without `; the previous version keeps running` (its new `apply` failing, say), the row does not run now. |
+| `<row id>: restarted (<other row> reloaded)` | The row uses a service of the other row, and restarted with it. The cause may also be `<row> updated`, `added` or `removed` (by `rutis.dev.json`) or `<Go or Swift runtime> restarted`; `started` or `stopped` instead of `restarted` when the row was not running before, or is not running now. |
+| `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | `rutis.dev.json` was read again; each row that changed follows: `<row id>: updated (its row in rutis.dev.json changed)`, `<row id>: added`, `<row id>: removed`. Refused: `rutis-host: reload rejected: <reason>; nothing changed`. |
+| `runtime <name>: starting again (<files> changed)` | A runtime that was down starts again for the change; `runtime <name>: running` follows when it runs, or `runtime <name>: down (<reason>)` again. When its `restart` starts it again: `runtime <name>: down; its restart starts it again, its rows with the code as it is then (…)`; when it is starting: `runtime <name>: starting; its rows start with the code as it is then (…)`. |
+| `<project>: building`, `<project>: built in 1.2s`, `<runtime>: rebuilt and restarted` | A Go or Swift project was rebuilt and its runtime restarted on the build. When the build fails: `<project>: the build failed; the last build keeps running`, followed by the compiler's errors; when the new build does not run: `<runtime>: cannot restart: <reason>; the previous build is kept`. |
+
 ## When a runtime ends
 
 When a local runtime's (`node`, `py`, `bun`, each Go or Swift runtime) process ends on its own (a crash, `kill -9`, a plugin making the process exit), `rutis-host` does what that runtime's `restart` says:
@@ -164,7 +188,7 @@ Also:
 - What the process held in memory is lost with the crash; a restart loses nothing more. Calls in progress have already failed explicitly and are not retried. What runs again is what plugins do as they start (`apply`), as when the host is restarted by hand.
 - Once the host stops (a termination signal, the `exit` policy), no runtime is restarted; nor is one removed by [changing the configuration while it runs](#changing-the-configuration-while-it-runs).
 - `restart` is a runtime setting: changing it while the host runs needs a restart.
-- `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` (or `"go"`, `"swift"`, …) in `rutis.dev.json` (for the project's own runtime, only `restart` is taken).
+- `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` (or `"go"`, `"swift"`, …) in `rutis.dev.json` (for the project's own runtime, only `restart` is taken). A runtime that stays down there also starts again at the next change to one of its rows (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)).
 
 - Go: `runtimes.go.restart` applies to every Go runtime, each on its own (its own waits and limit; `runtime go-<name>: restarting`). A runtime stopped for being idle did not end on its own; nor did one whose binary's handshake was refused (an old SDK), which is not restarted until its file changes. Whatever `restart` says, a crashed Go runtime also starts again when a row uses it once its binary changed. Changing `runtimes.go` while the host runs needs a restart, as before. `runtimes.swift.restart` is the same for the Swift runtimes (`runtime swift-<name>: restarting`).
 - Remote runtimes and peer rows' links reconnect by themselves and are not affected.
@@ -308,5 +332,7 @@ The environment cannot be changed from outside the process, so these tokens cann
 Place `rutis.json`, the Node project (with plugins and `@arcships/rutis-runtime` installed), the Python environment (with `rutis` and plugins installed), and the Go and Swift plugin directories (binaries for the platform) together. Run `rutis-host run /srv/app/rutis.json` under a process manager such as systemd. When `rutis-host` exits, the runtime processes it started exit as well.
 
 To apply a changed `rutis.json`, use `systemctl reload` (`ExecReload=/bin/kill -USR1 $MAINPID`), or run with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs).
+
+Installed with npm (`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`), `MAINPID` is the launcher `bin/rutis-host.mjs`, a Node process that runs the `rutis-host` binary. It passes SIGTERM and SIGUSR1 on to the binary, so `systemctl stop` and `systemctl reload` work as with the binary, and it exits as the binary does. It does not pass on SIGINT and SIGHUP (a terminal sends them to the binary itself): a SIGINT sent to the launcher alone does nothing, so stop it with SIGTERM. The binary from GitHub Releases or crates.io, and the one a PyPI install puts in the environment (`.venv/bin/rutis-host`), have no launcher.
 
 When stopping, have the process manager send SIGTERM to `rutis-host` alone and let it unload the rows. By default (`KillMode=control-group`), systemd also sends SIGTERM to the runtime processes, which then exit before their cleanups run; set `KillMode=mixed`, and set `TimeoutStopSec` longer than the cleanup deadline. If `rutis-host` is killed (SIGKILL, or ending the process on Windows), it cannot unload the rows: on Windows, the runtime processes are ended with it; on Unix, they notice that their channel closed, unload their rows themselves, and exit.

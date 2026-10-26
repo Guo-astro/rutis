@@ -412,8 +412,9 @@ fn greet(probe: &Probe, host: &mut Host) -> Value {
 }
 
 /// After a good edit: the new version runs, and the probe has started
-/// again (it is reloaded with every row; a Go project's restarts with the
-/// Go runtime its service lives in).
+/// again: its file did not change, so it does not reload, but it restarts
+/// with the greeter it uses (#665); a Go project's restarts with the Go
+/// runtime its service lives in.
 fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
     if kind.compiled() {
         // A build's time, not a hang's: incremental, but the runners are slow.
@@ -429,8 +430,8 @@ fn edited(kind: Kind, host: &mut Host, probe: &Probe) {
             host.expect("swift-demo: rebuilt and restarted");
         }
         _ => {
-            host.expect("demo: reloaded");
-            host.expect("probe: reloaded");
+            host.expect("demo: reloaded (");
+            host.expect("probe: restarted (demo reloaded)");
         }
     }
     probe.started(host);
@@ -445,16 +446,10 @@ fn failed(kind: Kind, host: &mut Host) -> String {
         ),
         _ => ("the failed reload", "demo: cannot reload: "),
     };
-    let line = match kind.compiled() {
+    match kind.compiled() {
         true => host.wait_for_within(build_guard(), what, |line| line.starts_with(prefix)),
         false => host.wait_for(what, |line| line.starts_with(prefix)),
-    };
-    if !kind.compiled() {
-        // Every row reloads; the probe's does, and it starts again.
-        host.expect("probe: reloaded");
-        // `wait_for` takes lines in any order: the probe's start comes later.
     }
-    line
 }
 
 fn dev_loop(kind: Kind) {
@@ -544,9 +539,7 @@ fn dev_loop(kind: Kind) {
     if !located(&error) {
         dev.wait_for(&format!("the error's location ({file}, line 5)"), located);
     }
-    if !kind.compiled() {
-        probe.started(&mut dev);
-    }
+    // Only the row whose file broke: the probe runs on, not restarted.
     assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v2)"));
     assert_eq!(
         dev.count("demo v2 cleanup"),
@@ -589,10 +582,20 @@ fn dev_loop(kind: Kind) {
         true => {
             let probe_file = format!("demo/{dir}/probe.py");
             let probe_source = std::fs::read(s.path(&probe_file)).expect(&probe_file);
+            // The probe alone first: it reloads, nothing is built (#665).
+            let builds = dev.count("demo: building");
+            s.replace(&probe_file, probe_source.clone());
+            dev.expect("probe: reloaded (");
+            probe.started(&mut dev);
+            assert_eq!(
+                dev.count("demo: building"),
+                builds,
+                "the probe's file rebuilt the plugin"
+            );
             s.replace(&source, kind.version(4));
             s.replace(&probe_file, probe_source);
             edited(kind, &mut dev, &probe);
-            dev.expect("probe: reloaded");
+            dev.expect("probe: reloaded (");
             dev.expect("demo v4 applied ");
             assert_eq!(greet(&probe, &mut dev), json!("Hello, Ada! (v4)"));
             4

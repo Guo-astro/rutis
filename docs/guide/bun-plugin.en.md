@@ -84,7 +84,7 @@ test('greets through events', async () => {
 bunx --bun rutis-host dev
 ```
 
-`rutis-host dev` runs the project in Bun when it finds `bun.lock`, `runtimes.bun` in `rutis.dev.json`, or a dependency on `@arcships/rutis-bun`, and reloads it when files change.
+`rutis-host dev` runs the project in Bun when it finds `bun.lock`, `runtimes.bun` in `rutis.dev.json`, or a dependency on `@arcships/rutis-bun`, and reloads it when its files change; only the rows whose files changed reload (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)).
 
 A host's `rutis.json`:
 

@@ -484,10 +484,22 @@ class Runtime:
         await self.unload(key)
         await self.load(key, row.module, config, row.exports, row.isolate, row.scope, id)
 
-    def module(self, name: str):
+    def module(self, name: str, fresh: bool = True, check: Callable[[Any], Any] | None = None):
         """The plugin module, imported again when its source file changed
-        since (rutis-loader's reload asks for the new code). Only the plugin
-        module itself is imported again, not the modules it imports.
+        since (rutis-loader's reload describes the row again, asking for the
+        new code). Only the plugin module itself is imported again, not the
+        modules it imports.
+
+        A module imported again is reloaded in place: when that raises (an
+        error while importing it), or `check` raises of it (it declares no
+        plugin), it is put back as it was, not left half updated.
+
+        With `fresh` false (a row loading under `rutis-host dev`), the module
+        as this process last imported it, unchanged: a row that loads again
+        for another reason (a service it uses came back, its config changed)
+        runs the code it was described with, not an edit made since, which
+        may not even import; the edit runs once a reload describes it
+        (#665).
 
         `name` is an entry point of the group `rutis.plugins` (a packaged
         plugin), or else a module name."""
@@ -495,17 +507,31 @@ class Runtime:
         module = sys.modules.get(name)
         if module is None:
             module = importlib.import_module(name)
+        elif not fresh and name in self.stamps:
+            return module
         elif name in self.stamps and _stamp(module) != self.stamps[name]:
-            importlib.invalidate_caches()
-            module = importlib.reload(module)
+            saved = dict(module.__dict__)
+            try:
+                importlib.invalidate_caches()
+                module = importlib.reload(module)
+                if check is not None:
+                    check(module)
+            except BaseException:
+                module.__dict__.clear()
+                module.__dict__.update(saved)
+                raise
         self.stamps[name] = _stamp(module)
         return module
 
     def _plugin(self, entry: Any) -> sdk.Plugin:
         """The plugin of a row: its module's, or a plugin definition this
-        runtime handed over (sent back home as itself)."""
+        runtime handed over (sent back home as itself). Under `rutis-host
+        dev` (RUTIS_DEV=1), a module's as last described; else as its file
+        is now."""
         if isinstance(entry, str):
-            return _supported(sdk.load(self.module(entry)), entry)
+            check = lambda module: _supported(sdk.load(module), entry)  # noqa: E731
+            fresh = os.environ.get("RUTIS_DEV") != "1"
+            return check(self.module(entry, fresh=fresh, check=check))
         plugin = _definition(entry)
         return _supported(plugin, plugin.name or "plugin definition")
 
@@ -523,7 +549,8 @@ class Runtime:
         }
 
     def describe(self, module: str) -> dict:
-        plugin = _supported(sdk.load(self.module(module)), module)
+        check = lambda loaded: _supported(sdk.load(loaded), module)  # noqa: E731
+        plugin = check(self.module(module, check=check))
         return {
             "config": plugin.config,
             "inject": plugin.inject,

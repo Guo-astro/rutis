@@ -93,6 +93,50 @@ fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, Stri
     Ok((config, id))
 }
 
+/// The source file of the row named `name` under `runtimes`: the module its
+/// runtime imports again when the row reloads (a TypeScript or JavaScript
+/// file, a Python module's file). `None` for a row whose plugin is not a
+/// file of this machine: a package, a compiled plugin, a remote runtime's,
+/// a peer.
+pub fn row_file(name: &str, runtimes: &crate::config::Runtimes) -> Option<PathBuf> {
+    let file = |name: &str, base: &Path| -> Option<PathBuf> {
+        if name.starts_with("file:") {
+            return url::Url::parse(name).ok()?.to_file_path().ok();
+        }
+        let path = Path::new(name);
+        if path.is_absolute() {
+            return Some(path.to_owned());
+        }
+        let relative = ["./", "../"]
+            .iter()
+            .chain(if cfg!(windows) {
+                &[".\\", "..\\"][..]
+            } else {
+                &[]
+            })
+            .any(|prefix| name.starts_with(prefix));
+        relative.then(|| base.join(path).components().collect())
+    };
+    if let Some((prefix, rest)) = name.split_once(':') {
+        if let (Some(py), "py") = (&runtimes.py, prefix) {
+            // `a.b`: a/b.py, or the package a/b/__init__.py.
+            let module = py.project.join(rest.replace('.', "/"));
+            return [module.with_extension("py"), module.join("__init__.py")]
+                .into_iter()
+                .find(|path| path.is_file());
+        }
+        if let (Some(bun), "bun") = (&runtimes.bun, prefix) {
+            return file(rest, &bun.project);
+        }
+        if rutis_loader::internal::is_runtime_name(prefix) {
+            // Another runtime's: Go, Swift, a remote one.
+            return None;
+        }
+    }
+    let node = runtimes.node.as_ref()?;
+    file(name, &node.project)
+}
+
 /// The files a change in which reloads the plugin: sources, not
 /// dependencies or build output.
 pub fn sources(dir: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {

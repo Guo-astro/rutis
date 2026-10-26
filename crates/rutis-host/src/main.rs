@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
 use rutis_loader::report::{Provider, RowStatus, Supply};
 
+mod dev;
 mod reload;
 mod stop;
 
@@ -37,7 +38,8 @@ rutis-host: run rutis plugins written in TypeScript, JavaScript, Python, Go and 
 usage:
   rutis-host run [rutis.json]                 run what the configuration names
   rutis-host dev [dir]                        run the plugin project in dir (default .),
-                                              reloading (Go, Swift: rebuilding) it as its files change
+                                              reloading the rows whose files change (Go, Swift:
+                                              rebuilding), and rutis.dev.json when it changes
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)
@@ -187,7 +189,7 @@ fn serve(command: &str, args: &[String]) -> Result<Stopped, String> {
     runtime.block_on(async {
         match command {
             "run" => run(args).await,
-            "dev" => dev(args).await,
+            "dev" => dev::dev(args).await,
             _ => check(args).await.map(|()| Stopped::Done),
         }
     })
@@ -310,232 +312,6 @@ async fn start(
             Started::Failed(stop::finish(host, deadline, signals).await)
         }
     }
-}
-
-async fn dev(args: &[String]) -> Result<Stopped, String> {
-    use std::time::Duration;
-
-    let (deadline, args) = stop::deadline(args)?;
-    stop::pass_on(deadline);
-    let mut signals = stop::Signals::listen()?;
-    let dir = std::path::PathBuf::from(args.first().map(String::as_str).unwrap_or("."));
-    // Go runtimes warn of calls that carry no call chain.
-    std::env::set_var("RUTIS_DEV", "1");
-    // A compiled language's project (Go, Swift) is rebuilt, not reloaded:
-    // the loop below does both, and its first build runs here, where a
-    // signal still ends it.
-    let language = languages::of_project(&dir);
-    if let Some(language) = language {
-        language.available()?;
-    }
-    let compiled = language.and_then(|language| {
-        let build = language.dev_build(&std::path::absolute(&dir).unwrap_or(dir.clone()))?;
-        Some((language.key(), build))
-    });
-    let (config, id) = match &compiled {
-        Some((_, project)) => {
-            outln!("{}: building", project.name());
-            let started = std::time::Instant::now();
-            let built = tokio::select! {
-                built = project.rebuild(1) => built,
-                signal = signals.next() => {
-                    errln!("rutis-host: {signal}: stopping");
-                    return Ok(Stopped::Done);
-                }
-            };
-            let binary = built?;
-            outln!(
-                "{}: built in {:.1}s",
-                project.name(),
-                started.elapsed().as_secs_f64()
-            );
-            project::dev_config_built(&dir, &binary)?
-        }
-        None => project::dev_config(&dir)?,
-    };
-    warn(&config);
-    let mut build = 1;
-    let host = host::Host::start(&config).await?;
-    for line in status::listening(&host.listening) {
-        outln!("{line}");
-    }
-    let started = async {
-        host.runtimes_ready().await?;
-        host.load(config.rows()).await
-    };
-    match start(&host, started, deadline, &mut signals).await {
-        Started::Running => {}
-        Started::Signal(signal) => {
-            return Ok(stop::stop(&host, signal, deadline, &mut signals).await)
-        }
-        Started::Failed(stopped) => return Ok(stopped.failed()),
-    }
-    // Before saying it runs: a change made once it says so is a change.
-    let mut seen = project::sources(&dir);
-    outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
-    status::follow(host.followed());
-    let mut exits = host.supervise();
-    // Builds no runtime runs any more, still to delete: Windows refuses
-    // while it still holds the image of a process that just ended.
-    let mut stale: Vec<std::path::PathBuf> = Vec::new();
-    let stopped = 'dev: loop {
-        remove_builds(&mut stale);
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(400)) => {}
-            signal = signals.next() => {
-                break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
-            }
-            (runtime, why) = exits.next() => {
-                let ended = Ended::Runtime(runtime, why);
-                break 'dev stop::end(&host, ended, deadline, &mut signals).await;
-            }
-        }
-        let now = project::sources(&dir);
-        if now == seen {
-            continue;
-        }
-        let changed = changed_files(&seen, &now);
-        seen = now;
-        let running = compiled
-            .as_ref()
-            .and_then(|(key, project)| Some((project, host.binaries_of(key)?)));
-        // Without a compiled project, or when a file not its source changed
-        // too (a plugin of another language the dev file adds), the other
-        // rows reload, after the rebuild.
-        let mut reload_others = true;
-        if let Some((project, running)) = running {
-            reload_others = changed.iter().any(|path| !project.is_source(path));
-            // A Go or Swift plugin is a binary: build it again, then restart
-            // its runtime on the new build. A failed build keeps the old one.
-            // Nor does a build: a signal ends it (and the build command).
-            outln!("{}: building", project.name());
-            let started = std::time::Instant::now();
-            let built = tokio::select! {
-                built = project.rebuild(build + 1) => built,
-                signal = signals.next() => {
-                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
-                }
-            };
-            match built {
-                Ok(binary) => {
-                    outln!(
-                        "{}: built in {:.1}s",
-                        project.name(),
-                        started.elapsed().as_secs_f64()
-                    );
-                    running.replace(project.runtime(), &binary);
-                    // A runtime that hangs starting does not keep a signal out.
-                    let restarted = tokio::select! {
-                        restarted = running.restart_runtime(project.runtime()) => restarted,
-                        signal = signals.next() => {
-                            break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
-                        }
-                    };
-                    match restarted {
-                        Ok(()) => {
-                            build += 1;
-                            outln!("{}: rebuilt and restarted", project.runtime());
-                            // Not the build the next start uses: once nothing
-                            // runs it, it can go.
-                            stale.push(project.binary(build - 1));
-                            remove_builds(&mut stale);
-                        }
-                        Err(error) => {
-                            // The new binary did not run: keep it and the
-                            // previous build, and point the runtime back at
-                            // the previous one, so a later change can retry.
-                            running.replace(project.runtime(), &project.binary(build));
-                            outln!(
-                                "{}: cannot restart: {error}; the previous build is kept",
-                                project.runtime()
-                            );
-                        }
-                    }
-                }
-                Err(errors) => outln!(
-                    "{}: the build failed; the last build keeps running\n{errors}",
-                    project.name()
-                ),
-            }
-        }
-        if !reload_others {
-            continue;
-        }
-        // Plugin rows load their new code; peer rows keep their sessions,
-        // and a compiled project's rows run on the build its runtime
-        // restarted on.
-        host.invalidate();
-        let own = compiled.as_ref().map(|(_, project)| project.runtime());
-        let entries = host.loader.entries();
-        let rows = rows_to_reload(
-            entries.iter().map(|entry| {
-                let name = entry.options["name"].as_str().unwrap_or_default();
-                (entry.id.as_str(), name)
-            }),
-            own,
-        );
-        for row in rows {
-            // A plugin whose new code hangs does not keep a signal out.
-            let reloaded = tokio::select! {
-                reloaded = host.loader.reload(&row) => reloaded,
-                signal = signals.next() => {
-                    break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
-                }
-            };
-            match reloaded {
-                Ok(_) => outln!("{row}: reloaded"),
-                Err(error) => outln!("{row}: cannot reload: {error}"),
-            }
-        }
-    };
-    // Stopped: no runtime runs them now.
-    remove_builds(&mut stale);
-    Ok(stopped)
-}
-
-/// Delete the builds in `stale`, keeping those that cannot be deleted yet
-/// (on Windows, while a process that ran one is not quite gone) for the
-/// next try.
-fn remove_builds(stale: &mut Vec<std::path::PathBuf>) {
-    stale.retain(|build| match std::fs::remove_file(build) {
-        Ok(()) => false,
-        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-    });
-}
-
-/// The files added, removed or modified between two scans of
-/// [`project::sources`].
-fn changed_files(
-    before: &[(std::path::PathBuf, std::time::SystemTime)],
-    after: &[(std::path::PathBuf, std::time::SystemTime)],
-) -> Vec<std::path::PathBuf> {
-    let before_set: HashSet<_> = before.iter().collect();
-    let after_set: HashSet<_> = after.iter().collect();
-    let mut changed: Vec<std::path::PathBuf> = before_set
-        .symmetric_difference(&after_set)
-        .map(|(path, _)| path.clone())
-        .collect();
-    changed.sort();
-    changed.dedup();
-    changed
-}
-
-/// Of `rows` (id, name), those `dev` reloads after a change: not the peer
-/// rows, which keep their sessions, nor the rows of the compiled project's
-/// runtime `own` (`<runtime>:<plugin>`), which a rebuild restarts.
-fn rows_to_reload<'a>(
-    rows: impl Iterator<Item = (&'a str, &'a str)>,
-    own: Option<&str>,
-) -> Vec<String> {
-    rows.filter(|(_, name)| *name != "rutis-bridge/peer")
-        .filter(|(_, name)| {
-            own.is_none_or(|runtime| {
-                name.strip_prefix(runtime)
-                    .is_none_or(|rest| !rest.starts_with(':'))
-            })
-        })
-        .map(|(id, _)| id.to_owned())
-        .collect()
 }
 
 async fn check(args: &[String]) -> Result<(), String> {
@@ -828,54 +604,6 @@ mod tests {
             Some("runtime py: rutis")
         );
         assert_eq!(runtime_line("node", &serde_json::Value::Null), None);
-    }
-
-    /// A file that changed, was added or was removed between two scans.
-    #[test]
-    fn dev_sees_which_files_changed() {
-        use std::path::PathBuf;
-        use std::time::{Duration, SystemTime};
-        let at = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
-        let before = vec![
-            (PathBuf::from("a.go"), at(1)),
-            (PathBuf::from("dev/probe.py"), at(1)),
-            (PathBuf::from("gone.go"), at(1)),
-        ];
-        let after = vec![
-            (PathBuf::from("a.go"), at(1)),
-            (PathBuf::from("dev/probe.py"), at(2)),
-            (PathBuf::from("new.go"), at(1)),
-        ];
-        assert_eq!(
-            super::changed_files(&before, &after),
-            ["dev/probe.py", "gone.go", "new.go"].map(PathBuf::from)
-        );
-        assert!(super::changed_files(&before, &before).is_empty());
-    }
-
-    /// After a change, `dev` reloads every row but the peers' and those of
-    /// the compiled project's own runtime, which its rebuild restarts: a
-    /// Python or TypeScript row the dev file adds to a Go or Swift project
-    /// reloads too (#547).
-    /// guarantee: host/dev-reload
-    #[test]
-    fn dev_reloads_the_rows_a_rebuild_does_not_restart() {
-        let rows = [
-            ("demo", "go-demo:demo"),
-            ("other", "go-demo:other"),
-            ("near", "go-demo-2:near"),
-            ("probe", "py:probe"),
-            ("ts", "./fake.ts"),
-            ("peer", "rutis-bridge/peer"),
-        ];
-        assert_eq!(
-            super::rows_to_reload(rows.into_iter(), Some("go-demo")),
-            ["near", "probe", "ts"]
-        );
-        assert_eq!(
-            super::rows_to_reload(rows.into_iter(), None),
-            ["demo", "other", "near", "probe", "ts"]
-        );
     }
 
     /// The rows that may provide a service at runtime: three named, then a

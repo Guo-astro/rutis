@@ -220,7 +220,7 @@ Arguments cross processes as in [passing values](plugin-api.en.md#passing-values
 uv run rutis-host dev
 ```
 
-`dev` runs the plugin with the project's `.venv` and reimports it when files change. Add other required services to `rutis.dev.json`, such as a fake `llm` (the row name `py:fake_llm` names the module `fake_llm` in the project's `src/`, shown after it):
+`dev` runs the plugin with the project's `.venv` and reimports it when its files change; only the rows whose files changed reload, and a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). Add other required services to `rutis.dev.json`, such as a fake `llm` (the row name `py:fake_llm` names the module `fake_llm` in the project's `src/`, shown after it):
 
 <!-- example: python-en file=weather/rutis.dev.json -->
 ```json

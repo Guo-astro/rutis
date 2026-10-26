@@ -152,7 +152,7 @@ test('plugins hear each other', async () => {
 npx rutis-host dev
 ```
 
-`dev` 把这个项目作为一行运行（源码 `src/index.ts`，不需要先构建），改了文件就重新加载它。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`：
+`dev` 把这个项目作为一行运行（源码 `src/index.ts`，不需要先构建），改了它的文件就重新加载它；只有文件变了的行重新加载，`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`：
 
 <!-- example: typescript file=greeter/rutis.dev.json -->
 ```json
