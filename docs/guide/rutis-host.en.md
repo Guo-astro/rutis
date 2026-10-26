@@ -114,8 +114,9 @@ A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for it
 | `waiting for runtime <name> (down: <reason>)` | The row's runtime ended, the reason as in `runtime <name>: down` |
 | `waiting for runtime <name> (stopped)` / `waiting for runtime <name>` | The host stopped the runtime; or it runs and is resolving its rows again (a remote runtime is written so too) |
 | `waiting for lmm (no row provides it; did you mean llm?)` | No row declares it; a service with a close name is suggested (most likely a misspelling) |
+| `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | No enabled row provides it, but rows that are disabled (themselves or by their group) were never resolved while the host runs, so what they provide is not known; `rutis-host check` resolves them and says whether a disabled row provides it. A close name adds `, did you mean llm?` after `it` here too |
 | `waiting for llm (row model failed: <first line of the error>)` | The row that provides it failed |
-| `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled |
+| `waiting for llm (row model, which provides it, is disabled)` | The row that provides it is disabled; written so only when that row's plugin has been resolved (another row enabling the same plugin, say), otherwise as `no enabled row provides it` above |
 | `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | The row that provides it waits for its own runtime (a remote runtime's state the host does not know: it only says it waits) |
 | `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | Two rows `inject` each other's services; neither starts |
 | `waiting for llm (row model waits too, for x)` | The row that provides it waits itself |
