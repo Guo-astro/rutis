@@ -19,7 +19,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@arcships/rutis": ">={{version}}"
+    "@arcships/rutis": "^{{version}}"
   },
   "devDependencies": {
     "@arcships/rutis-host": "^{{version}}",

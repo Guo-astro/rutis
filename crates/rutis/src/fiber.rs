@@ -1521,7 +1521,14 @@ impl FiberView {
     /// the load's error once it is [`FiberState::Failed`] (a failed plugin
     /// is tried again when its dependencies change: call this again to
     /// wait for that), and [`ErrorKind::InactiveEffect`] once it is
-    /// disposed or its root shuts down.
+    /// disposed, also when it was disposed (or its root shut down) before
+    /// the call. A fiber that stopped without reaching `Disposed` (its root
+    /// shutting down while the call starts, its driver gone) returns the
+    /// error it stopped with, such as [`ErrorKind::Closed`].
+    ///
+    /// It watches the states the fiber publishes: a plugin that fails and
+    /// is tried again at once (`Failed`, then `Pending`) may not be seen
+    /// failing, and this then keeps waiting for the retry.
     ///
     /// It waits as long as a dependency is missing: bound it with
     /// `tokio::time::timeout(limit, view.running())`, and on `Elapsed` look
@@ -1533,7 +1540,15 @@ impl FiberView {
         let settled = settle(&self.inner);
         let mut snapshots = self.inner.snapshot_rx.clone();
         Box::pin(async move {
-            settled.await?;
+            if let Err(error) = settled.await {
+                // A stopped fiber's settle reports how it stopped (the
+                // unload's cleanup error, `Closed`): disposed, it is not
+                // running, whatever its cleanups said.
+                return Err(match snapshots.borrow().state {
+                    FiberState::Disposed => Arc::new(ErrorKind::InactiveEffect),
+                    _ => error,
+                });
+            }
             loop {
                 let snapshot = snapshots.borrow_and_update().clone();
                 match snapshot.state {

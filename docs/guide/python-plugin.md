@@ -275,17 +275,17 @@ uv publish
 weather = "weather"
 ```
 
-对 `rutis` 的依赖只写下限：`rutis>=0.17`（`rutis-host new` 写的是它自己的版本）。插件和 Python 运行时是同一个 `rutis` 包，装在宿主的同一个环境里；写了上限（`<0.18`），宿主装插件时 rutis 会被降级，或者以后升级 rutis 时解析失败。能不能加载由插件 API 版本决定：`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载。
+对 `rutis` 的依赖只写下限：`rutis>=0.17`（`rutis-host new` 写的是它自己的版本）。插件和 Python 运行时是同一个 `rutis` 包，装在宿主的同一个环境里；写了上限（`<0.18`），宿主装插件时 rutis 会被降级，或者以后升级 rutis 时解析失败。能不能加载由插件 API 版本决定：`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载；插件 API 版本不变时，`rutis` 不删、不改插件导入的名字（[插件 API：版本](plugin-api.md#版本)）。
 
 发布前给分发包起一个你自己的名字：`weather` 这样的短名字在 PyPI 上多半已被占用。改 `pyproject.toml` 的 `name`，例如 `your-name-weather`；入口点名（上面的 `weather`）不用改，宿主的行名仍是 `py:weather`。
 
 ## 6. 被宿主使用
 
-宿主把插件装进它运行 Python 插件的环境（rutis.json 里 `runtimes.py.python` 指向的解释器；默认是激活的虚拟环境的，再是 `<runtimes.py.project>/.venv/bin/python`），然后加一行 `py:<入口点名>`。环境还没有时先建一个；插件依赖 `rutis`，运行时随它装上：
+宿主把插件装进它运行 Python 插件的环境（rutis.json 里 `runtimes.py.python` 指向的解释器；默认是激活的虚拟环境的，再是 `<runtimes.py.project>/.venv/bin/python`），然后加一行 `py:<入口点名>`。环境还没有时先建一个。Python 运行时就是这个环境里的 `rutis`，装成和宿主的 rutis-host 相同的版本（`rutis-host --version`）：
 
 ```bash
 uv venv                                                         # 建 .venv
-uv pip install --python .venv/bin/python your-name-weather      # 插件，连同 rutis
+uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-weather   # 运行时（宿主的版本）和插件
 ```
 
 ```json

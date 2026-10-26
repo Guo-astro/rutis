@@ -7,8 +7,9 @@ use std::path::Path;
 use crate::languages;
 
 /// The release train this program belongs to: the projects depend on the
-/// SDK of this version or later (a lower bound only: whether a runtime can
-/// load a plugin is decided by the plugin API, #672), and their development
+/// SDK of the same version (npm: a caret range, each plugin may have its
+/// own copy; Python: a lower bound only, as the plugin and the runtime
+/// share one `rutis` in one environment, #672), and their development
 /// tools on this train. Every train release tags the Go SDK
 /// (`go/rutis/v<version>`, release.yml), so a released rutis-host makes Go
 /// projects that build; one built from an unreleased commit names a
@@ -121,16 +122,16 @@ mod tests {
             .exists());
         create(dir.path(), "greeter", "node").unwrap();
         let package = std::fs::read_to_string(dir.path().join("greeter/package.json")).unwrap();
-        // The SDK from this version on, its runtime checking the plugin
-        // API (#672); built when packed, not only when published (#668).
-        assert!(package.contains(&format!("\"@arcships/rutis\": \">={VERSION}\"")));
+        // The SDK of this train (a copy of its own if the host has
+        // another); built when packed, not only when published (#668).
+        assert!(package.contains(&format!("\"@arcships/rutis\": \"^{VERSION}\"")));
         assert!(
             package.contains("\"prepack\": \"npm run build\""),
             "{package}"
         );
         create(dir.path(), "bun-greeter", "bun").unwrap();
         let package = std::fs::read_to_string(dir.path().join("bun-greeter/package.json")).unwrap();
-        assert!(package.contains(&format!("\"@arcships/rutis\": \">={VERSION}\"")));
+        assert!(package.contains(&format!("\"@arcships/rutis\": \"^{VERSION}\"")));
         assert!(package.contains(&format!("\"@arcships/rutis-bun\": \"^{VERSION}\"")));
         assert!(
             package.contains("\"prepack\": \"bun run build\""),

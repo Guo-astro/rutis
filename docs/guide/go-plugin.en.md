@@ -309,7 +309,7 @@ plugin = define_plugin(apply, provides={"llm": FakeLlm})
 
 ```bash
 uv venv dev/.venv                                  # the Python runtime's environment: <project>/.venv
-uv pip install --python dev/.venv/bin/python rutis
+uv pip install --python dev/.venv/bin/python "rutis==0.17.1"   # the version of your rutis-host
 ```
 
 The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project` (here `dev`), and that environment needs `rutis`; `dev/` holds no Go code, so `go build ./...` is not affected. In TypeScript it is the same: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row named `./dev/fake-llm.ts`.

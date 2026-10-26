@@ -275,17 +275,17 @@ The entry point in `pyproject.toml` lets the host find the plugin by name:
 weather = "weather"
 ```
 
-Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it.
+Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; while the plugin API version stays, `rutis` removes or changes no name plugins import ([plugin API: versions](plugin-api.en.md#versions)).
 
 Before publishing, give the distribution a name of your own: a short name such as `weather` is most likely taken on PyPI. Change `name` in `pyproject.toml`, for example to `your-name-weather`; the entry point name (`weather` above) stays, and a host's row is still `py:weather`.
 
 ## 6. Use from a host
 
-Install the plugin in the Python environment used to run Python plugins (the interpreter named by `runtimes.py.python` in `rutis.json`; by default the active virtual environment's, then `<runtimes.py.project>/.venv/bin/python`), then add a row named `py:<entry-point-name>`. Create the environment first if there is none; the plugin depends on `rutis`, so the runtime comes with it:
+Install the plugin in the Python environment used to run Python plugins (the interpreter named by `runtimes.py.python` in `rutis.json`; by default the active virtual environment's, then `<runtimes.py.project>/.venv/bin/python`), then add a row named `py:<entry-point-name>`. Create the environment first if there is none. The Python runtime is the `rutis` in that environment: install it at the version of the host's rutis-host (`rutis-host --version`):
 
 ```bash
 uv venv                                                         # creates .venv
-uv pip install --python .venv/bin/python your-name-weather      # the plugin, and rutis with it
+uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-weather   # the runtime (the host's version) and the plugin
 ```
 
 ```json

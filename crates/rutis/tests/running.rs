@@ -119,3 +119,35 @@ async fn running_ends_when_the_plugin_never_will() {
         .unwrap_err();
     assert!(matches!(*error, ErrorKind::InactiveEffect), "{error}");
 }
+
+/// Provides `Greeting`; its cleanup fails.
+pub struct Leaky;
+
+impl Plugin for Leaky {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.provide(Greeting("hello".into()))?;
+        ctx.effect(|| async { Err(rutis::Error::msg("cleanup failed")) })?;
+        Ok(())
+    }
+}
+
+/// Called once the plugin is gone, `running()` says so with
+/// `InactiveEffect`: after a dispose whose cleanup failed (not that
+/// cleanup's error), and after the root shut down (not `Closed`).
+/// guarantee: core/features.running
+#[tokio::test]
+async fn running_after_the_plugin_is_gone_says_so() {
+    let root = Ctx::root().unwrap();
+    let leaky = root.plugin(Leaky);
+    leaky.running().await.unwrap();
+    assert!(leaky.dispose().await.is_err(), "its cleanup fails");
+    let error = leaky.running().await.unwrap_err();
+    assert!(matches!(*error, ErrorKind::InactiveEffect), "{error}");
+
+    let printer = root.plugin(Printer);
+    root.shutdown().await.unwrap();
+    let error = printer.running().await.unwrap_err();
+    assert!(matches!(*error, ErrorKind::InactiveEffect), "{error}");
+}

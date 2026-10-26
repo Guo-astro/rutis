@@ -13,7 +13,7 @@ mkdir app && cd app
 npm init -y                                                # the Node project TypeScript plugins go in
 npm install @arcships/rutis-host @your-name/weather        # rutis-host brings the Node runtime
 uv venv                                                    # .venv: the environment Python plugins run in
-uv pip install --python .venv/bin/python your-name-llm     # the plugin, and the Python runtime (rutis) with it
+uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-llm   # the Python runtime at rutis-host's version, and the plugin
 ```
 
 2. Write `rutis.json`: the runtimes to start, and a row per plugin (its `name` is the npm package, or `py:` and the entry point; `config` is the plugin's configuration):
@@ -74,12 +74,12 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | --- | --- | --- | --- |
 | TypeScript, JavaScript (npm) | `npm install <package>` | the Node project (`runtimes.node.project`, by default the directory of `rutis.json`), beside `@arcships/rutis-runtime` (or the one the npm `rutis-host` brings) | the package name (`@your-name/weather`) or a subpath of it; a file: `./plugins/tool.ts` |
 | Bun | `bun add @arcships/rutis-bun <package>` | the Bun project (`runtimes.bun.project`) | `bun:<package>` ([Bun plugins](bun-plugin.en.md#3-run-it-in-a-host)) |
-| Python | `uv venv` once, then `uv pip install --python .venv/bin/python <distribution>` (with pip: `.venv/bin/python -m pip install <distribution>`) | the environment of `runtimes.py.python` (by default `$VIRTUAL_ENV`, then `<runtimes.py.project>/.venv`); the plugin brings `rutis`, the runtime, with it | `py:<entry point>` (`py:llm`), or `py:<module>` for a module file in `runtimes.py.project` |
+| Python | `uv venv` once, then `uv pip install --python .venv/bin/python "rutis==<rutis-host's version>" <distribution>` (with pip: `.venv/bin/python -m pip install …`) | the environment of `runtimes.py.python` (by default `$VIRTUAL_ENV`, then `<runtimes.py.project>/.venv`); its `rutis` is the Python runtime, at rutis-host's version | `py:<entry point>` (`py:llm`), or `py:<module>` for a module file in `runtimes.py.project` |
 | Go | `rutis-host go add <module>/cmd/<binary>@<version>` (with the machine's Go toolchain), or the binary for the platform from the plugin's release | `runtimes.go.dir` | `go:<plugin>` ([Go plugins](go-plugin.en.md#6-used-by-a-host)) |
 | Swift (macOS) | the binary from the plugin's release | `runtimes.swift.dir` | `swift:<plugin>` ([Swift plugins](swift-plugin.en.md#7-used-by-a-host)) |
 | Rust | not with `rutis-host`: a Rust application mounts its Rust plugins itself | | [Embed in a Rust application](rust-host.en.md) |
 
-- The plugins of one language share its runtime: one Node project, one Python environment. Each plugin depends on its SDK with a lower bound only, so installing one does not downgrade rutis, and a newer rutis loads plugins made with an older one ([plugin API: versions](plugin-api.en.md#versions)).
+- The plugins of one language share its runtime: one Node project, one Python environment. A Python plugin depends on `rutis` with a lower bound only, so installing one does not downgrade the runtime; a TypeScript plugin keeps the SDK version it was written against, and several copies work side by side ([plugin API: versions](plugin-api.en.md#versions)).
 - Declare under `runtimes` every runtime a row uses (`"node": {}`, `"py": {}`, …: an empty object takes the defaults).
 - After installing, `rutis-host check --strict` says whether every row can run and whether every service a row uses is declared by another row; in CI it fails otherwise.
 

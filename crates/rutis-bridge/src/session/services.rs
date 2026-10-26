@@ -69,9 +69,13 @@ pub fn host_key_in(name: &str, instance: rutis::host::InstanceId) -> Key<dyn Hos
 /// language would be ([`arg`](crate::session::arg)); the result is
 /// decoded as `T` ([`decode_value`](crate::session::decode_value):
 /// `serde_json::Value` for any, `()` to ignore it). A method the service
-/// declares `sync` runs on a blocking thread. The call comes from no row
+/// declares `sync` runs on a blocking thread; the others, and every method
+/// of a service whose [`HostDispatch::methods`] says nothing (a
+/// hand-written one returning `None`), are called as async: `invoke` runs
+/// on the calling task and must not block. The call comes from no row
 /// ([`caller_row`] is `None`), so a method taking the calling row's `&Ctx`
-/// fails. Not provided, an unknown method or the method's own error: `Err`.
+/// fails. Not provided, an unknown method or the method's own error: `Err`;
+/// a sync method that panics fails the call with the panic's message.
 pub async fn call_service<T>(
     ctx: &rutis::Ctx,
     name: &str,
@@ -105,9 +109,14 @@ where
     let reply = if sync {
         // A synchronous call waits for its answer: not on the async runtime.
         let called = method.to_owned();
-        tokio::task::spawn_blocking(move || service.invoke(&called, args))
-            .await
-            .map_err(|error| Error::Value(format!("{name}.{method}: {error}")))?
+        match tokio::task::spawn_blocking(move || service.invoke(&called, args)).await {
+            Ok(reply) => reply,
+            // As a panic in any call into a Rust service: its message.
+            Err(error) if error.is_panic() => {
+                Err(crate::session::rpc::panic_error(error.into_panic()))
+            }
+            Err(error) => Err(Error::Transport(format!("{name}.{method}: {error}"))),
+        }
     } else {
         service.invoke(method, args)
     }?;

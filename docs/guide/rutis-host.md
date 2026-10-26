@@ -13,7 +13,7 @@ mkdir app && cd app
 npm init -y                                                # TypeScript 插件装进的 Node 项目
 npm install @arcships/rutis-host @your-name/weather        # rutis-host 带着 Node 运行时
 uv venv                                                    # .venv：Python 插件运行的环境
-uv pip install --python .venv/bin/python your-name-llm     # 插件，连同 Python 运行时（rutis）
+uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-llm   # Python 运行时与 rutis-host 同版本，和插件
 ```
 
 2. 写 `rutis.json`：要启动的运行时，每个插件一行（`name` 是 npm 包名，或 `py:` 加入口点名；`config` 是插件的配置）：
@@ -74,12 +74,12 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | --- | --- | --- | --- |
 | TypeScript、JavaScript（npm） | `npm install <包名>` | Node 项目（`runtimes.node.project`，默认是 `rutis.json` 所在目录），和 `@arcships/rutis-runtime` 在一处（或用 npm 版 `rutis-host` 自带的那份） | 包名（`@your-name/weather`）或它的子路径；单个文件写 `./plugins/tool.ts` |
 | Bun | `bun add @arcships/rutis-bun <包名>` | Bun 项目（`runtimes.bun.project`） | `bun:<包名>`（[Bun 插件](bun-plugin.md#3-在宿主里运行)） |
-| Python | 先 `uv venv` 一次，再 `uv pip install --python .venv/bin/python <分发包名>`（用 pip：`.venv/bin/python -m pip install <分发包名>`） | `runtimes.py.python` 的环境（默认先 `$VIRTUAL_ENV`，再 `<runtimes.py.project>/.venv`）；插件依赖 `rutis`，运行时随它装上 | `py:<入口点名>`（`py:llm`），`runtimes.py.project` 里的模块文件写 `py:<模块名>` |
+| Python | 先 `uv venv` 一次，再 `uv pip install --python .venv/bin/python "rutis==<rutis-host 的版本>" <分发包名>`（用 pip：`.venv/bin/python -m pip install …`） | `runtimes.py.python` 的环境（默认先 `$VIRTUAL_ENV`，再 `<runtimes.py.project>/.venv`）；那里的 `rutis` 就是 Python 运行时，和 rutis-host 同版本 | `py:<入口点名>`（`py:llm`），`runtimes.py.project` 里的模块文件写 `py:<模块名>` |
 | Go | `rutis-host go add <模块>/cmd/<二进制>@<版本>`（用本机的 Go 工具链），或从插件的 release 下载本平台的二进制 | `runtimes.go.dir` | `go:<插件名>`（[Go 插件](go-plugin.md#6-被宿主使用)） |
 | Swift（macOS） | 从插件的 release 下载二进制 | `runtimes.swift.dir` | `swift:<插件名>`（[Swift 插件](swift-plugin.md#7-被宿主使用)） |
 | Rust | 不用 `rutis-host`：Rust 应用自己挂它的 Rust 插件 | | [在 Rust 应用里嵌入](rust-host.md) |
 
-- 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。每个插件对 SDK 的依赖只写下限，所以装插件不会把 rutis 降级，新的 rutis 也能加载用旧版本做的插件（[插件 API：版本](plugin-api.md#版本)）。
+- 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。Python 插件对 `rutis` 只写下限，所以装插件不会把运行时降级；TypeScript 插件各自带着它写时那个版本的 SDK，几份可以并存（[插件 API：版本](plugin-api.md#版本)）。
 - 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）。
 - 装好后，`rutis-host check --strict` 告诉你每一行能不能运行、每一行用到的服务是否都有别的行声明；放进 CI，不满足时失败。
 

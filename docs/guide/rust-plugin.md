@@ -403,7 +403,7 @@ impl Plugin for SessionsPlugin {
 ```
 
 - 保存克隆没有问题：它只是一个句柄，不让任何东西继续运行。插件停下时它的服务被撤下，之后没有人能经 rutis 拿到 `Sessions`。
-- 停下之前就拿着这个服务的调用方仍能调用它，它发出的事件照样送达：总线不问发出方是否还在运行。用保存的 `ctx` 登记的东西（`on`、`effect`、`provide`）以 `InactiveEffect` 被拒。停下之后不该再做事的方法自己检查：插件开始停下时 `ctx.cancelled()` 完成。
+- 停下之后，用保存的 `ctx` 登记的东西（`on`、`effect`、`provide`）以 `InactiveEffect` 被拒。不要指望那时还能用它发事件：停下之前就拿着这个服务的调用方仍可能调用它的方法，方法先检查插件是否已经停下，插件开始停下时 `ctx.cancelled()` 完成。
 - 只发出、不要结果的事件类型写 `type Value = ();`（上面的 `Closed`）：监听器返回 `Ok(None)`。
 
 ### 清理和后台任务

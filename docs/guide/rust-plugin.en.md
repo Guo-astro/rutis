@@ -403,7 +403,7 @@ impl Plugin for SessionsPlugin {
 ```
 
 - Keeping the clone is fine: it is a handle, and keeps nothing running. When the plugin stops, its services are withdrawn, so nobody reaches `Sessions` through rutis any more.
-- A caller that kept the service past the stop can still call it, and its events are still delivered: the bus does not ask whether the emitter still runs. What the kept `ctx` registers (`on`, `effect`, `provide`) is refused with `InactiveEffect`. A method that must not act after the stop checks for it: `ctx.cancelled()` completes once the plugin starts stopping.
+- After the stop, what the kept `ctx` registers (`on`, `effect`, `provide`) is refused with `InactiveEffect`. Do not rely on emitting from it then: a method that a caller who kept the service may still call checks for the stop first, as `ctx.cancelled()` completes once the plugin starts stopping.
 - Events of a type that are only emitted, with no result asked for, have `type Value = ();` (`Closed` above): the listeners return `Ok(None)`.
 
 ### Cleanup and background tasks

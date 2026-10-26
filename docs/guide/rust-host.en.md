@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 What waiting on a mounted plugin waits for:
 
 - `view.await` (and `update`, `restart`) returns once the fiber has handled what was queued for it: its load, the update, the restart. A plugin whose `Deps` are not all there does not load: it stays `Pending`, and `view.await` returns `Ok(())` all the same, with the plugin not running.
-- `view.running().await` waits until the plugin runs (`Active`: its `apply` has returned), however long its dependencies take to appear. It returns the load's error when the plugin fails (a failed plugin is tried again when its dependencies change), and `InactiveEffect` when it is disposed or the root shuts down.
+- `view.running().await` waits until the plugin runs (`Active`: its `apply` has returned), however long its dependencies take to appear. It returns the load's error when the plugin fails (a failed plugin is tried again when its dependencies change; one tried again at once may not be seen failing, and the wait goes on), and `InactiveEffect` when it is disposed or the root shuts down, also before the call.
 - It waits as long as a dependency is missing; bound it with `tokio::time::timeout(Duration::from_secs(10), view.running()).await`, and on a timeout `view.state()` and `root.diagnostics()` say what the plugin waits for.
 - Mounting order does not matter: a consumer mounted before its provider waits for it. Wait for the plugins the application needs before it goes on.
 
@@ -300,8 +300,8 @@ assert_eq!(today, "sunny in Oslo");
 ```
 
 - The arguments are a tuple (`("Oslo", 3)`; `("Oslo",)` for one, `()` for none) or a list, encoded as a call from another language would be; the result is decoded into the type you name (`serde_json::Value` for any, `()` to drop it).
-- The service is the one `ctx` sees by name (`host_key(name)`); a method its service declares `sync` runs on a blocking thread, the others are awaited.
-- What fails is an `Err` (`rutis_bridge::session::Error`): the method's own error with its `code()` and `data()`, an unknown method, `ServiceNotFound` when no service of that name is provided (a row that has not run yet: wait for it first, `reconcile` below).
+- The service is the one `ctx` sees by name (`host_key(name)`); a method its service declares `sync` runs on a blocking thread, the others are awaited. A hand-written `HostDispatch` whose `methods()` is `None` counts as all async: its `invoke` then runs on the calling task and must not block.
+- What fails is an `Err` (`rutis_bridge::session::Error`): the method's own error with its `code()` and `data()`, a sync method's panic with its message, an unknown method, `ServiceNotFound` when no service of that name is provided (a row that has not run yet: wait for it first, `reconcile` below).
 - It calls from no row: a method that takes the calling row's `&Ctx` fails.
 
 ### Which row calls

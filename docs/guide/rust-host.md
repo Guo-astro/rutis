@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 等一个装上的插件，等的是什么：
 
 - `view.await`（以及 `update`、`restart`）在 fiber 处理完排给它的事（装载、这次更新、这次重启）后返回。`Deps` 没有到齐的插件不装载，停在 `Pending`，`view.await` 照样返回 `Ok(())`，插件并没有运行。
-- `view.running().await` 等到插件运行（`Active`：它的 `apply` 已经返回），依赖多久出现就等多久。插件失败时返回装载的错误（失败的插件在依赖变化时再试），插件被卸载或根关闭时返回 `InactiveEffect`。
+- `view.running().await` 等到插件运行（`Active`：它的 `apply` 已经返回），依赖多久出现就等多久。插件失败时返回装载的错误（失败的插件在依赖变化时再试；马上又重试的可能看不到失败，会接着等），插件被卸载或根关闭时（调用之前也算）返回 `InactiveEffect`。
 - 依赖缺着时它一直等；用 `tokio::time::timeout(Duration::from_secs(10), view.running()).await` 限制，超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
 - 装的顺序不要紧：先装的使用者会等后装的提供者。应用要用的插件，先等它们运行再往下走。
 
@@ -300,8 +300,8 @@ assert_eq!(today, "sunny in Oslo");
 ```
 
 - 参数是元组（`("Oslo", 3)`；一个参数写 `("Oslo",)`，没有参数写 `()`）或列表，像别的语言的调用一样编码；结果解码成你写的类型（任意值用 `serde_json::Value`，不要结果用 `()`）。
-- 调用的是 `ctx` 按名字看到的那个服务（`host_key(名字)`）；服务声明为 `sync` 的方法在阻塞线程上执行，其余的按 async 等待。
-- 失败都是 `Err`（`rutis_bridge::session::Error`）：方法自己的错误，带 `code()` 和 `data()`；没有这个方法；没有提供这个名字的服务时是 `ServiceNotFound`（行还没运行：先等它，见下面的 `reconcile`）。
+- 调用的是 `ctx` 按名字看到的那个服务（`host_key(名字)`）；服务声明为 `sync` 的方法在阻塞线程上执行，其余的按 async 等待。`methods()` 返回 `None` 的手写 `HostDispatch` 全部按 async 算：它的 `invoke` 在调用方的任务上执行，不能阻塞。
+- 失败都是 `Err`（`rutis_bridge::session::Error`）：方法自己的错误，带 `code()` 和 `data()`；同步方法 panic 时带着 panic 的信息；没有这个方法；没有提供这个名字的服务时是 `ServiceNotFound`（行还没运行：先等它，见下面的 `reconcile`）。
 - 调用不来自任何行：要调用方行的 `&Ctx` 的方法会失败。
 
 ### 调用方的行

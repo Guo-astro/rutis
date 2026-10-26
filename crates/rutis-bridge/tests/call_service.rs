@@ -41,13 +41,14 @@ impl Weather {
     pub fn ping(&self) {}
 }
 
-/// A hand-written service whose method is sync.
+/// A hand-written service whose methods are sync; `broken` panics.
 struct Clock;
 
 impl HostDispatch for Clock {
     fn invoke(&self, method: &str, _args: Value) -> Reply {
         match method {
             "now" => Ok(json!(42).into()),
+            "broken" => panic!("the clock broke"),
             other => Err(rutis_bridge::session::Error::Value(format!(
                 "no method {other}"
             ))),
@@ -55,7 +56,7 @@ impl HostDispatch for Clock {
     }
 
     fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({ "now": "sync" }))
+        Some(json!({ "now": "sync", "broken": "sync" }))
     }
 }
 
@@ -95,13 +96,20 @@ async fn a_service_is_called_by_name() {
     root.shutdown().await.unwrap();
 }
 
-/// What fails is an `Err`: the method's own error (with its code), an
-/// unknown method, a service not provided, arguments that are not a list.
+/// What fails is an `Err`: the method's own error (with its code), a sync
+/// method's panic (its message), an unknown method, a service not provided,
+/// arguments that are not a list.
 /// guarantee: bridge/call-service
 #[tokio::test]
 async fn what_fails_is_an_error() {
     let root = Ctx::root().unwrap();
     root.provide(Weather).unwrap();
+    root.provide_at(host_key("clock"), Arc::new(Clock) as Arc<dyn HostDispatch>)
+        .unwrap();
+    let error = call_service::<()>(&root, "clock", "broken", ())
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "RustError: the clock broke");
     let error = call_service::<Forecast>(&root, "weather", "forecast", ("Atlantis", 1))
         .await
         .unwrap_err();

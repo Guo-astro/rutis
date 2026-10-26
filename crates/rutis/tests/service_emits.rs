@@ -1,8 +1,7 @@
 //! A service that emits events from its methods keeps a clone of its
 //! plugin's `Ctx` (#667): it emits as that plugin. Once the plugin has
-//! stopped the service is withdrawn; a caller that kept it can still call
-//! it and its events are still delivered, while registering on the kept
-//! ctx is refused (what docs/guide/rust-plugin.md says).
+//! stopped the service is withdrawn and registering on the kept ctx is
+//! refused (what docs/guide/rust-plugin.md says).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -68,14 +67,11 @@ async fn a_service_emits_with_the_ctx_it_kept() {
     }
     assert_eq!(*heard.lock().unwrap(), ["a", "b"]);
 
-    // Stopped: the service is withdrawn, so nobody new gets it; one kept
-    // past the stop (here, `sessions`) still emits, and its events are
-    // still delivered: the bus does not ask whether the emitter runs.
-    // Registering on the kept ctx is refused.
+    // Stopped: the service is withdrawn, and registering on the ctx the
+    // service kept is refused. (Whether emitting from it still reaches
+    // listeners is not promised.)
     plugin.dispose().await.unwrap();
     assert!(root.get::<Sessions>().is_none());
-    sessions.create_and_wait("c").await.unwrap();
-    assert_eq!(*heard.lock().unwrap(), ["a", "b", "c"]);
     let refused = sessions
         .ctx
         .on_sync::<Created>(|_, _| Ok(None))

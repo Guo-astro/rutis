@@ -18,7 +18,7 @@ npm install
 | `src/index.ts` | 插件本身 |
 | `test/index.test.ts` | 单元测试，不需要宿主 |
 | `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `package.json` | 依赖 `@arcships/rutis`（只写下限，见 §5）；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime`；`npm pack`、`npm publish` 前先构建（`prepack`） |
+| `package.json` | 依赖 `@arcships/rutis`（`^` 范围，见 §5）；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime`；`npm pack`、`npm publish` 前先构建（`prepack`） |
 | `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 npm |
 
 ## 2. 写插件
@@ -189,7 +189,7 @@ npm publish --access public   # 先运行 prepack：tsc 生成 dist/
 
 发布前给包起一个你自己的名字：`weather`、`greeter` 这样的短名字在 npm 上早被占用了。用带作用域的名字，改 `package.json` 的 `name`，例如 `"@your-name/weather"`（作用域是你的 npm 用户名或组织；首次发布带作用域的公开包要 `--access public`，模板的工作流已经带上）。宿主的行名就是这个包名。
 
-对 SDK 的依赖只写下限：`"@arcships/rutis": ">=0.17.0"`（`rutis-host new` 写的是它自己的版本）。能不能加载由插件 API 版本决定，不看 rutis 的版本号：`definePlugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载。所以宿主升级 rutis 不用等每个插件重新发布，npm 也能让各个插件共用一份 SDK。`^0.17.0` 这样的范围在 0.x 下只认 0.17.x，不要这样写。
+依赖写 `"@arcships/rutis": "^0.17.1"` 这样的范围（`rutis-host new` 写的是它自己的版本）。插件用的是它写时那个次版本的 SDK：宿主里装着别的版本时，npm 给插件装它自己的一份，几个版本的 SDK 可以并存（插件靠 `Symbol.for` 的标记被认出，与是哪一份 SDK 无关）。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
 
 ## 6. 被宿主使用
 

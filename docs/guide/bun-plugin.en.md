@@ -15,7 +15,7 @@ bun install
 | `src/index.ts` | The plugin |
 | `test/index.test.ts` | Unit tests (`bun test`), no host needed |
 | `rutis.dev.json` | Local runtime configuration and other plugins for testing |
-| `package.json` | Depends on `@arcships/rutis` (a lower bound only, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)); dev dependencies `@arcships/rutis-bun`, `@arcships/rutis-host`; builds before `npm pack` and `npm publish` (`prepack`) |
+| `package.json` | Depends on `@arcships/rutis` (a caret range, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)); dev dependencies `@arcships/rutis-bun`, `@arcships/rutis-host`; builds before `npm pack` and `npm publish` (`prepack`) |
 | `tsconfig.json` | `bun run check` type checks: Bun runs TypeScript without checking types |
 | `.github/workflows/publish.yml` | Tests and publishes to npm on a `v*` tag |
 
