@@ -17,7 +17,7 @@
     "check": "tsc --noEmit",
     "test": "bun test",
     "dev": "rutis-host dev",
-    "prepublishOnly": "bun run build"
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@arcships/rutis": "^{{version}}"

@@ -32,10 +32,10 @@ public let plugin = Rutis.define(Plugin(
     name: "{{id}}",
     // Services this plugin uses: it runs while they are all there.
     inject: [],
-    // What ctx.provide provides reaches rutis by itself, every method async.
-    // Declare provides: ["greeter": .of(Greeter.self, sync: ["hello"])] only
-    // to make methods sync, or for `rutis-host check` to know it before the
-    // plugin runs.
+    // What it provides, so that `rutis-host check` (and `check --strict` in a
+    // host's CI) knows it before the plugin runs: Greeter's methods, async;
+    // .of(Greeter.self, sync: ["hello"]) would make hello sync.
+    provides: ["greeter": .of(Greeter.self)],
     config: Config.self,
     apply: { ctx, config in
         ctx.provide("greeter", Greeter(greeting: config.greeting ?? "Hello"))

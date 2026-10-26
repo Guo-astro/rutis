@@ -30,7 +30,7 @@ pub use objects::{
 };
 pub(crate) use objects::{decode_data_with, decode_with, encode_with, transcode_with, Marked};
 pub use rpc::*;
-pub use services::{caller_row, host_key, host_key_in, CallerRow, HostDispatch};
+pub use services::{call_service, caller_row, host_key, host_key_in, CallerRow, HostDispatch};
 pub(crate) use services::{unleased, with_caller_row, with_unleased};
 pub use values::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid};
 

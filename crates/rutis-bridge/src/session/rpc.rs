@@ -585,7 +585,7 @@ pub async fn settle(value: Value) -> Reply {
 fn protected(call: impl FnOnce() -> Reply) -> Reply {
     catch_unwind(AssertUnwindSafe(call)).unwrap_or_else(|panic| Err(panic_error(panic)))
 }
-fn panic_error(panic: Box<dyn std::any::Any + Send>) -> Error {
+pub(crate) fn panic_error(panic: Box<dyn std::any::Any + Send>) -> Error {
     match panic.downcast::<Error>() {
         Ok(error) => *error,
         Err(panic) => crate::session::native_error(

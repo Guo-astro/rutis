@@ -1413,6 +1413,11 @@ fn spawn_fiber_inner(
 }
 
 /// fiber 句柄:注册返回,`IntoFuture` = 等待进入稳定态(启动错误经 Err 返回)。
+///
+/// Awaiting a view waits until what is already queued for the fiber has
+/// been handled, not until the plugin runs: a plugin waiting for a
+/// dependency that is not there is `Pending`, and the await returns
+/// `Ok(())`. To wait until it runs, watch its state ([`FiberView::watch`]).
 pub struct FiberView {
     /// 插件身份(D10)。
     pub id: PluginId,

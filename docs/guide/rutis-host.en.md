@@ -2,6 +2,59 @@
 
 `rutis-host` is a host that requires no Rust code. It assembles the core, plugin loader, local Node / Python / Go / Swift runtimes, and network connections, all driven by a `rutis.json` file. Plugin authors can use it for local development or deployment. For applications that need custom Rust services, see [Embed in a Rust application](rust-host.en.md).
 
+## Quick start
+
+A host for two plugins someone published: a TypeScript plugin, `@your-name/weather` on npm, which uses an `llm` service, and a Python plugin, `your-name-llm` on PyPI, whose entry point `llm` provides it. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
+
+1. Install `rutis-host` and the plugins, in a directory of the host's own:
+
+```bash
+mkdir app && cd app
+npm init -y                                                # the Node project TypeScript plugins go in
+npm install @arcships/rutis-host @your-name/weather        # rutis-host brings the Node runtime
+uv venv                                                    # .venv: the environment Python plugins run in
+uv pip install --python .venv/bin/python "rutis==0.17.1" your-name-llm   # the Python runtime at rutis-host's version, and the plugin
+```
+
+2. Write `rutis.json`: the runtimes to start, and a row per plugin (its `name` is the npm package, or `py:` and the entry point; `config` is the plugin's configuration):
+
+```json
+{
+  "format": 1,
+  "runtimes": { "node": {}, "py": {} },
+  "rows": [
+    { "id": "llm", "name": "py:llm" },
+    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
+  ]
+}
+```
+
+3. Check it, then run it:
+
+```bash
+npx rutis-host check --strict        # every row ok, every service a row uses declared by another; exit 0
+npx rutis-host run --watch-config
+```
+
+```text
+llm: running
+weather: running
+```
+
+Each row prints its state when it changes (also `starting`, `waiting for its services`, …; see [What `run` prints](#what-run-prints)).
+
+4. Change the configuration while it runs: change `"Oslo"` to `"Bergen"` in `rutis.json` and save. With `--watch-config` the host reads the file again and restarts only the row that changed:
+
+```text
+rutis-host: reloaded rutis.json (1 row changed)
+```
+
+On Unix, SIGUSR1 does the same without `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs).
+
+5. Stop it with Ctrl-C: each plugin's cleanup runs, the runtimes exit, and `rutis-host` exits with 0.
+
+A plugin not published yet installs the same way from a file: `npm install ../weather/your-name-weather-0.1.0.tgz` (what `npm pack` makes in the plugin's project), `uv pip install --python .venv/bin/python ../llm` (the plugin's project directory). The other languages: [How a host installs plugins](#how-a-host-installs-plugins).
+
 ## Installation
 
 | Method | Command |
@@ -13,6 +66,23 @@
 
 The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and the PyPI distribution includes the Python runtime (`rutis`). They are used when the project does not provide its own runtime. Go and Swift plugins are compiled binaries: running them needs no other package and no Go or Swift toolchain (Swift plugins run on macOS).
 
+## How a host installs plugins
+
+Each language's plugins go where that language's runtime finds them, and a row names the plugin:
+
+| Plugin | Install it with | Into | Row `name` |
+| --- | --- | --- | --- |
+| TypeScript, JavaScript (npm) | `npm install <package>` | the Node project (`runtimes.node.project`, by default the directory of `rutis.json`), beside `@arcships/rutis-runtime` (or the one the npm `rutis-host` brings) | the package name (`@your-name/weather`) or a subpath of it; a file: `./plugins/tool.ts` |
+| Bun | `bun add @arcships/rutis-bun <package>` | the Bun project (`runtimes.bun.project`) | `bun:<package>` ([Bun plugins](bun-plugin.en.md#3-run-it-in-a-host)) |
+| Python | `uv venv` once, then `uv pip install --python .venv/bin/python "rutis==<rutis-host's version>" <distribution>` (with pip: `.venv/bin/python -m pip install …`) | the environment of `runtimes.py.python` (by default `$VIRTUAL_ENV`, then `<runtimes.py.project>/.venv`); its `rutis` is the Python runtime, at rutis-host's version | `py:<entry point>` (`py:llm`), or `py:<module>` for a module file in `runtimes.py.project` |
+| Go | `rutis-host go add <module>/cmd/<binary>@<version>` (with the machine's Go toolchain), or the binary for the platform from the plugin's release | `runtimes.go.dir` | `go:<plugin>` ([Go plugins](go-plugin.en.md#6-used-by-a-host)) |
+| Swift (macOS) | the binary from the plugin's release | `runtimes.swift.dir` | `swift:<plugin>` ([Swift plugins](swift-plugin.en.md#7-used-by-a-host)) |
+| Rust | not with `rutis-host`: a Rust application mounts its Rust plugins itself | | [Embed in a Rust application](rust-host.en.md) |
+
+- The plugins of one language share its runtime: one Node project, one Python environment. A Python plugin depends on `rutis` with a lower bound only, so installing one does not downgrade the runtime; a TypeScript plugin keeps the SDK version it was written against, and several copies work side by side ([plugin API: versions](plugin-api.en.md#versions)).
+- Declare under `runtimes` every runtime a row uses (`"node": {}`, `"py": {}`, …: an empty object takes the defaults); one left out is enabled with its defaults and a warning (see [`runtimes`](#runtimes)).
+- After installing, `rutis-host check --strict` says whether every row can run and whether every service a row uses is declared by another row; in CI it fails otherwise.
+
 ## Commands
 
 | Command | Purpose |
@@ -22,6 +92,7 @@ The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and 
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
+| `rutis-host types [directory] [-o file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; see [Embed in a Rust application](rust-host.en.md#mark-the-type-rutisservice). |
 
 ## What `run` prints
 
