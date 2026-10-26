@@ -678,8 +678,17 @@ package final class Peer: @unchecked Sendable {
         case let .function(function):
             return export(.function(function), kind: "function", identity: ObjectIdentifier(function), origin: origin, grants: &grants)
         case let .object(object):
+            // Only to a far end that can call its methods; only this call
+            // fails (#675).
             if options.endpoint != nil, !declared.contains("objects") {
-                throw ValueError("the far end cannot receive object references")
+                let shown: String
+                if let service = object as? ServiceObject {
+                    shown = String(describing: Swift.type(of: service.service))
+                } else {
+                    shown = String(describing: Swift.type(of: object))
+                }
+                let far = greeting?.endpoint ?? "the far end"
+                throw ValueError("an object with methods (\(shown)) cannot cross to \(far); pass plain data or a function instead")
             }
             return export(.object(object), kind: "object", identity: object.identity, origin: origin, grants: &grants)
         case let .plugin(definition):
@@ -796,7 +805,19 @@ package final class Peer: @unchecked Sendable {
             case let .plugin(definition): return .plugin(definition)
             }
         }
-        if kind == "object" { throw Malformed("object references from the far end are not supported") }
+        if kind == "object" {
+            // Only this call fails (#675). Imported all the same, so that the
+            // refused call gives it back.
+            decoding.refuse(ValueError(objectReceived))
+            if let record = imports[id], record.kind == "object", !record.released {
+                record.grants += 1
+            } else {
+                let record = Imported(id: id, kind: kind, origin: origin)
+                imports[id] = record
+                decoding.fresh.append(record)
+            }
+            return .undefined
+        }
         // Only a test host takes the far end's plugin definitions; rutis
         // never sends one that is not this side's.
         if kind == "plugin", !options.host { throw Malformed("plugin definitions from the far end are not supported") }
@@ -941,9 +962,18 @@ package final class Peer: @unchecked Sendable {
         var frame: [(String, JSON)] = [("op", .string(op)), ("id", .string(id)), ("path", .array(path.map(JSON.string)))]
         frame.append(contentsOf: fields)
         var grants: [Int64] = []
+        // What cannot be sent fails only this call, here (#675).
+        var encoded: [JSON] = []
         if let args {
             do {
-                frame.append(("args", try encode(.list(args), &grants, chain, -1)))
+                for (index, arg) in args.enumerated() {
+                    do {
+                        encoded.append(try encode(arg, &grants, chain, 0))
+                    } catch let error as ValueError {
+                        throw ValueError("argument \(index + 1) of \(describe(op: op, fields: fields)): \(error.description)")
+                    }
+                }
+                frame.append(("args", .object([("type", .string("list")), ("value", .array(encoded))])))
             } catch {
                 rollback(grants)
                 lock.unlock()
@@ -951,6 +981,17 @@ package final class Peer: @unchecked Sendable {
             }
         }
         let data = JSONWriter.write(.object(frame))
+        if data.count > maxMessage {
+            rollback(grants)
+            lock.unlock()
+            // Blamed on the largest argument.
+            let sizes = encoded.map { JSONWriter.write($0).count }
+            let call = describe(op: op, fields: fields)
+            if let index = sizes.indices.max(by: { sizes[$0] < sizes[$1] }) {
+                throw ValueError("argument \(index + 1) of \(call): \(overLimit(data.count))")
+            }
+            throw ValueError("\(call): \(overLimit(data.count))")
+        }
         let waiter = Pending(id: id, answered: answered)
         pending[id] = waiter
         lock.unlock()
@@ -964,6 +1005,16 @@ package final class Peer: @unchecked Sendable {
             throw error
         }
         return waiter
+    }
+
+    /// What an outgoing call is, for messages.
+    private func describe(op: String, fields: [(String, JSON)]) -> String {
+        func field(_ name: String) -> String? { fields.first { $0.0 == name }?.1.stringValue }
+        switch op {
+        case "invoke": return describeInvocation(target: field("target") ?? "", method: field("method") ?? "")
+        case "call": return field("method").map { "the method \($0)" } ?? "a function"
+        default: return "an awaited result"
+        }
     }
 
     /// Waits until no call that is the far end's business runs.
@@ -1241,9 +1292,17 @@ package final class Peer: @unchecked Sendable {
     private func execute(_ job: Job) async {
         defer { finish(business: job.business) }
         let chain = job.path + [job.id]
+        // What it is, for a result that cannot be sent.
+        let described: String?
+        switch job.op {
+        case "invoke": described = describeInvocation(target: job.target, method: job.method ?? "")
+        case "call": described = job.method.map { "the method \($0)" } ?? "a function"
+        case "get": described = "the property \(job.property)"
+        default: described = nil
+        }
         if let refused = job.refused {
             releaseAll(job.fresh)
-            respond(job.id, .failure(refused), chain)
+            respond(job.id, .failure(refused), chain, described)
             return
         }
         let result: Result<Value, Error> = await CallChain.$path.withValue(chain) {
@@ -1275,10 +1334,13 @@ package final class Peer: @unchecked Sendable {
                 return .failure(error)
             }
         }
-        respond(job.id, result, chain)
+        respond(job.id, result, chain, described)
     }
 
-    private func respond(_ id: String, _ result: Result<Value, Error>, _ chain: [String]) {
+    /// Answers call `id`, a call of `call` (for messages): a result that
+    /// cannot be sent (a value the far end does not take, a message over the
+    /// limit) is answered with an error saying why instead (#675).
+    private func respond(_ id: String, _ result: Result<Value, Error>, _ chain: [String], _ call: String?) {
         lock.lock()
         running[id] = nil
         signals[id] = nil
@@ -1294,6 +1356,15 @@ package final class Peer: @unchecked Sendable {
             do {
                 let encoded = try encode(value, &grants, chain, 0)
                 data = JSONWriter.write(.object([("op", .string("return")), ("id", .string(id)), ("value", encoded)]))
+                if data.count > maxMessage {
+                    rollback(grants)
+                    failure = ofResult(overLimit(data.count), call)
+                    data = []
+                }
+            } catch let error as ValueError {
+                rollback(grants)
+                failure = ofResult(error.description, call)
+                data = []
             } catch {
                 rollback(grants)
                 failure = error
@@ -1306,6 +1377,12 @@ package final class Peer: @unchecked Sendable {
         if let failure {
             let encoded = encodeError(failure) { value in try ValueCodec.encodeAny(value) }
             data = JSONWriter.write(.object([("op", .string("throw")), ("id", .string(id)), ("error", encoded)]))
+            // An error too large to send: a short one saying so.
+            if data.count > maxMessage {
+                let what = "the error \(errorName(failure))" + (call.map { " of \($0)" } ?? "")
+                let short: JSON = .object([("name", .string("Error")), ("message", .string("\(what): \(overLimit(data.count))"))])
+                data = JSONWriter.write(.object([("op", .string("throw")), ("id", .string(id)), ("error", short)]))
+            }
         }
         lock.unlock()
         do {

@@ -95,8 +95,26 @@ fn rust_far_end_as(far: Endpoint) -> (Connection, Connection) {
 
 /// Listen on a Unix socket, start `command` with it, open the session.
 async fn far_end(
-    mut command: tokio::process::Command,
+    command: tokio::process::Command,
     far: &str,
+) -> (Connection, tokio::process::Child) {
+    far_end_with(command, main_endpoint(far)).await
+}
+
+/// `main` as a far end that takes no objects with methods, as every
+/// runtime is: what the far end would send it fails (#675).
+fn main_without_objects(far: &str) -> Format {
+    let mut endpoint = Endpoint::rust(id("main")).expect(id(far));
+    endpoint
+        .capabilities
+        .retain(|capability| capability != "objects");
+    Format::Endpoint(endpoint)
+}
+
+/// [`far_end`], with this side greeting in `format`.
+async fn far_end_with(
+    mut command: tokio::process::Command,
+    format: Format,
 ) -> (Connection, tokio::process::Child) {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("roundtrip.sock");
@@ -114,7 +132,7 @@ async fn far_end(
     }
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
     let channel = rutis_bridge::transport::local::framed(reader, stream, closer);
-    let connection = Connection::open_with(channel, Arc::new(Nothing), main_endpoint(far)).unwrap();
+    let connection = Connection::open_with(channel, Arc::new(Nothing), format).unwrap();
     connection.ready().await.unwrap();
     (connection, child)
 }
@@ -885,6 +903,125 @@ fn depth_limit(far: &Connection, name: &str) {
     assert!(far.close_reason().is_none(), "{name}: the session ended");
 }
 
+// ── What a call cannot send (#675) ───────────────────────────────────
+
+/// The local transport's message limit: 16 MiB.
+const LIMIT: usize = 16 * 1024 * 1024;
+
+fn over_the_limit(message: &str) -> bool {
+    message.contains("the message would be ")
+        && message.ends_with("over the limit of 16777216 bytes (16 MiB)")
+}
+
+/// guarantee: bridge/bad-values. Risk E1.
+///
+/// What cannot be sent fails only that call, on the side that would send
+/// it, naming the call, the argument or the result and why; the session
+/// goes on. A message over the limit (16 MiB): this side's argument, the
+/// far end's result, and the far end's argument to a callback (which never
+/// runs). And a thrown value that is not an error is relayed by the far end
+/// as it came ([`relayed_throw`]).
+fn bad_values(far: &Connection, name: &str) {
+    let call =
+        |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
+    match call("echo", vec![Value::Data(json!("x".repeat(LIMIT)))]) {
+        Err(Error::Value(message))
+            if message.starts_with("argument 1 of conformance.echo: ")
+                && over_the_limit(&message) => {}
+        other => panic!("{name}: this side's argument over the limit: {other:?}"),
+    }
+    match call("big", vec![Value::Data(json!(LIMIT + 10))]) {
+        Err(Error::Remote { message, .. })
+            if message.contains("the result of conformance.big: ") && over_the_limit(&message) => {}
+        other => panic!("{name}: the far end's result over the limit: {other:?}"),
+    }
+    let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback = {
+        let called = called.clone();
+        Value::callback(move |_| {
+            called.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::Undefined)
+        })
+    };
+    match call("applyBig", vec![callback, Value::Data(json!(LIMIT + 10))]) {
+        Err(Error::Remote { message, .. })
+            if message.contains("argument 1 of a function: ") && over_the_limit(&message) => {}
+        other => panic!("{name}: the far end's argument over the limit: {other:?}"),
+    }
+    assert_eq!(
+        called.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "{name}: the callback ran with an argument over the limit"
+    );
+    relayed_throw(far, name);
+    let back = call("echo", vec![Value::Data(json!("after"))]).and_then(Value::json);
+    assert_eq!(back.unwrap(), json!("after"), "{name}: a call after them");
+    assert!(far.close_reason().is_none(), "{name}: the session ended");
+}
+
+/// guarantee: bridge/bad-values.
+///
+/// A thrown value that is not an error (JavaScript's `throw 'a string'`:
+/// `ThrownValue`, its graph's root the string, no nodes), thrown by a
+/// callback the far end calls and thrown on by the far end, arrives as it
+/// was thrown: the name, the message, the root, and the nodes an array (Go
+/// sent `null`, which ended Node's session: `invalid error graph`).
+fn relayed_throw(far: &Connection, name: &str) {
+    let root = json!({ "type": "data", "value": "a string" });
+    let thrown = {
+        let root = root.clone();
+        Value::callback(move |_| {
+            Err(Error::Remote {
+                name: "ThrownValue".into(),
+                message: "a string".into(),
+                graph: Some(json!({ "root": root, "nodes": [] })),
+            })
+        })
+    };
+    let args = Value::List(vec![thrown, Value::Data(json!(1))]);
+    match far.invoke("conformance", "apply", args) {
+        Err(Error::Remote {
+            name: thrown,
+            message,
+            graph: Some(graph),
+        }) => {
+            assert_eq!(
+                (thrown.as_str(), message.as_str()),
+                ("ThrownValue", "a string"),
+                "{name}"
+            );
+            assert!(graph["nodes"].is_array(), "{name}: {graph}");
+            assert_eq!(graph["root"], root, "{name}: {graph}");
+        }
+        other => panic!("{name}: the thrown value relayed expected, got {other:?}"),
+    }
+}
+
+/// guarantee: bridge/bad-values.
+///
+/// To a far end that takes no objects with methods (`main` without
+/// `objects`, as every runtime is), the far end's result holding one fails
+/// that call before it is sent, naming the call and the far end; the
+/// session goes on.
+fn objects_refused(far: &Connection, name: &str) {
+    match far.invoke("conformance", "object", Value::List(vec![])) {
+        Err(Error::Remote { message, .. })
+            if message.contains("the result of conformance.object: an object with methods")
+                && message
+                    .contains("cannot cross to main; pass plain data or a function instead") => {}
+        other => panic!("{name}: an object to a far end that takes none: {other:?}"),
+    }
+    let back = far
+        .invoke(
+            "conformance",
+            "echo",
+            Value::List(vec![Value::Data(json!("after"))]),
+        )
+        .and_then(Value::json);
+    assert_eq!(back.unwrap(), json!("after"), "{name}: a call after it");
+    assert!(far.close_reason().is_none(), "{name}: the session ended");
+}
+
 // ── Release counts ───────────────────────────────────────────────────
 
 const SLOTS: u8 = 4;
@@ -1053,6 +1190,17 @@ async fn rust_depth_limit() {
         .unwrap();
 }
 
+/// guarantee: bridge/bad-values (#675). A Rust far end relays a thrown value
+/// that is not an error as it came; its memory channel has no size limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_relays_a_thrown_value() {
+    let (near, _far) = rust_far_end();
+    near.ready().await.unwrap();
+    tokio::task::spawn_blocking(move || relayed_throw(&near, "rust"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_releases_balance() {
     let (near, _far) = rust_far_end();
@@ -1088,6 +1236,19 @@ async fn node_depth_limit() {
         .unwrap();
 }
 
+/// guarantee: bridge/bad-values (#675).
+#[tokio::test(flavor = "multi_thread")]
+async fn node_bad_values() {
+    let (near, _child) = far_end(node(), "node").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "node"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(node(), main_without_objects("node")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "node"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn node_releases_balance() {
     let (near, _child) = far_end(node(), "node").await;
@@ -1114,6 +1275,19 @@ async fn python_depth_limit() {
         .unwrap();
 }
 
+/// guarantee: bridge/bad-values (#675).
+#[tokio::test(flavor = "multi_thread")]
+async fn python_bad_values() {
+    let (near, _child) = far_end(python(), "python").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "python"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(python(), main_without_objects("python")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "python"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn python_releases_balance() {
     let (near, _child) = far_end(python(), "python").await;
@@ -1129,17 +1303,27 @@ async fn python_releases_balance() {
 /// Go row).
 #[cfg(feature = "go")]
 async fn go_far_end() -> (Connection, tokio::process::Child) {
-    let directory = tempfile::tempdir().unwrap().keep();
-    let binary = directory.join("conformance");
-    let status = std::process::Command::new("go")
-        .args(["build", "-o"])
-        .arg(&binary)
-        .arg("./internal/fixtures/session")
-        .current_dir(repo().join("go/rutis"))
-        .status()
-        .expect("go is on PATH");
-    assert!(status.success(), "go build ./internal/fixtures/session");
-    far_end(tokio::process::Command::new(binary), "go").await
+    far_end(go(), "go").await
+}
+
+/// The Go session fixture, built once per test binary.
+#[cfg(feature = "go")]
+fn go() -> tokio::process::Command {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let binary = BINARY.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let binary = directory.join("conformance");
+        let status = std::process::Command::new("go")
+            .args(["build", "-o"])
+            .arg(&binary)
+            .arg("./internal/fixtures/session")
+            .current_dir(repo().join("go/rutis"))
+            .status()
+            .expect("go is on PATH");
+        assert!(status.success(), "go build ./internal/fixtures/session");
+        binary
+    });
+    tokio::process::Command::new(binary)
 }
 
 #[cfg(feature = "go")]
@@ -1156,6 +1340,20 @@ async fn go_values_round_trip() {
 async fn go_depth_limit() {
     let (near, _child) = go_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "go"))
+        .await
+        .unwrap();
+}
+
+/// guarantee: bridge/bad-values (#675).
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread")]
+async fn go_bad_values() {
+    let (near, _child) = far_end(go(), "go").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "go"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(go(), main_without_objects("go")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "go"))
         .await
         .unwrap();
 }
@@ -1232,6 +1430,12 @@ async fn go_tagged_values_round_trip() {
 /// exactly as sent.
 #[cfg(all(feature = "swift", target_os = "macos"))]
 async fn swift_far_end() -> (Connection, tokio::process::Child) {
+    far_end(swift(), "swift").await
+}
+
+/// The Swift session fixture, built once per test binary.
+#[cfg(all(feature = "swift", target_os = "macos"))]
+fn swift() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let binary = BINARY.get_or_init(|| {
         let product = "RutisSessionFixture";
@@ -1248,7 +1452,7 @@ async fn swift_far_end() -> (Connection, tokio::process::Child) {
             .expect("swift is on PATH");
         PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).join(product)
     });
-    far_end(tokio::process::Command::new(binary), "swift").await
+    tokio::process::Command::new(binary)
 }
 
 #[cfg(all(feature = "swift", target_os = "macos"))]
@@ -1278,6 +1482,20 @@ async fn swift_depth_limit() {
         .unwrap();
 }
 
+/// guarantee: bridge/bad-values (#675).
+#[cfg(all(feature = "swift", target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn swift_bad_values() {
+    let (near, _child) = far_end(swift(), "swift").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "swift"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(swift(), main_without_objects("swift")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "swift"))
+        .await
+        .unwrap();
+}
+
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_releases_balance() {
@@ -1289,12 +1507,17 @@ async fn swift_releases_balance() {
 
 #[cfg(feature = "bun")]
 async fn bun_far_end() -> (Connection, tokio::process::Child) {
+    far_end(bun(), "bun").await
+}
+
+#[cfg(feature = "bun")]
+fn bun() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("bun");
     command
         .args(["--no-install", "--no-env-file"])
         .arg(repo().join("bun/rutis-bun/test/fixtures/conformance-session.ts"))
         .current_dir(repo().join("bun/rutis-bun"));
-    far_end(command, "bun").await
+    command
 }
 
 #[cfg(feature = "bun")]
@@ -1320,6 +1543,20 @@ async fn bun_tagged_values_round_trip() {
 async fn bun_depth_limit() {
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "bun"))
+        .await
+        .unwrap();
+}
+
+/// guarantee: bridge/bad-values (#675).
+#[cfg(feature = "bun")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_bad_values() {
+    let (near, _child) = far_end(bun(), "bun").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "bun"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(bun(), main_without_objects("bun")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "bun"))
         .await
         .unwrap();
 }
@@ -1351,6 +1588,20 @@ async fn kotlin_values_round_trip() {
 async fn kotlin_depth_limit() {
     let (near, _child) = kotlin_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "kotlin"))
+        .await
+        .unwrap();
+}
+
+/// guarantee: bridge/bad-values (#675).
+#[cfg(feature = "kotlin")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kotlin_bad_values() {
+    let (near, _child) = far_end(kotlin::session(), "kotlin").await;
+    tokio::task::spawn_blocking(move || bad_values(&near, "kotlin"))
+        .await
+        .unwrap();
+    let (near, _second) = far_end_with(kotlin::session(), main_without_objects("kotlin")).await;
+    tokio::task::spawn_blocking(move || objects_refused(&near, "kotlin"))
         .await
         .unwrap();
 }

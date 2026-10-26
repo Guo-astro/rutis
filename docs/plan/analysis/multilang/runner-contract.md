@@ -366,7 +366,7 @@ runners only see ordinary wire values.
 | --- | --- | --- |
 | `Error::Remote{name,message,graph}` (relayed) | `name` | `message`, `graph` passed through untouched (`error_shape.rs`) |
 | `Error::SyncWaitCycle(m)` | `SyncWaitCycle` | `m` |
-| `Error::Value(m)` / `Error::Transport(m)` | `BindingError` | `"invalid binding value: m"` / `m` |
+| `Error::Value(m)` / `Error::Transport(m)` | `BindingError` | `m` / `m` (until 0.17.1 `"invalid binding value: m"` / `m`; #675) |
 | panic or fallible native result (`server::native_error`) | `RustError` | text |
 
 (`protocol.rs:49-73`, `server.rs:14-20`, `rpc.rs:400-411`.)

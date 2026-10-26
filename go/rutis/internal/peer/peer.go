@@ -696,7 +696,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		return p.exportValue(v.Value, "plugin", key, grants, origin)
 	case Object:
 		if p.opts.Endpoint != nil && !p.supports("objects") {
-			return nil, errors.New("the far end cannot receive object references")
+			return nil, p.objectRefused(v)
 		}
 		var key any
 		if reflect.ValueOf(v).Comparable() {
@@ -946,7 +946,11 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 		return entry.value, nil
 	}
 	if value.Kind == "object" {
-		return nil, errors.New("object references from the far end are not supported")
+		// Only the call it came in fails (#675): Go cannot call its methods.
+		// Its grant goes back with the call's other references.
+		d.fresh = append(d.fresh, &imported{id: ref, kind: value.Kind, origin: origin, grants: 1})
+		d.refuse(&ValueError{Message: "received an object with methods, which Go cannot take; pass plain data or a function instead"})
+		return nil, nil
 	}
 	// Plugin definitions travel back home only (this side's own), but to a
 	// side that takes them, as a host does (Options.Plugins).
@@ -1200,7 +1204,7 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		if args == nil {
 			args = []any{}
 		}
-		encoded, err := p.encode(args, &grants, chain, -1)
+		encoded, err := p.encodeArgs(args, &grants, chain, describeRequest(op, fields))
 		if err != nil {
 			p.rollback(grants)
 			p.mu.Unlock()
@@ -1209,6 +1213,16 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		frame["args"] = encoded
 	}
 	data, err := marshal(frame)
+	if err == nil && len(data) > MaxMessage {
+		// Over the channel's limit, which would end the session on it:
+		// only this call fails, here (#675).
+		call := describeRequest(op, fields)
+		if encoded, ok := frame["args"].(map[string]any); ok && largest(encoded) >= 0 {
+			err = ofArgument(errors.New(overLimit(len(data))), largest(encoded), call)
+		} else {
+			err = valueErrorf("the arguments of %s: %s", call, overLimit(len(data)))
+		}
+	}
 	if err != nil {
 		p.rollback(grants)
 		p.mu.Unlock()
@@ -1623,7 +1637,7 @@ func (p *Peer) execute(j *job) {
 	ctx := WithChain(j.ctx, append(append([]string{}, j.path...), j.id))
 	if j.refused != nil {
 		p.releaseAll(j.fresh)
-		p.respond(j.id, nil, j.refused, ChainOf(ctx))
+		p.respondTo(j.id, nil, j.refused, ChainOf(ctx), describeJob(j))
 		return
 	}
 	value, err := protect(func() (any, error) {
@@ -1645,7 +1659,7 @@ func (p *Peer) execute(j *job) {
 			return j.entry.value.(Func)(ctx, j.args)
 		}
 	})
-	p.respond(j.id, value, err, ChainOf(ctx))
+	p.respondTo(j.id, value, err, ChainOf(ctx), describeJob(j))
 }
 
 // Protect runs `call`, turning a panic into a PanicError.
@@ -1660,7 +1674,11 @@ func protect(call func() (value any, err error)) (value any, err error) {
 	return call()
 }
 
-func (p *Peer) respond(id string, value any, failure error, chain []string) {
+// respondTo answers the far end's call `id` (of `call`, "" when not known,
+// for messages). A result that cannot be sent (a value the far end does not
+// take, a message over the limit) is answered with an error saying why
+// instead (#675).
+func (p *Peer) respondTo(id string, value any, failure error, chain []string, call string) {
 	p.mu.Lock()
 	delete(p.running, id)
 	delete(p.signals, id)
@@ -1676,14 +1694,24 @@ func (p *Peer) respond(id string, value any, failure error, chain []string) {
 		encoded, err = p.encode(value, &grants, chain, 0)
 		if err == nil {
 			data, err = marshal(map[string]any{"op": "return", "id": id, "value": encoded})
+			if err == nil && len(data) > MaxMessage {
+				err = errors.New(overLimit(len(data)))
+			}
 		}
 		if err != nil {
 			p.rollback(grants)
-			failure = err
+			failure = ofResult(err, call)
 		}
 	}
 	if failure != nil {
 		data, err = marshal(map[string]any{"op": "throw", "id": id, "error": encodeError(failure)})
+		if err == nil && len(data) > MaxMessage {
+			what := "the error " + ErrorName(failure)
+			if call != "" {
+				what += " of " + call
+			}
+			data, err = marshal(map[string]any{"op": "throw", "id": id, "error": map[string]any{"name": "Error", "message": what + ": " + overLimit(len(data))}})
+		}
 		if err != nil {
 			data, _ = marshal(map[string]any{"op": "throw", "id": id, "error": map[string]any{"name": "Error", "message": failure.Error()}})
 		}

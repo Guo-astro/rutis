@@ -51,9 +51,16 @@ type Set []any
 
 // ValueError is a value this side cannot send or take: only the call
 // carrying it fails, and the session goes on.
-type ValueError struct{ Message string }
+type ValueError struct {
+	Message string
+	// What it says more of (ErrTooDeep, say), for errors.Is.
+	cause error
+}
 
 func (e *ValueError) Error() string { return e.Message }
+
+// Unwrap is the error it says more of, if any.
+func (e *ValueError) Unwrap() error { return e.cause }
 
 // Name is the name it crosses with.
 func (e *ValueError) Name() string { return "Error" }

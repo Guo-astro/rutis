@@ -182,6 +182,7 @@ impl Value {
                     waiters: 0,
                 }),
                 result: watch::channel(None).0,
+                call: std::sync::OnceLock::new(),
             }),
         }))))
     }
@@ -447,6 +448,9 @@ enum Body {
 struct AsyncResult {
     future: Mutex<FutureState>,
     result: watch::Sender<Option<Reply>>,
+    /// The call this is the result of (`service.method`), once a far end's
+    /// invocation returned it: a result that cannot be sent names it.
+    call: std::sync::OnceLock<String>,
 }
 struct FutureState {
     pending: Option<BoxFuture<'static, Reply>>,
@@ -483,6 +487,13 @@ fn poll_future(future: &mut BoxFuture<'static, Reply>, cx: &mut Context<'_>) -> 
         .unwrap_or_else(|panic| Poll::Ready(Err(panic_error(panic))))
 }
 impl Object {
+    /// The call this future is the result of, once one returned it.
+    fn result_of(&self) -> Option<String> {
+        match &self.body {
+            Body::Future(state) => state.call.get().cloned(),
+            _ => None,
+        }
+    }
     fn kind(&self) -> Kind {
         match &self.body {
             Body::Function(_) => Kind::Function,
@@ -1172,6 +1183,9 @@ struct SessionState {
     format: Format,
     /// The far end as the channel's connector verified it, if it did.
     verified: Option<PeerId>,
+    /// The far end of a compat-format session as whoever started it named
+    /// it ([`Connection::name_far_end`]), for messages.
+    named: std::sync::OnceLock<String>,
     /// This side's call ids: `rust:` or `<endpoint>:`.
     local_prefix: String,
     /// The far end's: `node:`, or `<endpoint>:` once it greeted.
@@ -1283,6 +1297,7 @@ impl Connection {
             tag: next_tag(),
             format,
             verified: info.peer,
+            named: std::sync::OnceLock::new(),
             local_prefix,
             remote_prefix,
             greeting: std::sync::OnceLock::new(),
@@ -1582,11 +1597,14 @@ impl Connection {
         result
     }
     fn write_locked(&self, writer: &mut Box<dyn Sender>, frame: Frame) -> Result<(), Error> {
+        let bytes = serde_json::to_vec(&frame).map_err(transport)?;
+        self.write_bytes_locked(writer, &bytes)
+    }
+    fn write_bytes_locked(&self, writer: &mut Box<dyn Sender>, bytes: &[u8]) -> Result<(), Error> {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
         }
-        let bytes = serde_json::to_vec(&frame).map_err(transport)?;
-        writer.send(&bytes).map_err(|error| ended("", error))
+        writer.send(bytes).map_err(|error| ended("", error))
     }
     fn send(&self, call: Operation, mut waiting: Waiting) -> Result<String, Error> {
         let mut writer = self.0.writer.lock().unwrap();
@@ -1631,37 +1649,62 @@ impl Connection {
                 }
             }
         }
-        let frame = match &call {
-            Operation::Invoke(target, method, args) => Frame::Invoke {
-                id: id.clone(),
-                path,
-                target: target.clone(),
-                method: method.clone(),
-                args: self.encode(args, MAX_DEPTH + 1)?,
-                sync,
-            },
-            Operation::Call(reference, method, args) => Frame::Call {
-                id: id.clone(),
-                path,
-                reference: *reference,
-                method: method.clone(),
-                args: self.encode(args, MAX_DEPTH + 1)?,
-                sync,
-            },
-            Operation::Get(reference, property) => Frame::Get {
-                id: id.clone(),
-                path,
-                reference: *reference,
-                property: property.clone(),
-                sync,
-            },
-            Operation::Await(reference, _) => Frame::Await {
-                id: id.clone(),
-                path,
-                reference: *reference,
-                sync,
-            },
+        // What cannot be sent (a value the far end does not take, a message
+        // over the channel's limit) fails only this call, here (#675).
+        let described = || call.describe();
+        let (frame, grants) = match &call {
+            Operation::Invoke(target, method, args) => {
+                let (args, grants) = self.encode_args(args, &described)?;
+                let frame = Frame::Invoke {
+                    id: id.clone(),
+                    path,
+                    target: target.clone(),
+                    method: method.clone(),
+                    args,
+                    sync,
+                };
+                (frame, grants)
+            }
+            Operation::Call(reference, method, args) => {
+                let (args, grants) = self.encode_args(args, &described)?;
+                let frame = Frame::Call {
+                    id: id.clone(),
+                    path,
+                    reference: *reference,
+                    method: method.clone(),
+                    args,
+                    sync,
+                };
+                (frame, grants)
+            }
+            Operation::Get(reference, property) => (
+                Frame::Get {
+                    id: id.clone(),
+                    path,
+                    reference: *reference,
+                    property: property.clone(),
+                    sync,
+                },
+                Vec::new(),
+            ),
+            Operation::Await(reference, _) => (
+                Frame::Await {
+                    id: id.clone(),
+                    path,
+                    reference: *reference,
+                    sync,
+                },
+                Vec::new(),
+            ),
         };
+        let bytes = match self.serialized(&frame, writer.max_message(), &described) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.ungrant(grants);
+                return Err(error);
+            }
+        };
+        drop(frame);
         let mut blocked = Vec::new();
         {
             let mut calls = self.0.calls.lock().unwrap();
@@ -1696,7 +1739,7 @@ impl Connection {
             }
             calls.waiting.insert(id.clone(), waiting);
         }
-        let result = self.write_locked(&mut writer, frame);
+        let result = self.write_bytes_locked(&mut writer, &bytes);
         drop(writer);
         if let Err(error) = result {
             self.close(error.clone());
@@ -1774,23 +1817,41 @@ impl Connection {
     /// Encode `value`, nested at most `levels` deep: [`MAX_DEPTH`] for a
     /// result, one more for an argument list (the list is not a level).
     fn encode(&self, value: &Value, levels: usize) -> Result<WireValue, Error> {
+        self.encode_granting(value, levels).map(|(wire, _)| wire)
+    }
+    /// [`Connection::encode`], with the references it granted: given back
+    /// on failure, and by the caller if the value is not sent after all.
+    fn encode_granting(
+        &self,
+        value: &Value,
+        levels: usize,
+    ) -> Result<(WireValue, Vec<u64>), Error> {
         let mut grants = Vec::new();
-        let result = self.encode_inner(value, levels, &mut grants);
-        if result.is_err() {
-            let mut exports = self.0.exports.lock().unwrap();
-            for id in grants {
-                let Some(entry) = exports.entries.get_mut(&id) else {
-                    continue;
-                };
-                entry.grants -= 1;
-                if entry.grants == 0 {
-                    // The value being encoded still holds the import of a
-                    // dropped relay, so no release is written under the lock.
-                    exports.remove(id);
-                }
+        match self.encode_inner(value, levels, &mut grants) {
+            Ok(wire) => Ok((wire, grants)),
+            Err(error) => {
+                self.ungrant(grants);
+                Err(error)
             }
         }
-        result
+    }
+    /// Give back the references granted for a value that was not sent.
+    fn ungrant(&self, grants: Vec<u64>) {
+        if grants.is_empty() {
+            return;
+        }
+        let mut exports = self.0.exports.lock().unwrap();
+        for id in grants {
+            let Some(entry) = exports.entries.get_mut(&id) else {
+                continue;
+            };
+            entry.grants -= 1;
+            if entry.grants == 0 {
+                // The value being encoded still holds the import of a
+                // dropped relay, so no release is written under the lock.
+                exports.remove(id);
+            }
+        }
     }
     fn encode_inner(
         &self,
@@ -2629,7 +2690,8 @@ impl Connection {
                 // Check on the pumping thread before handing the async waiter
                 // to the executor that might itself be blocked by this stack.
                 if sync && object.executor.blocked_here() {
-                    self.respond(id, object.ready_on_blocked_executor());
+                    let call = object.result_of();
+                    self.respond_to(id, object.ready_on_blocked_executor(), call.as_deref());
                     drop(_flight);
                     return;
                 }
@@ -2669,7 +2731,7 @@ impl Connection {
                 let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
                 let result = crate::session::with_caller_row(None, || object.call(args));
                 CALLER.with(|caller| caller.replace(previous));
-                self.respond(id, result);
+                self.respond_to(id, result, Some("a function"));
                 drop(_flight);
             }
             Accepted::Invoke(target, method, args) => {
@@ -2690,20 +2752,28 @@ impl Connection {
                 });
                 INVOKING.with(|cell| cell.replace(outer));
                 CALLER.with(|caller| caller.replace(previous));
+                // What it returned, or a future of it, is of this call: a
+                // result that cannot be sent says so.
+                let call = crossing::invocation(&target, &method);
+                if let Ok(Value::Reference(Reference(ReferenceInner::Local(object)))) = &result {
+                    if let Body::Future(state) = &object.body {
+                        let _ = state.call.set(call.clone());
+                    }
+                }
                 if let (true, Ok(Value::Reference(reference))) = (emit, &result) {
                     if reference.is_future() {
                         let future = result.unwrap();
                         let peer = self.clone();
                         self.0.executor.spawn(async move {
                             let settled = settle(future).await;
-                            peer.respond(id, settled);
+                            peer.respond_to(id, settled, Some(&call));
                             peer.0.dispatch.replied(&peer, &method);
                             drop(_flight);
                         });
                         return;
                     }
                 }
-                self.respond(id, result);
+                self.respond_to(id, result, Some(&call));
                 if event_op {
                     self.0.dispatch.replied(self, &method);
                 }
@@ -2713,28 +2783,67 @@ impl Connection {
     }
     fn finish_await(&self, id: String, result: Reply) {
         let awaiting = self.0.calls.lock().unwrap().awaiting.remove(&id);
-        if awaiting.is_some() {
-            self.respond(id, result);
+        if let Some(awaiting) = awaiting {
+            self.respond_to(id, result, awaiting.object.result_of().as_deref());
         }
     }
     fn respond(&self, id: String, result: Reply) {
+        self.respond_to(id, result, None);
+    }
+    /// Answer the far end's call `id`, a call of `call` when it is known
+    /// (for messages). A result that cannot be sent (a value the far end
+    /// does not take, a message over the channel's limit) is answered with
+    /// an error saying why instead (#675).
+    fn respond_to(&self, id: String, result: Reply, call: Option<&str>) {
         waits::answered(&self.0.tag, &id);
         let result = {
             let mut writer = self.0.writer.lock().unwrap();
-            let frame = match &result {
-                Ok(value) => match self.encode(value, MAX_DEPTH) {
-                    Ok(value) => Frame::Return { id, value },
-                    Err(error) => Frame::Throw {
+            let (frame, grants) = match &result {
+                Ok(value) => match self.encode_granting(value, MAX_DEPTH) {
+                    Ok((value, grants)) => (
+                        Frame::Return {
+                            id: id.clone(),
+                            value,
+                        },
+                        grants,
+                    ),
+                    Err(error) => (
+                        Frame::Throw {
+                            id: id.clone(),
+                            error: crossing::of_result(error, call).into(),
+                        },
+                        Vec::new(),
+                    ),
+                },
+                Err(error) => (
+                    Frame::Throw {
+                        id: id.clone(),
+                        error: error.clone().into(),
+                    },
+                    Vec::new(),
+                ),
+            };
+            let what = match (&frame, &result) {
+                (Frame::Return { .. }, _) => "the result".to_owned(),
+                (_, Err(Error::Remote { name, .. })) => format!("the error {name}"),
+                _ => "the error".to_owned(),
+            };
+            let described = || match call {
+                Some(call) => format!("{what} of {call}"),
+                None => what.clone(),
+            };
+            let bytes = match self.serialized(&frame, writer.max_message(), &described) {
+                Ok(bytes) => Ok(bytes),
+                Err(error) => {
+                    self.ungrant(grants);
+                    serde_json::to_vec(&Frame::Throw {
                         id,
                         error: error.into(),
-                    },
-                },
-                Err(error) => Frame::Throw {
-                    id,
-                    error: error.clone().into(),
-                },
+                    })
+                    .map_err(transport)
+                }
             };
-            self.write_locked(&mut writer, frame)
+            bytes.and_then(|bytes| self.write_bytes_locked(&mut writer, &bytes))
         };
         if let Err(error) = result {
             self.close(error);
@@ -2886,6 +2995,7 @@ fn ended(label: &str, error: ChannelError) -> Error {
     }
 }
 
+mod crossing;
 mod relay;
 mod waits;
 use relay::Relayed;

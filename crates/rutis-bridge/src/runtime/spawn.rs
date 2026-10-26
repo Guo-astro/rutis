@@ -173,6 +173,10 @@ impl Sender for ExitSender {
             }
         })
     }
+
+    fn max_message(&self) -> Option<usize> {
+        self.sender.max_message()
+    }
 }
 
 /// Notes that this side closed the channel, for [`ExitSender`], waking a

@@ -642,10 +642,22 @@ async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     assert_eq!(current_path(), ids(&["node:1"]));
 }
 
+/// A session of the endpoint format (as `main`) whose far end greets as
+/// `node`, declaring `capabilities`.
+fn endpoint_pair() -> (Connection, Far) {
+    let (local, far) = far_pair();
+    let endpoint = Endpoint::rust(PeerId::new("main").unwrap());
+    let connection =
+        Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(endpoint)).unwrap();
+    (connection, far)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn references_forwarded_to_another_session_reach_their_owner() {
     let (a, ra) = pair();
-    let (b, rb) = pair();
+    // A far end that takes objects: one that does not is refused them
+    // (`an_object_goes_only_to_a_far_end_that_takes_objects`).
+    let (b, rb) = endpoint_pair();
     let b_tag = b.tag().to_owned();
     // A owns a function (1), a future (2) and an object (3).
     let owner = std::thread::spawn(move || {
@@ -722,7 +734,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
         paths
     });
     let user = std::thread::spawn(move || {
-        let mut b = Remote::start(rb);
+        let mut b = Remote::start_endpoint(rb, &["objects"]);
         let Frame::Invoke {
             id,
             args: WireValue::List(args),
@@ -835,8 +847,8 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
         .unwrap();
     // B's chain reaches A tagged with B's session.
     let tagged = |id: &str| format!("{b_tag}/{id}");
-    assert_eq!(paths[0], vec![tagged("rust:1"), tagged("node:1")]);
-    assert_eq!(paths[1], vec![tagged("rust:1"), tagged("node:2")]);
+    assert_eq!(paths[0], vec![tagged("main:1"), tagged("node:1")]);
+    assert_eq!(paths[1], vec![tagged("main:1"), tagged("node:2")]);
     assert_eq!(paths[2], vec![tagged("node:5")]);
     let exports = b.0.exports.lock().unwrap();
     assert!(exports.entries.is_empty() && exports.relays.is_empty());
@@ -1711,6 +1723,28 @@ impl Remote {
         });
         remote
     }
+    /// [`Remote::start`] for a session of the endpoint format: greets as
+    /// `node`, declaring `capabilities`.
+    fn start_endpoint(stream: Far, capabilities: &[&str]) -> Self {
+        let mut remote = Self {
+            reader: stream.try_clone().unwrap(),
+            writer: stream,
+        };
+        assert!(matches!(remote.read(), Frame::Hello { .. }));
+        remote.send(Frame::Hello {
+            version: crate::session::ENDPOINT_PROTOCOL,
+            endpoint: Some("node".into()),
+            implementation: None,
+            capabilities: Some(
+                capabilities
+                    .iter()
+                    .chain([&EVENTS_CAPABILITY])
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
+        });
+        remote
+    }
     fn send_json(&mut self, frame: Json) {
         let bytes = serde_json::to_vec(&frame).unwrap();
         self.writer.sender.lock().unwrap().send(&bytes).unwrap();
@@ -2035,8 +2069,8 @@ async fn integers_beyond_2_53_cross_as_bigints() {
     {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "cannot send the integer 18446744073709551615, beyond ±(2^53-1) and so a bigint: \
-             the far end does not take bigint values (it did not declare the capability \
+            "argument 1 of t.m: cannot send the integer 18446744073709551615, beyond \
+             ±(2^53-1) and so a bigint: the far end does not take bigint values (it did not declare the capability \
              value-bigint)"
         ),
         other => panic!("a value error expected, got {other:?}"),
@@ -2174,7 +2208,7 @@ async fn a_tagged_value_to_a_far_end_without_its_capability_fails_only_that_call
     {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "cannot send bytes: the far end does not take bytes values \
+            "argument 1 of t.m: cannot send bytes: the far end does not take bytes values \
              (it did not declare the capability value-bytes)"
         ),
         other => panic!("a value error expected, got {other:?}"),
@@ -2549,4 +2583,255 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
     drop(peer);
     // The import was released once, when its last holder dropped.
     assert_eq!(remote.join().unwrap(), 1);
+}
+
+// ── What a call cannot send (#675) ───────────────────────────────────
+
+/// guarantee: bridge/bad-values
+///
+/// An object with methods goes only to a far end that declared `objects`
+/// (a Rust one): to any other (every runtime), a call carrying one fails on
+/// this side before it is sent, and a result holding one is answered with
+/// an error, each naming the call, the argument or the result and the far
+/// end. No relay is left behind, the object is released on its owner once
+/// dropped, and the session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
+    struct Holding(Mutex<Option<Value>>);
+    impl Dispatch for Holding {
+        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+            Ok(self.0.lock().unwrap().clone().unwrap_or(Value::Undefined))
+        }
+    }
+    let (a, ra) = pair();
+    let held = Arc::new(Holding(Mutex::new(None)));
+    let (local, rb) = far_pair();
+    let b = Connection::open(local, held.clone()).unwrap();
+    // A runtime's link names it: a compat far end does not name itself.
+    b.name_far_end("py");
+    let owner = tokio::task::spawn_blocking(move || {
+        let mut a = Remote::start(ra);
+        let Frame::Invoke { id, .. } = a.read() else {
+            panic!("invoke expected")
+        };
+        a.ret(id, reference(3, Kind::Object, false));
+        // Released once Rust drops it, never granted on to B.
+        assert!(matches!(
+            a.read(),
+            Frame::Release {
+                reference: 3,
+                count: 1
+            }
+        ));
+    });
+    let runtime = tokio::task::spawn_blocking(move || {
+        let mut b = Remote::start(rb);
+        let frame = b.read_json();
+        assert_eq!(
+            frame["method"], "after",
+            "the call holding the object was sent"
+        );
+        // A function of the far end's, to call with the object inside.
+        b.send_json(json!({
+            "op": "return", "id": frame["id"],
+            "value": { "type": "reference", "value": { "id": 9, "kind": "function", "home": false, "origin": [] } },
+        }));
+        b.send_json(json!({
+            "op": "invoke", "id": "node:1", "path": [], "target": "host:svc", "method": "get",
+            "args": { "type": "data", "value": [] },
+        }));
+        // The function's release may come first.
+        let reply = loop {
+            let frame = b.read_json();
+            if frame["op"] != "release" {
+                break frame;
+            }
+        };
+        assert_eq!(reply["op"], "throw", "{reply}");
+        // Kept open until the end of the test.
+        (reply["error"]["message"].as_str().unwrap().to_owned(), b)
+    });
+    a.ready().await.unwrap();
+    b.ready().await.unwrap();
+    let object = a
+        .invoke_async("", "object", Value::Undefined)
+        .await
+        .unwrap();
+    assert!(object.clone().reference().unwrap().is_object());
+    // What B returns when its far end calls it, right after `after`.
+    *held.0.lock().unwrap() = Some(object.clone());
+    let call = Value::List(vec![Value::Data(json!(1)), object.clone()]);
+    match b.invoke_async("host:svc\0scope", "take", call).await {
+        Err(Error::Value(message)) => assert_eq!(
+            message,
+            "argument 2 of svc.take: an object with methods cannot cross to py; \
+             pass plain data or a function instead"
+        ),
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    let function = b
+        .invoke_async("svc", "after", Value::List(vec![]))
+        .await
+        .unwrap()
+        .reference()
+        .unwrap();
+    // Inside a list or a record, as a function's argument: the same.
+    let nested = [
+        Value::List(vec![Value::Data(json!(1)), object.clone()]),
+        Value::Record([("o".to_owned(), object)].into_iter().collect()),
+    ];
+    for argument in nested {
+        match function.call_async(Value::List(vec![argument])).await {
+            Err(Error::Value(message)) => assert_eq!(
+                message,
+                "argument 1 of a function: an object with methods cannot cross to py; \
+                 pass plain data or a function instead"
+            ),
+            other => panic!("a value error expected, got {other:?}"),
+        }
+    }
+    drop(function);
+    let (message, _runtime) = runtime.await.unwrap();
+    assert_eq!(
+        message,
+        "the result of svc.get: an object with methods cannot cross to py; \
+         pass plain data or a function instead"
+    );
+    assert!(b.close_reason().is_none() && a.close_reason().is_none());
+    assert!(
+        b.0.exports.lock().unwrap().entries.is_empty(),
+        "a relay is left"
+    );
+    held.0.lock().unwrap().take();
+    owner.await.unwrap();
+}
+
+/// A memory channel whose sending side (this side's) takes messages of at
+/// most `limit` bytes, as the local and WebSocket transports do.
+fn limited_pair(limit: usize) -> (Channel, Far) {
+    struct Limited(Box<dyn Sender>, usize);
+    impl Sender for Limited {
+        fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
+            if message.len() > self.1 {
+                return Err(ChannelError::Closed {
+                    reason: "over the limit".into(),
+                });
+            }
+            self.0.send(message)
+        }
+        fn max_message(&self) -> Option<usize> {
+            Some(self.1)
+        }
+    }
+    let (mut local, far) = far_pair();
+    local.sender = Box::new(Limited(local.sender, limit));
+    (local, far)
+}
+
+/// guarantee: bridge/bad-values
+///
+/// A call or a result whose message would be over the channel's limit
+/// fails on this side before it is sent, naming the call, the argument (the
+/// largest) or the result, the size and the limit: nothing reaches the
+/// channel, which would end on it, references it would grant are not left
+/// granted, and the session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_over_the_limit_fails_only_its_call() {
+    struct Big;
+    impl Dispatch for Big {
+        fn invoke(&self, _: &Connection, _: &str, method: &str, _: Value) -> Reply {
+            let big = json!("x".repeat(2048));
+            Ok(match method {
+                "big" => Value::Data(big),
+                // Its result is sent when the far end awaits it.
+                "later" => Value::future(async move { Ok(Value::Data(big)) }),
+                _ => Value::Data(json!("small")),
+            })
+        }
+    }
+    let (local, far) = limited_pair(1024);
+    let peer = Connection::open(local, Arc::new(Big)).unwrap();
+    let script = tokio::task::spawn_blocking(move || {
+        let mut far = Remote::start(far);
+        let frame = far.read_json();
+        assert_eq!(frame["method"], "after", "the call over the limit was sent");
+        far.send_json(json!({ "op": "return", "id": frame["id"], "value": { "type": "data", "value": "fine" } }));
+        far.send_json(json!({
+            "op": "invoke", "id": "node:1", "path": [], "target": "host:svc", "method": "big",
+            "args": { "type": "data", "value": [] },
+        }));
+        let reply = far.read_json();
+        assert_eq!(reply["op"], "throw", "{reply}");
+        far.send_json(json!({
+            "op": "invoke", "id": "node:2", "path": [], "target": "svc", "method": "small",
+            "args": { "type": "data", "value": [] },
+        }));
+        let after = far.read_json();
+        assert_eq!(after["value"]["value"], "small", "{after}");
+        far.send_json(json!({
+            "op": "invoke", "id": "node:3", "path": [], "target": "host:svc", "method": "later",
+            "args": { "type": "data", "value": [] },
+        }));
+        let future = far.read_json();
+        assert_eq!(future["value"]["value"]["kind"], "future", "{future}");
+        far.send_json(json!({
+            "op": "await", "id": "node:4", "path": [], "reference": future["value"]["value"]["id"],
+        }));
+        let awaited = far.read_json();
+        assert_eq!(awaited["op"], "throw", "{awaited}");
+        let messages =
+            [&reply, &awaited].map(|reply| reply["error"]["message"].as_str().unwrap().to_owned());
+        // Kept open until the end of the test.
+        (messages, far)
+    });
+    peer.ready().await.unwrap();
+    let args = Value::List(vec![
+        Value::callback(|_| Ok(Value::Undefined)),
+        Value::Data(json!("y".repeat(2048))),
+    ]);
+    match peer.invoke_async("svc", "m", args).await {
+        Err(Error::Value(message)) => assert!(
+            message.starts_with("argument 2 of svc.m: the message would be ")
+                && message.ends_with(" bytes, over the limit of 1024 bytes"),
+            "{message}"
+        ),
+        other => panic!("a value error expected, got {other:?}"),
+    }
+    assert!(
+        peer.0.exports.lock().unwrap().entries.is_empty(),
+        "the callback is left granted"
+    );
+    assert_eq!(
+        peer.invoke_async("svc", "after", Value::List(vec![]))
+            .await
+            .unwrap(),
+        Value::Data(json!("fine"))
+    );
+    let ([message, awaited], _far) = script.await.unwrap();
+    assert!(
+        message.starts_with("the result of svc.big: the message would be "),
+        "{message}"
+    );
+    // An async result names the call that returned it.
+    assert!(
+        awaited.starts_with("the result of svc.later: the message would be "),
+        "{awaited}"
+    );
+    assert!(peer.close_reason().is_none());
+}
+
+#[test]
+fn the_limit_and_the_call_are_named() {
+    assert_eq!(
+        crossing::over_limit(30_889_096, 16 * 1024 * 1024),
+        "the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)"
+    );
+    assert_eq!(
+        crossing::invocation("host:weather\0row:a", "today"),
+        "weather.today"
+    );
+    assert_eq!(
+        crossing::invocation("", "events.dispatch"),
+        "events.dispatch"
+    );
 }

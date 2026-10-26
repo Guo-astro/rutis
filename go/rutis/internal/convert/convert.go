@@ -265,6 +265,18 @@ func (o object) Get(_ context.Context, property string) (any, error) {
 	return Property(o.rv, property)
 }
 
+// TypeName is the name of v's type, for messages (#675).
+func (o object) TypeName() string {
+	if !o.rv.IsValid() {
+		return ""
+	}
+	t := o.rv.Type()
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Name()
+}
+
 // Property reads the exported field of v named `name` on the wire (its
 // json name, or its wire name).
 func Property(v reflect.Value, name string) (any, error) {

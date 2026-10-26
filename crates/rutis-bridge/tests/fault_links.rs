@@ -834,12 +834,14 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
     assert!(caller.close_reason().is_none());
 }
 
-/// guarantee: bridge/large-and-deep-values; risk E1.
+/// guarantee: bridge/large-and-deep-values, bridge/bad-values; risk E1.
 ///
 /// Over a real WebSocket connection whose limit is 64 KiB: a call whose
 /// argument and result come within 512 bytes of the limit succeeds; one
-/// whose argument is over it fails explicitly (the connection closes with
-/// 1009, as the transport documents), and the callee never ran it.
+/// whose argument is over it fails explicitly before it is sent, naming
+/// the argument, the size and the limit, and the callee never ran it; the
+/// connection stays open and the next call is answered (#675: it used to
+/// close with 1009).
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
@@ -935,14 +937,23 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
     )
     .await;
     assert!(
-        matches!(&failed, Err(Error::Transport(_))),
+        matches!(&failed, Err(Error::Value(message))
+            if message.starts_with("argument 1 of echo: the message would be ")
+                && message.ends_with(" bytes, over the limit of 65536 bytes")),
         "a value over the limit fails explicitly: {:?}",
         failed.as_ref().map(|_| "a reply")
     );
-    within("the callee's session to end", served.closed()).await;
+    let back = within(
+        "a call after it",
+        caller.invoke_async("", "echo", Value::Data(json!(["after"]))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(back.json().unwrap(), json!("after"));
+    assert!(caller.close_reason().is_none() && served.close_reason().is_none());
     assert_eq!(
         *runs.lock().unwrap(),
-        [LIMIT - 512],
-        "the callee ran only the call within the limit"
+        [LIMIT - 512, 5],
+        "the callee ran only the calls within the limit"
     );
 }

@@ -26,8 +26,19 @@ class SocketChannel:
         self._reader = sock.makefile("rb")
         self._lock = threading.Lock()
         self._max = max_message
+        # Why the channel was closed, once it was: a send after that fails
+        # with it, never on the closed descriptor (`Bad file descriptor`).
+        self._closed: str | None = None
+
+    @property
+    def max_message(self) -> int:
+        """The largest message either way: a session checks what it would
+        send against it first, so one over it fails only its own call."""
+        return self._max
 
     def send(self, message: bytes) -> None:
+        if self._closed is not None:
+            raise ConnectionError(f"the channel is closed{': ' + self._closed if self._closed else ''}")
         if len(message) > self._max:
             reason = f"message of {len(message)} bytes exceeds the limit of {self._max}"
             self.close(reason)
@@ -51,6 +62,8 @@ class SocketChannel:
         raise ConnectionError("stream ended inside a message")
 
     def close(self, reason: str = "") -> None:
+        if self._closed is None:
+            self._closed = reason
         try:
             self._sock.shutdown(socket.SHUT_RDWR)
         except OSError:

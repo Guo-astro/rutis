@@ -575,6 +575,14 @@ struct MountRest {
 }
 
 /// A mount's parts, once split from where the process comes from.
+/// The runtime a mount runs on, for messages: its name, else `otherwise`.
+fn far_name(mount: &Mount<'_>, otherwise: &str) -> String {
+    mount
+        .runtime
+        .clone()
+        .unwrap_or_else(|| otherwise.to_owned())
+}
+
 struct Started {
     plugins: Vec<(std::path::PathBuf, Value)>,
     services: Value,
@@ -797,6 +805,15 @@ impl Process {
     /// Launch a mount: see [`Mount`].
     pub async fn mount(node_package: &Path, mount: Mount<'_>) -> Result<Arc<Self>, Error> {
         let (anchor, launcher) = (mount.anchor, mount.launcher);
+        // Without a launcher, the Node runtime.
+        let name = far_name(
+            &mount,
+            if launcher.is_none() {
+                "node"
+            } else {
+                "runtime"
+            },
+        );
         let (started, plugins) = Started::from(mount);
         let plugin = match (plugins.first(), anchor) {
             (Some((plugin, _)), _) => *plugin,
@@ -815,6 +832,7 @@ impl Process {
             spawned.directory,
             started,
             crate::runtime::rpc::Format::Compat,
+            &name,
         )
         .await
     }
@@ -831,19 +849,24 @@ impl Process {
         mount: Mount<'_>,
         format: crate::runtime::rpc::Format,
     ) -> Result<Arc<Self>, Error> {
+        let name = far_name(&mount, "runtime");
         let (started, _) = Started::from(mount);
-        Self::start(channel, None, None, started, format).await
+        Self::start(channel, None, None, started, format, &name).await
     }
 
+    /// `name`: the runtime, for messages, when its greeting does not name
+    /// it (the compat format).
     async fn start(
         channel: crate::channel::Channel,
         child: Option<crate::runtime::spawn::Child>,
         directory: Option<tempfile::TempDir>,
         started: Started,
         format: crate::runtime::rpc::Format,
+        name: &str,
     ) -> Result<Arc<Self>, Error> {
         let (imports, rest) = Self::imports(started);
         let peer = Connection::open_with(channel, imports.clone(), format)?;
+        peer.name_far_end(name);
         peer.ready().await?;
         Self::finish(peer, imports, child, directory, None, rest).await
     }

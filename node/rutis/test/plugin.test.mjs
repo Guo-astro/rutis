@@ -70,6 +70,12 @@ test('strict mode crosses values as between processes', async () => {
   t.service('store').put(nest(64))
   assert.throws(() => t.service('store').put(nest(65)), /nested deeper than 64 levels cannot cross/)
   assert.throws(() => t.service('store').wrong(), /declared sync but returned a promise/)
+  // An empty slot of an array arrives as undefined, as the runtimes send it (#675).
+  // eslint-disable-next-line no-sparse-arrays
+  t.service('store').put([1, , 3])
+  const crossed = kept.at(-1)
+  assert.ok(1 in crossed, 'the empty slot is filled')
+  assert.deepEqual(crossed, [1, undefined, 3])
 })
 
 test('a plugin that needs a newer plugin API is refused', async () => {

@@ -47,7 +47,10 @@ pub enum Error {
     },
     #[error("synchronous wait cycle: {0}")]
     SyncWaitCycle(String),
-    #[error("invalid binding value: {0}")]
+    /// A value that cannot cross, or a call this side refused: only that
+    /// call fails. The text says which call, which argument (or the
+    /// result) and why (#675).
+    #[error("{0}")]
     Value(String),
     /// The session could not be established: see [`Handshake`].
     #[error("{0}")]

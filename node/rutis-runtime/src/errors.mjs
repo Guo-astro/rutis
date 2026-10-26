@@ -48,6 +48,12 @@ export function decodeError({ name, message, graph }) {
   const make = node => node.errors !== undefined ? new AggregateError([], node.message)
     : new (Object.hasOwn(constructors, node.name) ? constructors[node.name] : Error)(node.message)
   if (!graph) return Object.assign(make({ name, message }), { name })
+  // A graph not in its shape (an older or another far end's) does not end
+  // the session: the error is then its name and message (#675).
+  try { return decodeGraph(graph, make) } catch { return Object.assign(make({ name, message }), { name }) }
+}
+
+function decodeGraph(graph, make) {
   if (!Array.isArray(graph.nodes)) throw new TypeError('invalid error graph')
   const nodes = graph.nodes.map(node => {
     if (node.type === 'error') return Object.assign(make(node), { name: node.name, ...(node.stack === undefined ? {} : { stack: node.stack }) })

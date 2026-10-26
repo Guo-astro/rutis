@@ -120,6 +120,12 @@ class WebSocketChannel:
         # Why the connection ended, once it did (`_reason`).
         self.ended_by: str | None = None
 
+    @property
+    def max_message(self) -> int:
+        """The largest message either way: a session checks what it would
+        send against it first, so one over it fails only its own call."""
+        return MAX_MESSAGE
+
     def send(self, message: bytes) -> None:
         if len(message) > MAX_MESSAGE:
             reason = f"message of {len(message)} bytes exceeds the limit of {MAX_MESSAGE}"

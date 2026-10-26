@@ -46,6 +46,25 @@ func text(value any) string {
 	return s
 }
 
+func number(value any) int {
+	var n int
+	if raw, ok := value.(json.RawMessage); ok {
+		_ = json.Unmarshal(raw, &n)
+	}
+	return n
+}
+
+// counter is an object with methods: it crosses only to a far end that
+// takes objects (#675).
+type counter struct{ n int }
+
+func (c *counter) Call(ctx context.Context, method string, args []any) (any, error) {
+	c.n++
+	return c.n, nil
+}
+
+func (c *counter) Get(ctx context.Context, property string) (any, error) { return c.n, nil }
+
 func (c *conformance) dispatch(ctx context.Context, target, method string, args []any) (any, error) {
 	if target != "conformance" {
 		return nil, fmt.Errorf("no target %s", target)
@@ -121,6 +140,19 @@ func (c *conformance) dispatch(ctx context.Context, target, method string, args 
 			return nil, fmt.Errorf("applyWrapped needs a function")
 		}
 		return fn.Call(ctx, []any{[]any{arg(args, 1)}}, true)
+	// What cannot be sent fails only its call (#675): a result over the
+	// message limit, an argument over it (this side's call of `fn`), an
+	// object to a far end that does not take objects.
+	case "big":
+		return strings.Repeat("x", number(arg(args, 0))), nil
+	case "applyBig":
+		fn, ok := arg(args, 0).(*peer.RemoteFunction)
+		if !ok {
+			return nil, fmt.Errorf("applyBig needs a function")
+		}
+		return fn.Call(ctx, []any{strings.Repeat("x", number(arg(args, 1)))}, true)
+	case "object":
+		return &counter{}, nil
 	case "reenter":
 		fn, _ := arg(args, 0).(*peer.RemoteFunction)
 		if fn == nil {

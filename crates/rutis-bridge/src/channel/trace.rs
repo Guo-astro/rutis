@@ -51,6 +51,10 @@ impl Sender for Traced<Box<dyn Sender>> {
         }
         result
     }
+
+    fn max_message(&self) -> Option<usize> {
+        self.inner.max_message()
+    }
 }
 
 impl Receiver for Traced<Box<dyn Receiver>> {
