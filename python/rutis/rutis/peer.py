@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 from . import _eager, _values
 from .plugin import Plugin
-from .channel import SocketChannel
+from .channel import MAX_MESSAGE, SocketChannel
 
 PROTOCOL = 2
 # The endpoint format: endpoint ids in the handshake and the call ids,
@@ -311,7 +311,8 @@ def encode_error(thrown: BaseException) -> dict:
         offset = len(nodes)
         reference = {"type": "reference", "value": offset}
         seen[id(error)] = reference
-        if isinstance(error, RemoteError) and error.graph is not None:
+        graph = _well_formed(error.graph) if isinstance(error, RemoteError) else None
+        if graph is not None:
             def shift(value):
                 if isinstance(value, list):
                     return [shift(item) for item in value]
@@ -321,8 +322,8 @@ def encode_error(thrown: BaseException) -> dict:
                     return {key: shift(item) for key, item in value.items()}
                 return value
 
-            nodes.extend(shift(error.graph["nodes"]))
-            reference = shift(error.graph["root"])
+            nodes.extend(shift(graph["nodes"]))
+            reference = shift(graph["root"])
             seen[id(error)] = reference
             return reference
         node = {
@@ -353,6 +354,20 @@ def encode_error(thrown: BaseException) -> dict:
         "message": message,
         "graph": {"root": root, "nodes": nodes},
     }
+
+
+def _well_formed(graph: Any) -> dict | None:
+    """An error graph as relayed: its root and its nodes (an array, also
+    when a far end sent none or null); None when it is not one, and the
+    error crosses on with its name and message alone (#675)."""
+    if not isinstance(graph, dict) or not isinstance(graph.get("root"), dict):
+        return None
+    nodes = graph.get("nodes")
+    if nodes is None:
+        nodes = []
+    if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
+        return None
+    return {"root": graph["root"], "nodes": nodes}
 
 
 def decode_error(failure: dict, depth: int = 0) -> Exception:
@@ -489,6 +504,63 @@ def _too_large() -> ValueError:
     )
 
 
+# What a call cannot send (#675): a value the far end cannot take, or a
+# message over the channel's limit, fails only that call, on the side that
+# would send it, and the error says which call, which argument (or the
+# result) and why. The wording is rutis-bridge's
+# (crates/rutis-bridge/src/session/rpc/crossing.rs).
+_MIB = 1024 * 1024
+
+
+def _invocation(target: Any, method: Any) -> str:
+    """What a call is, for messages: `service.method` (the target without a
+    `host:` prefix or a scope label), or the method alone for a control
+    call (no target)."""
+    service = str(target)
+    if service.startswith("host:"):
+        service = service[len("host:"):]
+    service = service.split("\0", 1)[0]
+    return f"{service}.{method}" if service else str(method)
+
+
+def _described(op: str, fields: dict) -> str:
+    """The call an outgoing or incoming frame makes, for messages."""
+    if op == "invoke":
+        return _invocation(fields.get("target"), fields.get("method"))
+    if op == "call":
+        return "a function" if fields.get("method") is None else f"the method {fields['method']}"
+    if op == "get":
+        return f"the property {fields.get('property')}"
+    return "an awaited result"
+
+
+def _prefixed(error: BaseException, prefix: str) -> BaseException:
+    """`error` with `prefix` before its message, of its own class where it
+    can be made from a message alone."""
+    try:
+        prefixed = type(error)(prefix + str(error))
+    except Exception:  # noqa: BLE001 - a class that takes something else
+        prefixed = ValueError(prefix + str(error))
+    return prefixed
+
+
+def _over_limit(size: int, limit: int) -> str:
+    """Why a message of `size` bytes is not sent over a channel taking at
+    most `limit`."""
+    mib = f" ({limit // _MIB} MiB)" if limit % _MIB == 0 else ""
+    return f"the message would be {size} bytes, over the limit of {limit} bytes{mib}"
+
+
+def _largest(args: Any) -> int | None:
+    """The largest of a call's encoded arguments (a list): the one a
+    message over the limit is blamed on."""
+    items = args.get("value") if isinstance(args, dict) and args.get("type") in ("list", "data") else None
+    if not isinstance(items, list) or not items:
+        return None
+    sizes = [len(dumps(item)) for item in items]
+    return max(range(len(sizes)), key=sizes.__getitem__)
+
+
 def _data(value: Any, depth: int = 0) -> Any:
     """Plain data for the wire, or TypeError (ValueError if nested deeper
     than MAX_DEPTH or an integer beyond ±MAX_SAFE_INTEGER; `depth` counts
@@ -576,6 +648,8 @@ class _Export:
     grants: int = 0
     result: tuple | None = None
     call: str | None = None
+    # The call it is the result of (`service.method`), for messages.
+    described: str | None = None
 
 
 @dataclasses.dataclass(eq=False)
@@ -873,11 +947,17 @@ class Peer:
                     else "object"
                 )
                 if kind == "object" and self._endpoint is not None and not self.supports("objects"):
-                    raise ValueError("the far end cannot receive object references")
+                    # Only a far end that declared `objects` can call its
+                    # methods (#675).
+                    raise ValueError(
+                        f"an object with methods ({type(value).__name__}) cannot cross to "
+                        f"{self.greeting['endpoint']}; pass plain data or a function instead"
+                    )
                 entry = _Export(value, kind, list(self._path()), business)
                 # The result of a call: awaiting it is awaiting that call.
                 if kind == "future" and self._answering is not None and self._answering[1] is value:
                     entry.call = self._answering[0]
+                    entry.described = self._answering[2]
                 self._identities[key] = ref
                 self._exports[ref] = entry
                 if kind == "future":
@@ -1074,7 +1154,14 @@ class Peer:
         if home:
             return self._export(ref, kind).value
         if kind == "object":
-            raise ValueError("object references exported by Rust are not supported")
+            # Python cannot call the methods of an object of the far end:
+            # only this call fails, and the grant goes back (#675).
+            if self._new_imports is not None:
+                self._new_imports.append(_Import(ref, kind, origin))
+            raise _values.Refused(
+                "received an object with methods, which Python cannot take; "
+                "pass plain data or a function instead"
+            )
         # Plugin definitions travel back home only: this side's own.
         if kind == "plugin":
             raise ValueError("plugin definitions exported by Rust are not supported")
@@ -1143,19 +1230,59 @@ class Peer:
             # cycles needs to know (#228); older hosts would refuse the field.
             if sync and "sync-wait" in self._declared:
                 frame["sync"] = True
+            described = _described(op, fields)
             if op != "await":
-                frame["args"] = self._encode(args, grants, True, -1)
+                frame["args"] = self._encode_args(args, grants, described)
             data = dumps(frame)
+            # A message over the limit would end the channel: only this call
+            # fails, before it is sent (#675).
+            limit = self._max_message()
+            if len(data) > limit:
+                reason = _over_limit(len(data), limit)
+                index = _largest(frame.get("args"))
+                raise ValueError(
+                    f"argument {index + 1} of {described}: {reason}"
+                    if index is not None
+                    else f"the arguments of {described}: {reason}"
+                )
             self._pending[call] = finish
             if self.closed_error is not None:
                 raise self.closed_error
-            with self._write_lock:
-                self._channel.send(data)
+            try:
+                with self._write_lock:
+                    self._channel.send(data)
+            except OSError as error:
+                # The channel failed: the session is over, and later calls
+                # fail with that, not on a closed descriptor each.
+                self._pending.pop(call, None)
+                self._fault(error)
+                raise
         except BaseException:
             self._pending.pop(call, None)
             self._rollback(grants)
             raise
         return call
+
+    def _max_message(self) -> int:
+        """The channel's limit on one message (16 MiB unless it says)."""
+        limit = getattr(self._channel, "max_message", None)
+        return limit if isinstance(limit, int) and not isinstance(limit, bool) else MAX_MESSAGE
+
+    def _encode_args(self, args: Any, grants: list, call: str) -> dict:
+        """The wire form of a call's arguments (a list; the list is not a
+        level), as `_encode` makes it: an error says which argument of
+        `call` it is (#675)."""
+        if not isinstance(args, (list, tuple)):
+            return self._encode(args, grants, True, -1)
+        # An argument list keeps an undefined argument as one.
+        listed = _beyond_data(args) or any(item is UNDEFINED for item in args)
+        encoded = []
+        for index, item in enumerate(args):
+            try:
+                encoded.append(self._encode(item, grants, True, 0) if listed else _data(item, 0))
+            except (ValueError, TypeError, RuntimeError) as error:
+                raise _prefixed(error, f"argument {index + 1} of {call}: ") from error
+        return {"type": "list" if listed else "data", "value": encoded}
 
     def _call_sync(self, op: str, fields: dict, args: Any) -> Any:
         if threading.get_ident() != self._thread:
@@ -1429,7 +1556,7 @@ class Peer:
                     # schedules it, and a synchronous call may hold the loop.
                     entry.result = _outcome(entry.value)
                 if entry.result is not None:
-                    self._respond(call, entry.result, business)
+                    self._respond(call, entry.result, business, entry.described)
                 elif self._waiting and self._related(job):
                     cycle = SyncWaitCycle(
                         "await requires the Python loop occupied by its parent synchronous call; "
@@ -1443,7 +1570,9 @@ class Peer:
                         signal = self._signals.get(entry.call)
                         if signal is not None:
                             self._signals[call] = signal
-                    entry.value.add_done_callback(lambda _done: self._respond(call, entry.result, business))
+                    entry.value.add_done_callback(
+                        lambda _done: self._respond(call, entry.result, business, entry.described)
+                    )
                 return
             value = None
             self._starting.add(call)
@@ -1465,9 +1594,9 @@ class Peer:
                             value.add_done_callback(lambda _done: self._settled())
                         else:
                             self._settled()
-                self._respond(call, (True, value), business)
+                self._respond(call, (True, value), business, _described(frame["op"], frame))
             except BaseException as error:  # noqa: BLE001 - every failure is the caller's
-                self._respond(call, (False, error), business)
+                self._respond(call, (False, error), business, _described(frame["op"], frame))
         finally:
             self._starting.discard(call)
             self._cancel_early.discard(call)
@@ -1490,7 +1619,11 @@ class Peer:
                 task.cancel()
         return task
 
-    def _respond(self, call: str, result: tuple, business: bool) -> None:
+    def _respond(self, call: str, result: tuple, business: bool, described: str | None = None) -> None:
+        """Answer the far end's call `call` (a call of `described`, when it
+        is known, for messages). A result that cannot be sent (a value the
+        far end does not take, a message over the channel's limit) is
+        answered with an error saying why instead (#675)."""
         # A signal lives until the call's result settles: a returned future
         # keeps it, so cancelling an await of it still reaches it.
         ok_value = result[1] if result[0] else None
@@ -1503,7 +1636,8 @@ class Peer:
             if self.closed_error is not None:
                 return
             ok, value = result
-            self._answering = (call, value)
+            self._answering = (call, value, described)
+            of = f" of {described}" if described is not None else ""
             try:
                 frame = (
                     {"op": "return", "id": call, "value": self._encode(value, grants, business)}
@@ -1513,9 +1647,21 @@ class Peer:
                 data = dumps(frame)
             except Exception as error:  # noqa: BLE001
                 self._rollback(grants)
+                grants = []
+                if ok and isinstance(error, (ValueError, TypeError, RuntimeError)):
+                    error = _prefixed(error, f"the result{of}: ")
                 data = dumps({"op": "throw", "id": call, "error": encode_error(error)})
             finally:
                 self._answering = None
+            limit = self._max_message()
+            if len(data) > limit:
+                # Over the limit, the channel would end: the far end gets
+                # why instead (#675).
+                self._rollback(grants)
+                name = value.name if isinstance(value, RemoteError) else type(value).__name__
+                what = "the result" if ok else f"the error {name}"
+                reason = ValueError(f"{what}{of}: {_over_limit(len(data), limit)}")
+                data = dumps({"op": "throw", "id": call, "error": encode_error(reason)})
             with self._write_lock:
                 self._channel.send(data)
         except Exception as error:  # noqa: BLE001

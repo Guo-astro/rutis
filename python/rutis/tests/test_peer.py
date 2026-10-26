@@ -9,7 +9,8 @@ import unittest
 import background
 from support import HANG_GUARD, within
 
-from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, AggregateError, Peer, decode_error, encode_error
+from rutis.channel import SocketChannel
+from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, AggregateError, Peer, RemoteError, decode_error, encode_error
 
 
 class PeerTests(background.IsolatedAsyncioTestCase):
@@ -312,9 +313,14 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         return json.loads(await within("the reply", asyncio.to_thread(lines.readline)))
 
     async def test_an_object_is_refused_to_a_far_end_without_objects(self):
+        # guarantee: bridge/bad-values (#675): only that call fails.
         reply = await self.session(["signals"])
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertIn("cannot receive object references", reply["error"]["message"])
+        self.assertEqual(
+            reply["error"]["message"],
+            "the result of svc.get: an object with methods (Weather) cannot cross to main; "
+            "pass plain data or a function instead",
+        )
 
     async def test_an_object_goes_to_a_far_end_with_objects(self):
         reply = await self.session(["objects"])
@@ -665,6 +671,140 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
         self.assertIsNone(peer.closed_error)
 
 
+class BadValueTests(background.IsolatedAsyncioTestCase):
+    """#675: what a call cannot send, or this side cannot take, fails only
+    that call, saying which call, which argument (or the result) and why;
+    the session goes on. The wording is rutis-bridge's."""
+
+    def session(self, dispatch, max_message=None, endpoint=None):
+        ours, theirs = socket.socketpair()
+        theirs.settimeout(10)
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        channel = SocketChannel(ours, max_message) if max_message is not None else ours
+        peer = Peer(channel, dispatch, endpoint=endpoint)
+        self.addCleanup(peer._channel.close)
+        self.addCleanup(peer.close)
+        if endpoint is None:
+            peer._receive({"op": "hello", "version": 2})
+        lines = theirs.makefile("rb")
+        self.addCleanup(lines.close)
+
+        async def read():
+            return json.loads(await asyncio.to_thread(lines.readline))
+
+        return peer, read
+
+    @staticmethod
+    def invoke(sequence, method, target="host:svc", args=None):
+        return {
+            "op": "invoke", "id": f"rust:{sequence}", "path": [], "target": target, "method": method,
+            "args": args if args is not None else {"type": "data", "value": []},
+        }
+
+    async def test_an_argument_over_the_limit_fails_only_that_call(self):
+        peer, read = self.session(lambda target, method, args: None, max_message=1024)
+        with self.assertRaises(ValueError) as refused:
+            peer.call("host:svc\0scope", "take", [lambda: 1, "x" * 2048])
+        message = str(refused.exception)
+        self.assertRegex(message, r"^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        self.assertEqual(peer._exports, {}, "the callback is left granted")
+        # Nothing was sent: the next frame is the call after it.
+        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": "fine"}})
+        self.assertEqual(peer.call("svc", "after", []), "fine")
+        sent = await read()
+        self.assertEqual((sent["id"], sent["method"]), ("node:2", "after"))
+        self.assertIsNone(peer.closed_error)
+
+    async def test_the_limit_is_16_mib(self):
+        peer, _read = self.session(lambda target, method, args: None)
+        with self.assertRaisesRegex(ValueError, r"over the limit of 16777216 bytes \(16 MiB\)$"):
+            peer.call("svc", "take", ["x" * (16 * 1024 * 1024)])
+        self.assertIsNone(peer.closed_error)
+
+    async def test_a_result_or_an_error_over_the_limit_is_answered_with_why(self):
+        def dispatch(target, method, args):
+            if method == "big":
+                return "x" * 2048
+            if method == "fail":
+                raise LookupError("x" * 2048)
+            return "small"
+
+        peer, read = self.session(dispatch, max_message=1024)
+        peer._receive(self.invoke(1, "big"))
+        reply = await read()
+        self.assertEqual(reply["op"], "throw", reply)
+        self.assertRegex(reply["error"]["message"], r"^the result of svc\.big: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        peer._receive(self.invoke(2, "fail"))
+        reply = await read()
+        self.assertEqual(reply["op"], "throw", reply)
+        self.assertRegex(reply["error"]["message"], r"^the error LookupError of svc\.fail: the message would be \d+ bytes")
+        peer._receive(self.invoke(3, "small"))
+        reply = await read()
+        self.assertEqual((reply["op"], reply["value"]), ("return", {"type": "data", "value": "small"}))
+        self.assertIsNone(peer.closed_error)
+
+    async def test_a_received_object_fails_only_its_call_and_goes_back(self):
+        object_reference = {"type": "reference", "value": {"id": 5, "kind": "object", "home": False, "origin": []}}
+        refused = "received an object with methods, which Python cannot take; pass plain data or a function instead"
+        peer, read = self.session(lambda target, method, args: "served")
+        # In a call's arguments: the call is answered with why, the grant goes back.
+        peer._receive(self.invoke(1, "take", args={"type": "list", "value": [{"type": "data", "value": 1}, object_reference]}))
+        release = await read()
+        self.assertEqual(release, {"op": "release", "reference": 5, "count": 1})
+        reply = await read()
+        self.assertEqual(reply["op"], "throw", reply)
+        self.assertEqual(reply["error"]["message"], refused)
+        # In a reply: the call waiting for it fails.
+        future = peer.request("svc", "make", [])
+        sent = await read()
+        peer._receive({"op": "return", "id": sent["id"], "value": object_reference})
+        with self.assertRaisesRegex(ValueError, "^" + refused):
+            await future
+        self.assertEqual(await read(), {"op": "release", "reference": 5, "count": 1})
+        # The session goes on.
+        peer._receive(self.invoke(2, "after"))
+        self.assertEqual((await read())["value"], {"type": "data", "value": "served"})
+        self.assertIsNone(peer.closed_error)
+
+    async def test_an_object_argument_to_a_far_end_without_objects_fails_that_call(self):
+        peer, read = self.session(lambda target, method, args: None, endpoint={"local": "py", "expected": "main"})
+        peer.start()
+        self.assertEqual((await read())["op"], "hello")
+        peer._receive({"op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "main", "capabilities": ["events-v2"]})
+        with self.assertRaises(ValueError) as refused:
+            peer.call("host:svc", "take", [Weather()])
+        self.assertEqual(
+            str(refused.exception),
+            "argument 1 of svc.take: an object with methods (Weather) cannot cross to main; "
+            "pass plain data or a function instead",
+        )
+        self.assertEqual(peer._exports, {})
+        self.assertIsNone(peer.closed_error)
+
+    async def test_a_malformed_error_graph_fails_only_its_call(self):
+        peer, read = self.session(lambda target, method, args: None)
+        future = peer.request("svc", "m", [])
+        sent = await read()
+        peer._receive({"op": "throw", "id": sent["id"], "error": {"name": "Odd", "message": "graph", "graph": {"nodes": 7}}})
+        with self.assertRaises(RemoteError) as failed:
+            await future
+        self.assertEqual((failed.exception.name, failed.exception.message), ("Odd", "graph"))
+        # Thrown on, it crosses with its name and message.
+        self.assertEqual(encode_error(failed.exception)["graph"]["nodes"][0]["name"], "Odd")
+        self.assertIsNone(peer.closed_error)
+
+    async def test_a_failed_channel_ends_the_session_once(self):
+        peer, _read = self.session(lambda target, method, args: None)
+        peer._channel.close("gone")
+        with self.assertRaisesRegex(ConnectionError, "the channel is closed: gone"):
+            peer.call("svc", "m", [])
+        self.assertIsNotNone(peer.closed_error)
+        # Later calls fail with that, without touching the channel.
+        with self.assertRaisesRegex(ConnectionError, "the channel is closed: gone"):
+            peer.request("svc", "m", [])
+
+
 class ErrorGraphTests(unittest.TestCase):
     FAR = {
         "name": "TypeError",
@@ -720,6 +860,32 @@ class ErrorGraphTests(unittest.TestCase):
         wire = encode_error(Unsendable("x"))
         self.assertEqual(len(wire["graph"]["nodes"]), 1)
         self.assertEqual((decode_error(wire).code, decode_error(wire).data), ("U", None))
+
+    def test_a_thrown_value_that_is_not_an_error_is_relayed_as_one(self):
+        # #675: JavaScript's `throw 'a string'`, thrown on from Python: the
+        # graph keeps its root and an array of nodes, also when a far end
+        # sent null for them (Go before 0.17.2).
+        for nodes in ([], None):
+            with self.subTest(nodes=nodes):
+                thrown = decode_error({
+                    "name": "ThrownValue", "message": "a string",
+                    "graph": {"root": {"type": "data", "value": "a string"}, "nodes": nodes},
+                })
+                self.assertEqual((thrown.name, thrown.message), ("ThrownValue", "a string"))
+                wire = encode_error(thrown)
+                self.assertEqual(
+                    wire,
+                    {"name": "ThrownValue", "message": "a string",
+                     "graph": {"root": {"type": "data", "value": "a string"}, "nodes": []}},
+                )
+
+    def test_a_malformed_graph_crosses_on_with_its_name_and_message(self):
+        for graph in ({"nodes": 7}, {"root": {"type": "reference", "value": 0}, "nodes": "x"}, "graph", [1]):
+            with self.subTest(graph=graph):
+                wire = encode_error(decode_error({"name": "Odd", "message": "m", "graph": graph}))
+                self.assertEqual((wire["name"], wire["message"]), ("Odd", "m"))
+                self.assertEqual(wire["graph"]["root"], {"type": "reference", "value": 0})
+                self.assertEqual([node["name"] for node in wire["graph"]["nodes"]], ["Odd"])
 
     def test_a_remote_error_thrown_on_crosses_with_its_whole_graph(self):
         # Alone, not only inside an AggregateError: as Node's decoded Error re-encodes.

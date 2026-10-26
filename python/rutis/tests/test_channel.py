@@ -110,6 +110,10 @@ class LineLimitTests(unittest.TestCase):
         lines = theirs.makefile("rb")
         self.assertEqual(lines.readline(), b"1234\n")
         self.assertEqual(lines.readline(), b"")
+        # #675: once closed, a send says so, never `Bad file descriptor`.
+        with self.assertRaisesRegex(ConnectionError, "the channel is closed: message of 5 bytes exceeds the limit of 4"):
+            channel.send(b"1")
+        self.assertEqual(channel.max_message, 4)
 
     def test_a_truncated_last_line_is_an_error_not_an_end(self):
         channel, theirs = self.pair(max_message=8)

@@ -88,6 +88,30 @@ class Conformance:
     def tables(self):
         return self.peer.references()
 
+    # What a call cannot send (#675): a result or an argument over the
+    # 16 MiB limit fails that call on this side, and an object with
+    # methods does not go to a far end without `objects`.
+    def big(self, size):
+        return "x" * size
+
+    def apply_big(self, fn, size):
+        return fn("x" * size)
+
+    def make_object(self):
+        return Counter()
+
+
+class Counter:
+    """An object with methods: it crosses by reference, only to a far end
+    that declared `objects`."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def inc(self):
+        self.n += 1
+        return self.n
+
 
 def dial(spec: str):
     if spec.startswith("listen:"):
@@ -114,7 +138,13 @@ async def main(spec: str) -> None:
     def dispatch(target, method, args):
         if target != "conformance":
             raise LookupError(f"no target {target}")
-        name = {"aborted": "is_aborted", "started": "is_started", "applyWrapped": "apply_wrapped"}.get(method, method)
+        name = {
+            "aborted": "is_aborted",
+            "started": "is_started",
+            "applyWrapped": "apply_wrapped",
+            "applyBig": "apply_big",
+            "object": "make_object",
+        }.get(method, method)
         operation = getattr(service, name, None)
         if operation is None or name.startswith("_"):
             raise LookupError(f"no method {method}")
