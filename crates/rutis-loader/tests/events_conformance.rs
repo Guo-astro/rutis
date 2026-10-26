@@ -34,7 +34,7 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,10 +49,10 @@ use rutis_bridge::runtime::testing::events::{
 };
 use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::report::EntryStatus;
+use rutis_loader::report::{EntryStatus, RowState};
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{
-    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
+    Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RowEvent, ServiceCatalog,
 };
 use serde_json::{json, Value as Json};
 
@@ -447,6 +447,12 @@ struct Host {
     state: Mutex<State>,
     rust: rust_participant::Hooks,
     node: rust_participant::Node,
+    /// The last `rutis/row` state the host dispatched for each row (by its
+    /// label), seen by a dispatch observer as the dispatch takes its
+    /// snapshot: a row is settled once its own `rutis/row` went out, not
+    /// only once its fiber runs (#659).
+    said: Arc<Mutex<HashMap<String, RowState>>>,
+    _said: Mutex<rutis::Disposer>,
     _dir: tempfile::TempDir,
 }
 
@@ -472,6 +478,21 @@ impl Host {
             });
         let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), tap.sink(print));
         tap.attach(&root).unwrap();
+        // The loader emits a row's `rutis/row` from its fiber's status
+        // changes, after the state is visible: watch the dispatches
+        // themselves. An observer adds no entry to the bus, so no case's
+        // table or routes change.
+        let said: Arc<Mutex<HashMap<String, RowState>>> = Arc::default();
+        let said_observer = {
+            let said = said.clone();
+            root.events()
+                .observe_dispatch(&root, move |attempt| {
+                    if let Some(event) = attempt.event.downcast_ref::<RowEvent>() {
+                        said.lock().unwrap().insert(event.row.clone(), event.state);
+                    }
+                })
+                .unwrap()
+        };
         root.provide_at(
             host_key("events-log"),
             Arc::new(EventsLogService(log.clone())),
@@ -538,6 +559,8 @@ impl Host {
             state: Mutex::default(),
             rust,
             node,
+            said,
+            _said: Mutex::new(said_observer),
             _dir: dir,
         };
         host.reconcile().await.expect("the scopes");
@@ -688,9 +711,17 @@ impl Host {
         let deadline = tokio::time::Instant::now() + COLD.limit();
         loop {
             let state = self.row_state(&row.label, &row.scope);
+            // Its `rutis/row` too: a row loaded next must not be on the
+            // table yet when this one's goes out (§5.1 takes the listeners
+            // registered when the dispatch starts).
+            let said = self.said.lock().unwrap().get(&row.label).copied();
             match &state {
-                Some((FiberState::Active, _)) if !fails => return Ok(()),
-                Some((FiberState::Failed, _)) if fails => return Ok(()),
+                Some((FiberState::Active, _)) if !fails && said == Some(RowState::Running) => {
+                    return Ok(())
+                }
+                Some((FiberState::Failed, _)) if fails && said == Some(RowState::Failed) => {
+                    return Ok(())
+                }
                 Some((FiberState::Failed, error)) => {
                     return Err(format!("row {} failed: {error:?}", row.label))
                 }
@@ -719,7 +750,7 @@ impl Host {
                     })
                     .collect();
                 return Err(format!(
-                    "row {} did not start: {state:?} (runtimes: {})",
+                    "row {} did not start: {state:?}, its last rutis/row {said:?} (runtimes: {})",
                     row.label,
                     runtimes.join(", ")
                 ));
