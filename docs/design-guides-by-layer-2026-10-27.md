@@ -9,7 +9,7 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 这份设计稿是**重写指南的计划**：定下每份指南的新结构、每一步讲什么和用哪个例子、哪些内容搬到哪里、宿主持有者指南的目录和例子、要做的少量代码改动，以及怎样验收。指南本身在实施步骤里重写。
 
 范围外：
-- 别的 0.19 issue 的 API 与输出文字：`rutis-host call` 与服务列表（#670）、严格假服务与 Python 类型（#684）、`管住插件` 的选项（#683）、`rutis-host add` 与安装 API（#691）、各 SDK 根上的名字（#692）。本稿只引用，不替它们设计。
+- 别的 0.19 issue 的 API 与输出文字：`rutis-host call` 与服务列表（#670）、契约描述与 Python 类型（#684）、`管住插件` 的选项（#683）、`rutis-host add` 与安装 API（#691）、各 SDK 根上的名字（#692）。本稿只引用，不替它们设计。
 - Kotlin 插件指南：Kotlin 插件只在 Android 应用里由应用托管，没有 `rutis-host new` 与 `dev`，短路径的第 1、7 步不存在；它的读者是应用作者。`kotlin-app.md`、`swift-app.md` 不改。
 - 以 `rutis-host` 为运行时的产品、Swift / Kotlin 应用作为宿主：#663 还没有评估过，宿主持有者指南这一版只写 Rust 嵌入。
 - 给 Rust 插件加 `rutis-host new --lang rust` 或 `dev`：Rust 插件编进 Rust 宿主，没有对应的运行时；Rust 的短路径在第 7 步用一个最小的 Rust 宿主（§3.3）。
@@ -39,7 +39,7 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 | D2 | 例子统一用模板的 `greeter`：`rutis-host new greeter` 生成的项目就是第 2 步的样子；第 3–7 步依次加上使用 `translate` 服务、配置 `greeting`、发出 `greeter/greeted`、测试、`dev` 与假的 `translate`。模板因此改成第 2 步的样子（去掉模板里的配置，挪到第 4 步） |
 | D3 | 第 7 步之前，指南只出现 7 个概念；其余内容搬进 plugin-api.md、cordis.md、nodes.md、rutis-host.md（§四的对照表），原处只留一行链接 |
 | D4 | 每份指南自己讲清「行」：在第 7 步，用 `rutis.dev.json` 的两行讲 |
-| D5 | rutis-host.md 的开头面向组装插件的人：快速上手改用 `rutis-host add`（#691）、启动后看到服务列表并用 `rutis-host call` 调一次（#670）、`rutis-host status`（0.18）；各语言插件的手动装法留作参考表 |
+| D5 | rutis-host.md 的开头面向组装插件的人：快速上手改用 `rutis-host add npm:@your-name/weather`、`rutis-host add pypi:your-name-llm`（#691，安装记录写在 `rutis.json` 顶层的 `installed`）、启动后看到服务列表并用 `rutis-host call` 调一次（#670）、`rutis-host status`（0.18）；各语言插件的手动装法留作参考表 |
 | D6 | 宿主持有者指南放在**新文件** `docs/guide/open-host.md`（两份），按宿主要完成的 6 件事写（§五）；rust-host.md 保持 API 参考，开头加一行指向它。#683 说的「rust-host.md 一节『管住插件』」写进新指南的第 3 节，选项的参考行由 #683 加在 rust-host.md 的表里 |
 | D7 | 指南里的例子都由检查跑：插件指南与宿主持有者指南的命令和文件用 `tools/doc-examples.mjs` 的标记；Rust 代码另外作为 doctest 编译（已有的做法）。doc-examples 加两样：`matches=<路径>`（这一块必须和项目里的文件一字不差，锁住指南与模板一致）、带属性的代码块（` ```rust,no_run `）；Swift 的例子在 macOS 上跑 |
 | D8 | 公开路径：删掉 rutis-loader 根上的 crate 内 glob 导入，让根路径不再被占；其余 #685 列的名字已经在公开路径下，指南按那些路径写，由 doctest 锁住 |
@@ -59,9 +59,9 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 | 3 使用服务 | `inject: ['translate']`、`ctx.use('translate')`；「都就绪才启动」一句 | `hello(name, lang)` 调 `translate.text(greeting, lang)` | `inject` | #692 |
 | 4 配置 | Schema 里写 `default`，`apply` 收到补好默认值、校验过的配置；配置从哪里来：测试里的 `config`，运行时来自宿主的行（第 7 步） | `greeting`，默认 `"Hello"` | 配置 | 0.18 #669 |
 | 5 发出和监听事件 | `ctx.emit('greeter/greeted', name)`；`ctx.on(name, listener)` 一个例子；「其余四种方式、过滤、作用域见插件 API」一行 | 每次问候发出一次 | 事件 | — |
-| 6 测试 | `load(plugin, { config, services })`、`t.service`、`t.on('greeter/greeted')`、`t.unload`；一句：给某个宿主写插件、宿主给了严格的假服务时，把它们传给 `services` | 假的 `translate` | 测试工具 | #670（`t.on`）、#684（那一句） |
-| 7 本地运行并试一下 | `rutis-host dev`；`rutis.dev.json` 的两行：和插件同 id 的那一行就是插件自己（`config` 就是它收到的配置），另一行是一起运行的假 `translate`（本语言写的）；`dev` 打印的服务列表；`rutis-host call greeter.hello '"Ada"' '"sv"'`；改一次代码看到 `reloaded` | `dev/fake-translate.ts` | `dev` 与行 | #670 |
-| 8 发布 | 起自己的包名、打 tag 的工作流、依赖范围一行（链接插件 API「版本」）、「宿主怎样装你的插件」一行（链接 rutis-host.md） | 命令 | — | #691（链接写 `add`） |
+| 6 测试 | `load(plugin, { config, services })`、`t.service`、`t.on('greeter/greeted', listener)`（形式和 `ctx.on` 相同，返回 `off`；测试把收到的事件记进自己的数组再断言）、`t.unload`；一句：给某个宿主写插件、宿主给了契约描述时，把它作为 `contract` 传给 `load`（Python 是 `load(..., contract=...)`），假服务照旧自己写进 `services` | 假的 `translate` | 测试工具 | #670（`t.on`）、#684（那一句） |
+| 7 本地运行并试一下 | `rutis-host dev`；`rutis.dev.json` 的两行：和插件同 id 的那一行就是插件自己（`config` 就是它收到的配置），另一行是一起运行的假 `translate`（本语言写的）；`dev` 启动后打印的 `rutis-host dev: services: greeter (greeter), translate (translate)`；`rutis-host call greeter.hello '"Ada"' '"sv"'`（每个参数是一个 JSON 值）；改一次代码看到 `reloaded` | `dev/fake-translate.ts` | `dev` 与行 | #670 |
+| 8 发布 | 起自己的包名、打 tag 的工作流、依赖范围一行（链接插件 API「版本」）、「宿主怎样装你的插件」一行：`rutis-host add npm:@your-name/greeter`（链接 rutis-host.md） | 命令 | — | #691 |
 
 路径之后，每份指南只有：「调试」（#679 已加）、该语言特有的事（Swift 的「系统权限」、Bun 的「运行时的约定」），以及一行「进阶：插件 API」。
 
@@ -77,6 +77,14 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 | `load`、`t.service`、`t.on`、`t.unload` | 测试工具 |
 | `rutis-host dev`、`rutis.dev.json` 的行、`rutis-host call` | `dev` 与行 |
 
+这些名字在 #692 之后都在根上：`definePlugin` 来自 `@arcships/rutis`，`use`、`provide`、`on`、`emit` 是根上 `Context` 的成员，`load` 来自 `@arcships/rutis/testing`。其他语言的短路径同样只用 #692 定的根上名字：
+
+| 语言 | 路径上用到的名字 |
+| --- | --- |
+| Python | `define_plugin`；ctx 的 `use`、`provide`、`on`、`emit`；`rutis.testing.load` |
+| Go | `Define`、`Plugin`、`Provides`、`Ctx`、`Serve`；`Ctx` 的 `Use`、`Provide`、`On`、`Emit`；`rutistest.Load` |
+| Swift | `Rutis.define`、`Plugin`、`@RutisService`、`@RutisClient`、`@RutisConfig`、`Rutis.serve`；ctx 的 `use`、`provide`、`on`、`emit`；`RutisTest.load` |
+
 不出现：清理函数与 `ctx.effect`（模板不需要；在插件 API「生命周期」）、`'sync'`、`ctx.signal`、插件定义、`host()`、`serial` / `waterfall` / `parallel` / `bail` / `filter`、作用域、严格模式的细节、插件 API 版本、Cordis。每种语言的实施 PR 附一张同样的表，审阅时核对。
 
 ### 3.3 各语言的差别
@@ -87,9 +95,9 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 | --- | --- |
 | Bun | 命令换成 `bunx --bun`、`bun install`、`bun test`；其余与 TypeScript 相同（指南仍写全 8 步，不让读者在两份之间跳） |
 | Python | 第 2 步一句：`async def` 是异步方法；第 8 步：入口点名就是宿主的行名 |
-| Go | 第 1 步一句：一个二进制就是宿主里的一个运行时进程；第 2 步：方法名小写对外、方法要能并发调用；第 3 步：函数字段的结构体、**把 ctx 传下去**；第 4 步：没写的字段是零值，默认值在 `Apply` 里给（0.18 的 Go 规则）；第 7 步：假的 `translate` 用 Go 写，形式按 #670 第 3 条 |
+| Go | 第 1 步一句：一个二进制就是宿主里的一个运行时进程；第 2 步：方法名小写对外、方法要能并发调用；第 3 步：函数字段的结构体、**把 ctx 传下去**；第 4 步：没写的字段是零值，默认值在 `Apply` 里给（0.18 的 Go 规则）；第 7 步：假的 `translate` 用 Go 写，是项目里的一个 main 包目录，`rutis.dev.json` 里那一行的 `name` 写 `./dev/faketranslate`（#670） |
 | Rust | 第 1 步：`cargo new --lib greeter` 加依赖（没有模板）；第 2 步：`#[rutis::service]`；第 3 步：`type Deps = Arc<…>`；第 4 步：`fn new(config: &Config)`，默认值用 serde 的 `default`；第 5 步：事件类型与在服务方法里发出（保存插件的 `Ctx`）；第 6 步：`#[tokio::test]` 里建根；第 7 步：`examples/try.rs` 是一个最小的 Rust 宿主，建根、装插件与假的 `translate`、用 `call_service` 调一次，`cargo run --example try`；第 8 步：`cargo publish`，宿主用 `Builtins::register` 装（dylib 链接外部插件指南）。Rust 的第 7 个概念因此是「宿主装插件」，不是「行」 |
-| Swift | 第 1 步：`rutis-host new greeter --lang swift`、`swift test`，第一次要信任 SDK 的宏；第 7 步：`dev` 会先构建；路径之后保留「系统权限」 |
+| Swift | 第 1 步：`rutis-host new greeter --lang swift`、`swift test`，第一次要信任 SDK 的宏；第 7 步：`dev` 会先构建，假的 `translate` 是包里的一个 executableTarget（#670）；路径之后保留「系统权限」 |
 
 ### 3.4 模板
 
@@ -112,6 +120,8 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 | TS「已有的 Cordis 插件」 | Cordis 包作为行 | cordis.md |
 | rutis-host.md 开头 | 「插件作者用它在本地开发」 | 改为面向组装插件的人；`dev` 一节原样保留作参考，插件指南链接它 |
 
+搬进 plugin-api.md 的进阶内容按 #692 的位置写：TypeScript、Bun 用 `@arcships/rutis/advanced` 的 `advanced(ctx).serial(…)`，Python 用 `rutis.advanced` 的 `advanced(ctx).serial(…)`，Go 用 `advanced.Of(ctx)`，Swift、Kotlin 用 `ctx.advanced`。
+
 不搬的：rust-host.md 全部留在原处（它是嵌入的 API 参考）；Swift「系统权限」、Bun「运行时的约定」留在各自指南的路径之后。
 
 docs/guide/README.md 与根 README 的指南索引按层分组：给宿主写插件（六种语言）、用 rutis-host 组装插件、做一个开放插件的宿主（新）、参考（插件 API、连接节点、Cordis、Rust 嵌入、应用托管）。
@@ -123,14 +133,14 @@ docs/guide/README.md 与根 README 的指南索引按层分组：给宿主写插
 | 节 | 讲什么 | 例子 | 用到的名字 | 等哪个 issue |
 | --- | --- | --- | --- | --- |
 | 1 接入 | 依赖；建根；提供自己的服务；用 loader 装插件（Node、Python 运行时）；等就绪（`reconcile` 等每一行的 `apply` 跑完一遍，卡住的插件用 `tokio::time::timeout` 包住，再看状态）；关闭（`shutdown_with_timeout`，剩下的进程 `kill_processes()`）。一张表说清 loader 每个零件做什么：`Chain` 按顺序问谁认识这个行名、`with_shared` 让运行时的解析器也给 `RuntimeRowsPlugin` 用、`RuntimeResolver` 是一个运行时认识的行名、`RuntimeRowsPlugin` 让运行时重启后重新解析它的行、`ServiceCatalog` 是服务名表、`Layer` / `Patch` 是行的来源。路径相对于哪里、没安装的 Python 插件用 `python_path`、给一个运行时设环境变量 | `jot` 的 `main.rs` 与一个 TS 命令 `wordcount` | `Ctx::root`、`rutis::host::*`、`LoaderPlugin`、`Chain`、`Builtins`、`ServiceCatalog`、`Layer`、`Patch`、`rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin}`、`rutis_bridge::runtime::{LocalRuntime, Launcher}`、`rutis_bridge::transport::local::kill_processes` | 0.18（默认输出、`status()`） |
-| 2 定义插件面 | `#[rutis::service]` 的 `Notes`；回调注册 `Commands::register`：处理函数按引用传进来，`&Ctx` 参数是调用方的行，登记挂在它上面，插件卸载时自动去掉；`caller_row()` 知道是哪个插件；`rutis-host types` 给插件作者生成 TypeScript 与 Python 类型，文件头与错误类型用宿主的名字 | `Commands`、`Notes`、生成的 `jot.d.ts` / `jot.py` | `rutis::service`、`rutis::host::BoxFuture`、`rutis_bridge::session::caller_row` | #684 |
-| 3 管住插件 | 每个插件一个运行时进程；调用时限与取消；问候时限（调试时关掉）；限定一个插件能用哪些服务；超时或被拒时宿主和插件作者看到什么 | `jot` 给第三方命令每个一个进程、5 秒时限、只许用 `notes` 与 `commands` | #683 定的选项 | #683 |
-| 4 管理插件 | 装、升级、卸载插件（不需要知道语言）；增删行、改配置（loader 的命令式修改与持久化）；看一行现在怎样 | `jot install <插件引用>`、`jot remove` | #691 的嵌入 API、`rutis_loader::edit`、`Loader::status()` | #691 |
-| 5 服务好插件作者 | 交给插件作者的东西：模板（宿主自己的，带生成的类型与严格假服务）、开发循环（`--plugin <目录>` 用 `RuntimeResolver::invalidate_all` 与 `Loader::reload`）、出错时按错误码给提示（`rutis_bridge::thrown()` 读出 name、code、site） | `jot` 的 TS 模板与测试 | #684 的严格假服务、`thrown()` | #684、#670、0.18 #677 |
+| 2 定义插件面 | `#[rutis::service]` 的 `Notes`；回调注册 `Commands::register`：处理函数按引用传进来，`&Ctx` 参数是调用方的行，登记挂在它上面，插件卸载时自动去掉；`caller_row()` 知道是哪个插件；`rutis-host types --python <文件> --contract <文件>`（或 `build.rs` 里的 `Exports::python` / `Exports::contract`）给插件作者生成 TypeScript、Python 类型与一份契约描述（JSON），文件头与错误类型用宿主的名字 | `Commands`、`Notes`、生成的 `jot.d.ts` / `jot.py` / `jot.contract.json` | `rutis::service`、`rutis::host::BoxFuture`、`rutis_bridge::session::caller_row` | #684 |
+| 3 管住插件 | 选项设在命名运行时上：每个插件一个命名运行时（一个进程），行名写 `<运行时名>:<包名>`；运行时的 `limits` 给出调用时限、超时怎样停、能用哪些服务；`greeting` 设问候时限（调试时关掉）；超时或被拒时宿主和插件作者看到什么。选项的参考在 rust-host.md / rutis-host.md | `jot` 给每个第三方命令一个运行时：`LocalRuntime::node(…).named("wordcount").limits(Limits::new().call(Duration::from_secs(5)).services(["notes", "commands"]))`；用 rutis.json 的产品写 `runtimes.local: [{ "name": "wordcount", "language": "node", "limits": { "services": ["notes", "commands"] } }]` | `rutis_bridge::runtime::{LocalRuntime, Limits}`，其余按 #683 | #683 |
+| 4 管理插件 | 装、升级、卸载插件（不需要知道语言）；增删行、改配置（loader 的命令式修改与持久化）；看一行现在怎样 | `jot install npm:@acme/wordcount@1.2.0`、`jot remove wordcount`（引用写法与 `rutis-host add` 相同：`npm:`、`pypi:`、Go 模块路径、`./本地路径`，版本 `@版本`） | `rutis_loader` 的 `install` feature 里的 `Installer`、`rutis_loader::edit`、`Loader::status()` | #691 |
+| 5 服务好插件作者 | 交给插件作者的东西：模板（宿主自己的，带生成的类型、契约描述和宿主写好的假服务；测试把契约描述作为 `contract` 传给 `load`，名字在契约里的服务都被检查）、开发循环（`--plugin <目录>` 用 `RuntimeResolver::invalidate_all` 与 `Loader::reload`）、出错时按错误码给提示（`rutis_bridge::thrown()` 读出 name、code、site） | `jot` 的 TS 模板与测试 | #684 的契约描述与 `load` 的 `contract` 选项、`thrown()` | #684、#670、0.18 #677 |
 | 6 看得到状态 | 一处看到哪些行在跑、在等什么、运行时进程、进行中的调用与调用方；要随变化做事时监听 `rutis/row`、`rutis/runtime` | `jot status` 打印 `Loader::status()` | `Loader::status()`、`RuntimeHandle::state()`、`RowEvent` | 0.18 #678 |
 
 - 每节的 Rust 代码既是 doc-examples 的 `file=` 块（第 1 节写出 `Cargo.toml`、`src/main.rs`，再 `cargo run` 一次，看到 `wordcount` 跑起来），也作为 doctest 编译：open-host.md 两份像 rust-host.md 一样由 `rutis-loader` 的 `lib.rs` 引入。
-- 第 5 节的 TS 模板与测试同样由 doc-examples 跑：第三方照模板写 `wordcount`、`npm test`，用的是第 2 节生成的严格假服务。
+- 第 5 节的 TS 模板与测试同样由 doc-examples 跑：第三方照模板写 `wordcount`、`npm test`，用的是第 2 节生成的契约描述和模板里的假服务；给 `notes.put` 传数字时测试就失败，和真宿主一样。
 - 只讲做成这件事要用的；每个名字第一次出现时链接 rust-host.md 里它的参考条目，不在两处重复参数细节。
 
 ## 六、小的代码改动
@@ -146,6 +156,7 @@ docs/guide/README.md 与根 README 的指南索引按层分组：给宿主写插
 | `caller_row`、`CallerRow`、`call_service` | `rutis_bridge::session` | 原样 |
 | `Resolver` 与写解析器的类型 | `rutis_loader::Resolver`、`rutis_loader::resolve` | 原样 |
 | `kill_processes` | `rutis_bridge::transport::local` | 原样 |
+| `Limits`（#683 新增）、`Installer`（#691 新增） | `rutis_bridge::runtime`、`rutis_loader`（`install` feature） | 按那两份设计 |
 | `RuntimeResolver`、`RuntimeRowsPlugin` | `rutis_loader::runtime` | 原样 |
 
 只有第一行要改代码。之后由 doctest 保证：指南里每一行 `use` 都要能编译。
@@ -165,18 +176,18 @@ docs/guide/README.md 与根 README 的指南索引按层分组：给宿主写插
 
 ## 七、开发者看到什么
 
-**TypeScript 插件作者，照指南走一遍**（输出里 `dev` 的服务列表与 `call` 的格式由 #670 定，下面按它的意思写）：
+**TypeScript 插件作者，照指南走一遍**（`dev` 的服务列表与 `call` 的写法按 #670）：
 
 ```text
 $ npx @arcships/rutis-host new greeter --lang node && cd greeter && npm install && npm test
 # tests 1  pass 1
 （第 3 步若只写了 ctx.use、忘了写进 inject，测试失败，文字是现在的：）
 service translate is not available to this plugin, which does not declare it in inject: add 'translate' to its inject
-（写进 inject 后通过；第 6 步用 t.on 断言收到 greeter/greeted）
+（写进 inject 后通过；第 6 步用 t.on 记下 greeter/greeted 再断言）
 $ npx rutis-host dev
 greeter: running
 translate: running
-（服务列表：greeter 由 greeter 提供，translate 由 translate 提供）
+rutis-host dev: services: greeter (greeter), translate (translate)
 $ npx rutis-host call greeter.hello '"Ada"' '"sv"'
 "Hej, Ada!"
 （改 src/index.ts 保存）
@@ -191,7 +202,7 @@ docs/guide/typescript-plugin.md:41: the block does not match greeter/src/index.t
 +  provides: { greeter: { hello: 'sync' } },
 ```
 
-**Go 插件作者，第 7 步**：`rutis.dev.json` 里假的 `translate` 是项目里的 Go 代码，`rutis-host dev` 构建并运行它，不需要 Node 或 Python（形式按 #670）。
+**Go 插件作者，第 7 步**：`rutis.dev.json` 里写 `{ "id": "translate", "name": "./dev/faketranslate" }`，`dev/faketranslate` 是项目里的一个 main 包；`rutis-host dev` 构建并运行它，不需要 Node 或 Python（#670）。
 
 **宿主持有者**：
 

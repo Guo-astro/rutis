@@ -9,7 +9,7 @@ Relation to 0.18: the guides describe the behaviour after 0.18 — config gets i
 This design is **a plan for rewriting the guides**: the new structure of each guide, what each step covers and with which example, what moves where, the outline and examples of the host owner's guide, the few code changes needed, and how the result is accepted. The guides themselves are rewritten in the implementation steps.
 
 Out of scope:
-- The APIs and output text of other 0.19 issues: `rutis-host call` and the service list (#670), strict fakes and Python types (#684), the "keep plugins in check" options (#683), `rutis-host add` and the install API (#691), the names at each SDK's root (#692). This design refers to them and does not design them.
+- The APIs and output text of other 0.19 issues: `rutis-host call` and the service list (#670), the contract description and Python types (#684), the "keep plugins in check" options (#683), `rutis-host add` and the install API (#691), the names at each SDK's root (#692). This design refers to them and does not design them.
 - A Kotlin plugin guide: Kotlin plugins are hosted only by Android apps; there is no `rutis-host new` or `dev`, so steps 1 and 7 of the short path do not exist; its readers are app authors. `kotlin-app.md` and `swift-app.md` are unchanged.
 - Products that use `rutis-host` as their runtime, and Swift / Kotlin apps as hosts: #663 has not evaluated them yet; this version of the host owner's guide covers Rust embedding.
 - `rutis-host new --lang rust` or `dev` for Rust plugins: a Rust plugin is compiled into a Rust host and has no runtime of its own there; the Rust short path uses a minimal Rust host in step 7 (§3.3).
@@ -39,7 +39,7 @@ Out of scope:
 | D2 | One example throughout, the template's `greeter`: the project `rutis-host new greeter` generates is step 2; steps 3–7 add using a `translate` service, a `greeting` config, emitting `greeter/greeted`, tests, and `dev` with a fake `translate`. The templates therefore become step 2 (the config moves out of the template into step 4) |
 | D3 | Before step 7, a guide shows only the 7 concepts; everything else moves to plugin-api.md, cordis.md, nodes.md or rutis-host.md (the table in §4), leaving one line with a link |
 | D4 | Each guide explains "row" itself: in step 7, with the two rows of `rutis.dev.json` |
-| D5 | rutis-host.md opens for people assembling plugins: the quick start uses `rutis-host add` (#691), sees the service list after start and calls once with `rutis-host call` (#670), and `rutis-host status` (0.18); installing each language's plugins by hand stays as a reference table |
+| D5 | rutis-host.md opens for people assembling plugins: the quick start uses `rutis-host add npm:@your-name/weather` and `rutis-host add pypi:your-name-llm` (#691; the install records go into `installed` at the top of `rutis.json`), sees the service list after start and calls once with `rutis-host call` (#670), and `rutis-host status` (0.18); installing each language's plugins by hand stays as a reference table |
 | D6 | The host owner's guide is a **new file** `docs/guide/open-host.md` (both languages), written around the 6 things a host does (§5); rust-host.md stays the API reference and gets one line at the top pointing to it. What #683 calls "a section 'Keep plugins in check' in rust-host.md" is section 3 of the new guide; #683 adds the options' reference rows to rust-host.md's tables |
 | D7 | Every example in the guides is run by a check: commands and files in the plugin guides and the host owner's guide carry `tools/doc-examples.mjs` markers; Rust code is also compiled as doctests (as now). doc-examples gains `matches=<path>` (the block must equal that file in the project, which keeps guide and template in step) and code fences with attributes (` ```rust,no_run `); Swift's examples run on macOS |
 | D8 | Public paths: remove the crate-internal glob imports at rutis-loader's root so they no longer take the root paths; the other names #685 lists already have public paths, and the guide uses those, locked by doctests |
@@ -59,9 +59,9 @@ TypeScript as the example; each step's code block is **the whole file** (the rea
 | 3 Use a service | `inject: ['translate']`, `ctx.use('translate')`; one sentence: it starts when all are ready | `hello(name, lang)` calls `translate.text(greeting, lang)` | `inject` | #692 |
 | 4 Config | `default` in the Schema; `apply` receives the config with defaults filled and checked; where config comes from: `config` in tests, the host's row at run time (step 7) | `greeting`, default `"Hello"` | config | 0.18 #669 |
 | 5 Emit and listen to events | `ctx.emit('greeter/greeted', name)`; one `ctx.on(name, listener)` example; one line: "the other four ways, filters and scopes: Plugin API" | emitted on every greeting | events | — |
-| 6 Test | `load(plugin, { config, services })`, `t.service`, `t.on('greeter/greeted')`, `t.unload`; one sentence: when you write for a host that ships strict fakes, pass those as `services` | a fake `translate` | testing tool | #670 (`t.on`), #684 (that sentence) |
-| 7 Run locally and try it | `rutis-host dev`; the two rows of `rutis.dev.json`: the row with the plugin's id is the plugin itself (its `config` is what the plugin receives), the other is a fake `translate` running alongside (written in the same language); the service list `dev` prints; `rutis-host call greeter.hello '"Ada"' '"sv"'`; change the code once and see `reloaded` | `dev/fake-translate.ts` | `dev` and rows | #670 |
-| 8 Publish | A package name of your own, the tag workflow, one line on the dependency range (link to Plugin API "Versions"), one line "how a host installs your plugin" (link to rutis-host.md) | commands | — | #691 (the link says `add`) |
+| 6 Test | `load(plugin, { config, services })`, `t.service`, `t.on('greeter/greeted', listener)` (the same form as `ctx.on`, returning `off`; the test records what arrives in its own array and asserts on it), `t.unload`; one sentence: when you write for a host that ships a contract description, pass it to `load` as `contract` (in Python `load(..., contract=...)`); the fakes are still your own, in `services` | a fake `translate` | testing tool | #670 (`t.on`), #684 (that sentence) |
+| 7 Run locally and try it | `rutis-host dev`; the two rows of `rutis.dev.json`: the row with the plugin's id is the plugin itself (its `config` is what the plugin receives), the other is a fake `translate` running alongside (written in the same language); the line `dev` prints after starting, `rutis-host dev: services: greeter (greeter), translate (translate)`; `rutis-host call greeter.hello '"Ada"' '"sv"'` (each argument is one JSON value); change the code once and see `reloaded` | `dev/fake-translate.ts` | `dev` and rows | #670 |
+| 8 Publish | A package name of your own, the tag workflow, one line on the dependency range (link to Plugin API "Versions"), one line "how a host installs your plugin": `rutis-host add npm:@your-name/greeter` (link to rutis-host.md) | commands | — | #691 |
 
 After the path each guide has only: "Debugging" (added by #679), what is specific to the language (Swift's "System permissions", Bun's "Runtime conventions"), and one line "Advanced: Plugin API".
 
@@ -77,6 +77,14 @@ After the path each guide has only: "Debugging" (added by #679), what is specifi
 | `load`, `t.service`, `t.on`, `t.unload` | testing tool |
 | `rutis-host dev`, rows of `rutis.dev.json`, `rutis-host call` | `dev` and rows |
 
+After #692 all these names are at the root: `definePlugin` comes from `@arcships/rutis`, `use`, `provide`, `on` and `emit` are members of the root's `Context`, `load` comes from `@arcships/rutis/testing`. The other languages' paths likewise use only the root names #692 defines:
+
+| Language | Names used on the path |
+| --- | --- |
+| Python | `define_plugin`; ctx's `use`, `provide`, `on`, `emit`; `rutis.testing.load` |
+| Go | `Define`, `Plugin`, `Provides`, `Ctx`, `Serve`; `Ctx`'s `Use`, `Provide`, `On`, `Emit`; `rutistest.Load` |
+| Swift | `Rutis.define`, `Plugin`, `@RutisService`, `@RutisClient`, `@RutisConfig`, `Rutis.serve`; ctx's `use`, `provide`, `on`, `emit`; `RutisTest.load` |
+
 Not shown: cleanup functions and `ctx.effect` (the template does not need them; Plugin API "Lifecycle"), `'sync'`, `ctx.signal`, plugin definitions, `host()`, `serial` / `waterfall` / `parallel` / `bail` / `filter`, scopes, strict-mode details, the plugin API version, Cordis. Each language's implementation PR carries the same table, checked in review.
 
 ### 3.3 Differences between languages
@@ -87,9 +95,9 @@ Every language takes the same 8 steps with the same example, differing only here
 | --- | --- |
 | Bun | Commands become `bunx --bun`, `bun install`, `bun test`; otherwise as TypeScript (the guide still has all 8 steps, so readers do not jump between two guides) |
 | Python | Step 2, one sentence: `async def` is an async method; step 8: the entry point name is the host's row name |
-| Go | Step 1, one sentence: one binary is one runtime process in the host; step 2: methods are lower-cased for other languages and must allow concurrent calls; step 3: the struct of function fields, **pass ctx down**; step 4: fields not written are zero values, defaults are given in `Apply` (0.18's Go rule); step 7: the fake `translate` is Go code, in the form #670 item 3 decides |
+| Go | Step 1, one sentence: one binary is one runtime process in the host; step 2: methods are lower-cased for other languages and must allow concurrent calls; step 3: the struct of function fields, **pass ctx down**; step 4: fields not written are zero values, defaults are given in `Apply` (0.18's Go rule); step 7: the fake `translate` is Go code, a main package directory in the project; its row in `rutis.dev.json` has `"name": "./dev/faketranslate"` (#670) |
 | Rust | Step 1: `cargo new --lib greeter` plus dependencies (no template); step 2: `#[rutis::service]`; step 3: `type Deps = Arc<…>`; step 4: `fn new(config: &Config)`, defaults with serde's `default`; step 5: the event type and emitting from a service method (keeping the plugin's `Ctx`); step 6: a root in `#[tokio::test]`; step 7: `examples/try.rs` is a minimal Rust host that builds a root, adds the plugin and a fake `translate`, and calls once with `call_service`: `cargo run --example try`; step 8: `cargo publish`, the host adds it with `Builtins::register` (dylib: link to the external plugin guide). Rust's seventh concept is therefore "the host adds the plugin", not "rows" |
-| Swift | Step 1: `rutis-host new greeter --lang swift`, `swift test`, trusting the SDK's macros once; step 7: `dev` builds first; "System permissions" stays after the path |
+| Swift | Step 1: `rutis-host new greeter --lang swift`, `swift test`, trusting the SDK's macros once; step 7: `dev` builds first, and the fake `translate` is an executableTarget of the package (#670); "System permissions" stays after the path |
 
 ### 3.4 Templates
 
@@ -112,6 +120,8 @@ The node, bun, python, go and swift templates of `rutis-host new` become step 2:
 | TS "Existing Cordis plugins" | Cordis packages as rows | cordis.md |
 | rutis-host.md opening | "Plugin authors use it to develop locally" | Rewritten for people assembling plugins; the `dev` section stays as reference, linked from the plugin guides |
 
+The advanced content moved into plugin-api.md is written in #692's places: TypeScript and Bun use `advanced(ctx).serial(…)` from `@arcships/rutis/advanced`, Python `advanced(ctx).serial(…)` from `rutis.advanced`, Go `advanced.Of(ctx)`, Swift and Kotlin `ctx.advanced`.
+
 Not moved: all of rust-host.md stays (it is the embedding API reference); Swift's "System permissions" and Bun's "Runtime conventions" stay after the path in their guides.
 
 The guide indexes in docs/guide/README and the root README are grouped by layer: writing plugins for a host (six languages), assembling plugins with rutis-host, building a host open to plugins (new), reference (Plugin API, linking nodes, Cordis, embedding in Rust, app hosting).
@@ -123,14 +133,14 @@ The guide indexes in docs/guide/README and the root README are grouped by layer:
 | Section | What it covers | Example | Names used | Waits for |
 | --- | --- | --- | --- | --- |
 | 1 Integrate | Dependencies; a root; providing the host's own services; adding plugins with the loader (Node and Python runtimes); waiting until ready (`reconcile` returns once every row's `apply` has run once; wrap a stuck plugin with `tokio::time::timeout`, then look at the status); shutting down (`shutdown_with_timeout`, then `kill_processes()` for what is left). One table on what each loader part does: `Chain` asks in order who knows a row name, `with_shared` lets `RuntimeRowsPlugin` use a runtime's resolver too, `RuntimeResolver` is the row names one runtime knows, `RuntimeRowsPlugin` resolves a runtime's rows again after it restarts, `ServiceCatalog` is the table of service names, `Layer` / `Patch` are where rows come from. What paths are relative to, `python_path` for Python plugins that are not installed, environment variables for one runtime | `jot`'s `main.rs` and a TS command `wordcount` | `Ctx::root`, `rutis::host::*`, `LoaderPlugin`, `Chain`, `Builtins`, `ServiceCatalog`, `Layer`, `Patch`, `rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin}`, `rutis_bridge::runtime::{LocalRuntime, Launcher}`, `rutis_bridge::transport::local::kill_processes` | 0.18 (default output, `status()`) |
-| 2 Define the plugin surface | `Notes` with `#[rutis::service]`; callback registration `Commands::register`: the handler comes by reference, the `&Ctx` parameter is the calling row, registrations hang on it and go away when the plugin unloads; `caller_row()` says which plugin it is; `rutis-host types` generates TypeScript and Python types for plugin authors, with the host's names in the header and error types | `Commands`, `Notes`, the generated `jot.d.ts` / `jot.py` | `rutis::service`, `rutis::host::BoxFuture`, `rutis_bridge::session::caller_row` | #684 |
-| 3 Keep plugins in check | A runtime process per plugin; call time limits and cancellation; the hello time limit (off while debugging); limiting which services a plugin may use; what host and plugin author see on a timeout or a refusal | `jot` gives each third-party command its own process, a 5-second limit, and only `notes` and `commands` | the options #683 defines | #683 |
-| 4 Manage plugins | Installing, upgrading, removing plugins (without knowing their language); adding and removing rows, changing config (the loader's imperative edits and persistence); how a row is doing now | `jot install <plugin ref>`, `jot remove` | #691's embedding API, `rutis_loader::edit`, `Loader::status()` | #691 |
-| 5 Serve your plugin authors | What to hand plugin authors: a template (the host's own, with the generated types and strict fakes), a development loop (`--plugin <dir>` using `RuntimeResolver::invalidate_all` and `Loader::reload`), hints by error code on failure (`rutis_bridge::thrown()` gives name, code, site) | `jot`'s TS template and its test | #684's strict fakes, `thrown()` | #684, #670, 0.18 #677 |
+| 2 Define the plugin surface | `Notes` with `#[rutis::service]`; callback registration `Commands::register`: the handler comes by reference, the `&Ctx` parameter is the calling row, registrations hang on it and go away when the plugin unloads; `caller_row()` says which plugin it is; `rutis-host types --python <file> --contract <file>` (or `Exports::python` / `Exports::contract` in `build.rs`) generates TypeScript and Python types and a contract description (JSON) for plugin authors, with the host's names in the header and error types | `Commands`, `Notes`, the generated `jot.d.ts` / `jot.py` / `jot.contract.json` | `rutis::service`, `rutis::host::BoxFuture`, `rutis_bridge::session::caller_row` | #684 |
+| 3 Keep plugins in check | The options are set on named runtimes: each plugin gets a named runtime (one process), its row written `<runtime name>:<package>`; the runtime's `limits` give the call time limit, how a timeout stops, and the services it may use; `greeting` sets the greeting time limit (off while debugging); what host and plugin author see on a timeout or a refusal. The options' reference is in rust-host.md / rutis-host.md | `jot` gives each third-party command a runtime: `LocalRuntime::node(…).named("wordcount").limits(Limits::new().call(Duration::from_secs(5)).services(["notes", "commands"]))`; a product on rutis.json writes `runtimes.local: [{ "name": "wordcount", "language": "node", "limits": { "services": ["notes", "commands"] } }]` | `rutis_bridge::runtime::{LocalRuntime, Limits}`, the rest as #683 defines | #683 |
+| 4 Manage plugins | Installing, upgrading, removing plugins (without knowing their language); adding and removing rows, changing config (the loader's imperative edits and persistence); how a row is doing now | `jot install npm:@acme/wordcount@1.2.0`, `jot remove wordcount` (references as for `rutis-host add`: `npm:`, `pypi:`, a Go module path, `./local path`, version `@version`) | `Installer` from `rutis_loader`'s `install` feature, `rutis_loader::edit`, `Loader::status()` | #691 |
+| 5 Serve your plugin authors | What to hand plugin authors: a template (the host's own, with the generated types, the contract description and fakes the host wrote; tests pass the contract description to `load` as `contract`, and every service named in the contract is checked), a development loop (`--plugin <dir>` using `RuntimeResolver::invalidate_all` and `Loader::reload`), hints by error code on failure (`rutis_bridge::thrown()` gives name, code, site) | `jot`'s TS template and its test | #684's contract description and `load`'s `contract` option, `thrown()` | #684, #670, 0.18 #677 |
 | 6 See the state | One place showing which rows run, what they wait for, runtime processes, calls in flight and their callers; listen to `rutis/row`, `rutis/runtime` to act on changes | `jot status` prints `Loader::status()` | `Loader::status()`, `RuntimeHandle::state()`, `RowEvent` | 0.18 #678 |
 
 - Each section's Rust code is both a doc-examples `file=` block (section 1 writes `Cargo.toml` and `src/main.rs`, then `cargo run` once and sees `wordcount` run) and a doctest: both open-host.md files are included by `rutis-loader`'s `lib.rs`, as rust-host.md is.
-- Section 5's TS template and test are run by doc-examples too: a third party writes `wordcount` from the template and runs `npm test` against the strict fakes generated in section 2.
+- Section 5's TS template and test are run by doc-examples too: a third party writes `wordcount` from the template and runs `npm test` against the contract description generated in section 2 and the template's fakes; passing a number to `notes.put` fails the test, as it fails in the real host.
 - Only what the task needs; each name links, where it first appears, to its reference entry in rust-host.md, with parameter details in one place only.
 
 ## 6. Small code changes
@@ -146,6 +156,7 @@ The guide indexes in docs/guide/README and the root README are grouped by layer:
 | `caller_row`, `CallerRow`, `call_service` | `rutis_bridge::session` | as is |
 | `Resolver` and the types for writing a resolver | `rutis_loader::Resolver`, `rutis_loader::resolve` | as is |
 | `kill_processes` | `rutis_bridge::transport::local` | as is |
+| `Limits` (new in #683), `Installer` (new in #691) | `rutis_bridge::runtime`, `rutis_loader` (`install` feature) | as those designs define |
 | `RuntimeResolver`, `RuntimeRowsPlugin` | `rutis_loader::runtime` | as is |
 
 Only the first row needs code. From then on doctests guarantee it: every `use` line in the guide must compile.
@@ -165,18 +176,18 @@ They become English, describing what the code does now (old design references su
 
 ## 7. What developers see
 
-**A TypeScript plugin author following the guide** (the formats of `dev`'s service list and of `call` are #670's; written here as it means them):
+**A TypeScript plugin author following the guide** (`dev`'s service list and `call` as #670 writes them):
 
 ```text
 $ npx @arcships/rutis-host new greeter --lang node && cd greeter && npm install && npm test
 # tests 1  pass 1
 (in step 3, with ctx.use written but inject forgotten, the test fails with today's text:)
 service translate is not available to this plugin, which does not declare it in inject: add 'translate' to its inject
-(passes once it is in inject; step 6 asserts with t.on that greeter/greeted arrived)
+(passes once it is in inject; step 6 records greeter/greeted with t.on and asserts on it)
 $ npx rutis-host dev
 greeter: running
 translate: running
-(service list: greeter provided by greeter, translate provided by translate)
+rutis-host dev: services: greeter (greeter), translate (translate)
 $ npx rutis-host call greeter.hello '"Ada"' '"sv"'
 "Hej, Ada!"
 (save a change to src/index.ts)
@@ -191,7 +202,7 @@ docs/guide/typescript-plugin.md:41: the block does not match greeter/src/index.t
 +  provides: { greeter: { hello: 'sync' } },
 ```
 
-**A Go plugin author, step 7**: the fake `translate` in `rutis.dev.json` is Go code in the project; `rutis-host dev` builds and runs it, with no Node or Python (in #670's form).
+**A Go plugin author, step 7**: `rutis.dev.json` has `{ "id": "translate", "name": "./dev/faketranslate" }`, where `dev/faketranslate` is a main package in the project; `rutis-host dev` builds and runs it, with no Node or Python (#670).
 
 **A host owner**:
 
