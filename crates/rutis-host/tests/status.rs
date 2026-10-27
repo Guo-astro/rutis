@@ -41,7 +41,7 @@ fn status(target: &Path, dir: &Path, runtime: &Path) -> std::process::Output {
         .unwrap()
 }
 
-/// Provides `slow`, whose `wait` does not return while the host runs.
+/// Provides `slow`, whose `wait` does not return, cancelled or not.
 const SLOW: &str = r#"
 import asyncio
 
@@ -50,7 +50,11 @@ provides = {"slow": {"wait": "async"}}
 
 class Slow:
     async def wait(self):
-        await asyncio.sleep(600)
+        while True:
+            try:
+                await asyncio.sleep(600)
+            except asyncio.CancelledError:
+                pass
 
 
 def apply(ctx, config):
@@ -163,11 +167,13 @@ fn status_says_what_a_running_host_does() {
         0o600
     );
 
+    // The caller's apply never returns: stopping does not finish, and
+    // says which call it waits on.
     signal(&host, libc::SIGTERM, false);
-    let (_, stderr, _) = host.exit();
+    let (exit, stderr, _) = host.exit();
+    assert_eq!(exit.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("  call not returned: caller → slow.wait  ")
-            || !stderr.contains("did not finish"),
+        stderr.contains("  call not returned: caller → slow.wait  "),
         "{stderr}"
     );
     // The host removed its socket.

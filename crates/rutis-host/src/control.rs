@@ -24,17 +24,28 @@ pub fn key(target: &Path) -> PathBuf {
 
 /// The socket of the host running the configuration `target`.
 pub fn socket(target: &Path) -> PathBuf {
-    directory().join(format!("{:016x}.sock", fnv1a(key(target).as_os_str())))
+    socket_in(&base(), target)
+}
+
+/// [`socket`] under the runtime directory `base`.
+fn socket_in(base: &Path, target: &Path) -> PathBuf {
+    directory(base).join(format!("{:016x}.sock", fnv1a(key(target).as_os_str())))
+}
+
+/// The system's runtime directory: `$XDG_RUNTIME_DIR`, else the
+/// temporary directory. A `status` run with other variables (another
+/// user, `sudo`) looks elsewhere.
+fn base() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// The user's own directory for the hosts' sockets: in the runtime
-/// directory, unless a socket's path there would be longer than a socket
-/// may have (about 100 bytes), then in `/tmp`.
-fn directory() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
+/// directory `base`, unless a socket's path there would be longer than a
+/// socket may have (about 100 bytes), then in `/tmp`.
+fn directory(base: &Path) -> PathBuf {
     let own = format!("rutis-host-{}", user());
     let dir = base.join(&own);
     // `<dir>/<16 hex digits>.sock`.
@@ -70,6 +81,10 @@ fn fnv1a(text: &std::ffi::OsStr) -> u64 {
 pub struct Serving {
     #[cfg(unix)]
     path: PathBuf,
+    /// The socket file's device and inode: only that file is removed, not
+    /// one another host put there since.
+    #[cfg(unix)]
+    file: (u64, u64),
     #[cfg(unix)]
     task: tokio::task::JoinHandle<()>,
 }
@@ -78,8 +93,13 @@ impl Drop for Serving {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
             self.task.abort();
-            let _ = std::fs::remove_file(&self.path);
+            let ours = std::fs::symlink_metadata(&self.path)
+                .is_ok_and(|meta| (meta.dev(), meta.ino()) == self.file);
+            if ours {
+                let _ = std::fs::remove_file(&self.path);
+            }
         }
     }
 }
@@ -90,9 +110,15 @@ impl Drop for Serving {
 /// the user's own): the host runs on without it.
 #[cfg(unix)]
 pub fn serve(target: &Path, loader: Loader) -> Result<Serving, String> {
+    serve_in(&base(), target, loader)
+}
+
+/// [`serve`] under the runtime directory `base`.
+#[cfg(unix)]
+fn serve_in(base: &Path, target: &Path, loader: Loader) -> Result<Serving, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
-    let dir = directory();
+    let dir = directory(base);
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -107,7 +133,7 @@ pub fn serve(target: &Path, loader: Loader) -> Result<Serving, String> {
             dir.display()
         ));
     }
-    let path = socket(target);
+    let path = socket_in(base, target);
     if std::os::unix::net::UnixStream::connect(&path).is_ok() {
         return Err(format!(
             "another rutis-host answers `rutis-host status` for {}",
@@ -120,9 +146,14 @@ pub fn serve(target: &Path, loader: Loader) -> Result<Serving, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    let meta =
+        std::fs::symlink_metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let file = (meta.dev(), meta.ino());
     let task = tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
+                // Out of descriptors, say: try again in a while, not at once.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
             let loader = loader.clone();
@@ -131,7 +162,7 @@ pub fn serve(target: &Path, loader: Loader) -> Result<Serving, String> {
             });
         }
     });
-    Ok(Serving { path, task })
+    Ok(Serving { path, file, task })
 }
 
 /// Read one request and answer it: `status`, or that only `status` is
@@ -158,9 +189,28 @@ async fn answer(stream: tokio::net::UnixStream, loader: &Loader) -> std::io::Res
 /// What the host running the configuration `target` says to `status`.
 #[cfg(unix)]
 pub async fn status(target: &Path) -> Result<String, String> {
+    status_in(&base(), target).await
+}
+
+/// [`status`] under the runtime directory `base`; a host that does not
+/// answer within 10 seconds is said to.
+#[cfg(unix)]
+async fn status_in(base: &Path, target: &Path) -> Result<String, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), ask(base, target))
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "the rutis-host running {} did not answer within 10s",
+                key(target).display()
+            ))
+        })
+}
+
+#[cfg(unix)]
+async fn ask(base: &Path, target: &Path) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let path = socket(target);
+    let path = socket_in(base, target);
     let mut stream = tokio::net::UnixStream::connect(&path).await.map_err(|_| {
         format!(
             "no rutis-host runs {}: start it with `rutis-host run` or `rutis-host dev`, or name \
@@ -206,5 +256,49 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         assert_ne!(socket(dir.path()), socket(other.path()));
         assert_eq!(fnv1a(std::ffi::OsStr::new("")), 0xcbf2_9ce4_8422_2325);
+    }
+
+    /// A host answers `status` with its loader's status, and anything
+    /// else with an error; a second host for the same configuration does
+    /// not take the socket over; once the first stops answering, its
+    /// socket is gone and `status` says no host runs it.
+    /// guarantee: host/status
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_socket_answers_status_only_and_once_per_configuration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let base = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let loader = || {
+            rutis_loader::LoaderPlugin::new(
+                rutis_loader::Chain::new(),
+                rutis_loader::LoaderOptions::default(),
+            )
+            .handle()
+        };
+        let serving = serve_in(base.path(), project.path(), loader()).unwrap();
+        let said = status_in(base.path(), project.path()).await.unwrap();
+        assert_eq!(said, rutis_loader::status::Status::default().to_string());
+
+        let path = socket_in(base.path(), project.path());
+        let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        stream.write_all(b"stop\n").await.unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).await.unwrap();
+        assert_eq!(reply, "error: this socket answers only `status`\n");
+
+        let second = serve_in(base.path(), project.path(), loader());
+        assert!(
+            second
+                .as_ref()
+                .is_err_and(|why| why.starts_with("another rutis-host answers")),
+            "{:?}",
+            second.err()
+        );
+        drop(serving);
+        assert!(!path.exists());
+        let refused = status_in(base.path(), project.path()).await.unwrap_err();
+        assert!(refused.starts_with("no rutis-host runs "), "{refused}");
     }
 }

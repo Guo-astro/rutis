@@ -41,8 +41,8 @@ const NEEDY: &str = "inject = [\"missing\"]\n\ndef apply(ctx, config):\n    pass
 
 /// The status lists each row with its state and why, each service with
 /// the row providing it, the runtime running with its process id, and a
-/// call from the host to a row's service that has not returned. Once the
-/// runtime's process is killed, its rows wait for it, and the runtime is
+/// call from the host to a row's service that has not returned, gone once
+/// the caller gives it up. Once the runtime's process is killed, its rows wait for it, and the runtime is
 /// down without a process id.
 /// guarantee: loader/status
 #[tokio::test(flavor = "multi_thread")]
@@ -141,6 +141,12 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
         "{printed}"
     );
 
+    // A call given up is gone from the status, the runtime still running.
+    call.abort();
+    COLD.until(|| loader.status().calls.is_empty(), "the call gone")
+        .await;
+    assert_eq!(loader.status().runtimes[0].state, RuntimeState::Running);
+
     kill(pid);
     let status = COLD
         .eventually(
@@ -161,8 +167,6 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
             .is_some_and(|reason| reason.starts_with("waiting for runtime py (down: ")),
         "{slow_row:?}"
     );
-    assert!(call.await.unwrap().is_err());
-    assert!(loader.status().calls.is_empty());
     root.shutdown().await.unwrap();
 }
 

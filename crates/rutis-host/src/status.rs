@@ -215,7 +215,11 @@ impl Shown {
                 .find(|(runtime, _, _)| runtime == name)
                 .map(|(_, state, _)| state.clone())
         };
-        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime));
+        // Only then is it worth asking which runtime each row runs in.
+        let any_away = states
+            .iter()
+            .any(|(_, state, _)| matches!(state, RuntimeState::Down(_) | RuntimeState::Starting));
+        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime, any_away));
         out
     }
 
@@ -250,6 +254,7 @@ impl Shown {
         loader: &Loader,
         peers: &PeerResolver,
         runtime: &dyn Fn(&str) -> Option<RuntimeState>,
+        any_away: bool,
     ) -> Vec<String> {
         let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
@@ -263,9 +268,11 @@ impl Shown {
             false => loader.waits_of(&waiting),
         }
         .into_iter();
-        let mut runtimes = loader
-            .runtimes_of(&entries.iter().collect::<Vec<_>>())
-            .into_iter();
+        let mut runtimes = match any_away {
+            true => loader.runtimes_of(&entries.iter().collect::<Vec<_>>()),
+            false => vec![None; entries.len()],
+        }
+        .into_iter();
         for entry in &entries {
             let key = match &entry.instance {
                 Some(instance) => format!("{} in {:?}", entry.id, instance.plugin),

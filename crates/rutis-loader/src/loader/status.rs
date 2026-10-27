@@ -210,11 +210,11 @@ impl Loader {
             // its plugin is told (#681).
             let (state, reason) = match (state, runtime_name(entry.plugin)) {
                 (RowState::Running | RowState::Starting, Some(name)) => match runtime_of(&name) {
-                    Some((RuntimeState::Running, _)) | None => (state, reason),
-                    Some((runtime, why)) => (
+                    Some((runtime @ (RuntimeState::Down | RuntimeState::Starting), why)) => (
                         RowState::Pending,
                         Some(own_runtime_line(&name, Some((runtime, why)))),
                     ),
+                    _ => (state, reason),
                 },
                 _ => (state, reason),
             };
@@ -259,14 +259,15 @@ impl Loader {
             return vec![None; entries.len()];
         };
         let diagnostics = root.diagnostics();
+        let fibers: HashMap<PluginId, &PluginDiagnostics> = diagnostics
+            .plugins
+            .iter()
+            .map(|fiber| (fiber.id, fiber))
+            .collect();
         entries
             .iter()
             .map(|entry| {
-                let plugin = entry.plugin?;
-                let fiber = diagnostics
-                    .plugins
-                    .iter()
-                    .find(|fiber| fiber.id == plugin)?;
+                let fiber = fibers.get(&entry.plugin?)?;
                 fiber
                     .injects
                     .iter()
