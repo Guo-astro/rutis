@@ -652,15 +652,19 @@ impl Ctx {
             crate::service::marked::<T>(self)
         };
         let Some(entries) = marked else {
-            if !mutable && key.name().is_none() {
+            let plain = !mutable && key.name().is_none();
+            let provided = self.provide_native(key, value, check, mutable)?;
+            // Said once it is provided: a refused provide serves nothing.
+            if plain {
                 if let Some(service) = crate::service::unserved::<T>(self) {
-                    let note = ErrorKind::NotServedByName {
+                    let note = Arc::new(ErrorKind::NotServedByName {
                         service: service.to_owned(),
-                    };
-                    self.error_sink()(Arc::new(note));
+                    });
+                    let sink = self.error_sink();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(note)));
                 }
             }
-            return self.provide_native(key, value, check, mutable);
+            return Ok(provided);
         };
         // Both slots are checked before anything is registered: a provide
         // refused for either serves nothing, not even for a moment. The
@@ -1217,23 +1221,13 @@ impl crate::host::CtxHost for Ctx {
                 });
             }
         }
-        let bindings = self.0.shared.registry.bindings_snapshot();
-        // The names reports give keys, for the readable form.
-        let name = crate::fiber::waiting::key_names(&self.0.shared);
-        let mut key_names = crate::diagnostics::KeyNames::default();
-        let keys = plugins
-            .iter()
-            .flat_map(|plugin| plugin.injects.iter().map(|dep| &dep.key))
-            .chain(bindings.iter().map(|binding| &binding.key));
-        for key in keys {
-            key_names.insert(key, &name);
-        }
         RuntimeDiagnostics {
             shutting_down: self.is_shutting_down(),
             plugins,
-            bindings,
+            bindings: self.0.shared.registry.bindings_snapshot(),
             event_backlogs: self.events().backlogs(),
-            key_names,
+            // Asked for names only when it is displayed.
+            key_names: crate::diagnostics::KeyNames(crate::fiber::waiting::namers(&self.0.shared)),
         }
     }
 

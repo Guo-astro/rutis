@@ -130,9 +130,10 @@ pub trait CtxHost: sealed::Sealed {
     /// stream. Dependency checks are never called here: their status is the
     /// last result recorded by normal gate resolution, or `CheckPending` if
     /// that binding has not been checked yet. Reading does not call plugin
-    /// `name`, `injects`, or other user code and does not advance a fiber;
-    /// it calls the key namers ([`name_keys_with`](Self::name_keys_with))
-    /// for the names its `Display` gives services.
+    /// `name`, `injects`, or other user code and does not advance a fiber.
+    /// Its `Display` calls the key namers
+    /// ([`name_keys_with`](Self::name_keys_with)) for the names it gives
+    /// services; taking the snapshot does not.
     fn diagnostics(&self) -> RuntimeDiagnostics;
 
     /// 最终关闭 root。重复或并发调用共享同一完成结果；现有 `dispose`

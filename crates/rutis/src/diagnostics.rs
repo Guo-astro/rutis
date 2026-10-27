@@ -35,22 +35,17 @@ pub struct RuntimeDiagnostics {
     pub(crate) key_names: KeyNames,
 }
 
-/// The names the key namers gave the keys of a snapshot.
+/// The key namers of the root when the snapshot was taken: asked only
+/// when the snapshot is displayed, so reading one costs nothing more.
 #[derive(Clone, Default)]
-pub(crate) struct KeyNames(Vec<(TypeKey, String)>);
+pub(crate) struct KeyNames(pub(crate) Vec<Arc<crate::host::KeyNamer>>);
 
 impl KeyNames {
-    pub(crate) fn insert(&mut self, key: &TypeKey, name: &impl Fn(&TypeKey) -> String) {
-        if !self.0.iter().any(|(known, _)| known == key) {
-            self.0.push((key.clone(), name(key)));
-        }
-    }
-
     fn get(&self, key: &TypeKey) -> String {
         self.0
             .iter()
-            .find(|(known, _)| known == key)
-            .map_or_else(|| key.describe(), |(_, name)| name.clone())
+            .find_map(|namer| namer(key))
+            .unwrap_or_else(|| key.describe())
     }
 }
 

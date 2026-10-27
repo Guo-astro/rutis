@@ -165,7 +165,7 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 
 ### Default output
 
-The error sink `Ctx::root()` and `Ctx::root_with(handle)` install (`host::default_sink()`) writes each error it gets as a line on standard error, with no prefix such as `[rutis]`. What went wrong is visible even when nobody reads a result:
+The error sink `Ctx::root()` and `Ctx::root_with(handle)` install (`host::default_sink()`) writes each error it gets to standard error, with no prefix such as `[rutis]`; an error is usually one line, and errors gathered together (`multiple errors:`) take a line each. What went wrong is visible even when nobody reads a result:
 
 | What | One line, beginning with the name | Error |
 | --- | --- | --- |
@@ -175,7 +175,11 @@ The error sink `Ctx::root()` and `Ctx::root_with(handle)` install (`host::defaul
 | A type marked `#[rutis::service]` is provided, but rutis-bridge is not linked | `service calendar is provided by type but not registered by name: …` | `ErrorKind::NotServedByName`, once per service |
 | A listener fails | `listener of … failed: …` | `ErrorKind::ListenerFailed` |
 
-The name is the row's (once the row has loaded), else the plugin's. rutis's own plugins (transports, links, runtimes, the loader) do not report failed starts here: the runtime's line or the link's state says so already. A runtime ending while the whole tree shuts down is not reported.
+The name is the row's (once the row has loaded), else the plugin's; a copy of a row refused in an instance is written `weather in session 7` (the group and the instance's number). rutis's own plugins (transports, links, runtimes, the loader) do not report failed starts here: the runtime's line or the link's state says so already. An `apply` failing because it was stopped (`dispose`, a shutdown) and a runtime ending while the whole tree shuts down are not reported. A config change refused for a running row, which goes on with its previous config, is no failed start and is not reported here; `reconcile`'s result has it.
+
+One cause can print several lines: a plugin that fails to start reports the errors of the cleanups its rollback ran, then `StartFailed` (whose error holds them too); a parent failing because a child failed reports once for each.
+
+The sink is called from inside rutis: do not wait on rutis operations in it. rutis-loader reports refused rows while holding its operation lock, so a sink calling that loader's `reconcile` or another change waits forever; to do such things, send the error to another task.
 
 To turn it off or change it, replace the sink: `Ctx::root_with_sink(handle, sink)`. To keep the rest and drop one kind, filter by variant in your own sink and hand the rest to `default_sink()`:
 
@@ -199,7 +203,7 @@ Shutting down has no time limit: `root.shutdown()` waits until every cleanup has
 not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9
 ```
 
-A cleanup registered with `ctx.effect` is named by the file, line and column it was registered at; any other by the plugin or row and what it is doing: `still withdrawing calendar` (a service it provided), `still running the cleanup its apply returned` (the cleanup `apply` returned, as a rutis-loader row's is), `its apply has not returned`.
+A cleanup registered with `ctx.effect` is named by the file, line and column it was registered at; any other by the plugin or row and what it is doing: `still withdrawing calendar` (a service it provided), `still running the cleanup its apply returned` (the cleanup `apply` returned, as a rutis-loader row's is), `its apply has not returned`, `still waiting for its event calls, or the copies of its plugin definitions, to end`. The root is no plugin: only a cleanup the host registered on it with `ctx.effect` is listed, as `the host`. rutis's own plugins (links, runtimes and the like) are listed only when no plugin of the developer's is stuck, being the only lead then.
 
 ## Provide Rust services to plugins
 

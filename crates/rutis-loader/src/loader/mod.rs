@@ -416,9 +416,10 @@ struct Failing {
     /// The copy is [`Unavailable`](crate::Unavailable) in its instance: it
     /// fails there alone, and never counts as a new failure of a change.
     unavailable: bool,
-    /// Its plugin failed (the kernel reports that), rather than the row
-    /// being refused before it ran.
-    plugin: bool,
+    /// A plugin of the copy is running, or ran and failed: its failure is
+    /// the kernel's to report, and a change refused while it keeps its
+    /// previous config is no failed start.
+    running: bool,
 }
 
 impl Failing {

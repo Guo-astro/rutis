@@ -68,6 +68,10 @@ impl DynPlugin for RowPlugin {
         self.inner.validate()
     }
 
+    fn platform(&self) -> bool {
+        self.inner.platform()
+    }
+
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             ctx.mark_row(&self.row)?;

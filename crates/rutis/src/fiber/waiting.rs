@@ -121,19 +121,25 @@ const PURGE_EVERY: usize = 32;
 /// How reports name keys: by the names a namer gives them (a loader's
 /// services, a row's runtime), else described.
 pub(crate) fn key_names(shared: &crate::ctx::Shared) -> impl Fn(&crate::TypeKey) -> String {
-    let namers: Vec<Arc<crate::host::KeyNamer>> = shared
-        .key_namers
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .collect();
+    let namers = namers(shared);
     move |key| {
         namers
             .iter()
             .find_map(|namer| namer(key))
             .unwrap_or_else(|| key.describe())
     }
+}
+
+/// The key namers added to the root (`CtxHost::name_keys_with`), still
+/// held by whoever added them.
+pub(crate) fn namers(shared: &crate::ctx::Shared) -> Vec<Arc<crate::host::KeyNamer>> {
+    shared
+        .key_namers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect()
 }
 
 /// Report `fiber` to its error sink when it still waits in `generation`

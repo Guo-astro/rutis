@@ -664,7 +664,7 @@ impl Inner {
                 scope,
                 value: value.to_string(),
                 unavailable: false,
-                plugin: false,
+                running: false,
             };
             if !out.contains(&failing) {
                 out.push(failing);
@@ -726,11 +726,7 @@ impl Inner {
                 scope: failing.scope,
             };
             failing.unavailable = state.rejected.get(&slot).is_some_and(Unavailable::is);
-            failing.plugin = !state.rejected.contains_key(&slot)
-                && state
-                    .running
-                    .get(&slot)
-                    .is_some_and(|running| running.view.state().state == FiberState::Failed);
+            failing.running = state.running.contains_key(&slot);
         }
         out
     }
@@ -1013,13 +1009,19 @@ impl Inner {
                 .filter(|f| !f.unavailable && !before.contains(f)),
         );
         // A row that cannot start reaches the error sink (stderr, by
-        // default), as a plugin that fails does from the kernel (#678).
+        // default), as a plugin that fails does from the kernel (#678). A
+        // copy in an instance says which.
         let refused: Vec<Arc<ErrorKind>> = after
             .iter()
-            .filter(|f| !f.plugin && !f.unavailable && !before.contains(f))
+            .filter(|f| !f.running && !f.unavailable && !before.contains(f))
             .map(|failing| {
+                let id = &failing.failure.id;
+                let plugin = match failing.scope.and_then(|n| state.instances.get(&n)) {
+                    Some(instance) => format!("{id} in {} {}", instance.group, instance.kernel),
+                    None => id.clone(),
+                };
                 Arc::new(ErrorKind::StartFailed {
-                    plugin: failing.failure.id.clone(),
+                    plugin,
                     error: Arc::new(ErrorKind::PluginFailed(
                         failing.failure.error.clone().into(),
                     )),

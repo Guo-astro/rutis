@@ -280,6 +280,96 @@ async fn a_stuck_row_cleanup_and_a_withdrawal_are_named() {
         .unwrap();
 }
 
+/// An apply that fails because it was stopped (a dispose, a shutdown) is
+/// no failed start: nothing reaches the error sink.
+/// guarantee: core/features.default-output
+#[tokio::test]
+async fn an_apply_failing_because_it_was_stopped_is_not_reported() {
+    struct GivesUp(Arc<Notify>);
+    impl Plugin for GivesUp {
+        type Deps = ();
+        fn name(&self) -> &str {
+            "gives-up"
+        }
+        async fn apply(&self, ctx: &Ctx, _: ()) -> rutis::Result {
+            self.0.notify_one();
+            ctx.cancelled().await;
+            Err(Error::msg("stopped while starting"))
+        }
+    }
+    let (ctx, sunk) = root();
+    let started = Arc::new(Notify::new());
+    let view = ctx.plugin(GivesUp(started.clone()));
+    within("apply to start", started.notified()).await;
+    let _ = within("the dispose", view.dispose()).await;
+    let other = ctx.plugin(GivesUp(started.clone()));
+    within("apply to start", started.notified()).await;
+    within("the shutdown", ctx.shutdown()).await.unwrap();
+    drop(other);
+    assert!(texts(&sunk).is_empty(), "{:?}", texts(&sunk));
+}
+
+/// Only the developer's plugins are named when they are stuck: the host's
+/// own cleanups only by where they were registered (as `the host`), and
+/// rutis's own plugins left out while one of the developer's is listed.
+/// guarantee: core/features.shutdown-timeout-names-stuck
+#[tokio::test]
+async fn a_stuck_shutdown_names_neither_the_root_nor_rutis_plugins_beside_the_developers() {
+    struct Holds(Arc<Notify>, &'static str, bool);
+    impl DynPlugin for Holds {
+        fn name(&self) -> &str {
+            self.1
+        }
+        fn platform(&self) -> bool {
+            self.2
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            let release = self.0.clone();
+            Box::pin(async move {
+                ctx.effect(move || async move {
+                    release.notified().await;
+                    Ok(())
+                })?;
+                Ok(Effect::Done)
+            })
+        }
+    }
+    let (ctx, _) = root();
+    let release = Arc::new(Notify::new());
+    (&ctx.plugin(Holds(release.clone(), "rutis-bridge/import#main", true)))
+        .await
+        .unwrap();
+    (&ctx.plugin(Holds(release.clone(), "weather", false)))
+        .await
+        .unwrap();
+    let error = ctx
+        .shutdown_with_timeout(Duration::from_millis(50))
+        .await
+        .unwrap_err();
+    let DisposeWaitError::TimedOut { stuck, .. } = &error else {
+        panic!("{error}");
+    };
+    let names: Vec<&str> = stuck.iter().map(|s| s.plugin.as_str()).collect();
+    assert_eq!(names, ["weather"], "{error}");
+    // weather's cleanup ends; now rutis's own plugin is the only lead.
+    release.notify_one();
+    let error = within(
+        "the second wait",
+        ctx.shutdown_with_timeout(Duration::from_millis(200)),
+    )
+    .await
+    .unwrap_err();
+    let DisposeWaitError::TimedOut { stuck, .. } = &error else {
+        panic!("{error}");
+    };
+    let names: Vec<&str> = stuck.iter().map(|s| s.plugin.as_str()).collect();
+    assert_eq!(names, ["rutis-bridge/import#main"], "{error}");
+    release.notify_one();
+    within("the shutdown to finish", ctx.shutdown())
+        .await
+        .unwrap();
+}
+
 /// An apply that does not return holds a shutdown: it says so.
 /// guarantee: core/features.shutdown-timeout-names-stuck
 #[tokio::test]

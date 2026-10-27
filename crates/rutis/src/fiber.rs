@@ -103,10 +103,16 @@ fn timed_out(elapsed: Duration, stuck: &[Stuck], state: FiberState) -> String {
 /// shutdown or dispose that ran out of time: each plugin whose own work is
 /// unfinished (a child plugin's unload is left to the child), in tree
 /// order.
+///
+/// The root is not a plugin: only a cleanup the host registered on it with
+/// `ctx.effect` is listed, as `the host`. rutis's own plugins (a link, a
+/// runtime) are listed only when no plugin of the developer's is stuck:
+/// they are then the only lead there is.
 pub(crate) fn stuck_below(top: &Arc<FiberInner>) -> Vec<Stuck> {
     use crate::effect::Origin;
     let name = waiting::key_names(top.ctx.shared());
-    let mut out = Vec::new();
+    // (rutis's own, what) in tree order.
+    let mut found: Vec<(bool, Stuck)> = Vec::new();
     let mut pending = vec![top.clone()];
     while let Some(fiber) = pending.pop() {
         let mut children: Vec<Arc<FiberInner>> = fiber
@@ -118,12 +124,24 @@ pub(crate) fn stuck_below(top: &Arc<FiberInner>) -> Vec<Stuck> {
             .collect();
         children.reverse();
         pending.extend(children);
-        let plugin = fiber.display_name();
+        let root = fiber.is_root;
+        let plugin = if root {
+            "the host".to_owned()
+        } else {
+            fiber.display_name()
+        };
+        let own_platform = fiber.platform && !root;
+        let mut push = |doing: String| {
+            found.push((
+                own_platform,
+                Stuck {
+                    plugin: plugin.clone(),
+                    doing,
+                },
+            ))
+        };
         match fiber.state_snapshot().state {
-            FiberState::Loading => out.push(Stuck {
-                plugin,
-                doing: "its apply has not returned".into(),
-            }),
+            FiberState::Loading if !root => push("its apply has not returned".into()),
             FiberState::Unloading => {
                 let records: Vec<Arc<EffectRecord>> = fiber
                     .effect_index
@@ -132,41 +150,49 @@ pub(crate) fn stuck_below(top: &Arc<FiberInner>) -> Vec<Stuck> {
                     .iter()
                     .filter_map(Weak::upgrade)
                     .collect();
-                let mut child = false;
-                let mut own = Vec::new();
+                let mut busy = false;
                 for record in &records {
                     let Some((origin, label)) = record.draining() else {
                         continue;
                     };
+                    busy = true;
                     let doing = match origin {
-                        Origin::Mount => {
-                            child = true;
-                            continue;
-                        }
+                        Origin::Mount => continue,
                         Origin::Effect(at) => format!(
                             "still running the cleanup registered at {}:{}:{}",
                             at.file(),
                             at.line(),
                             at.column()
                         ),
+                        // The host's other cleanups wait for plugins,
+                        // which are named themselves.
+                        _ if root => continue,
                         Origin::Provide(key) => format!("still withdrawing {}", name(key)),
                         Origin::Apply => "still running the cleanup its apply returned".into(),
                         Origin::Other => format!("still running the cleanup {label}"),
                     };
-                    own.push(doing);
+                    push(doing);
                 }
-                if own.is_empty() && !child {
-                    own.push("still waiting for its event calls to finish".into());
+                // Before its cleanups run, an unload waits for the event
+                // calls still running and for the copies of the plugin
+                // definitions it made to end.
+                if !busy && !root {
+                    push(
+                        "still waiting for its event calls, or the copies of its plugin \
+                         definitions, to end"
+                            .into(),
+                    );
                 }
-                out.extend(own.into_iter().map(|doing| Stuck {
-                    plugin: plugin.clone(),
-                    doing,
-                }));
             }
             _ => {}
         }
     }
-    out
+    let developers = found.iter().any(|(platform, _)| !platform);
+    found
+        .into_iter()
+        .filter(|(platform, _)| !developers || !platform)
+        .map(|(_, stuck)| stuck)
+        .collect()
 }
 
 /// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
@@ -963,6 +989,11 @@ impl FiberInner {
             Self::set_state(this, &mut tr, FiberState::Unloading);
         }
         this.flush_status();
+        // A load that failed because it was being stopped (a dispose,
+        // restart or shutdown cancelled it) is no failed start to report.
+        let stopping = this.token.lock().unwrap().is_cancelled()
+            || this.closing.load(Ordering::SeqCst)
+            || this.ctx.shared().closing.load(Ordering::SeqCst);
         this.cancel_current();
 
         this.wait_events().await;
@@ -984,7 +1015,7 @@ impl FiberInner {
         this.flush_status();
         // Seen without anyone reading the result (#678): an embedding's
         // default sink prints it. rutis's own plugins report their own.
-        if !this.platform {
+        if !this.platform && !stopping {
             let error = ErrorKind::StartFailed {
                 plugin: this.display_name(),
                 error: arc,

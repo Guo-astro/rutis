@@ -165,7 +165,7 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 
 ### 默认输出
 
-`Ctx::root()`、`Ctx::root_with(handle)` 装的错误汇集（`host::default_sink()`）把收到的每个错误写一行到标准错误，不带 `[rutis]` 之类的前缀。没人读返回值时也看得到出了什么事：
+`Ctx::root()`、`Ctx::root_with(handle)` 装的错误汇集（`host::default_sink()`）把收到的每个错误写到标准错误，不带 `[rutis]` 之类的前缀；一个错误通常一行，几个错误聚在一起（`multiple errors:`）时每个一行。没人读返回值时也看得到出了什么事：
 
 | 事 | 一行，以名字开头 | 错误 |
 | --- | --- | --- |
@@ -175,7 +175,11 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 | 标了 `#[rutis::service]` 的类型被提供，但没链接 rutis-bridge | `service calendar is provided by type but not registered by name: …` | `ErrorKind::NotServedByName`，每个服务一次 |
 | 监听器出错 | `listener of … failed: …` | `ErrorKind::ListenerFailed` |
 
-名字是行名（行装载后），否则是插件名。rutis 自己的插件（传输、链路、运行时、加载器）启动失败不在这里报：它们的失败已经写在运行时那一行或链路状态里。整棵树关闭时运行时结束不报。
+名字是行名（行装载后），否则是插件名；实例里的行被拒时写 `weather in session 7`（组名和实例的编号）。rutis 自己的插件（传输、链路、运行时、加载器）启动失败不在这里报：它们的失败已经写在运行时那一行或链路状态里。因为被停下（`dispose`、关闭）而失败的 `apply`、整棵树关闭时结束的运行时都不报。正在运行的行改配置被拒、仍按原来的配置运行时，不算启动失败，这里不报，`reconcile` 的结果里有它。
+
+同一件事可能打印几行：插件启动失败时先报回滚中清理的错误，再报 `StartFailed`（它的错误里也有那些清理错误）；父插件因子插件失败而失败时两者各报一次。
+
+汇集是在 rutis 内部被调用的：不要在汇集里等 rutis 的操作。rutis-loader 报被拒的行时还拿着它的操作锁，汇集里再调用这个加载器的 `reconcile` 等修改会一直等下去；要做这类事，把错误送到别的任务里处理。
 
 要关掉或改写，换掉汇集：`Ctx::root_with_sink(handle, sink)`。想保留其余输出、只去掉某一种，在自己的汇集里按变体过滤，其余交给 `default_sink()`：
 
@@ -199,7 +203,7 @@ let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9
 ```
 
-用 `ctx.effect` 登记的清理写出登记处的文件、行号和列；其他清理写插件或行名和它在做什么：`still withdrawing calendar`（撤下它提供的服务）、`still running the cleanup its apply returned`（`apply` 返回的清理，rutis-loader 的行就是这种）、`its apply has not returned`。
+用 `ctx.effect` 登记的清理写出登记处的文件、行号和列；其他清理写插件或行名和它在做什么：`still withdrawing calendar`（撤下它提供的服务）、`still running the cleanup its apply returned`（`apply` 返回的清理，rutis-loader 的行就是这种）、`its apply has not returned`、`still waiting for its event calls, or the copies of its plugin definitions, to end`。根不是插件：只有宿主在根上用 `ctx.effect` 登记的清理会列出，写作 `the host`。rutis 自己的插件（链路、运行时等）只在没有开发者的插件卡住时列出，那时它们是仅有的线索。
 
 ## 给插件提供 Rust 服务
 
