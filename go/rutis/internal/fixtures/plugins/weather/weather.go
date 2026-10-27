@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 type Config struct {
@@ -91,11 +92,11 @@ var samples = map[string]func() any{
 	},
 	"go/value-constructed": func() any {
 		return []any{
-			rutis.DateTime{Date: rutis.Date{Year: 2026, Month: 10, Day: 15}, Time: rutis.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000}},
-			rutis.Date{Year: 2026, Month: 10, Day: 15},
-			rutis.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000},
-			rutis.Decimal("1.10"),
-			rutis.UUID("0f8fad5b-d9cb-469f-a165-70867728950e"),
+			advanced.DateTime{Date: advanced.Date{Year: 2026, Month: 10, Day: 15}, Time: advanced.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000}},
+			advanced.Date{Year: 2026, Month: 10, Day: 15},
+			advanced.TimeOfDay{Hour: 14, Minute: 30, Second: 5, Nanosecond: 250_000_000},
+			advanced.Decimal("1.10"),
+			advanced.UUID("0f8fad5b-d9cb-469f-a165-70867728950e"),
 		}
 	},
 	"go/big-int-in-struct": func() any { return Reading{N: 1 << 60} },

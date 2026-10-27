@@ -23,6 +23,8 @@ import (
 // AggregateError reports every failed listener of a Parallel dispatch, in
 // registration order, even when only one failed. Unwrap lets errors.Is/As
 // inspect each failure.
+//
+// Deprecated: moved in 0.19: use advanced.AggregateError.
 type AggregateError = peer.AggregateError
 
 // Listener is what the bus says of a listener, as a Filter predicate sees
@@ -36,6 +38,8 @@ type Scope = events.Scope
 
 // Next is the rest of a waterfall: a waterfall listener gets it as its last
 // argument, and calls it at most once.
+//
+// Deprecated: moved in 0.19: use advanced.Next.
 type Next = events.Next
 
 // Terminal is a waterfall's innermost step: `next` of the last listener
@@ -46,11 +50,17 @@ type Terminal = events.Terminal
 // error of that name made here or received from another process.
 var (
 	// ErrReservedEvent: a plugin emitted a `rutis/*` event.
+	//
+	// Deprecated: moved in 0.19: use advanced.ErrReservedEvent.
 	ErrReservedEvent = events.ErrReservedEvent
 	// ErrWaterfallNext: `next` called twice, or after its waterfall ended.
+	//
+	// Deprecated: moved in 0.19: use advanced.ErrWaterfallNext.
 	ErrWaterfallNext = events.ErrWaterfallNext
 	// ErrAsyncListener: a Bail reached an asynchronous listener of another
 	// language.
+	//
+	// Deprecated: moved in 0.19: use advanced.ErrAsyncListener.
 	ErrAsyncListener = events.ErrAsyncListener
 	// ErrBinding: a transport failure, a withdrawn listener, a refused
 	// frame.
@@ -62,9 +72,13 @@ type ListenOption func(*events.ListenOptions)
 
 // Prepend puts the listener before every listener registered so far,
 // instead of after them.
+//
+// Deprecated: moved in 0.19: use advanced.Prepend.
 func Prepend() ListenOption { return func(o *events.ListenOptions) { o.Prepend = true } }
 
 // Global exempts the listener from emitters' filters (Filter).
+//
+// Deprecated: moved in 0.19: use advanced.Global.
 func Global() ListenOption { return func(o *events.ListenOptions) { o.Global = true } }
 
 type listener struct {
