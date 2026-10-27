@@ -82,6 +82,12 @@ func decoderPath(err error, t reflect.Type) []any {
 			}
 		}
 		if next == nil {
+			// The Go name of an embedded struct whose fields are
+			// promoted (encoding/json names it in Field): not a key.
+			if embedded, ok := at.FieldByName(key); ok && embedded.Anonymous {
+				at = embedded.Type
+				continue
+			}
 			break
 		}
 		path = append(path, key)

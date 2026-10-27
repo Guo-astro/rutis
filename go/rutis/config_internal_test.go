@@ -221,3 +221,20 @@ func TestDecoderPathsAndNegativeZero(t *testing.T) {
 		t.Fatalf("%q", text)
 	}
 }
+
+type promotedHome struct {
+	forecastHome
+}
+
+// A field promoted from an embedded struct is named by its key.
+func TestADecoderErrorInAPromotedFieldNamesIt(t *testing.T) {
+	def := Define(Plugin[promotedHome]{
+		Name:   "weather",
+		Schema: map[string]any{"type": "object", "properties": map[string]any{"lat": map[string]any{}}},
+		Apply:  func(*Ctx, promotedHome) error { return nil },
+	})
+	err := def.apply(nil, json.RawMessage(`{"lat":"north"}`))
+	if coded := badConfigOf(t, err); coded.Error() != "config: lat is not a value the plugin accepts" {
+		t.Fatalf("%q", coded.Error())
+	}
+}

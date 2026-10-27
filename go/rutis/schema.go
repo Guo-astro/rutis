@@ -30,6 +30,9 @@ type jsonField struct {
 	// a JSON string.
 	quoted bool
 	depth  int
+	// Named by its tag: it wins over untagged fields of the name at its
+	// depth.
+	tagged bool
 }
 
 // jsonFields is the fields encoding/json decodes a struct's keys into:
@@ -78,7 +81,7 @@ func jsonFields(t reflect.Type) []jsonField {
 			}
 			byName[name] = append(byName[name], jsonField{
 				name: name, goName: f.Name, doc: f.Tag.Get("doc"), typ: f.Type,
-				quoted: strings.Contains(","+rest+",", ",string,"), depth: depth,
+				quoted: strings.Contains(","+rest+",", ",string,"), depth: depth, tagged: tagName != "",
 			})
 		}
 	}
@@ -86,18 +89,26 @@ func jsonFields(t reflect.Type) []jsonField {
 	var out []jsonField
 	for _, name := range order {
 		candidates := byName[name]
-		shallowest := candidates[0]
-		count := 0
+		depth := candidates[0].depth
 		for _, c := range candidates {
-			if c.depth < shallowest.depth {
-				shallowest, count = c, 0
-			}
-			if c.depth == shallowest.depth {
-				count++
+			depth = min(depth, c.depth)
+		}
+		// At the shallowest depth: the one field, or the one tagged
+		// field among them; none when that does not tell.
+		var at, tagged []jsonField
+		for _, c := range candidates {
+			if c.depth == depth {
+				at = append(at, c)
+				if c.tagged {
+					tagged = append(tagged, c)
+				}
 			}
 		}
-		if count == 1 {
-			out = append(out, shallowest)
+		switch {
+		case len(at) == 1:
+			out = append(out, at[0])
+		case len(tagged) == 1:
+			out = append(out, tagged[0])
 		}
 	}
 	return out
@@ -172,15 +183,30 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 		if err != nil {
 			return nil, err
 		}
-		if ty, ok := schema["type"].(string); ok {
-			nullable := map[string]any{}
-			for key, value := range schema {
-				nullable[key] = value
+		var types []any
+		switch ty := schema["type"].(type) {
+		case string:
+			types = []any{ty}
+		case []any:
+			types = ty
+		case []string:
+			for _, name := range ty {
+				types = append(types, name)
 			}
-			nullable["type"] = []any{ty, "null"}
-			return nullable, nil
+		default:
+			return schema, nil
 		}
-		return schema, nil
+		for _, name := range types {
+			if name == "null" {
+				return schema, nil
+			}
+		}
+		nullable := map[string]any{}
+		for key, value := range schema {
+			nullable[key] = value
+		}
+		nullable["type"] = append(append([]any{}, types...), "null")
+		return nullable, nil
 	case reflect.Interface:
 		return map[string]any{}, nil
 	case reflect.Slice, reflect.Array:

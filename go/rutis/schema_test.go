@@ -111,3 +111,36 @@ func TestFieldsAreWhatEncodingJSONDecodes(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+type withName struct {
+	Name string `json:"Name"`
+}
+
+type otherName struct {
+	Name int
+}
+
+type embedsTagged struct {
+	innerConfig `json:"inner"`
+}
+
+// A tagged embedded struct is one field; of two fields of a name at one
+// depth the tagged one wins; a pointer to a schema with several types
+// also takes null.
+func TestEmbeddedFieldsFollowEncodingJSON(t *testing.T) {
+	type config struct {
+		embedsTagged
+		withName
+		otherName
+		Num *json.Number `json:"num"`
+	}
+	schema, err := schemaOf(reflect.TypeFor[config]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(schema)
+	want := `{"properties":{"Name":{"type":"string"},"inner":{"properties":{"lat":{"type":"number"}},"type":"object"},"num":{"type":["number","string","null"]}},"type":"object"}`
+	if string(got) != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
