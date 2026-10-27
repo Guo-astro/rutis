@@ -677,3 +677,161 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
     assert!(!path.contains(&id), "{path:?} holds {id}");
     assert_eq!(path, vec![format!("{tag}/rust:2"), format!("{tag}/node:1")]);
 }
+
+/// Keeps the future it answers with, for the test to hand on.
+struct Keep(Arc<std::sync::OnceLock<Value>>);
+impl Dispatch for Keep {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+        let future = Value::future(async { Ok(Value::Data(json!(1))) });
+        self.0.set(future.clone()).ok();
+        Ok(future)
+    }
+}
+
+/// The origin of a future made while a call of session `a` was handled is
+/// in `a`'s terms: back to `a` it stays as it is; sent to session `b` it is
+/// rebased, `a`'s ids tagged with `a` (in the compat format, left out), so
+/// `b` never takes one of them for one of its own calls.
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_future_sent_to_another_session_has_its_origin_rebased() {
+    let held = Arc::new(std::sync::OnceLock::new());
+    let (a, far_a) = connected(Arc::new(Keep(held.clone())));
+    let mut far_a =
+        tokio::task::spawn_blocking(move || Remote::start_declaring(far_a, &TAKES_OBJECTS))
+            .await
+            .unwrap();
+    a.ready().await.unwrap();
+    let tag = a.tag().to_owned();
+    let (far_a, home) = tokio::task::spawn_blocking(move || {
+        far_a.send(Frame::Invoke {
+            id: "node:1".into(),
+            path: vec!["rust:9".into()],
+            target: "t".into(),
+            method: "make".into(),
+            args: data(json!([])),
+            sync: false,
+        });
+        let Frame::Return { value, .. } = far_a.read() else {
+            panic!("return expected")
+        };
+        let WireValue::Reference { origin, .. } = value else {
+            panic!("a future expected")
+        };
+        (far_a, origin)
+    })
+    .await
+    .unwrap();
+    assert_eq!(home, ids(&["rust:9", "node:1"]), "back home, as it was");
+    let future = held.get().unwrap().clone();
+    // To a session of the endpoint format: tagged.
+    let (b, far_b) = endpoint_pair();
+    let given = |b: Connection, far_b: Far, future: Value| async move {
+        let taker = tokio::task::spawn_blocking(move || {
+            let mut far_b = Remote::start_endpoint(far_b, &["objects"]);
+            let Frame::Invoke { id, args, .. } = far_b.read() else {
+                panic!("invoke expected")
+            };
+            far_b.ret(id, WireValue::Undefined);
+            let WireValue::List(mut args) = args else {
+                panic!("a list expected")
+            };
+            let WireValue::Reference { origin, .. } = args.remove(0) else {
+                panic!("a future expected")
+            };
+            (far_b, origin)
+        });
+        b.ready().await.unwrap();
+        b.invoke_async("t", "take", Value::List(vec![future]))
+            .await
+            .unwrap();
+        taker.await.unwrap()
+    };
+    let (_far_b, origin) = given(b, far_b, future.clone()).await;
+    assert_eq!(
+        origin,
+        vec![format!("{tag}/rust:9"), format!("{tag}/node:1")]
+    );
+    // To a runtime of the compat format, which takes only its own ids:
+    // none of `a`'s.
+    let (c, far_c) = connected(Arc::new(NoExports));
+    let taker = tokio::task::spawn_blocking(move || {
+        let mut far_c = Remote::start_declaring(far_c, &TAKES_OBJECTS);
+        let Frame::Invoke { id, args, .. } = far_c.read() else {
+            panic!("invoke expected")
+        };
+        far_c.ret(id, WireValue::Undefined);
+        let WireValue::List(mut args) = args else {
+            panic!("a list expected")
+        };
+        let WireValue::Reference { origin, .. } = args.remove(0) else {
+            panic!("a future expected")
+        };
+        (far_c, origin)
+    });
+    c.ready().await.unwrap();
+    c.invoke_async("t", "take", Value::List(vec![future]))
+        .await
+        .unwrap();
+    let (_far_c, origin) = taker.await.unwrap();
+    assert!(origin.is_empty(), "{origin:?} holds ids of another session");
+    drop(far_a);
+}
+
+/// A future the host made outside any call, awaited by session `b`, calls
+/// an object of session `a`: it runs on `b`'s behalf, so the chain `a`
+/// gets is in `a`'s terms, `b`'s ids tagged with `b`.
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_future_awaited_by_a_session_calls_on_its_behalf() {
+    let (_a, mut far_a, object) = owner("node").await;
+    let object = object.reference().unwrap();
+    let future =
+        Value::future(async move { object.call_method_async("get", Value::List(vec![])).await });
+    let (b, far_b) = connected(Arc::new(NoExports));
+    let taker = tokio::task::spawn_blocking(move || {
+        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let Frame::Invoke { id, args, .. } = far_b.read() else {
+            panic!("invoke expected")
+        };
+        far_b.ret(id, WireValue::Undefined);
+        let WireValue::List(args) = args else {
+            panic!("a list expected")
+        };
+        (far_b, granted(&args[0]).0)
+    });
+    b.ready().await.unwrap();
+    let tag = b.tag().to_owned();
+    b.invoke_async("t", "take", Value::List(vec![future]))
+        .await
+        .unwrap();
+    let (mut far_b, reference) = taker.await.unwrap();
+    let path = tokio::task::spawn_blocking(move || {
+        far_b.send(Frame::Await {
+            id: "node:2".into(),
+            path: vec!["rust:2".into()],
+            reference,
+            sync: false,
+        });
+        let path = loop {
+            if let Frame::Call { id, path, .. } = far_a.read() {
+                far_a.ret(id, data(json!(1)));
+                break path;
+            }
+        };
+        let answer = loop {
+            if let Frame::Return { id, value } = far_b.read() {
+                if id == "node:2" {
+                    break data_of(value);
+                }
+            }
+        };
+        (path, answer, far_a, far_b)
+    });
+    let (path, answer, _far_a, _far_b) = tokio::time::timeout(STEP, path)
+        .await
+        .expect("the object's method called")
+        .unwrap();
+    assert_eq!(answer, json!(1));
+    assert_eq!(path, vec![format!("{tag}/rust:2"), format!("{tag}/node:2")]);
+}
