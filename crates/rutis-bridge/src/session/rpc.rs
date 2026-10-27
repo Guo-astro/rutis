@@ -309,6 +309,13 @@ impl Reference {
             ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
+    /// For an object with methods from another session: the far end it
+    /// came from, as messages name it (#687).
+    pub(crate) fn object_source(&self) -> Option<&str> {
+        self.remote_object()
+            .ok()
+            .map(|import| import.source.as_str())
+    }
     fn remote_object(&self) -> Result<&Arc<Import>, Error> {
         match &self.0 {
             ReferenceInner::Remote(import) if import.kind == Kind::Object => Ok(import),
@@ -319,16 +326,20 @@ impl Reference {
     pub fn call_method(&self, method: &str, args: Value) -> Reply {
         let import = self.remote_object()?;
         import
-            .connection()?
-            .request_sync(Operation::Call(import.id, Some(method.into()), args))
+            .connection()
+            .and_then(|connection| {
+                connection.request_sync(Operation::Call(import.id, Some(method.into()), args))
+            })
+            .map_err(|error| import.gone(error))
     }
     /// Call a method of a remote object without blocking the caller.
     pub async fn call_method_async(&self, method: &str, args: Value) -> Reply {
         let import = self.remote_object()?;
-        import
-            .connection()?
+        let connection = import.connection().map_err(|error| import.gone(error))?;
+        connection
             .request_async(Operation::Call(import.id, Some(method.into()), args))
             .await
+            .map_err(|error| import.gone(error))
     }
     /// Read a property of a remote object; every read is live.
     pub fn get(&self, property: &str) -> Reply {
@@ -842,7 +853,8 @@ const COMPAT_CAPABILITIES: [&str; 13] = [
 ];
 /// What a compat-format handshake may declare that means anything here; any
 /// other capability there is ignored, as before the format had any.
-const COMPAT_DECLARED: [&str; 14] = [
+const COMPAT_DECLARED: [&str; 15] = [
+    "objects",
     "sync-wait",
     EVENTS_CAPABILITY,
     "sync-stack",
@@ -865,6 +877,11 @@ struct Import {
     kind: Kind,
     grants: Mutex<u64>,
     origin: Vec<String>,
+    /// The far end it came from, for messages ([`Connection::far_name`]),
+    /// and why that session ended, once it did: kept here, as the session
+    /// may be gone by the time a call fails.
+    source: String,
+    end: Arc<std::sync::OnceLock<String>>,
 }
 impl Import {
     fn connection(&self) -> Result<Connection, Error> {
@@ -872,6 +889,54 @@ impl Import {
             .upgrade()
             .map(Connection)
             .ok_or_else(|| Error::Transport("the connection closed".into()))
+    }
+
+    /// A call on this object that failed because its session ended
+    /// (`error` a transport error): `a call on an object from py failed:
+    /// runtime py exited` (code `peer-gone`, data `{runtime, reason}`), as
+    /// only the host can say where an object came from (#687 §八). Any
+    /// other error, or a reference of another kind, as it is.
+    fn gone(&self, error: Error) -> Error {
+        let Error::Transport(reason) = &error else {
+            return error;
+        };
+        if self.kind != Kind::Object {
+            return error;
+        }
+        let how = match self.end.get() {
+            Some(how) => how.clone(),
+            None => ending(reason),
+        };
+        Error::binding(
+            crate::session::code::PEER_GONE,
+            format!(
+                "a call on an object from {source} failed: runtime {source} {how}",
+                source = self.source
+            ),
+            Some(serde_json::json!({ "runtime": self.source, "reason": reason })),
+        )
+    }
+}
+
+/// `values`, each undefined one null: what sits inside a value (#687 §七).
+fn nulls(values: Vec<Value>) -> Vec<Value> {
+    values
+        .into_iter()
+        .map(|value| match value {
+            Value::Undefined => Value::Data(Json::Null),
+            value => value,
+        })
+        .collect()
+}
+
+/// How a session ended, as messages say it of its runtime, from what ended
+/// it: `exited` when its process did (the local transport's `the process
+/// …`, read as a row's call in progress reads it, `runtime/rows.rs`), else
+/// `disconnected`.
+fn ending(reason: &str) -> String {
+    match reason.starts_with("the process ") {
+        true => "exited".into(),
+        false => "disconnected".into(),
     }
 }
 impl Drop for Import {
@@ -1191,6 +1256,10 @@ struct SessionState {
     /// The far end of a compat-format session as whoever started it named
     /// it ([`Connection::name_far_end`]), for messages.
     named: std::sync::OnceLock<String>,
+    /// How the far end went, once this side knows ([`Connection::ending`],
+    /// or what closed the session): shared with the imports, whose calls
+    /// say it after the session is gone.
+    end: Arc<std::sync::OnceLock<String>>,
     /// This side's call ids: `rust:` or `<endpoint>:`.
     local_prefix: String,
     /// The far end's: `node:`, or `<endpoint>:` once it greeted.
@@ -1303,6 +1372,7 @@ impl Connection {
             format,
             verified: info.peer,
             named: std::sync::OnceLock::new(),
+            end: Arc::default(),
             local_prefix,
             remote_prefix,
             greeting: std::sync::OnceLock::new(),
@@ -1441,6 +1511,9 @@ impl Connection {
                 return;
             }
             calls.closed = Some(error.clone());
+            if let Error::Transport(reason) = &error {
+                let _ = self.0.end.set(ending(reason));
+            }
             waits::ended(&self.0.tag);
             (
                 std::mem::take(&mut calls.waiting),
@@ -1921,17 +1994,27 @@ impl Connection {
                 }
                 self.encode_data(value)?
             }
+            // Undefined is null at any depth (#687 §七, design V10): only a
+            // whole argument (each encoded alone, `encode_args`) or a whole
+            // result keeps it.
             Value::List(values) => WireValue::List(
                 values
                     .iter()
-                    .map(|value| self.encode_inner(value, levels - 1, grants))
+                    .map(|value| match value {
+                        Value::Undefined => Ok(WireValue::Data(Json::Null)),
+                        value => self.encode_inner(value, levels - 1, grants),
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             Value::Record(fields) => WireValue::Record(
                 fields
                     .iter()
                     .map(|(key, value)| {
-                        Ok((key.clone(), self.encode_inner(value, levels - 1, grants)?))
+                        let value = match value {
+                            Value::Undefined => WireValue::Data(Json::Null),
+                            value => self.encode_inner(value, levels - 1, grants)?,
+                        };
+                        Ok((key.clone(), value))
                     })
                     .collect::<Result<_, Error>>()?,
             ),
@@ -2107,14 +2190,20 @@ impl Connection {
             }
             WireValue::Undefined => Value::Undefined,
             WireValue::Data(value) => Value::Data(value),
-            WireValue::List(values) => Value::List(self.decode_each(values)?),
+            // Undefined is null at any depth, also from an older far end
+            // that sent it (#687 §七); `decode_args` keeps whole arguments.
+            WireValue::List(values) => Value::List(nulls(self.decode_each(values)?)),
             // A Rust callee is cancelled by its future being dropped, once
             // the caller gives the call up and releases its result; the
             // signal itself only marks the call as cancellable.
             WireValue::Signal => Value::Signal,
             WireValue::Record(fields) => {
                 let (keys, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
-                Value::Record(keys.into_iter().zip(self.decode_each(values)?).collect())
+                Value::Record(
+                    keys.into_iter()
+                        .zip(nulls(self.decode_each(values)?))
+                        .collect(),
+                )
             }
             WireValue::Reference {
                 id,
@@ -2172,6 +2261,8 @@ impl Connection {
                             kind,
                             grants: Mutex::new(1),
                             origin,
+                            source: self.far_name(),
+                            end: self.0.end.clone(),
                         });
                         imports.insert(id, Arc::downgrade(&import));
                         drop(imports);
@@ -2346,7 +2437,13 @@ impl Connection {
     /// its format): that call fails with a throw saying why, and the
     /// session goes on.
     fn decode_args(&self, id: &str, args: WireValue) -> Result<Option<Value>, Error> {
-        match self.decode(args) {
+        // Each argument decoded alone: an undefined one stays undefined
+        // ("not given"), unlike one inside a value.
+        let decoded = match args {
+            WireValue::List(items) => self.decode_each(items).map(Value::List),
+            args => self.decode(args),
+        };
+        match decoded {
             Ok(args) => Ok(Some(args)),
             Err(error @ Error::Value(_)) => {
                 if !id.starts_with(self.remote_prefix()) {

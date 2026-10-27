@@ -20,7 +20,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { Client } from './client.ts'
-import { HOST_GONE } from './errors.ts'
+import { HOST_GONE, reportedStack } from './errors.ts'
 import { takeToken } from './channel.ts'
 import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
@@ -62,7 +62,7 @@ const runtimeName = () => current?.name ?? 'bun'
 function reportUnhandled() {
   for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
     process.on(event, (error: any) => {
-      const text = typeof error?.stack === 'string' && error.stack ? error.stack : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
+      const text = typeof error?.stack === 'string' && error.stack ? reportedStack(error.stack) : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
       say(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
     })
   }

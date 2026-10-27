@@ -124,7 +124,13 @@ def kind_text(kind: str, error: BaseException) -> str:
 class UnhandledError(Exception):
     """A load failed because the row's code left an exception unhandled
     while it loaded: says what, with that exception's traceback, code and
-    data."""
+    data, and the exception itself as its `__cause__`, so that its own
+    cause and an AggregateError's errors cross with it as they do for an
+    exception once the row has loaded."""
+
+    # Its stack is the exception's frames; the exception, with its chain,
+    # crosses as the cause (peer.encode_error).
+    reports_its_cause = True
 
 
 def unhandled_error(kind: str, error: BaseException) -> UnhandledError:
@@ -133,12 +139,33 @@ def unhandled_error(kind: str, error: BaseException) -> UnhandledError:
     for name in ("code", "data"):
         if hasattr(error, name):
             setattr(failure, name, getattr(error, name))
+    failure.__cause__ = error
     return failure
 
 
 def report_text(error: BaseException) -> str:
-    """The error as reported for no row: its whole traceback."""
-    return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()
+    """The error as reported for no row: its traceback with only the
+    plugin's frames, or the whole traceback when none of its frames is
+    the plugin's (it is then all there is to find its source by)."""
+    from .runner import _plugin_frame  # runner imports this module
+
+    report = traceback.TracebackException.from_exception(error)
+    if not any(_plugin_frame(frame) for frame in report.stack):
+        return "".join(report.format()).rstrip()
+    # Each exception of the chain (its cause, its context) keeps only the
+    # plugin's frames, or all of its own when none is the plugin's.
+    seen: set[int] = set()
+    pending = [report]
+    while pending:
+        part = pending.pop()
+        if id(part) in seen:
+            continue
+        seen.add(id(part))
+        own = [frame for frame in part.stack if _plugin_frame(frame)]
+        if own:
+            part.stack = traceback.StackSummary.from_list(own)
+        pending.extend(link for link in (part.__cause__, part.__context__) if link is not None)
+    return "".join(report.format()).rstrip()
 
 
 def install_exit(name_row: Callable[[str | None, list[str]], str | None], runtime: Callable[[], str]) -> None:

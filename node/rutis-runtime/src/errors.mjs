@@ -24,6 +24,15 @@ function pluginStack(stack) {
   return stack.split('\n').filter(line => !/^\s*at /.test(line) || !NOT_THE_PLUGINS.some(part => line.includes(part))).join('\n')
 }
 
+// `stack` as reported for an error no row can be told for (#688): only the
+// plugin's frames, or the whole stack when none of its frames is the
+// plugin's, since then the stack is all there is to find its source by.
+export function reportedStack(stack) {
+  if (typeof stack !== 'string') return stack
+  const own = pluginStack(stack)
+  return own.split('\n').some(line => /^\s*at /.test(line)) ? own : stack
+}
+
 // A thrown value that is not an error, shown as the developer wrote it:
 // `"need 5 words"`, `{code: 3}`, `[1, 2]`, `42` (§4.5). Short: nested
 // values beyond two levels and long texts are cut.
