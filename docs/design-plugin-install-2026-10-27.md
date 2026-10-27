@@ -125,7 +125,7 @@ Cordis 4 本身没有安装命令；Koishi 的插件市场用 npm 装进项目�
 - 键是插件名，也就是行的 `name`。`from` 是不带版本的引用，`version` 是装上的确切版本，`language` 是运行时的键，Go、Swift 另有 `binary`（相对文件所在目录）。同一个包的几个插件，`from` 相同。
 - 为什么放在 `rutis.json` 里而不是旁边另一个文件：少一个文件、少一个概念；宿主持有者在同一处看到装了什么、运行什么；部署时本来就要带着 `rutis.json`。它由 `add` 写，人也能读能改。
 - 行的名字是记录里的键时，rutis-host 按记录把它交给那门语言的解析：Node 原样，Bun `bun:<包>`，Python `py:<入口点>`，Go `go-<二进制>:<插件>`，Swift `swift-<二进制>:<插件>`。输出里仍写行里写的名字。不是记录里的键的名字，和现在一样解析。
-- **运行时推出**（I7）：按记录的键写名字（不带前缀）的行，用到的语言在 `runtimes` 没写时按默认启用，和 #666 一样，但不告警（记录已经说明了）；`runtimes` 写了的照它。Go、Swift 没写时，运行时就是记录里的那些二进制（`binaries`），不把整个目录当作受信任。行写成 `<运行时名>:<插件>`、在一个具名运行时里运行时（#683 的 `runtimes.local`，[#185 的设计](https://github.com/arcships/rutis/pull/732) 里 agent 插件就是这样），行照那个运行时解析，不因记录启用语言运行时；记录只用于 `remove` / `upgrade`。
+- **运行时推出**（I7）：按记录的键写名字（不带前缀）的行，用到的语言在 `runtimes` 没写时按默认启用，和 #666 一样，但不告警（记录已经说明了）；`runtimes` 写了的照它。Go、Swift 没写时，运行时就是记录里的那些二进制（`binaries`），不把整个目录当作受信任。
 - **名字冲突**：插件名已经是另一个包的记录时，`add` 拒绝，写明是哪个包。旧写法的行（`py:llm`）与记录无关，不算冲突。
 - 旧版 rutis-host 读到带 `installed` 的文件，按现有规则报"不认识的字段"并列出可用字段。`format` 仍是 1：`installed` 不改变其他字段的含义。
 
@@ -172,17 +172,15 @@ installer.remove(&records["llm"]).await?;            // 按记录卸掉整个包
 
 - **放在 rutis-loader**：嵌入的宿主本来就依赖它和它的语言 feature；描述插件要用的运行时也在这里。`rutis` 内核不变，不知道任何包管理器；`rutis-loader` 也只在调用时把 npm、uv、go 当作外部命令运行，不在构建时依赖它们。rutis-host 的库不是公开 API（`lib.rs` 写明无 semver 承诺），不放那里；也不为它另开一个 crate。
 - **记录是同一个形状**：`Record`（`from`、`version`、`language`，Go、Swift 另有 `binary`）实现 serde 的序列化与反序列化，就是 §六 `installed` 里键（插件名）后面的那个对象。rutis-host 把 `plugin.name → plugin.record` 原样写进 `installed`，读回来原样交给 `remove` / `upgrade`，中间不转换；rutis-host 读 `rutis.json` 用的也是这个类型。
-- **记录归调用方**：调用方存在自己想存的地方（rutis-host 存进 `installed`，deskmate 存进自己的插件列表，#185 的 `Admin` 经它的保存回调）。API 不读写任何配置文件，也不碰 loader 与运行时。
-- **分工**：`Installer::add` 做 §五 的第 1–4 步与失败回滚（本地目录的流程与命令行相同：按项目文件认语言、准备环境、链接或 `-e` 安装），返回插件名、行名与记录；描述（第 5 步）是单独的 `describe`；写行、加运行时、检查与通知 loader 由调用方做。所以命令行之外的调用方（#185 的 `rutis_loader::admin::Admin`）能直接用它，不经过 `rutis-host add`。
+- **记录归调用方**：调用方存在自己想存的地方（rutis-host 存进 `installed`，deskmate 存进自己的插件列表）。API 不读写任何配置文件，也不碰 loader 与运行时。
 - **行名**：返回 loader 认得的行名（`py:llm`、`bun:@ana/x`、`go-netkit:dns`）。嵌入的宿主用程序写行，不需要无前缀的名字；那是 `rutis.json` 给人写的便利。
 - `describe` 返回已有的 `RowSchema`，不另定类型。
 - rutis-host 的 `add` / `remove` / `upgrade` 与 `go add` 都调用它，安装逻辑只有一份。
 
 ## 十、与其他设计的关系、安全
 
-- **本地路径与 #185**：宿主或 agent 自己写的插件是一个本地目录，用同一个 `add ./plugins/notes` 装上；语言按项目文件判断。npm 装成链接、Python 用 `-e`、Go 每次 `upgrade` 重新构建，所以 agent 改了代码不用再 `add`；改动在这一行下次重新加载或重启时生效。agent 怎样触发重新加载、怎样把服务变成工具，是 #185 设计的事。
+- **#185**：#185 的 `loader` 服务不安装包；从包仓库安装归本设计（命令行与嵌入 `Installer`）。
 - **与 `dev`（#670）**：`add` 在插件项目里写 `rutis.dev.json`，`dev` 照现有规则重新读它：新行 `added` 并启动，别的行不动，共享运行时不重启。新行要的运行时还没在运行时（TypeScript 项目第一次加 Python 插件），和现在改配置加运行时一样被拒绝、提示重启，文字改为说出是哪个运行时：`reload rejected: rows now use the py runtime, which is not running: restart the host; nothing changed`。`run --watch-config` 相同。
-- **运行中由程序装（#185 的 `Admin`）**：宿主的管理服务 `plugins.add(path)` 在运行中调用 `Installer::add`，再自己用 #683 的 `RuntimeSet` 加一个具名运行时（`runtimes.local` 的条目）、写行、检查、通知 loader，并把行、运行时条目和记录写进 `rutis.json`；之后的重读（`--watch-config`、SIGUSR1）得到同样的条目，不算变化。上面"新行要的语言运行时没在运行就被拒绝"只针对 `runtimes.node` / `py` / `bun` 这类语言运行时经配置重读新增的情况；`runtimes.local` 的具名运行时运行中可以增删（#683），`Admin` 的流程不受这条限制。
 - **#683（管住插件）**：各插件在哪个进程运行、能用哪些服务，是 #683 的行选项，与怎样装无关。
 - **#698（远程运行时）**：只装到本机运行时；远程运行时上的插件由那一端自己装。
 - **安全**：`add`、`upgrade`、`--dry-run` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与宿主持有者直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
