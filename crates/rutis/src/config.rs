@@ -20,7 +20,10 @@ pub struct ConfigError {
 }
 
 impl ConfigError {
-    /// An error with these problems, in the order given.
+    /// An error with these problems, in the order given. For rutis's own
+    /// crates: a plugin's own config check returns errors of its own, so
+    /// that they stay apart from this one (config schema design §5.2).
+    #[doc(hidden)]
     pub fn new(issues: Vec<ConfigIssue>) -> Self {
         ConfigError { issues }
     }
@@ -72,6 +75,7 @@ impl std::error::Error for ConfigError {}
 /// One problem: where it is, and its sentence (path included:
 /// `home.lat should be a number, got "north"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ConfigIssue {
     pub path: Vec<PathSegment>,
     pub message: String,
@@ -79,6 +83,7 @@ pub struct ConfigIssue {
 
 impl ConfigIssue {
     /// The problem at `path`, its sentence `<path> <reason>`.
+    #[doc(hidden)]
     pub fn at(path: Vec<PathSegment>, reason: &str) -> Self {
         let message = format!("{} {reason}", path_text(&path));
         ConfigIssue { path, message }

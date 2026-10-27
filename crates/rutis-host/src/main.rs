@@ -365,6 +365,13 @@ async fn check(args: &[String]) -> Result<(), String> {
         .collect();
     for row in &report.rows {
         let (id, name) = (&row.id, &row.name);
+        // Extra keys in its config: warnings, errors with `--strict`
+        // (printed after the row's lines).
+        let extra: Vec<String> = row
+            .config_warnings
+            .iter()
+            .map(|warning| format!("config: {}", warning.message))
+            .collect();
         match &row.status {
             RowStatus::Disabled => outln!("{id} ({name}): disabled"),
             // A config that does not match its plugin's schema: one line
@@ -414,15 +421,6 @@ async fn check(args: &[String]) -> Result<(), String> {
                 config: checked_config,
                 ..
             } => {
-                // Extra keys in its config: warnings, errors with
-                // `--strict`.
-                let extra: Vec<String> = match checked_config {
-                    ConfigStatus::Checked { warnings } => warnings
-                        .iter()
-                        .map(|warning| format!("config: {}", warning.message))
-                        .collect(),
-                    _ => Vec::new(),
-                };
                 let missing: Vec<&str> = requires
                     .iter()
                     .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
@@ -477,10 +475,17 @@ async fn check(args: &[String]) -> Result<(), String> {
                             outln!("{id} ({name}): cannot run with --strict: {line}");
                         }
                     }
-                    (false, _) => outln!(
-                        "{id} ({name}): cannot run: nothing provides {}",
-                        missing.join(", ")
-                    ),
+                    (false, _) => {
+                        outln!(
+                            "{id} ({name}): cannot run: nothing provides {}",
+                            missing.join(", ")
+                        );
+                        if strict {
+                            for line in &extra {
+                                outln!("{id} ({name}): cannot run with --strict: {line}");
+                            }
+                        }
+                    }
                 }
                 for requirement in &undeclared {
                     let line = match &requirement.supply {
@@ -501,15 +506,6 @@ async fn check(args: &[String]) -> Result<(), String> {
                             false => "warning",
                         },
                         did_you_mean(requirement.like.as_deref())
-                    );
-                }
-                for line in &extra {
-                    errln!(
-                        "rutis-host: {}: {id}: {line}",
-                        match strict {
-                            true => "error",
-                            false => "warning",
-                        }
                     );
                 }
                 // A plugin needing a newer plugin API does not resolve: its
@@ -533,6 +529,15 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
             }
             _ => outln!("{id} ({name}): not checked"),
+        }
+        for line in &extra {
+            errln!(
+                "rutis-host: {}: {id}: {line}",
+                match strict {
+                    true => "error",
+                    false => "warning",
+                }
+            );
         }
     }
     // Warnings only, in 0.17.2: a configuration that passed still passes

@@ -96,7 +96,7 @@ fn required_can_be_ignored() {
     let checked = check(
         &schema,
         Some(&serde_json::json!({ "days": "x" })),
-        Options { required: false },
+        Options::default().without_required(),
     );
     let lines = ConfigError::new(checked.errors).lines();
     assert_eq!(lines, ["config: days should be an integer, got \"x\""]);

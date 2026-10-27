@@ -27,8 +27,12 @@
 
 - 根是不是对象、根的 `default`、属性的 `default`，都顺着 `$ref` 和 `allOf` 找（先自己，再 `$ref`，再 `allOf` 成员，依次第一个）；schemars 生成的根常常只有一个 `$ref`。
 - 默认值也补进数组的每一项和字典（`additionalProperties` 是 Schema）的每个值里的对象。
-- 同一路径上的问题：先是类型（类型错就只报类型，自己、`$ref`、`allOf` 成员里任何一个 `type` 不符都算），然后依次看自己、`$ref`、各 `allOf` 成员，每个按 `enum` / `const`、上下界、`anyOf` / `oneOf` 的顺序；完全相同的问题只报一次。
-- `additionalProperties` 取自己、`$ref`、`allOf` 成员里第一个写了的；多余的键只在其中有 `properties` 时警告。
+- 一个 Schema 「顺着 `$ref` 和 `allOf`」得到的各部分按深度优先的先序排：自己，然后它的 `$ref`（连同那里的 `$ref`、`allOf`），然后各 `allOf` 成员（各自同样展开），每个只算一次。
+- 同一路径上的问题：先是类型（类型错就只报类型，任何一部分的 `type` 不符都算），然后按上面的顺序逐部分，每部分按 `enum` / `const`、上下界、`anyOf` / `oneOf` 的顺序；完全相同的问题只报一次。
+- `additionalProperties` 取各部分里第一个写了的；没写时，多余的键在某一部分有 `properties` 时警告；写成 `true` 或 `{}` 时不警告。
+- 对同一个值正在试的 `anyOf` / `oneOf` 分支又经 `$ref` 回到它自己时，这一次算不匹配（不会无限递归）；进到子键、数组项时重新算。
+- 解析不了的 `$ref`（不是 `#/$defs/…`、`#/definitions/…`，或找不到）忽略，当作没写。
+- 路径里的键不截断（只有 `got` 的字符串超过 40 个才截断）。
 - 根的路径写成 `config`；第一段不是标识符的键或下标时前面也写 `config`（`config["1st"]`）。
 - `anyOf` / `oneOf` 的分支按 `const`、`enum`、`type` 的先后取第一个有的。
 - `type` 里不认识的名字忽略；`items` 是数组（旧的元组写法）时不检查。

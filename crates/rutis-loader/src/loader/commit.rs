@@ -268,13 +268,22 @@ impl Inner {
                     continue;
                 }
             };
-            if let Some(warnings) = warnings.as_deref_mut() {
-                let purpose = super::config_step::Purpose::Check { warnings };
-                if let Err(error) = self.config_step(&row.id, resolved, &config, purpose) {
-                    check(Err(error))?;
-                    continue;
+            let config = match warnings.as_deref_mut() {
+                Some(warnings) => {
+                    let purpose = super::config_step::Purpose::Check { warnings };
+                    match self.config_step(resolved, &config, purpose) {
+                        // The filled copy for the rows the loader fills;
+                        // other runtimes' SDKs fill their own.
+                        Ok(filled) if !resolved.foreign_scope => filled,
+                        Ok(_) => config,
+                        Err(error) => {
+                            check(Err(super::config_step::rejected(&row.id, error)))?;
+                            continue;
+                        }
+                    }
                 }
-            }
+                None => config,
+            };
             let checked = catch_unwind(AssertUnwindSafe(|| {
                 let factory = match &resolved.scoped {
                     Some(scoped) => scoped(&build)?,

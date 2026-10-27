@@ -980,7 +980,6 @@ impl rutis::ConfigError
 pub fn rutis::ConfigError::find<'a>(&'a (dyn core::error::Error + 'static)) -> core::option::Option<&'a rutis::ConfigError>
 pub fn rutis::ConfigError::issues(&self) -> &[rutis::ConfigIssue]
 pub fn rutis::ConfigError::lines(&self) -> alloc::vec::Vec<alloc::string::String>
-pub fn rutis::ConfigError::new(alloc::vec::Vec<rutis::ConfigIssue>) -> Self
 impl core::clone::Clone for rutis::ConfigError
 pub fn rutis::ConfigError::clone(&self) -> Self
 impl core::cmp::Eq for rutis::ConfigError
@@ -999,11 +998,9 @@ impl core::marker::Unpin for rutis::ConfigError
 impl core::marker::UnsafeUnpin for rutis::ConfigError
 impl core::panic::unwind_safe::RefUnwindSafe for rutis::ConfigError
 impl core::panic::unwind_safe::UnwindSafe for rutis::ConfigError
-pub struct rutis::ConfigIssue
+#[non_exhaustive] pub struct rutis::ConfigIssue
 pub rutis::ConfigIssue::message: alloc::string::String
 pub rutis::ConfigIssue::path: alloc::vec::Vec<rutis::PathSegment>
-impl rutis::ConfigIssue
-pub fn rutis::ConfigIssue::at(alloc::vec::Vec<rutis::PathSegment>, &str) -> Self
 impl core::clone::Clone for rutis::ConfigIssue
 pub fn rutis::ConfigIssue::clone(&self) -> Self
 impl core::cmp::Eq for rutis::ConfigIssue

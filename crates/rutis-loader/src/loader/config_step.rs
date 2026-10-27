@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use rutis::host::ErrorKind;
-use rutis::ConfigIssue;
+use rutis::{ConfigError, ConfigIssue};
 use serde_json::Value;
 
 use crate::config::{self, Options};
@@ -52,14 +52,16 @@ pub(super) fn checkable(resolved: &Resolved) -> Checkable {
 /// How `resolved`'s rows are checked: a Go binary built with an SDK older
 /// than 0.18 lists every field without `omitempty` as required in its
 /// manifest, so `required` is not checked there (design §7).
-fn options(resolved: &Resolved) -> Options {
-    let meta = &resolved.meta;
+fn options(meta: &Value) -> Options {
     let old_go = meta.get("source").and_then(Value::as_str) == Some("go")
         && meta
             .get("sdk")
             .and_then(Value::as_str)
             .is_some_and(older_than_0_18);
-    Options { required: !old_go }
+    match old_go {
+        true => Options::default().without_required(),
+        false => Options::default(),
+    }
 }
 
 /// `version` (`major.minor[.patch][-pre]`) is older than 0.18.
@@ -77,38 +79,58 @@ impl Inner {
     /// The config step for a copy of row `row` of `resolved`, its config
     /// evaluated: fill a copy with defaults, validate it, work out the
     /// extra keys. On a config that does not match, the marked error
-    /// ([`rutis::ConfigError`], passed as the plugin's error). Otherwise
-    /// the filled copy, or `config` as it is where nothing is checked.
+    /// ([`rutis::ConfigError`]; [`rejected`] passes it on as the row's
+    /// error). Otherwise the filled copy, or `config` as it is where
+    /// nothing is checked.
     pub(super) fn config_step(
         &self,
-        row: &str,
         resolved: &Resolved,
         config: &Value,
         purpose: Purpose<'_>,
-    ) -> Result<Value, LoaderError> {
+    ) -> Result<Value, ConfigError> {
         let Purpose::Check { warnings } = purpose;
         let (Checkable::Yes, Some(schema)) = (checkable(resolved), &resolved.schema) else {
             return Ok(config.clone());
         };
-        let checked = config::check(schema, Some(config), options(resolved));
+        let checked = config::check(schema, Some(config), options(&resolved.meta));
         for warning in checked.warnings.iter() {
             if !warnings.contains(warning) {
                 warnings.push(warning.clone());
             }
         }
         match checked.error() {
-            Some(error) => Err(LoaderError::Rejected {
-                id: row.to_owned(),
-                error: Arc::new(ErrorKind::PluginFailed(Box::new(error))),
-            }),
+            Some(error) => Err(error),
             None => Ok(checked.config),
         }
     }
 }
 
+/// Row `row` failing with the config error `error`, passed as its
+/// plugin's error.
+pub(super) fn rejected(row: &str, error: ConfigError) -> LoaderError {
+    LoaderError::Rejected {
+        id: row.to_owned(),
+        error: Arc::new(ErrorKind::PluginFailed(Box::new(error))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::older_than_0_18;
+    use super::{older_than_0_18, options};
+    use crate::config::Options;
+    use serde_json::json;
+
+    #[test]
+    fn old_go_manifests_do_not_check_required() {
+        let go = |sdk: &str| json!({ "source": "go", "sdk": sdk });
+        assert_eq!(
+            options(&go("0.17.2")),
+            Options::default().without_required()
+        );
+        assert_eq!(options(&go("0.18.0")), Options::default());
+        let swift = json!({ "source": "swift", "sdk": "0.17.2" });
+        assert_eq!(options(&swift), Options::default());
+    }
 
     #[test]
     fn versions_older_than_0_18() {

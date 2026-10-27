@@ -2424,6 +2424,488 @@
         ]
       },
       "warnings": []
+    },
+    {
+      "name": "errors and warnings together",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "units": "kelvin",
+        "cty": "x"
+      },
+      "then": {
+        "errors": [
+          "config: units should be \"metric\" or \"imperial\", got \"kelvin\""
+        ]
+      },
+      "warnings": [
+        "config: cty is not a config key (did you mean city?)"
+      ]
+    },
+    {
+      "name": "a branch referring back to itself does not match",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "$ref": "#/$defs/A"
+          }
+        },
+        "$defs": {
+          "A": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/A"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": 1
+      },
+      "then": {
+        "errors": [
+          "config: v should be another accepted value or a string, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a branch referring back to itself, another branch matching",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "$ref": "#/$defs/A"
+          }
+        },
+        "$defs": {
+          "A": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/A"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": "x"
+      },
+      "then": {
+        "config": {
+          "v": "x"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "additionalProperties true: no warning",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "a": {}
+        }
+      },
+      "config": {
+        "b": 1
+      },
+      "then": {
+        "config": {
+          "b": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "additionalProperties {}: no warning",
+      "schema": {
+        "type": "object",
+        "additionalProperties": {},
+        "properties": {
+          "a": {}
+        }
+      },
+      "config": {
+        "b": 1
+      },
+      "then": {
+        "config": {
+          "b": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "unknown type names are ignored",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "any"
+          },
+          "b": {
+            "type": [
+              "string",
+              "any"
+            ]
+          }
+        }
+      },
+      "config": {
+        "a": 1,
+        "b": 2
+      },
+      "then": {
+        "errors": [
+          "config: b should be a string, got 2"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "items as an array is not checked",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "array",
+            "items": [
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "t": [
+          1
+        ]
+      },
+      "then": {
+        "config": {
+          "t": [
+            1
+          ]
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "an index as the first segment",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "config": [
+        1
+      ],
+      "then": {
+        "errors": [
+          "config: config[0] should be a string, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a branch with type and enum is written by its enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "x",
+                  "y"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": 1
+      },
+      "then": {
+        "errors": [
+          "config: v should be one of \"x\", \"y\", null, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a $ref that does not resolve is ignored",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "$ref": "#/nope"
+          },
+          "b": {
+            "$ref": "#/$defs/missing"
+          }
+        }
+      },
+      "config": {
+        "a": 1,
+        "b": 2
+      },
+      "then": {
+        "config": {
+          "a": 1,
+          "b": 2
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "keys in paths are not cut",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {}
+        }
+      },
+      "config": {
+        "x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 1
+      },
+      "then": {
+        "config": {
+          "x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 1
+        }
+      },
+      "warnings": [
+        "config: config[\"x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"] is not a config key"
+      ]
+    },
+    {
+      "name": "a smaller distance beats a smaller code point",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "timeout": {},
+          "Timeoutx": {}
+        }
+      },
+      "config": {
+        "timeoutt": 1
+      },
+      "then": {
+        "config": {
+          "timeoutt": 1
+        }
+      },
+      "warnings": [
+        "config: timeoutt is not a config key (did you mean timeout?)"
+      ]
+    },
+    {
+      "name": "7 scalars at distance 2 is suggested",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "abcdexy": {}
+        }
+      },
+      "config": {
+        "abcdefg": 1
+      },
+      "then": {
+        "config": {
+          "abcdefg": 1
+        }
+      },
+      "warnings": [
+        "config: abcdefg is not a config key (did you mean abcdexy?)"
+      ]
+    },
+    {
+      "name": "6 scalars at distance 2 is not",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "abcdxy": {}
+        }
+      },
+      "config": {
+        "abcdef": 1
+      },
+      "then": {
+        "config": {
+          "abcdef": 1
+        }
+      },
+      "warnings": [
+        "config: abcdef is not a config key"
+      ]
+    },
+    {
+      "name": "astral characters: cut at 40 scalar values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "q": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      },
+      "then": {
+        "errors": [
+          "config: q should be a number, got \"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀…\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "combining characters count as scalar values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "q": "ééééééééééééééééééééé"
+      },
+      "then": {
+        "errors": [
+          "config: q should be a number, got \"éééééééééééééééééééé…\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "astral characters: lengths in scalar values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ab😀": {}
+        }
+      },
+      "config": {
+        "a😀": 1
+      },
+      "then": {
+        "config": {
+          "a😀": 1
+        }
+      },
+      "warnings": [
+        "config: config[\"a😀\"] is not a config key"
+      ]
+    },
+    {
+      "name": "astral characters: sorted by code point",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {}
+        }
+      },
+      "config": {
+        "😀": 1,
+        "｡": 2
+      },
+      "then": {
+        "config": {
+          "😀": 1,
+          "｡": 2
+        }
+      },
+      "warnings": [
+        "config: config[\"｡\"] is not a config key",
+        "config: config[\"😀\"] is not a config key"
+      ]
+    },
+    {
+      "name": "more escapes",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "q": "\b\f\r/<>&  "
+      },
+      "then": {
+        "errors": [
+          "config: q should be a number, got \"\\b\\f\\r/<>&  \""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "more numbers",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "a": 1e-05,
+        "b": 1e-06,
+        "c": 1.5e+20
+      },
+      "then": {
+        "errors": [
+          "config: a should be a string, got 0.00001",
+          "config: b should be a string, got 0.000001",
+          "config: c should be a string, got 150000000000000000000"
+        ]
+      },
+      "warnings": []
     }
   ]
 }

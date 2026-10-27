@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 
 /// How a config is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
     /// Missing `required` keys are errors. Off for the manifests of Go
     /// binaries built with an SDK older than 0.18, which list every field
@@ -29,8 +30,17 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    /// Missing `required` keys are not errors.
+    pub fn without_required(mut self) -> Self {
+        self.required = false;
+        self
+    }
+}
+
 /// What checking a config gives.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Checked {
     /// The config with defaults filled, an integral number passing
     /// `integer` written as an integer: what `apply` gets. `Null` for no
@@ -68,7 +78,14 @@ pub fn check(schema: &Value, config: Option<&Value>, options: Options) -> Checke
         warn: true,
         ..Sink::default()
     };
-    doc.validate(&root, &mut value, &mut Vec::new(), options, &mut sink);
+    doc.validate(
+        &root,
+        &mut value,
+        &mut Vec::new(),
+        options,
+        &mut sink,
+        &mut Vec::new(),
+    );
     // No value where the root does not allow it.
     if value.is_null() && config.is_none() && !sink.errors.is_empty() {
         sink.errors = vec![ConfigIssue::at(Vec::new(), "is required")];
@@ -253,6 +270,7 @@ impl<'a> Document<'a> {
         path: &mut Vec<PathSegment>,
         options: Options,
         sink: &mut Sink,
+        entered: &mut Vec<*const Value>,
     ) {
         let parts = self.parts(schemas);
         // The type first: when it is wrong, nothing else at or below it.
@@ -330,9 +348,18 @@ impl<'a> Document<'a> {
                 };
                 let mut passed = None;
                 for branch in branches {
+                    // A branch already being tried for this same value (a
+                    // schema that refers back to itself through `anyOf` /
+                    // `oneOf`) does not match.
+                    let at = branch as *const Value;
+                    if entered.contains(&at) {
+                        continue;
+                    }
                     let mut copy = value.clone();
                     let mut trial = Sink::default();
-                    self.validate(&[branch], &mut copy, path, options, &mut trial);
+                    entered.push(at);
+                    self.validate(&[branch], &mut copy, path, options, &mut trial, entered);
+                    entered.pop();
                     if trial.errors.is_empty() {
                         passed = Some(copy);
                         break;
@@ -377,16 +404,23 @@ impl<'a> Document<'a> {
                     path.push(PathSegment::Key(key.clone()));
                     if known.binary_search(key).is_ok() {
                         let below = Self::property(&parts, key);
-                        self.validate(&below, child, path, options, sink);
+                        self.validate(&below, child, path, options, sink, &mut Vec::new());
                     } else {
                         match additional {
                             Some(Value::Bool(false)) => {
                                 sink.errors.push(extra(path, key, &known));
                             }
                             Some(schema @ Value::Object(_)) => {
-                                self.validate(&[schema], child, path, options, sink);
+                                self.validate(
+                                    &[schema],
+                                    child,
+                                    path,
+                                    options,
+                                    sink,
+                                    &mut Vec::new(),
+                                );
                             }
-                            _ if described && sink.warn => {
+                            None if described && sink.warn => {
                                 sink.warnings.push(extra(path, key, &known));
                             }
                             _ => {}
@@ -403,7 +437,7 @@ impl<'a> Document<'a> {
                 if !below.is_empty() {
                     for (index, item) in items.iter_mut().enumerate() {
                         path.push(PathSegment::Index(index));
-                        self.validate(&below, item, path, options, sink);
+                        self.validate(&below, item, path, options, sink, &mut Vec::new());
                         path.pop();
                     }
                 }

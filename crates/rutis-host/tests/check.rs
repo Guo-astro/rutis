@@ -708,7 +708,8 @@ async fn check_fails_a_config_that_does_not_match_the_schema() {
             { "id": "weather", "name": "./weather.mjs", "config": wrong },
             { "id": "weather-py", "name": "py:weather", "config": wrong },
             { "id": "oslo", "name": "./weather.mjs", "config": "Oslo" },
-            { "id": "fine", "name": "py:weather", "config": { "city": "Oslo" } }
+            { "id": "fine", "name": "py:weather", "config": { "city": "Oslo" } },
+            { "id": "both", "name": "./weather.mjs", "config": { "city": "Oslo", "units": "kelvin", "cty": "x" } }
         ]),
         &[],
     )
@@ -726,11 +727,14 @@ async fn check_fails_a_config_that_does_not_match_the_schema() {
             "weather-py (py:weather): cannot run: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
             "oslo (file://<dir>/weather.mjs): cannot run: config: config should be an object, got \"Oslo\"",
             "fine (py:weather): ok",
+            "both (file://<dir>/weather.mjs): cannot run: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
         ]
     );
+    // Its extra keys are warned about too (design §9).
     assert_eq!(
         checked.stderr,
-        "rutis-host: 3 row(s) or binaries cannot run\n"
+        "rutis-host: warning: both: config: cty is not a config key (did you mean city?)\n\
+         rutis-host: 4 row(s) or binaries cannot run\n"
     );
     assert_eq!(checked.status, 1);
 }
