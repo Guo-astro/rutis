@@ -31,6 +31,7 @@ import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
+import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
 // emits them (internal/* stays in each runtime). The wording matches the
@@ -95,8 +96,7 @@ export const oldHost = (name: string) =>
 // What a plugin using `name`, which neither its `inject` nor its row's
 // declares, is told when the service is not there for it: what to declare,
 // not that it is missing (#676). The same in every runtime and testing tool.
-export const undeclaredUse = (name: string) =>
-  `service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`
+export const undeclaredUse = UNDECLARED
 
 export function scopedId(name: string, label?: string | null): string {
   if (name.includes('\0') || label?.includes('\0')) throw new Error(`service ${JSON.stringify(name)} or its scope label contains NUL`)
@@ -189,13 +189,14 @@ export class Runtime {
     const provided = this.#services.get(id)
     if (provided) return provided.value
     if (this.#hosts.has(id)) return this.#hosts.get(id)
-    throw new Error(`service ${id.replace('\0', ' in scope ')} is not available`)
+    throw unavailable(serviceName(id))
   }
 
   provide(row: Row, name: string, value: unknown): () => void {
     const id = idIn(row, name)
     const current = this.#services.get(id)
-    if (current) throw new Error(`service ${id} is already provided by row ${current.row}`)
+    // `forecast is already provided by a` (§8.1 row 13): the row's name.
+    if (current) throw new Error(`${name} is already provided by ${this.#bus.rowId(current.row)}`)
     this.#services.set(id, { row: row.key, value })
     row.provided.push(id)
     // Not declared: announced, with the methods it has; a host older than
@@ -307,7 +308,7 @@ export class Runtime {
           return this.lookup(idIn(row, name))
         } catch (error) {
           // Not given to it, though it may run: say so (#676).
-          if (!declares.has(name)) throw new Error(undeclaredUse(name))
+          if (!declares.has(name)) throw notDeclared(name)
           throw error
         }
       },
@@ -424,10 +425,10 @@ export class Runtime {
     const entry = this.#handles.get(target)
     if (!entry) throw new Error(`unknown or released service object ${target}`)
     const slot = this.#slots.get(entry.name)
-    if (slot && !slot.methods.has(method)) throw new Error(`unknown service method ${entry.name}.${method}`)
+    if (slot && !slot.methods.has(method)) throw noMethod(serviceName(entry.name), method, slot.methods)
     if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
     const operation = entry.object[method]
-    if (typeof operation !== 'function') throw new TypeError(`${entry.name}.${method} is not a method`)
+    if (typeof operation !== 'function') throw noMethod(serviceName(entry.name), method, slot ? slot.methods : methodsOf(entry.object))
     return Reflect.apply(operation, entry.object, args)
   }
 
@@ -503,7 +504,7 @@ export class Runtime {
     return new Proxy(target, {
       get(target, property, receiver) {
         if (typeof property !== 'string' || property in target || passthrough.has(property)) return Reflect.get(target, property, receiver)
-        return () => { throw new Error(`${id}.${property} is not provided by the rutis host`) }
+        return () => { throw noMethod(serviceName(id), property, Object.keys(methods)) }
       },
     })
   }

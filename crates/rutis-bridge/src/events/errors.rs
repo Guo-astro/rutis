@@ -37,8 +37,22 @@ pub fn to_session(error: &ErrorKind) -> Error {
     if let ErrorKind::ListenersFailed { name, errors } = error {
         return aggregate(name, errors);
     }
-    if let ErrorKind::ListenerFailed { error, .. } = error {
-        return to_session(error);
+    if let ErrorKind::ListenerFailed {
+        name,
+        listener,
+        error,
+    } = error
+    {
+        // The kernel labels a row's listener `row <id>`: the error records
+        // that row and the event it was listening to (#677).
+        let error = to_session(error);
+        return match listener.strip_prefix("row ") {
+            Some(row) => error.with_site(&crate::session::Site {
+                event: Some(name.clone()),
+                ..crate::session::Site::new(row, "listener")
+            }),
+            None => error,
+        };
     }
     if let ErrorKind::SyncEventPanicked(inner) = error {
         return to_session(inner);
@@ -67,31 +81,43 @@ fn named(error: &ErrorKind) -> String {
 }
 
 /// The line a host prints for an event failure its error sink receives
-/// (events protocol §5.6): `rutis: listener of <name> in <where> failed:
-/// <ErrorName>: <message>`, and the same for a filter; `None` for any other
-/// error.
+/// (events protocol §5.6, in the words of the diagnostics design §8.1):
+/// `<row>: listener of <name> failed: <ErrorName>: <message>` for a row's
+/// listener, `listener of <name> in <where> failed: …` for another, then
+/// where the error came from; `filter of <name> from <where> failed: …`
+/// for a filter; `None` for any other error.
 pub fn report_line(error: &ErrorKind) -> Option<String> {
     match error {
         ErrorKind::ListenerFailed {
             name,
             listener,
             error,
-        } => Some(format!(
-            "rutis: listener of {name} in {listener} failed: {}",
-            named(error)
-        )),
+        } => {
+            let text = crate::report::printable(&named(error));
+            let mut line = match listener.strip_prefix("row ") {
+                Some(row) => format!(
+                    "{}: listener of {name} failed: {text}",
+                    crate::report::printable(row)
+                ),
+                None => format!("listener of {name} in {listener} failed: {text}"),
+            };
+            for whereabout in crate::report::whereabouts(error) {
+                line.push_str("\n    ");
+                line.push_str(&whereabout);
+            }
+            Some(line)
+        }
         ErrorKind::FilterFailed {
             name,
             emitter,
             error,
         } => Some(format!(
-            "rutis: filter of {name} from {emitter} failed: {}",
-            named(error)
+            "filter of {name} from {emitter} failed: {}",
+            crate::report::printable(&named(error))
         )),
         ErrorKind::PluginFailed(source) => {
             let line = source.to_string();
-            line.starts_with("filter of ")
-                .then(|| format!("rutis: {line}"))
+            line.starts_with("filter of ").then_some(line)
         }
         _ => None,
     }
@@ -101,7 +127,10 @@ pub fn report_line(error: &ErrorKind) -> Option<String> {
 /// error node whose `errors` are the children's (as JavaScript encodes an
 /// `AggregateError`).
 fn aggregate(name: &str, errors: &[Arc<ErrorKind>]) -> Error {
-    let message = format!("{} listeners of {name} failed", errors.len());
+    let message = match errors.len() {
+        1 => format!("1 listener of {name} failed"),
+        n => format!("{n} listeners of {name} failed"),
+    };
     let mut nodes: Vec<Json> = vec![Json::Null];
     let mut children = Vec::new();
     for error in errors {
@@ -203,5 +232,54 @@ mod tests {
         assert_eq!(second["code"], "Busy");
         // The child's data moved with it.
         assert_eq!(second["data"], json!({ "type": "data", "value": [1] }));
+    }
+
+    /// A row's listener that fails records the row and the event (#677).
+    #[test]
+    fn a_listener_error_records_its_row_and_event() {
+        let thrown = crate::exports::failure("KeyError", "KeyError", "'region'".into(), None);
+        let failed = |listener: &str| ErrorKind::ListenerFailed {
+            name: "weather/asked".into(),
+            listener: listener.into(),
+            error: Arc::new(to_cordis(thrown.clone()).into_kind()),
+        };
+        let site = to_session(&failed("row weather")).site().unwrap();
+        assert_eq!(
+            site,
+            crate::session::Site {
+                event: Some("weather/asked".into()),
+                ..crate::session::Site::new("weather", "listener")
+            }
+        );
+        // A listener that is not a row's records nothing.
+        assert_eq!(to_session(&failed("plugin printer")).site(), None);
+    }
+
+    /// A row's listener that fails prints as the row's line; one failed
+    /// listener is `1 listener` (#677, §8.1 row 7).
+    #[test]
+    fn a_listener_failure_prints_as_its_rows_line() {
+        let thrown = crate::exports::failure("KeyError", "KeyError", "'region'".into(), None);
+        let failed = |listener: &str| ErrorKind::ListenerFailed {
+            name: "weather/asked".into(),
+            listener: listener.into(),
+            error: Arc::new(to_cordis(thrown.clone()).into_kind()),
+        };
+        assert_eq!(
+            report_line(&failed("row weather")).unwrap(),
+            "weather: listener of weather/asked failed: KeyError: 'region'"
+        );
+        assert_eq!(
+            report_line(&failed("plugin printer")).unwrap(),
+            "listener of weather/asked in plugin printer failed: KeyError: 'region'"
+        );
+        let one = to_session(&ErrorKind::ListenersFailed {
+            name: "weather/asked".into(),
+            errors: vec![Arc::new(failed("row weather"))],
+        });
+        assert_eq!(
+            one.to_string(),
+            "AggregateError: 1 listener of weather/asked failed"
+        );
     }
 }

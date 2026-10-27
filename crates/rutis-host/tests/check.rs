@@ -173,7 +173,7 @@ async fn check_fails_what_cannot_run() {
          inject: []\n  \
          provides: {}\n\
          future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 4; this runtime supports 3: upgrade @arcships/rutis-runtime where the host runs\n\
-         broken (file://<dir>/broken.mjs): cannot load \"file://<dir>/broken.mjs\": Error: broken on import\n\
+         broken (file://<dir>/broken.mjs): cannot load <dir>/broken.mjs: Error: broken on import (<dir>/broken.mjs:1:7)\n\
          missing (weather-plugin): no plugin named \"weather-plugin\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n\
          nowhere (py:nowhere): cannot load \"py:nowhere\": ModuleNotFoundError: No module named 'nowhere'\n\
@@ -665,10 +665,156 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
             "  embeddings: not known to be provided; it may come from embedder (the gpu runtime is not running)",
             "gpu (rutis-bridge/peer): ok",
             "embedder (gpu:embedder): ok",
+            "  config not checked: its schema is known only when it runs",
         ]
     );
     assert_eq!(checked.stderr, "");
     assert_eq!(checked.status, 0);
+}
+
+/// The weather plugin's schema (config schema design §9).
+fn weather_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["city"],
+        "properties": {
+            "city": { "type": "string" },
+            "units": { "enum": ["metric", "imperial"], "default": "metric" },
+            "days": { "type": "integer" },
+            "home": { "type": "object", "properties": { "lat": { "type": "number" } } }
+        }
+    })
+}
+
+/// A Node plugin and a Python module with the same schema.
+fn weather_plugins() -> Vec<(&'static str, String)> {
+    let schema = weather_schema();
+    vec![
+        (
+            "package.json",
+            r#"{ "name": "app", "type": "module" }"#.to_owned(),
+        ),
+        (
+            "weather.mjs",
+            format!(
+                "import {{ definePlugin }} from '{}'\n\
+                 export default definePlugin({{ config: {schema}, apply() {{}} }})\n",
+                sdk()
+            ),
+        ),
+        (
+            "weather.py",
+            format!(
+                "import json\nConfig = json.loads({:?})\ndef apply(ctx, config):\n    pass\n",
+                schema.to_string()
+            ),
+        ),
+    ]
+}
+
+async fn check_rows(rows: serde_json::Value, args: &[&str]) -> Checked {
+    let dir = tempfile::tempdir().unwrap();
+    let mut files = weather_plugins();
+    files.push(("rutis.json", configuration(rows)));
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    write(dir.path(), &files);
+    let python = repo().join("python/rutis");
+    let mut all = vec!["rutis.json"];
+    all.extend_from_slice(args);
+    check(dir.path(), &all, &[("RUTIS_PYTHON_PATH", &python)]).await
+}
+
+/// Lines of `check`'s output without what it prints of each plugin
+/// (indented).
+fn rows_only(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with("  "))
+        .collect()
+}
+
+/// A config that does not match its plugin's schema fails its row, one
+/// line per problem sorted by path, the same for every language; exit
+/// status 1 (config schema design §7).
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_fails_a_config_that_does_not_match_the_schema() {
+    let wrong = serde_json::json!({ "days": 1.5, "home": { "lat": "north" }, "units": "kelvin" });
+    let checked = check_rows(
+        serde_json::json!([
+            { "id": "weather", "name": "./weather.mjs", "config": wrong },
+            { "id": "weather-py", "name": "py:weather", "config": wrong },
+            { "id": "oslo", "name": "./weather.mjs", "config": "Oslo" },
+            { "id": "fine", "name": "py:weather", "config": { "city": "Oslo" } },
+            { "id": "both", "name": "./weather.mjs", "config": { "city": "Oslo", "units": "kelvin", "cty": "x" } }
+        ]),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        rows_only(&checked.stdout),
+        [
+            "weather (file://<dir>/weather.mjs): cannot run: config: city is required",
+            "weather (file://<dir>/weather.mjs): cannot run: config: days should be an integer, got 1.5",
+            "weather (file://<dir>/weather.mjs): cannot run: config: home.lat should be a number, got \"north\"",
+            "weather (file://<dir>/weather.mjs): cannot run: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
+            "weather-py (py:weather): cannot run: config: city is required",
+            "weather-py (py:weather): cannot run: config: days should be an integer, got 1.5",
+            "weather-py (py:weather): cannot run: config: home.lat should be a number, got \"north\"",
+            "weather-py (py:weather): cannot run: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
+            "oslo (file://<dir>/weather.mjs): cannot run: config: config should be an object, got \"Oslo\"",
+            "fine (py:weather): ok",
+            "both (file://<dir>/weather.mjs): cannot run: config: units should be \"metric\" or \"imperial\", got \"kelvin\"",
+        ]
+    );
+    // Its extra keys are warned about too (design §9).
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: warning: both: config: cty is not a config key (did you mean city?)\n\
+         rutis-host: 4 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// An extra key is a warning on standard error, with exit status 0; with
+/// `--strict` the row cannot run, exit status 1 (config schema design §7).
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_warns_of_extra_config_keys() {
+    let rows = serde_json::json!([
+        { "id": "weather", "name": "./weather.mjs", "config": { "city": "Oslo", "cty": "Bergen" } },
+        { "id": "weather-py", "name": "py:weather", "config": { "city": "Oslo", "zz": 1 } }
+    ]);
+    let checked = check_rows(rows.clone(), &[]).await;
+    assert_eq!(
+        rows_only(&checked.stdout),
+        [
+            "weather (file://<dir>/weather.mjs): ok",
+            "weather-py (py:weather): ok"
+        ]
+    );
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: warning: weather: config: cty is not a config key (did you mean city?)\n\
+         rutis-host: warning: weather-py: config: zz is not a config key\n"
+    );
+    assert_eq!(checked.status, 0);
+
+    let strict = check_rows(rows, &["--strict"]).await;
+    assert_eq!(
+        rows_only(&strict.stdout),
+        [
+            "weather (file://<dir>/weather.mjs): cannot run with --strict: config: cty is not a config key (did you mean city?)",
+            "weather-py (py:weather): cannot run with --strict: config: zz is not a config key"
+        ]
+    );
+    assert_eq!(
+        strict.stderr,
+        "rutis-host: error: weather: config: cty is not a config key (did you mean city?)\n\
+         rutis-host: error: weather-py: config: zz is not a config key\n\
+         rutis-host: 2 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(strict.status, 1);
 }
 
 /// A listening link row and a runtime dialing in to the same listener, the

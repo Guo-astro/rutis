@@ -124,7 +124,9 @@ pub enum ErrorKind {
     ServiceRead(#[from] ServiceReadError),
     #[error("service {0:?} not found in scope")]
     ServiceNotFound(String),
-    #[error("plugin failed: {0}")]
+    /// Plugin code's own error, shown as it is: what the plugin said, with
+    /// no prefix of rutis's (#677).
+    #[error("{0}")]
     PluginFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("multiple errors: {errors:?}")]
     Aggregate {
@@ -157,7 +159,7 @@ pub enum ErrorKind {
     InstanceOutOfScope { instance: InstanceId },
     /// `parallel` had failures: one per failed listener, in registration
     /// order (`AggregateError`, also for a single failure).
-    #[error("{} listeners of {name} failed", errors.len())]
+    #[error("{}", listeners_failed(errors.len(), name))]
     ListenersFailed {
         name: String,
         errors: Vec<Arc<ErrorKind>>,
@@ -517,6 +519,14 @@ pub(crate) fn join_panic_error(join_err: tokio::task::JoinError) -> Error {
     }
 }
 
+/// `1 listener of <event> failed` / `<n> listeners of <event> failed`.
+fn listeners_failed(count: usize, event: &str) -> String {
+    match count {
+        1 => format!("1 listener of {event} failed"),
+        n => format!("{n} listeners of {event} failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,15 +545,26 @@ mod tests {
     #[test]
     fn plugin_failure_display_and_sink_preserve_each_cause_once() {
         let error = ErrorKind::PluginFailed(Box::new(OuterCause { source: InnerCause }));
-        assert_eq!(error.to_string(), "plugin failed: outer cause");
+        assert_eq!(error.to_string(), "outer cause");
         assert_eq!(
             format_for_sink(&error),
-            "plugin failed: outer cause\n  caused by: inner cause"
+            "outer cause\n  caused by: inner cause"
         );
         assert_eq!(
             std::error::Error::source(&error).unwrap().to_string(),
             "outer cause"
         );
+    }
+
+    /// One failed listener is `1 listener`, more are `n listeners` (#677).
+    #[test]
+    fn listeners_failed_counts_in_words() {
+        let failed = |count: usize| ErrorKind::ListenersFailed {
+            name: "weather/asked".into(),
+            errors: (0..count).map(|_| Arc::new(ErrorKind::Closed)).collect(),
+        };
+        assert_eq!(failed(1).to_string(), "1 listener of weather/asked failed");
+        assert_eq!(failed(2).to_string(), "2 listeners of weather/asked failed");
     }
 
     #[test]
@@ -556,7 +577,7 @@ mod tests {
         };
         assert_eq!(
             format_for_sink(&error),
-            "multiple errors:\n1. plugin failed: cleanup detail\n2. service \"missing\" not found in scope"
+            "multiple errors:\n1. cleanup detail\n2. service \"missing\" not found in scope"
         );
     }
 
@@ -568,7 +589,7 @@ mod tests {
         let error = ErrorKind::PluginFailed(Box::new(nested));
         assert_eq!(
             format_for_sink(&error),
-            "plugin failed: multiple errors:\n1. service \"nested\" not found in scope"
+            "multiple errors:\n1. service \"nested\" not found in scope"
         );
     }
 

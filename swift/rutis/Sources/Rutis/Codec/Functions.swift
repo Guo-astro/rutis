@@ -22,8 +22,14 @@ extension Rutis {
     /// The arguments of a call, decoded by the declared types.
     public struct Arguments: @unchecked Sendable {
         package let values: [Value]
+        /// The service (or object) and method called, which a refused
+        /// argument names.
+        package let callee: Refusal.Callee?
 
-        package init(_ values: [Value]) { self.values = values }
+        package init(_ values: [Value], callee: Refusal.Callee? = nil) {
+            self.values = values
+            self.callee = callee
+        }
 
         /// How many arguments the caller passed.
         public var count: Int { values.count }
@@ -35,10 +41,14 @@ extension Rutis {
             do {
                 return try ValueCodec.decode(type, from: value)
             } catch {
-                if index >= values.count, !(T.self is OptionalProtocol.Type) {
-                    throw RutisError(name: "Error", message: "missing argument \(index + 1) (\(T.self))")
+                let callee = callee ?? Refusal.Callee(method: "")
+                let expected = Refusal.expected(T.self)
+                var undefined = index >= values.count
+                if case .undefined = value { undefined = true }
+                if undefined, !(T.self is OptionalProtocol.Type) {
+                    throw Refusal.missing(callee, index, expected: expected)
                 }
-                throw RutisError(name: "Error", message: "argument \(index + 1): \(errorMessage(error))")
+                throw Refusal.badArgument(callee, index, expected: expected, actual: Refusal.actual(value, error))
             }
         }
 
@@ -125,10 +135,11 @@ final class ServiceObject: SessionObject, @unchecked Sendable {
     }
 
     func call(method: String, args: [Value]) async throws -> Value {
+        let callee = Refusal.Callee(object: String(describing: type(of: service)), method: method)
         guard let body = methods[method] else {
-            throw RutisError(name: "Error", message: "\(type(of: service)) has no method \(method)")
+            throw Refusal.noMethod(callee, methods.keys)
         }
-        return try await body(Rutis.Arguments(args)).value
+        return try await body(Rutis.Arguments(args, callee: callee)).value
     }
 
     func get(property: String) async throws -> Value {

@@ -73,6 +73,27 @@ export function failureText(kind, error) {
   return `${kind}: ${errorText(error)}${site ? ` (at ${site})` : ''}`
 }
 
+// What failed, the error's own text: `unhandled rejection: Error: boom`
+// (where, the host prints from the error's stack).
+export function kindText(kind, error) {
+  return `${kind}: ${errorText(error)}`
+}
+
+// The error a load fails with when the row's code left `error` unhandled
+// while it loaded: an `UnhandledError` saying what, with the error's own
+// frames, code and data.
+export function unhandledError(kind, error) {
+  const failure = new Error(kindText(kind, error))
+  failure.name = 'UnhandledError'
+  const frames = typeof error?.stack === 'string' ? error.stack.split('\n').filter(line => /^\s*at /.test(line)) : []
+  failure.stack = [`UnhandledError: ${failure.message}`, ...frames].join('\n')
+  if (error && typeof error === 'object') {
+    if (typeof error.code === 'string') failure.code = error.code
+    if (Object.hasOwn(error, 'data')) failure.data = error.data
+  }
+  return failure
+}
+
 // The error as reported for no row: the whole stack, which is all there is
 // to find its source by.
 export function reportText(error) {

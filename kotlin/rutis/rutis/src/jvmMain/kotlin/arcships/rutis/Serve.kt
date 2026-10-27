@@ -133,7 +133,7 @@ private fun serveLocal(channel: String, plugins: List<Plugin>): Int {
         return 1
     }
     if (!ended) {
-        System.err.println("rutis: cleanups did not finish within the shutdown deadline after the session ended")
+        System.err.println("rutis: cleanups did not finish within the shutdown deadline after the host disconnected")
         return 1
     }
     return 0

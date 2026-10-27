@@ -178,6 +178,22 @@ test('a re-exported apply keeps its configuration type', async () => {
   })
 })
 
+// guarantee: sdk/error-texts
+// A host method the host leaves out, or one the service does not declare:
+// to the plugin, a method its service does not have (code no-method),
+// in words without the platform's name (#677).
+test('a host service\'s missing methods fail as no-method', async () => {
+  await fixture(`import type { Context } from '@deepseek-ai/cordis'
+    declare module '@deepseek-ai/cordis' { interface Context { pinger: { ping(): number, pong(): number } } }
+    export function apply(ctx: Context) { ctx.pinger.ping() }
+  `, file => {
+    const { rust } = generate(file, root, { provide: ['pinger'] })
+    assert.match(rust, /::rutis_bridge::cordis::Error::binding\("no-method", "pinger has no method ping \(the host does not implement it\)"\.into\(\), None\)/)
+    assert.match(rust, /_ => Err\(::rutis_bridge::cordis::Error::no_method\("pinger", __rutis_method, vec!\["ping", "pong"\]\)\)/)
+    assert.doesNotMatch(rust, /rutis host|is not bound"/)
+  })
+})
+
 test('public state cannot silently become a copied value', async () => {
   await fixture(`import type { Context } from '@deepseek-ai/cordis'
     class Service { value = 1; read(): number { return this.value } }

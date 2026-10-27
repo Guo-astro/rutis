@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
 import { encode } from './codec.mjs'
-import { encodeError, decodeError } from './errors.mjs'
+import { encodeError, decodeError, callSite } from './errors.mjs'
 import { VALUE_CAPABILITIES, ValueError, base64Decode, base64Encode, bytesOf, checkKeys, checkText, constructedTag, describe, instantFromText, instantText, keyOf, tagOf, undeclared } from './values.mjs'
 
 // Values with behaviour cross by reference, so their identity and state stay
@@ -17,6 +17,9 @@ export const RECORD = Symbol.for('rutis.session.record')
 // declared `plugins` (docs/design-plugin-values-2026-10-25.md §5).
 const LEAF_PLUGIN = Symbol.for('rutis.leaf-plugin')
 const isPluginDefinition = value => value !== null && typeof value === 'object' && value[LEAF_PLUGIN] === true
+// What a call is told that hands this side a plugin definition made in
+// another process: only this side's own come back to it (§4.5).
+export const PLUGIN_FROM_ELSEWHERE = 'received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead'
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
   if (builtins.some(type => value instanceof type) || constructedTag(value) || value[RECORD] === true) return false
@@ -97,7 +100,7 @@ export function greetingOf(frame, endpoint) {
 // argument list is not a level. A deeper value fails its own call here,
 // before it is sent; the session goes on.
 export const MAX_DEPTH = 64
-const tooDeep = () => new RangeError(`value nested deeper than ${MAX_DEPTH} levels, the most a value crossing a session may nest`)
+const tooDeep = () => new RangeError(`a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
 
 // The largest message either way, as the channels take it: 16 MiB. A frame
 // over it fails its own call here, before it is sent; the channel would
@@ -124,16 +127,23 @@ export function describeCall(op, { target, method, property } = {}) {
 // new error saying which, the thrown one its cause. Never changed in place:
 // a getter run while encoding may throw one error many times, or a frozen
 // one.
-const ofArgument = (error, index, call) => prefixed(error, `argument ${index + 1} of ${call}`)
-const ofResult = (error, call) => prefixed(error, call ? `the result of ${call}` : 'the result')
+// `<svc>.<m>: argument 2 cannot be sent: <why>` (§4.3, as rutis-bridge says it).
+const cannotSend = (call, what) => call ? `${call}: ${what} cannot be sent` : `${what} cannot be sent`
+const ofArgument = (error, index, call) => prefixed(error, cannotSend(call, `argument ${index + 1}`), { part: 'argument', argument: index + 1 })
+const ofResult = (error, call) => prefixed(error, cannotSend(call, 'the result'), { part: 'result' })
+// A value that cannot be sent, as every language says it (§4.3): code
+// `bad-value`, data `{ part, argument?, limit? }` (`part`: argument,
+// arguments, result or error; `limit`: the message limit in bytes).
+const badValue = (error, data) => Object.assign(error, { code: 'bad-value', data })
 // The classes a value error of this side is: it keeps its class, any other
 // thrown value is wrapped in an Error.
 const VALUE_ERRORS = [ValueError, RangeError, TypeError]
-function prefixed(error, what) {
+function prefixed(error, what, data) {
   let reason
   try { reason = error instanceof Error ? error.message : String(error) } catch { reason = 'a value that cannot be shown was thrown' }
   const Class = VALUE_ERRORS.find(type => error?.constructor === type) ?? Error
-  return new Class(`${what}: ${reason}`, { cause: error })
+  const refused = new Class(`${what}: ${reason}`, { cause: error })
+  return data ? badValue(refused, data) : refused
 }
 // A class instance's class, for messages: none for a plain object.
 const className = value => {
@@ -169,7 +179,7 @@ class RemotePromise extends Promise {
 // the owning JS thread, including while a synchronous caller pumps its chain.
 export class Session {
   #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #holds; #report; #owner; #within
-  #next = 0; #received = 0; #ref = 0; #pending = new Map(); #exports = new Map(); #identities = new WeakMap()
+  #next = 0; #received = 0; #ref = 0; #pending = new Map(); #sites = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
   // Call id prefixes: `node:` / `rust:` (compat), `<endpoint>:` (endpoint format).
@@ -249,10 +259,10 @@ export class Session {
     // ends; say which were lost instead of dropping them silently (#546).
     // Protocol jobs are still dropped silently, as before.
     const dropped = [...this.#queued].filter(job => job.run)
-    this.#pending.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
+    this.#pending.clear(); this.#sites.clear(); this.#exports.clear(); this.#imports.clear(); this.#queued.clear()
     if (dropped.length) {
       const events = dropped.map(job => String(job.key ?? '(none)'))
-      const line = `rutis: session ended with ${dropped.length} local emit${dropped.length === 1 ? '' : 's'} still waiting behind an earlier one: ${events.join(', ')}`
+      const line = `rutis: the connection to the host ended with ${dropped.length} local emit${dropped.length === 1 ? '' : 's'} still waiting behind an earlier one: ${events.join(', ')}`
       // Reporting is best effort: a failing reporter must not throw from
       // close() (nor turn into an uncaught microtask exception) and leave
       // the session half closed (#546).
@@ -427,15 +437,13 @@ export class Session {
         const { id, home, kind, origin } = wire.value
         if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // This side cannot call an object's methods: only the call it came
+        // This side cannot call an object's methods, nor use a plugin
+        // definition made in another process: only the call it came
         // in fails (an older host may send one, #675), and it is released.
-        if (kind === 'object') {
+        if (kind === 'object' || kind === 'plugin') {
           this.#decoding?.imported.push({ id, kind, grants: 1, released: false })
-          return this.#refuse(new ValueError('received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
+          return this.#refuse(new ValueError(kind === 'plugin' ? PLUGIN_FROM_ELSEWHERE : 'received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
         }
-        // Rust does not export plugin definitions; only this side's travel
-        // back home.
-        if (kind === 'plugin') throw new Error('plugin definitions exported by Rust are not supported')
         let proxy = this.#imports.get(id)?.deref()
         if (proxy) {
           const record = this.#proxies.get(proxy)
@@ -477,7 +485,9 @@ export class Session {
     if (!record) throw new Error('not an imported reference')
     this.#finalizer.unregister(record); this.#release(record)
   }
-  #request(op, fields, args, finish, origin = [], sync = false) {
+  #request(op, fields, args, finish, origin = [], sync = false, site = callSite()) {
+    // `site`: where the plugin's code made the call, the stack an error it
+    // gets back has and what it adds when thrown on (§4.4).
     const id = this.#allocate(), grants = []
     try {
       const call = () => describeCall(op, fields)
@@ -492,11 +502,11 @@ export class Session {
         const items = frame.args?.type === 'list' ? frame.args.value : []
         const sizes = items.map(item => Buffer.byteLength(encode(item)))
         const largest = sizes.indexOf(Math.max(...sizes))
-        const what = largest < 0 ? `the arguments of ${call()}` : `argument ${largest + 1} of ${call()}`
-        throw new RangeError(`${what}: ${overLimit(size, this.#max)}`)
+        const what = largest < 0 ? 'the arguments' : `argument ${largest + 1}`
+        throw badValue(new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, this.#max)}`), largest < 0 ? { part: 'arguments', limit: this.#max } : { part: 'argument', argument: largest + 1, limit: this.#max })
       }
-      this.#pending.set(id, finish); this.#send(encoded)
-    } catch (error) { this.#pending.delete(id); this.#rollback(grants); throw error }
+      this.#pending.set(id, finish); this.#sites.set(id, site); this.#send(encoded)
+    } catch (error) { this.#pending.delete(id); this.#sites.delete(id); this.#rollback(grants); throw error }
     return id
   }
   // A call's arguments, each nested at most MAX_DEPTH deep: what cannot be
@@ -523,7 +533,9 @@ export class Session {
     return result.value
   }
   #requestAsync(op, fields, args, origin) {
-    return new Promise((resolve, reject) => this.#request(op, fields, args, result => result.ok ? resolve(result.value) : reject(result.value), origin))
+    // Taken here, before the Promise's executor adds its frame.
+    const site = callSite()
+    return new Promise((resolve, reject) => this.#request(op, fields, args, result => result.ok ? resolve(result.value) : reject(result.value), origin, false, site))
   }
   invoke(target, method, args) { return this.#requestSync('invoke', { target, method }, args) }
   // Promise assimilation here is intentional: this is the generated async
@@ -556,10 +568,10 @@ export class Session {
         // Decode/pin before admitting a subsequent release frame.
         if (frame.op === 'throw' && (typeof frame.error?.name !== 'string' || typeof frame.error.message !== 'string')) throw new Error('invalid error')
         // A result this side does not take fails the call waiting for it.
-        const { value, refused } = frame.op === 'return' ? this.#decodeValue(frame.value) : { value: decodeError(frame.error), refused: undefined }
+        const { value, refused } = frame.op === 'return' ? this.#decodeValue(frame.value) : { value: decodeError(frame.error, this.#sites.get(frame.id)), refused: undefined }
         const pending = this.#pending.get(frame.id)
         if (!pending) throw new Error('response for unknown call')
-        this.#pending.delete(frame.id); pending(refused ? { ok: false, value: refused } : { ok: frame.op === 'return', value }); return
+        this.#pending.delete(frame.id); this.#sites.delete(frame.id); pending(refused ? { ok: false, value: refused } : { ok: frame.op === 'return', value }); return
       }
       if (frame.op === 'cancel') {
         if (typeof frame.id !== 'string') throw new Error('invalid cancel')
@@ -705,8 +717,8 @@ export class Session {
       const size = sizeOver(frame, this.#max)
       if (size > this.#max) {
         this.#rollback(grants); grants.length = 0
-        const what = result.ok ? 'the result' : `the error ${result.value?.name ?? 'ThrownValue'}`
-        frame = encode({ op: 'throw', id, error: encodeError(new RangeError(`${call ? `${what} of ${call}` : what}: ${overLimit(size, this.#max)}`)) })
+        const what = result.ok ? 'the result' : result.value instanceof Error ? `the error ${result.value.name}` : 'the error'
+        frame = encode({ op: 'throw', id, error: encodeError(badValue(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, this.#max)}`), { part: result.ok ? 'result' : 'error', limit: this.#max })) })
       }
       this.#send(frame)
     } catch (error) { this.#fault(error) }

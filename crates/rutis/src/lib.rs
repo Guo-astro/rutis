@@ -38,6 +38,7 @@
 #![allow(clippy::type_complexity)]
 
 mod bus;
+mod config;
 mod ctx;
 mod definition;
 mod deps;
@@ -56,6 +57,7 @@ mod registry;
 mod service;
 mod sync;
 
+pub use config::{ConfigError, ConfigIssue, PathSegment};
 pub use ctx::Ctx;
 pub use definition::Definition;
 pub use deps::Deps;

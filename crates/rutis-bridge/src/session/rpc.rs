@@ -355,7 +355,10 @@ impl Reference {
                 .connection()?
                 .request_sync(Operation::Await(import.id, import.origin.clone())),
             ReferenceInner::Local(_) => {
-                Err(Error::Value("local future requires wait_async".into()))
+                Err(Error::refused(
+                "the result is not ready yet and cannot be waited for synchronously: await it instead"
+                    .into(),
+            ))
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -538,7 +541,9 @@ impl Object {
             }
         }
         Err(Error::SyncWaitCycle(
-            format!("await needs the Rust current_thread executor occupied by its parent synchronous call; origin: {:?}", self.origin),
+            "this result would wait on itself: it is awaited inside the synchronous call that \
+             produces it (synchronous calls)"
+                .into(),
         ))
     }
     async fn wait(self: &Arc<Self>, _sync: bool, path: Vec<String>) -> Reply {
@@ -866,7 +871,7 @@ impl Import {
         self.peer
             .upgrade()
             .map(Connection)
-            .ok_or_else(|| Error::Transport("session closed".into()))
+            .ok_or_else(|| Error::Transport("the connection closed".into()))
     }
 }
 impl Drop for Import {
@@ -1631,9 +1636,15 @@ impl Connection {
         // is a hop all the same (#537).
         let hop =
             waits::forward(&self.0.tag, &id, sequence, &path, synchronous).map_err(|cycle| {
+                // The call the developer wrote, and the rows it went through
+                // when rows made every call of the cycle (#677).
+                let rows = cycle
+                    .rows
+                    .map(|rows| format!(": {}", rows.join(" → ")))
+                    .unwrap_or_default();
                 Error::SyncWaitCycle(format!(
-                    "this synchronous call would wait on itself: {}",
-                    cycle.join(" -> ")
+                    "{} would wait on itself{rows} (synchronous calls)",
+                    call.describe()
                 ))
             })?;
         // Leaves the wait graph if the call is not sent after all.
@@ -2829,8 +2840,8 @@ impl Connection {
                 _ => "the error".to_owned(),
             };
             let described = || match call {
-                Some(call) => format!("{what} of {call}"),
-                None => what.clone(),
+                Some(call) => format!("{call}: {what} cannot be sent"),
+                None => format!("{what} cannot be sent"),
             };
             let bytes = match self.serialized(&frame, writer.max_message(), &described) {
                 Ok(bytes) => Ok(bytes),
@@ -2995,9 +3006,9 @@ fn ended(label: &str, error: ChannelError) -> Error {
     }
 }
 
-mod crossing;
+pub(crate) mod crossing;
 mod relay;
-mod waits;
+pub(crate) mod waits;
 use relay::Relayed;
 
 // The tests script the far end over a memory channel.

@@ -32,8 +32,13 @@ func TestAnArgumentOverTheLimitFailsOnlyItsCall(t *testing.T) {
 	callback := Func(func(ctx context.Context, args []any) (any, error) { return nil, nil })
 	_, err := runtime.Call(ctx, "host:svc\x00scope", "take", []any{callback, strings.Repeat("x", MaxMessage)}, true)
 	var refused *ValueError
-	if err == nil || !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "argument 2 of svc.take: the message would be ") || !strings.HasSuffix(err.Error(), overLimitTail) {
+	if err == nil || !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "svc.take: argument 2 cannot be sent: the message would be ") || !strings.HasSuffix(err.Error(), overLimitTail) {
 		t.Fatalf("%T %v", err, err)
+	}
+	// guarantee: sdk/error-texts (a value that cannot be sent: code
+	// bad-value, data {argument, part, limit}: #677)
+	if data, _ := json.Marshal(refused.Data()); refused.Code() != "bad-value" || string(data) != `{"argument":2,"limit":16777216,"part":"argument"}` {
+		t.Fatalf("%s %s", refused.Code(), data)
 	}
 	runtime.mu.Lock()
 	exports := len(runtime.exports)
@@ -69,8 +74,11 @@ func TestAResultOverTheLimitIsAnsweredWithAThrow(t *testing.T) {
 	ctx := context.Background()
 	_, err := host.Call(ctx, "conformance", "big", nil, true)
 	var remote *RemoteError
-	if !errors.As(err, &remote) || !strings.HasPrefix(remote.Message, "the result of conformance.big: the message would be ") || !strings.HasSuffix(remote.Message, overLimitTail) {
+	if !errors.As(err, &remote) || !strings.HasPrefix(remote.Message, "conformance.big: the result cannot be sent: the message would be ") || !strings.HasSuffix(remote.Message, overLimitTail) {
 		t.Fatalf("%v", err)
+	}
+	if data, _ := json.Marshal(remote.Data); remote.Code != "bad-value" || string(data) != `{"limit":16777216,"part":"result"}` {
+		t.Fatalf("%s %s", remote.Code, data)
 	}
 	_, err = host.Call(ctx, "conformance", "bigError", nil, true)
 	if !errors.As(err, &remote) || !strings.HasPrefix(remote.Message, "the error Error of conformance.bigError: the message would be ") {
@@ -141,13 +149,13 @@ func TestAnObjectGoesOnlyToAFarEndThatTakesObjects(t *testing.T) {
 	ctx := context.Background()
 	_, err := a.Call(ctx, "x", "take", []any{1, &counter{}}, true)
 	var refused *ValueError
-	want := "argument 2 of x.take: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
+	want := "x.take: argument 2 cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
 	if !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("%v", err)
 	}
 	_, err = b.Call(ctx, "x", "object", nil, true)
 	var remote *RemoteError
-	want = "the result of x.object: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
+	want = "x.object: the result cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
 	if !errors.As(err, &remote) || remote.Message != want {
 		t.Fatalf("%v", err)
 	}

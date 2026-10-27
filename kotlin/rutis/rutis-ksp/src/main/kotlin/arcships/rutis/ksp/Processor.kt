@@ -219,7 +219,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
                         logger.error("rutis: $target.$method: a service method cannot take varargs", parameter)
                         "TODO()"
                     }
-                    isAny(type) -> if (type.isMarkedNullable) "$G.native(args, $i)" else "($G.native(args, $i) ?: throw IllegalArgumentException(\"$method: argument ${i + 1} is null\"))"
+                    isAny(type) -> if (type.isMarkedNullable) "$G.native(args, $i)" else "$G.nativeArg(args, $i, \"$method\")"
                     isFunction(type) -> {
                         val local = "$G.local<${render(type.makeNotNullable())}>(args, $i)"
                         val remote = remoteFunction(type, "$G.remote(args, $i, \"$method\")")

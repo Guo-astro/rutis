@@ -851,7 +851,9 @@ export function generate(plugins, nodePackage, options = {}) {
   }
 
   function hostTrait(serviceName, traitName, dispatchName, methods, unavailable) {
-    const unimplemented = method => `::rutis_bridge::cordis::Error::Value(${literal(`${serviceName}.${method.name} is not implemented by the rutis host`)}.into())`
+    // A method the host leaves out: to the plugin calling it, one its
+    // service does not have (code `no-method`, §4.3).
+    const unimplemented = method => `::rutis_bridge::cordis::Error::binding("no-method", ${literal(`${serviceName} has no method ${method.name} (the host does not implement it)`)}.into(), None)`
     const signatureOf = method => method.params.filter(parameter => !parameter.omitted).map(parameter => `${parameter.name}: ${parameter.rustType}`).join(', ')
     const declarations = methods.map(method => {
       const signature = signatureOf(method)
@@ -886,7 +888,7 @@ export function generate(plugins, nodePackage, options = {}) {
         #[allow(unused_mut, unused_variables)]
         let mut __rutis_args = __rutis_args.list()?.into_iter();
         match __rutis_method { ${arms}
-          _ => Err(::rutis_bridge::cordis::Error::Value(format!("${serviceName}.{__rutis_method} is not bound"))),
+          _ => Err(::rutis_bridge::cordis::Error::no_method(${literal(serviceName)}, __rutis_method, vec![${methods.map(method => literal(method.name)).join(', ')}])),
         }
       }
     }

@@ -81,7 +81,7 @@ async fn plugins_inject_and_call_host_services() {
     assert!(
         error
             .to_string()
-            .contains("clock.rewind is not provided by the rutis host"),
+            .contains("clock has no method rewind (methods: later, now, watch)"),
         "{error}"
     );
     process.dispose().await.unwrap();

@@ -25,12 +25,12 @@
 //!
 //! | Old side | Current side | What is checked |
 //! | --- | --- | --- |
-//! | `@arcships/rutis-runtime` | rutis-host, Python runtime | its plugins run and are called across the host, a plugin of the current SDK runs on it; events both ways; tagged values make the round trip |
+//! | `@arcships/rutis-runtime` | rutis-host, Python runtime | its plugins run and are called across the host, a plugin of the current SDK runs on it; events both ways; tagged values make the round trip; errors of the current side (with `site`) reach its plugins and theirs come back, failing just that call (#677) |
 //! | `@arcships/rutis-bun` | rutis-host, Python runtime | the same in Bun |
 //! | PyPI `rutis` (local runtime) | rutis-host, Node runtime | its plugins run and are called; events both ways; tagged values |
 //! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | the same over the link |
 //! | Go SDK (a binary built against the tagged module) | rutis-host, Python runtime | its plugin runs and is called; events both ways; tagged values |
-//! | rutis-host | the current runtimes (Node, Python, Go SDK) | their plugins run and call each other through the old host; events both ways through it; tagged values |
+//! | rutis-host | the current runtimes (Node, Python, Go SDK) | their plugins run and call each other through the old host; events both ways through it; tagged values; their errors (real stacks, `rethrown`) cross the old host, failing just that call (#677) |
 //! | rutis-host (a node) | rutis-host (a node), both dialing and listening | services both ways over the link; events both ways (`export` / `import`); tagged values; a JS error with `code` and `data` reaches the old node as a failed call, and the session goes on |
 //! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it is announced and reaches rows of either runtime; the current `check` warns |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
@@ -274,6 +274,65 @@ export default definePlugin({
   },
 })
 "#;
+
+/// `thrower` in Python (current package): `fail` raises.
+const THROWER_PY: &str = r#"from rutis import define_plugin
+
+
+class Thrower:
+    async def fail(self):
+        raise ValueError("refused by thrower")
+
+
+def apply(ctx, config):
+    ctx.provide("thrower", Thrower())
+
+
+plugin = define_plugin(apply, provides={"thrower": Thrower})
+"#;
+
+/// `relay` in TypeScript, for the SDK of either version: calls
+/// `thrower.fail`; `caught` catches the error and returns its message,
+/// `passed` lets it go on to its own caller.
+const RELAY_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+type Thrower = { fail(): Promise<unknown> }
+
+export default definePlugin({
+  inject: ['thrower'],
+  provides: { relay: { caught: 'async', passed: 'async' } },
+  apply(ctx) {
+    const thrower = ctx.use<Thrower>('thrower')
+    ctx.provide('relay', {
+      async caught() {
+        try { await thrower.fail(); return 'not thrown' } catch (e) { return String((e as Error).message) }
+      },
+      async passed() { await thrower.fail(); return 'not thrown' },
+    })
+  },
+})
+"#;
+
+/// Errors cross between the versions (#677): an error carrying what the
+/// current side adds (`site`, `rethrown`, real stacks) or lacking it (from
+/// the old side) fails just that call, its message intact, through a relay
+/// that catches it and one that lets it go on; the session goes on.
+fn errors_cross(host: &mut Host, probe: &Probe) {
+    for _ in 0..2 {
+        assert_eq!(
+            probe.call(host, "relay", "caught", json!([])),
+            Ok(json!("refused by thrower"))
+        );
+        let failed = probe
+            .call(host, "relay", "passed", json!([]))
+            .expect_err("the error goes on to the caller");
+        assert!(failed.contains("refused by thrower"), "{failed}");
+        let failed = probe
+            .call(host, "thrower", "fail", json!([]))
+            .expect_err("the error reaches the caller");
+        assert!(failed.contains("refused by thrower"), "{failed}");
+    }
+}
 
 /// What `sender.date` answers when the value made the round trip.
 const DATE: &str = "2026-10-17T00:00:00.000Z";
@@ -783,7 +842,13 @@ fn a_previous_node_runtime_under_the_current_host() {
         link_sdk(&s, "current", &repo().join("node/rutis"));
         s.write("current/newer.ts", NEWER_TS);
         s.write("sender.py", SENDER_PY.replace("TARGET", "greeter"));
-        let probe = s.probe("probe", Lang::Python, &["greeter", "sender", "newer"]);
+        s.write("relay.ts", RELAY_TS);
+        s.write("thrower.py", THROWER_PY);
+        let probe = s.probe(
+            "probe",
+            Lang::Python,
+            &["greeter", "sender", "newer", "relay", "thrower"],
+        );
         s.write_json(
             "rutis.json",
             &json!({
@@ -792,6 +857,8 @@ fn a_previous_node_runtime_under_the_current_host() {
                     { "id": "greeter", "name": "./greeter.ts" },
                     { "id": "newer", "name": s.path("current/newer.ts") },
                     { "id": "sender", "name": "py:sender" },
+                    { "id": "relay", "name": "./relay.ts" },
+                    { "id": "thrower", "name": "py:thrower" },
                     probe.row(),
                 ],
             }),
@@ -810,6 +877,14 @@ fn a_previous_node_runtime_under_the_current_host() {
         );
         values(&mut host, &probe);
         events(&mut host, &probe, "greeter", "node");
+        // The current host's errors (with `site`) reach the old runtime's
+        // relay, and its errors come back.
+        host.expect("relay: running");
+        errors_cross(&mut host, &probe);
+        assert_eq!(
+            probe.call(&mut host, "greeter", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (node)"))
+        );
         stop(host);
         s.finish();
     });
@@ -1078,7 +1153,13 @@ fn the_current_runtimes_under_a_previous_host() {
         s.write("greeter.ts", GREETER_TS);
         s.write("sender.py", SENDER_PY.replace("TARGET", "greeter"));
         go_build(&s, None, GREETER_GO_EVENTS, "go-src", "plugins/go");
-        let probe = s.probe("probe", Lang::Python, &["greeter", "gogreeter", "sender"]);
+        s.write("relay.ts", RELAY_TS);
+        s.write("thrower.py", THROWER_PY);
+        let probe = s.probe(
+            "probe",
+            Lang::Python,
+            &["greeter", "gogreeter", "sender", "relay", "thrower"],
+        );
         s.write_json(
             "rutis.json",
             &json!({
@@ -1087,6 +1168,8 @@ fn the_current_runtimes_under_a_previous_host() {
                     { "id": "greeter", "name": "./greeter.ts" },
                     { "id": "gogreeter", "name": "go:gogreeter" },
                     { "id": "sender", "name": "py:sender" },
+                    { "id": "relay", "name": "./relay.ts" },
+                    { "id": "thrower", "name": "py:thrower" },
                     probe.row(),
                 ],
             }),
@@ -1106,6 +1189,14 @@ fn the_current_runtimes_under_a_previous_host() {
         );
         values(&mut host, &probe);
         events(&mut host, &probe, "greeter", "node");
+        // The current runtimes' errors (real stacks, `rethrown`) cross the
+        // old host, and the host goes on.
+        host.expect("relay: running");
+        errors_cross(&mut host, &probe);
+        assert_eq!(
+            probe.call(&mut host, "greeter", "hello", json!(["Ada"])),
+            Ok(json!("Hello, Ada (node)"))
+        );
         stop(host);
         s.finish();
     });

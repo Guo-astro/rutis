@@ -176,7 +176,7 @@ impl Dispatch for Operations {
                 .list()?
                 .into_iter()
                 .next()
-                .ok_or_else(|| Error::Value("link.offers needs its offers".into()))?
+                .ok_or_else(|| Error::refused("link.offers needs its offers".into()))?
                 .json()?;
             let families: BTreeSet<String> = crate::session::decode(announced["families"].clone())?;
             let version: u64 = crate::session::decode(announced["version"].clone())?;
@@ -203,7 +203,7 @@ impl Dispatch for Operations {
             (self.handlers.lock().unwrap().get(family)).map(|family| family.handler.clone());
         match handler {
             Some(handler) => handler.invoke(peer, target, method, args),
-            None => Err(Error::Value(format!(
+            None => Err(Error::refused(format!(
                 "{} is not offered here",
                 if target.is_empty() { method } else { target }
             ))),
@@ -293,12 +293,12 @@ impl Peer {
     /// Serve `family` on this session. A family has one handler at a time.
     pub fn register(&self, family: &str, handler: Arc<dyn Handler>) -> Result<Offered, Error> {
         if family.is_empty() || family == "link" || family.contains(['.', ':']) {
-            return Err(Error::Value(format!("{family:?} cannot be registered")));
+            return Err(Error::refused(format!("{family:?} cannot be registered")));
         }
         let since = {
             let mut handlers = self.operations.handlers.lock().unwrap();
             if handlers.contains_key(family) {
-                return Err(Error::Value(format!("{family} is already registered")));
+                return Err(Error::refused(format!("{family} is already registered")));
             }
             // A new offer of the family, whatever was offered before,
             // registered with its handler in one step.

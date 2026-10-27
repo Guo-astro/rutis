@@ -428,9 +428,17 @@ extension Rutis {
 
 /// A value this side cannot send or take: only the call carrying it fails,
 /// and the session goes on. It crosses named `Error`.
-struct ValueError: Error, CustomStringConvertible {
+struct ValueError: Error, CustomStringConvertible, @unchecked Sendable {
     let description: String
-    init(_ description: String) { self.description = description }
+    /// bad-value, with `{argument?, part, limit?}`, when it is of a part of
+    /// a call (#677): read as any error's `code` and `data` are.
+    let code: String?
+    let data: [String: Any]?
+    init(_ description: String, data: [String: Any]? = nil) {
+        self.description = description
+        self.data = data
+        code = data == nil ? nil : "bad-value"
+    }
 }
 
 /// A point in time to the nanosecond (tag `instant`), as the session holds

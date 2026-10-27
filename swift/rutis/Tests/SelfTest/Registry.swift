@@ -2,6 +2,10 @@
 // a new test is added here).
 
 let registry: [(String, () async throws -> Void)] = [
+    ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
+    ("ErrorTextTests.anObjectRefusesAMethodByItsTypeName", { try await ErrorTextTests().anObjectRefusesAMethodByItsTypeName() }),
+    ("ErrorTextTests.useSaysWhyAServiceIsNotThere", { try await ErrorTextTests().useSaysWhyAServiceIsNotThere() }),
+    ("ErrorTextTests.aCallFailsSayingTheHostDisconnected", { try await ErrorTextTests().aCallFailsSayingTheHostDisconnected() }),
     ("PeerTests.testCallsAndCallbacks", { try await PeerTests().testCallsAndCallbacks() }),
     ("PeerTests.testCancellingAnAsyncCallAbortsTheCallee", { try await PeerTests().testCancellingAnAsyncCallAbortsTheCallee() }),
     ("PeerTests.testAValueTooDeepFailsOnlyItsCall", { try await PeerTests().testAValueTooDeepFailsOnlyItsCall() }),
@@ -54,6 +58,12 @@ let registry: [(String, () async throws -> Void)] = [
     ("ServiceMacroTests.aMethodTableFromTheTypesMethods", { ServiceMacroTests().aMethodTableFromTheTypesMethods() }),
     ("ServiceMacroTests.anActorsMethodsAreAwaited", { ServiceMacroTests().anActorsMethodsAreAwaited() }),
     ("ServiceMacroTests.overloadsAreAnError", { ServiceMacroTests().overloadsAreAnError() }),
+    ("ServiceMacroTests.aThrowingMethodIsLocated", { ServiceMacroTests().aThrowingMethodIsLocated() }),
+    ("ThrowSiteTests.aMethodThatThrowsSendsWhereItIsDeclared", { try await ThrowSiteTests().aMethodThatThrowsSendsWhereItIsDeclared() }),
+    ("ThrowSiteTests.aReceivedErrorThrownOnKeepsItsGraph", { try await ThrowSiteTests().aReceivedErrorThrownOnKeepsItsGraph() }),
+    ("ThrowSiteTests.aReceivedErrorThrownOnByAMethodNamesItInRethrown", { try await ThrowSiteTests().aReceivedErrorThrownOnByAMethodNamesItInRethrown() }),
+    ("ThrowSiteTests.rethrownHoldsAtMostEight", { ThrowSiteTests().rethrownHoldsAtMostEight() }),
+    ("ThrowSiteTests.inProcessTheErrorIsUnchanged", { try await ThrowSiteTests().inProcessTheErrorIsUnchanged() }),
     ("ServiceMacroTests.aFunctionParameterMustBeAsyncThrows", { ServiceMacroTests().aFunctionParameterMustBeAsyncThrows() }),
     ("ClientMacroTests.aProxyOfTheProtocol", { ClientMacroTests().aProxyOfTheProtocol() }),
     ("ClientMacroTests.aMethodMustBeAsyncThrows", { ClientMacroTests().aMethodMustBeAsyncThrows() }),

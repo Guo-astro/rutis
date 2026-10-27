@@ -576,9 +576,7 @@ async fn an_announced_service_another_provider_has_fails_the_later_row() {
     };
     let error = snapshot.error.expect("why it failed").to_string();
     assert!(
-        error.contains(
-            "service llm is already provided by the application: row clash cannot provide it too"
-        ),
+        error.contains("llm is already provided by the host"),
         "{error}"
     );
     // Announced methods are all `async`.

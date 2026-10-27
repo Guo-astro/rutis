@@ -163,8 +163,13 @@ jobs:
         with:
           package: rutis,rutis-bridge,rutis-loader
           rust-toolchain: manual
+      # `--registry crates-io`, here and for `cargo publish`: a self-hosted
+      # runner carrying the label ubuntu-24.04 may replace crates-io with a
+      # mirror in its Cargo config, and cargo then refuses to package or
+      # publish for crates.io without it (0.17.2's first release attempt).
+      # Dependencies are still fetched through the runner's configuration.
       - name: Package (each crate built from its package, against the others)
-        run: cargo package --locked $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
+        run: cargo package --locked --registry crates-io $(node scripts/train.mjs --crates | sed 's/[^ ]*/-p &/g')
       - name: Publish what crates.io does not have, each after those it depends on
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -172,7 +177,7 @@ jobs:
             if curl -sf -A "rutis release (github.com/arcships/rutis)" "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
               echo "$crate $version is already published"
             else
-              cargo publish --locked -p "$crate"
+              cargo publish --locked --registry crates-io -p "$crate"
             fi
           done
         env:
@@ -197,16 +202,21 @@ jobs:
         with:
           name: packages
           path: packages
+      # `--registry`, which wins over any npm configuration: a self-hosted
+      # runner may point npm at a mirror (its environment or global npmrc),
+      # which has neither this version nor the token (0.17.2's first release
+      # attempt asked to log in to the mirror).
       - name: Publish what npm does not have
         run: |
           version="${GITHUB_REF_NAME#v}"
+          registry=https://registry.npmjs.org/
           publish() {
             tarball="packages/npm/$1-$version.tgz"
             name=$(tar -xOzf "$tarball" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).name")
-            if npm view "$name@$version" version >/dev/null 2>&1; then
+            if npm view "$name@$version" version --registry "$registry" >/dev/null 2>&1; then
               echo "$name $version is already published"
             else
-              npm publish "$tarball" --provenance --access public
+              npm publish "$tarball" --provenance --access public --registry "$registry"
             fi
           }
           publish arcships-rutis
@@ -241,7 +251,7 @@ jobs:
       # and a self-hosted Linux runner carrying the label ubuntu-24.04 may
       # have no Docker. --check-url skips the files PyPI already has.
       - uses: astral-sh/setup-uv@v6
-      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
+      - run: uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
 
   pypi-host:
     needs: [verify, ci, install, dylib-windows]
@@ -259,7 +269,7 @@ jobs:
           path: dist
       # uv, as in the job pypi: no Docker.
       - uses: astral-sh/setup-uv@v6
-      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
+      - run: uv publish --trusted-publishing always --publish-url https://upload.pypi.org/legacy/ --check-url https://pypi.org/simple/ dist/*
 
   # Maven Central: the Kotlin SDK, io.github.arcships:rutis (jvm and
   # android) and io.github.arcships:rutis-ksp, under the namespace
@@ -421,6 +431,12 @@ jobs:
   published:
     needs: [verify, github, go]
     runs-on: ubuntu-24.04
+    # The registries themselves, not a mirror a self-hosted runner may be
+    # configured with: what is checked is that they serve this version.
+    # (Cargo has no such variable: its step uses a Cargo home of its own.)
+    env:
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      GOPROXY: https://proxy.golang.org,direct
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -465,6 +481,9 @@ jobs:
       - name: the crate and the Go module
         env:
           VERSION: ${{ needs.verify.outputs.version }}
+          # No Cargo configuration, so no mirror replacing crates.io; the
+          # toolchain itself is found on PATH as before.
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: |
           cargo install --locked "rutis-host@$VERSION" --root "$RUNNER_TEMP/cargo"
           "$RUNNER_TEMP/cargo/bin/rutis-host" --version | grep -x "rutis-host $VERSION"
@@ -484,7 +503,17 @@ jobs:
     # github failed) leaves `published` skipped, so its result cannot say
     # whether anything was published; verify's `publish` can. `always()`
     # because a skipped dependency would otherwise skip this job too.
-    if: always() && needs.verify.outputs.publish == 'true' && contains(needs.*.result, 'failure')
+    # Publishing began only if a publishing job ran: when the gate fails
+    # they are all skipped, nothing was published, and the failed run says
+    # so. `contains(needs.*.result, 'failure')` alone is true then too: a job
+    # skipped because the gate failed counts as failed in this expression
+    # (#655, #717), though its result reads `skipped`.
+    if: >-
+      always() && needs.verify.outputs.publish == 'true'
+      && contains(needs.*.result, 'failure')
+      && (needs.crates.result != 'skipped' || needs.npm.result != 'skipped'
+        || needs.pypi.result != 'skipped' || needs.pypi-host.result != 'skipped'
+        || needs.maven.result != 'skipped' || needs.go.result != 'skipped')
     runs-on: ubuntu-24.04
     permissions:
       issues: write

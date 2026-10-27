@@ -1,6 +1,11 @@
 import type { Emitter, ListenerDescriptor, Plugin } from './index.js'
 
-export declare class PluginTestError extends Error {}
+export declare class PluginTestError extends Error {
+  /** For a refusal a runtime makes too: its code (`not-declared`, `unavailable`, `no-method`). */
+  code?: string
+  /** For such a refusal: its details, as the runtimes give them (`{ service }`, …). */
+  data?: unknown
+}
 
 /** The five ways to emit, with `filter`. */
 export interface TestEmitter extends Emitter {

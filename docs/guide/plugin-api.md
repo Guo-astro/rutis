@@ -242,7 +242,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
-- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region (at file:///…/weather.mjs:12:9)`；正在加载的行加载失败。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
+- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
 - **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`，哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
 - **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
 - Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
@@ -269,7 +269,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
 | 编码后超过 16 MiB 的调用或返回值 | 不能跨进程（这次调用失败，见下） |
 
-不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 TypeScript 把类的实例传给 Python 的服务时得到 `argument 2 of weather.store: an object with methods cannot cross to py; pass plain data or a function instead`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看消息文字，不要看名字。
+不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 TypeScript 把类的实例传给 Python 的服务时得到 `weather.store: argument 2 cannot be sent: an object with methods cannot cross to py; pass plain data or a function instead`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
 
 嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 
@@ -279,7 +279,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 五个运行时（Rust、Node、Bun、Python、Go）和测试工具的严格模式都按这个上限在发送时检查。上限约束的是发送：接收的 Rust 一侧为不遵守上限的对端（例如更早的版本）留了余量，线上不超过 208 层的帧照常读取，所以从这样的对端**收到**的值可能超过 64 层（最多约 100 层含引用的数组、约 206 层数据）；这部分余量不保证，插件不要依赖。帧更深、Rust 一侧不读时：能看出它属于哪个调用，就只让那个调用失败（对端的调用收到错误；对本侧调用的回复让本侧的调用失败），其中的引用直到会话结束才释放；看不出属于哪个调用时，结束会话并说明原因。见 [#279](https://github.com/arcships/rutis/issues/279)。
 
-消息大小：一次调用（连同它的参数）或一个返回值编码后最多 **16 MiB**（16777216 字节，本地通道和 WebSocket 的默认上限）。**要发送它的一方**在发出之前拒绝更大的消息，只让这次调用失败，错误写明方法、第几个参数（最大的那个）或返回值、大小和上限（`argument 1 of store.put: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`）：作为参数时调用方的这次调用失败，对端不执行它；作为返回值时调用方收到这个错误；会话继续，其他调用不受影响。Rust、Node、Bun、Python、Go、Swift、Kotlin 都在发送前检查。更早版本的对端仍可能发来超过上限的消息：接收方像以前一样关闭这条连接，这个会话结束（本地运行时随之退出），其他会话不受影响。大的数据分块传，或者只传它的位置（路径、地址）。
+消息大小：一次调用（连同它的参数）或一个返回值编码后最多 **16 MiB**（16777216 字节，本地通道和 WebSocket 的默认上限）。**要发送它的一方**在发出之前拒绝更大的消息，只让这次调用失败，错误写明方法、第几个参数（最大的那个）或返回值、大小和上限（`store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`）：作为参数时调用方的这次调用失败，对端不执行它；作为返回值时调用方收到这个错误；会话继续，其他调用不受影响。Rust、Node、Bun、Python、Go、Swift、Kotlin 都在发送前检查。更早版本的对端仍可能发来超过上限的消息：接收方像以前一样关闭这条连接，这个会话结束（本地运行时随之退出），其他会话不受影响。大的数据分块传，或者只传它的位置（路径、地址）。
 
 数字有下面这些边界。它们是现在的行为，**不保证**以后不变（明确不保证），依赖它们的插件需要自己处理：
 

@@ -15,6 +15,7 @@
 
 pub mod backoff;
 mod catalog;
+pub mod config;
 pub mod edit;
 mod error;
 mod framework;
@@ -63,7 +64,7 @@ pub mod report {
     pub use crate::error::{Failure, Unavailable};
     pub use crate::framework::RowState;
     pub use crate::loader::{
-        CheckReport, Clash, CycleLink, EntryInfo, EntryStatus, InstanceInfo, Isolate,
+        CheckReport, Clash, ConfigStatus, CycleLink, EntryInfo, EntryStatus, InstanceInfo, Isolate,
         LoaderChanged, PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck,
         RowInfo, RowStatus, Supply, Unknown, Wait, WaitReason,
     };

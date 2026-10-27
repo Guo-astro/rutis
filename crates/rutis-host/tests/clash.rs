@@ -134,25 +134,20 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
     let mut failed = Vec::new();
     while failed.len() < 2 {
         let line = host.wait_line(|line| {
-            (line.starts_with("py-late: failed") || line.starts_with("node-late: failed"))
+            line.contains(" is already provided by ")
                 .then(|| line.to_owned())
         });
         failed.push(line);
     }
     failed.sort();
     let context = format!("{:#?}", host.seen);
-    assert!(
-        failed[0].starts_with("node-late: failed: ")
-            && failed[0].ends_with(
-                "service weather is already provided by row py-early: row node-late cannot provide it too"
-            ),
+    // The row that fails names the service and who has it (§8.1 row 13).
+    assert_eq!(
+        failed[0], "node-late: weather is already provided by py-early",
         "{context}"
     );
-    assert!(
-        failed[1].starts_with("py-late: failed: ")
-            && failed[1].ends_with(
-                "service forecast is already provided by row node-early: row py-late cannot provide it too"
-            ),
+    assert_eq!(
+        failed[1], "py-late: forecast is already provided by node-early",
         "{context}"
     );
     signal(&host, libc::SIGTERM, false);
@@ -166,7 +161,11 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
             .filter(|line| line.starts_with(&format!("{row}: ")))
             .collect();
         let at = |prefix: String| states.iter().position(|line| line.starts_with(&prefix));
-        let (running, failed) = (at(format!("{row}: running")), at(format!("{row}: failed")));
+        let failed_line = |line: &&String| line.contains(" is already provided by ");
+        let (running, failed) = (
+            at(format!("{row}: running")),
+            states.iter().position(failed_line),
+        );
         assert!(
             running.is_some() && running < failed,
             "{row}: running, then failed: {context}"

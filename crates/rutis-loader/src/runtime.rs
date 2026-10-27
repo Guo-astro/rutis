@@ -72,6 +72,7 @@ use rutis_bridge::runtime::{
     row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
     RuntimeHandle, RuntimeState,
 };
+use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
@@ -581,11 +582,11 @@ type Refused = Arc<Refusals>;
 /// run when the clash is long gone; that one is refused again if it
 /// provides the name while the clash is still there.
 #[derive(Default)]
-struct Refusals(Mutex<HashMap<rutis::host::InstanceId, (String, bool)>>);
+struct Refusals(Mutex<HashMap<rutis::host::InstanceId, (SessionError, bool)>>);
 
 impl Refusals {
     /// Record why `instance` was refused, unless it was already.
-    fn record(&self, instance: rutis::host::InstanceId, why: String) {
+    fn record(&self, instance: rutis::host::InstanceId, why: SessionError) {
         self.0
             .lock()
             .unwrap()
@@ -602,7 +603,7 @@ impl Refusals {
     }
 
     /// Why this apply of `instance` fails: the refusal whose restart runs it.
-    fn take(&self, instance: rutis::host::InstanceId) -> Option<String> {
+    fn take(&self, instance: rutis::host::InstanceId) -> Option<SessionError> {
         let mut refusals = self.0.lock().unwrap();
         match refusals.get(&instance) {
             Some((_, true)) => refusals.remove(&instance).map(|(why, _)| why),
@@ -736,9 +737,32 @@ struct JsRow {
     refused: Refused,
 }
 
-fn failed(error: impl std::fmt::Display) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+/// The row failed with `error`, kept as it is: a plugin's error from the
+/// runtime keeps its name, code, data and stack for whoever reads it
+/// (`rutis_bridge::thrown`, #677).
+fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.into()))
 }
+
+/// The row failed for a reason rutis states.
+/// A row refused a service name another provider has: printed as the
+/// row's state on its own (`b: forecast is already provided by a`).
+fn refused(reason: String) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(Box::new(provide_error(reason))))
+}
+
+/// The error of a row refused a service name: `ProvideError`, printed as
+/// its message alone.
+fn provide_error(reason: String) -> SessionError {
+    SessionError::Remote {
+        name: "ProvideError".into(),
+        message: reason,
+        graph: None,
+    }
+}
+
+/// An error rutis-bridge's sessions carry (a far end's, with its graph).
+type SessionError = rutis_bridge::session::Error;
 
 impl DynPlugin for JsRow {
     fn name(&self) -> &str {
@@ -753,8 +777,10 @@ impl DynPlugin for JsRow {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
-            if let Some(refused) = self.refused.take(ctx.instance()) {
-                return Err(failed(refused));
+            // Or because its code left an error unhandled (#688): it fails
+            // with that error.
+            if let Some(error) = self.refused.take(ctx.instance()) {
+                return Err(failed(error));
             }
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
@@ -789,6 +815,7 @@ impl DynPlugin for JsRow {
                     return Err(error);
                 }
             };
+            let row = self.row_name(ctx);
             Ok(Effect::AsyncDisposer(Box::new(move || {
                 Box::pin(async move {
                     // The row's services go first, and their users stop,
@@ -801,7 +828,7 @@ impl DynPlugin for JsRow {
                     match unloaded {
                         // The process is gone, and the row with it.
                         Ok(()) | Err(rutis_bridge::session::Error::Transport(_)) => Ok(()),
-                        Err(e) => Err(failed(e)),
+                        Err(e) => Err(failed(e.with_site(&Site::new(row, "cleanup")))),
                     }
                 })
             })))
@@ -810,6 +837,18 @@ impl DynPlugin for JsRow {
 }
 
 impl JsRow {
+    /// The row's name in messages: the loader's id for it, the row that
+    /// handed over a copied definition, or the plugin's name.
+    fn row_name(&self, ctx: &Ctx) -> String {
+        if let Some(id) = &self.id {
+            return id.clone();
+        }
+        ctx.get::<Loader>()
+            .and_then(|loader| loader.row(ctx.instance()))
+            .map(|row| row.id)
+            .unwrap_or_else(|| self.name.clone())
+    }
+
     /// Lease the shared services the plugin injects into `leases`, then
     /// load it into the runtime. Returns its key there and the projection
     /// of its services; on failure nothing of the load remains, and the
@@ -928,9 +967,9 @@ impl JsRow {
         // the kernel's restart cancels the apply running, whose cleanup
         // unloads the runtime's row, before the next apply fails.
         let tasks = tokio::runtime::Handle::current();
-        let (refused, restarting) = (self.refused.clone(), ctx.clone());
+        let (refusals, restarting) = (self.refused.clone(), ctx.clone());
         process.on_row_failed(&key, move |why| {
-            fail_running(&restarting, &refused, &tasks, why)
+            fail_running(&restarting, &refusals, &tasks, why)
         });
         // Its listeners' descriptions and failure reports name it by its id.
         process.name_row(&key, &id);
@@ -966,14 +1005,16 @@ impl JsRow {
         };
         if let Err(error) = loaded {
             projection.close();
-            return Err(failed(error));
+            return Err(failed(
+                error.with_site(&Site::new(self.row_name(ctx), "apply")),
+            ));
         }
         // A service another provider had first: this row, the later one,
         // fails.
-        if let Some(refused) = projection.take_refused() {
+        if let Some(refused_reason) = projection.take_refused() {
             projection.withdraw().await;
             let _ = process.unload_row(&key).await;
-            return Err(failed(refused));
+            return Err(refused(refused_reason));
         }
         // Volatile-only changes go to Cordis, which commits them in place.
         let forward = Arc::new(Forward {
@@ -998,7 +1039,8 @@ impl JsRow {
         // restarts, and that load fails with why.
         let tasks = tokio::runtime::Handle::current();
         let (refused, restarting) = (self.refused.clone(), ctx.clone());
-        projection.on_refused(move |why| fail_running(&restarting, &refused, &tasks, why));
+        projection
+            .on_refused(move |why| fail_running(&restarting, &refused, &tasks, provide_error(why)));
         Ok((key, projection))
     }
 }
@@ -1006,7 +1048,12 @@ impl JsRow {
 /// Fail the running row of `restarting` with `why`: its fiber restarts,
 /// and that apply fails with why ([`Refusals`]). A row a service clash
 /// refused fails so, and one whose code left an error unhandled (#688).
-fn fail_running(restarting: &Ctx, refused: &Refused, tasks: &tokio::runtime::Handle, why: String) {
+fn fail_running(
+    restarting: &Ctx,
+    refused: &Refused,
+    tasks: &tokio::runtime::Handle,
+    why: SessionError,
+) {
     let generation = restarting.cancellation_token();
     if generation.is_cancelled() {
         return; // already unloading or restarted
@@ -1170,22 +1217,20 @@ mod stale_tests {
         let instance = root.instance();
         let refusals = Refusals::default();
 
-        refusals.record(instance, "clash".into());
-        assert_eq!(
-            refusals.take(instance),
-            None,
-            "a restart already on its way"
-        );
+        let taken = |refusals: &Refusals| refusals.take(instance).map(|error| error.to_string());
+
+        refusals.record(instance, provide_error("clash".into()));
+        assert_eq!(taken(&refusals), None, "a restart already on its way");
         refusals.arm(instance);
-        assert_eq!(refusals.take(instance).as_deref(), Some("clash"));
-        assert_eq!(refusals.take(instance), None, "taken once");
+        assert_eq!(taken(&refusals).as_deref(), Some("clash"));
+        assert_eq!(taken(&refusals), None, "taken once");
 
         // Its restart ran without applying (it waited for a dependency):
         // the generation that applies later, the clash gone, runs.
-        refusals.record(instance, "clash".into());
+        refusals.record(instance, provide_error("clash".into()));
         refusals.arm(instance);
         refusals.forget(instance);
-        assert_eq!(refusals.take(instance), None);
+        assert_eq!(taken(&refusals), None);
     }
 
     /// A remote Node runtime takes npm names, not another runtime's rows.

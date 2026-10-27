@@ -612,6 +612,7 @@ impl rutis::host::CallError
 pub fn rutis::host::CallError::into_raw(self) -> (alloc::string::String, core::option::Option<alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>)
 pub fn rutis::host::CallError::message(&self) -> &str
 pub fn rutis::host::CallError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rutis::host::CallError::raw(&self) -> core::option::Option<&(dyn core::any::Any + core::marker::Send + core::marker::Sync)>
 pub fn rutis::host::CallError::with_raw(impl core::convert::Into<alloc::string::String>, alloc::boxed::Box<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>) -> Self
 impl core::error::Error for rutis::host::CallError
 impl core::fmt::Debug for rutis::host::CallError
@@ -951,6 +952,71 @@ pub fn rutis::host::shutdown_deadline() -> core::time::Duration
 pub type rutis::host::BoxFuture<'a, T> = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = T> + core::marker::Send + 'a)>>
 pub type rutis::host::ErrorSink = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(alloc::rcs::arc::Arc<rutis::host::ErrorKind>) + core::marker::Send + core::marker::Sync)>
 pub type rutis::host::KeyNamer = (dyn core::ops::function::Fn(&rutis::host::TypeKey) -> core::option::Option<alloc::string::String> + core::marker::Send + core::marker::Sync)
+pub enum rutis::PathSegment
+pub rutis::PathSegment::Index(usize)
+pub rutis::PathSegment::Key(alloc::string::String)
+impl core::clone::Clone for rutis::PathSegment
+pub fn rutis::PathSegment::clone(&self) -> Self
+impl core::cmp::Eq for rutis::PathSegment
+impl core::cmp::Ord for rutis::PathSegment
+pub fn rutis::PathSegment::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for rutis::PathSegment
+pub fn rutis::PathSegment::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for rutis::PathSegment
+pub fn rutis::PathSegment::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for rutis::PathSegment
+pub fn rutis::PathSegment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for rutis::PathSegment
+pub fn rutis::PathSegment::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for rutis::PathSegment
+impl core::marker::Freeze for rutis::PathSegment
+impl core::marker::Send for rutis::PathSegment
+impl core::marker::Sync for rutis::PathSegment
+impl core::marker::Unpin for rutis::PathSegment
+impl core::marker::UnsafeUnpin for rutis::PathSegment
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::PathSegment
+impl core::panic::unwind_safe::UnwindSafe for rutis::PathSegment
+pub struct rutis::ConfigError
+impl rutis::ConfigError
+pub fn rutis::ConfigError::find<'a>(&'a (dyn core::error::Error + 'static)) -> core::option::Option<&'a rutis::ConfigError>
+pub fn rutis::ConfigError::issues(&self) -> &[rutis::ConfigIssue]
+pub fn rutis::ConfigError::lines(&self) -> alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for rutis::ConfigError
+pub fn rutis::ConfigError::clone(&self) -> Self
+impl core::cmp::Eq for rutis::ConfigError
+impl core::cmp::PartialEq for rutis::ConfigError
+pub fn rutis::ConfigError::eq(&self, &Self) -> bool
+impl core::error::Error for rutis::ConfigError
+impl core::fmt::Debug for rutis::ConfigError
+pub fn rutis::ConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::ConfigError
+pub fn rutis::ConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::ConfigError
+impl core::marker::Freeze for rutis::ConfigError
+impl core::marker::Send for rutis::ConfigError
+impl core::marker::Sync for rutis::ConfigError
+impl core::marker::Unpin for rutis::ConfigError
+impl core::marker::UnsafeUnpin for rutis::ConfigError
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::ConfigError
+impl core::panic::unwind_safe::UnwindSafe for rutis::ConfigError
+#[non_exhaustive] pub struct rutis::ConfigIssue
+pub rutis::ConfigIssue::message: alloc::string::String
+pub rutis::ConfigIssue::path: alloc::vec::Vec<rutis::PathSegment>
+impl core::clone::Clone for rutis::ConfigIssue
+pub fn rutis::ConfigIssue::clone(&self) -> Self
+impl core::cmp::Eq for rutis::ConfigIssue
+impl core::cmp::PartialEq for rutis::ConfigIssue
+pub fn rutis::ConfigIssue::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::ConfigIssue
+pub fn rutis::ConfigIssue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::ConfigIssue
+impl core::marker::Freeze for rutis::ConfigIssue
+impl core::marker::Send for rutis::ConfigIssue
+impl core::marker::Sync for rutis::ConfigIssue
+impl core::marker::Unpin for rutis::ConfigIssue
+impl core::marker::UnsafeUnpin for rutis::ConfigIssue
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::ConfigIssue
+impl core::panic::unwind_safe::UnwindSafe for rutis::ConfigIssue
 pub struct rutis::Ctx(_)
 impl rutis::Ctx
 pub fn rutis::Ctx::bail<E: rutis::events::Event>(&self, impl rutis::events::into_event::IntoEvent<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>

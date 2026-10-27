@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { declared, locate, Modules, versionOf, PLUGIN_API } from '../src/plugin.ts'
@@ -15,7 +15,11 @@ test('module exports and definePlugin both declare a plugin', () => {
   expect(declared({ apply, inject: ['a'], provides: { s: { m: 'sync' } } }, 'x').inject).toEqual(['a'])
   const made = { apply, inject: [], provides: {}, api: 1, [Symbol.for('rutis.leaf-plugin')]: true }
   expect(declared({ default: made }, 'x').apply).toBe(apply)
-  expect(() => declared({ default: {} }, 'x')).toThrow('no apply')
+  // guarantee: sdk/error-texts
+  let refused: any
+  try { declared({ default: {} }, 'x', '/work/src/index.ts') } catch (error) { refused = error }
+  expect([refused.name, refused.message]).toEqual(['LoadError', 'the default export of /work/src/index.ts is not a plugin made with definePlugin'])
+  expect(() => declared({}, 'x')).toThrow('the default export of x is not a plugin made with definePlugin')
   expect(() => declared({ apply, provides: { s: { m: 'later' } } }, 'x')).toThrow("kind must be 'sync' or 'async'")
   expect(() => declared({ apply, api: PLUGIN_API + 1 }, 'x')).toThrow(`needs plugin API ${PLUGIN_API + 1}; this runtime supports ${PLUGIN_API}`)
 })
@@ -92,7 +96,27 @@ test('a module that does not parse fails with its file and line', async () => {
   const file = join(dir, 'broken.ts')
   writeFileSync(file, 'export interface C {\n  a?: string\n}\n\nconst const = 1\n')
   const error: any = await new Modules().import(locate('./broken.ts', dir)).catch(error => error)
-  expect(error.name).toBe('BuildMessage')
-  expect(error.message).toContain(`${realpathSync(file)}:5:`)
-  expect(error.message).toContain('const const = 1')
+  expect(error.name).toBe('LoadError')
+  expect(error.message).toMatch(new RegExp(`^cannot load ${escape(realpathSync(file))}: SyntaxError: .+ \\(${escape(realpathSync(file))}:5:\\d+\\)$`))
+  expect(error.cause.name).toBe('BuildMessage')
+})
+
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// guarantee: sdk/error-texts
+// A submodule that throws as it is imported is named, not the entry
+// (§8.1 row 5); an entry file that was there and is no more is said so.
+test('an import error names the submodule that threw, and a gone entry is said so (#677)', async () => {
+  const dir = realpathSync(project())
+  writeFileSync(join(dir, 'entry.ts'), "import { x } from './util.ts'\nexport function apply() { return x }\n")
+  writeFileSync(join(dir, 'util.ts'), "export const x = 1\nthrow new RangeError('bad util')\n")
+  const error: any = await new Modules().import(join(dir, 'entry.ts')).catch(error => error)
+  expect(error.name).toBe('LoadError')
+  expect(error.message).toMatch(new RegExp(`^cannot load ${escape(join(dir, 'util.ts'))}: RangeError: bad util \\(${escape(join(dir, 'util.ts'))}:2:\\d+\\)$`))
+  const modules = new Modules()
+  writeFileSync(join(dir, 'kept.ts'), 'export function apply() {}\n')
+  await modules.import(join(dir, 'kept.ts'))
+  rmSync(join(dir, 'kept.ts'))
+  const gone: any = await modules.import(join(dir, 'kept.ts')).catch(error => error)
+  expect([gone.name, gone.message]).toEqual(['LoadError', `the entry file ${join(dir, 'kept.ts')} is gone`])
 })

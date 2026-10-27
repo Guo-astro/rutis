@@ -25,7 +25,7 @@ import threading
 import traceback
 
 from .channel import SocketChannel
-from .peer import EVENTS_REFUSAL, Incompatible, Peer
+from .peer import EVENTS_REFUSAL, HOST_FAILED, Incompatible, Peer, host_gone
 from .runner import Runtime, shutdown_deadline
 
 
@@ -104,7 +104,9 @@ class Session:
         every row and proxy goes."""
         if replaced and hasattr(self.channel, "replaced"):
             self.channel.replaced()
-        self.peer.close(ConnectionError("replaced by a new connection" if replaced else "session ended"))
+        self.peer.close(
+            host_gone("replaced by a new connection", "replaced") if replaced else host_gone()
+        )
         self.runtime.closing = True
         await self.runtime.dispose()
 
@@ -115,7 +117,7 @@ class Session:
         give_up_after(shutdown_deadline())
         self.runtime.closing = True
         await self.runtime.dispose()
-        self.peer.close(ConnectionError("the runtime stopped"))
+        self.peer.close(host_gone("the runtime stopped", "stopped"))
         self.channel.close("the runtime stopped")
 
 
@@ -268,7 +270,7 @@ def ended_because(session: Session) -> str:
     if ended_by:
         return ended_by
     reason = str(session.peer.closed_error or "the session closed")
-    return reason.removeprefix("session failed: ")
+    return reason.removeprefix(HOST_FAILED)
 
 
 async def dial_out(spec: str, endpoint: dict) -> int:

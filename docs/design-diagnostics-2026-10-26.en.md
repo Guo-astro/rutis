@@ -55,7 +55,7 @@ Diagnostics are about "being able to see", not "deciding for others". Each of th
 | G8 | When a Node, Bun or Python runtime is held by synchronous code for 5 seconds, it prints which method of which row, without interrupting it | 6 |
 | G9 | Plugin output carries a name prefix: on by default in `dev`, off by default in `run` | 7 |
 | G10 | Rust embedding writes load failures and runtime exits to standard error by default; the output does not contain platform names | 7 |
-| G11 | Error type names and fields do not change, and loader types such as `Failure` do not change; what changes is the error text, the `plugin failed: ` prefix and Node's `error.stack` | 11 |
+| G11 | Each language's error type names and fields do not change, and loader types such as `Failure` do not change; what changes is the error text, the `plugin failed: ` prefix, Node's `error.stack`, and a new variant with a code in Rust's `session::Error` (§4.3) | 11 |
 
 ## 4. Errors
 
@@ -104,6 +104,8 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 
 `SyncWaitCycle` and `AggregateError` already have their own type names and get no code. Codes are for programs and do not appear in the line of text meant for people. Rows can be added to the table during implementation; existing rows do not change.
 
+On the Rust side (decided during implementation, 2026-10-26): `rutis_bridge::session::Error` has a new variant, `Binding { code: Option<&'static str>, message, data }`, used when rutis refuses a call: a method that does not exist, wrong arguments and a service that is not there carry a code; protocol refusals (one end not keeping to the protocol) carry none. `Error::Value` now means only a value that cannot cross. On the wire both `Binding` and `Value` are `BindingError`s with a code (`bad-value` for `Value`), and a `Transport` error during a call is `peer-gone`; `Error::code()` gives the same code on this side. A Rust host that matches every variant of `session::Error` needs the new arm (incompatible, in the migration guide).
+
 ### 4.4 Locations across languages
 
 Locations sent:
@@ -123,6 +125,7 @@ When receiving an error from the other side:
 - The other side's error graph is kept inside the SDK (Python, Go and Kotlin already do this), and is carried along unchanged when the caller rethrows it.
 - Node and Bun no longer overwrite `error.stack` with the other side's stack: `error.stack` is the caller's own stack.
 - When rutis prints, it shows both sides: the row on the other side that failed and its location, followed by the caller's location.
+- How the caller's location gets there: an error node has one more optional field, `rethrown` (an array of strings, added during implementation, 2026-10-26). When an end throws an error it **received** on across a boundary again (splicing in the received error graph as it came, §4.4), it appends one item to the root node's `rethrown`: the frames of that rethrow (without the "Name: message" line). Each language gives the frames it gives for `stack`: TypeScript, Python and Kotlin the real frames in this process after the error was received; Go, Swift and Rust the declaration of the method that throws it on. The first caller comes first; at most 8 items, no more are appended. An older end does not know the field, decodes as usual and carries it on unchanged when rethrowing (it just appends nothing). Like `site` it is only for printing and for the host to read, never handed to the caller's code. When rutis prints, it writes `called from:` and those frames under the other side's frames, item by item; a whole error is at most 64 frames (§4.6).
 
 Also fix one item named in #677: Go's `Parallel` returns `*rutis.AggregateError` in a real host (`errors.As` holds, `Data` is not empty); today this is only correct in the test tools.
 
@@ -299,13 +302,13 @@ The second half of #676: cycles of mutual `inject`, and several rows providing t
 
 Written into "Migrating to 0.18" (both languages):
 
-- **Rust hosts**: `ErrorKind::PluginFailed` is displayed without the `plugin failed: ` prefix; plugin errors are no longer strings, read the structure with `rutis_bridge::thrown()`. Code that matches on text must switch to error codes. Loader types (`Failure`, `ReconcileReport`) do not change.
+- **Rust hosts**: `ErrorKind::PluginFailed` is displayed without the `plugin failed: ` prefix; plugin errors are no longer strings, read the structure with `rutis_bridge::thrown()`. Code that matches on text must switch to error codes. Loader types (`Failure`, `ReconcileReport`) do not change. `session::Error` gains the `Binding` variant (§4.3).
 - **Rust embedding (behavior change)**: load failures and runtime exits are written to standard error by default (can be turned off); the default output no longer starts with `[rutis]`. `shutdown()` does not change.
 - **Node, Bun**: for cross-language errors received, `error.stack` becomes the caller's own stack (previously the other side's).
 - **All languages**: error type names and fields do not change. Error text will change.
 - **Node, Bun, Python runtimes**: unhandled errors no longer make the process exit ("boundary rule 8" rewritten).
 - **`check`**: cycles and same-name providers exit with 1.
-- **Protocol**: error nodes have one more optional field, `site`, which an older side ignores; the protocol version is not raised, and different versions work together as usual.
+- **Protocol**: error nodes have two more optional fields, `site` and `rethrown`, which an older side ignores; the protocol version is not raised, and different versions work together as usual.
 
 ## 12. Implementation
 

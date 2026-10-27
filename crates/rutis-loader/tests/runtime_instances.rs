@@ -578,7 +578,7 @@ async fn rows_of_the_runtime_run_only_in_its_group() {
         .expect("refused");
     assert_eq!(
         error.to_string(),
-        "entry \"stray\" rejected: plugin failed: phone:contacts runs only inside the phone group, \
+        "entry \"stray\" rejected: phone:contacts runs only inside the phone group, \
          in the instance of a runtime connection"
     );
 }

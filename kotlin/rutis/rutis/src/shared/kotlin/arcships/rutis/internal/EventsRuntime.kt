@@ -132,7 +132,7 @@ internal object EventsRuntime {
         checkListen(name)
         val listener: LocalListener
         synchronized(rt.lock) {
-            if (rt.rows[row.key] !== row) throw IllegalStateException("rutis: row ${row.key} is not active")
+            if (rt.rows[row.key] !== row) throw IllegalStateException("rutis: row ${row.name} is not active")
             rt.listenerSeq++
             listener = LocalListener(rt, rt.listenerSeq.toString(), name, row, fn, prepend, global)
             val list = rt.listeners.getOrPut(name) { ArrayList() }
@@ -232,7 +232,7 @@ internal object EventsRuntime {
         val snapshot: Dispatch
         val viaHost: (suspend () -> Any?)?
         synchronized(rt.lock) {
-            if (rt.rows[row.key] !== row) throw RutisException(RutisException.BINDING_ERROR, "row ${row.key} is not loaded in this runtime")
+            if (rt.rows[row.key] !== row) throw RutisException(RutisException.BINDING_ERROR, "row ${row.name} is not loaded in this runtime")
             if (viaHost(rt, name, mode)) {
                 viaHost = sendViaHost(rt, row, name, mode, values, terminal, keep)
                 snapshot = Dispatch(name, emptyList())

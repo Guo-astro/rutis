@@ -397,7 +397,8 @@ class Bus:
                 elif outcome.exception() is not None:
                     errors.append(outcome.exception())
         if errors:
-            raise AggregateError(errors, f"{len(errors)} listeners of {name} failed")
+            count = "1 listener" if len(errors) == 1 else f"{len(errors)} listeners"
+            raise AggregateError(errors, f"{count} of {name} failed")
 
     async def serial(self, name: str, entries: list[Entry], args: list) -> Any:
         for entry in entries:

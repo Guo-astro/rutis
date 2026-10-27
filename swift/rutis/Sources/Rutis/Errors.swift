@@ -57,6 +57,19 @@ public struct RutisError: Error, CustomStringConvertible, LocalizedError, @unche
     package static func binding(_ message: String) -> RutisError {
         RutisError(name: Name.bindingError, message: message)
     }
+
+    /// What a call fails with once the session ended with `error`: when
+    /// the host went, `the host disconnected` with code peer-gone and
+    /// `{reason}` (#677).
+    package static func ended(_ error: Error) -> RutisError {
+        if let ended = error as? SessionEnded, let gone = ended.gone {
+            return RutisError(name: Name.bindingError, message: ended.reason, code: "peer-gone", data: ["reason": gone])
+        }
+        return binding(String(describing: error))
+    }
+
+    /// A call with no session to the host.
+    package static func hostGone() -> RutisError { ended(SessionEnded.hostGone()) }
 }
 
 /// The name an error crosses with: a RutisError's own, else the simple name
@@ -143,13 +156,53 @@ func isNilOptional(_ value: Any?) -> Bool {
     return mirror.displayStyle == .optional && mirror.children.isEmpty
 }
 
+// ── Where a method threw ─────────────────────────────────────────────────
+
+/// Where the method a call ran threw (#677 §4.4): Swift errors carry no
+/// stack, so the generated method table records the declaration of the
+/// method that threw, and the error crosses with that one frame. The error
+/// itself is never wrapped: code catching it in process sees it as thrown.
+package final class ThrowSite: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: String?
+
+    package init() {}
+
+    /// The frame line, `    at Type.method (file:line)`, if a method threw.
+    package var frame: String? { lock.withLock { recorded } }
+
+    func record(_ frame: String) { lock.withLock { recorded = frame } }
+
+    /// The site of the call the running Task serves.
+    @TaskLocal package static var current: ThrowSite?
+}
+
+extension Rutis {
+    /// For generated code (`@RutisService`): runs `body`, a call of the
+    /// method `method` declared at `file`:`line`; what it throws is thrown
+    /// on unchanged, and the call being served records where.
+    public static func located<T>(_ method: String, _ file: String, _ line: Int,
+                                  _ body: () async throws -> T) async throws -> T
+    {
+        do {
+            return try await body()
+        } catch {
+            // The outermost method records last: the one the call ran.
+            ThrowSite.current?.record("    at \(method) (\(file):\(line))")
+            throw error
+        }
+    }
+}
+
 // ── Error graphs ─────────────────────────────────────────────────────────
 
 /// The wire form of an error: its name, message and error graph (an
 /// AggregateError's children in order). A RutisError thrown on crosses with
 /// the far end's graph spliced in (nodes appended, references shifted), as
-/// Node does.
-package func encodeError(_ error: Error, encodeData: (Any) throws -> Value) -> JSON {
+/// Node does. `frame`, where the method that threw was declared, follows
+/// "name: message" in the root's `stack`; for a received error thrown on,
+/// it is appended to the root node's `rethrown` instead (at most 8 items).
+package func encodeError(_ error: Error, frame: String? = nil, encodeData: (Any) throws -> Value) -> JSON {
     if let remote = error as? RutisError, remote.name == RutisError.Name.syncWaitCycle, remote.graph == nil {
         return .object([("name", .string(remote.name)), ("message", .string(remote.message))])
     }
@@ -173,7 +226,20 @@ package func encodeError(_ error: Error, encodeData: (Any) throws -> Value) -> J
         {
             let offset = nodes.count
             nodes.append(contentsOf: received.map { shift($0, offset) })
-            return shift(root, offset)
+            let shifted = shift(root, offset)
+            // Thrown on by a method: its declaration joins the root's `rethrown`.
+            if depth == 0, let frame, let id = shifted["value"]?.int64Value, id >= 0, Int(id) < nodes.count,
+               case let .object(fields) = nodes[Int(id)], JSON.lookup(fields, "type") == .string("error")
+            {
+                var items = JSON.lookup(fields, "rethrown")?.arrayValue ?? []
+                if items.count < 8 {
+                    items.append(.string(frame))
+                    var updated = fields.filter { $0.0 != "rethrown" }
+                    updated.append(("rethrown", .array(items)))
+                    nodes[Int(id)] = .object(updated)
+                }
+            }
+            return shifted
         }
         let name = errorName(error)
         let message = errorMessage(error)
@@ -181,7 +247,7 @@ package func encodeError(_ error: Error, encodeData: (Any) throws -> Value) -> J
         nodes.append(.null)
         var node: [(String, JSON)] = [
             ("type", .string("error")), ("name", .string(name)), ("message", .string(message)),
-            ("stack", .string("\(name): \(message)")),
+            ("stack", .string(depth == 0 && frame != nil ? "\(name): \(message)\n\(frame!)" : "\(name): \(message)")),
         ]
         let (code, data, hasData) = codeAndData(error)
         if let code { node.append(("code", .string(code))) }

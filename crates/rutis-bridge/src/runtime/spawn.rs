@@ -314,7 +314,7 @@ pub(crate) fn command(
         #[cfg(not(feature = "node"))]
         None => {
             let _ = node_package;
-            return Err(Error::Value(
+            return Err(Error::refused(
                 "no launcher given, and the Node runtime needs the `node` feature".into(),
             ));
         }

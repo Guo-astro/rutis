@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::patch::Layer;
 use crate::resolver::{Declared, Resolved};
 use crate::LoaderError;
+use rutis::ConfigIssue;
 
 use super::Loader;
 
@@ -68,6 +69,9 @@ pub struct RowCheck {
     /// The module the row names.
     pub name: String,
     pub status: RowStatus,
+    /// Extra keys in its config where its plugin's schema allows them
+    /// (sorted by path): warnings, whether the row can run or not.
+    pub config_warnings: Vec<ConfigIssue>,
 }
 
 #[derive(Debug)]
@@ -87,7 +91,26 @@ pub enum RowStatus {
         /// What the row waits for in rutis (its plugin's and its own
         /// `inject`), by name, and who provides each.
         requires: Vec<Requirement>,
+        /// How its config was checked against its plugin's schema (a
+        /// config that does not match fails the row instead).
+        config: ConfigStatus,
     },
+}
+
+/// How a row's config was checked ([`RowStatus::Checked`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigStatus {
+    /// It matches its plugin's schema (its extra keys:
+    /// [`RowCheck::config_warnings`]).
+    Checked,
+    /// Its plugin has no schema.
+    NoSchema,
+    /// Its schema is known only when it runs (a remote runtime not
+    /// connected, a peer that is not there): not checked.
+    NotYet,
+    /// A Cordis row: Cordis validates its config with its own `Config`.
+    Cordis,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +199,7 @@ impl Loader {
         for row in desired.rows.iter().filter(|row| !row.group) {
             let name = row.name.clone().unwrap_or_default();
             let wanted = desired.wanted(row);
+            let mut warnings = Vec::new();
             let status = if let Some(invalid) = &row.invalid {
                 RowStatus::Failed(invalid.clone())
             } else if let Err(error) = &row.disabled {
@@ -193,22 +217,47 @@ impl Loader {
                         if !wanted {
                             RowStatus::Disabled
                         } else {
-                            match inner.dry_run(layers, &row.id, Some(resolved.clone())).await {
+                            let dry = inner
+                                .dry_run_checking(
+                                    layers,
+                                    &row.id,
+                                    Some(resolved.clone()),
+                                    Some(&mut warnings),
+                                )
+                                .await;
+                            match dry {
                                 Err(error) => RowStatus::Failed(error),
-                                Ok(()) => RowStatus::Checked {
-                                    resolved,
-                                    declared,
-                                    requires: Vec::new(),
-                                },
+                                Ok(()) => {
+                                    let config = match super::config_step::checkable(&resolved) {
+                                        super::config_step::Checkable::Yes => ConfigStatus::Checked,
+                                        super::config_step::Checkable::NoSchema => {
+                                            ConfigStatus::NoSchema
+                                        }
+                                        super::config_step::Checkable::NotYet => {
+                                            ConfigStatus::NotYet
+                                        }
+                                        super::config_step::Checkable::Cordis => {
+                                            ConfigStatus::Cordis
+                                        }
+                                    };
+                                    RowStatus::Checked {
+                                        resolved,
+                                        declared,
+                                        requires: Vec::new(),
+                                        config,
+                                    }
+                                }
                             }
                         }
                     }
                 }
             };
+            warnings.sort_by(|a, b| a.path.cmp(&b.path));
             rows.push(RowCheck {
                 id: row.id.clone(),
                 name,
                 status,
+                config_warnings: warnings,
             });
         }
 

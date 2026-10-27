@@ -169,6 +169,7 @@ impl<'de> serde::Deserialize<'de> for ServiceChanged {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl crate::Event for ServiceChanged {
     const NAME: &'static str = "rutis::ServiceChanged";
     type Value = ();

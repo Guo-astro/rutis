@@ -128,6 +128,19 @@ impl Inner {
         id: &str,
         resolved: Option<Arc<crate::resolver::Resolved>>,
     ) -> Result<(), LoaderError> {
+        self.dry_run_checking(layers, id, resolved, None).await
+    }
+
+    /// [`Inner::dry_run`] for `check`, which also validates the configs of
+    /// rows of other runtimes and collects their extra keys into
+    /// `warnings` (config schema design §7).
+    pub(super) async fn dry_run_checking(
+        &self,
+        layers: &[Layer],
+        id: &str,
+        resolved: Option<Arc<crate::resolver::Resolved>>,
+        mut warnings: Option<&mut Vec<rutis::ConfigIssue>>,
+    ) -> Result<(), LoaderError> {
         // The plugins to check, and where each copy would run: its context
         // without the plugin's own scope, and the instances enclosing it.
         let (desired, checks, failing) = {
@@ -194,7 +207,9 @@ impl Inner {
                 }
             };
             match module {
-                Ok(module) => self.dry_run_copies(row, &module, targets, &tolerated)?,
+                Ok(module) => {
+                    self.dry_run_copies(row, &module, targets, &tolerated, warnings.as_deref_mut())?
+                }
                 Err(error) if targets.iter().all(|(scope, ..)| tolerated(*scope, &error)) => {}
                 Err(error) => return Err(error),
             }
@@ -211,6 +226,7 @@ impl Inner {
         resolved: &crate::resolver::Resolved,
         targets: Vec<Target>,
         tolerated: &dyn Fn(Option<u64>, &LoaderError) -> bool,
+        mut warnings: Option<&mut Vec<rutis::ConfigIssue>>,
     ) -> Result<(), LoaderError> {
         let rejected = |error: Error| LoaderError::Rejected {
             id: row.id.clone(),
@@ -251,6 +267,22 @@ impl Inner {
                     check(Err(error))?;
                     continue;
                 }
+            };
+            let config = match warnings.as_deref_mut() {
+                Some(warnings) => {
+                    let purpose = super::config_step::Purpose::Check { warnings };
+                    match self.config_step(resolved, &config, purpose) {
+                        // The filled copy for the rows the loader fills;
+                        // other runtimes' SDKs fill their own.
+                        Ok(filled) if !resolved.foreign_scope => filled,
+                        Ok(_) => config,
+                        Err(error) => {
+                            check(Err(super::config_step::rejected(&row.id, error)))?;
+                            continue;
+                        }
+                    }
+                }
+                None => config,
             };
             let checked = catch_unwind(AssertUnwindSafe(|| {
                 let factory = match &resolved.scoped {

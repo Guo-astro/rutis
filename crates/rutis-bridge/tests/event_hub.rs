@@ -420,7 +420,7 @@ async fn rows_dispatch_and_hear_by_name() {
         assert!(
             error
                 .to_string()
-                .contains("row ghost is not loaded in this runtime"),
+                .contains("the calling row is not loaded in this runtime"),
             "{error}"
         );
     })
@@ -528,7 +528,7 @@ async fn a_failing_filter_of_an_emit_is_reported_from_its_row() {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             *lines.lock().unwrap(),
-            vec!["rutis: filter of t/fe from row chat failed: FErr: no".to_owned()]
+            vec!["filter of t/fe from row chat failed: FErr: no".to_owned()]
         );
         assert!(heard.lock().unwrap().is_empty());
     })
@@ -954,7 +954,7 @@ async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
     within("the unload", view.dispose()).await.unwrap();
     let failed = within("the call", parallel).await.unwrap().unwrap_err();
     assert!(
-        failed.to_string().contains("1 listeners of t/hang failed"),
+        failed.to_string().contains("1 listener of t/hang failed"),
         "{failed}"
     );
     let errors = errors.lock().unwrap().clone();

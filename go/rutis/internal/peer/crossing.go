@@ -2,6 +2,7 @@ package peer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -58,17 +59,41 @@ func describeJob(j *job) string {
 	return ""
 }
 
-// ofArgument is `err` as one of argument `index` (from 0) of `call`.
+// ofArgument is `err` as one of argument `index` (from 0) of `call`:
+// `<call>: argument <i> cannot be sent: <why>`, code bad-value (#677).
 func ofArgument(err error, index int, call string) error {
-	return &ValueError{Message: fmt.Sprintf("argument %d of %s: %s", index+1, call, err.Error()), cause: err}
+	return &ValueError{Message: fmt.Sprintf("%s: argument %d cannot be sent: %s", call, index+1, err.Error()), cause: err,
+		argument: index + 1, part: "argument", limit: limitOf(err)}
 }
 
-// ofResult is `err` as one of the result of `call` ("" when not known).
+// ofResult is `err` as one of the result of `call` ("" when not known):
+// `<call>: the result cannot be sent: <why>`.
 func ofResult(err error, call string) error {
 	if call == "" {
-		return &ValueError{Message: "the result: " + err.Error(), cause: err}
+		return &ValueError{Message: "the result cannot be sent: " + err.Error(), cause: err, part: "result", limit: limitOf(err)}
 	}
-	return &ValueError{Message: fmt.Sprintf("the result of %s: %s", call, err.Error()), cause: err}
+	return &ValueError{Message: fmt.Sprintf("%s: the result cannot be sent: %s", call, err.Error()), cause: err,
+		part: "result", limit: limitOf(err)}
+}
+
+// ofArguments is `err` as one of the arguments of `call` together.
+func ofArguments(err error, call string) error {
+	return &ValueError{Message: fmt.Sprintf("%s: the arguments cannot be sent: %s", call, err.Error()), cause: err,
+		part: "arguments", limit: limitOf(err)}
+}
+
+// tooLarge is a message over the limit.
+type tooLarge struct{ size int }
+
+func (e *tooLarge) Error() string { return overLimit(e.size) }
+
+// limitOf is the limit `err` is over, 0 when it is not a message over it.
+func limitOf(err error) int {
+	var large *tooLarge
+	if errors.As(err, &large) {
+		return MaxMessage
+	}
+	return 0
 }
 
 // overLimit says why a message of `size` bytes is not sent.
@@ -155,5 +180,5 @@ func (p *Peer) encodeArgs(args []any, grants *[]int64, origin []string, call str
 			return nil, ofArgument(failed, i, call)
 		}
 	}
-	return nil, &ValueError{Message: fmt.Sprintf("the arguments of %s: %s", call, err.Error()), cause: err}
+	return nil, ofArguments(err, call)
 }

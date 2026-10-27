@@ -80,8 +80,14 @@ class Testing(background.TestCase):
             async with load(sneaky, services={"llm": Llm()}):
                 pass
 
-        with self.assertRaisesRegex(PluginTestError, "is not available to this plugin, which does not declare it in inject"):
+        with self.assertRaises(PluginTestError) as refused:
             run(undeclared())
+        # As the runtime says it, with its code (#677).
+        self.assertEqual(
+            str(refused.exception),
+            "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject",
+        )
+        self.assertEqual((refused.exception.code, refused.exception.data), ("not-declared", {"service": "llm"}))
 
     def test_strict_mode_crosses_values_as_between_processes(self):
         class Store:
@@ -119,7 +125,7 @@ class Testing(background.TestCase):
                 # Nesting: 64 levels cross, 65 do not (#279).
                 nest = lambda depth: functools.reduce(lambda inner, _: [inner], range(depth), "bottom")
                 t.service("store").put(nest(64))
-                with self.assertRaisesRegex(PluginTestError, "nested deeper than 64 levels cannot cross"):
+                with self.assertRaisesRegex(PluginTestError, "^store.put: argument 1 cannot be sent: value nested deeper than 64 levels, the most a value crossing processes may nest$"):
                     t.service("store").put(nest(65))
                 # Integers of any size cross: beyond ±(2^53−1) as bigints
                 # (design V6), which stay ints to the plugin.

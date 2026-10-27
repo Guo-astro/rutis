@@ -169,7 +169,7 @@ async fn check_describes_swift_binaries_and_fails_an_old_one() {
         arch => arch,
     };
     for line in [
-        "plugin API for Go and Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)".to_owned(),
+        "plugin API for Swift binaries: 3 (checked by this host; the Node, Bun and Python runtimes check their own plugins)".to_owned(),
         "ping (swift:ping): ok".to_owned(),
         "  runtime: \"swift-netkit\"".to_owned(),
         "swift binaries:".to_owned(),

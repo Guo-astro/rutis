@@ -12,7 +12,9 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::report::{Clash, CycleLink, Provider, Requirement, RowStatus, Supply};
+use rutis_loader::report::{
+    Clash, ConfigStatus, CycleLink, Provider, Requirement, RowStatus, Supply,
+};
 
 mod dev;
 mod reload;
@@ -331,11 +333,12 @@ async fn check(args: &[String]) -> Result<(), String> {
     warn(&config);
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
-    // Only with binaries to check (#668).
-    if config.runtimes.go.is_some() || config.runtimes.swift.is_some() {
-        outln!(
-            "plugin API for Go and Swift binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
-        );
+    // Only with binaries to check (#668), naming the languages there are.
+    if let Some(line) = plugin_api_line(
+        config.runtimes.go.is_some(),
+        config.runtimes.swift.is_some(),
+    ) {
+        outln!("{line}");
     }
     // Each local runtime: what implements it and what it runs on.
     for (name, runtime) in &host.runtimes {
@@ -367,8 +370,22 @@ async fn check(args: &[String]) -> Result<(), String> {
         .collect();
     for row in &report.rows {
         let (id, name) = (&row.id, &row.name);
+        // Extra keys in its config: warnings, errors with `--strict`
+        // (printed after the row's lines).
+        let extra: Vec<String> = row
+            .config_warnings
+            .iter()
+            .map(|warning| format!("config: {}", warning.message))
+            .collect();
         match &row.status {
             RowStatus::Disabled => outln!("{id} ({name}): disabled"),
+            // A config that does not match its plugin's schema: one line
+            // per problem.
+            RowStatus::Failed(error) if error.config().is_some() => {
+                for line in error.config().into_iter().flat_map(|config| config.lines()) {
+                    outln!("{id} ({name}): cannot run: {line}");
+                }
+            }
             RowStatus::Failed(error) => {
                 outln!("{id} ({name}): {error}");
                 if let rutis_loader::LoaderError::NotFound { name } = error {
@@ -404,7 +421,10 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
             }
             RowStatus::Checked {
-                resolved, requires, ..
+                resolved,
+                requires,
+                config: checked_config,
+                ..
             } => {
                 let missing: Vec<&str> = requires
                     .iter()
@@ -423,7 +443,8 @@ async fn check(args: &[String]) -> Result<(), String> {
                         )
                     })
                     .collect();
-                match (missing.is_empty(), strict && !undeclared.is_empty()) {
+                let strictly = strict && (!undeclared.is_empty() || !extra.is_empty());
+                match (missing.is_empty(), strictly) {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
                         cannot.insert(id.as_str());
@@ -449,15 +470,27 @@ async fn check(args: &[String]) -> Result<(), String> {
                                 names(true).join(", ")
                             ));
                         }
-                        outln!(
-                            "{id} ({name}): cannot run with --strict: {}",
-                            why.join("; ")
-                        )
+                        if !why.is_empty() {
+                            outln!(
+                                "{id} ({name}): cannot run with --strict: {}",
+                                why.join("; ")
+                            );
+                        }
+                        for line in &extra {
+                            outln!("{id} ({name}): cannot run with --strict: {line}");
+                        }
                     }
-                    (false, _) => outln!(
-                        "{id} ({name}): cannot run: nothing provides {}",
-                        missing.join(", ")
-                    ),
+                    (false, _) => {
+                        outln!(
+                            "{id} ({name}): cannot run: nothing provides {}",
+                            missing.join(", ")
+                        );
+                        if strict {
+                            for line in &extra {
+                                outln!("{id} ({name}): cannot run with --strict: {line}");
+                            }
+                        }
+                    }
                 }
                 for requirement in &undeclared {
                     let line = match &requirement.supply {
@@ -491,6 +524,9 @@ async fn check(args: &[String]) -> Result<(), String> {
                 if let Some(schema) = &resolved.schema {
                     outln!("  config: {schema}");
                 }
+                if matches!(checked_config, ConfigStatus::NotYet) {
+                    outln!("  config not checked: its schema is known only when it runs");
+                }
                 for requirement in requires {
                     if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
                         outln!("  {line}{}", did_you_mean(requirement.like.as_deref()));
@@ -498,6 +534,15 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
             }
             _ => outln!("{id} ({name}): not checked"),
+        }
+        for line in &extra {
+            errln!(
+                "rutis-host: {}: {id}: {line}",
+                match strict {
+                    true => "error",
+                    false => "warning",
+                }
+            );
         }
     }
     // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
@@ -705,10 +750,35 @@ fn runtime_line(name: &str, about: &serde_json::Value) -> Option<String> {
     (!described.is_empty()).then(|| format!("runtime {name}: {}", described.join(", ")))
 }
 
+/// What `check` says of the plugin API the binaries are checked against:
+/// only for the languages the configuration has (#668, #680).
+fn plugin_api_line(go: bool, swift: bool) -> Option<String> {
+    let languages = match (go, swift) {
+        (true, true) => "Go and Swift",
+        (true, false) => "Go",
+        (false, true) => "Swift",
+        (false, false) => return None,
+    };
+    Some(format!(
+        "plugin API for {languages} binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::runtime_line;
+    use super::{plugin_api_line, runtime_line};
     use serde_json::json;
+
+    /// `check` names the plugin API only for the binaries' languages the
+    /// configuration has (#680).
+    #[test]
+    fn the_plugin_api_line_names_only_the_languages_there_are() {
+        assert_eq!(plugin_api_line(false, false), None);
+        let line = |go, swift| plugin_api_line(go, swift).unwrap();
+        assert!(line(true, false).starts_with("plugin API for Go binaries: "));
+        assert!(line(false, true).starts_with("plugin API for Swift binaries: "));
+        assert!(line(true, true).starts_with("plugin API for Go and Swift binaries: "));
+    }
 
     /// guarantee: host/check
     #[test]

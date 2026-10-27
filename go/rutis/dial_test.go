@@ -90,7 +90,7 @@ func TestASessionsEndIsClassified(t *testing.T) {
 		{fmt.Errorf("%w: the far end speaks protocol 9, this side 3", peer.ErrIncompatible), 0, incompatible},
 		{fmt.Errorf("%w: the far end greeted as other", peer.ErrEndpointMismatch), 0, authRejected},
 		{errors.New("session failed: replaced by a new connection"), replaced, retryable},
-		{errors.New("Rust process disconnected"), goingAway, retryable},
+		{peer.HostGone(nil), goingAway, retryable},
 		// Classified by type, never by text.
 		{errors.New("incompatible session: said by a plugin"), 0, retryable},
 	} {

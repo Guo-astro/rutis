@@ -375,7 +375,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                 }
                 await peer.closed()
                 publish(.connecting)
-                let ended = peer.error ?? ChannelError("the session ended")
+                let ended = peer.error ?? ChannelError("the host disconnected")
                 (failure, reason, lost) = (sessionFailure(ended, closeCode: socket.closeCode), "\(ended)", "connection lost")
                 if let refused = session.refused { failure = .incompatible; reason = refused.reason }
                 await session.end()

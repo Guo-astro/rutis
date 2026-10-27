@@ -34,7 +34,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
      * service has.
      */
     fun <I : Any> use(name: String, type: Class<I>): I {
-        if (name !in row.plugin.inject) throw IllegalArgumentException("service $name is not available to this plugin, which does not declare it in inject: add '$name' to its inject")
+        if (name !in row.plugin.inject) throw NotDeclaredException(name)
         val factory = Tables.clientFactory(type)
             ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
@@ -45,7 +45,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
                 LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
             }
             host != null -> HostHandle(rt, name, "host:$id", host)
-            else -> throw IllegalStateException("service $name is not available")
+            else -> throw UnavailableException(name)
         }
         val missing = factory.methods.filter { it !in handle.kinds }
         if (missing.isNotEmpty()) throw IllegalArgumentException("use $name: ${type.simpleName} calls ${missing.joinToString()}, which the service does not have")
@@ -63,7 +63,7 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
     /** Registers a cleanup, run when the row unloads (latest first). */
     fun effect(cleanup: suspend () -> Unit) {
         if (!rt.addCleanup(row, cleanup)) {
-            Report.line("rutis: row ${row.key} is not active: cleanup is not registered")
+            Report.line("rutis: row ${row.name} is not active: cleanup is not registered")
         }
     }
 
@@ -127,10 +127,10 @@ internal class LocalHandle(
     private val table: ServiceTable<Any>,
     override val kinds: Map<String, String>,
 ) : ServiceHandle {
-    override suspend fun callSuspend(method: String, args: List<Any?>): Any? = table.invoke(target, method, args)
+    override suspend fun callSuspend(method: String, args: List<Any?>): Any? = table.serve(target, method, args, name)
 
     override fun callBlocking(method: String, args: List<Any?>): Any? =
-        runBlocking(CallChain.element()) { table.invoke(target, method, args) }
+        runBlocking(CallChain.element()) { table.serve(target, method, args, name) }
 }
 
 /** A rutis service, called through the session (`host:<id>`). */
@@ -140,7 +140,7 @@ internal class HostHandle(
     private val target: String,
     override val kinds: Map<String, String>,
 ) : ServiceHandle {
-    private fun session() = rt.session ?: throw IllegalStateException("the runtime has no session")
+    private fun session() = rt.session ?: throw arcships.rutis.internal.peer.HostGoneException(null)
 
     override suspend fun callSuspend(method: String, args: List<Any?>): Any? =
         session().callSuspend(target, method, args, kinds[method] == "sync")

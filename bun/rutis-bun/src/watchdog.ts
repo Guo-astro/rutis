@@ -13,6 +13,6 @@ const { ended, after } = workerData as { ended: Int32Array, after: number }
 Atomics.wait(ended, 0, 0)
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, after)
 try {
-  writeSync(2, `rutis-bun: the session ended ${after / 1000} s ago and this process has not exited (a plugin keeps it busy); ending it\n`)
+  writeSync(2, `runtime bun: the host disconnected ${after / 1000} s ago and this process has not exited (a plugin keeps it busy); ending it\n`)
 } catch {}
 process.kill(process.pid, 'SIGKILL')

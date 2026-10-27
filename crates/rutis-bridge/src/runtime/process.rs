@@ -61,12 +61,12 @@ fn row_label(label: Option<&str>, key: &str) -> String {
 /// Refuse a name or label [`scoped_id`] cannot keep apart.
 fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
     if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
-        return Err(Error::Value(format!(
+        return Err(Error::refused(format!(
             "service {name:?} or its scope label contains NUL"
         )));
     }
     if label == Some("") {
-        return Err(Error::Value(format!(
+        return Err(Error::refused(format!(
             "service {name:?} has an empty scope label"
         )));
     }
@@ -157,9 +157,9 @@ pub(crate) fn calling() -> Option<Arc<Process>> {
 /// Run once when a row's plugin ends on its own.
 type RowEnded = Box<dyn FnOnce() + Send>;
 
-/// Run once, with why, when the runtime fails a running row: an error its
-/// code left unhandled (#688).
-type RowFailed = Box<dyn FnOnce(String) + Send>;
+/// Run once, with the error, when the runtime fails a running row: an
+/// error its code left unhandled (#688).
+type RowFailed = Box<dyn FnOnce(crate::session::Error) + Send>;
 
 /// Everything one mount needs: the plugins loaded in order into one Cordis
 /// Context, the exported services, and what the rutis side contributes.
@@ -507,7 +507,14 @@ impl Dispatch for Imports {
                 let (host, row) = hosts
                     .get(name)
                     .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
-                    .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
+                    .ok_or_else(|| {
+                        let service = name_of(name);
+                        Error::binding(
+                            crate::session::code::UNAVAILABLE,
+                            format!("service {service} is not available"),
+                            Some(serde_json::json!({ "service": service })),
+                        )
+                    })?;
                 // Through the registration rows share, of a service rows
                 // lease for themselves (#676): the calling plugin does not
                 // declare it, so a method that needs the calling row says
@@ -532,7 +539,7 @@ impl Dispatch for Imports {
         if target.is_empty() && method.starts_with("events.") {
             return match self.bus.get() {
                 Some(events) => events.invoke(connection, method, args),
-                None => Err(Error::Value(format!(
+                None => Err(Error::refused(format!(
                     "{method}: the session's events are not set up yet"
                 ))),
             };
@@ -550,13 +557,25 @@ impl Dispatch for Imports {
             return Ok(RpcValue::Undefined);
         }
         if target.is_empty() && method == "rows.failed" {
-            // `[key, why]`: an error the row's code left unhandled (#688).
-            // The host fails the row; the runtime keeps running the others.
-            let (key, why): (String, String) = crate::runtime::decode(args.json()?)?;
+            // `[key, why, error?]`: an error the row's code left unhandled
+            // (#688): what it was (`unhandled rejection: Error: boom`), and
+            // the error as the runtime encodes a thrown one. The host fails
+            // the row; the runtime keeps running the others.
+            let mut args: Vec<Value> = crate::runtime::decode(args.json()?)?;
+            let error: Option<crate::session::protocol::Failure> = match args.len() > 2 {
+                true => serde_json::from_value(args.split_off(2).swap_remove(0)).ok(),
+                false => None,
+            };
+            let (key, why): (String, String) = crate::runtime::decode(Value::Array(args))?;
+            let error = crate::session::Error::Remote {
+                name: crate::session::UNHANDLED_ERROR.into(),
+                message: why,
+                graph: error.and_then(|error| error.graph),
+            };
             let failed = self.failed.lock().unwrap().remove(&key);
             return match failed {
                 Some(failed) => {
-                    failed(why);
+                    failed(error);
                     Ok(RpcValue::Undefined)
                 }
                 // Nothing fails rows here (an embedder without the
@@ -567,7 +586,7 @@ impl Dispatch for Imports {
             };
         }
         if !(target.is_empty() && method == "service") {
-            return Err(Error::Value(
+            return Err(Error::refused(
                 "application has no exported service target".into(),
             ));
         }
@@ -714,6 +733,8 @@ pub struct Process {
     /// Those that belong to the process itself (handed over outside any
     /// row's call): they end when its session does.
     owned: Arc<Mutex<Vec<rutis::Definition>>>,
+    /// The runtime's name, as the mount gave it, for messages.
+    name: Option<String>,
 }
 
 /// What a plugin module declares, for rutis-loader (see
@@ -865,7 +886,7 @@ impl Process {
             (Some((plugin, _)), _) => *plugin,
             (None, Some(anchor)) => anchor,
             (None, None) => {
-                return Err(Error::Value(
+                return Err(Error::refused(
                     "a mount needs at least one plugin or an anchor".into(),
                 ))
             }
@@ -1005,6 +1026,7 @@ impl Process {
             scope: scope.clone(),
             definitions: Mutex::default(),
             owned: Arc::default(),
+            name: runtime.clone(),
         });
         let _ = process.imports.process.set(Arc::downgrade(&process));
         // The plugin definitions the process owns end with its session.
@@ -1224,7 +1246,7 @@ impl Process {
     fn require_plugin_values(&self) -> Result<(), Error> {
         match self.supports("plugin-values") {
             true => Ok(()),
-            false => Err(Error::Value(
+            false => Err(Error::refused(
                 "the runtime's SDK is too old to hand over plugin definitions \
                  (it lacks the feature plugin-values)"
                     .into(),
@@ -1292,7 +1314,7 @@ impl Process {
             // while it starts.
             let mut exported = self.imports.exported.lock().unwrap();
             if let Some((id, _)) = scoped.iter().find(|(id, _)| exported.contains_key(id)) {
-                return Err(Error::Value(format!("service {id} is already exported")));
+                return Err(Error::refused(format!("service {id} is already exported")));
             }
             for (id, name) in &scoped {
                 exported.insert(id.clone(), (name.clone(), observer.clone()));
@@ -1379,7 +1401,9 @@ impl Process {
             .insert(key.to_owned(), Box::new(ended));
     }
 
-    /// Run `failed` with why if the runtime fails row `key` while it runs:
+    /// Run `failed` with the error if the runtime fails row `key` while it
+    /// runs (an [`UNHANDLED_ERROR`](crate::session::UNHANDLED_ERROR) whose
+    /// message says what happened and whose graph is the error's own):
     /// an error the row's code left unhandled (a promise rejection, an
     /// exception in a task), which the runtime traced to the row
     /// (`rows.failed`, #688). The runtime keeps running and keeps the row
@@ -1389,7 +1413,11 @@ impl Process {
     /// right after it. A runtime fails a row this way only once it loaded:
     /// an error while it loads fails the load instead. With nothing
     /// registered the call fails, and the runtime writes why itself.
-    pub fn on_row_failed(&self, key: &str, failed: impl FnOnce(String) + Send + 'static) {
+    pub fn on_row_failed(
+        &self,
+        key: &str,
+        failed: impl FnOnce(crate::session::Error) + Send + 'static,
+    ) {
         self.imports
             .failed
             .lock()
@@ -1431,7 +1459,7 @@ impl Process {
     fn require(&self, feature: &str) -> Result<(), Error> {
         match self.supports(feature) {
             true => Ok(()),
-            false => Err(Error::Value(format!(
+            false => Err(Error::refused(format!(
                 "the Node runtime lacks `{feature}`: @arcships/rutis-runtime 0.3.0 or later is required"
             ))),
         }
@@ -1530,7 +1558,7 @@ impl Process {
                     entry.leases = entry
                         .leases
                         .checked_add(1)
-                        .ok_or_else(|| Error::Value(format!("host lease overflow for {id}")))?;
+                        .ok_or_else(|| Error::refused(format!("host lease overflow for {id}")))?;
                     entry.dispatch = dispatch.clone();
                     entry.row = row;
                     false
@@ -1680,9 +1708,14 @@ impl Process {
         let status = child.exited().await;
         result?;
         if status != "exited normally" {
-            return Err(Error::Transport(format!("Cordis process {status}")));
+            return Err(Error::Transport(format!("the runtime process {status}")));
         }
         Ok(())
+    }
+
+    /// The runtime's name, as the mount gave it.
+    pub(crate) fn runtime_name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// How the Node process ended (for example `exited with signal: 9

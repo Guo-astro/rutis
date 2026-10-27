@@ -111,11 +111,31 @@ impl From<Error> for Failure {
                 message,
                 graph: None,
             },
-            error => Self {
-                name: "BindingError".into(),
-                message: error.to_string(),
-                graph: None,
-            },
+            // A BindingError with the code a program decides by (the
+            // diagnostics design §4.3).
+            error => {
+                let message = error.to_string();
+                match (error.code(), error.data()) {
+                    (Some(code), data) => {
+                        let coded =
+                            crate::exports::failure("BindingError", code, message.clone(), data);
+                        let graph = match coded {
+                            Error::Remote { graph, .. } => graph,
+                            _ => None,
+                        };
+                        Self {
+                            name: "BindingError".into(),
+                            message,
+                            graph,
+                        }
+                    }
+                    (None, _) => Self {
+                        name: "BindingError".into(),
+                        message,
+                        graph: None,
+                    },
+                }
+            }
         }
     }
 }
@@ -236,5 +256,55 @@ mod tests {
             let got = value[0].as_f64().unwrap();
             assert_eq!(got.to_bits(), x.to_bits(), "{x:e} read back as {got:e}");
         }
+    }
+
+    /// rutis's own errors cross as `BindingError`s carrying the code a
+    /// program decides by, and its details as `data` (#677).
+    #[test]
+    fn rutis_errors_cross_with_their_codes() {
+        use crate::session::{code, Error};
+        let root = |failure: &Failure| {
+            let graph = failure.graph.as_ref().expect("a graph");
+            let index = graph["root"]["value"].as_u64().unwrap() as usize;
+            graph["nodes"][index].clone()
+        };
+        let no_method = Failure::from(Error::binding(
+            code::NO_METHOD,
+            "weather has no method tomorow (methods: today, tomorrow)".into(),
+            Some(serde_json::json!({ "service": "weather", "method": "tomorow" })),
+        ));
+        assert_eq!(no_method.name, "BindingError");
+        assert_eq!(
+            no_method.message,
+            "weather has no method tomorow (methods: today, tomorrow)"
+        );
+        let node = root(&no_method);
+        assert_eq!(node["code"], "no-method");
+        assert_eq!(
+            node["data"],
+            serde_json::json!({ "type": "data", "value": { "service": "weather", "method": "tomorow" } })
+        );
+        // Read back on the far end, the code and data are there.
+        let back = Error::from(no_method);
+        assert_eq!(back.code(), Some("no-method"));
+        assert_eq!(
+            back.data(),
+            Some(serde_json::json!({ "service": "weather", "method": "tomorow" }))
+        );
+        for (error, expected) in [
+            (Error::Value("a sparse array".into()), "bad-value"),
+            (
+                Error::Transport("the runtime py exited".into()),
+                "peer-gone",
+            ),
+        ] {
+            let failure = Failure::from(error);
+            assert_eq!(failure.name, "BindingError");
+            assert_eq!(root(&failure)["code"], expected);
+        }
+        // A protocol refusal carries no code.
+        let refused = Failure::from(Error::refused("link is already registered".into()));
+        assert_eq!(refused.name, "BindingError");
+        assert!(refused.graph.is_none());
     }
 }

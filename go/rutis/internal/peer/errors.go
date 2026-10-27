@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	errs "github.com/arcships/rutis/go/rutis/internal/errs"
 	"math"
 	"math/big"
 	"reflect"
@@ -13,57 +14,24 @@ import (
 	"strings"
 )
 
-// RemoteError is an error thrown on the other side of the session.
-type RemoteError struct {
-	Name    string
-	Message string
-	Graph   json.RawMessage
-	// Code and Data are what a Rust service's Err(e) carries (#440): its
-	// code (the variant's name) and data (e's serde value, decoded as
-	// encoding/json does, big integers as *big.Int); empty and nil otherwise.
-	Code string
-	Data any
-}
+// The error types a plugin author meets are declared in package errs,
+// whose package name is rutis: `%T` and `%#v` print *rutis.RemoteError,
+// not a name of this package (#677).
+type (
+	RemoteError    = errs.RemoteError
+	Sentinel       = errs.Sentinel
+	Error          = errs.Error
+	Coded          = errs.Coded
+	AggregateError = errs.AggregateError
+	PanicError     = errs.PanicError
+)
 
-func (e *RemoteError) Error() string {
-	if e.Name == "" {
-		return e.Message
-	}
-	return e.Name + ": " + e.Message
-}
-
-// Is makes errors.Is(err, ErrSyncWaitCycle) hold for a received cycle,
-// and errors.Is(err, sentinel) for a Sentinel of its name.
-func (e *RemoteError) Is(target error) bool {
-	if sentinel, ok := target.(*Sentinel); ok {
-		return sentinel.name == e.Name
-	}
-	return target == ErrSyncWaitCycle && e.Name == "SyncWaitCycle"
-}
-
-// Sentinel matches (errors.Is) every error of one cross-language name,
-// made in this process (an *Error) or received (a *RemoteError).
-type Sentinel struct{ name string }
-
-// NewSentinel is the sentinel of the error name `name`.
-func NewSentinel(name string) *Sentinel { return &Sentinel{name} }
-
-func (s *Sentinel) Error() string { return s.name }
-
-// Error is an error with a cross-language name, made in this process.
-type Error struct{ name, message string }
-
-// Errorf makes an *Error named `name`.
-func Errorf(name, format string, args ...any) error {
-	return &Error{name: name, message: fmt.Sprintf(format, args...)}
-}
-
-func (e *Error) Error() string { return e.message }
-func (e *Error) Name() string  { return e.name }
-func (e *Error) Is(target error) bool {
-	sentinel, ok := target.(*Sentinel)
-	return ok && sentinel.name == e.name
-}
+var (
+	NewSentinel = errs.NewSentinel
+	Errorf      = errs.Errorf
+	NewCoded    = errs.NewCoded
+	HostGone    = errs.HostGone
+)
 
 // ErrIncompatible is what a session ends with when the far end greeted in
 // a way this side cannot speak (another protocol version, no valid
@@ -75,46 +43,80 @@ var ErrIncompatible = errors.New("incompatible session")
 var ErrEndpointMismatch = errors.New("endpoint mismatch")
 
 // ErrSyncWaitCycle matches a SyncWaitCycle error received from the far end.
-var ErrSyncWaitCycle = errors.New("SyncWaitCycle")
+var ErrSyncWaitCycle = errs.ErrSyncWaitCycle
 
-// AggregateError holds every failed event listener in registration order.
-// It crosses as Cordis's AggregateError (its Message, the failures in
-// `errors`).
-type AggregateError struct {
-	// Message is what it crosses with: `<n> listeners of <name> failed`
-	// for a parallel dispatch.
-	Message string
-	Errors  []error
+// located is an error a service method returned, with the frame of that
+// method's declaration (`    at Type.Method (file:line)`): it crosses with
+// that frame as its stack's second line (#677). Only the session sees it;
+// the error itself is unchanged.
+type located struct {
+	err   error
+	frame string
 }
 
-func (e *AggregateError) Error() string {
-	messages := make([]string, 0, len(e.Errors))
-	for _, err := range e.Errors {
-		if err != nil {
-			messages = append(messages, err.Error())
-		}
+func (e *located) Error() string { return e.err.Error() }
+func (e *located) Unwrap() error { return e.err }
+
+// Locate marks err, returned by a service method, with the frame of the
+// method's declaration. A panic keeps its own stack and is returned as it
+// is. A received error keeps its own graph: the frame is appended to its
+// root node's `rethrown` when it crosses, its stack left as it came.
+func Locate(err error, frame string) error {
+	if err == nil || frame == "" {
+		return err
 	}
-	if e.Message != "" {
-		return e.Message + ": [" + strings.Join(messages, "; ") + "]"
+	switch err.(type) {
+	case *PanicError, *located:
+		return err
 	}
-	return "multiple errors: [" + strings.Join(messages, "; ") + "]"
-}
-func (e *AggregateError) Name() string    { return "AggregateError" }
-func (e *AggregateError) Unwrap() []error { return e.Errors }
-
-// PanicError is a recovered panic, thrown with its stack.
-type PanicError struct {
-	Value any
-	Stack string
+	return &located{err, frame}
 }
 
-func (e *PanicError) Error() string { return fmt.Sprintf("panic: %v", e.Value) }
-func (e *PanicError) Name() string  { return "Panic" }
+// maxRethrown is how many rethrows a received error's root node records.
+const maxRethrown = 8
+
+// rethrow appends frame to the `rethrown` of the error node root refers to,
+// at most maxRethrown items. nodes are a decoded copy: the received graph
+// itself is never changed.
+func rethrow(root map[string]any, nodes []any, frame string) {
+	if frame == "" || root["type"] != "reference" {
+		return
+	}
+	id, ok := root["value"].(float64)
+	if !ok || id < 0 || int(id) >= len(nodes) || id != math.Trunc(id) {
+		return
+	}
+	node, ok := nodes[int(id)].(map[string]any)
+	if !ok || node["type"] != "error" {
+		return
+	}
+	var items []any
+	switch existing := node["rethrown"].(type) {
+	case nil:
+	case []any:
+		items = existing
+	default:
+		return
+	}
+	if len(items) >= maxRethrown {
+		return
+	}
+	node["rethrown"] = append(items, frame)
+}
+
+// unlocated is err without the frame Locate gave it, and that frame.
+func unlocated(err error) (error, string) {
+	if l, ok := err.(*located); ok {
+		return l.err, l.frame
+	}
+	return err, ""
+}
 
 // ErrorName is the name an error crosses with: Name() when it has one, the
 // far end's name for a RemoteError, "Error" for the standard library's
 // plain errors, else its type name (*fs.PathError -> PathError).
 func ErrorName(err error) string {
+	err, _ = unlocated(err)
 	if remote, ok := err.(*RemoteError); ok {
 		return remote.Name
 	}
@@ -141,6 +143,7 @@ func ErrorName(err error) string {
 // in (nodes appended, references shifted), as Node does: it decodes into a
 // real Error whose re-encoding carries the whole graph.
 func encodeError(err error) map[string]any {
+	err, frame := unlocated(err)
 	if remote, ok := err.(*RemoteError); ok && remote.Name == "SyncWaitCycle" && remote.Graph == nil {
 		return map[string]any{"name": remote.Name, "message": remote.Message}
 	}
@@ -189,12 +192,28 @@ func encodeError(err error) map[string]any {
 				for _, node := range graph.Nodes {
 					nodes = append(nodes, shift(node))
 				}
-				return shift(graph.Root).(map[string]any)
+				root := shift(graph.Root).(map[string]any)
+				// Thrown on by the method that returned it: the
+				// top-level error only.
+				rethrow(root, nodes, frame)
+				frame = ""
+				return root
 			}
+		}
+		if _, ok := err.(*RemoteError); ok {
+			// A received error that cannot be spliced in crosses as it
+			// came, without the method's frame.
+			frame = ""
 		}
 		name, message := ErrorName(err), wireMessage(err)
 		id := len(nodes)
-		node := map[string]any{"type": "error", "name": name, "message": message, "stack": name + ": " + message}
+		stack := name + ": " + message
+		if frame != "" {
+			// The method that returned it: the top-level error only.
+			stack += "\n" + frame
+			frame = ""
+		}
+		node := map[string]any{"type": "error", "name": name, "message": message, "stack": stack}
 		nodes = append(nodes, node)
 		// A code and its data cross, as from JavaScript and Rust (#440):
 		// an error with `Code() string` and `Data() any`. Data that cannot
@@ -202,7 +221,7 @@ func encodeError(err error) map[string]any {
 		if coded, ok := err.(interface{ Code() string }); ok {
 			node["code"] = coded.Code()
 		}
-		if carrying, ok := err.(interface{ Data() any }); ok {
+		if carrying, ok := err.(interface{ Data() any }); ok && !isPartless(err) {
 			mark := len(nodes)
 			if data, ok := graphData(carrying.Data(), &nodes); ok {
 				node["data"] = data
@@ -230,9 +249,17 @@ func encodeError(err error) map[string]any {
 	return map[string]any{"name": ErrorName(err), "message": wireMessage(err), "graph": map[string]any{"root": root, "nodes": nodes}}
 }
 
+// isPartless is a ValueError whose part of a call is not known: it
+// crosses with its code and no data.
+func isPartless(err error) bool {
+	value, ok := err.(*ValueError)
+	return ok && value.part == ""
+}
+
 // wireMessage is the message an error crosses with: the far end's own for a
 // RemoteError, its Message for an AggregateError, else Error().
 func wireMessage(err error) string {
+	err, _ = unlocated(err)
 	switch err := err.(type) {
 	case *RemoteError:
 		return err.Message

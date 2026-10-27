@@ -208,7 +208,7 @@ impl RuntimePlugin {
 
     fn with(runtime: String, anchor: PathBuf, remote: bool) -> Self {
         Self {
-            label: format!("{runtime}-runtime"),
+            label: format!("runtime {runtime}"),
             session: [crate::runtime::runtime_session_key(&runtime).erase()],
             remote,
             runtime,
@@ -250,7 +250,7 @@ impl RuntimePlugin {
     /// several of one language, live side by side.
     pub fn named(mut self, name: impl Into<String>) -> Self {
         self.runtime = name.into();
-        self.label = format!("{}-runtime", self.runtime);
+        self.label = format!("runtime {}", self.runtime);
         self.session = [crate::runtime::runtime_session_key(&self.runtime).erase()];
         self
     }
@@ -305,7 +305,7 @@ impl DynPlugin for RuntimePlugin {
                 let session = ctx
                     .get_key::<dyn crate::runtime::RuntimeSession>(self.session[0].clone())
                     .ok_or_else(|| {
-                        crate::runtime::Error::Value(format!(
+                        crate::runtime::Error::refused(format!(
                             "the session of the {} runtime is gone",
                             self.runtime
                         ))
@@ -349,7 +349,7 @@ impl DynPlugin for RuntimePlugin {
                 .filter(|feature| !process.supports(feature))
                 .collect();
             if !missing.is_empty() {
-                let error = crate::runtime::Error::Value(format!(
+                let error = crate::runtime::Error::refused(format!(
                     "the {} runtime lacks {}: @arcships/rutis-runtime 0.3.0 or later \
                      (or a runtime speaking its row contract) is required",
                     self.runtime,
@@ -457,7 +457,7 @@ async fn withdraw(service: &Mutex<Option<Disposer>>) {
     let disposer = service.lock().unwrap().take();
     if let Some(disposer) = disposer {
         if let Err(error) = disposer.dispose().await {
-            eprintln!("rutis: cannot withdraw the runtime: {error}");
+            eprintln!("cannot withdraw a runtime that went away: {error}");
         }
     }
 }

@@ -10,6 +10,7 @@
 mod api;
 mod check;
 mod commit;
+mod config_step;
 mod desired;
 mod instances;
 mod plugins;
@@ -33,11 +34,13 @@ use crate::resolver::{Resolved, Resolver, Values};
 use crate::LoaderError;
 
 pub use check::{
-    CheckReport, Clash, CycleLink, Provider, Requirement, RowCheck, RowStatus, Supply, Unknown,
+    CheckReport, Clash, ConfigStatus, CycleLink, Provider, Requirement, RowCheck, RowStatus,
+    Supply, Unknown,
 };
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
+pub(crate) use waits::closest;
 pub use waits::{Wait, WaitReason};
 
 pub struct LoaderOptions {

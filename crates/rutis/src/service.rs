@@ -578,6 +578,11 @@ impl CallError {
         &self.message
     }
 
+    /// The wire's own error this one carries, if any, without taking it.
+    pub fn raw(&self) -> Option<&(dyn Any + Send + Sync)> {
+        self.raw.as_deref()
+    }
+
     pub fn into_raw(self) -> (String, Option<Box<dyn Any + Send + Sync>>) {
         (self.message, self.raw)
     }
@@ -649,9 +654,39 @@ pub trait Wire: Send + Sync + 'static {
     ) -> CallError;
     /// `error`, when it is the wire's own error type: thrown as it is.
     fn forwarded(&self, error: &dyn Any) -> Option<CallError>;
+    /// `error`, a method's `Err` as thrown, saying where it came from: the
+    /// method `method`, declared at `file:line` (the diagnostics design
+    /// §4.4). A wire without stacks returns it as it is.
+    fn located(&self, error: CallError, method: &str, file: &str, line: u32) -> CallError {
+        let _ = (method, file, line);
+        error
+    }
+    /// `error`, received from the other side and returned again by the
+    /// method `method` declared at `file:line`: that frame recorded as a
+    /// rethrow. A wire without stacks returns it as it is.
+    fn rethrown(&self, error: CallError, method: &str, file: &str, line: u32) -> CallError {
+        let _ = (method, file, line);
+        error
+    }
 }
 
 // ── What generated code calls ───────────────────────────────────
+
+/// A type a marked block can serve: other plugins call it from several
+/// threads at once. The generated code names the served type as
+/// `<T as Served>::Itself`, so a type that is not `Send + Sync` is one
+/// error, with this message.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be a service: it must be `Send` and `Sync`, because other plugins call it from several threads at once",
+    label = "`{Self}` is not `Send` and `Sync`",
+    note = "keep the fields that change in a `Mutex`, `RwLock` or atomic, and use `Arc` instead of `Rc`"
+)]
+pub trait Served: Send + Sync + 'static {
+    type Itself: Send + Sync + 'static;
+}
+impl<T: Send + Sync + 'static> Served for T {
+    type Itself = T;
+}
 
 /// The marked `T` a block serves.
 pub fn downcast<T: Any + Send + Sync>(service: &Arc<dyn Any + Send + Sync>) -> Arc<T> {
@@ -749,15 +784,33 @@ impl<P: FromFunction> ViaFunction<P> for Param<P> {
     }
 }
 
+/// The last choice, taken whatever `P` is: its bound is on the method, not
+/// the impl, so a type that is neither a function nor data is reported
+/// through [`Parameter`]'s message instead of "no method found".
 pub trait ViaData<P> {
-    fn __rutis_param(&self, wire: &'static dyn Wire, value: Encoded) -> Result<P, CallError>;
+    fn __rutis_param(&self, wire: &'static dyn Wire, value: Encoded) -> Result<P, CallError>
+    where
+        P: Parameter;
 }
 
-impl<P: DeserializeOwned> ViaData<P> for &Param<P> {
-    fn __rutis_param(&self, wire: &'static dyn Wire, value: Encoded) -> Result<P, CallError> {
+impl<P> ViaData<P> for &Param<P> {
+    fn __rutis_param(&self, wire: &'static dyn Wire, value: Encoded) -> Result<P, CallError>
+    where
+        P: Parameter,
+    {
         decode(wire, value)
     }
 }
+
+/// A type a marked method can take as data from other languages.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be a parameter of a `#[rutis::service]` method: other languages cannot send it",
+    label = "`{Self}` does not implement serde `Deserialize`",
+    note = "derive `serde::Deserialize` for `{Self}`, or take a type that has it (`String`, `u32`, `Vec<T>`, ...)",
+    note = "a parameter can also be `&Ctx`, `rutis::Definition`, or a function the caller passes (`impl Fn(A) -> BoxFuture<'static, Result<X, E>>`)"
+)]
+pub trait Parameter: DeserializeOwned {}
+impl<P: DeserializeOwned> Parameter for P {}
 
 macro_rules! from_function {
     ($($arg:ident),*) => {
@@ -870,6 +923,30 @@ pub fn encode_ok<T: Returnable>(wire: &'static dyn Wire, value: &T) -> Result<En
 /// is; otherwise by [`Failure`].
 pub fn forwarded<E: Any>(wire: &'static dyn Wire, error: &E) -> Option<CallError> {
     wire.forwarded(error)
+}
+
+/// An error received from the other side that a method returns again, with
+/// the method and where it is declared.
+pub fn rethrown(
+    wire: &'static dyn Wire,
+    error: CallError,
+    method: &str,
+    file: &str,
+    line: u32,
+) -> CallError {
+    wire.rethrown(error, method, file, line)
+}
+
+/// A method's `Err` as thrown, with the method and where it is declared
+/// (`file!()` and `line!()` at the method's name).
+pub fn located(
+    wire: &'static dyn Wire,
+    error: CallError,
+    method: &str,
+    file: &str,
+    line: u32,
+) -> CallError {
+    wire.located(error, method, file, line)
 }
 
 /// An error, classified at the call site by what its type implements: the
@@ -994,18 +1071,27 @@ impl<E: std::fmt::Debug + std::fmt::Display> FailDebug for &Failure<'_, E> {
 
 /// An error another language can get thrown from a marked method.
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot be thrown to other languages",
-    label = "not `Display`",
-    note = "the error of a marked method's `Result` implements `Display`; its message is that"
+    message = "`{Self}` cannot be the error of a `#[rutis::service]` method: it does not implement `Display`",
+    label = "`{Self}` does not implement `Display`",
+    note = "implement `std::fmt::Display` for `{Self}` (its text is the message the caller sees), for example with `#[derive(thiserror::Error)]` and `#[error(\"...\")]`",
+    note = "with `Debug` and serde `Serialize` too, the caller also gets its fields"
 )]
 pub trait Throwable: std::fmt::Display {}
 impl<E: std::fmt::Display + ?Sized> Throwable for E {}
 
-pub trait FailDisplay {
-    fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError;
+/// The last choice, taken whatever `E` is: its bound is on the method, so
+/// an error type that is not `Display` is reported through [`Throwable`]'s
+/// message instead of "no method found".
+pub trait FailDisplay<E> {
+    fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError
+    where
+        E: Throwable;
 }
-impl<E: Throwable> FailDisplay for Failure<'_, E> {
-    fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
+impl<E> FailDisplay<E> for Failure<'_, E> {
+    fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError
+    where
+        E: Throwable,
+    {
         let name = short_name::<E>();
         wire.failure(name, name, self.0.to_string(), None)
     }

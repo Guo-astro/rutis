@@ -113,6 +113,27 @@ def failure_text(kind: str, error: BaseException) -> str:
     return f"{kind}: {type(error).__name__}: {error}" + (f" (at {site})" if site else "")
 
 
+def kind_text(kind: str, error: BaseException) -> str:
+    """What failed, the error's own text: `unhandled exception: ValueError:
+    boom` (where, the host prints from the error's traceback)."""
+    return f"{kind}: {type(error).__name__}: {error}"
+
+
+class UnhandledError(Exception):
+    """A load failed because the row's code left an exception unhandled
+    while it loaded: says what, with that exception's traceback, code and
+    data."""
+
+
+def unhandled_error(kind: str, error: BaseException) -> UnhandledError:
+    """The `UnhandledError` a load fails with for `error`."""
+    failure = UnhandledError(kind_text(kind, error)).with_traceback(error.__traceback__)
+    for name in ("code", "data"):
+        if hasattr(error, name):
+            setattr(failure, name, getattr(error, name))
+    return failure
+
+
 def report_text(error: BaseException) -> str:
     """The error as reported for no row: its whole traceback."""
     return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()

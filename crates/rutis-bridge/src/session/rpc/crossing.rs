@@ -33,9 +33,11 @@ impl Operation {
 /// says which; any other error is as it was.
 pub(super) fn of_argument(error: Error, index: usize, call: &dyn Fn() -> String) -> Error {
     match error {
-        Error::Value(reason) => {
-            Error::Value(format!("argument {} of {}: {reason}", index + 1, call()))
-        }
+        Error::Value(reason) => Error::Value(format!(
+            "{}: argument {} cannot be sent: {reason}",
+            call(),
+            index + 1
+        )),
         error => error,
     }
 }
@@ -44,11 +46,52 @@ pub(super) fn of_argument(error: Error, index: usize, call: &dyn Fn() -> String)
 pub(super) fn of_result(error: Error, call: Option<&str>) -> Error {
     match error {
         Error::Value(reason) => Error::Value(match call {
-            Some(call) => format!("the result of {call}: {reason}"),
-            None => format!("the result: {reason}"),
+            Some(call) => format!("{call}: the result cannot be sent: {reason}"),
+            None => format!("the result cannot be sent: {reason}"),
         }),
         error => error,
     }
+}
+
+/// The `data` of a value error (code `bad-value`, the diagnostics design
+/// §4.3): `{part: "argument", argument: N}` or `{part: "result"}` (or
+/// `"arguments"`, `"error"`), and `limit` (bytes) for a message over the
+/// limit. Read from the text [`of_argument`], [`of_result`] and
+/// [`over_limit`] write, the one place that writes it.
+pub(crate) fn value_data(message: &str) -> serde_json::Value {
+    let mut data = serde_json::Map::new();
+    let parts = [
+        ("argument", ": argument "),
+        ("result", "the result cannot be sent: "),
+        ("arguments", "the arguments cannot be sent: "),
+        ("error", "the error "),
+    ];
+    for (part, marker) in parts {
+        let Some(at) = message.find(marker) else {
+            continue;
+        };
+        if part == "argument" {
+            let rest = &message[at + marker.len()..];
+            let Some(number) = rest.split(' ').next().and_then(|n| n.parse::<u64>().ok()) else {
+                continue;
+            };
+            if !rest[number.to_string().len()..].starts_with(" cannot be sent: ") {
+                continue;
+            }
+            data.insert("argument".into(), number.into());
+        }
+        data.insert("part".into(), part.into());
+        break;
+    }
+    if let Some(limit) = message
+        .split(", over the limit of ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|limit| limit.parse::<u64>().ok())
+    {
+        data.insert("limit".into(), limit.into());
+    }
+    serde_json::Value::Object(data)
 }
 
 /// Why a message of `size` bytes is not sent over a channel taking at most
@@ -157,9 +200,10 @@ impl Connection {
             args => {
                 self.encode_inner(args, MAX_DEPTH + 1, &mut grants)
                     .map_err(|error| match error {
-                        Error::Value(reason) => {
-                            Error::Value(format!("the arguments of {}: {reason}", call()))
-                        }
+                        Error::Value(reason) => Error::Value(format!(
+                            "{}: the arguments cannot be sent: {reason}",
+                            call()
+                        )),
                         error => error,
                     })
             }
@@ -193,7 +237,44 @@ impl Connection {
         };
         Err(match largest(args) {
             Some(index) => of_argument(Error::Value(reason), index, call),
-            None => Error::Value(format!("the arguments of {}: {reason}", call())),
+            None => Error::Value(format!(
+                "{}: the arguments cannot be sent: {reason}",
+                call()
+            )),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A value error carries `{part, argument?, limit?}` (§4.3), as the
+    /// other languages send it.
+    #[test]
+    fn a_value_error_carries_its_part() {
+        let call = || "svc.m".to_owned();
+        let data = |error: Error| error.data().unwrap();
+        assert_eq!(
+            data(of_argument(
+                Error::Value("NaN cannot cross processes".into()),
+                1,
+                &call
+            )),
+            json!({ "part": "argument", "argument": 2 })
+        );
+        assert_eq!(
+            data(of_result(
+                Error::Value(over_limit(2048, 1024)),
+                Some("svc.m")
+            )),
+            json!({ "part": "result", "limit": 1024 })
+        );
+        assert_eq!(
+            data(of_result(Error::Value("x".into()), None)),
+            json!({ "part": "result" })
+        );
+        assert_eq!(Error::Value("x".into()).code(), Some("bad-value"));
     }
 }

@@ -237,7 +237,7 @@ impl Projection {
             let published = match binding.as_ref() {
                 Some((_, writer)) => writer
                     .set(ctx, proxy.clone())
-                    .map_err(|error| Error::Value(error.to_string())),
+                    .map_err(|error| Error::refused(error.to_string())),
                 None => match ctx.provide_mut_at(key.clone(), proxy.clone()) {
                     Ok(registered) => {
                         binding = Some(registered);
@@ -248,17 +248,24 @@ impl Projection {
                     Err(error)
                         if matches!(&*error, ErrorKind::ServiceExists(_)) && occupied.is_some() =>
                     {
-                        let (this, occupied) = occupied.as_ref().unwrap();
+                        // `forecast is already provided by a`: the row
+                        // that fails is the one printing it.
+                        let (_, occupied) = occupied.as_ref().unwrap();
                         let holder = occupied(ctx).unwrap_or_else(|| "another plugin".to_owned());
-                        let why = format!(
-                            "service {service} is already provided by {holder}: {this} cannot provide it too"
-                        );
+                        let holder = holder.strip_prefix("row ").unwrap_or(&holder);
+                        let why = format!("{service} is already provided by {holder}");
                         if let Some(me) = me.upgrade() {
                             me.refuse(why.clone());
                         }
-                        Err(Error::Value(why))
+                        // Printed as the row's state on its own (`b:
+                        // forecast is already provided by a`).
+                        Err(Error::Remote {
+                            name: "ProvideError".into(),
+                            message: why,
+                            graph: None,
+                        })
                     }
-                    Err(error) => Err(Error::Value(error.to_string())),
+                    Err(error) => Err(Error::refused(error.to_string())),
                 },
             };
             if published.is_err() {
@@ -318,7 +325,7 @@ impl Projection {
             }
         }
         if let Err(error) = self.publish() {
-            eprintln!("rutis: cannot withdraw Cordis services: {error}");
+            eprintln!("cannot withdraw the services of a runtime that went away: {error}");
         }
     }
 
@@ -465,7 +472,10 @@ impl Projection {
                                 slot.withdrawing = false;
                             }
                             if let Err(error) = me.publish() {
-                                eprintln!("rutis: cannot publish Cordis service {name}: {error}");
+                                eprintln!(
+                                    "cannot provide service {}: {error}",
+                                    crate::report::printable(&name)
+                                );
                             }
                         }
                     };
@@ -515,7 +525,10 @@ impl ServiceEvents for Projection {
             process.release(&handle);
         }
         if let Err(error) = self.publish() {
-            eprintln!("rutis: cannot publish Cordis service {name}: {error}");
+            eprintln!(
+                "cannot provide service {}: {error}",
+                crate::report::printable(name)
+            );
         }
     }
 }

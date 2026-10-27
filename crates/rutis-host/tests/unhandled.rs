@@ -168,14 +168,12 @@ fn where_rows_are_traced_an_unhandled_error_fails_its_row() {
     }
     failed.sort();
     let context = format!("{:#?}", host.seen);
-    assert!(
-        failed[0].contains("unhandled rejection: Error: boom from node-faulty (at ")
-            && failed[0].contains("faulty.mjs:"),
+    assert_eq!(
+        failed[0], "node-faulty: failed: unhandled rejection: Error: boom from node-faulty",
         "{context}"
     );
-    assert!(
-        failed[1].contains("unhandled exception: ValueError: boom from py-faulty (at ")
-            && failed[1].contains("faulty.py:"),
+    assert_eq!(
+        failed[1], "py-faulty: failed: unhandled exception: ValueError: boom from py-faulty",
         "{context}"
     );
     // A moment for anything else to happen.
@@ -186,6 +184,20 @@ fn where_rows_are_traced_an_unhandled_error_fails_its_row() {
     assert_eq!(status.code(), Some(0), "{context}");
     for row in ["node-witness", "py-witness"] {
         assert!(ran_on(&output, row), "{row}: {context}");
+    }
+    // Where: the plugin's own frames, printed under each failure.
+    for (row, file) in [("node-faulty", "faulty.mjs:"), ("py-faulty", "faulty.py\"")] {
+        let at = output
+            .iter()
+            .position(|line| line.starts_with(&format!("{row}: failed")))
+            .unwrap();
+        assert!(
+            output[at + 1..]
+                .iter()
+                .take_while(|line| line.starts_with("    "))
+                .any(|line| line.contains(file)),
+            "{row}: {context}"
+        );
     }
     assert!(!stderr.contains(": down ("), "{context}");
     assert!(!stderr.contains("unknown row"), "{context}");

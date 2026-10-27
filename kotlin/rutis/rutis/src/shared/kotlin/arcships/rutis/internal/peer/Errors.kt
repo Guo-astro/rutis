@@ -24,6 +24,7 @@ import java.util.concurrent.CancellationException
 /** The name a throwable crosses with. */
 fun errorName(error: Throwable): String = when (error) {
     is RutisException -> error.name
+    is HostGoneException -> RutisException.BINDING_ERROR
     is CancellationException -> "CancellationException"
     // The SDK's value errors cross as plain errors, as in the other languages.
     is ValueException -> "Error"
@@ -42,6 +43,7 @@ fun errorMessage(error: Throwable): String = when (error) {
  */
 private fun codeOf(error: Throwable): String? {
     if (error is RutisException) return error.code
+    if (error is ValueException) return error.code
     return try {
         error.javaClass.getMethod("getCode").invoke(error) as? String
     } catch (_: ReflectiveOperationException) {
@@ -54,6 +56,7 @@ private fun codeOf(error: Throwable): String? {
 /** A throwable's `data` property (`getData()`), whether it has one. */
 private fun dataOf(error: Throwable): Pair<Boolean, Any?> {
     if (error is RutisException) return (error.data != null) to error.data
+    if (error is ValueException) return (error.data != null) to error.data
     return try {
         true to error.javaClass.getMethod("getData").invoke(error)
     } catch (_: ReflectiveOperationException) {
@@ -61,6 +64,82 @@ private fun dataOf(error: Throwable): Pair<Boolean, Any?> {
     } catch (_: SecurityException) {
         false to null
     }
+}
+
+/** Frames of the SDK's own dispatch: where a plugin's method was called from. */
+private fun isDispatch(frame: StackTraceElement): Boolean {
+    val c = frame.className
+    return c.startsWith("arcships.rutis.internal.") ||
+        c.startsWith("arcships.rutis.ServiceObject") ||
+        c.startsWith("arcships.rutis.LocalHandle") ||
+        c.startsWith("arcships.rutis.HostHandle") ||
+        c.startsWith("arcships.rutis.ServiceTable") ||
+        c.contains("_RutisService")
+}
+
+/** Frames of the runtime under any call: coroutine resumption, reflection, threads. */
+private fun isMachinery(frame: StackTraceElement): Boolean {
+    val c = frame.className
+    return isDispatch(frame) ||
+        c.startsWith("kotlin.coroutines.") || c.startsWith("kotlinx.coroutines.") ||
+        c.startsWith("java.lang.reflect.") || c.startsWith("jdk.internal.reflect.") ||
+        c.startsWith("sun.reflect.") || c.startsWith("java.util.concurrent.") ||
+        c == "java.lang.Thread" || c.startsWith("kotlin.reflect.")
+}
+
+/**
+ * A throwable's frames as they cross: without the SDK's dispatch below the
+ * plugin's method and the runtime under it. Null when none of them is a frame
+ * of the plugin's own.
+ */
+private fun ownFrames(error: Throwable): List<StackTraceElement>? {
+    val frames = error.stackTrace.toList()
+    // The first dispatch frame below a frame of the plugin's own.
+    val firstOwn = frames.indexOfFirst { !isMachinery(it) }
+    if (firstOwn < 0) return null
+    var end = frames.size
+    val cut = (firstOwn + 1 until frames.size).firstOrNull { isDispatch(frames[it]) }
+    if (cut != null) end = cut
+    while (end > firstOwn + 1 && isMachinery(frames[end - 1])) end--
+    return frames.subList(0, end)
+}
+
+/**
+ * The `stack` an error crosses with: "Name: message" and the throwable's
+ * frames as `    at <frame>` lines, as the JVM prints them, without the
+ * SDK's dispatch below the plugin's method and the runtime under it.
+ */
+internal fun stackOf(name: String, message: String, error: Throwable): String {
+    val frames = ownFrames(error) ?: error.stackTrace.toList()
+    return buildString {
+        append(name).append(": ").append(message)
+        for (frame in frames) append("\n    at ").append(frame)
+    }
+}
+
+/** At most this many `rethrown` items on an error node; no more are appended. */
+private const val MAX_RETHROWN = 8
+
+/**
+ * The root node of a received graph thrown on again here, with this rethrow's
+ * frames (`    at <frame>` lines as in [stackOf], without "Name: message")
+ * appended to its
+ * `rethrown`; unchanged when there are no frames of our own or already 8 items.
+ */
+private fun withRethrown(node: JsonObject, error: Throwable): JsonObject {
+    if (node["type"] != JsonPrimitive("error")) return node
+    // Its frames from the first of our own: where the SDK handed it over
+    // (the wait for the reply) is not where it was thrown on.
+    val frames = ownFrames(error)?.dropWhile { isMachinery(it) }
+    if (frames.isNullOrEmpty()) return node
+    val previous = when (val r = node["rethrown"]) {
+        null, JsonNull -> emptyList()
+        is JsonArray -> r
+        else -> return node
+    }
+    if (previous.size >= MAX_RETHROWN) return node
+    val item = frames.joinToString("\n") { "    at $it" }
+    return JsonObject(node + ("rethrown" to JsonArray(previous + JsonPrimitive(item))))
 }
 
 private fun reference(id: Int): JsonObject = buildJsonObject {
@@ -102,7 +181,16 @@ fun encodeError(error: Throwable): JsonObject {
             if (root is JsonObject && graphNodes is JsonArray) {
                 val offset = nodes.size
                 for (node in graphNodes) nodes.add(shift(node, offset))
-                return shift(root, offset) as JsonObject
+                val shifted = shift(root, offset) as JsonObject
+                // Thrown on whole: the caller's frames go on the root's
+                // `rethrown`, in a copy (the received graph stays as it came).
+                if (depth == 0) {
+                    val id = (shifted["value"] as? JsonPrimitive)?.intOrNull
+                    if (shifted["type"] == JsonPrimitive("reference") && id != null && id in offset until nodes.size) {
+                        (nodes[id] as? JsonObject)?.let { nodes[id] = withRethrown(it, error) }
+                    }
+                }
+                return shifted
             }
         }
         val name = errorName(error)
@@ -114,7 +202,7 @@ fun encodeError(error: Throwable): JsonObject {
         node["type"] = JsonPrimitive("error")
         node["name"] = JsonPrimitive(name)
         node["message"] = JsonPrimitive(message)
-        node["stack"] = JsonPrimitive("$name: $message")
+        node["stack"] = JsonPrimitive(stackOf(name, message, error))
         // A code and its data cross, as from JavaScript and Rust (#440): data
         // that cannot cross is left out, nothing of it kept.
         codeOf(error)?.let { node["code"] = JsonPrimitive(it) }

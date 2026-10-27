@@ -91,7 +91,9 @@ type slot struct {
 }
 
 type handleEntry struct {
-	id       string
+	id string
+	// name is the service's name, as the plugin wrote it.
+	name     string
 	object   any
 	shape    *Shape
 	methods  map[string]bool
@@ -350,7 +352,7 @@ func (rt *runtimeState) refresh(id string) {
 				s.methods[wire] = true
 			}
 		}
-		rt.handles[s.handle] = &handleEntry{id: id, object: current, shape: shape, methods: s.methods, current: true}
+		rt.handles[s.handle] = &handleEntry{id: id, name: s.name, object: current, shape: shape, methods: s.methods, current: true}
 	}
 	rt.version++
 	if rt.session != nil && !rt.closing {
@@ -407,12 +409,13 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	// a panic: a plain goroutine or timer calling it recovers nothing.
 	if rt.rows[r.key] != r {
 		rt.mu.Unlock()
-		fmt.Fprintf(rowOutput, "rutis: row %s is not active: service %s is not provided\n", r.key, name)
+		fmt.Fprintf(rowOutput, "rutis: row %s is not active: service %s is not provided\n", r.name, name)
 		return func() {}
 	}
 	if existing, ok := rt.services[id]; ok {
+		owner := rt.rowName(existing.row)
 		rt.mu.Unlock()
-		panic(fmt.Sprintf("rutis: service %s is already provided by row %s", printable(id), existing.row))
+		panic(fmt.Sprintf("%s is already provided by %s", name, owner))
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
 	r.provided = append(r.provided, id)
@@ -445,6 +448,15 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 		rt.mu.Unlock()
 		rt.flush()
 	}
+}
+
+// rowName is the name of the row `key` (rt.mu held), as the configuration
+// calls it; the key when it is gone.
+func (rt *runtimeState) rowName(key string) string {
+	if r := rt.rows[key]; r != nil && r.name != "" {
+		return r.name
+	}
+	return key
 }
 
 func printable(id string) string { return strings.ReplaceAll(id, "\x00", "@") }
@@ -484,8 +496,9 @@ func (rt *runtimeState) loadNamed(ctx context.Context, key, name string, entry a
 			return fmt.Errorf("service name %s cannot be projected", name)
 		}
 		if existing := rt.slots[r.id(name)]; existing != nil {
+			owner := rt.rowName(existing.row)
 			rt.mu.Unlock()
-			return fmt.Errorf("service %s is already exported by row %s", printable(r.id(name)), existing.row)
+			return fmt.Errorf("%s is already provided by %s", name, owner)
 		}
 	}
 	// The row's context outlives the rows.load call, keeping its chain.
@@ -629,7 +642,7 @@ func (rt *runtimeState) dispose(ctx context.Context) error {
 		select {
 		case <-done:
 		case <-ctx.Done():
-			fmt.Fprintf(os.Stderr, "rutis: gave up the cleanups of row %s and those after it: %v\n", rows[i].key, ctx.Err())
+			fmt.Fprintf(os.Stderr, "rutis: gave up the cleanups of row %s and those after it: %v\n", rows[i].name, ctx.Err())
 			return ctx.Err()
 		}
 	}
@@ -654,14 +667,23 @@ func (rt *runtimeState) dispatch(ctx context.Context, target, method string, arg
 	if entry == nil {
 		return nil, fmt.Errorf("unknown or released service object %s", printable(target))
 	}
-	if entry.methods != nil && !entry.methods[method] {
-		return nil, fmt.Errorf("unknown service method %s.%s", printable(entry.id), method)
+	object := reflect.ValueOf(entry.object)
+	callee := convert.Callee{Service: entry.name, Method: method}
+	index, ok := entry.shape.index(object, method)
+	if !ok || (entry.methods != nil && !entry.methods[method]) {
+		var names []string
+		if entry.methods != nil {
+			for name := range entry.methods {
+				names = append(names, name)
+			}
+		} else {
+			for name := range entry.shape.wires(object) {
+				names = append(names, name)
+			}
+		}
+		return nil, convert.NoMethod(callee, names)
 	}
-	fn, ok := entry.shape.method(reflect.ValueOf(entry.object), method)
-	if !ok {
-		return nil, fmt.Errorf("unknown service method %s.%s", printable(entry.id), method)
-	}
-	return convert.Call(ctx, fn, args)
+	return convert.CallMethod(ctx, object, index, args, callee)
 }
 
 func argument[T any](args []any, i int) (T, error) {
@@ -902,7 +924,7 @@ type Ctx struct {
 // last result, after at most one value.
 func (c *Ctx) Use(name string, target any) error {
 	if !contains(c.row.def.inject, name) {
-		return fmt.Errorf("service %s is not available to this plugin, which does not declare it in Inject: add %q to its Inject", name, name)
+		return peer.NewCoded("BindingError", "not-declared", map[string]any{"service": name}, "service %s is not available to this plugin, which does not declare it in Inject: add %q to its Inject", name, name)
 	}
 	id := c.row.id(name)
 	c.rt.mu.Lock()
@@ -916,7 +938,7 @@ func (c *Ctx) Use(name string, target any) error {
 	case isHost:
 		service = c.rt.hostService(name, id, methods)
 	default:
-		return fmt.Errorf("service %s is not available", name)
+		return peer.NewCoded("BindingError", "unavailable", map[string]any{"service": name}, "service %s is not available", name)
 	}
 	return service.bind(target)
 }
@@ -942,9 +964,18 @@ func (c *Ctx) Go(task func(context.Context) error) {
 	go func() {
 		defer c.row.tasks.Done()
 		if _, err := peer.Protect(func() (any, error) { return nil, task(c.Context) }); err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "rutis: a task of row %s failed: %v\n", c.row.key, err)
+			fmt.Fprintf(os.Stderr, "rutis: a task of row %s failed: %v\n", c.row.name, err)
 		}
 	}()
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func contains(list []string, item string) bool {
@@ -980,7 +1011,7 @@ func (s *Service) Call(ctx context.Context, method string, result any, args ...a
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
 	if _, ok := s.methods[method]; !ok {
-		return fmt.Errorf("%s has no method %s", s.name, method)
+		return convert.NoMethod(convert.Callee{Service: s.name, Method: method}, sortedKeys(s.methods))
 	}
 	converted, err := convert.ToPeerArgs(args)
 	if err != nil {
@@ -1013,10 +1044,11 @@ func localService(name string, local providedService) *Service {
 		local:   &local,
 		call: func(ctx context.Context, method string, args []any) (any, error) {
 			fn, ok := local.shape.method(value, method)
+			callee := convert.Callee{Service: name, Method: method}
 			if !ok {
-				return nil, fmt.Errorf("%s has no method %s", name, method)
+				return nil, convert.NoMethod(callee, sortedKeys(methods))
 			}
-			return convert.Call(ctx, fn, args)
+			return convert.CallAs(ctx, fn, args, callee)
 		},
 	}
 }
@@ -1029,7 +1061,7 @@ func (rt *runtimeState) hostService(name, id string, methods map[string]string) 
 			rt.warnChainless(ctx)
 			session := rt.session
 			if session == nil {
-				return nil, errors.New("the runtime has no session")
+				return nil, peer.HostGone(nil)
 			}
 			value, err := session.Call(ctx, "host:"+id, method, args, methods[method] == "sync")
 			if err != nil {

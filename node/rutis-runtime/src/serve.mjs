@@ -109,18 +109,18 @@ export async function serve({ spec, id, peer, anchor }) {
   async function start(ws, link) {
     const session = { ws }
     const { child, socket } = await spawnSession({ id, peer, anchor }, () => {
-      if (current === session) { current = undefined; ws.close('runtime session ended') }
+      if (current === session) { current = undefined; ws.close('the runtime ended') }
     })
     session.child = child
     if (!socket) {
       // The child ended before connecting: so does the session, now, since
       // no later exit will.
-      ws.close('runtime session ended: its process exited before connecting')
+      ws.close('the runtime exited before connecting')
       return undefined
     }
     session.childChannel = frame(socket, {
       message: text => ws.send(text),
-      closed: () => { if (current === session) ws.close('runtime session ended') },
+      closed: () => { if (current === session) ws.close('the runtime ended') },
     })
     link.attach(session.childChannel)
     return session

@@ -682,3 +682,36 @@ func toFloat(value any) float64 {
 }
 
 func toInt(ref any) int { return int(toFloat(ref.(map[string]any)["value"])) }
+
+// guarantee: sdk/error-texts (a call in flight when the host goes fails with
+// `the host disconnected`, code peer-gone: #677)
+func TestACallFailsSayingTheHostDisconnected(t *testing.T) {
+	entered := make(chan struct{})
+	host, runtime := pair(t, func(ctx context.Context, target, method string, args []any) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, nil)
+	failed := make(chan error, 1)
+	go func() {
+		_, err := runtime.Call(context.Background(), "", "wait", nil, false)
+		failed <- err
+	}()
+	testwait.Within(t, "the call to reach the host", entered)
+	host.channel.Close("gone")
+	err := testwait.Within(t, "the call to fail", failed)
+	if err == nil || err.Error() != "the host disconnected" {
+		t.Fatalf("%v", err)
+	}
+	gone, ok := err.(*Coded)
+	if !ok || gone.Code() != "peer-gone" || gone.Name() != "BindingError" {
+		t.Fatalf("%#v", err)
+	}
+	if reason := gone.Data().(map[string]any)["reason"]; reason != "disconnected" {
+		t.Fatal(reason)
+	}
+	// Later calls fail the same way.
+	if _, err := runtime.Call(context.Background(), "", "again", nil, false); err == nil || err.Error() != "the host disconnected" {
+		t.Fatalf("%v", err)
+	}
+}

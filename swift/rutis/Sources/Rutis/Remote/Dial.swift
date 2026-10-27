@@ -207,8 +207,9 @@ final class DialedSocket: NSObject, Channel, URLSessionWebSocketDelegate, @unche
             return
         }
         task.cancel(with: .protocolError, reason: Data("no session protocol".utf8))
-        let said = chosen.map { "the access point chose \"\($0)\"" } ?? "the access point chose none"
-        continuation?.resume(throwing: DialError(failure: .incompatible, reason: "\(host): session protocol: \(said)"))
+        let said = chosen.map { "the access point chose the protocol \"\($0)\", which this process does not speak" }
+            ?? "the access point chose no protocol: it speaks none this process speaks"
+        continuation?.resume(throwing: DialError(failure: .incompatible, reason: "\(host): \(said)"))
     }
 
     /// The session let go of its delegate, this socket.

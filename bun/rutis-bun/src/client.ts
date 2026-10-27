@@ -3,6 +3,7 @@
 // it, or that call back into it.
 import { Worker, MessageChannel, receiveMessageOnPort, type MessagePort } from 'node:worker_threads'
 import { Session } from './session.ts'
+import { hostGone } from './errors.ts'
 
 export interface Endpoint { local: string, expected?: string, verified?: string, declare?: string[] }
 type Dispatch = (target: string, method: string, args: unknown) => unknown
@@ -45,7 +46,7 @@ export class Client {
     this.#worker.on('error', error => this.#session.close(error))
     this.#exited = new Promise(resolve => this.#worker.once('exit', code => {
       this.reason ??= `the communication worker exited (${code}) before its channel ended`
-      this.#session.close(new Error(`communication worker exited (${code})`))
+      this.#session.close(hostGone(`the communication worker exited (${code})`))
       this.#port.close()
       resolve(code)
     }))
@@ -54,7 +55,7 @@ export class Client {
   reason?: string
   #receive(message: any) {
     if (message?.ready) { this.#session.start(); return }
-    if (message?.closed) { this.reason ??= message.closed; this.#session.close(new Error(message.closed)); return }
+    if (message?.closed) { this.reason ??= message.closed; this.#session.close(hostGone(message.closed)); return }
     this.#session.receive(message)
   }
   // Connect on `channel` and greet; rejects when the channel or the
