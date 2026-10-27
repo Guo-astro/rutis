@@ -93,6 +93,8 @@ class Session:
             channel, self.runtime.dispatch, settled=None, endpoint=endpoint, require={"events-v2": EVENTS_REFUSAL}
         )
         self.runtime.peer = self.peer
+        # A function or object a row hands over runs as that row's (#688).
+        self.runtime.traced(self.peer)
 
     def start(self) -> None:
         self.peer.start()

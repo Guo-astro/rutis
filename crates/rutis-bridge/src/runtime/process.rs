@@ -123,6 +123,9 @@ struct Imports {
     /// What to do when a row's plugin ends on its own (`rows.ended`), by
     /// row key (see [`Process::on_row_ended`]).
     ended: Mutex<HashMap<String, RowEnded>>,
+    /// What to do when the runtime charges an error nobody handled to a
+    /// row (`rows.failed`), by row key (see [`Process::on_row_failed`]).
+    failed: Mutex<HashMap<String, RowFailed>>,
     /// The id of each row as its configuration names it, by row key
     /// ([`Process::name_row`]); a row not named is called by its key.
     names: Mutex<HashMap<String, String>>,
@@ -153,6 +156,10 @@ pub(crate) fn calling() -> Option<Arc<Process>> {
 
 /// Run once when a row's plugin ends on its own.
 type RowEnded = Box<dyn FnOnce() + Send>;
+
+/// Run once, with the error, when the runtime fails a running row: an
+/// error its code left unhandled (#688).
+type RowFailed = Box<dyn FnOnce(crate::session::Error) + Send>;
 
 /// Everything one mount needs: the plugins loaded in order into one Cordis
 /// Context, the exported services, and what the rutis side contributes.
@@ -388,6 +395,13 @@ pub(crate) fn search_path(
 }
 
 impl Imports {
+    /// Row `key` is unloaded or never loaded: nothing waits for it to
+    /// end or fail any more.
+    fn forget_row(&self, key: &str) {
+        self.ended.lock().unwrap().remove(key);
+        self.failed.lock().unwrap().remove(key);
+    }
+
     /// Stop following the slots `ids` (a row's, unloaded): their observers,
     /// each with the service's name and the slot's last version, to tell
     /// them the services are gone. The slots go too: ids in an instance's
@@ -541,6 +555,35 @@ impl Dispatch for Imports {
                 ended();
             }
             return Ok(RpcValue::Undefined);
+        }
+        if target.is_empty() && method == "rows.failed" {
+            // `[key, why, error?]`: an error the row's code left unhandled
+            // (#688): what it was (`unhandled rejection: Error: boom`), and
+            // the error as the runtime encodes a thrown one. The host fails
+            // the row; the runtime keeps running the others.
+            let mut args: Vec<Value> = crate::runtime::decode(args.json()?)?;
+            let error: Option<crate::session::protocol::Failure> = match args.len() > 2 {
+                true => serde_json::from_value(args.split_off(2).swap_remove(0)).ok(),
+                false => None,
+            };
+            let (key, why): (String, String) = crate::runtime::decode(Value::Array(args))?;
+            let error = crate::session::Error::Remote {
+                name: crate::session::UNHANDLED_ERROR.into(),
+                message: why,
+                graph: error.and_then(|error| error.graph),
+            };
+            let failed = self.failed.lock().unwrap().remove(&key);
+            return match failed {
+                Some(failed) => {
+                    failed(error);
+                    Ok(RpcValue::Undefined)
+                }
+                // Nothing fails rows here (an embedder without the
+                // loader), or the row is gone: the runtime writes why.
+                None => Err(Error::Value(format!(
+                    "rows.failed: nothing fails row {key} here"
+                ))),
+            };
         }
         if !(target.is_empty() && method == "service") {
             return Err(Error::refused(
@@ -919,6 +962,7 @@ impl Process {
             bus: std::sync::OnceLock::new(),
             names: Mutex::default(),
             ended: Mutex::default(),
+            failed: Mutex::default(),
             process: std::sync::OnceLock::new(),
         });
         let rest = MountRest {
@@ -1067,7 +1111,7 @@ impl Process {
             .await;
         if loaded.is_err() {
             // Never loaded, so it cannot end.
-            self.imports.ended.lock().unwrap().remove(key);
+            self.imports.forget_row(key);
             self.row_gone(key);
         }
         loaded.map(|_| ())
@@ -1143,7 +1187,7 @@ impl Process {
             .await;
         if loaded.is_err() {
             // Never loaded, so it cannot end.
-            self.imports.ended.lock().unwrap().remove(key);
+            self.imports.forget_row(key);
             self.row_gone(key);
         }
         loaded
@@ -1173,7 +1217,7 @@ impl Process {
             )
             .await;
         if loaded.is_err() {
-            self.imports.ended.lock().unwrap().remove(key);
+            self.imports.forget_row(key);
             self.row_gone(key);
         }
         loaded
@@ -1333,7 +1377,7 @@ impl Process {
         // After the call: the withdrawals of the row's services arrive
         // before its reply.
         self.forget_exports(key);
-        self.imports.ended.lock().unwrap().remove(key);
+        self.imports.forget_row(key);
         unloaded.map(|_| ())
     }
 
@@ -1355,6 +1399,30 @@ impl Process {
             .lock()
             .unwrap()
             .insert(key.to_owned(), Box::new(ended));
+    }
+
+    /// Run `failed` with the error if the runtime fails row `key` while it
+    /// runs (an [`UNHANDLED_ERROR`](crate::session::UNHANDLED_ERROR) whose
+    /// message says what happened and whose graph is the error's own):
+    /// an error the row's code left unhandled (a promise rejection, an
+    /// exception in a task), which the runtime traced to the row
+    /// (`rows.failed`, #688). The runtime keeps running and keeps the row
+    /// loaded: what to do with it is the host's (the loader restarts it,
+    /// and the restart fails with why). Registered and dropped as
+    /// [`Process::on_row_ended`] is: before the load, as the error may come
+    /// right after it. A runtime fails a row this way only once it loaded:
+    /// an error while it loads fails the load instead. With nothing
+    /// registered the call fails, and the runtime writes why itself.
+    pub fn on_row_failed(
+        &self,
+        key: &str,
+        failed: impl FnOnce(crate::session::Error) + Send + 'static,
+    ) {
+        self.imports
+            .failed
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), Box::new(failed));
     }
 
     /// What the plugin at `entry` declares: its config schema (schemastery
@@ -1692,6 +1760,7 @@ mod tests {
             bus: std::sync::OnceLock::new(),
             names: Mutex::default(),
             ended: Mutex::default(),
+            failed: Mutex::default(),
             process: std::sync::OnceLock::new(),
         }
     }

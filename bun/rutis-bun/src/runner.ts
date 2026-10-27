@@ -26,6 +26,7 @@
 // (another instance, say) is another service. Services, host proxies and
 // export slots are registered by id (`scopes`): the name outside any scope,
 // the name, a NUL and the label inside one.
+import { realpathSync } from 'node:fs'
 import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
@@ -170,6 +171,17 @@ export class Runtime {
 
   // The session ended: nothing is elsewhere any more.
   ended() { this.#bus.ended() }
+  /** This runtime's name on the host (`mount`'s `runtime`), or `bun`. */
+  get name(): string { return this.#bus.runtime ?? 'bun' }
+  /** The id of the one row whose plugin file is among `files` (real
+   * paths), which names the row calling process.exit (#688). */
+  rowOfFiles(files: Set<string>): string | undefined {
+    const found = [...this.#rows.values()].filter(row => {
+      if (typeof row.entry !== 'string') return false
+      try { return files.has(realpathSync(locate(row.entry, this.#project))) } catch { return false }
+    })
+    return found.length === 1 ? this.#bus.rowId(found[0].key) ?? undefined : undefined
+  }
 
   // ── Services ──────────────────────────────────────────────────
 

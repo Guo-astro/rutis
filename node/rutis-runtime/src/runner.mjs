@@ -1,14 +1,15 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isAbsolute } from 'node:path'
-import { statSync } from 'node:fs'
+import { statSync, writeSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
 import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
-import { cannotLoad, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
+import { rowTracking, install as handleUnhandled, failureText, kindText, realFile, reportText, stackFiles, unhandledError } from './unhandled.mjs'
+import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -49,7 +50,7 @@ function cordisOf(entry) {
   try { return createRequire(entry).resolve('@deepseek-ai/cordis') } catch { return undefined }
 }
 const cordisPath = cordisOf(pluginPath)
-const { Context, Inject, Service, resolveConfig } = await import(cordisPath ? pathToFileURL(cordisPath).href : '@deepseek-ai/cordis')
+const { Context, Fiber, Inject, Service, resolveConfig } = await import(cordisPath ? pathToFileURL(cordisPath).href : '@deepseek-ai/cordis')
 // Volatile config helpers from the cosmokit that Cordis itself uses.
 const cosmokit = await import(pathToFileURL(createRequire(cordisPath ?? fileURLToPath(import.meta.resolve('@deepseek-ai/cordis'))).resolve('@deepseek-ai/cosmokit')).href).catch(() => ({}))
 let peer
@@ -95,7 +96,10 @@ let creating
 // The fibers of rows unloaded, with their row: a plugin keeping its
 // context past its row emits from that row, which the bus refuses (§3).
 const unloaded = new WeakMap()
-const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading) })
+// Under `rutis-host dev`, which row each piece of asynchronous work is
+// (#688, ./unhandled.mjs): an error it leaves unhandled fails that row.
+const tracking = rowTracking(process.env.RUTIS_DEV === '1')
+const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading), within: tracking.within })
 function whose(context) {
   const owner = rowOf(context?.fiber) ?? (creating ? [creating.key, creating] : undefined)
   if (!owner) {
@@ -113,6 +117,15 @@ function goneRowOf(fiber) {
   }
 }
 install(ctx, Context, bus, whose)
+// A fiber's apply and effects run as its row's: also those Cordis starts
+// later, from another row's code (a gated row whose inject came, say).
+if (tracking.enabled && typeof Fiber?.prototype?._execute === 'function') {
+  const execute = Fiber.prototype._execute
+  Fiber.prototype._execute = function (runner) {
+    const row = rowOf(this)?.[0] ?? (creating ? creating.key : undefined)
+    return tracking.within(row, () => execute.call(this, runner))
+  }
+}
 // How long an unloading row's listeners are waited for (§7.1).
 const deadline = shutdownDeadline()
 // Test support, not part of the protocol: with RUTIS_TEST_INSPECT set, the
@@ -586,6 +599,19 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     scope = scope.isolate(name, isolated(name, label))
   }
   const row = { key, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
+  // Its plugin's file, by which a call of process.exit names it (#688).
+  row.file = typeof entry === 'string' ? realFile(located(entry)) : undefined
+  // An error the row leaves unhandled while it loads fails the load (#688):
+  // also one that comes once the load is done but not yet answered.
+  let settled = false
+  const failing = new Promise((_, reject) => {
+    row.failLoad = (kind, thrown) => {
+      const error = unhandledError(kind, thrown)
+      if (settled) row.lateFailure ??= error
+      else reject(error)
+      return true
+    }
+  })
   bus.nameRow(key, place?.id)
   let fiber
   creating = row
@@ -604,7 +630,7 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     slots.set(ids[index], slot)
     slot.exporter = exporter(name, slot, scope)
   }
-  try {
+  const loading = (async () => {
     await fiber.await()
     // A gated row: the gate applied, and its plugin runs in a fiber of its
     // own, whose failure the gate does not share. The row waits for it, so
@@ -622,10 +648,20 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     // registered (§4.4 2).
     await Promise.all(announced.map(slot => slot.announcing))
     await Promise.all(bus.registrations(key))
+  })()
+  // Failed meanwhile: what is left of the load settles unobserved.
+  loading.catch(() => {})
+  // Before the race hears it: a failure from then on is a late one.
+  loading.then(() => { settled = true }, () => { settled = true })
+  try {
+    await Promise.race([loading, failing])
+    if (row.lateFailure) throw row.lateFailure
   } catch (error) {
+    row.failLoad = undefined
     await unloadRow(key)
     throw error
   }
+  row.failLoad = undefined
   row.loading = false
   // Ended while it loaded (rutis unloading it meanwhile forgot it).
   if (rows.get(key) === row && hasEnded(row)) endRow(key)
@@ -836,7 +872,24 @@ function mount(args) {
   })()
 }
 
+// A call runs as the row whose service it calls; a control call as no
+// row's, even arriving while a row's synchronous call waits (#688).
 function dispatch(target, method, args) {
+  if (!tracking.enabled) return dispatchCall(target, method, args)
+  return tracking.within(target === '' ? undefined : serviceRow(target), () => dispatchCall(target, method, args))
+}
+
+// The row whose service the object `handle` is, if a row's.
+function serviceRow(handle) {
+  const id = handles.get(handle)?.name
+  if (id === undefined) return undefined
+  const slot = slots.get(id)
+  if (slot?.row !== undefined) return slot.row
+  for (const [key, row] of rows) if (row.exports.includes(id)) return key
+  return undefined
+}
+
+function dispatchCall(target, method, args) {
   if (closing) throw new Error('plugin is closing')
   if (target === '') {
     switch (method) {
@@ -943,6 +996,58 @@ function watch(ended, after) {
   watchdog.on('error', error => process.stderr.write(`runtime node: the watchdog failed: ${error?.message ?? error}\n`))
 }
 
+// Errors nobody handled (#688, ./unhandled.mjs): the row they are traced
+// to fails (rutis-host restarts it, and the restart fails with why); one
+// traced to no row is reported here. The process goes on either way.
+const runtimeName = () => bus.runtime ?? 'node'
+function charge(kind, error, traced) {
+  const key = chargedRow(traced, error)
+  const row = key === undefined ? undefined : rows.get(key)
+  if (!row || closing || !peer) {
+    process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${reportText(error)}\n`)
+    return
+  }
+  const why = failureText(kind, error)
+  if (row.failLoad) { row.failLoad(kind, error); return }
+  // Once: the row is on its way out; what else it leaves unhandled until
+  // it has gone is written here.
+  if (row.failing) {
+    process.stderr.write(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
+    return
+  }
+  row.failing = true
+  // What it was, and the error as a thrown one crosses: its code, data
+  // and stack, which the host prints under it.
+  let encoded
+  try { encoded = encodeError(error) } catch {}
+  peer.callAsync('', 'rows.failed', encoded ? [key, kindText(kind, error), encoded] : [key, kindText(kind, error)]).catch(() => {
+    // A host older than 0.18 fails no row so: the row goes on.
+    process.stderr.write(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
+  })
+}
+// The row an error traced to row `key` is charged to: that row, unless the
+// innermost plugin file on the error's stack is another row's only. Then
+// it came from code of a row this one called directly, in this process,
+// and which of the two left it unhandled cannot be told (the stack says
+// where it was thrown, not who dropped it): no row is charged.
+function chargedRow(key, error) {
+  if (key === undefined) return undefined
+  for (const file of stackFiles(error?.stack)) {
+    const owners = [...rows].filter(([, row]) => row.file === file)
+    if (!owners.length) continue
+    return owners.some(([owner]) => owner === key) ? key : undefined
+  }
+  return key
+}
+
+// The id of the row calling process.exit: the row running, else the one
+// row whose plugin file is on the stack; undefined when it cannot tell.
+function exitingRow(key, files) {
+  if (key !== undefined && rows.has(key)) return bus.rowId(key)
+  const found = [...rows].filter(([, row]) => row.file !== undefined && files.has(row.file))
+  return found.length === 1 ? bus.rowId(found[0][0]) : undefined
+}
+
 // Calls on exported objects and functions may replace services too.
 try {
   peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
@@ -957,6 +1062,10 @@ try {
     holds: (method, args) => method === 'events.call' && args?.[0]?.mode === 'emit' ? args[0].name : undefined,
     requires: [EVENTS_V2],
     report: bus.report,
+    // A function or object a row hands over runs as that row's when
+    // called (#688).
+    owner: tracking.current,
+    within: tracking.within,
   })
 } catch (error) {
   // A host older than 0.13 (protocol §2.2).
@@ -968,6 +1077,16 @@ try {
   if (dialed) process.exit(1)
   throw error
 }
+// Installed once connected: a failure before that is the runtime's own,
+// and ends it.
+handleUnhandled(tracking, {
+  charge,
+  // Written before the process exits, as Node exits at once.
+  exiting: (key, files, code) => {
+    const row = exitingRow(key, files)
+    if (row !== undefined) writeSync(2, `runtime ${runtimeName()}: row ${row} called process.exit(${code})\n`)
+  },
+})
 bus.peer = {
   call: (target, method, args) => peer.call(target, method, args),
   callAsync: (target, method, args) => peer.callAsync(target, method, args),
@@ -1006,7 +1125,10 @@ const late = setTimeout(() => {
   console.error(`runtime node: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting`)
   process.exit(1)
 }, deadline)
-await dispose()
+await dispose().catch(error => {
+  console.error(`rutis runtime: unloading failed: ${error?.stack ?? error}`)
+  process.exitCode = 1
+})
 // What is still being written goes out first.
 await Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve))))
 clearTimeout(late)

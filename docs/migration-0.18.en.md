@@ -147,6 +147,33 @@ Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for
 
 - Error nodes have two more optional fields: `site` (the row it came from, doing what) and `rethrown` (the frames of callers that threw it on). An older end ignores them; the protocol version is unchanged and 0.17 ends meet as before.
 
+## Node, Bun and Python runtimes: errors nobody handled are handled differently (#688)
+
+In 0.17 a promise rejection a Node or Bun plugin left unhandled (or an exception thrown in a timer) ended its runtime's process, and every row of that runtime stopped and waited; an exception nobody retrieved from a Python task was only logged by asyncio, and the row ran on. From 0.18:
+
+- The process goes on. Where the row that produced the error is traced (Node under `rutis-host dev`; in Python, tasks and callbacks that run in a row), that row fails, saying what and where; the other rows of the runtime run on.
+
+  ```
+  weather: failed: unhandled rejection: Error: no region
+      at Timeout._onTimeout (file:///…/weather.mjs:12:9)
+  ```
+
+- Where it is not (Node under `rutis-host run`, Bun, Python code that runs in no row), the runtime writes a line saying the source is unknown, and no row fails:
+
+  ```
+  runtime node: an unhandled error from an unknown row: Error: no region
+      at …
+  ```
+
+- A plugin calling `process.exit` / `os._exit` still ends the process, and the runtime first writes `runtime node: row weather called process.exit(1)`.
+
+What to change:
+
+- **Python**: a row that ran on after one of its tasks failed now fails (the host restarts it, and the restart fails). Handle or retrieve the exceptions of the tasks you start (`await` them, or read `exception()` in an `add_done_callback`).
+- **Node, Bun**: a project that recovered by letting the runtime exit on an error and having the host restart it no longer sees the runtime exit: `restart: "on-failure"` does not restart the runtime for it, and a host with `restart: "exit"` no longer stops with status 3 for it. To recover after an error, handle the error in the plugin; to end the process, call `process.exit` explicitly.
+
+See [Plugins in one runtime share its process](guide/plugin-api.en.md#plugins-in-one-runtime-share-its-process) in the plugin API guide.
+
 ## Two entries on one listener accepting one token: an error at start (#702)
 
 When a listening peer row and a runtime that connects in (`listen` + `instances` of `runtimes.remote`) would accept the same token on one listener (say neither has its own and both fall back to `RUTIS_TOKEN`), 0.17 started, but refused each connection with 403 (it could not tell which entry it was for), and the runtime retried every 30 seconds. From 0.18 `run`, `check` and a configuration reload fail before starting. The same holds for any two entries on one listener: two runtimes that connect in (refused with 403 in 0.17 too), two listening peer rows (in 0.17 every connection reached the later row, and the earlier one never connected).

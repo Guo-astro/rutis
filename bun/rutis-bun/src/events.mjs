@@ -107,12 +107,15 @@ export class Bus {
   // `internal/dispatch` for a dispatch from elsewhere (§5.3). `loading(row)`:
   // whether `row` (null: the mount) is loading, so that the host refusing
   // a listener it registers fails the load instead of being reported (§11).
-  constructor({ runtime = null, peer = null, report = line => process.stderr.write(`${line}\n`), dispatched, loading = () => false } = {}) {
+  // `within(row, run)`: runs a listener of `row` as that row's code (the
+  // runtime traces which row an unhandled error comes from, #688).
+  constructor({ runtime = null, peer = null, report = line => process.stderr.write(`${line}\n`), dispatched, loading = () => false, within = (_row, run) => run() } = {}) {
     this.runtime = runtime
     this.peer = peer
     this.report = report
     this.dispatched = dispatched
     this.loading = loading
+    this.within = within
   }
 
   // ── Rows ──────────────────────────────────────────────────────
@@ -358,7 +361,7 @@ export class Bus {
     if (!start) this.#starting.set(entry.row, start = { count: 0, out: null, resolve: null })
     start.count++
     try {
-      const result = entry.remote ? entry.invoke(mode, name ?? entry.name, args) : Reflect.apply(entry.callback, thisArg, args)
+      const result = entry.remote ? entry.invoke(mode, name ?? entry.name, args) : this.within(entry.row, () => Reflect.apply(entry.callback, thisArg, args))
       if (isThenable(result)) {
         let running = this.#running.get(entry.row)
         if (!running) this.#running.set(entry.row, running = new Set())

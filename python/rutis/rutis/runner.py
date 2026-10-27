@@ -54,8 +54,19 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
+from ._unhandled import (
+    as_row,
+    current_row,
+    failure_text,
+    install_exit,
+    kind_text,
+    record_task_rows,
+    report_text,
+    row_of,
+    unhandled_error,
+)
 from .events import Bus, Emitter, check_scope, discard, plain, reserved, start
-from .peer import UNDEFINED, AsyncListener, BindingError, LoadError, Peer, RemoteFuture
+from .peer import UNDEFINED, AsyncListener, BindingError, LoadError, Peer, RemoteFuture, encode_error
 
 # rows.announce: services rows provide without declaring them are announced
 # with their methods, to a host whose mount says `announce`. Events are not
@@ -253,6 +264,12 @@ class Row:
     # the row loads: those sent from the session's loop, and from other
     # threads; (sent, whether it is a registration).
     pending: list | None = field(default_factory=list)
+    # While it loads: set with why when its code leaves an exception
+    # unhandled, which fails the load (#688).
+    failing: Any = None
+    # Failed by an exception its code left unhandled, once loaded: rutis
+    # was told (`rows.failed`, #688).
+    failed: bool = False
     # Guards `pending`, which other threads add to.
     lock: Any = field(default_factory=threading.Lock)
 
@@ -347,6 +364,15 @@ class Runtime:
         self.unanswered: dict[str, int] = {}
         # The source file of each plugin module when it was imported.
         self.stamps: dict[str, tuple | None] = {}
+        # Listeners run as their row's code (#688).
+        self.bus.within = as_row
+        # The loop whose unhandled exceptions this runtime takes (#688).
+        self._handling: asyncio.AbstractEventLoop | None = None
+        try:
+            self._take_unhandled(asyncio.get_running_loop())
+        except RuntimeError:
+            pass  # no loop yet: the first row load takes it
+        _exit_named(self)
 
     # ── Services ─────────────────────────────────────────────────
 
@@ -457,6 +483,7 @@ class Runtime:
             raise ValueError(f"row {key} is already loaded")
         if self.loop is None:
             self.loop = asyncio.get_running_loop()
+        self._take_unhandled(asyncio.get_running_loop())
         # Descriptors and reported lines call the row by its id (§4.2).
         self.bus.row_ids[key] = id if isinstance(id, str) else key
         exports = exports or {}
@@ -476,34 +503,157 @@ class Runtime:
         self.rows[key] = row
         for name, methods in exports.items():
             self.slots[row.id(name)] = Slot(key, set(methods), name)
+        # The row's code runs as the row's: what its tasks leave unhandled
+        # names it (#688). While it loads, that fails the load.
+        # The loop running this load (a test may load on another loop than
+        # the one this runtime first saw).
+        row.failing = asyncio.get_running_loop().create_future()
+        loading = start(as_row(key, lambda: self._apply(row, plugin, config, exports)))
         try:
-            cleanup = await _settle(plugin.apply(Context(self, row), config))
-            if cleanup is not None:
-                if not callable(cleanup):
-                    raise TypeError("apply must return a cleanup function or None")
-                row.cleanups.append(cleanup)
-            for name in exports:
-                self._refresh(row.id(name))
-            # rutis has published the announced services (or refused one,
-            # which fails the row there) and registered its listeners before
-            # it hears that the row loaded: those its threads provide while
-            # it waits too. A refused registration fails the load (§4.4).
-            while True:
-                with row.lock:
-                    pending = row.pending or []
-                    row.pending = [] if pending else None
-                if not pending:
-                    break
-                outcomes = await asyncio.gather(*(_awaitable(sent) for sent, _ in pending), return_exceptions=True)
-                for (_sent, registration), outcome in zip(pending, outcomes):
-                    if registration and isinstance(outcome, Exception):
-                        raise outcome
+            await asyncio.wait({loading, row.failing}, return_when=asyncio.FIRST_COMPLETED)
+            if not loading.done():
+                loading.cancel()
+                raise row.failing.exception()
+            loading.result()
+            # Failed once loaded, before this answers: the load fails.
+            if row.failing.done() and not row.failing.cancelled():
+                raise row.failing.exception()
         except BaseException:
+            if not loading.done():
+                loading.cancel()
             try:
                 await self.unload(key)
             except Exception:
                 pass
             raise
+        finally:
+            failing, row.failing = row.failing, None
+            if not failing.done():
+                failing.cancel()
+            elif not failing.cancelled():
+                failing.exception()  # taken: nobody else reads it
+
+    async def _apply(self, row: Row, plugin: sdk.Plugin, config: Any, exports: dict) -> None:
+        """Apply the row's plugin; done once rutis heard what it provided
+        and registered."""
+        cleanup = await _settle(plugin.apply(Context(self, row), config))
+        if cleanup is not None:
+            if not callable(cleanup):
+                raise TypeError("apply must return a cleanup function or None")
+            row.cleanups.append(cleanup)
+        for name in exports:
+            self._refresh(row.id(name))
+        # rutis has published the announced services (or refused one,
+        # which fails the row there) and registered its listeners before
+        # it hears that the row loaded: those its threads provide while
+        # it waits too. A refused registration fails the load (§4.4).
+        while True:
+            with row.lock:
+                pending = row.pending or []
+                row.pending = [] if pending else None
+            if not pending:
+                break
+            outcomes = await asyncio.gather(*(_awaitable(sent) for sent, _ in pending), return_exceptions=True)
+            for (_sent, registration), outcome in zip(pending, outcomes):
+                if registration and isinstance(outcome, Exception):
+                    raise outcome
+
+    # ── Errors nobody handled (#688) ─────────────────────────────
+
+    def _take_unhandled(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Take `loop`'s exceptions nobody handled (once per loop)."""
+        if self._handling is loop:
+            return
+        self._handling = loop
+        loop.set_exception_handler(self._unhandled)
+        record_task_rows(loop)
+
+    def _unhandled(self, loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        error = context.get("exception")
+        if not isinstance(error, Exception):
+            loop.default_exception_handler(context)
+            return
+        self.charge("unhandled exception", error, row_of(context))
+
+    def traced(self, peer: Peer) -> None:
+        """Functions and objects rows hand over through `peer` run as the
+        row's code when called (#688)."""
+        peer.owner = current_row.get
+        peer.within = as_row
+
+    def charged_row(self, key: str | None, error: BaseException) -> str | None:
+        """The row an error traced to row `key` is charged to: that row,
+        unless the innermost plugin file in its traceback is another row's
+        only. Then it came from code of a row this one called directly, in
+        this process, and which of the two left it unhandled cannot be told
+        (the traceback says where it was raised, not who dropped it): no row
+        is charged."""
+        if key is None:
+            return None
+        files = {row_key: _module_file(row.module) for row_key, row in list(self.rows.items())}
+        for frame in reversed(traceback.extract_tb(error.__traceback__)):
+            owners = [row_key for row_key, file in files.items() if file is not None and file == frame.filename]
+            if not owners:
+                continue
+            return key if key in owners else None
+        return key
+
+    def _runtime_name(self) -> str:
+        return self.bus.runtime or "py"
+
+    def charge(self, kind: str, error: BaseException, key: str | None) -> None:
+        """An exception nobody handled, traced to row `key` (None: to no
+        row): the row fails (rutis restarts it, and the restart fails with
+        why); one traced to no row is reported here. The process goes on."""
+        key = self.charged_row(key, error)
+        row = self.rows.get(key) if key is not None else None
+        name = self._runtime_name()
+        if row is None or self.closing or self.peer is None:
+            print(f"runtime {name}: an unhandled error from an unknown row: {report_text(error)}", file=sys.stderr, flush=True)
+            return
+        why = failure_text(kind, error)
+        if row.failing is not None:
+            if not row.failing.done():
+                row.failing.set_exception(unhandled_error(kind, error))
+            return
+        # Once: the row is on its way out; what else it leaves unhandled
+        # until it has gone is written here.
+        if row.failed:
+            print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+            return
+        row.failed = True
+
+        def told(done) -> None:
+            # A host older than 0.18 fails no row so: the row goes on.
+            if done.cancelled() or done.exception() is not None:
+                print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+
+        try:
+            # What it was, and the error as a raised one crosses: its code,
+            # data and traceback, which the host prints under it.
+            try:
+                encoded = encode_error(error)
+            except Exception:  # noqa: BLE001 - the text alone then
+                encoded = None
+            args = [key, kind_text(kind, error)] + ([encoded] if encoded is not None else [])
+            self._request("rows.failed", args).add_done_callback(told)
+        except Exception:  # noqa: BLE001 - the session is gone
+            print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+
+    def name_row(self, key: str | None, files: list[str]) -> str | None:
+        """The id of the row whose code runs (`key`), else of the one row
+        whose plugin module is among `files` (a thread a plugin started has
+        a context of its own); None when it cannot tell."""
+        if key is not None and key in self.rows:
+            return self.bus.row_id(key)
+        found = set()
+        for row_key, row in list(self.rows.items()):
+            file = _module_file(row.module)
+            if file is not None and file in files:
+                found.add(row_key)
+        if len(found) == 1:
+            return self.bus.row_id(found.pop())
+        return None
 
     async def unload(self, key: str) -> None:
         row = self.rows.pop(key, None)
@@ -870,7 +1020,7 @@ class Runtime:
             )
             if entry.kind == "async":
                 raise refused
-            value = entry.listener(*args)
+            value = as_row(entry.row, lambda: entry.listener(*args), awaited=False)
             if inspect.isawaitable(value):
                 discard(value)
                 raise refused
@@ -889,6 +1039,8 @@ class Runtime:
         task = asyncio.current_task()
         if task is not None:
             self.bus.track(entry.row, task)
+        # Its task's context is its own: the listener runs as its row's.
+        current_row.set(entry.row)
         try:
             value = await _settle(entry.listener(*args))
         except asyncio.CancelledError:
@@ -910,7 +1062,9 @@ class Runtime:
         if self.closing:
             raise RuntimeError("runtime is closing")
         if target == "":
-            return self._control(method, args if args is not None else [])
+            # A control call is no row's, also arriving while a row's
+            # synchronous call waits (#688).
+            return as_row(None, lambda: self._control(method, args if args is not None else []))
         entry = self.handles.get(target)
         if entry is None:
             # A handle is the service's id, maybe with `#<generation>`.
@@ -924,7 +1078,9 @@ class Runtime:
         if not isinstance(args, list):
             raise TypeError("method arguments must be an array")
         check_arguments(service, method, function, args)
-        return function(*args)
+        # The method runs as the code of the row whose service it is (#688).
+        owner = slot.row if slot is not None else None
+        return as_row(owner, lambda: function(*args))
 
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":
@@ -1003,6 +1159,34 @@ class Runtime:
     async def _dispose_and_drain(self) -> None:
         await self.dispose()
         await self.peer.drain()
+
+
+
+
+def _module_file(module: Any) -> str | None:
+    """The source file of a row's plugin: its module's, or the file of a
+    plugin definition's `apply`."""
+    try:
+        if isinstance(module, str):
+            loaded = sys.modules.get(module)
+            return getattr(loaded, "__file__", None)
+        return inspect.getsourcefile(module.apply)
+    except (TypeError, AttributeError):
+        return None
+
+
+_exit_runtimes: list = []
+
+
+def _exit_named(runtime: Runtime) -> None:
+    """Name the row calling `os._exit`, from the runtime of the latest
+    session (a listening runtime serves one session at a time)."""
+    if not _exit_runtimes:
+        install_exit(
+            lambda key, files: _exit_runtimes[-1].name_row(key, files),
+            lambda: _exit_runtimes[-1]._runtime_name(),
+        )
+    _exit_runtimes[:] = [runtime]
 
 
 def _binding(error: BaseException) -> BindingError:

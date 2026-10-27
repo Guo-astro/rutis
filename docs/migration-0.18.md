@@ -147,6 +147,33 @@
 
 - 错误节点多两个可选字段：`site`（出错的行、在做什么）与 `rethrown`（再抛出它的调用方的帧）。旧的一端忽略它们；不升协议版本，与 0.17 照常相遇。
 
+## Node、Bun、Python 运行时：没处理的错误的处理方式改变（#688）
+
+0.17 里 Node、Bun 插件没处理的 promise 拒绝（或定时器里抛出的异常）让它所在的运行时进程退出，同一运行时里的行一起停下等待；Python 任务里没人取的异常只被 asyncio 记一行日志，这一行照常运行。0.18 起：
+
+- 进程不退出。追得到产生它的那一行时（`rutis-host dev` 下的 Node；Python 里在某一行里运行的任务和回调），这一行失败，写明原因和位置；同一运行时里的其他行继续。
+
+  ```
+  weather: failed: unhandled rejection: Error: no region
+      at Timeout._onTimeout (file:///…/weather.mjs:12:9)
+  ```
+
+- 追不到时（`rutis-host run` 下的 Node，Bun，Python 里不在任何一行里运行的代码）写一行来源不明，哪一行都不失败：
+
+  ```
+  runtime node: an unhandled error from an unknown row: Error: no region
+      at …
+  ```
+
+- 插件调用 `process.exit` / `os._exit` 时进程照常结束，运行时先写一行 `runtime node: row weather called process.exit(1)`。
+
+要改的：
+
+- **Python**：以前一个任务出错后这一行照常运行，现在这一行失败（宿主重启它，重启也失败）。自己启动的任务，处理或取走它的异常（`await` 它，或 `add_done_callback` 里读 `exception()`）。
+- **Node、Bun**：以前靠"出错就让运行时退出、宿主按 `restart` 重启运行时"恢复的项目，现在不会有运行时退出：`restart: "on-failure"` 不再因此重启运行时，`restart: "exit"` 的宿主不再因此以 3 退出。要在出错后恢复，在插件里处理错误；确实要结束进程的，显式调用 `process.exit`。
+
+详见插件 API 指南的[同一运行时里的插件共用一个进程](guide/plugin-api.md#同一运行时里的插件共用一个进程)。
+
 ## 同一监听器上两个条目接受同一个 token：启动即报错（#702）
 
 同一个监听器上，监听的节点行和连进来的运行时（`runtimes.remote` 的 `listen` + `instances`）会接受同一个 token 时（例如都没有单独的 token、都退回 `RUTIS_TOKEN`），0.17 照常启动，但连接到达时以 403 拒绝（分不出是给谁的），运行时每 30 秒重试。0.18 起 `run`、`check`、重新读配置在启动前报错。同一个监听器上任意两个条目都一样：两个连进来的运行时（0.17 同样以 403 拒绝）、两个监听的节点行（0.17 里连接都到了后一行，前一行永远连不上）。

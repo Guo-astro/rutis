@@ -763,6 +763,8 @@ class _Export:
     call: str | None = None
     # The call it is the result of (`service.method`), for messages.
     described: str | None = None
+    # Whose code it is (`Peer.owner` when exported): its calls run so.
+    owner: Any = None
 
 
 @dataclasses.dataclass(eq=False)
@@ -806,6 +808,11 @@ class Peer:
         self._write_lock = threading.Lock()
         self._dispatch = dispatch
         self._settled = settled
+        # `owner()`: whose code is running now (the runtime's row, #688),
+        # kept with each function or object exported; `within(owner, call)`
+        # runs a call of it as that owner's.
+        self.owner: Callable[[], Any] = lambda: None
+        self.within: Callable[[Any, Callable], Any] = lambda _owner, call: call()
         self._inbox: collections.deque = collections.deque()
         self._cv = threading.Condition()
         self._wake_pending = False
@@ -1069,7 +1076,7 @@ class Peer:
                         f"an object with methods ({type(value).__name__}) cannot cross to "
                         f"{self.greeting['endpoint']}; pass plain data or a function instead"
                     )
-                entry = _Export(value, kind, list(self._path()), business)
+                entry = _Export(value, kind, list(self._path()), business, owner=self.owner())
                 # The result of a call: awaiting it is awaiting that call.
                 if kind == "future" and self._answering is not None and self._answering[1] is value:
                     entry.call = self._answering[0]
@@ -1700,9 +1707,10 @@ class Peer:
                     if frame["op"] == "get":
                         value = getattr(entry.value, frame["property"])
                     elif frame["op"] == "call" and frame.get("method") is not None:
-                        value = _apply(getattr(entry.value, frame["method"]), job.args)
+                        method = getattr(entry.value, frame["method"])
+                        value = self.within(entry.owner, lambda: _apply(method, job.args))
                     elif frame["op"] == "call":
-                        value = _apply(entry.value, job.args)
+                        value = self.within(entry.owner, lambda: _apply(entry.value, job.args))
                     else:
                         value = self._dispatch(frame["target"], frame["method"], job.args)
                     if asyncio.iscoroutine(value):

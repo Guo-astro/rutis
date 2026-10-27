@@ -3,8 +3,8 @@
 //! callbacks into Rust from a synchronous call, unload. And what is its own:
 //! it runs incoming calls while a synchronous call waits, plugins resolve
 //! only what the project installed, the project's `.env` is not read, an
-//! uncaught error ends the process, an edited plugin is imported again, and
-//! a Bun older than the package supports is refused.
+//! uncaught error leaves the process running, an edited plugin is imported
+//! again, and a Bun older than the package supports is refused.
 // Unix only (Q7.8): Bun on Windows is not a declared platform of the Bun
 // runtime.
 #![cfg(all(unix, feature = "bun"))]
@@ -329,17 +329,23 @@ export function apply(ctx) {
     ctx.shutdown().await.unwrap();
 }
 
-/// An uncaught error in a plugin ends the process, and with it every
-/// service of the runtime.
+/// An uncaught error in a plugin is reported, and the process goes on:
+/// its services still answer (#688). (Bun cannot tell which row it came
+/// from: it fails none.)
+/// guarantee: loader/unhandled-errors
 #[tokio::test(flavor = "multi_thread")]
-async fn an_uncaught_error_ends_the_runtime() {
+async fn an_uncaught_error_leaves_the_runtime_running() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("fragile.ts"),
         r#"
-export const provides = { fragile: { later: 'sync' } }
+export const provides = { fragile: { later: 'sync', reject: 'sync', alive: 'sync' } }
 export function apply(ctx) {
-  ctx.provide('fragile', { later: () => { setTimeout(() => { throw new Error('boom') }, 10); return 'scheduled' } })
+  ctx.provide('fragile', {
+    later: () => { setTimeout(() => { throw new Error('boom') }, 10); return 'scheduled' },
+    reject: () => { Promise.reject(new Error('boom')); return 'rejected' },
+    alive: () => 'alive',
+  })
 }
 "#,
     )
@@ -350,26 +356,26 @@ export function apply(ctx) {
     let fragile = ctx
         .get_at::<dyn HostDispatch>(&host_key("fragile"))
         .unwrap();
-    assert_eq!(
+    let call = |method: &str| {
         fragile
-            .invoke("later", json!([]).into())
+            .invoke(method, json!([]).into())
             .unwrap()
             .json()
-            .unwrap(),
-        json!("scheduled")
-    );
-    drop(fragile);
-    tokio::time::timeout(Duration::from_secs(10), process.closed())
-        .await
-        .expect("the process ends");
+            .unwrap()
+    };
+    assert_eq!(call("later"), json!("scheduled"));
+    assert_eq!(call("reject"), json!("rejected"));
+    // Both errors have happened by then; the process runs on.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(call("alive"), json!("alive"));
     assert!(
-        process
-            .exit_status()
-            .is_some_and(|status| !status.contains("status: 0")),
+        process.exit_status().is_none(),
         "{:?}",
         process.exit_status()
     );
+    drop(fragile);
     projection.close();
+    process.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
 

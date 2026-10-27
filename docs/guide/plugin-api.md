@@ -236,6 +236,17 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
 
+## 同一运行时里的插件共用一个进程
+
+同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。
+
+插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
+
+- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
+- **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`，哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
+- **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
+- Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
+
 ## 值怎样传递
 
 插件和它用到的服务可能不在同一个进程。跨进程时：

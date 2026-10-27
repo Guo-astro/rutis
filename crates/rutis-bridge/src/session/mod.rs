@@ -79,8 +79,18 @@ pub enum Error {
 /// providing a name another has (`ProvideError`: `forecast is already
 /// provided by a`), and a call refused (`BindingError`: `weather has no
 /// method tomorow (methods: …)`).
-pub(crate) const MESSAGE_ALONE: [&str; 4] =
-    ["ThrownValue", "LoadError", "ProvideError", "BindingError"];
+pub(crate) const MESSAGE_ALONE: [&str; 5] = [
+    "ThrownValue",
+    "LoadError",
+    "ProvideError",
+    "BindingError",
+    UNHANDLED_ERROR,
+];
+
+/// The name of the error a row fails with when its code left an error
+/// unhandled (#688): its message says what (`unhandled rejection: Error:
+/// boom`), its graph is the error's own (its code, data and stack).
+pub const UNHANDLED_ERROR: &str = "UnhandledError";
 
 /// How a far end's error reads: `<name>: <message>`, or the message alone
 /// for the names of [`MESSAGE_ALONE`].

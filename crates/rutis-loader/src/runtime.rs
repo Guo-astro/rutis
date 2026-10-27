@@ -582,11 +582,11 @@ type Refused = Arc<Refusals>;
 /// run when the clash is long gone; that one is refused again if it
 /// provides the name while the clash is still there.
 #[derive(Default)]
-struct Refusals(Mutex<HashMap<rutis::host::InstanceId, (String, bool)>>);
+struct Refusals(Mutex<HashMap<rutis::host::InstanceId, (SessionError, bool)>>);
 
 impl Refusals {
     /// Record why `instance` was refused, unless it was already.
-    fn record(&self, instance: rutis::host::InstanceId, why: String) {
+    fn record(&self, instance: rutis::host::InstanceId, why: SessionError) {
         self.0
             .lock()
             .unwrap()
@@ -603,7 +603,7 @@ impl Refusals {
     }
 
     /// Why this apply of `instance` fails: the refusal whose restart runs it.
-    fn take(&self, instance: rutis::host::InstanceId) -> Option<String> {
+    fn take(&self, instance: rutis::host::InstanceId) -> Option<SessionError> {
         let mut refusals = self.0.lock().unwrap();
         match refusals.get(&instance) {
             Some((_, true)) => refusals.remove(&instance).map(|(why, _)| why),
@@ -748,14 +748,21 @@ fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
 /// A row refused a service name another provider has: printed as the
 /// row's state on its own (`b: forecast is already provided by a`).
 fn refused(reason: String) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(Box::new(
-        rutis_bridge::session::Error::Remote {
-            name: "ProvideError".into(),
-            message: reason,
-            graph: None,
-        },
-    )))
+    rutis::Error::from(ErrorKind::PluginFailed(Box::new(provide_error(reason))))
 }
+
+/// The error of a row refused a service name: `ProvideError`, printed as
+/// its message alone.
+fn provide_error(reason: String) -> SessionError {
+    SessionError::Remote {
+        name: "ProvideError".into(),
+        message: reason,
+        graph: None,
+    }
+}
+
+/// An error rutis-bridge's sessions carry (a far end's, with its graph).
+type SessionError = rutis_bridge::session::Error;
 
 impl DynPlugin for JsRow {
     fn name(&self) -> &str {
@@ -770,8 +777,10 @@ impl DynPlugin for JsRow {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
-            if let Some(refused_reason) = self.refused.take(ctx.instance()) {
-                return Err(refused(refused_reason));
+            // Or because its code left an error unhandled (#688): it fails
+            // with that error.
+            if let Some(error) = self.refused.take(ctx.instance()) {
+                return Err(failed(error));
             }
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
@@ -950,6 +959,18 @@ impl JsRow {
             // Already unloading or restarted: nothing left to end.
             let _ = ending.dispose_self();
         });
+        // So does an error its code leaves unhandled, which the runtime
+        // traced to it (#688): the runtime and its other rows go on.
+        // Registered before the load, as an error may come right after it
+        // (the load itself fails for one while it loads). One that comes
+        // while this apply still finishes restarts the fiber all the same:
+        // the kernel's restart cancels the apply running, whose cleanup
+        // unloads the runtime's row, before the next apply fails.
+        let tasks = tokio::runtime::Handle::current();
+        let (refusals, restarting) = (self.refused.clone(), ctx.clone());
+        process.on_row_failed(&key, move |why| {
+            fail_running(&restarting, &refusals, &tasks, why)
+        });
         // Its listeners' descriptions and failure reports name it by its id.
         process.name_row(&key, &id);
         let loaded = match &self.entry {
@@ -1016,35 +1037,45 @@ impl JsRow {
         }
         // One it provides afterwards fails it the same way: the fiber
         // restarts, and that load fails with why.
-        let refused = self.refused.clone();
-        let restarting = ctx.clone();
         let tasks = tokio::runtime::Handle::current();
-        projection.on_refused(move |why| {
-            let generation = restarting.cancellation_token();
-            if generation.is_cancelled() {
-                return; // already unloading or restarted
-            }
-            refused.record(restarting.instance(), why);
-            let ctx = restarting.clone();
-            let refused = refused.clone();
-            tasks.spawn(async move {
-                let instance = ctx.instance();
-                let view = ctx
-                    .diagnostics()
-                    .plugins
-                    .into_iter()
-                    .find(|plugin| plugin.instance == instance)
-                    .and_then(|plugin| ctx.view(plugin.id));
-                // Gone or restarting anyway: nothing to fail.
-                if let Some(view) = view.filter(|_| !generation.is_cancelled()) {
-                    refused.arm(instance);
-                    let _ = view.restart().await;
-                }
-                refused.forget(instance);
-            });
-        });
+        let (refused, restarting) = (self.refused.clone(), ctx.clone());
+        projection
+            .on_refused(move |why| fail_running(&restarting, &refused, &tasks, provide_error(why)));
         Ok((key, projection))
     }
+}
+
+/// Fail the running row of `restarting` with `why`: its fiber restarts,
+/// and that apply fails with why ([`Refusals`]). A row a service clash
+/// refused fails so, and one whose code left an error unhandled (#688).
+fn fail_running(
+    restarting: &Ctx,
+    refused: &Refused,
+    tasks: &tokio::runtime::Handle,
+    why: SessionError,
+) {
+    let generation = restarting.cancellation_token();
+    if generation.is_cancelled() {
+        return; // already unloading or restarted
+    }
+    refused.record(restarting.instance(), why);
+    let ctx = restarting.clone();
+    let refused = refused.clone();
+    tasks.spawn(async move {
+        let instance = ctx.instance();
+        let view = ctx
+            .diagnostics()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.instance == instance)
+            .and_then(|plugin| ctx.view(plugin.id));
+        // Gone or restarting anyway: nothing to fail.
+        if let Some(view) = view.filter(|_| !generation.is_cancelled()) {
+            refused.arm(instance);
+            let _ = view.restart().await;
+        }
+        refused.forget(instance);
+    });
 }
 
 /// Mounts the copies of plugin definitions other languages hand over: each
@@ -1186,22 +1217,20 @@ mod stale_tests {
         let instance = root.instance();
         let refusals = Refusals::default();
 
-        refusals.record(instance, "clash".into());
-        assert_eq!(
-            refusals.take(instance),
-            None,
-            "a restart already on its way"
-        );
+        let taken = |refusals: &Refusals| refusals.take(instance).map(|error| error.to_string());
+
+        refusals.record(instance, provide_error("clash".into()));
+        assert_eq!(taken(&refusals), None, "a restart already on its way");
         refusals.arm(instance);
-        assert_eq!(refusals.take(instance).as_deref(), Some("clash"));
-        assert_eq!(refusals.take(instance), None, "taken once");
+        assert_eq!(taken(&refusals).as_deref(), Some("clash"));
+        assert_eq!(taken(&refusals), None, "taken once");
 
         // Its restart ran without applying (it waited for a dependency):
         // the generation that applies later, the clash gone, runs.
-        refusals.record(instance, "clash".into());
+        refusals.record(instance, provide_error("clash".into()));
         refusals.arm(instance);
         refusals.forget(instance);
-        assert_eq!(refusals.take(instance), None);
+        assert_eq!(taken(&refusals), None);
     }
 
     /// A remote Node runtime takes npm names, not another runtime's rows.
