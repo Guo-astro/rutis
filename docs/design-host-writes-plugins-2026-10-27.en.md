@@ -1,257 +1,274 @@
-# The host writes its own plugins: the agent's tools, isolation, errors and iteration
+# The host writes its own plugins: how an agent in the host operates and manages plugins
 
 [English](design-host-writes-plugins-2026-10-27.en.md) · [中文](design-host-writes-plugins-2026-10-27.md)
 
 Status: draft, not implemented. Date: 2026-10-27. Base: `main` `103c0d22`. Scheduled: 0.19 (design only); implementation after 0.19.
-Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)). Keeps and updates the tool draft of [#505](https://github.com/arcships/rutis/pull/505) (before 0.15, closed).
-Relation to 0.18: errors and state come entirely from [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) (`site` on the error graph, error codes, `Loader::status()`); no new structure. The agent is part of the host, so under that design's §2 it is on the side of "the person reading the output and the host".
-0.19 work this depends on: [#683](https://github.com/arcships/rutis/issues/683) (keeping plugins in check; design in [PR #733](https://github.com/arcships/rutis/pull/733), `docs/design-host-plugin-limits-2026-10-27.en.md`) and [#691](https://github.com/arcships/rutis/issues/691) (plugin installation and its embedding API; design in [PR #734](https://github.com/arcships/rutis/pull/734), `docs/design-plugin-install-2026-10-27.en.md`). Every item needed from them is listed in §10.
+Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)). Replaces [#505](https://github.com/arcships/rutis/pull/505)'s "two tools for an agent framework" draft.
+Relation to 0.18: state and errors come entirely from [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) (`Loader::status()`, `site` on the error graph, error codes); no new structure.
+0.19 designs this depends on: [#683](https://github.com/arcships/rutis/issues/683) (keeping plugins in check, `docs/design-host-plugin-limits-2026-10-27.en.md` in [PR #733](https://github.com/arcships/rutis/pull/733)), [#691](https://github.com/arcships/rutis/issues/691) (plugin installation, `docs/design-plugin-install-2026-10-27.en.md` in [PR #734](https://github.com/arcships/rutis/pull/734)), [#670](https://github.com/arcships/rutis/issues/670) (`rutis-host call`, `docs/design-try-and-test-plugins-2026-10-27.en.md` in [PR #731](https://github.com/arcships/rutis/pull/731)). What they need to provide is listed in §10.
 
-Out of scope: the agent in rutis-dsh (§3.4); one tool per service method (§3.2); the agent installing plugins from npm, PyPI or other registries; agent-written plugins using each other's services by default; memory and CPU limits and a file or network sandbox (§5); agent-written Go and Swift plugins (one binary is one runtime there, and #683's named local runtimes are Node, Python and Bun only); services inside instances, and object references as `rutis_call` arguments or results; the known gap that a reload does not re-import the submodules a plugin imports (already in the [rutis-host guide](guide/rutis-host.en.md)); reloading on file changes in embedding hosts; a "try, then discard, never written to the config" mode; #505's `Loader::services()`, scoped registration and removal in `ToolRegistry`, and limits on references and in-flight calls.
+Out of scope: tools for one particular agent framework (if rutis-agent's `ToolRegistry` wants them, they are a few lines adapting this service, not in this design); one tool per service; enable / disable a row, `upgrade`, and a separate `check` method in the management service (§11); a separate trial runtime, and the host running the plugin's own tests (§5); installing from npm or PyPI (local directories only); agent-written Go and Swift plugins (#683's named local runtimes are Node, Python and Bun only); agent-written plugins using each other's services; memory and CPU limits and a sandbox; services inside instances; object or function references as `call` arguments or results; the known gap that submodule edits do not reload (already in the [rutis-host guide](guide/rutis-host.en.md)); S1 on Windows (#670's `call` is not on Windows).
 
 ## 1. What should work, and where it is stuck
 
-The main line of the [design philosophy](design-philosophy.en.md) §1: whatever the host needs to reach, it writes a plugin for and connects it, often with an agent writing it; it tries it, changes it, replaces it, and the connection becomes part of the host.
+[Design philosophy](design-philosophy.en.md) §1: whatever the host needs to reach, it writes a plugin for and connects it, often with an agent writing it; it tries, changes and replaces it, and the connection becomes part of the host.
 
-The concrete scenario: an agent runs in a host. A user asks "what's the weather in Oslo today", and the agent has no tool that can answer. It should be able to:
+The scenario: a `rutis-host run` host runs an agent. The agent is itself a plugin row in the host (written in Python here; any language works). A user asks "what's the weather in Oslo today", and no service can answer. The agent should:
 
-1. write a Python plugin with its own file tool, providing the service `weather`;
-2. install it into the host;
-3. call `weather.today("Oslo")` to answer;
+1. write a Python plugin `weather` (with Python's own file operations, into a directory);
+2. have the host check and install it;
+3. call `weather.today("Oslo")`;
 4. break it: learn which file and line is wrong while the old version keeps serving;
-5. fix it and change its behaviour: put the new version in place;
-6. drop it: remove it, and its process exits cleanly.
+5. fix it and put the new version in place;
+6. drop it: remove it, and its process exits;
+7. see at any time which rows, services and errors there are.
 
-Where it is stuck today:
-
-- **The agent cannot reach plugin services.** rutis-agent's tools come from `ToolRegistry` (`crates/rutis-agent/src/tools/mod.rs`), which holds hand-written tools such as `bash` and `replace_text`, not rutis services. [Session persistence and self-control tools](design-session-persist-and-self-tools-2026-08-23.en.md) §3 says "no dynamic loading of new code" and leaves it for later; this design is that later work. The agent does not load code into itself: it adds plugin rows to the host, whose lifecycle rutis already manages.
-- **The agent cannot install, replace or remove plugins.** Embedding hosts have no "install a local directory" API (#691 adds it); `rutis-host dev` reloads, but follows one project directory.
-- **Agent-written plugins are not isolated.** They share one Python process with other plugins; an infinite loop makes the plugins in that process wait with it.
-- **The agent cannot read errors.** In 0.17 errors are strings by the time they reach the host; 0.18 keeps their structure, but nothing hands it to the agent yet.
+Where it is stuck: the host has these operations, but only for the command line and the person at the terminal — `rutis-host check`, `status` (0.18), `call` (#670), `add` / `remove` (#691), `dev`'s reload. A plugin row can reach none of them. [Session persistence and self-control tools](design-session-persist-and-self-tools-2026-08-23.en.md) §3 left "dynamic loading of new code" for later; this design is that work, done by handing the host's existing operations to a plugin row, not by having the agent load code into itself.
 
 ## 2. Decisions
 
 | # | Decision | Section |
 | --- | --- | --- |
-| H1 | The host gives the agent three fixed tools: `rutis_services` (list callable services) and `rutis_call` (call by name), kept from #505; plus `rutis_plugin` (add, reload, remove, status) | 3, 4 |
-| H2 | No tool per service: the tool schemas are fixed, the service list is data | 3.2 |
-| H3 | By default the agent can call services provided by plugin rows; the host's own services and peers' services must be listed by the host in `allow` | 3.3 |
-| H4 | An agent-written plugin is a local directory, installed with #691's embedding API (`Installer`); `RutisTools` adds a named local runtime of its own (`agent-<plugin>`) and writes the row under a group in the host's editable config (the "agent group"), so it is still there after a restart | 4 |
-| H5 | The agent group only marks which rows the agent installed: `rutis_plugin` reloads and removes only those; reload is the existing `Loader::reload` (all or nothing, the old version keeps serving) and reloads only that row; remove takes the plugin's runtime with it, and its process ends | 4 |
-| H6 | Isolation uses only #683's options, set on each agent plugin's own runtime: one process per plugin; `limits` of a 30 s call limit, ending the process on timeout (`stop: "process"`), and `services` equal to `allow` (empty by default); the greeting limit at its default. No sandbox | 5 |
-| H7 | An error in a tool result is the text rutis prints for people (with `site` and both locations); the agent gets it through the host's reading interfaces, plugin code does not | 6 |
-| H8 | The implementation is an optional module of rutis-agent; the host hands the three tools to `ToolsPlugin::new` when assembling; `ToolRegistry` is unchanged | 3.4 |
-| H9 | Scenario S1 uses rutis-agent with a scripted model; its E2E lives in `tests/e2e`, runs on three platforms, in nightly | 8 |
+| H1 | The host provides a management service by name (default `plugins`) with 5 methods: `status`, `call`, `add`, `reload`, `remove`. The agent uses it through `inject`, which every SDK has, whatever its language or agent framework | 3 |
+| H2 | These methods, the command line and #670's socket are one implementation: all call `Loader::status()`, `call_service`, #691's `Installer`, `Loader::check`, `Loader::reload`; the layer combining them lives in rutis-loader (`admin`), shared by rutis-host and embedding hosts | 3 |
+| H3 | Not provided by default. The host names the row it is given to in its config (`admin.for`); calls from other rows are refused with `not-allowed` | 4 |
+| H4 | By default the agent reloads and removes only rows it added itself (kept in the `agent-plugins` group); the host can widen this with `manage: "all"` | 4 |
+| H5 | `call` reaches services provided by plugin rows by default; the host's own services and peers' services must be listed in `allow` | 4 |
+| H6 | Each plugin the agent adds gets a named local runtime `agent-<plugin>` with default `limits`: `call` 30 s, `stop: "process"`, `services` equal to `allow` (empty by default) | 4 |
+| H7 | Before `add` or `reload` takes effect, checks run in a fixed order: install → runtime → `Loader::check` → load, or swap all or nothing; a failing step stops there, undoes what this call did, and the old version keeps serving | 5 |
+| H8 | Results are plain data: `{ok, text, error?}`; `error` is the root of 0.18's error graph (with `site` and locations), `text` is what rutis prints for people | 6 |
+| H9 | What is added is written to the host's config and survives a restart: rutis-host writes `rutis.json` (row, `runtimes.local`, `installed`); embedding hosts store it through a save callback | 7 |
+| H10 | S1's agent is a scripted Python plugin, driven step by step by the test with `rutis-host call agent.step <n>`; no model | 9 |
 
-## 3. How the agent sees and calls services
+## 3. The management service
 
-### 3.1 Three tools
+### 3.1 Methods
 
-| Tool | Arguments | Result |
-| --- | --- | --- |
-| `rutis_services` | none | The services callable now: `[{name, provider, methods}]`; `provider` is a row name or "host", `methods` is `{method: "sync" \| "async"}`, `null` when the service does not say |
-| `rutis_call` | `{service, method, arguments}` (`arguments` is a list) | The method's return value (JSON); on failure `error: ` followed by the error text rutis prints (§6) |
-| `rutis_plugin` | `{action: "add", path}` / `{action: "reload" \| "remove", name}` / `{action: "status"}` | The outcome, one item per line (§4, §7) |
+| Method | Arguments | What it does | Result |
+| --- | --- | --- | --- |
+| `status()` | none | 0.18's `Loader::status()`: each row's state and reason, each service's provider and methods (`{method: "sync" \| "async"}`), runtimes, calls in progress | The snapshot (plain data) plus `text` (what `rutis-host status` prints) |
+| `call(service, method, args)` | service, method, argument list | Calls by name as "host", like `rutis-host call` | `{ok: true, value}` or `{ok: false, text, error}` |
+| `add(path)` | local directory (relative to the host config's directory) | §5.1's checks and load | `{ok, row, text, error?}` |
+| `reload(row)` | row name | §5.2's checks and swap | `{ok, text, error?}` |
+| `remove(row)` | row name | §5.3 | `{ok, text}` |
 
-The data comes from existing seams; no new core API:
+- Failures of plugin code (import fails, `apply` fails, a method throws, a timeout) are **not thrown**; they are in the result: the agent reads them and changes the code, which is the normal flow. Only crossing a permission throws (not the row it was given to, a row it may not manage), with #683's code `not-allowed`, see §8; a misspelled row name is also a result.
+- The method set holds only what the scenario uses: each of the 7 steps maps to a method.
 
-- `rutis_services`: names and providers from 0.18's `Loader::status().services`; `methods` from `HostDispatch::methods()` (`crates/rutis-bridge/src/session/services.rs`). The `Loader::services()` #505 wanted to add is replaced by the 0.18 snapshot. #505's `callable` field goes too: since 0.17 Rust services are exposed by name automatically (`#[rutis::service]`), so the list holds only what can be called.
-- `rutis_call`: the existing `rutis_bridge::session::call_service`. It already does what #505 wanted fixed in the first version: sync methods run on a blocking thread, async results are awaited; the call comes from no row, so a method needing the caller's `&Ctx` fails clearly; the service is looked up on every call, so a replaced or withdrawn service is seen on the next call. Results decode as plain data; an object or function reference as a result fails the call with a reason (out of scope).
-- Cancellation: when the agent's turn is cancelled, `ToolRegistry::execute` already drops the tool's future, and dropping `call_service`'s future cancels the call on the other side (0.18 §6.1). `rutis_call` sets no time limit of its own: under 0.18 §2 how long to wait is the caller's business; the limit for agent-written plugins is `limits.call` on their own runtime (§5).
+### 3.2 One implementation with the existing operations
 
-### 3.2 Why not one tool per service
+| Operation | Command line | #670's socket | Management service | Implementation (existing or 0.19) |
+| --- | --- | --- | --- | --- |
+| State | `rutis-host status` | `status` | `status()` | `Loader::status()` (0.18) |
+| Call | `rutis-host call` | `call` | `call()` | `rutis_bridge::session::call_service` |
+| Check | `rutis-host check` | — | inside `add`, `reload` | `Loader::check(&layers)` (`crates/rutis-loader/src/loader/check.rs`), including 0.18's config-schema validation |
+| Install | `rutis-host add <path>` (#691) | — | `add()` | #691's `Installer::add`; runtimes added while running with #683's `RuntimeSet`; rows written with `Loader::create` |
+| Reload | `dev`'s file changes, the rutis-dev channel's `swap` | — | `reload()` | `Loader::reload` (`crates/rutis-loader/src/loader/api.rs`) |
+| Remove | `rutis-host remove` (#691) | — | `remove()` | `Loader::remove`, `RuntimeSet::remove`, `Installer::remove` |
 
-`ToolRegistry::register` can already add tools while running, so "install a plugin, get a tool" looks possible. We don't:
+- The only new thing is the layer chaining these steps in §5's order: `rutis_loader::admin::Admin` (rutis-loader's `admin` feature, which brings #691's `install`). It has Rust versions of the 5 methods plus a `HostDispatch` that provides them by name. rutis-host uses it; embedding hosts use the same one. rutis-host's library is not a public API, so it does not go there (the same reason as #691's `Installer`).
+- The socket gets no `add` / `reload` / `remove`: the command line's `add` / `remove` edit the config file (#691); nobody needs to install into a running host from the command line.
+- `rutis-host call` and `call()` produce the same text: both are written by 0.18's error-printing code.
 
-- service methods have no cross-language parameter schema (0.18's config schema covers configs; #684 generates Python types, not tool parameters), so each tool's parameters would be guessed;
-- the tool list would change with every load, failed reload and replacement, so the model sees different tool definitions each turn and scripted tests are hard to reproduce; `ToolRegistry` would also need removal (#505's `register_scoped`);
-- two generic tools need no change when a plugin changes language or location (a remote runtime); the agent reads the current state from `rutis_services` each turn.
+### 3.3 How the agent uses it
 
-Cost: one more step for the model (list, then call). Parameters come from the plugin's own description and from error text (`bad-argument` says which argument should be what).
+The agent's row says `inject: ["plugins"]`, and its code uses the service the way its language does, with nothing rutis-specific (Python sketch):
 
-### 3.3 Which services are callable by default
-
-Kept from #505:
-
-- **By default**: services provided by plugin rows (provider is a row name in `Loader::status()`), including hand-written rows, rows on remote runtimes and rows in the agent group. That is what the host installs plugins for.
-- **Listed by the host**: services the host itself provides (provider "host") and services provided by peers. The host gives an `allow` list when assembling. Services outside it are not in `rutis_services`, and `rutis_call` returns `error: <service> is not open to the agent`.
-- **Not listed**: services inside instances (the agent calls from the host's root and does not see them).
-
-`allow` is also the value of `limits.services` on each agent plugin's runtime (§5). One list, meaning "the services opened to the agent's side".
-
-The agent's file and command permissions come from its existing `bash` and `replace_text` tools; this design neither adds to nor weakens them.
-
-### 3.4 Where it lives
-
-- A new module `rutis_agent::rutis_tools` (rutis-agent's optional feature `plugins`, with optional dependencies on rutis-loader and rutis-bridge). It provides `RutisTools`, built from the root `Ctx`, the `Loader`, the agent group's row name and `allow`; `defs()` returns three `ToolDef`s. The host hands them to `ToolsPlugin::new(defs)` with its other tools. The tool set is fixed; `ToolRegistry` is unchanged.
-- rutis-agent is an example project (outside MSRV, test hardening and audits), but #185's scenario uses it end to end, so the module lives there. The tool logic depends only on `Ctx`, `Loader`, `call_service` and #691's embedding API, not on rutis-agent's types; it moves out as a whole if it becomes a product API.
-- **rutis-dsh is not connected in this round**: dsh's agent loop and tool service run in Node (TS), rutis-dsh builds only on Unix with the npm project installed, and S1 must run on three platforms. When connected later, the host gives dsh the same three operations as a service provided by name, forwarded by a dsh tool plugin; that waits for a user.
-
-## 4. Add, reload, remove
-
-### 4.1 The agent group and a runtime per plugin
-
-- **The agent group**: a group row in the host's editable config (named by the host, for example `agent-plugins`); every plugin the agent installs is a child of it. It only marks which rows the agent installed: `rutis_plugin`'s `reload` and `remove` accept only rows in it, so the agent cannot touch hand-written rows. It carries no limits.
-- **A runtime per plugin**: #683 sets limits on named runtimes (services rows of the same runtime provide each other are not limited by `services`). So `RutisTools` gives each agent plugin a named local runtime of its own, `agent-<plugin>` (Rust embedding's `LocalRuntime::named(..).limits(..)`), and writes the row as `agent-<plugin>:<plugin>`. Each plugin then has one process, and plugins cannot use each other's services (out of scope).
-- **Records**: `RutisTools` stores each agent plugin's `{plugin, runtime name, #691 install record}` in a file the host gives it (for example `.rutis/agent-plugins.json`); #691's install records are kept by the host anyway. When the host builds the loader it puts #683's `RuntimeSet` in the `Chain` (`RutisTools` uses it to add and remove runtimes while running); at start-up `RutisTools` adds these runtimes again from the file, in §4.2's `add` order, and the rows in the config start once their runtime is there.
-
-### 4.2 Four actions
-
-| Action | What it does | Existing capability used |
-| --- | --- | --- |
-| `add {path}` | Installs the local directory with #691's `Installer::add` (language from the project file, environment prepared) and gets the row name the loader knows (such as `py:weather`); adds the runtime `agent-weather` in #683's order: first `root.plugin` with the `LocalRuntime` (language from the install result, with §5's `limits`) and its `RuntimeRowsPlugin`, then `RuntimeSet::add` with its resolver, then `Loader::create` writes the row `{"id": "weather", "name": "agent-weather:weather"}` under the agent group; stores the record; returns once the row is running or has failed | #691's embedding API; #683's named runtimes, `Limits` and `RuntimeSet`; the existing `Loader::create(entry, parent, ..)` |
-| `reload {name}` | Reads the row's code again and puts it in place; when the new code does not import, its dry run fails, or it makes other rows fail, the old version keeps serving and the reason is returned. If its runtime's process was ended after a timeout, the runtime is started again first (as in `dev`, where a local runtime whose process ended is started again by the next change) | The existing `Loader::reload(id)` (`crates/rutis-loader/src/loader/api.rs`), the same one `rutis-host dev` and the rutis-dev channel's `swap` use |
-| `remove {name}` | In #683's order: first `Loader::remove` deletes the row, then the `LocalRuntime` and `RuntimeRowsPlugin` fibers are unloaded (the process ends, `runtime agent-weather: stopped` is printed, other runtimes' pids are unchanged), then `RuntimeSet::remove`; after that `Installer::remove` removes the installation and the record is deleted | The existing `Loader::remove`; #683's `RuntimeSet`; #691's `Installer::remove` |
-| `status` | Each agent-group row's state and reason, the services they provide, their runtimes, calls in progress | 0.18's `Loader::status()`, the agent group's part only |
-
-- **Written to the config**: #691's embedding API reads and writes no config; `RutisTools` writes the row with `Loader::create` into the host's editable config, like any plugin the host owner installed, and it survives a restart. That is design philosophy §1's "the connection becomes part of the host". To drop it, the agent calls `remove`.
-- **Only that row reloads**: `reload` does not restart a runtime process. Each agent plugin has its own runtime, but reloads are still per row, as in `dev` (a shared runtime is never restarted for one plugin), and only a per-row reload lets the old version keep serving when the new code fails. Known gap: only the row's own module is re-imported, not the submodules it imports (out of scope, already in the guide).
-- **No new `add` after edits**: #691 installs local directories as a link (npm) or with `-e` (Python), so the agent edits the installed code.
-- **No file watching**: embedding hosts have no file watcher; the agent calls `reload` after writing code. When each step takes effect is then deterministic. Under `rutis-host dev`, file changes reload anyway, and an extra `reload` is a reload with nothing changed.
-- The `cannot reload` sentence is written today by `rutis-host`'s `dev.rs`; the implementation moves its wording into rutis-loader's `report` module, shared by `dev` and `rutis_plugin`, with the text unchanged.
-
-## 5. Isolation: #683's options
-
-An agent-written plugin is code nobody has reviewed; it is treated like a plugin the host opens to third parties. This design designs no mechanism; it only decides which #683 options each agent plugin's runtime uses, with which values:
-
-| #683 option | On an agent plugin's runtime | Why |
-| --- | --- | --- |
-| Named local runtime (one process) | One per plugin: `agent-<plugin>` | A plugin that loops forever or crashes does not hold up others; `remove` takes the runtime with it and its process ends, which S1 step 6 asserts. Cost: one more process per plugin (tens of MB for Python) |
-| `limits.call` | 30 s | Calls come in not only from the agent: hand-written plugins may use agent-written services too; a call over the limit fails with `timeout`, naming the runtime and call, and the host is not held up. 30 s equals the local greeting limit and is enough for weather or lookup calls |
-| `limits.stop` | `"process"` | A plugin stuck in synchronous code cannot be cancelled (Python `def`, a JS busy loop); only ending the process stops it, and the process belongs to this plugin alone. When the agent fixes the code and calls `reload`, the runtime starts again (§4.2) |
-| `limits.services` | Equal to `allow`, empty by default | The plugin's code later runs with nobody watching; by default it gets no service from outside its runtime, and using one is `not-allowed`. S1's `weather` uses no service. To let it use one (including a hand-written plugin's), the host adds the name to `allow` |
-| `greeting` | Not set (30 s locally) | The agent does not start plugins under a debugger |
-
-What is not provided, stated plainly: rutis provides no sandbox. Agent-written plugins run as the host process's user, with the same files and network; there are no memory or CPU limits (#683's guide describes limiting per process with operating-system tools, and each agent plugin has its own process, so that applies). A host that needs stronger isolation puts agent plugins on a remote runtime under another user or in a container (0.19 #695); this design adds nothing for that.
-
-## 6. What went wrong, and how to fix it
-
-The agent is part of the host, not the calling plugin code. Under 0.18 §2, `site` and code locations go to the person reading output and the host; the agent reads them through the host's reading interfaces, and sees the same text the host owner sees in a terminal. The errors plugin code the agent wrote receives at run time still carry only name, message, code and `data`, unchanged.
-
-| Where it failed | Where the agent sees it | What is read |
-| --- | --- | --- |
-| A call fails (the method throws, no such method, wrong argument, `timeout`, `not-allowed`) | `rutis_call`'s result | `rutis_bridge::thrown()` gives the error graph, written as text by the same code 0.18 uses to print errors (#677): which row, which method, why, then the file and line in the plugin's code |
-| Start-up fails after `add` (import error, `apply` error, config not matching the schema, service name conflict, a required service not in `allow`) | `add`'s result; later `status` | The row's state and reason in `Loader::status()` |
-| A broken edit | `reload`'s result | The `cannot reload` sentence with reason and location; the old version keeps serving |
-| Later events (runtime exits, process ended after a timeout, a call hangs) | `status` | The 0.18 snapshot: runtime `down` and why; calls in progress and how long they have waited |
-
-Error codes (`no-method`, `bad-argument` and so on) are for programs; 0.18 keeps them out of the text for people. The agent reads text, so no codes are added; the text already says how to fix it (`methods: today, tomorrow`, `argument 1 should be a number`).
-
-## 7. What developers see
-
-### 7.1 The host owner
-
-When assembling the agent:
-
-```rust
-let tools = rutis_agent::rutis_tools::RutisTools::new(&root, loader.clone(), "agent-plugins")
-    .allow(["calendar"])            // empty by default
-    .records(home.join(".rutis/agent-plugins.json"))
-    .installer(installer)           // #691's Installer, built with the host's own places
-    .runtimes(runtime_set.clone())  // #683's RuntimeSet, put in the Chain when the loader was built
-    .await?;
-let mut defs = vec![bash_tool(), replace_text_tool()];
-defs.extend(tools.defs());
-root.plugin(ToolsPlugin::new(defs))?;
+```python
+plugins = ctx.use("plugins")
+result = await plugins.add("agent-plugins/weather")
+if not result["ok"]:
+    fix_from(result["error"])        # error carries site, file and line
 ```
 
-- When the config has no `agent-plugins` yet, `RutisTools` creates the group in the editable config (`{"id": "agent-plugins", "group": true, "config": []}`); when it exists it is used as is. The group carries no settings.
-- At start-up `RutisTools` adds each agent plugin's runtime back from the records file, with §5's `Limits` (`Limits::new().call(Duration::from_secs(30)).stop(Stop::Process).services(allow)`). To change the values the host passes its own `Limits` with `.limits(..)`; `services` still follows `allow`.
-- The rows and errors the host owner sees in a terminal (`rutis-host status` or the host's own output) are the ones the agent sees in tool results.
+The agent writes plugin files with its language's own file operations; plugin processes already run with the host user's permissions (no sandbox, out of scope in #683), so rutis adds no file-writing interface.
 
-### 7.2 The agent (tool results the model sees)
+## 4. Permissions and limits
+
+### 4.1 Who may use the management service
+
+- **Not provided by default**: without `admin` in the config the host does not provide it, and a row that `inject`s it gets 0.18's "no provider".
+- **Given to one row**: `admin.for` names a row id. The service identifies the calling row with the existing `caller_row()` (`crates/rutis-bridge/src/session/services.rs`); any other row is refused with `not-allowed`, the text saying whom it is given to. Calls from no row (the host's own Rust code) work as usual.
+- **Why not #683's `services`**: it lists what one runtime may use, and is unlimited when not written; making "no other row can use `plugins`" would need a list on every runtime, so it cannot be the default. Recognizing the calling row is one check, with the existing `caller_row()`, and no new permission system.
+
+### 4.2 Which rows the agent may manage
+
+| `admin.manage` | Rows it may `reload` / `remove` | For |
+| --- | --- | --- |
+| `"own"` (default) | The rows it added with `add`: all in the `agent-plugins` group (created by `Admin`, with no settings, only to mark these rows) | A mistake by the agent cannot touch the hand-written plugins the host owner relies on |
+| `"all"` | Every plugin row (except its own) | When the agent maintains the whole host, and the host owner widens it explicitly |
+
+`status` and `call` are not affected by `manage`: the agent works for the host and sees all of it.
+
+### 4.3 Which services `call` reaches
+
+By default services provided by plugin rows (provider is a row name in `Loader::status()`), which is what the host installs plugins for. The host's own services and peers' services must be listed in `admin.allow`; others are refused with `not-allowed`. `call` calls as "host", and the callee's limits (#683) apply as usual.
+
+### 4.4 Runtimes of plugins the agent adds
+
+Since #683 sets limits on named runtimes, `add` gives each plugin a named local runtime of its own, `agent-<plugin>`:
+
+| `limits` | Value | Why |
+| --- | --- | --- |
+| (one runtime per plugin) | yes | A plugin that loops or crashes takes no one with it; `remove` takes the runtime too and its process exits. Cost: one process per plugin |
+| `call` | 30 s | Calls come in not only from the agent; a timeout fails with `timeout` and the host is not held up |
+| `stop` | `"process"` | A plugin stuck in synchronous code cannot be cancelled, only ended, and the process is its own. The next `reload` starts the runtime again |
+| `services` | Equal to `admin.allow`, empty by default | The plugin's code later runs with nobody watching; by default it gets no service from outside its runtime. One row per runtime, so plugins cannot use each other's either |
+| `greeting` | not set | The agent does not start plugins under a debugger |
+
+The host can change these with `admin.limits` (`services` still follows `allow`).
+
+## 5. Internal checks: before a change takes effect
+
+### 5.1 `add(path)`
+
+| Step | Who, with what | On failure |
+| --- | --- | --- |
+| 1 Install | `Installer::add` (#691): language from the project file, environment prepared; local directories as a link or with `-e`, so later edits need no reinstall. Yields the language and row name (`py:weather`) | Returns #691's error (`./agent-plugins/weather has no package.json, pyproject.toml or go.mod`); nothing changed |
+| 2 Runtime | Adds `agent-weather` in #683's order: `root.plugin(LocalRuntime + RuntimeRowsPlugin)`, `RuntimeSet::add` | Undoes step 1; returns why |
+| 3 Static check | `Loader::check` (the one `rutis-host check` uses) with the new row `agent-weather:weather` added to the current config: imports and describes it in the new runtime (syntax and import errors), dry run (config schema), every dependency has a provider, no dependency cycle, no duplicate provider, no required service blocked by `services` | Undoes steps 2 and 1; returns this row's problems from the report (as `check` prints them) |
+| 4 Load | `Loader::create` writes the row under `agent-plugins` and waits until it runs or fails (`apply` error, start-up timeout) | Deletes the row, undoes steps 2 and 1; returns the 0.18 error |
+| 5 Save | §7 | — |
+
+A new plugin has no old version, so a failure undoes everything and leaves no failed row behind.
+
+### 5.2 `reload(row)`
+
+| Step | Who, with what | On failure |
+| --- | --- | --- |
+| 1 Runtime | If `stop: "process"` ended its process, start `agent-<name>` again first (as `dev` starts a local runtime whose process ended at the next change) | Returns why the runtime does not start; the old version was not running anyway |
+| 2 Static check | `Loader::check`: imports and describes the row's new code again, the checks of §5.1 step 3 | Returns the problems; the old version keeps serving, nothing was swapped |
+| 3 Swap | `Loader::reload`: all or nothing. When the new module does not resolve, its dry run fails, or other rows newly fail, the old module is restored | Returns the `cannot reload` sentence and the 0.18 error; the old version keeps serving |
+
+- Step 2 looks like a repeat of `Loader::reload`'s own resolve and dry run, but it checks two things `reload` does not: whether services the new code newly uses have a provider, and whether it makes a cycle. Without it the new version would be swapped in and wait forever for a missing service, with the old version gone.
+- Known boundary: when the new code fails in `apply`, `Loader::reload` has already unloaded the old version and loads it again; the service is briefly unavailable in between. Syntax and import errors are stopped at step 2 and never get here.
+- Only that row reloads; its runtime process is not restarted, as in `dev`.
+
+### 5.3 `remove(row)`
+
+In #683's order: `Loader::remove` deletes the row → the `LocalRuntime` and `RuntimeRowsPlugin` are unloaded (the process exits, `runtime agent-weather: stopped` is printed, other runtimes' pids are unchanged) → `RuntimeSet::remove` → `Installer::remove` → save. The agent's source directory is not deleted; those are the agent's own files.
+
+### 5.4 Steps removed
+
+- **A separate trial runtime** (import and `apply` the new code in another runtime first, then swap): not done. `apply` opens ports, files and outside connections, and two copies applying at once conflict; import errors are already stopped at step 2 in the plugin's own runtime; it would only catch "`apply` fails", at the cost of another process and a real `apply` every time.
+- **The host running the plugin's own tests** (including #684's contract check): the agent is a plugin process and can run its language's test command itself (`pytest`); #684's contract describes the host's Rust services, which S1's plugin does not use. Nobody needs the host to run them.
+
+## 6. The state and errors the agent reads
+
+- 0.18 §2 gives `site` and code locations to the person reading output and to the host, and does not hand them to callers' code by itself. The management service is the host's reading interface, given to one row by the host owner in the config, a decision of his like opening #670's socket; errors plugin code gets from ordinary calls still carry no `site`, unchanged.
+- `error` is the root of 0.18's error graph (`name`, `message`, `code`, `data`, `site`, `stack`), taken with `rutis_bridge::thrown()`; `text` is what 0.18 prints, with locations on both sides. Agent code decides by `code` and `site`; a model reads `text`.
+
+## 7. Written to the config
+
+| Host | Where | After a restart |
+| --- | --- | --- |
+| rutis-host | `rutis.json`: the row in the `agent-plugins` group, `agent-<name>` in `runtimes.local` (with `limits`), #691's `installed` record. These are exactly the entries rutis-host gets when it reads its config again, so its next reread (`--watch-config`, SIGUSR1) sees no change | Starts from the config, like hand-written rows |
+| Embedding host | `Admin` hands `{row, runtime entry, install record}` to a save callback the host gives it; the host stores it where it likes (as #691's "records belong to the host") | The host hands the records back to `Admin`, which adds the runtimes back in §5.1 step 2's order |
+
+The host owner opens `rutis.json` and sees what the agent added, and can delete it himself.
+
+## 8. What developers see
+
+The host owner's config:
+
+```json
+{
+  "runtimes": { "py": { "project": "." } },
+  "admin": { "for": "agent", "allow": [] },
+  "rows": [
+    { "id": "agent", "name": "py:my_agent", "inject": ["plugins"] },
+    { "id": "notes", "name": "py:notes" }
+  ]
+}
+```
+
+`admin`'s fields: `for` (required), `service` (default `plugins`), `manage` (`"own"` / `"all"`), `allow` (default empty), `limits` (default §4.4). Rust embedding: `Admin::new(&root, loader, installer, runtime_set).serve_to("agent").allow([..]).persist(hook)`, then `root.plugin(admin.service("plugins"))`.
+
+What the agent gets (the `text` part; `ok` and `error` come with it):
 
 | Call | Result |
 | --- | --- |
-| `rutis_services` | `[{"name":"weather","provider":"weather","methods":{"today":"async"}}]`; `[]` when there are none |
-| `rutis_call {service:"weather", method:"today", arguments:["Oslo"]}` | `"sunny (v1)"` |
-| `rutis_plugin {action:"add", path:"weather"}` | `weather: running; provides weather` |
-| Same, the directory is not a plugin project | `error: ./weather has no package.json, pyproject.toml or go.mod` (#691's text) |
-| Same, `weather` requires `llm`, which is not in `allow` | `weather: uses llm, which the host does not let runtime agent-weather use (allowed: )` (#683's text) |
-| Same, `apply` fails | `weather: failed in apply: KeyError: 'units'` + `src/weather/__init__.py:12 in apply` |
-| `rutis_plugin {action:"reload", name:"weather"}` (syntax error) | `weather: cannot reload: SyntaxError: invalid syntax (src/weather/__init__.py, line 3); the previous version keeps running` |
-| Same, fixed | `weather: reloaded` |
-| Same, a row outside the agent group | `error: calendar was not added by the agent; only rows under agent-plugins can be reloaded or removed` |
-| `rutis_plugin {action:"remove", name:"weather"}` | `weather: removed` |
-| `rutis_plugin {action:"status"}` | The 0.18 snapshot's text, agent group only: `weather  running`, `  provides weather`, `runtime agent-weather  running  pid 4123` |
-| `rutis_call`, the method throws | `error: call to weather.today failed: KeyError: 'region'` + `weather at src/weather/__init__.py:9 in today` |
-| `rutis_call`, misspelled method | `error: weather has no method tody (methods: today)` |
-| `rutis_call`, no answer in 30 s | `error: call to weather.today did not finish within 30s (the host's limit for runtime agent-weather); the call was cancelled; runtime agent-weather was ended` (#683's text, code `timeout`) |
-| `weather`'s code uses an optional service not in `allow` | The plugin code gets `not-allowed`: `llm is not available to weather: the host does not let runtime agent-weather use it`; if it does not handle it, `rutis_call`'s result is that sentence after `error: call to weather.today failed: ` |
-| `rutis_call`, the service does not exist or was removed | `error: no service named weather is provided` |
-| `rutis_call`, a host service not in `allow` | `error: llm is not open to the agent` |
+| `add("agent-plugins/weather")` | `ok: true`, `weather: running; provides weather` |
+| Same, a syntax error (step 3) | `ok: false`, `weather: SyntaxError: invalid syntax (src/weather/__init__.py, line 3)`; `status()` has no `weather` |
+| Same, `apply` fails (step 4) | `ok: false`, `weather: failed in apply: KeyError: 'units'` + `src/weather/__init__.py:12 in apply` |
+| Same, required `llm` not in `allow` | `ok: false`, `weather: uses llm, which the host does not let runtime agent-weather use (allowed: )` (#683's text) |
+| Same, a dependency nobody provides | `ok: false`, `weather: waits for geo, which no row provides` |
+| `call("weather", "today", ["Oslo"])` | `ok: true`, `value: "sunny (v1)"` |
+| Same, the method throws | `ok: false`, `call to weather.today failed: KeyError: 'region'` + `weather at src/weather/__init__.py:9 in today` |
+| Same, no answer in 30 s | `ok: false`, `call to weather.today did not finish within 30s (the host's limit for runtime agent-weather); the call was cancelled; runtime agent-weather was ended` (`timeout`) |
+| Same, a host service not in `allow` | `ok: false`, `llm is not open to the agent` (`not-allowed`) |
+| `reload("weather")`, syntax error | `ok: false`, `weather: cannot reload: SyntaxError: invalid syntax (src/weather/__init__.py, line 3); the previous version keeps running` |
+| Same, fixed | `ok: true`, `weather: reloaded` |
+| `remove("weather")` | `ok: true`, `weather: removed; runtime agent-weather: stopped` |
+| `remove("notes")` (`manage: "own"`) | throws `not-allowed`: `notes was not added by agent; the host lets agent manage only the rows it added` |
+| `reload("wether")` | `ok: false`, `no row wether (rows agent added: weather)` |
+| Another row calls `plugins.status()` | throws `not-allowed`: `plugins is given to agent only` |
 
-All text follows 0.18 §4.5's banned words (tool names are names the host gives the model, not error text).
+What the host owner sees in the terminal: rutis-host prints row changes as usual (`weather: running`, `runtime agent-weather: stopped`), the same text the agent gets. No text contains 0.18 §4.5's banned words.
 
-### 7.3 The plugin author (the agent or a person)
+An agent-written plugin is an ordinary Python plugin, with nothing agent- or rutis-specific in it.
 
-An agent-written plugin is an ordinary Python plugin: a `pyproject.toml` and a plugin defined with the SDK that `provide`s a `weather` service. Nothing agent- or rutis-specific; the same plugin written by a person and placed outside the agent group behaves the same.
-
-## 8. Scenario S1 (updated for this design)
+## 9. Scenario S1 (updated for this design)
 
 Replaces the scenario and assertions in #185's body (the issue itself is not edited).
 
-Roles: a new E2E fixture host `tests/e2e/fixture-agent` (Rust, embedding rutis-loader, rutis-bridge and rutis-agent), with `ScriptedLlm` as the model and a JSON script the scenario writes; its tools are only `replace_text` (works on all three platforms, no `bash`) and the three `rutis_*` tools. Each user message the scenario sends starts a turn; the fixture writes every tool call and result as a JSON line. The config has an empty `agent-plugins` group; Python is on the machine (#691 creates the environment when needed).
+A scripted Python plugin stands in for the agent: it provides the service `agent` whose method `step(n)` does step n of a fixed script and returns what it got. This is simpler than wiring a model and takes the same path (a plugin row `inject`ing the management service); the agent's reasoning is not what this scenario tests. The test starts `rutis-host run --allow-call` (#670) and drives each step with `rutis-host call agent.step <n>`. The config is §8's, plus the hand-written `notes` row and an `intruder` row (which also `inject`s `plugins`).
 
-| Step | What the agent does | Assertions |
+| Step | What `agent.step(n)` does | Assertions |
 | --- | --- | --- |
-| 1 | Turn 1: `rutis_services` gives `[]`; `replace_text create` writes `weather/pyproject.toml` and `weather/src/weather/__init__.py` (`today(city)` returns `"sunny (v1)"`) | The files exist; `rutis_services` returned `[]` |
-| 2 | Same turn: `rutis_plugin add {path:"weather"}` | Result `weather: running; provides weather`; `status` shows the runtime `agent-weather` with the single row `weather`; its pid is recorded |
-| 3 | Turn 2: `rutis_services`, then `rutis_call weather.today ["Oslo"]` | The list holds only `weather` (`today: async`); result `"sunny (v1)"` |
-| 4 | Turn 3: `replace_text str_replace` writes a syntax error, `rutis_plugin reload weather`, then `rutis_call` | The `reload` result starts with `weather: cannot reload: SyntaxError`, contains `src/weather/__init__.py` and ends with `the previous version keeps running`; `rutis_call` still gives `"sunny (v1)"` |
-| 5 | Turn 4: fixed and changed to return `"rainy (v2)"`, `reload`, then `rutis_call` | `reload` result `weather: reloaded`; `rutis_call` result `"rainy (v2)"` |
-| 6 | Turn 5: `rutis_plugin remove weather`, `rutis_services`, `rutis_call` | `remove` result `weather: removed`; the list is `[]`; `rutis_call` result `error: no service named weather is provided`; `runtime agent-weather: stopped` is printed; `status` has no runtime `agent-weather` and other runtimes' pids are unchanged; the process recorded in step 2 exits within 5 s; the records file has no `weather` |
+| 1 | Writes `agent-plugins/weather/pyproject.toml` and `src/weather/__init__.py` with Python (`today` returns `"sunny (v1)"`); `status()` | The files exist; no `weather` among the services |
+| 2 | `add("agent-plugins/weather")` | `ok`; `rutis.json` gained the row in the `agent-plugins` group, `agent-weather` in `runtimes.local`, and an `installed` record; in `status`, `agent-weather` has the single row `weather`; its pid is recorded |
+| 3 | `call("weather", "today", ["Oslo"])` | `"sunny (v1)"` |
+| 4 | Writes a syntax error, `reload("weather")`, then `call` | `reload`'s `ok` is false, `text` starts with `weather: cannot reload: SyntaxError` and contains `src/weather/__init__.py`; `call` still gives `"sunny (v1)"` |
+| 5 | Changes it to return `"rainy (v2)"`, `reload`, then `call` | `ok`; `"rainy (v2)"` |
+| 6 | `remove("weather")`, `status()` | `ok`; no `weather` and no `agent-weather`; the recorded process exits within 5 s; other runtimes' pids unchanged; `rutis.json` is as it was at step 1 |
+| 7 | `remove("notes")` | Throws `not-allowed`; `notes` keeps running |
 
-Further assertions:
+Also:
 
-- The tool definitions given to the model are the same every turn (the same four tools); `rutis_services` gives, turn by turn, `[]`, `[weather]`, `[weather]`, `[weather]`, `[]`.
-- No interruption: from step 4 until step 5's `reload` returns, the fixture calls `weather.today` every 100 ms in the background, and no call fails; every call after step 5's `reload` returns gives `"rainy (v2)"`, with no alternation between old and new.
-- Tool results contain none of 0.18 §4.5's banned words.
-- After the fixture stops, `tests/e2e`'s residue checks pass (processes, sockets, temporary directories).
-
-## 9. Compatibility and migration
-
-Everything is new and not installed by default: a host without `RutisTools` behaves as before; the agent group and the `agent-*` runtimes exist only when the host installs it. The `cannot reload` sentence moves to another crate with its text unchanged. No incompatible change; nothing goes into "Migrating to 0.19".
+- `rutis-host call intruder.try_status` (which calls `plugins.status()`) gets `not-allowed`.
+- No interruption: from step 4 until step 5's `reload` returns, the test calls `rutis-host call weather.today '"Oslo"'` every 100 ms and no call fails; after step 5 every call gives `"rainy (v2)"`.
+- No result contains 0.18 §4.5's banned words.
+- After the host stops, `tests/e2e`'s residue checks pass.
+- Location: `tests/e2e/tests/host_writes_plugin.rs`, with the scripted agent plugin in the scenario directory. The E2E framework #175 is done (closed). Linux and macOS (`call` is not on Windows), in nightly.
 
 ## 10. Implementation
 
-After 0.19. Four steps, by dependency:
+After 0.19:
 
 | Step | Content | Can start when | Done when |
 | --- | --- | --- | --- |
-| 1 | `rutis_services`, `rutis_call`: the `RutisTools` skeleton, the `allow` filter, error text | 0.18's #677 (error structure, `thrown()`, printing) and #678 (`Loader::status()`) are released | Tests in rutis-agent: the list follows services appearing and disappearing; unknown service, unknown method, wrong argument and not in `allow` each have a test asserting the text exactly |
-| 2 | `rutis_plugin`'s four actions (without `limits` yet), the records file and re-adding runtimes at start-up; the `cannot reload` sentence moved into rutis-loader | #691's `Installer` is done; #683's step 1 (`Limits`, named runtimes, `RuntimeSet`) is done | Tests: `add` succeeding and three failures; the old version keeps serving after a failed `reload`; rows outside the agent group are refused; after `remove` the row, runtime, installation and record are all gone; after a host restart agent plugins run as before |
-| 3 | Each agent plugin's runtime gets §5's `Limits` | #683 is done | Tests: two agent plugins run in two processes and cannot use each other's services; a call to one over 30 s fails with `timeout`, its process is ended, the other carries on, and `reload` starts it again; using a service outside `allow` fails with `not-allowed` |
-| 4 | `tests/e2e/fixture-agent` and `tests/e2e/tests/host_writes_plugin.rs` (§8's S1); a "let the agent write plugins" section in rutis-agent's README | 1–3 are done; the E2E framework #175 is done (closed; `tests/e2e`'s residue checks and fixture host can be used as they are) | Passes on Linux, macOS and Windows; runs in nightly as #175 assigns (PR CI runs only S2, S3, S4, S9) |
+| 1 | `Admin`'s `status` and `call`, providing it by name, the `admin.for` check, `allow` | 0.18's #677, #678; #670 | Unit tests: the snapshot and methods; `call` succeeding and four failures; other rows refused |
+| 2 | `add`, `reload`, `remove` with §5's order; the save callback | #691's `Installer`; #683's `RuntimeSet` and `Limits` | Every row of §8 has a test asserting the text exactly; after each failing step nothing is left behind (no extra runtime, installation or row); both `manage` values |
+| 3 | rutis-host reads `admin`, writes `rutis.json`, and works after a restart | Step 2; #683's `runtimes.local` | A reread after writing is no change; after a restart the agent's plugins run as before |
+| 4 | S1 (§9); a section "letting an agent in the host manage plugins" in rutis-host.md and rust-host.md (both languages) | 1–3 | Passes on Linux and macOS |
 
-This covers #185's "Done": the two design documents (this one), and S1 updated per §8.
+This covers #185's "Done": the two design documents (this one), and S1 updated per §9.
 
-Needed from #683 (per its design in PR #733: limits are set on named runtimes):
+Needed from #683:
 
-1. rutis-loader's `RuntimeSet`: put in the `Chain` once when the loader is built, then `add(rows)` / `remove(name)` add and remove the resolvers of named local runtimes (`LocalRuntime::named(..)`, Node, Python, Bun) while running, sending `<runtime>:<plugin>` rows to their runtime, without restarting other runtimes;
-2. A documented order: to add, first `root.plugin(LocalRuntime + RuntimeRowsPlugin)`, then `RuntimeSet::add`, then insert rows; to remove, first delete the rows, then unload those two fibers (the process ends, `runtime <name>: stopped` is printed, other runtimes' pids are unchanged), then `RuntimeSet::remove`;
-3. `Limits` settable on such a runtime (`LocalRuntime::limits`): `call`, `stop`, `services`;
-4. After `stop: "process"` ends the process, a Rust embedding can start that runtime again (for `reload`);
-5. `timeout` and `not-allowed` errors carry `site` per 0.18's error structure and are readable by the host with `rutis_bridge::thrown()`;
-6. Services that rows of the same runtime provide each other are not limited by `services` (each runtime here has one row, so this is unused, only not in conflict);
-7. The greeting limit keeps its current default (nothing new).
+1. rutis-loader's `RuntimeSet`: adding and removing named local runtimes while running without restarting others, with the order documented (already in PR #733);
+2. `LocalRuntime::limits` with `call`, `stop`, `services`; the `timeout` and `not-allowed` codes carrying 0.18's `site`;
+3. After `stop: "process"` ends a process, a Rust embedding can start that runtime again;
+4. `Loader::check` reports "a required service is blocked by `services`" (PR #733 §4.4 already has `check` do the same check);
+5. rutis-host builds its loader with a `RuntimeSet`, and a `runtimes.local` entry written into `rutis.json` while running is treated by the next reread as an existing runtime, not restarted.
 
-Needed from #691 (per its design in PR #734):
+Needed from #691: `Installer::add` takes a local directory and returns the language and row name; local directories are installed as a link or with `-e`; records are serializable, and rutis-host's `installed` field has the same shape as `Installer`'s record; `Installer::remove` removes by record; the API reads and writes no config.
 
-1. `Installer::add` takes a local directory, detects the language from the project file and prepares the environment, with no language prefix from the caller;
-2. The install result has the language and the row name the loader knows (`py:weather`); `RutisTools` takes the plugin name from it and replaces the prefix with its own runtime's name;
-3. Local directories are installed as a link or with `-e`, so edits need no reinstall;
-4. Install records are serializable and kept by the host; `Installer::remove` removes an installation by its record;
-5. The API reads and writes no config (which group a row goes under and which config it is written to is up to `RutisTools`);
-6. Failures return errors that can be printed as they are (following 0.18's text rules).
+Needed from #670: `run --allow-call` and the `call` request (S1 drives with them); `call`'s results and error text written by 0.18's printing code, which the management service's `call()` shares. Nothing new is asked of it.
 
-## 11. Self-review: what was removed
+## 11. Self-review: is it too heavy?
 
-- #505's `Loader::services()`: 0.18's `Loader::status()` already has services and providers; removed.
-- #505's `callable` field and "listed but not callable": Rust services are exposed by name since 0.17; removed.
-- #505's `ToolRegistry::register_scoped` / `unregister`: the tool set is fixed and given once at assembly; removed.
-- #505's resource-limit track (references, in-flight calls): belongs to #683 or later, not here.
-- Limit settings on the agent group: #683 sets limits on runtimes; the group only marks the rows the agent installed.
-- File watching: an explicit `reload` from the agent is deterministic; no watcher is added to embedding hosts.
-- Agent-written plugins using each other's services by default, and installing from registries: no concrete user; the host can open the former with `allow`.
-- Connecting rutis-dsh: S1 needs three platforms and dsh is Unix-only; waits for a user.
+| Item | User | Conclusion |
+| --- | --- | --- |
+| The service's 5 methods | S1's 7 steps | Kept |
+| Enable / disable a row | Not in S1; `remove` already stops it running | Removed |
+| `upgrade` | For local directories, `reload` after an edit is enough | Removed |
+| A separate `check` method | Checks run inside `add` and `reload`; the agent has no "check without installing" step | Removed |
+| `add` / `reload` / `remove` over the socket | The command line edits the config file, not a running host | Removed |
+| Trial runtime, host-run tests | See §5.4 | Removed |
+| `Loader::check` before `reload` | Stops a new version waiting for a missing service or making a cycle | Kept |
+| `manage: "all"` | An agent maintaining the whole host | Kept, off by default |
+| One runtime per plugin | Isolation, process exits on `remove` | Kept |
+| Tools for rutis-agent | A thin adapter over this service | Removed, out of scope |
+| A model driving S1 | The test is of the management service, not of reasoning | Removed, scripted plugin instead |
