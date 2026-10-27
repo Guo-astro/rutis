@@ -920,6 +920,15 @@ impl JsRow {
             // Already unloading or restarted: nothing left to end.
             let _ = ending.dispose_self();
         });
+        // So does an error its code leaves unhandled, which the runtime
+        // traced to it (#688): the runtime and its other rows go on.
+        // Registered before the load, as an error may come right after it
+        // (the load itself fails for one while it loads).
+        let tasks = tokio::runtime::Handle::current();
+        let (refused, restarting) = (self.refused.clone(), ctx.clone());
+        process.on_row_failed(&key, move |why| {
+            fail_running(&restarting, &refused, &tasks, why)
+        });
         // Its listeners' descriptions and failure reports name it by its id.
         process.name_row(&key, &id);
         let loaded = match &self.entry {
@@ -985,14 +994,8 @@ impl JsRow {
         // One it provides afterwards fails it the same way: the fiber
         // restarts, and that load fails with why.
         let tasks = tokio::runtime::Handle::current();
-        let (refused, restarting, spawner) = (self.refused.clone(), ctx.clone(), tasks.clone());
-        projection.on_refused(move |why| fail_running(&restarting, &refused, &spawner, why));
-        // So does an error its code left unhandled, which the runtime
-        // traced to it (#688): the runtime and its other rows go on.
         let (refused, restarting) = (self.refused.clone(), ctx.clone());
-        process.on_row_failed(&key, move |why| {
-            fail_running(&restarting, &refused, &tasks, why)
-        });
+        projection.on_refused(move |why| fail_running(&restarting, &refused, &tasks, why));
         Ok((key, projection))
     }
 }

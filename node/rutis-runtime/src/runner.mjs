@@ -8,7 +8,7 @@ import { toJsonSchema } from './schema.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
 import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
-import { rowTracking, install as handleUnhandled, failureText, realFile, reportText } from './unhandled.mjs'
+import { rowTracking, install as handleUnhandled, failureText, realFile, reportText, stackFiles } from './unhandled.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -548,9 +548,16 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   const row = { key, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
   // Its plugin's file, by which a call of process.exit names it (#688).
   row.file = typeof entry === 'string' ? realFile(located(entry)) : undefined
-  // An error the row leaves unhandled while it loads fails the load (#688).
+  // An error the row leaves unhandled while it loads fails the load (#688):
+  // also one that comes once the load is done but not yet answered.
+  let settled = false
   const failing = new Promise((_, reject) => {
-    row.failLoad = why => reject(Object.assign(new Error(why), { stack: `Error: ${why}` }))
+    row.failLoad = why => {
+      const error = Object.assign(new Error(why), { stack: `Error: ${why}` })
+      if (settled) row.lateFailure ??= error
+      else reject(error)
+      return true
+    }
   })
   bus.nameRow(key, place?.id)
   let fiber
@@ -591,8 +598,11 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   })()
   // Failed meanwhile: what is left of the load settles unobserved.
   loading.catch(() => {})
+  // Before the race hears it: a failure from then on is a late one.
+  loading.then(() => { settled = true }, () => { settled = true })
   try {
     await Promise.race([loading, failing])
+    if (row.lateFailure) throw row.lateFailure
   } catch (error) {
     row.failLoad = undefined
     await unloadRow(key)
@@ -937,7 +947,8 @@ function watch(ended, after) {
 // to fails (rutis-host restarts it, and the restart fails with why); one
 // traced to no row is reported here. The process goes on either way.
 const runtimeName = () => bus.runtime ?? 'node'
-function charge(kind, error, key) {
+function charge(kind, error, traced) {
+  const key = chargedRow(traced, error)
   const row = key === undefined ? undefined : rows.get(key)
   if (!row || closing || !peer) {
     process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${reportText(error)}\n`)
@@ -957,6 +968,21 @@ function charge(kind, error, key) {
     process.stderr.write(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
   })
 }
+// The row an error traced to row `key` is charged to: that row, unless the
+// innermost plugin file on the error's stack is another row's (code of a
+// row this one called directly, in this process), which is then charged;
+// one of several rows sharing that file, none of them `key`: none.
+function chargedRow(key, error) {
+  if (key === undefined) return undefined
+  for (const file of stackFiles(error?.stack)) {
+    const owners = [...rows].filter(([, row]) => row.file === file)
+    if (!owners.length) continue
+    if (owners.some(([owner]) => owner === key)) return key
+    return owners.length === 1 ? owners[0][0] : undefined
+  }
+  return key
+}
+
 // The id of the row calling process.exit: the row running, else the one
 // row whose plugin file is on the stack; undefined when it cannot tell.
 function exitingRow(key, files) {
@@ -964,14 +990,6 @@ function exitingRow(key, files) {
   const found = [...rows].filter(([, row]) => row.file !== undefined && files.has(row.file))
   return found.length === 1 ? bus.rowId(found[0][0]) : undefined
 }
-handleUnhandled(tracking, {
-  charge,
-  // Written before the process exits, as Node exits at once.
-  exiting: (key, files, code) => {
-    const row = exitingRow(key, files)
-    if (row !== undefined) writeSync(2, `runtime ${runtimeName()}: row ${row} called process.exit(${code})\n`)
-  },
-})
 
 // Calls on exported objects and functions may replace services too.
 try {
@@ -1002,6 +1020,16 @@ try {
   if (dialed) process.exit(1)
   throw error
 }
+// Installed once connected: a failure before that is the runtime's own,
+// and ends it.
+handleUnhandled(tracking, {
+  charge,
+  // Written before the process exits, as Node exits at once.
+  exiting: (key, files, code) => {
+    const row = exitingRow(key, files)
+    if (row !== undefined) writeSync(2, `runtime ${runtimeName()}: row ${row} called process.exit(${code})\n`)
+  },
+})
 bus.peer = {
   call: (target, method, args) => peer.call(target, method, args),
   callAsync: (target, method, args) => peer.callAsync(target, method, args),
@@ -1040,7 +1068,10 @@ const late = setTimeout(() => {
   console.error(`rutis runtime: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting`)
   process.exit(1)
 }, deadline)
-await dispose()
+await dispose().catch(error => {
+  console.error(`rutis runtime: unloading failed: ${error?.stack ?? error}`)
+  process.exitCode = 1
+})
 // What is still being written goes out first.
 await Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve))))
 clearTimeout(late)

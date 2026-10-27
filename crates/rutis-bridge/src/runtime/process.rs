@@ -554,10 +554,17 @@ impl Dispatch for Imports {
             // The host fails the row; the runtime keeps running the others.
             let (key, why): (String, String) = crate::runtime::decode(args.json()?)?;
             let failed = self.failed.lock().unwrap().remove(&key);
-            if let Some(failed) = failed {
-                failed(why);
-            }
-            return Ok(RpcValue::Undefined);
+            return match failed {
+                Some(failed) => {
+                    failed(why);
+                    Ok(RpcValue::Undefined)
+                }
+                // Nothing fails rows here (an embedder without the
+                // loader), or the row is gone: the runtime writes why.
+                None => Err(Error::Value(format!(
+                    "rows.failed: nothing fails row {key} here"
+                ))),
+            };
         }
         if !(target.is_empty() && method == "service") {
             return Err(Error::Value(
@@ -1378,8 +1385,10 @@ impl Process {
     /// (`rows.failed`, #688). The runtime keeps running and keeps the row
     /// loaded: what to do with it is the host's (the loader restarts it,
     /// and the restart fails with why). Registered and dropped as
-    /// [`Process::on_row_ended`] is. A runtime fails a row this way only
-    /// once it loaded: an error while it loads fails the load instead.
+    /// [`Process::on_row_ended`] is: before the load, as the error may come
+    /// right after it. A runtime fails a row this way only once it loaded:
+    /// an error while it loads fails the load instead. With nothing
+    /// registered the call fails, and the runtime writes why itself.
     pub fn on_row_failed(&self, key: &str, failed: impl FnOnce(String) + Send + 'static) {
         self.imports
             .failed

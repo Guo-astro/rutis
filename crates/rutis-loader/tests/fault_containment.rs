@@ -722,10 +722,36 @@ async def apply(ctx, config):
     await asyncio.sleep(10)
 "#;
 
+/// Leaves an error unhandled at once after its apply: the moment the
+/// runtime answers the load, or right after.
+const PROMPT_JS: &str = r#"{
+  inject: ['probe'],
+  apply(ctx) {
+    ctx.use('probe').record('prompt: started')
+    setTimeout(() => { Promise.reject(new Error('boom right after load')) }, 0)
+  },
+}"#;
+
+const PROMPT_PY: &str = r#"
+import asyncio
+
+inject = ["probe"]
+
+
+async def boom():
+    raise ValueError("boom right after load")
+
+
+def apply(ctx, config):
+    ctx.use("probe").record("prompt: started")
+    loop = asyncio.get_running_loop()
+    loop.call_soon(lambda: loop.create_task(boom()))
+"#;
+
 /// Where the runtime traces rows (Node under `dev`, Python): an error a
 /// row's code leaves unhandled fails that row, saying what and where, also
-/// while it loads; the other rows of the runtime run on, and so does its
-/// process (#688).
+/// while it loads and right after; the other rows of the runtime run on,
+/// and so does its process (#688).
 /// guarantee: loader/unhandled-errors
 async fn an_unhandled_error_fails_only_its_row(language: Language) {
     let dir = tempfile::tempdir().unwrap();
@@ -733,6 +759,7 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
         ("witness", WITNESS_JS, WITNESS_PY),
         ("faulty", FAULTY_JS, FAULTY_PY),
         ("early", EARLY_JS, EARLY_PY),
+        ("prompt", PROMPT_JS, PROMPT_PY),
     ] {
         language.write(dir.path(), stem, js, py);
     }
@@ -741,11 +768,12 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
     let row = |id: &str| json!({ "id": id, "name": language.row_name(dir.path(), id) });
     let reconcile = tokio::spawn({
         let loader = loader.clone();
-        let rows = vec![row("witness"), row("faulty"), row("early")];
+        let rows = vec![row("witness"), row("faulty"), row("early"), row("prompt")];
         async move { loader.reconcile(layer(rows), None).await }
     });
     let early = failure(loader, "early").await;
     let faulty = failure(loader, "faulty").await;
+    let prompt = failure(loader, "prompt").await;
     reconcile.await.unwrap().unwrap();
     let (exception, file) = match language {
         #[cfg(feature = "python")]
@@ -754,7 +782,11 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
         _ => ("Error", ".mjs:"),
     };
     // What failed and where: the plugin's own file.
-    for (error, what) in [(&early, "boom while loading"), (&faulty, "boom after load")] {
+    for (error, what) in [
+        (&early, "boom while loading"),
+        (&faulty, "boom after load"),
+        (&prompt, "boom right after load"),
+    ] {
         assert!(
             error.contains(&format!("{exception}: {what}")),
             "{language:?}: {error}"
@@ -802,6 +834,100 @@ async fn node_dev_an_unhandled_error_fails_only_its_row() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_an_unhandled_error_fails_only_its_row() {
     an_unhandled_error_fails_only_its_row(Language::Python).await;
+}
+
+/// Provides `lend`, whose `lend` leaves an error unhandled in its own code.
+const LENDER_JS: &str = r#"{
+  provides: { lend: { lend: 'async' } },
+  apply(ctx) {
+    ctx.provide('lend', { lend() { setTimeout(() => { Promise.reject(new Error('boom in lender')) }, 10); return 'lent' } })
+  },
+}"#;
+
+const LENDER_PY: &str = r#"
+import asyncio
+
+
+class Lend:
+    def lend(self):
+        async def boom():
+            raise ValueError("boom in lender")
+
+        asyncio.get_running_loop().create_task(boom())
+        return "lent"
+
+
+provides = {"lend": Lend}
+
+
+def apply(ctx, config):
+    ctx.provide("lend", Lend())
+"#;
+
+/// Calls the lender's `lend` directly (same runtime: the object itself),
+/// once it runs.
+const BORROWER_JS: &str = r#"{
+  inject: ['lend', 'probe'],
+  apply(ctx) {
+    ctx.use('probe').record('borrower: started')
+    setTimeout(() => { ctx.use('lend').lend() }, 300)
+  },
+}"#;
+
+const BORROWER_PY: &str = r#"
+import asyncio
+
+inject = ["lend", "probe"]
+
+
+def apply(ctx, config):
+    ctx.use("probe").record("borrower: started")
+    asyncio.get_running_loop().call_later(0.3, lambda: ctx.use("lend").lend())
+"#;
+
+/// An error left unhandled in one row's code that another row of the same
+/// runtime called directly is charged to the row whose code it is, not to
+/// the caller (#688).
+/// guarantee: loader/unhandled-errors
+async fn an_error_in_a_called_rows_code_is_charged_to_that_row(language: Language) {
+    let dir = tempfile::tempdir().unwrap();
+    for (stem, js, py) in [
+        ("lender", LENDER_JS, LENDER_PY),
+        ("borrower", BORROWER_JS, BORROWER_PY),
+    ] {
+        language.write(dir.path(), stem, js, py);
+    }
+    let fixture = fixture(language, dir.path()).await;
+    let (loader, probe) = (&fixture.loader, &fixture.probe);
+    let row = |id: &str| json!({ "id": id, "name": language.row_name(dir.path(), id) });
+    let reconcile = tokio::spawn({
+        let loader = loader.clone();
+        let rows = vec![row("lender"), row("borrower")];
+        async move { loader.reconcile(layer(rows), None).await }
+    });
+    probe.wait_for("borrower: started").await;
+    let lender = failure(loader, "lender").await;
+    reconcile.await.unwrap().unwrap();
+    assert!(lender.contains("boom in lender"), "{language:?}: {lender}");
+    // The borrower waits for the service it uses; it did not fail.
+    COLD.until(
+        || row_state(loader, "borrower") == Some(FiberState::Pending),
+        "the borrower to wait for lend",
+    )
+    .await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "node")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_that_row() {
+    an_error_in_a_called_rows_code_is_charged_to_that_row(Language::NodeDev).await;
+}
+
+#[cfg(feature = "python")]
+#[tokio::test(flavor = "multi_thread")]
+async fn python_an_error_in_a_called_rows_code_is_charged_to_that_row() {
+    an_error_in_a_called_rows_code_is_charged_to_that_row(Language::Python).await;
 }
 
 /// Where the runtime does not trace rows (Node outside `dev`, Bun): an

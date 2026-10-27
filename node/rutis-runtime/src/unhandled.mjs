@@ -23,6 +23,8 @@ import { inspect } from 'node:util'
 // Rows are traced only when `enabled`: `within(row, run)` runs `run` as
 // the row's (undefined: no row's), `current()` is the row running now,
 // `owner(promise)` the row a promise was created in.
+// An error traced to a row whose stack shows another row's plugin file is
+// charged to that row (the runner's `chargedRow`).
 export function rowTracking(enabled) {
   if (!enabled) return { enabled: false, within: (_row, run) => run(), current: () => undefined, owner: () => undefined }
   const store = new AsyncLocalStorage()
@@ -38,7 +40,9 @@ export function rowTracking(enabled) {
     enabled: true,
     within: (row, run) => store.run(row ?? undefined, run),
     current: () => store.getStore(),
-    owner: promise => (promise && owners.get(promise)) ?? store.getStore(),
+    // A promise created outside every row is no row's, whichever row's
+    // code rejected it.
+    owner: promise => (promise ? owners.get(promise) : undefined),
   }
 }
 

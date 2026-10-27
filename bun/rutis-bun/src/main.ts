@@ -55,11 +55,15 @@ checkBun()
 // is on the stack, when there is one.
 let current: Runtime | undefined
 const runtimeName = () => current?.name ?? 'bun'
-for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
-  process.on(event, (error: any) => {
-    const text = typeof error?.stack === 'string' && error.stack ? error.stack : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
-    process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
-  })
+// Installed once connected: a failure before that is the runtime's own,
+// and ends it.
+function reportUnhandled() {
+  for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
+    process.on(event, (error: any) => {
+      const text = typeof error?.stack === 'string' && error.stack ? error.stack : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
+      process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
+    })
+  }
 }
 // The source files on a stack, as real paths.
 function stackFiles(stack: string | undefined): Set<string> {
@@ -144,6 +148,7 @@ try {
   fail(`cannot connect on ${channel}: ${error.message}`)
 }
 runtime.attach(client)
+reportUnhandled()
 if (dialed) {
   // Stopped: the rows go while rutis still hears from this end, then the
   // session ends (and so does this process, below).
@@ -176,10 +181,13 @@ setTimeout(() => {
   process.stderr.write(`rutis-bun: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting\n`)
   process.exit(1)
 }, deadline)
-await runtime.dispose()
+await runtime.dispose().catch(error => {
+  process.stderr.write(`rutis-bun: unloading failed: ${error?.stack ?? error}\n`)
+  process.exitCode = 1
+})
 // Stray plugin timers and sockets must not keep the process alive: the host
 // waits for it to exit.
-process.exit(0)
+process.exit(process.exitCode ?? 0)
 
 // How long cleanups may take once the session ended: RUTIS_SHUTDOWN_TIMEOUT
 // seconds (rutis-host passes its own deadline on), 10 by default; in ms.

@@ -48,6 +48,7 @@ import inspect
 import os
 import sys
 import threading
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -460,6 +461,9 @@ class Runtime:
                 loading.cancel()
                 raise row.failing.exception()
             loading.result()
+            # Failed once loaded, before this answers: the load fails.
+            if row.failing.done() and not row.failing.cancelled():
+                raise row.failing.exception()
         except BaseException:
             if not loading.done():
                 loading.cancel()
@@ -517,6 +521,30 @@ class Runtime:
             return
         self.charge("unhandled exception", error, row_of(context))
 
+    def traced(self, peer: Peer) -> None:
+        """Functions and objects rows hand over through `peer` run as the
+        row's code when called (#688)."""
+        peer.owner = current_row.get
+        peer.within = as_row
+
+    def charged_row(self, key: str | None, error: BaseException) -> str | None:
+        """The row an error traced to row `key` is charged to: that row,
+        unless the innermost plugin file in its traceback is another row's
+        (code of a row this one called directly, in this process), which is
+        then charged; one of several rows sharing that file, none of them
+        `key`: none."""
+        if key is None:
+            return None
+        files = {row_key: _module_file(row.module) for row_key, row in list(self.rows.items())}
+        for frame in reversed(traceback.extract_tb(error.__traceback__)):
+            owners = [row_key for row_key, file in files.items() if file is not None and file == frame.filename]
+            if not owners:
+                continue
+            if key in owners:
+                return key
+            return owners[0] if len(owners) == 1 else None
+        return key
+
     def _runtime_name(self) -> str:
         return self.bus.runtime or "py"
 
@@ -524,6 +552,7 @@ class Runtime:
         """An exception nobody handled, traced to row `key` (None: to no
         row): the row fails (rutis restarts it, and the restart fails with
         why); one traced to no row is reported here. The process goes on."""
+        key = self.charged_row(key, error)
         row = self.rows.get(key) if key is not None else None
         name = self._runtime_name()
         if row is None or self.closing or self.peer is None:
@@ -532,7 +561,7 @@ class Runtime:
         why = failure_text(kind, error)
         if row.failing is not None:
             if not row.failing.done():
-                row.failing.set_exception(RuntimeError(why))
+                row.failing.set_exception(_Unhandled(why))
             return
         # Once: the row is on its way out; what else it leaves unhandled
         # until it has gone is written here.
@@ -962,7 +991,9 @@ class Runtime:
         if self.closing:
             raise RuntimeError("runtime is closing")
         if target == "":
-            return self._control(method, args if args is not None else [])
+            # A control call is no row's, also arriving while a row's
+            # synchronous call waits (#688).
+            return as_row(None, lambda: self._control(method, args if args is not None else []))
         entry = self.handles.get(target)
         if entry is None:
             raise LookupError(f"unknown or released service object {target}")
@@ -1052,6 +1083,14 @@ class Runtime:
     async def _dispose_and_drain(self) -> None:
         await self.dispose()
         await self.peer.drain()
+
+
+class _Unhandled(Exception):
+    """A load failed by an exception its code left unhandled; named as the
+    JavaScript runtimes name theirs."""
+
+
+_Unhandled.__name__ = _Unhandled.__qualname__ = "Error"
 
 
 def _module_file(module: Any) -> str | None:
