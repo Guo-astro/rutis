@@ -981,6 +981,8 @@ impl rutis::ConfigError
 pub fn rutis::ConfigError::find<'a>(&'a (dyn core::error::Error + 'static)) -> core::option::Option<&'a rutis::ConfigError>
 pub fn rutis::ConfigError::issues(&self) -> &[rutis::ConfigIssue]
 pub fn rutis::ConfigError::lines(&self) -> alloc::vec::Vec<alloc::string::String>
+impl rutis::ConfigError
+pub fn rutis::ConfigError::of(&rutis::host::ErrorKind) -> core::option::Option<&rutis::ConfigError>
 impl core::clone::Clone for rutis::ConfigError
 pub fn rutis::ConfigError::clone(&self) -> Self
 impl core::cmp::Eq for rutis::ConfigError

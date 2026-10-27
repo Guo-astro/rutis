@@ -14,6 +14,8 @@ use rutis::internal::config::value_text;
 use rutis::{ConfigError, ConfigIssue, PathSegment};
 use serde_json::{Map, Value};
 
+pub use crate::loader::ConfigWarnings;
+
 /// How a config is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

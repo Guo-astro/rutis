@@ -135,6 +135,9 @@ pub fn headline(error: &ErrorKind) -> Option<String> {
         ("call", Some(service), Some(method), _) => {
             format!("call to {service}.{method} failed: {text}")
         }
+        // A config that does not match its schema says so itself
+        // (`config: units should be …`), not `failed in apply:`.
+        ("apply", ..) if thrown.code() == Some(crate::session::code::BAD_CONFIG) => text,
         ("apply", ..) => format!("failed in apply: {text}"),
         ("cleanup", ..) => format!("failed in cleanup: {text}"),
         ("listener", _, _, Some(event)) => format!("listener of {event} failed: {text}"),
@@ -182,6 +185,29 @@ mod tests {
         assert_eq!(
             report(&error),
             "call to forecast.tomorrow failed: KeyError: 'region'\n    in weather:\n    File \"weather.py\", line 31, in tomorrow"
+        );
+    }
+
+    /// A config that does not match its schema, raised in `apply` by a
+    /// runtime's SDK (code `bad-config`), says so itself: no `failed in
+    /// apply:` (config schema design §5.2).
+    #[test]
+    fn a_bad_config_is_its_own_headline() {
+        let error = ErrorKind::PluginFailed(Box::new(Error::Remote {
+            name: "BindingError".into(),
+            message: "config: city is required".into(),
+            graph: Some(json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{
+                    "type": "error", "name": "BindingError", "message": "config: city is required",
+                    "code": "bad-config",
+                    "site": { "row": "weather", "doing": "apply" }
+                }]
+            })),
+        }));
+        assert_eq!(
+            headline(&error).as_deref(),
+            Some("config: city is required")
         );
     }
 

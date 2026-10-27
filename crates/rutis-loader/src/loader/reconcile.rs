@@ -82,24 +82,24 @@ impl Inner {
             });
             current = instance.parent.as_ref().and_then(|p| p.scope);
         }
-        Build { chain }
+        Build { chain, row: None }
     }
 
     /// The factory `resolved` gives a copy in `scope`.
     pub(super) fn slot_factory(
         state: &State,
         resolved: &Resolved,
-        scope: Option<u64>,
+        slot: &Slot,
     ) -> Result<Arc<dyn PluginFactory<Value>>, Error> {
         match &resolved.scoped {
             None => Ok(resolved.factory.clone()),
             Some(scoped) => {
-                catch_unwind(AssertUnwindSafe(|| scoped(&Self::build_for(state, scope))))
-                    .unwrap_or_else(|_| {
-                        Err(rutis::Error::from(ErrorKind::PluginFailed(
-                            "factory panicked".into(),
-                        )))
-                    })
+                let build = Self::build_for(state, slot.scope).for_row(&slot.row);
+                catch_unwind(AssertUnwindSafe(|| scoped(&build))).unwrap_or_else(|_| {
+                    Err(rutis::Error::from(ErrorKind::PluginFailed(
+                        "factory panicked".into(),
+                    )))
+                })
             }
         }
     }
@@ -353,7 +353,7 @@ impl Inner {
             id: id.clone(),
             error: Arc::new(error.into_kind()),
         };
-        let factory = match Self::slot_factory(state, &resolved, slot.scope) {
+        let factory = match Self::slot_factory(state, &resolved, &slot) {
             Ok(factory) => factory,
             Err(error) => {
                 state.rejected.insert(slot, rejected(error));
@@ -368,8 +368,23 @@ impl Inner {
             }
         };
         // The kernel's first load only builds and validates the instance;
-        // check the config here as `update` and the dry run do.
-        let checked = catch_unwind(AssertUnwindSafe(|| factory.validate_config(&config)))
+        // check the config here as `update` and the dry run do: first the
+        // config step, then the plugin's own check of the filled copy.
+        let subject = super::config_step::Subject::of(&resolved);
+        let purpose = super::config_step::Purpose::Run {
+            row: &slot.row,
+            instance: None,
+        };
+        let filled = match self.config_step(&subject, &config, purpose) {
+            Ok(filled) => filled,
+            Err(error) => {
+                state
+                    .rejected
+                    .insert(slot, super::config_step::rejected(&id, error));
+                return None;
+            }
+        };
+        let checked = catch_unwind(AssertUnwindSafe(|| factory.validate_config(&filled)))
             .unwrap_or_else(|_| {
                 Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "validate_config panicked".into(),
@@ -383,6 +398,7 @@ impl Inner {
         let injects = combined_injects(factory.as_ref(), &rust_scope);
         let view = row_ctx.plugin_with(
             EntryFactory {
+                loader: Arc::downgrade(self),
                 name: name.clone(),
                 injects: injects.clone(),
                 row: slot.row.clone(),
@@ -779,8 +795,7 @@ impl Inner {
                     let name = row.name.clone().unwrap_or_default();
                     match state.resolved.get(&name) {
                         Some(Ok(resolved)) => {
-                            let Ok(factory) = Self::slot_factory(state, resolved, slot.scope)
-                            else {
+                            let Ok(factory) = Self::slot_factory(state, resolved, slot) else {
                                 continue;
                             };
                             let build = Self::build_for(state, slot.scope);
@@ -871,7 +886,7 @@ impl Inner {
                 let Some(Ok(resolved)) = state.resolved.get(&name) else {
                     continue;
                 };
-                let Ok(factory) = Self::slot_factory(state, resolved, slot.scope) else {
+                let Ok(factory) = Self::slot_factory(state, resolved, slot) else {
                     continue;
                 };
                 // Expressions are evaluated where the plugin runs.
@@ -937,7 +952,18 @@ impl Inner {
                     factory,
                     value: desired.clone(),
                 };
-                if running.view.set_config(config.clone()).is_ok() {
+                // The plugin gets the copy `apply` would: filled for the
+                // rows the loader fills (design §2.2).
+                let subject = super::config_step::Subject::of(&resolved);
+                let purpose = super::config_step::Purpose::Run {
+                    row: &slot.row,
+                    instance: None,
+                };
+                // A config that does not pass falls back to an ordinary
+                // update, which fails with it.
+                let filled = self.config_step(&subject, &desired, purpose).ok();
+                let stored = filled.is_some() && running.view.set_config(config.clone()).is_ok();
+                if let (true, Some(filled)) = (stored, &filled) {
                     running.config = desired.clone();
                     state.rejected.remove(&slot);
                     let running = &state.running[&slot];
@@ -946,7 +972,7 @@ impl Inner {
                         crate::volatile::key_for(running.view.instance()),
                         VolatileUpdate {
                             paths,
-                            config: desired,
+                            config: filled.clone(),
                         },
                     ));
                 } else {
