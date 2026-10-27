@@ -1,18 +1,18 @@
 package arcships.rutis.internal
 
 import arcships.rutis.Ctx
-import arcships.rutis.DecodePaths
+import arcships.rutis.generated.DecodePaths
 import arcships.rutis.Plugin
 import arcships.rutis.Rutis
 import arcships.rutis.RutisException
-import arcships.rutis.RutisFormat
-import arcships.rutis.Scope
+import arcships.rutis.advanced.RutisFormat
+import arcships.rutis.advanced.Scope
 import arcships.rutis.noMethod
 import arcships.rutis.serve
-import arcships.rutis.ServiceObject
-import arcships.rutis.ServiceShape
-import arcships.rutis.ServiceTable
-import arcships.rutis.Tables
+import arcships.rutis.generated.ServiceObject
+import arcships.rutis.advanced.ServiceShape
+import arcships.rutis.generated.ServiceTable
+import arcships.rutis.generated.Tables
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.Undefined
@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.CompletableFuture
+import arcships.rutis.advanced.PLUGIN_API
 
 /**
  * What this runtime supports of the runtime contract. `rows.announce`:
@@ -192,7 +193,7 @@ class RuntimeState(plugins: List<Plugin>) {
 
     /** `plugin`, unless it needs a newer plugin API than this runtime's. */
     internal fun supported(plugin: Plugin): Plugin {
-        if (plugin.api > Rutis.PLUGIN_API) throw IllegalStateException("plugin ${plugin.name} needs plugin API ${plugin.api}; this runtime supports ${Rutis.PLUGIN_API}")
+        if (plugin.api > arcships.rutis.advanced.PLUGIN_API) throw IllegalStateException("plugin ${plugin.name} needs plugin API ${plugin.api}; this runtime supports ${arcships.rutis.advanced.PLUGIN_API}")
         return plugin
     }
 

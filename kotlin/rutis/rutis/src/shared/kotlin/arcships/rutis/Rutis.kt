@@ -4,6 +4,10 @@ import arcships.rutis.internal.Schema
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import arcships.rutis.advanced.Kind
+import arcships.rutis.advanced.RutisFormat
+import arcships.rutis.advanced.ServiceShape
+import arcships.rutis.generated.Tables
 
 /**
  * Writes rutis plugins in Kotlin (design: docs/design-android-runtime-2026-10-12.md).
@@ -27,12 +31,15 @@ import kotlinx.serialization.json.JsonElement
  */
 object Rutis {
     /** This SDK's version: the runtime's implementation version (the release train checks it). */
+    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.VERSION.", ReplaceWith("VERSION", "arcships.rutis.advanced.VERSION"))
     const val VERSION: String = "0.17.2"
 
     /** The plugin API this SDK writes plugins against and its runtime supports. */
+    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.PLUGIN_API.", ReplaceWith("PLUGIN_API", "arcships.rutis.advanced.PLUGIN_API"))
     const val PLUGIN_API: Int = 3
 
     /** The name the runtime reports itself by: the Maven coordinates it is published as. */
+    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.IMPLEMENTATION.", ReplaceWith("IMPLEMENTATION", "arcships.rutis.advanced.IMPLEMENTATION"))
     const val IMPLEMENTATION: String = "io.github.arcships:rutis"
 
     /** The configuration of a plugin that takes none. */
@@ -78,27 +85,9 @@ object Rutis {
             else -> Schema.of(config.descriptor)
         }
         @Suppress("UNCHECKED_CAST")
-        return Plugin(name, inject.toList(), provides, derived, PLUGIN_API, config as KSerializer<Any?>, apply as suspend (Ctx, Any?) -> Unit)
+        return Plugin(name, inject.toList(), provides, derived, arcships.rutis.advanced.PLUGIN_API, config as KSerializer<Any?>, apply as suspend (Ctx, Any?) -> Unit)
     }
 }
-
-/** A method's kind: a `sync` method is waited for, an `async` one awaited (default). */
-enum class Kind(val wire: String) {
-    Sync("sync"),
-    Async("async"),
-}
-
-/**
- * The methods a provided service has on the wire, and the kind of each:
- * [service] from a `@RutisService` class, or from the kinds themselves.
- */
-class ServiceShape internal constructor(
-    /** The class whose instances provide it, when known. */
-    val type: Class<*>?,
-    /** Each method's kind on the wire. */
-    val kinds: Map<String, String>,
-    internal val problem: String? = null,
-)
 
 /**
  * The shape of a service of the `@RutisService` class `T`: its methods,

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import arcships.rutis.advanced.RutisFormat
 
 /**
  * The JSON Schema of a configuration type, derived from its serial
@@ -88,7 +89,7 @@ object Schema {
                 }
             }
         }
-        SerialKind.CONTEXTUAL -> arcships.rutis.RutisFormat.serializersModule.getContextualDescriptor(descriptor)
+        SerialKind.CONTEXTUAL -> arcships.rutis.advanced.RutisFormat.serializersModule.getContextualDescriptor(descriptor)
             ?.let { of(it, visiting) } ?: JsonObject(emptyMap())
         is PolymorphicKind -> JsonObject(emptyMap())
         else -> JsonObject(emptyMap())

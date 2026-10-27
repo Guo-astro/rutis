@@ -7,13 +7,13 @@ package arcships.rutis.conformance.plugins
 
 import arcships.rutis.Ctx
 import arcships.rutis.EventArgs
-import arcships.rutis.Emitter
-import arcships.rutis.Listener
-import arcships.rutis.RemoteFunction
+import arcships.rutis.advanced.Emitter
+import arcships.rutis.advanced.Listener
+import arcships.rutis.advanced.RemoteFunction
 import arcships.rutis.Rutis
 import arcships.rutis.RutisClient
 import arcships.rutis.RutisException
-import arcships.rutis.RutisFormat
+import arcships.rutis.advanced.RutisFormat
 import arcships.rutis.RutisService
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -34,6 +34,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import arcships.rutis.generated.Generated
 
 @Serializable
 data class Thrown(val name: String = "Error", val message: String = "")
@@ -264,7 +265,7 @@ class ParticipantRow internal constructor(
         val does = spec as? JsonObject ?: throw IllegalArgumentException("conformance-events: does $spec")
         fun next() = args.next ?: throw IllegalStateException("conformance-events: ${p.label} has no next in this dispatch")
         return when {
-            "returns" in does -> arcships.rutis.Generated.toNative(does["returns"])
+            "returns" in does -> arcships.rutis.generated.Generated.toNative(does["returns"])
             "returnsNothing" in does -> null
             "echo" in does -> args.firstOrNull()
             "throws" in does -> {
@@ -280,7 +281,7 @@ class ParticipantRow internal constructor(
                 val rest = next()()
                 prefix + (if (rest == null) "" else text(rest))
             }
-            "veto" in does -> arcships.rutis.Generated.toNative(does["veto"])
+            "veto" in does -> arcships.rutis.generated.Generated.toNative(does["veto"])
             "nextTwice" in does -> {
                 val n = next()
                 n()
