@@ -217,8 +217,13 @@ impl De {
     }
 
     fn integer<'de, V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
-        if let Some(Value::Number(n)) = self.parsed() {
-            return De::new(Value::Number(n), self.path).integer(visitor);
+        match self.parsed() {
+            Some(Value::Number(n)) if n.is_i64() || n.is_u64() => {
+                return De::new(Value::Number(n), self.path).integer(visitor);
+            }
+            // A key that does not spell an integer: the key as written.
+            Some(_) => return Err(self.wrong("an integer")),
+            None => {}
         }
         let path = self.path.clone();
         let result = match &self.value {
@@ -753,6 +758,12 @@ mod tests {
         assert_eq!(numbered[&1], "a");
         let flags: BTreeMap<bool, u8> = decode(&json!({ "true": 1 }), false).unwrap();
         assert_eq!(flags[&true], 1);
+        assert_eq!(
+            decode::<BTreeMap<u32, u8>>(&json!({ "1.5": 1 }), false)
+                .unwrap_err()
+                .to_string(),
+            "config: config[\"1.5\"] should be an integer, got \"1.5\""
+        );
         assert_eq!(
             decode::<BTreeMap<u32, u8>>(&json!({ "x": 1 }), false)
                 .unwrap_err()
