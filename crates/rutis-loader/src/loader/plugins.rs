@@ -21,6 +21,8 @@ pub(super) struct EntryConfig {
 }
 
 pub(super) struct EntryFactory {
+    /// The loader: its config step fills and validates each config.
+    pub(super) loader: Weak<Inner>,
     pub(super) name: String,
     pub(super) injects: Vec<TypeKey>,
     /// The row's id: its fiber is marked with it, so its listeners'
@@ -38,14 +40,32 @@ impl PluginFactory<EntryConfig> for EntryFactory {
     }
 
     fn validate_config(&self, config: &EntryConfig) -> Result<(), Error> {
-        config.factory.validate_config(&config.value)
+        config.factory.validate_config(&self.filled(config)?)
     }
 
     fn build(&self, config: &EntryConfig) -> Result<Box<dyn DynPlugin>, Error> {
         Ok(Box::new(RowPlugin {
             row: self.row.clone(),
-            inner: config.factory.build(&config.value)?,
+            inner: config.factory.build(&self.filled(config)?)?,
         }))
+    }
+}
+
+impl EntryFactory {
+    /// `config` through the loader's config step: the filled copy for the
+    /// rows the loader fills, as it is for others.
+    fn filled(&self, config: &EntryConfig) -> Result<Value, Error> {
+        let Some(loader) = self.loader.upgrade() else {
+            return Ok(config.value.clone());
+        };
+        let subject = super::config_step::Subject::of(&config.resolved);
+        let purpose = super::config_step::Purpose::Run {
+            row: &self.row,
+            instance: None,
+        };
+        loader
+            .config_step(&subject, &config.value, purpose)
+            .map_err(rutis::ConfigError::into_error)
     }
 }
 
@@ -137,6 +157,8 @@ impl LoaderPlugin {
                     op: tokio::sync::Mutex::new(()),
                     #[cfg(feature = "runtimes")]
                     rekey_pending: Default::default(),
+                    warned: Default::default(),
+                    config_warnings: Mutex::new(super::config_step::standard_error()),
                     state: Mutex::new(State::default()),
                 }),
             },

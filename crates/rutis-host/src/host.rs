@@ -298,6 +298,13 @@ impl Host {
             },
         );
         let loader = plugin.handle();
+        // Extra config keys, in order with what plugins print (config
+        // schema design §3.2).
+        loader.on_config_warning(std::sync::Arc::new(
+            |row: &str, issue: &rutis::ConfigIssue| {
+                crate::errln!("{row}: config: {}", issue.message)
+            },
+        ));
         (&root.plugin(plugin))
             .await
             .map_err(|error| format!("the loader: {error}"))?;

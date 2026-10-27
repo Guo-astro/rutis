@@ -794,9 +794,19 @@ fn cannot_reload(id: &str, error: &LoaderError, running: bool) -> String {
         }
         error => error.to_string(),
     };
+    // A config error is a line per problem: each gets the row's prefix.
+    let lines = match error.config() {
+        Some(config) => config
+            .lines()
+            .iter()
+            .map(|line| format!("{id}: cannot reload: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => format!("{id}: cannot reload: {why}"),
+    };
     match running {
-        true => format!("{id}: cannot reload: {why}; the previous version keeps running"),
-        false => format!("{id}: cannot reload: {why}"),
+        true => format!("{lines}; the previous version keeps running"),
+        false => lines,
     }
 }
 

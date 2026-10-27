@@ -135,6 +135,9 @@ pub fn headline(error: &ErrorKind) -> Option<String> {
         ("call", Some(service), Some(method), _) => {
             format!("call to {service}.{method} failed: {text}")
         }
+        // A config that does not match its schema says so itself
+        // (`config: units should be …`), not `failed in apply:`.
+        ("apply", ..) if thrown.code() == Some(crate::session::code::BAD_CONFIG) => text,
         ("apply", ..) => format!("failed in apply: {text}"),
         ("cleanup", ..) => format!("failed in cleanup: {text}"),
         ("listener", _, _, Some(event)) => format!("listener of {event} failed: {text}"),

@@ -268,21 +268,22 @@ impl Inner {
                     continue;
                 }
             };
-            let config = match warnings.as_deref_mut() {
-                Some(warnings) => {
-                    let purpose = super::config_step::Purpose::Check { warnings };
-                    match self.config_step(resolved, &config, purpose) {
-                        // The filled copy for the rows the loader fills;
-                        // other runtimes' SDKs fill their own.
-                        Ok(filled) if !resolved.foreign_scope => filled,
-                        Ok(_) => config,
-                        Err(error) => {
-                            check(Err(super::config_step::rejected(&row.id, error)))?;
-                            continue;
-                        }
-                    }
+            // The filled copy for the rows the loader fills; other
+            // runtimes' SDKs fill their own.
+            let purpose = match warnings.as_deref_mut() {
+                Some(warnings) => super::config_step::Purpose::Check { warnings },
+                None => super::config_step::Purpose::Run {
+                    row: &row.id,
+                    instance: None,
+                },
+            };
+            let subject = super::config_step::Subject::of(resolved);
+            let config = match self.config_step(&subject, &config, purpose) {
+                Ok(config) => config,
+                Err(error) => {
+                    check(Err(super::config_step::rejected(&row.id, error)))?;
+                    continue;
                 }
-                None => config,
             };
             let checked = catch_unwind(AssertUnwindSafe(|| {
                 let factory = match &resolved.scoped {

@@ -18,8 +18,13 @@ use crate::LoaderError;
 #[non_exhaustive]
 pub struct Resolved {
     pub factory: Arc<dyn PluginFactory<Value>>,
-    /// JSON Schema of the config, for forms and comparison only; the
-    /// factory's `validate_config` stays the authority.
+    /// JSON Schema of the config. For the rows the loader fills (those
+    /// without `foreign_scope`: `Builtins`, dylibs, an embedder's own
+    /// resolver) the loader fills a copy of the config with its defaults
+    /// and validates it against the schema before `validate_config` /
+    /// `build` (config schema design §2.1); the factory's own checks come
+    /// after. For other runtimes' rows their SDK does that, and the loader
+    /// only warns of extra keys.
     pub schema: Option<Value>,
     /// Diagnostics: version, source path, hash and the like.
     pub meta: Value,
@@ -368,32 +373,26 @@ impl Resolver for Chain {
 /// Adapts a `PluginFactory<C>` to JSON config.
 struct Json<C, F> {
     inner: F,
+    /// `C` has a schema the loader validates against first.
+    schema: bool,
     _config: PhantomData<fn() -> C>,
 }
 
-impl<C, F> Json<C, F> {
+impl<C: JsonSchema + 'static, F> Json<C, F> {
     fn new(inner: F) -> Self {
         Self {
             inner,
+            schema: schema_of::<C>().is_some(),
             _config: PhantomData,
         }
     }
 }
 
-fn decode<C: DeserializeOwned>(value: &Value) -> Result<C, Error> {
-    let first = serde_json::from_value::<C>(value.clone());
-    match (first, value) {
-        (Ok(config), _) => Ok(config),
-        (Err(_), Value::Null) => serde_json::from_value::<C>(Value::Object(Default::default()))
-            .map_err(|e| {
-                rutis::Error::from(ErrorKind::Validation {
-                    issues: vec![e.to_string()],
-                })
-            }),
-        (Err(e), _) => Err(rutis::Error::from(ErrorKind::Validation {
-            issues: vec![e.to_string()],
-        })),
-    }
+/// `value` as `C`. With a schema the loader validated it first, and a
+/// decoder error is one sentence; without one it is written by its kind
+/// (config schema design §3.3).
+fn decode<C: DeserializeOwned>(value: &Value, schema: bool) -> Result<C, Error> {
+    rutis::internal::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
 }
 
 impl<C, F> PluginFactory<Value> for Json<C, F>
@@ -410,11 +409,12 @@ where
     }
 
     fn validate_config(&self, config: &Value) -> Result<(), Error> {
-        self.inner.validate_config(&decode::<C>(config)?)
+        self.inner
+            .validate_config(&decode::<C>(config, self.schema)?)
     }
 
     fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
-        self.inner.build(&decode::<C>(config)?)
+        self.inner.build(&decode::<C>(config, self.schema)?)
     }
 }
 

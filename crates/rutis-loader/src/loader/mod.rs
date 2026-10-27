@@ -37,10 +37,49 @@ pub use check::{
     CheckReport, Clash, ConfigStatus, CycleLink, Provider, Requirement, RowCheck, RowStatus,
     Supply, Unknown,
 };
+pub use config_step::ConfigWarnings;
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
 pub(crate) use waits::closest;
+
+/// A [`Loader`] that does not keep it alive.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
+pub(crate) struct WeakLoader(std::sync::Weak<Inner>);
+
+#[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
+impl WeakLoader {
+    /// The config step for a copy of row `row` in `instance` of a runtime
+    /// that dialed in, its plugin described there with `schema`: extra keys
+    /// warned about once per row, instance and value; the config as it is
+    /// (the runtime's SDK fills and validates).
+    pub(crate) fn connection_step(
+        &self,
+        row: &str,
+        instance: &str,
+        schema: Option<&Value>,
+        cordis: bool,
+        config: &Value,
+    ) -> Result<Value, rutis::ConfigError> {
+        let Some(inner) = self.0.upgrade() else {
+            return Ok(config.clone());
+        };
+        let subject = config_step::Subject::connection(schema, cordis);
+        let purpose = config_step::Purpose::Run {
+            row,
+            instance: Some(instance),
+        };
+        inner.config_step(&subject, config, purpose)
+    }
+}
+
+impl Loader {
+    #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
+    pub(crate) fn downgrade(&self) -> WeakLoader {
+        WeakLoader(Arc::downgrade(&self.inner))
+    }
+}
 pub use waits::{Wait, WaitReason};
 
 pub struct LoaderOptions {
@@ -355,6 +394,11 @@ struct Inner {
     /// ([`Loader::rekeying`]): announcements meanwhile need no other.
     #[cfg(feature = "runtimes")]
     rekey_pending: std::sync::atomic::AtomicBool,
+    /// The rows, instances and config values warned about
+    /// ([`config_step`]).
+    warned: config_step::Warned,
+    /// Where extra config keys are written ([`Loader::on_config_warning`]).
+    config_warnings: Mutex<ConfigWarnings>,
     state: Mutex<State>,
 }
 

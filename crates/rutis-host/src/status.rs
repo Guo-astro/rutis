@@ -22,6 +22,9 @@ pub fn describe(status: &EntryStatus) -> String {
     match status {
         EntryStatus::Disabled => "disabled".into(),
         EntryStatus::Inactive => "inactive".into(),
+        // A config that does not match its schema: `config: …`, a line
+        // per problem.
+        EntryStatus::Unresolved(error) if error.config().is_some() => error.to_string(),
         EntryStatus::Unresolved(error) => format!("unresolved: {error}"),
         EntryStatus::Stopped => "stopped in its instance".into(),
         EntryStatus::Running(snapshot) => match snapshot.state {
@@ -31,6 +34,7 @@ pub fn describe(status: &EntryStatus) -> String {
             // A headline already says what failed (`failed in apply: …`,
             // `call to forecast.tomorrow failed: …`).
             FiberState::Failed => match &snapshot.error {
+                Some(error) if rutis::ConfigError::of(error).is_some() => error.to_string(),
                 Some(error) if rutis_bridge::report::headline(error).is_some() => {
                     rutis_bridge::report::report(error)
                 }
@@ -362,7 +366,7 @@ impl Shown {
         let mut out = Vec::new();
         for (id, line) in &rows {
             if self.rows.get(id) != Some(line) {
-                out.push(format!("{id}: {line}"));
+                out.extend(prefixed(id, line));
             }
         }
         for id in self.rows.keys().filter(|id| !rows.contains_key(*id)) {
@@ -373,6 +377,24 @@ impl Shown {
         self.links = links;
         out
     }
+}
+
+/// A row's line, `<id>: <line>`; each further line of it that is not
+/// indented (one problem each of a config error) gets the prefix too, the
+/// indented ones (where an error came from) are left as they are.
+fn prefixed(id: &str, line: &str) -> Vec<String> {
+    let mut lines = line.split('\n');
+    let mut out = vec![format!("{id}: {}", lines.next().unwrap_or_default())];
+    for more in lines {
+        match more.starts_with(char::is_whitespace) {
+            true => out
+                .last_mut()
+                .expect("a first line")
+                .push_str(&format!("\n{more}")),
+            false => out.push(format!("{id}: {more}")),
+        }
+    }
+    out
 }
 
 /// Print every change of a row's state, of a peer row's link, and of a
@@ -402,6 +424,33 @@ pub fn listening(listening: &[(String, std::net::SocketAddr)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config error prints one line per problem, each with the row's
+    /// name (config schema design §9); where an error came from stays
+    /// indented under its line.
+    #[test]
+    fn a_config_error_prints_a_line_per_problem() {
+        let error = rutis_loader::LoaderError::Rejected {
+            id: "weather".into(),
+            error: std::sync::Arc::new(rutis::host::ErrorKind::PluginFailed(Box::new(
+                rutis::internal::config::decode::<std::collections::BTreeMap<String, u8>>(
+                    &serde_json::json!({ "a": "x" }),
+                    false,
+                )
+                .unwrap_err(),
+            ))),
+        };
+        let line = describe(&EntryStatus::Unresolved(error));
+        assert_eq!(line, "config: a should be an integer, got \"x\"");
+        assert_eq!(
+            prefixed("weather", "config: a\nconfig: b"),
+            ["weather: config: a", "weather: config: b"]
+        );
+        assert_eq!(
+            prefixed("weather", "failed in apply: x\n    in weather:"),
+            ["weather: failed in apply: x\n    in weather:"]
+        );
+    }
 
     /// A failed row prints the plugin's own error, then which row and what
     /// it was doing, then the plugin's frames (#677).

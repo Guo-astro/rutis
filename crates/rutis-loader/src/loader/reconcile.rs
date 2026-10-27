@@ -368,8 +368,23 @@ impl Inner {
             }
         };
         // The kernel's first load only builds and validates the instance;
-        // check the config here as `update` and the dry run do.
-        let checked = catch_unwind(AssertUnwindSafe(|| factory.validate_config(&config)))
+        // check the config here as `update` and the dry run do: first the
+        // config step, then the plugin's own check of the filled copy.
+        let subject = super::config_step::Subject::of(&resolved);
+        let purpose = super::config_step::Purpose::Run {
+            row: &slot.row,
+            instance: None,
+        };
+        let filled = match self.config_step(&subject, &config, purpose) {
+            Ok(filled) => filled,
+            Err(error) => {
+                state
+                    .rejected
+                    .insert(slot, super::config_step::rejected(&id, error));
+                return None;
+            }
+        };
+        let checked = catch_unwind(AssertUnwindSafe(|| factory.validate_config(&filled)))
             .unwrap_or_else(|_| {
                 Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "validate_config panicked".into(),
@@ -383,6 +398,7 @@ impl Inner {
         let injects = combined_injects(factory.as_ref(), &rust_scope);
         let view = row_ctx.plugin_with(
             EntryFactory {
+                loader: Arc::downgrade(self),
                 name: name.clone(),
                 injects: injects.clone(),
                 row: slot.row.clone(),
@@ -937,7 +953,18 @@ impl Inner {
                     factory,
                     value: desired.clone(),
                 };
-                if running.view.set_config(config.clone()).is_ok() {
+                // The plugin gets the copy `apply` would: filled for the
+                // rows the loader fills (design §2.2).
+                let subject = super::config_step::Subject::of(&resolved);
+                let purpose = super::config_step::Purpose::Run {
+                    row: &slot.row,
+                    instance: None,
+                };
+                // A config that does not pass falls back to an ordinary
+                // update, which fails with it.
+                let filled = self.config_step(&subject, &desired, purpose).ok();
+                let stored = filled.is_some() && running.view.set_config(config.clone()).is_ok();
+                if let (true, Some(filled)) = (stored, &filled) {
                     running.config = desired.clone();
                     state.rejected.remove(&slot);
                     let running = &state.running[&slot];
@@ -946,7 +973,7 @@ impl Inner {
                         crate::volatile::key_for(running.view.instance()),
                         VolatileUpdate {
                             paths,
-                            config: desired,
+                            config: filled.clone(),
                         },
                     ));
                 } else {

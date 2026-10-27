@@ -34,6 +34,13 @@ fn generate_id(taken: impl Fn(&str) -> bool) -> String {
 }
 
 impl Loader {
+    /// Write a row's extra config keys (keys its plugin's schema does not
+    /// name, where it allows them) with `warnings` instead of on standard
+    /// error: once per row and config value (config schema design §3.2).
+    pub fn on_config_warning(&self, warnings: super::ConfigWarnings) {
+        *self.inner.config_warnings.lock().unwrap() = warnings;
+    }
+
     /// Replace the layers and bring the running tree to them. Queued,
     /// unsaved edits are replayed on the new editable layer and saved.
     pub async fn reconcile(
