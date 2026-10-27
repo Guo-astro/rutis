@@ -6,7 +6,7 @@ Status: draft, not implemented. Date: 2026-10-27. Base: `main` `103c0d22`. Sched
 Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)). Replaces the [#505](https://github.com/arcships/rutis/pull/505) draft.
 Relation to 0.18: state is [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §5's `Loader::status()`, error text follows its §4; no new structure.
 
-Out of scope: installing from registries (#691's `rutis-host add` and embedding `Installer`, the host's business); the other `Loader` methods such as `update`, `set_disabled`, `move_to`, `check` (§3, S1 does not use them); any permission layer (a host that wants limits uses #683's `limits.services`); an agent's tools, prompts or approvals (the agent product's business); a row reloading or removing itself (it would wait for its own call in progress; S1 does not do it); S1 on Windows (#670's `call` is not on Windows).
+Out of scope: installing from registries (#691's `rutis-host add` and embedding `Installer`, the host's business); the other `Loader` methods such as `update`, `set_disabled`, `move_to`, `check` (§3, S1 does not use them); any permission layer (a host that wants limits uses #683's `allowed_services`); an agent's tools, prompts or approvals (the agent product's business); a row reloading or removing itself (it would wait for its own call in progress; S1 does not do it); S1 on Windows (#670's `call` is not on Windows).
 
 ## 1. What should work, and where it is stuck
 
@@ -38,7 +38,7 @@ rutis does the same: the same name, the same method shapes, usable by anyone by 
 | --- | --- |
 | L1 | `LoaderPlugin` also provides a service named `loader`, by the path that exists since 0.17: a type marked `#[rutis::service(name = "loader")]`, exposed by name automatically when `ctx.provide`d. No new channel |
 | L2 | Only the 4 methods S1 uses, named and shaped after Cordis's `ctx.loader` (table below) |
-| L3 | Any plugin may `inject: ["loader"]` by default, as in Cordis; a host that wants limits uses #683's `limits.services`. No separate permissions |
+| L3 | Any plugin may `inject: ["loader"]` by default, as in Cordis; a host that wants limits uses #683's `allowed_services`. No separate permissions |
 | L4 | Checks and swaps use only the loader's existing behaviour (§5); the only addition is rutis-host's editable layer |
 | L5 | A plugin in a local directory loads by naming it in the row; no installation. Installing from registries is #691's and stays out of the `loader` service |
 
@@ -145,7 +145,7 @@ After 0.19, one PR:
 | rutis-host's editable layer and the `Persist` writing `rutis.json` | After adding and removing rows the file is right, a reread is no change, and a restart works |
 | S1 (§8); a section "managing plugins with `loader`" in rutis-host.md and the plugin API guide (both languages) | Passes on Linux and macOS |
 
-Dependencies: 0.18's `Loader::status()` (#678) and error text (#677); S1 uses #670's `call`. No dependency on #683 (only a host that wants limits uses its `limits.services`) or #691.
+Dependencies: 0.18's `Loader::status()` (#678) and error text (#677); S1 uses #670's `call`. No dependency on #683 (only a host that wants limits uses its `allowed_services`) or #691.
 
 ## 11. Self-review: anything without a user?
 

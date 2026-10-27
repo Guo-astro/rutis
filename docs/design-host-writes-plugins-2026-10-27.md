@@ -6,7 +6,7 @@
 Issue：[#185](https://github.com/arcships/rutis/issues/185)（含并入的 [#693](https://github.com/arcships/rutis/issues/693)）。取代 [#505](https://github.com/arcships/rutis/pull/505) 的草案。
 与 0.18 的关系：状态用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §五 的 `Loader::status()`，出错文字按它 §四；不加结构。
 
-范围外：从包仓库安装（#691 的 `rutis-host add` 与嵌入 `Installer`，归宿主）；`update`、`set_disabled`、`move_to`、`check` 等其余 `Loader` 方法（§三，S1 用不到）；任何权限层（宿主要限制时用 #683 的 `limits.services`）；agent 的工具、提示、批准（agent 产品的事）；一行对自己 `reload` / `remove`（会等它自己正在进行的调用，S1 用不到）；Windows 上的 S1（#670 的 `call` 不在 Windows 上）。
+范围外：从包仓库安装（#691 的 `rutis-host add` 与嵌入 `Installer`，归宿主）；`update`、`set_disabled`、`move_to`、`check` 等其余 `Loader` 方法（§三，S1 用不到）；任何权限层（宿主要限制时用 #683 的 `allowed_services`）；agent 的工具、提示、批准（agent 产品的事）；一行对自己 `reload` / `remove`（会等它自己正在进行的调用，S1 用不到）；Windows 上的 S1（#670 的 `call` 不在 Windows 上）。
 
 ## 一、要做成什么，现在卡在哪
 
@@ -38,7 +38,7 @@ rutis 照这个做：同一个名字、同样的方法形状、同样默认谁�
 | --- | --- |
 | L1 | `LoaderPlugin` 再按名字提供一个服务 `loader`，走 0.17 起已有的路径：一个标了 `#[rutis::service(name = "loader")]` 的类型，`ctx.provide` 时自动对外。不另开通道 |
 | L2 | 方法只放 S1 用得到的 4 个，名字与参数贴近 Cordis 的 `ctx.loader`（下表） |
-| L3 | 默认任何插件都能 `inject: ["loader"]`，与 Cordis 相同；宿主要限制，用 #683 的 `limits.services`。不另做权限 |
+| L3 | 默认任何插件都能 `inject: ["loader"]`，与 Cordis 相同；宿主要限制，用 #683 的 `allowed_services`。不另做权限 |
 | L4 | 检查与替换只用 loader 已有的行为（§五）；补的只有 rutis-host 的可编辑层 |
 | L5 | 本地目录的插件直接写进行名就能加载，不需要安装；从包仓库安装归 #691，不进 `loader` 服务 |
 
@@ -145,7 +145,7 @@ async def apply(ctx, config):
 | rutis-host 的可编辑层与写回 `rutis.json` 的 `Persist` | 加、删行后文件正确、重读不算变化、重启后照常 |
 | S1（§八）；rutis-host.md 与插件 API 指南加"用 `loader` 管理插件"一节（中英） | Linux、macOS 通过 |
 
-依赖：0.18 的 `Loader::status()`（#678）与出错文字（#677）；S1 用 #670 的 `call`。不依赖 #683（宿主要限制时才用它的 `limits.services`）与 #691。
+依赖：0.18 的 `Loader::status()`（#678）与出错文字（#677）；S1 用 #670 的 `call`。不依赖 #683（宿主要限制时才用它的 `allowed_services`）与 #691。
 
 ## 十一、自审：还有没有没有使用方的东西
 
