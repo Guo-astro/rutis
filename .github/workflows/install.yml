@@ -248,9 +248,11 @@ jobs:
       # The developer's view (#690, tests/e2e/tests/devx.rs): a plugin
       # written in each language from the template, tested, reloaded under
       # dev and packed; plugins of two languages assembled, run, changed and
-      # stopped; with these packages, before they are published (the
-      # release gate) and every night. Linux only: the steps are the same
-      # on every platform, about two minutes here.
+      # stopped; a small Rust host's extension point taking a plugin from
+      # the template, and its errors structured; with these packages,
+      # before they are published (the release gate) and every night.
+      # Linux only: the steps are the same on every platform, a few minutes
+      # here.
       - name: the developer-experience scenarios
         if: env.RUTIS_E2E_SOURCE == 'local' && runner.os == 'Linux' && matrix.platform == 'linux-x64'
         env:

@@ -26,7 +26,7 @@
 | `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
 | `ci-stats.yml` | 每周；手动 | 统计 CI 的耗时和失败 |
 | `deps.yml` | 每周；手动 | 依赖漏洞检查：`cargo deny check advisories`（不含示例项目）、`@arcships/rutis-runtime` 的 `npm audit`、Python 包的 `pip-audit`。不在 PR 上跑，不阻止合并；失败时 GitHub 通知维护者 |
-| `install.yml` | 每晚由 `nightly.yml` 调用（改了打包路径或周一五个平台，否则只有 linux-x64）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64）。linux-x64 上接着跑开发者体验场景（`tests/e2e/tests/devx.rs`，#690）：每种语言从模板写一个插件、测试、`dev` 下重载、打包，两种语言的插件组装、运行、改配置、停止；每晚和发布门都跑，不通过不发版，约两分钟 |
+| `install.yml` | 每晚由 `nightly.yml` 调用（改了打包路径或周一五个平台，否则只有 linux-x64）；发布时由 `release.yml` 调用；手动 | 用 `package.yml` 构建这次提交的包并安装运行：npm、PyPI、release 二进制。发布前五个平台（linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64），手动运行默认三个平台（linux-x64、darwin-arm64、win32-x64）。linux-x64 上接着跑开发者体验场景（`tests/e2e/tests/devx.rs`，#690）：每种语言从模板写一个插件、测试、`dev` 下重载、打包，两种语言的插件组装、运行、改配置、停止；一个小的 Rust 宿主开放扩展点、装进用模板写的插件、插件出错时拿到带错误码的结构化错误；每晚和发布门都跑，不通过不发版，几分钟 |
 | `release.yml` | 打 `v*` tag；手动（`dry-run` 默认打开：只跑发布门，不发布） | 发布门（调用 `ci.yml`（`all=true`）、`package.yml`、`install.yml`（五个平台）、`dylib-windows.yml`）、发布、发布后验证（[发布](release.md)） |
 | `release-cli.yml` | 打 `cli-v*` tag | 发布 rutis-cli |
 

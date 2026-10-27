@@ -1,0 +1,18 @@
+[package]
+name = "rutis-e2e-fixture-toolhost"
+description = "The small host of the host owner's developer-experience check (#690): a Rust application embedding rutis that lets plugins register tools, lists them and calls them"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The system under test, not the harness: the harness (tests/e2e) only runs
+# this program (quality standard Q7.6). It is assembled from the crates as
+# docs/guide/rust-host.md says.
+[dependencies]
+rutis = { path = "../../../crates/rutis" }
+rutis-bridge = { path = "../../../crates/rutis-bridge", default-features = false, features = ["node"] }
+rutis-loader = { path = "../../../crates/rutis-loader", default-features = false, features = ["node"] }
+serde_json = "1"
+tokio = { workspace = true }

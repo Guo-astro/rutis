@@ -14,6 +14,11 @@
 //! - Assembling plugins: `rutis-host` with a TypeScript plugin using a
 //!   Python plugin's service: `check`, `run`, a call end to end, a change
 //!   of configuration while it runs, a row disabled, a stop.
+//! - A host owner: a small Rust host (`tests/e2e/fixture-toolhost`) opens
+//!   an extension point, `tools.register(name, description, run)`; a
+//!   plugin from the template registers a tool; the host lists it and
+//!   calls it, and when the tool fails the host gets the plugin's error
+//!   structured, with its code.
 //!
 //! The JavaScript and Python packages are this build's (npm tarballs,
 //! wheels); the Go SDK and the Rust crates are this checkout's (an
@@ -1065,5 +1070,94 @@ fn plugins_in_two_languages_are_assembled_run_changed_and_stopped() {
     host.ctrl_c();
     let status = host.wait_exit();
     assert!(status.success(), "rutis-host run after Ctrl-C: {status}");
+    s.finish();
+}
+
+// ── A host owner ────────────────────────────────────────────────
+
+/// The third party's tool plugin, from the template: it registers the tool
+/// `weather` with the host's extension point. A call without a city fails
+/// with the plugin's own error code.
+const TOOL_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+interface Tools {
+  register(name: string, description: string, run: (input: { city?: string }) => Promise<string>): Promise<void>
+}
+
+export default definePlugin({
+  inject: ['tools'],
+  async apply(ctx) {
+    const tools = ctx.use('tools') as Tools
+    await tools.register('weather', 'the weather in a city', async input => {
+      if (!input?.city) throw Object.assign(new Error('which city? pass { "city": … }'), { code: 'no-city' })
+      return `${input.city}: sunny`
+    })
+  },
+})
+"#;
+
+/// One JSON line the tool host answers.
+fn toolhost_answer(host: &mut Host, what: &str) -> Value {
+    let line = host.wait_for(what, |line| line.starts_with('{'));
+    serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"))
+}
+
+/// risk: B1 (the host owner's path, #663: an extension point, a third
+/// party's plugin, its errors structured)
+#[test]
+#[ignore = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS"]
+fn a_host_owners_extension_point_takes_a_template_plugin_and_its_errors() {
+    let s = Scenario::installed("devx-host-owner");
+    // Built first: a build's time is not the host's.
+    let _ = rutis_e2e::fixture_toolhost_program();
+    let launcher = tools(&s);
+    // The third party: a plugin from the template, on the packages a user
+    // installs.
+    let project = new(&s, &launcher, "third-party", "node");
+    let platform = format!("rutis-host-{}", npm_platform());
+    from_artifacts(&s, &project, &["rutis-host", &platform, "rutis-runtime"]);
+    s.replace(format!("{project}/src/index.ts"), TOOL_TS);
+    run(&s, &project, npm(), &["install", "--omit=optional"], &[]);
+    let entry = s.path(&project).join("src/index.ts").display().to_string();
+    s.write_json(
+        format!("{project}/toolhost.json"),
+        &json!({ "plugins": [{ "id": "weather-tool", "name": entry }] }),
+    );
+    // The host, with the Node runtime the plugin installed.
+    let runtime = s
+        .path(&project)
+        .join("node_modules/@arcships/rutis-runtime")
+        .display()
+        .to_string();
+    let mut host = s.fixture_toolhost(&project, &[("RUTIS_NODE_RUNTIME", runtime.as_str())]);
+    assert_eq!(
+        toolhost_answer(&mut host, "the host to start"),
+        json!({ "ready": true })
+    );
+
+    // The host lists the tool the plugin registered, and calls it.
+    host.send_line("list");
+    assert_eq!(
+        toolhost_answer(&mut host, "the tools"),
+        json!({ "tools": [{ "name": "weather", "description": "the weather in a city" }] })
+    );
+    host.send_line(r#"call weather {"city":"Oslo"}"#);
+    assert_eq!(
+        toolhost_answer(&mut host, "the call"),
+        json!({ "ok": "Oslo: sunny" })
+    );
+
+    // The tool fails: the host gets the plugin's error, structured, with
+    // the plugin's own code.
+    host.send_line("call weather {}");
+    let failed = toolhost_answer(&mut host, "the failed call");
+    assert_eq!(
+        failed,
+        json!({ "error": { "name": "Error", "code": "no-city", "message": "which city? pass { \"city\": … }" } })
+    );
+
+    host.send_line("stop");
+    let status = host.wait_exit();
+    assert!(status.success(), "the tool host after stop: {status}");
     s.finish();
 }
