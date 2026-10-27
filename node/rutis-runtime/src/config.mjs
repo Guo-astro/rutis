@@ -33,6 +33,8 @@ export function schemaOf(config) {
   if (standard !== undefined) {
     throw new TypeError(`config of definePlugin should be a JSON Schema object, got ${standard?.vendor === 'schemastery' ? 'a schemastery Schema' : 'a Standard Schema'}`)
   }
+  // (Only a plain object: a function of an older SDK, or an object built
+  // by a class, is not taken for a JSON Schema.)
   return isObject(config) ? config : undefined
 }
 
@@ -101,7 +103,10 @@ export function valueText(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null'
   if (typeof value === 'boolean') return String(value)
   if (Array.isArray(value)) return `an array of ${value.length}`
-  return 'an object'
+  if (isObject(value)) return 'an object'
+  // What only a test's own config holds: a bigint, a Date, a Map, …
+  if (typeof value === 'bigint') return `${value}n`
+  return `a ${value?.constructor?.name ?? typeof value}`
 }
 
 // `s` as a JSON string, its content cut to `limit` scalar values with `…`.

@@ -116,3 +116,8 @@ test('definePlugin takes JSON Schema only', () => {
   assert.throws(() => definePlugin({ config: schemastery, apply() {} }), { name: 'TypeError', message: 'config of definePlugin should be a JSON Schema object, got a schemastery Schema' })
   assert.throws(() => definePlugin({ config: zod, apply() {} }), { message: 'config of definePlugin should be a JSON Schema object, got a Standard Schema' })
 })
+
+test("a test's own values that JSON lacks are written by what they are", async () => {
+  const plugin = definePlugin({ config: { type: 'object', properties: { n: { type: 'integer' }, at: { type: 'object' } } }, apply() {} })
+  await assert.rejects(load(plugin, { config: { n: 5n, at: new Date(0) } }), { message: 'config: at should be an object, got a Date\nconfig: n should be an integer, got 5n' })
+})

@@ -492,10 +492,11 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       if (schema !== undefined) {
         const checked = checkConfig(schema, config)
         // Once per row and config value, as the host's loader warns.
-        const seen = JSON.stringify(config) ?? ''
+        let seen
+        try { seen = JSON.stringify(config, (_, value) => (typeof value === 'bigint' ? `${value}n` : value)) ?? '' } catch {}
         row.warned ??= new Set()
-        if (checked.warnings.length && !row.warned.has(seen)) {
-          row.warned.add(seen)
+        if (checked.warnings.length && (seen === undefined || !row.warned.has(seen))) {
+          if (seen !== undefined) row.warned.add(seen)
           for (const warning of checked.warnings) process.stderr.write(`${row.key}: config: ${warning.message}\n`)
         }
         if (checked.errors.length) throw configError(checked.errors)
