@@ -15,6 +15,7 @@ mod desired;
 mod instances;
 mod plugins;
 mod reconcile;
+pub mod status;
 mod waits;
 
 use std::collections::{BTreeMap, HashMap};

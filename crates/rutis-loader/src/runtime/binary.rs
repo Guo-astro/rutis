@@ -1188,6 +1188,19 @@ impl<L: BinaryLanguage> Resolver for BinaryResolver<L> {
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move { self.resolve_now(name).map(Arc::new) })
     }
+
+    /// The runtimes started and not stopped since.
+    fn runtimes(&self) -> Vec<RuntimeHandle> {
+        let Some(inner) = self.runtimes.lock().unwrap().upgrade() else {
+            return Vec::new();
+        };
+        let slots = inner.slots.lock().unwrap();
+        slots
+            .running
+            .values()
+            .map(|slot| slot.handle.clone())
+            .collect()
+    }
 }
 
 /// The rows of one runtime, for its [`RuntimeRowsPlugin`].
@@ -2159,6 +2172,11 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
+                    // Calls on its objects held elsewhere say why it went
+                    // (#687 §五): the references do not keep it running.
+                    if let RuntimeState::Ready(process) = previous.handle.state() {
+                        process.connection().ending("stopped because it was idle");
+                    }
                     stop(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);

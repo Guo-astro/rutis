@@ -239,6 +239,10 @@ JSON Schema 2020-12 的受限子集只负责值类型与配置。对象引用不
 
 **精度与边界。** 接收方的时钟精度比 `instant` 粗时（JS 毫秒、Python 微秒），向负无穷截断，不报错；Rust、Go、Kotlin 保留纳秒。整数超出 ±(2^53−1) 时，发送方**自动**按 `bigint` 发出，不写成 `data` 里的数字（值类型设计 V6）：`data` 里含这样的整数时，包含它的数组、对象按 `list` / `record` 编码；对端没有声明 `value-bigint` 时，同其他标记，这次调用失败。浮点数不受影响，照旧是 `data`。接收方把收到的 `bigint` 转成本语言的整数（放得下时）或大整数类型；旧实现发来的 `data` 里超出范围的整数照旧按数字读。节点之间转发的事件（`NodeEvent`，参数为 JSON）不承载这些值：含它们的事件在转发时拒绝（0.12；0.13 起事件在节点之间也承载全部值，见[统一事件的协议规格](design-events-protocol-2026-10-18.md)第十节）。
 
+**`undefined` 的位置（0.18，#687）。** `undefined` 只在作为整个参数（`list` 形式的参数列表里的一项）或整个返回值时保留"没有给"的意思。其余位置（`list`、`record`、`map` 里任何深度，稀疏数组的空位）一律是 `null`：发送方写 `{"type":"data","value":null}`，接收方把收到的 `undefined` 标记也读成 `null`，所以旧实现发来的也一致。
+
+**对象与能力 `objects`（0.18，#687）。** 带方法的对象以 `{"type":"reference","value":{"id","home","kind":"object","origin"}}` 发出，方法调用是带 `method` 的 `call` 帧（格式不变）。能力 `objects` 表示这一端收对象：Node、Bun、Python、Go、Swift、Kotlin 从 0.18 起在 endpoint 与 compat 两种握手里都声明，Rust 的 `COMPAT_DECLARED` 包含它（0.17 的宿主不认，在它下面运行时总是"不收对象"）。运行时只在 endpoint 会话上检查对方的 `objects`（compat 会话的对方总是 Rust 宿主，每个版本都收对象）。宿主转发对象时按**下游**是否声明检查，没有声明时这次调用以 `bad-value` 失败，会话继续。设计见[对象引用](design-object-refs-2026-10-27.md)。
+
 ## 七、对象身份、代理与授权
 
 ### 7.1 真实对象与引用

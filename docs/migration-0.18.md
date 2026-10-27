@@ -110,6 +110,7 @@
 - 宿主服务的方法在堆栈里显示为 `weather.today`，不再是 `HostProxy.__getattr__.<locals>.call`；返回"没有值"的调用得到 `None`，不会再见到 `UNDEFINED`。
 - 宿主断开时调用抛出 `ConnectionError`，带码 `peer-gone`。
 - `str(SyncWaitCycle)` 只是消息，前面不再有 `SyncWaitCycle: `（与其他错误相同）。
+- `raise … from cause` 的 `cause` 作为错误图里的 `cause` 一起发出（与 JavaScript 错误的 `cause` 相同）；加载中没处理的错误（`UnhandledError`）以原错误为 `cause`，原错误自己的 `cause` 和 `AggregateError` 的 `errors` 也一起发出。
 - 导入插件模块（或它导入的模块）时出错，抛出 `LoadError`（`from rutis import LoadError`，是 `Exception` 的子类），写明出错的文件和行号；入口模块本身不存在时仍是原来的 `ModuleNotFoundError`。
 
 ### Go
@@ -164,6 +165,8 @@
   runtime node: an unhandled error from an unknown row: Error: no region
       at …
   ```
+
+  下面只列插件自己的帧；一帧都不是插件的时候列出完整堆栈，那是找来源的唯一线索。
 
 - 插件调用 `process.exit` / `os._exit` 时进程照常结束，运行时先写一行 `runtime node: row weather called process.exit(1)`。
 

@@ -686,7 +686,7 @@ const WITNESS_JS: &str = r#"{
     process.stderr.write = function (chunk, ...rest) {
       const text = String(chunk)
       if (text.includes('an unhandled error from an unknown row')) {
-        setImmediate(() => probe.record('reported: ' + text.split('\n')[0]))
+        setImmediate(() => probe.record('reported: ' + text.trimEnd().split('\n').join(' | ')))
       }
       return write.call(this, chunk, ...rest)
     }
@@ -1012,6 +1012,20 @@ async fn an_error_in_a_called_rows_code_is_charged_to_no_row(language: Language)
         all.contains("boom in lender") && all.contains("refused by lender"),
         "{language:?}: {all}"
     );
+    // Only the plugins' own frames are listed (#677, §4.5).
+    assert!(all.contains("lender."), "{language:?}: {all}");
+    for not_the_plugins in [
+        "node:internal",
+        "(node:",
+        "rutis-runtime/src/",
+        "rutis/runner.py",
+        "/asyncio/",
+    ] {
+        assert!(
+            !all.contains(not_the_plugins),
+            "{language:?}: {not_the_plugins} in {all}"
+        );
+    }
     for id in ["witness", "lender", "borrower"] {
         assert_eq!(
             row_state(loader, id),
@@ -1069,6 +1083,21 @@ async fn an_unhandled_error_from_an_unknown_row_is_reported(language: Language) 
         reported.contains(": an unhandled error from an unknown row: Error: boom after load"),
         "{language:?}: {reported}"
     );
+    // Only the plugin's own frames are listed (#677, §4.5): its file, not
+    // the JavaScript engine's or the runtime's.
+    assert!(reported.contains("faulty.mjs"), "{language:?}: {reported}");
+    for not_the_plugins in [
+        "node:internal",
+        "(node:",
+        "native:",
+        "rutis-runtime/src/",
+        "rutis-bun/src/",
+    ] {
+        assert!(
+            !reported.contains(not_the_plugins),
+            "{language:?}: {not_the_plugins} in {reported}"
+        );
+    }
     // Nothing failed, and the runtime is up.
     for id in ["witness", "faulty"] {
         assert_eq!(

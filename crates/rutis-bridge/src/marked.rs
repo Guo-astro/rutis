@@ -445,13 +445,44 @@ enum BadArgument {
         argument: usize,
         why: String,
     },
+    /// Argument `argument` (from 1) an object with methods (from the
+    /// runtime `from`, when known), which a Rust service does not take: it
+    /// takes data and functions (#687 §九).
+    Object {
+        argument: usize,
+        expected: String,
+        from: Option<String>,
+    },
 }
 
 impl BadArgument {
     /// The text after `service.method` (`: argument 1 should be …`, or
     /// ` takes 1 argument, got 2`).
     fn text(&self) -> String {
+        self.text_of(None)
+    }
+
+    /// [`BadArgument::text`] of a call to the service `service`, when
+    /// known.
+    fn text_of(&self, service: Option<&str>) -> String {
         match self {
+            Self::Object {
+                argument,
+                expected,
+                from,
+            } => {
+                let from = from
+                    .as_deref()
+                    .map(|from| format!(" from {from}"))
+                    .unwrap_or_default();
+                let takes = match service {
+                    Some(service) => format!("{service} takes data and functions, so pass"),
+                    None => "pass".into(),
+                };
+                format!(
+                    ": argument {argument} should be {expected}, got an object{from}; {takes} a function for each method"
+                )
+            }
             Self::TooMany { expected, received } => {
                 let plural = if *expected == 1 { "" } else { "s" };
                 format!(" takes {expected} argument{plural}, got {received}")
@@ -482,10 +513,16 @@ impl BadArgument {
                 data["expected"] = expected.clone().into();
             }
             Self::Invalid { argument, .. } => data["argument"] = (*argument).into(),
+            Self::Object {
+                argument, expected, ..
+            } => {
+                data["argument"] = (*argument).into();
+                data["expected"] = expected.clone().into();
+            }
         }
         Error::binding(
             crate::session::code::BAD_ARGUMENT,
-            format!("{service}.{method}{}", self.text()),
+            format!("{service}.{method}{}", self.text_of(Some(service))),
             Some(data),
         )
     }
@@ -494,9 +531,23 @@ impl BadArgument {
     /// caller's words: `Missing` for an argument not passed, `Wrong` for a
     /// value of another type, saying what it should be and what it is.
     fn of_decoding(argument: usize, value: &Value, why: &str) -> Self {
-        let expected = why
+        let raw = why
             .rsplit_once(", expected ")
-            .map(|(_, expected)| expected_in_words(expected));
+            .map(|(_, expected)| expected.trim());
+        if let Value::Reference(reference) = value {
+            if let Some(from) = reference.object_source() {
+                let expected = match raw.and_then(|raw| raw.strip_prefix("struct ")) {
+                    Some(name) => format!("a {name}"),
+                    None => raw.map(expected_in_words).unwrap_or_else(|| "data".into()),
+                };
+                return Self::Object {
+                    argument,
+                    expected,
+                    from: Some(from.to_owned()).filter(|from| !from.is_empty()),
+                };
+            }
+        }
+        let expected = raw.map(expected_in_words);
         if let (Value::Undefined, Some(expected)) = (value, expected.clone()) {
             return Self::Missing { argument, expected };
         }
@@ -726,14 +777,30 @@ impl Wire for BridgeWire {
             .map_err(call_error);
         };
         let shown = value.clone();
-        crate::session::decode_data_with(value, |json| {
+        let decoded = crate::session::decode_data_with(value, |json| {
             into(&mut <dyn erased_serde::Deserializer>::erase(json))
                 .map_err(|error| error.to_string())
-        })
-        .map_err(|error| match error {
-            Error::Value(why) => BadArgument::of_decoding(position, &shown, &why).into(),
-            error => call_error(error),
-        })
+        });
+        match decoded {
+            Ok(()) => Ok(()),
+            Err(Error::Value(why)) => {
+                // An object is refused before the parameter's type is seen:
+                // what that type is, serde says of a value it does not take
+                // (`true`; a boolean parameter takes it).
+                let why = match &shown {
+                    Value::Reference(reference) if reference.object_source().is_some() => {
+                        let probe = serde_json::Value::Bool(true);
+                        match into(&mut <dyn erased_serde::Deserializer>::erase(probe)) {
+                            Err(error) => error.to_string(),
+                            Ok(()) => "invalid type: an object, expected a boolean".into(),
+                        }
+                    }
+                    _ => why,
+                };
+                Err(BadArgument::of_decoding(position, &shown, &why).into())
+            }
+            Err(error) => Err(call_error(error)),
+        }
     }
 
     fn encode(&self, value: &dyn erased_serde::Serialize) -> Result<Encoded, CallError> {

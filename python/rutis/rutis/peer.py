@@ -350,7 +350,12 @@ def encode_error(thrown: BaseException) -> dict:
             "type": "error",
             "name": error.name if isinstance(error, RemoteError) else type(error).__name__,
             "message": error.message if isinstance(error, RemoteError) else _message(error),
-            "stack": error.stack if isinstance(error, LoadError) else "".join(traceback.format_exception(error)),
+            # An error whose cause is itself the error it reports (an
+            # `UnhandledError`) leaves the chain to its `cause` node, so
+            # the same traceback is not in its stack twice.
+            "stack": error.stack
+            if isinstance(error, LoadError)
+            else "".join(traceback.format_exception(error, chain=not getattr(error, "reports_its_cause", False))),
         }
         nodes.append(node)
         # A str `code` and its `data` cross, as from JavaScript and Rust
@@ -366,6 +371,10 @@ def encode_error(thrown: BaseException) -> dict:
                 del nodes[mark:]
         if isinstance(error, AggregateError):
             node["errors"] = [visit(item) for item in error.errors]
+        # `raise … from cause`: the cause crosses as its own node, as a
+        # JavaScript error's `cause` does.
+        if isinstance(error.__cause__, BaseException):
+            node["cause"] = visit(error.__cause__)
         return reference
 
     root = visit(thrown)

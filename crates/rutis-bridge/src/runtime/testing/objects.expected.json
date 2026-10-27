@@ -1,0 +1,215 @@
+{
+  "$comment": "Objects with methods across languages (#687, docs/design-object-refs-2026-10-27.md §十): one row per case, one cell per language. yes: that language's tests run the case; forward: the host forwards it (Rust); no: not applicable. A test runs a case for a language when it carries the marker `objects-case(<language>): <case>`; crates/rutis-bridge/tests/objects_expected.rs checks every yes and forward cell of the enforced languages has one.",
+  "languages": [
+    "node",
+    "bun",
+    "python",
+    "go",
+    "swift",
+    "kotlin",
+    "rust"
+  ],
+  "enforced": [
+    "rust"
+  ],
+  "cases": [
+    {
+      "id": "send-call-state",
+      "what": "Send an object with methods; the far end calls a method; the original object's state changes",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "plain-object-by-reference",
+      "what": "A plain object with function-valued properties crosses by reference",
+      "node": "yes",
+      "bun": "yes",
+      "python": "no",
+      "go": "no",
+      "swift": "no",
+      "kotlin": "no",
+      "rust": "forward"
+    },
+    {
+      "id": "data-stays-data",
+      "what": "Data stays data: plain objects, dicts, structs, Codable, @Serializable are copied; functions inside go by reference",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "no"
+    },
+    {
+      "id": "same-proxy-home",
+      "what": "Passed twice it is the same proxy; passed back to its own process it is the original",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "third-language",
+      "what": "Passed on to a third language",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "return-array-event",
+      "what": "As a return value, an element of an array or dict, an event argument",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "outlives-its-row",
+      "what": "Still callable after the row that passed it unloads",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "cancel",
+      "what": "A call through a method given up by its caller is cancelled on the far end",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "no-method",
+      "what": "A method the object lacks: no-method at the call, only that call fails",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "yes"
+    },
+    {
+      "id": "receiver-releases",
+      "what": "The receiver lets go of the proxy: the sender's object is released",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "holder-killed-releases",
+      "what": "The process holding a proxy is killed: the sender's object is released",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "forward"
+    },
+    {
+      "id": "sync-wait-cycle",
+      "what": "Two runtimes calling each other's objects synchronously: SyncWaitCycle, nothing hangs",
+      "node": "no",
+      "bun": "no",
+      "python": "no",
+      "go": "yes",
+      "swift": "no",
+      "kotlin": "no",
+      "rust": "yes"
+    },
+    {
+      "id": "owner-killed-peer-gone",
+      "what": "The sender's process is killed: calls fail with peer-gone; the session and other rows go on",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "yes"
+    },
+    {
+      "id": "idle-stop-peer-gone",
+      "what": "An on-demand runtime stops idle: its objects fail with peer-gone, saying it stopped because it was idle",
+      "node": "no",
+      "bun": "no",
+      "python": "no",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "no",
+      "rust": "yes"
+    },
+    {
+      "id": "no-objects-declared",
+      "what": "The far end did not declare objects: the call fails, the session goes on",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "yes"
+    },
+    {
+      "id": "declared-type-refuses",
+      "what": "The declared parameter type cannot take an object: bad-argument",
+      "node": "no",
+      "bun": "no",
+      "python": "no",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "yes"
+    },
+    {
+      "id": "strict-testing-tool",
+      "what": "The testing tool's strict mode gives a cross-process proxy",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "no"
+    },
+    {
+      "id": "undefined-nested-null",
+      "what": "undefined is null at any depth; a whole argument keeps it",
+      "node": "yes",
+      "bun": "yes",
+      "python": "yes",
+      "go": "yes",
+      "swift": "yes",
+      "kotlin": "yes",
+      "rust": "yes"
+    }
+  ]
+}

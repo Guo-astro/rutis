@@ -134,13 +134,14 @@ impl LocalRuntime {
     }
 
     fn with(name: &str, launcher: Launcher, anchor: PathBuf) -> Self {
+        let processes = Processes::default();
         Self {
             label: format!("runtime {name}"),
             runtime_name: name.to_owned(),
             launcher,
-            runtime: RuntimePlugin::session(name, anchor.clone()),
+            runtime: RuntimePlugin::session(name, anchor.clone()).processes(processes.clone()),
             anchor,
-            processes: Processes::default(),
+            processes,
         }
     }
 

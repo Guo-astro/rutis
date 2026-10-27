@@ -14,6 +14,7 @@
 pub(crate) use crate::session::*;
 
 mod access;
+mod calls;
 mod definitions;
 mod local;
 mod plugin;
@@ -31,6 +32,7 @@ pub(crate) mod unix;
 pub use crate::transport::local::Stdio;
 pub(crate) use access::peer_session;
 pub use access::RuntimeAccessPlugin;
+pub use calls::InFlight;
 pub(crate) use definitions::read as read_definition;
 pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};
 pub use local::LocalRuntime;

@@ -141,13 +141,18 @@ fn decode(value: WireValue) -> Result<Value, crate::session::Error> {
         }
         WireValue::Undefined => Value::Undefined,
         WireValue::Data(value) => Value::Data(value),
-        WireValue::List(values) => {
-            Value::List(values.into_iter().map(decode).collect::<Result<_, _>>()?)
-        }
+        // Undefined inside a value is null, as the session decodes it
+        // (#687 §七).
+        WireValue::List(values) => Value::List(
+            values
+                .into_iter()
+                .map(|value| decode(value).map(inside))
+                .collect::<Result<_, _>>()?,
+        ),
         WireValue::Record(fields) => Value::Record(
             fields
                 .into_iter()
-                .map(|(key, value)| Ok((key, decode(value)?)))
+                .map(|(key, value)| Ok((key, inside(decode(value)?))))
                 .collect::<Result<_, crate::session::Error>>()?,
         ),
         WireValue::Signal | WireValue::Reference { .. } => Value::Signal,
@@ -382,5 +387,13 @@ impl Write for Duplex<'_> {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// A value inside another: undefined is null there.
+fn inside(value: Value) -> Value {
+    match value {
+        Value::Undefined => Value::Data(serde_json::Value::Null),
+        value => value,
     }
 }

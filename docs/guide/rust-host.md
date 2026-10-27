@@ -547,7 +547,7 @@ root.plugin(go_runtimes).await?;
 看宿主里发生了什么，有三样：
 
 - **默认输出**：加载失败、长时间等不到依赖、语言运行时退出，默认写到标准错误，每行以插件、行或运行时的名字开头，不带 `[rutis]` 前缀（可以关掉，见[默认输出](#默认输出)）。`shutdown_with_timeout` 到时写明还没结束的插件和清理。
-- **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。
+- **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印（格式见 [rutis-host 指南「查看当前状态」](rutis-host.md#查看当前状态)）。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。运行时来自 loader 的解析器：`RuntimeResolver`、Go 与 Swift 的 `BinaryResolver` 列出它们的运行时；自己写的 `Resolver` 实现 `runtimes()` 就会列出自己的。调用记录在运行时一侧，看不到同一个运行时里的调用。`rutis_bridge::runtime::RuntimeState` 实现 `Debug`。
 - **内核诊断**：`root.diagnostics()` 的 `Display` 一项一行，用插件和行的名字列出插件（状态、在等什么）和服务（由谁提供），默认不列 rutis 自己的插件和根；`{:#}` 也列出它们。字段（`PluginDiagnostics::platform`、`row` 等）给程序读。
 
 语言运行时（Node、Bun、Python、Go）是单独的进程，各用各的调试器：在插件项目里用 `rutis-host dev --debug` 运行（见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南），或者用状态里的 pid 把调试器接到运行着的进程上。

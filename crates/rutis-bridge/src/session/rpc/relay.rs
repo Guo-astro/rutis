@@ -39,7 +39,7 @@ impl Connection {
         }
         // An object goes only to a far end that can call its methods.
         if import.kind == Kind::Object && !self.supports("objects") {
-            return Err(self.object_refused());
+            return Err(self.object_refused(&import.source));
         }
         let identity = Arc::as_ptr(import) as usize;
         {
@@ -115,7 +115,7 @@ impl Connection {
         }
         let target = match import.connection() {
             Ok(target) => target,
-            Err(error) => return self.respond(id, Err(error)),
+            Err(error) => return self.respond(id, Err(import.gone(error))),
         };
         let operation = match call {
             Relayed::Call(method, args) => Operation::Call(import.id, method, args),
@@ -143,7 +143,7 @@ impl Connection {
                 let _path = PathGuard::enter(forwarded);
                 target.request_sync(operation)
             };
-            self.respond(id, result);
+            self.respond(id, result.map_err(|error| import.gone(error)));
             drop(flight);
             return;
         }
@@ -163,11 +163,12 @@ impl Connection {
             );
         }
         let peer = self.clone();
+        let import = import.clone();
         object.executor.handle.spawn(async move {
             tokio::select! {
                 // Dropping the forwarded request cancels it on the target.
                 result = with_path(forwarded, target.request_async(operation)) => {
-                    peer.finish_await(id, result)
+                    peer.finish_await(id, result.map_err(|error| import.gone(error)))
                 }
                 _ = cancelled => {},
             }

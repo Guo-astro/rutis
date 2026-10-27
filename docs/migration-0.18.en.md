@@ -110,6 +110,7 @@ Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for
 - A host service's methods show as `weather.today` in tracebacks, no longer `HostProxy.__getattr__.<locals>.call`; a call that returns no value gives `None`, and `UNDEFINED` no longer shows.
 - When the host disconnects, calls raise `ConnectionError` with code `peer-gone`.
 - `str(SyncWaitCycle)` is the message alone, with no `SyncWaitCycle: ` before it (as for the other errors).
+- The `cause` of `raise … from cause` crosses as the error graph's `cause` (as a JavaScript error's `cause` does); an error left unhandled while loading (`UnhandledError`) has the original error as its `cause`, so that error's own `cause` and an `AggregateError`'s `errors` cross too.
 - An error while importing a plugin's module (or a module it imports) raises `LoadError` (`from rutis import LoadError`, a subclass of `Exception`), naming the file and line that raised; a missing entry module itself is still the original `ModuleNotFoundError`.
 
 ### Go
@@ -164,6 +165,8 @@ In 0.17 a promise rejection a Node or Bun plugin left unhandled (or an exception
   runtime node: an unhandled error from an unknown row: Error: no region
       at …
   ```
+
+  Only the plugin's own frames are listed under it; when none of the frames is the plugin's, the whole stack is, as it is then the only clue to the source.
 
 - A plugin calling `process.exit` / `os._exit` still ends the process, and the runtime first writes `runtime node: row weather called process.exit(1)`.
 
