@@ -214,6 +214,21 @@ jobs:
           cp "$down/wheels-${{ matrix.wheel }}"/*.whl "$art/wheels/"
           cp "$down/binary-${{ matrix.platform }}"/dist/* "$art/binary/"
           ls -R "$art"
+      # After publishing, what is checked is that the registries serve this
+      # version: install from them, not from a mirror a self-hosted runner
+      # may be configured with (which may not have it yet). Before
+      # publishing, the packages come from the files built here, and only
+      # their dependencies are fetched, through the runner's configuration.
+      - name: the registries themselves
+        if: env.RUTIS_E2E_SOURCE == 'registry'
+        run: |
+          {
+            echo "NPM_CONFIG_REGISTRY=https://registry.npmjs.org/"
+            echo "PIP_INDEX_URL=https://pypi.org/simple"
+            echo "UV_DEFAULT_INDEX=https://pypi.org/simple"
+            echo "UV_INDEX_URL=https://pypi.org/simple"
+            echo "GOPROXY=https://proxy.golang.org,direct"
+          } >> "$GITHUB_ENV"
       - name: download the released binary
         if: env.RUTIS_E2E_SOURCE == 'registry'
         env:
