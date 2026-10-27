@@ -401,7 +401,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `node` | `project`（默认 `.`）、`runtime`、`restart` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
 | `bun` | `project`（默认 `.`）、`runtime`、`program`、`restart` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
-| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
+| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 

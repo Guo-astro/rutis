@@ -78,6 +78,17 @@ var (
 	PluginServedAs func(definition any, name string) any
 )
 
+// The SDK's services used by name (*rutis.Service), set by package rutis
+// (#687 §四): ServiceType is their type, ObjectFromPeer the *rutis.Service
+// an object of the far end is received as (into `any` or *rutis.Service),
+// and ServiceToPeer that object again when such a service is handed over
+// (false for a service that is no object).
+var (
+	ServiceType    reflect.Type
+	ObjectFromPeer func(*peer.RemoteObject) any
+	ServiceToPeer  func(service any) (*peer.RemoteObject, bool)
+)
+
 // ToPeer converts a Go value to a peer value.
 func ToPeer(v any) (any, error) { return toPeer(v, 0, 0) }
 
@@ -87,7 +98,7 @@ func toPeer(v any, levels, hops int) (any, error) {
 	switch x := v.(type) {
 	case nil:
 		return nil, nil
-	case peer.UndefinedType, *peer.RemoteFunction, *peer.RemoteFuture, *peer.RemotePlugin, peer.Func, peer.Object, peer.Plugin, peer.Map, peer.Set:
+	case peer.UndefinedType, *peer.RemoteFunction, *peer.RemoteFuture, *peer.RemotePlugin, *peer.RemoteObject, peer.Func, peer.Object, peer.Plugin, peer.Map, peer.Set:
 		return x, nil
 	case json.RawMessage:
 		return rawData(x)
@@ -154,6 +165,12 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		// A plugin definition crosses as itself, a `plugin` reference.
 		if t == PluginType && PluginToPeer != nil {
 			return PluginToPeer(rv.Interface()), nil
+		}
+		// A *rutis.Service of an object of the far end is that object.
+		if t == ServiceType && ServiceToPeer != nil {
+			if object, ok := ServiceToPeer(rv.Interface()); ok {
+				return object, nil
+			}
 		}
 		// What it points to: addressable, so methods on the pointer are
 		// found there (as encoding/json finds them).

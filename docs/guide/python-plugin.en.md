@@ -71,6 +71,23 @@ async def apply(ctx, config):
 
 When this row unloads or reloads, every copy mounted from a definition it handed over ends first. In the testing tool, a definition a test double receives can be passed to `load` as it is. See [Plugin API](plugin-api.en.md#plugin-definitions).
 
+### Objects with methods
+
+Data (`dict`, `list`, `tuple`, dataclasses) is copied; an instance of any other class goes to another language by reference: the far end gets a proxy whose calls reach the original object here. An object another process passes here is a proxy too:
+
+```python
+cache = await ctx.use("store").cache()
+await cache.set("a", 1)          # every method is async, a call of the far end's object
+value = await cache.get("a")
+```
+
+- Every public name on a proxy is a method (as with `ctx.use`); it has no data fields: to get data, have a method return it. Its `repr` is `<remote object>`.
+- One object passed several times is one proxy on the far end (`is`); a proxy passed back to its own process is the original object there.
+- An object does not follow its row: after the row that passed it unloads, it can still be called. Once its runtime has exited, calls on it fail with `peer-gone`.
+- Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set)`.
+- `undefined` (sent by JavaScript) inside a list or dict is `None` here, at any depth.
+- Rows in the same runtime get the object itself. The testing tool's strict mode gives the cross-process proxy.
+
 ## 3. Test
 
 `rutis.testing` does not require a host:

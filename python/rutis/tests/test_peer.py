@@ -321,12 +321,13 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
 
     async def test_an_object_is_refused_to_a_far_end_without_objects(self):
         # guarantee: bridge/bad-values (#675): only that call fails.
+        # objects-case(python): no-objects-declared
         reply = await self.session(["signals"])
         self.assertEqual(reply["op"], "throw", reply)
         self.assertEqual(
             reply["error"]["message"],
             "svc.get: the result cannot be sent: an object with methods (Weather) cannot cross to main; "
-            "pass plain data or a function instead",
+            "pass plain data or a function instead, or upgrade main to rutis 0.18",
         )
 
     async def test_an_object_goes_to_a_far_end_with_objects(self):
@@ -751,29 +752,6 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         self.assertEqual((reply["op"], reply["value"]), ("return", {"type": "data", "value": "small"}))
         self.assertIsNone(peer.closed_error)
 
-    async def test_a_received_object_fails_only_its_call_and_goes_back(self):
-        object_reference = {"type": "reference", "value": {"id": 5, "kind": "object", "home": False, "origin": []}}
-        refused = "received an object with methods, which Python cannot take; pass plain data or a function instead"
-        peer, read = self.session(lambda target, method, args: "served")
-        # In a call's arguments: the call is answered with why, the grant goes back.
-        peer._receive(self.invoke(1, "take", args={"type": "list", "value": [{"type": "data", "value": 1}, object_reference]}))
-        release = await read()
-        self.assertEqual(release, {"op": "release", "reference": 5, "count": 1})
-        reply = await read()
-        self.assertEqual(reply["op"], "throw", reply)
-        self.assertEqual(reply["error"]["message"], refused)
-        # In a reply: the call waiting for it fails.
-        future = peer.request("svc", "make", [])
-        sent = await read()
-        peer._receive({"op": "return", "id": sent["id"], "value": object_reference})
-        with self.assertRaisesRegex(ValueError, "^" + refused):
-            await future
-        self.assertEqual(await read(), {"op": "release", "reference": 5, "count": 1})
-        # The session goes on.
-        peer._receive(self.invoke(2, "after"))
-        self.assertEqual((await read())["value"], {"type": "data", "value": "served"})
-        self.assertIsNone(peer.closed_error)
-
     async def test_an_object_argument_to_a_far_end_without_objects_fails_that_call(self):
         peer, read = self.session(lambda target, method, args: None, endpoint={"local": "py", "expected": "main"})
         peer.start()
@@ -784,7 +762,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(
             str(refused.exception),
             "svc.take: argument 1 cannot be sent: an object with methods (Weather) cannot cross to main; "
-            "pass plain data or a function instead",
+            "pass plain data or a function instead, or upgrade main to rutis 0.18",
         )
         self.assertEqual(peer._exports, {})
         self.assertIsNone(peer.closed_error)

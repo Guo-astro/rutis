@@ -370,7 +370,7 @@ func TestSynchronousCallsSayTheyWaitToAFarEndThatAsked(t *testing.T) {
 		hello    string
 		declares string
 	}{
-		{"compat", Options{}, `{"op":"hello","version":2,"capabilities":%s}`, `["reentrant-sync","sync-wait","events-v2","value-instant","value-datetime","value-date","value-time","value-bytes","value-map","value-set","value-bigint","value-decimal","value-uuid"]`},
+		{"compat", Options{}, `{"op":"hello","version":2,"capabilities":%s}`, `["objects","reentrant-sync","sync-wait","events-v2","value-instant","value-datetime","value-date","value-time","value-bytes","value-map","value-set","value-bigint","value-decimal","value-uuid"]`},
 		{
 			"endpoint",
 			Options{Endpoint: &Endpoint{Local: "go", Expected: "main"}, Capabilities: []string{"signals", "reentrant-sync", "sync-wait"}},
