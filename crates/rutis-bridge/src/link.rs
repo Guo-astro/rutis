@@ -255,8 +255,13 @@ impl DynPlugin for LinkPlugin {
             ctx.effect(move || {
                 async move {
                     // Dropping the task's state closes the session, revokes
-                    // the registration and cancels any retry.
+                    // the registration and cancels any retry. Waited for:
+                    // a dial in the middle of starting a process (fork and
+                    // exec, which do not yield) finishes that first, and
+                    // the process must have been recorded, and its channel
+                    // closed, when the link has stopped.
                     task.abort();
+                    let _ = task.await;
                     state.send_replace(LinkState::Idle);
                     Ok(())
                 }

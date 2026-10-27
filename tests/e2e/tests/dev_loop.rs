@@ -484,9 +484,10 @@ fn dev_loop(kind: Kind) {
         false => check.wait_exit(),
     };
     assert!(checked.success(), "rutis-host check");
-    // The template declares no `provides`: its greeter is known once it
-    // runs.
+    // The template declares its `provides` (#666): check knows the
+    // greeter before it runs.
     check.expect("demo");
+    check.expect("provides: {\"greeter\":{\"hello\":\"async\"}}");
 
     // 4. dev, with a probe that calls the greeter.
     let (lang, dir) = kind.probe();

@@ -381,7 +381,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       bus.nameRow(key, key)
       const ctx = {
         use(name) {
-          if (!plugin.inject.includes(name)) throw new PluginTestError(`the plugin uses ${name} without declaring it in inject`)
+          if (!plugin.inject.includes(name)) throw new PluginTestError(`service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`)
           const found = lookup(name, own)
           if (found === undefined) throw new PluginTestError(`service ${name} is not available`)
           // A service another row here provides is the object itself.

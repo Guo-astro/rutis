@@ -205,6 +205,116 @@ async fn gives_up_a_cleanup_at_its_deadline(runtime: Runtime) {
     );
 }
 
+// ── A plugin keeping the runtime busy (#682) ────────────────────
+
+/// Unix: the exit statuses read as Unix ones (on Windows the runtimes end
+/// with their host's job anyway).
+#[cfg(unix)]
+mod busy {
+    use super::*;
+
+    /// Marks `config.marker`, then keeps the runtime's main thread busy for
+    /// ever: the runtime cannot run anything else, its session's end included.
+    const NODE_BUSY: &str = r#"
+import { writeFileSync } from 'node:fs'
+export function apply(ctx, config) {
+  setTimeout(() => { writeFileSync(config.marker, 'busy'); for (;;) {} }, 50)
+}
+"#;
+
+    #[cfg(feature = "python")]
+    const PYTHON_BUSY: &str = r#"
+import asyncio
+
+
+def apply(ctx, config):
+    def spin():
+        with open(config["marker"], "w") as marker:
+            marker.write("busy")
+        while True:
+            pass
+
+    asyncio.get_running_loop().call_later(0.05, spin)
+"#;
+
+    /// The busy plugin's row entry, written next to the lingering one.
+    fn busy_entry(runtime: Runtime, dir: &Path) -> PathBuf {
+        match runtime {
+            #[cfg(feature = "python")]
+            Runtime::Python => {
+                std::fs::write(dir.join("busy.py"), PYTHON_BUSY).unwrap();
+                PathBuf::from("busy")
+            }
+            #[cfg(feature = "go")]
+            Runtime::Go => {
+                unreachable!("a busy goroutine does not keep the Go runtime from its end")
+            }
+            _ => {
+                let entry = dir.join("busy.mjs");
+                std::fs::write(&entry, NODE_BUSY).unwrap();
+                entry
+            }
+        }
+    }
+
+    /// A plugin keeps the runtime busy when its host goes away: the runtime
+    /// cannot unload its rows, but it does not outlive its host either. Once
+    /// the deadline (1 s here) and a second more have passed, it ends: Node and
+    /// Bun from a watchdog thread (killed), Python from the thread reading its
+    /// channel (exit status 1).
+    async fn a_busy_runtime_ends_when_its_host_goes_away(runtime: Runtime) {
+        let dir = tempfile::tempdir().unwrap();
+        let (process, _) = start(runtime, dir.path(), "1").await;
+        let entry = busy_entry(runtime, dir.path());
+        let marker = dir.path().join("busy");
+        process
+            .load_row("busy", &entry, json!({ "marker": marker }), &[], &[], &[])
+            .await
+            .unwrap_or_else(|error| panic!("{runtime:?}: rows.load: {error}"));
+        rutis_test_support::until(|| marker.exists(), "the plugin to keep its runtime busy").await;
+        let gone = std::time::Instant::now();
+        process
+            .connection()
+            .close(Error::Transport("the host went away".into()));
+        let status = eventually(
+            || process.exit_status(),
+            &format!("{runtime:?} ends once its host went away, busy as it is"),
+        )
+        .await;
+        let took = gone.elapsed();
+        match runtime {
+            #[cfg(feature = "python")]
+            Runtime::Python => assert_eq!(status, "exited with exit status: 1", "{runtime:?}"),
+            _ => assert_eq!(status, "exited with signal: 9 (SIGKILL)", "{runtime:?}"),
+        }
+        // Not before its deadline: it gave its cleanups their time.
+        assert!(
+            took >= std::time::Duration::from_secs(1),
+            "{runtime:?} ended after {took:?}"
+        );
+    }
+
+    /// guarantee: host/killed-host-leaves-no-runtimes
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_kept_busy_ends_when_its_host_goes_away() {
+        a_busy_runtime_ends_when_its_host_goes_away(Runtime::Node).await;
+    }
+
+    /// guarantee: host/killed-host-leaves-no-runtimes
+    #[cfg(feature = "python")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn python_kept_busy_ends_when_its_host_goes_away() {
+        a_busy_runtime_ends_when_its_host_goes_away(Runtime::Python).await;
+    }
+
+    /// guarantee: host/killed-host-leaves-no-runtimes
+    #[cfg(all(unix, feature = "bun"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bun_kept_busy_ends_when_its_host_goes_away() {
+        a_busy_runtime_ends_when_its_host_goes_away(Runtime::Bun).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn node_exits_after_its_cleanups_when_its_host_goes_away() {
     exits_after_its_cleanups(Runtime::Node).await;

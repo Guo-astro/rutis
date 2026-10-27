@@ -24,10 +24,11 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name: "{{id}}",
 	// Services this plugin uses: Inject: []string{"llm"}, then ctx.Use("llm", &llm).
 	Inject: []string{},
-	// What ctx.Provide provides reaches rutis by itself, every method async.
-	// Declare Provides: rutis.Provides{"greeter": rutis.MethodsOf[*Greeter](rutis.Sync("Hello"))}
-	// only to make methods sync, or for `rutis-host check` to know it before
-	// the plugin runs.
+	// What it provides, so that `rutis-host check` (and `check --strict` in a
+	// host's CI) knows it before the plugin runs: the exported methods of
+	// *Greeter, async; rutis.MethodsOf[*Greeter](rutis.Sync("Hello")) would
+	// make Hello sync.
+	Provides: rutis.Provides{"greeter": rutis.MethodsOf[*Greeter]()},
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		greeting := config.Greeting
 		if greeting == "" {

@@ -70,6 +70,8 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 `ctx.diagnostics()` 列出存活 fiber 的身份、状态、声明与已绑定依赖，以及服务绑定。`injects[].status` 可区分缺失、实例越界、provider 未就绪、摘除中、check 拒绝或 panic；`TypeKey::describe()` 给出类型名、限定名和实例号。读取只使用已登记的元数据与最近一次门控检查结果，不调用插件或 check，也不触发生命周期转换。它逐个读取 fiber 和绑定，**不是全树原子快照**：并发生命周期变化时，同一结果中的状态、依赖和绑定可能来自不同时刻。check 状态（`check()` 谓词由 `rutis::internal` 的 `provide_checked` 登记）可能停留在上次门控结果；调用 `refresh()` 后应等待相关 fiber 收敛，再重新读取诊断。Cordis 原生的投递观察、清理树和服务拦截差异见 [设计草案](design-cordis-observation.md)。
 
+插件等的服务（`Deps` 或 `injects`）一直没有提供者时，它停在 Pending，本身不报错。等了 10 秒仍缺时，ErrorSink 收到一次 `ErrorKind::StillWaiting`，写明插件和缺的类型（默认的 sink 打印 `[rutis] plugin printer is still waiting after 10s for app::Greeting: it starts once that is provided`）；插件照常继续等，每次重新开始等待最多报一次。`ctx.report_waiting_after(Some(时长))` 改这个时间，`None` 不报，对整棵树生效（0.17.2 起，#676）。缺的键默认按 `TypeKey::describe()` 写；`ctx.name_keys_with(&namer)` 加一个命名函数，rutis-loader 挂上时就加了一个：服务写它的名字（`llm`），行的运行时写 `runtime py`。rutis-host 关掉它：它的行状态已经写明在等什么。
+
 `ctx.is_shutting_down()` 直接读取 root 的关闭标志。调用 `Ctx::shutdown()` 时即变为 true，无需等待清理完成，关闭结束后仍为 true。子上下文和隔离上下文共享该标志；仅卸载或关闭子插件不会将它置为 true。只需要关闭状态时（例如 loader 修改或创建实例前），可用它避免收集诊断快照。
 
 ## 错误与 panic

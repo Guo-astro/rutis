@@ -174,6 +174,9 @@ impl Host {
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
         );
+        // Each row's line says what it waits for (`status`): the kernel's
+        // report of a long wait would say it again.
+        root.report_waiting_after(None);
         let mut catalog = ServiceCatalog::new();
         catalog.share_by_name();
 
@@ -227,7 +230,25 @@ impl Host {
         };
         // In reverse: Node's resolver, which takes bare npm names, last.
         for language in LANGUAGES.iter().rev() {
-            language.start(config, &mut mount)?;
+            let key = language.key();
+            match language.start(config, &mut mount) {
+                // A runtime the file does not declare, which rows enabled
+                // with its defaults (#666): as before 0.17.2 its rows fail,
+                // and the host runs the others, saying why.
+                Err(error)
+                    if config
+                        .runtimes
+                        .implicit
+                        .iter()
+                        .any(|implicit| implicit == key) =>
+                {
+                    errln!(
+                        "rutis-host: warning: the {key} runtime, which rows use but runtimes does not declare, \
+                         cannot run with its defaults: {error}; its rows do not run"
+                    );
+                }
+                started => started?,
+            }
         }
 
         for remote in &config.runtimes.remote {
@@ -738,6 +759,53 @@ impl Host {
             let left = rutis_bridge::transport::local::running_processes();
             errln!("rutis-host: processes {left:?} did not end when killed");
         }
+    }
+
+    /// For each row, the other rows whose services it uses now, as rutis
+    /// resolved them: a service its fiber (or a fiber under it) depends on,
+    /// provided by another row's fiber (or one under it). A dependency
+    /// resolved inside a runtime only (between Cordis rows), or one not
+    /// resolved now, is not known here.
+    pub fn row_dependencies(
+        &self,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        use std::collections::{BTreeMap, BTreeSet, HashMap};
+        let rows: HashMap<rutis::host::PluginId, String> = self
+            .loader
+            .entries()
+            .into_iter()
+            .filter_map(|entry| Some((entry.plugin?, entry.id)))
+            .collect();
+        let plugins = self.root.diagnostics().plugins;
+        let parents: HashMap<rutis::host::PluginId, Option<rutis::host::PluginId>> = plugins
+            .iter()
+            .map(|plugin| (plugin.id, plugin.parent))
+            .collect();
+        // The row a fiber belongs to: its own, or the nearest above it.
+        let row_of = |mut id: rutis::host::PluginId| -> Option<&String> {
+            for _ in 0..parents.len() {
+                if let Some(row) = rows.get(&id) {
+                    return Some(row);
+                }
+                id = (*parents.get(&id)?)?;
+            }
+            None
+        };
+        let mut dependencies: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for plugin in &plugins {
+            let Some(row) = row_of(plugin.id) else {
+                continue;
+            };
+            for dependency in &plugin.resolved_dependencies {
+                if let Some(provider) = row_of(dependency.provider).filter(|other| *other != row) {
+                    dependencies
+                        .entry(row.clone())
+                        .or_default()
+                        .insert(provider.clone());
+                }
+            }
+        }
+        dependencies
     }
 
     /// What has not stopped yet: the plugins stopping (or still starting),

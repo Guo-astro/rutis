@@ -129,6 +129,28 @@ async def apply(ctx, config):
         probe.record(f"py calendar: {entry['title']} / {error.code} {error.data['Missing']['day']}")
 "#;
 
+/// Uses `calendar` without declaring it: found only through the
+/// registration rows share once another row leases it, whose calls carry
+/// no row; and `notes`, which nothing gives it.
+const JS_SNEAK: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['probe'],
+  async apply(ctx) {
+    const probe = ctx.use('probe')
+    try { ctx.use('notes') } catch (error) { probe.record(`sneak notes: ${error.message}`) }
+    let calendar
+    for (let tries = 0; calendar === undefined; tries++) {
+      try { calendar = ctx.use('calendar') } catch (error) {
+        if (tries > 400) throw error
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+    try { await calendar.caller() } catch (error) { probe.record(`sneak caller: ${error.message}`) }
+  },
+})
+"#;
+
 const JS_HIDDEN: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
@@ -210,6 +232,7 @@ async fn fixture_with(by_name: bool) -> Fixture {
         ("js_calendar", JS_CALENDAR),
         ("js_notes", JS_NOTES),
         ("js_hidden", JS_HIDDEN),
+        ("js_sneak", JS_SNEAK),
     ] {
         std::fs::write(
             js.join(format!("{file}.mjs")),
@@ -362,6 +385,45 @@ async fn a_marked_service_provided_in_an_instance_is_that_instances() {
     }
     fixture.expect("notes of A").await;
     fixture.expect("notes of B").await;
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A plugin using a service it does not declare in `inject` is told to
+/// declare it: `use` of one nothing gives it, and a method taking `&Ctx`
+/// of one it found through the registration rows share, whose calls carry
+/// no row (#676).
+/// guarantee: sdk/undeclared-use
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
+    let fixture = fixture().await;
+    let rows = vec![
+        fixture.js("jc", "js_calendar"),
+        fixture.js("sneak", "js_sneak"),
+    ];
+    fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    fixture
+        .expect("sneak notes: service notes is not available to this plugin, which does not declare it in inject: add 'notes' to its inject")
+        .await;
+    let said = Guard(HANG_GUARD * 3)
+        .eventually_with(
+            || {
+                fixture
+                    .probe
+                    .lines()
+                    .into_iter()
+                    .find(|line| line.starts_with("sneak caller: "))
+            },
+            "the undeclared call to fail",
+            || format!("{:?}", fixture.probe.lines()),
+        )
+        .await;
+    assert!(
+        said.ends_with(
+            "caller needs the calling row's context, which a call carries only when the \
+             calling plugin declares calendar in its inject: add 'calendar' to its inject"
+        ),
+        "{said}"
+    );
     fixture.root.shutdown().await.unwrap();
 }
 

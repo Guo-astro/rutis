@@ -40,7 +40,7 @@ test('a plugin runs with the services it injects and provides what it declares',
 test('undeclared services, missing services and missing methods are errors', async () => {
   await assert.rejects(load(weather, { config: {} }), /injects llm/)
   const sneaky = definePlugin({ apply(ctx) { ctx.use('llm') } })
-  await assert.rejects(load(sneaky, { services: { llm: {} } }), /without declaring it in inject/)
+  await assert.rejects(load(sneaky, { services: { llm: {} } }), /is not available to this plugin, which does not declare it in inject/)
   const incomplete = definePlugin({ provides: { a: { run: 'sync' } }, apply(ctx) { ctx.provide('a', {}) } })
   await assert.rejects(load(incomplete), /no such method/)
   const t = await load(weather, { config: { city: 'x' }, services: { llm: { ask: async () => '' } } })

@@ -903,7 +903,7 @@ type Ctx struct {
 // last result, after at most one value.
 func (c *Ctx) Use(name string, target any) error {
 	if !contains(c.row.def.inject, name) {
-		return fmt.Errorf("the plugin uses %s without declaring it in Inject", name)
+		return fmt.Errorf("service %s is not available to this plugin, which does not declare it in Inject: add %q to its Inject", name, name)
 	}
 	id := c.row.id(name)
 	c.rt.mu.Lock()

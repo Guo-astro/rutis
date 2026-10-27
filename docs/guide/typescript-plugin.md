@@ -6,8 +6,8 @@
 
 <!-- example: typescript run -->
 ```bash
-npx @arcships/rutis-host new greeter --lang node
-cd greeter
+npx @arcships/rutis-host new weather --lang node
+cd weather
 npm install
 ```
 
@@ -18,12 +18,14 @@ npm install
 | `src/index.ts` | 插件本身 |
 | `test/index.test.ts` | 单元测试，不需要宿主 |
 | `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `package.json` | 依赖 `@arcships/rutis`；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime` |
+| `package.json` | 依赖 `@arcships/rutis`（`^` 范围，见 §5）；开发依赖 `@arcships/rutis-host`、`@arcships/rutis-runtime`；`npm pack`、`npm publish` 前先构建（`prepack`） |
 | `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 npm |
 
 ## 2. 写插件
 
-<!-- example: typescript file=greeter/src/index.ts -->
+生成的 `src/index.ts` 是一个不用任何服务的 `greeter`，`test/index.test.ts` 是它的测试，`npm test` 直接能过。下面把它换成一个用到 `llm` 服务的 `weather`：`src/index.ts` 换成这段，`test/index.test.ts` 同时换成 §3 的那段（两个文件一起换；只换一个，模板自带的测试会失败）。
+
+<!-- example: typescript file=weather/src/index.ts -->
 ```ts
 import { definePlugin } from '@arcships/rutis'
 
@@ -45,6 +47,7 @@ class Weather {
 
 export default definePlugin<Config>({
   inject: ['llm'],                                 // 用到的服务：都就绪才启动，任何一个撤销就停下
+  provides: { weather: { today: 'async' } },      // 提供的服务：check 运行前就知道；只有声明的方法能调用
   config: { type: 'object', properties: { city: { type: 'string' } } },  // 配置的 JSON Schema
   apply(ctx, config) {
     ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
@@ -55,7 +58,7 @@ export default definePlugin<Config>({
 
 插件只依赖 `@arcships/rutis`。它不认识宿主是谁、`llm` 由哪种语言或哪台机器提供，也不管自己什么时候启动和停止：这些由宿主决定。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
 
-`weather` 不用声明：`ctx.provide` 提供的服务自动对外，方法取对象上的函数（这里是 `today`），按 `async` 调用。要把某个方法标成 `sync`，或让 `rutis-host check` 在运行前知道插件提供什么，再写 `provides`，例如 `provides: { weather: { unit: 'sync' } }`（写了的服务按声明，只有声明的方法能调用）。
+`provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了的服务按声明：只有声明的方法能调用，加方法时也加到这里；`'sync'` 把方法标成同步。不写也能运行：`ctx.provide` 提供的服务照样自动对外，方法取对象上的函数，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
 插件本身也是一个值：把 `definePlugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，用的是你在 `apply` 里准备好的东西。见 [插件 API](plugin-api.md#插件定义)。
 
@@ -63,7 +66,7 @@ export default definePlugin<Config>({
 
 `@arcships/rutis/testing` 不需要宿主，给插件提供假服务、调用它提供的服务：
 
-<!-- example: typescript file=greeter/test/index.test.ts -->
+<!-- example: typescript file=weather/test/index.test.ts -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -93,7 +96,7 @@ npm test
 
 下面两个插件在测试工具的 `host()` 上共享一条总线：`greeter` 用 `serial` 取第一个结果、用 `waterfall` 让别的插件改写问候语、用 `emit` 通知；`shout` 是 waterfall 的一环，并监听通知。
 
-<!-- example: typescript file=greeter/test/events.test.ts order=2 -->
+<!-- example: typescript file=weather/test/events.test.ts order=2 -->
 ```ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -147,24 +150,24 @@ test('plugins hear each other', async () => {
 
 ## 4. 在本地宿主里运行
 
-<!-- example: typescript run until="greeter: running" order=99 -->
+<!-- example: typescript run until="weather: running" order=99 -->
 ```bash
 npx rutis-host dev
 ```
 
 `dev` 把这个项目作为一行运行（源码 `src/index.ts`，不需要先构建），改了它的文件就重新加载它；只有文件变了的行重新加载，`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。插件需要的其他服务写在 `rutis.dev.json` 里，例如一个假的 `llm`：
 
-<!-- example: typescript file=greeter/rutis.dev.json -->
+<!-- example: typescript file=weather/rutis.dev.json -->
 ```json
 {
   "rows": [
-    { "id": "greeter", "config": { "city": "Oslo" } },
+    { "id": "weather", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "./dev/fake-llm.ts" }
   ]
 }
 ```
 
-<!-- example: typescript file=greeter/dev/fake-llm.ts -->
+<!-- example: typescript file=weather/dev/fake-llm.ts -->
 ```ts
 // dev/fake-llm.ts
 import { definePlugin } from '@arcships/rutis'
@@ -179,27 +182,28 @@ export default definePlugin({
 ## 5. 发布
 
 ```bash
-npm run build      # tsc 生成 dist/
-npm publish
+npm publish --access public   # 先运行 prepack：tsc 生成 dist/
 ```
 
-或者推一个 `v0.1.0` 这样的 tag，模板里的工作流会测试、`check` 并发布（仓库里需要 `NPM_TOKEN` secret）。
+或者推一个 `v0.1.0` 这样的 tag，模板里的工作流会测试、`check` 并发布（仓库里需要 `NPM_TOKEN` secret）。`npm pack` 和 `npm publish` 都会先运行 `prepack`（`npm run build`），所以包里总有 `dist/`。
 
-依赖写 `"@arcships/rutis": "^0.17.1"` 这样的范围。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
+发布前给包起一个你自己的名字：`weather`、`greeter` 这样的短名字在 npm 上早被占用了。用带作用域的名字，改 `package.json` 的 `name`，例如 `"@your-name/weather"`（作用域是你的 npm 用户名或组织；首次发布带作用域的公开包要 `--access public`，模板的工作流已经带上）。宿主的行名就是这个包名。
+
+依赖写 `"@arcships/rutis": "^0.17.2"` 这样的范围（`rutis-host new` 写的是它自己的版本）。插件用的是它写时那个次版本的 SDK：宿主里装着别的版本时，npm 给插件装它自己的一份，几个版本的 SDK 可以并存（插件靠 `Symbol.for` 的标记被认出，与是哪一份 SDK 无关）。插件上带有它所用的插件 API 版本（`definePlugin` 自动标记），宿主的运行时比它旧时会明确报错，而不是加载后出错。
 
 ## 6. 被宿主使用
 
 宿主把插件包装进它的 Node 项目（和 `@arcships/rutis-runtime` 同一处），然后在配置里加一行，行名就是包名：
 
 ```bash
-npm install greeter
+npm install @your-name/weather
 ```
 
 ```json
-{ "id": "greeter", "name": "greeter", "config": { "city": "Oslo" } }
+{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
 ```
 
-见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
 
 ## 已有的 Cordis 插件
 

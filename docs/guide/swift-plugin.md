@@ -64,7 +64,7 @@ public final class Weather: @unchecked Sendable {
 public let plugin = Rutis.define(Plugin(
     name: "weather",
     inject: ["llm"],                                            // 全部就绪时才运行
-    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // 可选：把 unit 标为同步；方法默认异步
+    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // 声明提供什么（check 运行前就知道）；unit 标为同步，其余异步
     config: Config.self,
     apply: { ctx, config in
         ctx.provide("weather", Weather(llm: try ctx.use("llm", LLMProxy.self), city: config.city))

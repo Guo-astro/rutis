@@ -15,7 +15,7 @@ bun install
 | `src/index.ts` | 插件本身 |
 | `test/index.test.ts` | 单元测试（`bun test`），不需要宿主 |
 | `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `package.json` | 依赖 `@arcships/rutis`；开发依赖 `@arcships/rutis-bun`、`@arcships/rutis-host` |
+| `package.json` | 依赖 `@arcships/rutis`（`^` 范围，见 [TypeScript 插件 §5](typescript-plugin.md#5-发布)）；开发依赖 `@arcships/rutis-bun`、`@arcships/rutis-host`；`npm pack`、`npm publish` 前先构建（`prepack`） |
 | `tsconfig.json` | `bun run check` 做类型检查：Bun 运行 TypeScript 时不检查类型 |
 | `.github/workflows/publish.yml` | 打 `v*` tag 时测试并发布到 npm |
 
@@ -113,7 +113,7 @@ bunx --bun rutis-host dev
 
 ## 5. 发布
 
-与 TypeScript 插件相同：`npm publish`（模板的 workflow 在打 `v*` tag 时发布）。宿主用 `bun add` 安装后，加一行 `{ "id": "greeter", "name": "bun:greeter" }`。
+与 TypeScript 插件相同：`npm publish`（先运行 `prepack` 构建；模板的 workflow 在打 `v*` tag 时发布；包名用带作用域的名字，见 [TypeScript 插件 §5](typescript-plugin.md#5-发布)）。宿主用 `bun add` 安装后，加一行 `{ "id": "greeter", "name": "bun:greeter" }`。
 
 ## 6. 在别的机器上运行
 

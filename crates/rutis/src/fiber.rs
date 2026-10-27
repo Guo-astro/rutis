@@ -257,6 +257,9 @@ pub(crate) struct FiberInner {
     /// The generation of the library whose code this fiber runs
     /// (`service::set_generation`); 0 when none was set.
     pub code_generation: std::sync::atomic::AtomicU64,
+    /// The generation whose wait for missing services is watched
+    /// (`waiting`): reported once per wait.
+    pub waiting_watch: Mutex<Option<u64>>,
 }
 
 /// 工厂擦除面(D32):泛型 `PluginFactory<C>` 的类型擦除适配层内部协议。
@@ -652,6 +655,7 @@ impl FiberInner {
             if matches!(this.state(), FiberState::Active | FiberState::Loading) {
                 Self::unload(this, NextState::Pending).await;
             }
+            Self::watch_waiting(this);
             return;
         }
         // 等值合并:依赖三元组集未变则跳过(§〇 epoch 内容派生相等键)
@@ -666,6 +670,23 @@ impl FiberInner {
             Self::unload(this, NextState::Pending).await;
         }
         Self::load(this, satisfied).await;
+    }
+
+    /// Waiting for services nothing provides: once per wait, have it
+    /// reported if it lasts ([`waiting`]).
+    fn watch_waiting(this: &Arc<Self>) {
+        if this.is_root || this.state() != FiberState::Pending {
+            return;
+        }
+        let generation = this.transition.lock().unwrap().generation;
+        {
+            let mut watched = this.waiting_watch.lock().unwrap();
+            if *watched == Some(generation) {
+                return;
+            }
+            *watched = Some(generation);
+        }
+        waiting::watch(this, generation);
     }
 
     async fn load(this: &Arc<Self>, deps: HashSet<(PluginId, u64, TypeKey, Option<ScopeId>)>) {
@@ -715,6 +736,9 @@ impl FiberInner {
             // not skipped as unchanged.
             Self::unload(this, NextState::Pending).await;
             this.flush_status();
+            if !missing.is_empty() {
+                Self::watch_waiting(this);
+            }
             return;
         }
 
@@ -1361,6 +1385,7 @@ fn spawn_fiber_inner(
             scope_group: std::sync::OnceLock::new(),
             row: std::sync::OnceLock::new(),
             code_generation: std::sync::atomic::AtomicU64::new(0),
+            waiting_watch: Mutex::new(None),
             shutdown_task: Mutex::new(None),
             shutdown_inner: Mutex::new(None),
             driver: Mutex::new(None),
@@ -1388,6 +1413,11 @@ fn spawn_fiber_inner(
 }
 
 /// fiber 句柄:注册返回,`IntoFuture` = 等待进入稳定态(启动错误经 Err 返回)。
+///
+/// Awaiting a view waits until what is already queued for the fiber has
+/// been handled, not until the plugin runs: a plugin waiting for a
+/// dependency that is not there is `Pending`, and the await returns
+/// `Ok(())`. To wait until it runs, watch its state ([`FiberView::watch`]).
 pub struct FiberView {
     /// 插件身份(D10)。
     pub id: PluginId,
@@ -1877,6 +1907,8 @@ pub(crate) mod test_hooks {
         }
     }
 }
+
+pub(crate) mod waiting;
 
 #[cfg(test)]
 mod transient_tests;

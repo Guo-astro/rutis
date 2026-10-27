@@ -122,6 +122,11 @@ pub struct Runtimes {
     /// connection an instance of a group (`listen` and `instances`).
     #[serde(default)]
     pub remote: Vec<RemoteRuntime>,
+    /// The local runtimes (by key) that rows enabled with their defaults,
+    /// the file not declaring them ([`HostConfig::enable_used_runtimes`]):
+    /// one that cannot start is a warning, its rows fail, the host runs.
+    #[serde(skip)]
+    pub implicit: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -361,12 +366,27 @@ impl HostConfig {
 
     /// The configuration `text`, read from `path` ([`HostConfig::read`]).
     pub fn parse(text: &str, path: &Path) -> Result<Self, String> {
+        Self::parse_beside(text, path, &Runtimes::default())
+    }
+
+    /// [`HostConfig::read`] of a file whose rows also run in the runtimes
+    /// `provided`, which something else configures: `rutis.dev.json` beside
+    /// the plugin project's own runtime, which `rutis-host dev` sets up. A
+    /// runtime `provided` has is not one the file leaves undeclared.
+    pub fn read_beside(path: &Path, provided: &Runtimes) -> Result<Self, String> {
+        Self::parse_beside(&read_text(path)?, path, provided)
+    }
+
+    /// [`HostConfig::parse`], beside the runtimes `provided`
+    /// ([`HostConfig::read_beside`]).
+    pub fn parse_beside(text: &str, path: &Path, provided: &Runtimes) -> Result<Self, String> {
         check_newer_format(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();
         check_rows(&config.rows, "rows", &mut ignored)
             .map_err(|error| format!("{}: {error}", path.display()))?;
+        ignored.extend(config.enable_used_runtimes_beside(provided));
         config.warnings = ignored
             .into_iter()
             .map(|warning| format!("{}: {warning}", path.display()))
@@ -386,6 +406,52 @@ impl HostConfig {
             }
         }
         Ok(config)
+    }
+
+    /// Enable, with its defaults, each local runtime that enabled rows use
+    /// but `runtimes` does not declare (a `py:` row without `runtimes.py`),
+    /// as if it declared `"py": {}` (#666); one line each, saying so.
+    /// Before [`HostConfig::rebase`]: the defaults are relative to the file.
+    pub fn enable_used_runtimes(&mut self) -> Vec<String> {
+        self.enable_used_runtimes_beside(&Runtimes::default())
+    }
+
+    /// [`HostConfig::enable_used_runtimes`], but for the runtimes
+    /// `provided` (configured elsewhere, [`HostConfig::read_beside`]),
+    /// which are neither enabled here nor said to be undeclared.
+    pub fn enable_used_runtimes_beside(&mut self, provided: &Runtimes) -> Vec<String> {
+        let mut names = Vec::new();
+        rows_named(&self.rows, &mut names);
+        let mut said = Vec::new();
+        for language in LANGUAGES {
+            let key = language.key();
+            // A remote runtime of that name takes its rows.
+            let remote =
+                self.runtimes.remote.iter().any(|remote| {
+                    remote.name == key || (key == "node" && remote.language == "node")
+                });
+            if language.configured(&self.runtimes) || language.configured(provided) || remote {
+                continue;
+            }
+            let rows: Vec<&str> = names
+                .iter()
+                .filter(|name| language.runs_by_default(name))
+                .map(String::as_str)
+                .collect();
+            if let Some(first) = rows.first() {
+                language.enable_default(&mut self.runtimes);
+                self.runtimes.implicit.push(key.to_owned());
+                said.push(format!(
+                    "rows use the {key} runtime ({first}{}), which runtimes does not declare: \
+                     it runs with its defaults; declare \"runtimes\": {{ \"{key}\": {{}} }} to say so",
+                    match rows.len() {
+                        1 => String::new(),
+                        n => format!(" and {} more", n - 1),
+                    }
+                ));
+            }
+        }
+        said
     }
 
     /// Make the relative paths in this configuration relative to `base`.
@@ -439,7 +505,19 @@ impl HostConfig {
     /// Add `other`'s runtimes (where this has none), listeners and rows.
     pub fn merge(&mut self, mut other: HostConfig) {
         for language in LANGUAGES {
+            let taken = !language.configured(&self.runtimes);
             language.merge(&mut self.runtimes, &mut other.runtimes);
+            // Taken as rows of the other enabled it: still implicit.
+            let key = language.key();
+            if taken
+                && other
+                    .runtimes
+                    .implicit
+                    .iter()
+                    .any(|implicit| implicit == key)
+            {
+                self.runtimes.implicit.push(key.to_owned());
+            }
         }
         self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
@@ -613,6 +691,26 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
     Ok(())
 }
 
+/// The names of the rows in `rows` and the groups in it that are not
+/// disabled (`"disabled": true`), in order.
+fn rows_named(rows: &[Value], names: &mut Vec<String>) {
+    for row in rows {
+        if row["disabled"] == true {
+            continue;
+        }
+        if let Some(name) = row["name"].as_str() {
+            names.push(name.to_owned());
+        }
+        let group = !matches!(
+            row.get("group"),
+            None | Some(Value::Null | Value::Bool(false))
+        );
+        if let (true, Some(children)) = (group, row["config"].as_array()) {
+            rows_named(children, names);
+        }
+    }
+}
+
 /// The token presented to, or accepted from, `peer`:
 /// `RUTIS_TOKEN_<PEER>` (upper case, `-` as `_`), else `RUTIS_TOKEN`.
 pub fn token(peer: &str) -> Option<String> {
@@ -673,6 +771,63 @@ mod tests {
             Path::new("/srv/app/.venv/bin/python")
         );
         assert!(serde_json::from_value::<HostConfig>(json!({ "unknown": 1 })).is_err());
+    }
+
+    /// Rows of a language whose runtime `runtimes` does not declare enable
+    /// it with its defaults, saying so once (#666); a declared runtime, a
+    /// remote one of that name, a disabled row or an npm name do not.
+    /// guarantee: host/config-paths-and-defaults
+    #[test]
+    #[cfg(unix)]
+    fn rows_enable_the_runtime_they_use() {
+        let text = json!({
+            "rows": [
+                { "id": "llm", "name": "py:llmbox" },
+                { "id": "g", "group": true, "config": [
+                    { "id": "tool", "name": "py:tool" },
+                    { "id": "ts", "name": "./plugins/fake.ts" },
+                ] },
+                { "id": "off", "name": "bun:off", "disabled": true },
+                { "id": "w", "name": "weather" },
+            ]
+        })
+        .to_string();
+        let config = HostConfig::parse(&text, Path::new("/srv/app/rutis.json")).unwrap();
+        assert_eq!(
+            config.runtimes.py.as_ref().unwrap().project,
+            Path::new("/srv/app/.")
+        );
+        assert!(config.runtimes.node.is_some());
+        assert!(config.runtimes.bun.is_none());
+        assert_eq!(
+            config.warnings,
+            [
+                "/srv/app/rutis.json: rows use the node runtime (./plugins/fake.ts), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"node\": {} } to say so",
+                "/srv/app/rutis.json: rows use the py runtime (py:llmbox and 1 more), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"py\": {} } to say so",
+            ]
+        );
+        // Declared, or a remote runtime's: nothing added, nothing said.
+        let declared = json!({
+            "runtimes": { "py": { "python": "/usr/bin/python3" }, "remote": [{ "name": "bun", "language": "bun" }] },
+            "rows": [{ "id": "a", "name": "py:a" }, { "id": "b", "name": "bun:b" }],
+        })
+        .to_string();
+        let config = HostConfig::parse(&declared, Path::new("/srv/app/rutis.json")).unwrap();
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+        assert!(config.runtimes.bun.is_none());
+        assert!(config.runtimes.implicit.is_empty());
+        assert_eq!(
+            config.runtimes.py.unwrap().python.unwrap(),
+            Path::new("/usr/bin/python3")
+        );
+        // A `bun:` row enables Bun; what rows enable is recorded as such.
+        let bun = json!({ "rows": [{ "id": "b", "name": "bun:b" }] }).to_string();
+        let config = HostConfig::parse(&bun, Path::new("/srv/app/rutis.json")).unwrap();
+        assert_eq!(
+            config.runtimes.bun.as_ref().unwrap().project,
+            Path::new("/srv/app/.")
+        );
+        assert_eq!(config.runtimes.implicit, ["bun"]);
     }
 
     #[test]

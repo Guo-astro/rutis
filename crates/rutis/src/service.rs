@@ -635,6 +635,13 @@ pub trait Wire: Send + Sync + 'static {
     }
     /// The context of the row calling, read while the call starts.
     fn caller(&self) -> Option<Ctx>;
+    /// Why `method`, which takes the calling row's context, has none
+    /// ([`Wire::caller`] is `None`), read while the call starts.
+    fn no_caller(&self, method: &str) -> String {
+        format!(
+            "{method} needs the calling row's context: only a row of a language runtime can call it"
+        )
+    }
     /// A call that is wrong in itself (arity, a value of the wrong shape).
     fn error(&self, message: String) -> CallError;
     /// A method's `Err` as thrown: `name`, `code`, `message`, `data`.
@@ -688,11 +695,8 @@ pub fn decode<T: DeserializeOwned>(
 
 /// The calling row's context, for a method taking `&Ctx`.
 pub fn caller(wire: &'static dyn Wire, method: &str) -> Result<Ctx, CallError> {
-    wire.caller().ok_or_else(|| {
-        wire.error(format!(
-            "{method} needs the calling row's context: only a row of a language runtime can call it"
-        ))
-    })
+    wire.caller()
+        .ok_or_else(|| wire.error(wire.no_caller(method)))
 }
 
 /// The function passed for a parameter taking one.

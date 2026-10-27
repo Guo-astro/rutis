@@ -80,6 +80,17 @@ pub trait Language: Sync {
         Restart::No
     }
 
+    /// Whether a row named `name` (as written in the file) runs in its
+    /// runtime with that runtime's defaults: such rows enable the runtime
+    /// when `runtimes` does not declare it (#666). Never for a language
+    /// without defaults (Go and Swift need their binaries named).
+    fn runs_by_default(&self, _name: &str) -> bool {
+        false
+    }
+
+    /// Declare its runtime with every setting at its default.
+    fn enable_default(&self, _runtimes: &mut Runtimes) {}
+
     /// Make its relative paths absolute with `at`.
     fn rebase(&self, runtimes: &mut Runtimes, at: &dyn Fn(&mut PathBuf));
 

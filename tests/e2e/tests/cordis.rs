@@ -317,7 +317,7 @@ fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     disabled["disabled"] = json!(true);
     s.replace("rutis.json", config(&disabled));
     host.expect("rutis-host: reloaded rutis.json (1 row changed)");
-    host.expect("persona: waiting for its services");
+    host.expect("persona: waiting for ");
     host.expect("prompts: disabled");
     reader.event(&mut host, "stopped");
     assert_eq!(
@@ -364,7 +364,7 @@ fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     let down = host.expect("runtime node: down (");
     assert!(down.contains("exited with"), "{down}");
     for id in ids.iter().chain(&["persona", "crasher", "breaker"]) {
-        host.expect(&format!("{id}: waiting for its services"));
+        host.expect(&format!("{id}: waiting for "));
     }
     breaker.event(&mut host, "stopped");
     assert_eq!(

@@ -398,19 +398,29 @@ impl DynPlugin for RuntimePlugin {
                     false => Err(error),
                 };
             }
-            let disposer = ctx.provide_at(
+            // Running before its service is there: what applies once it is
+            // (the rows' second stage) sees the runtime running (#682, #701).
+            self.state
+                .send_replace(RuntimeState::Ready(process.clone()));
+            let provided = ctx.provide_at(
                 Runtime::key(&self.runtime),
                 Arc::new(Runtime {
                     process: process.clone(),
                     hosts: self.hosts.clone(),
                 }),
-            )?;
+            );
+            let disposer = match provided {
+                Ok(disposer) => disposer,
+                Err(error) => {
+                    // As before it was set: the cleanup says how it ends.
+                    self.state.send_replace(RuntimeState::Starting);
+                    return Err(error);
+                }
+            };
             *service.lock().unwrap() = Some(disposer);
             // The watcher starts last, so every failure above leaves no task
             // holding the process. A process that already ended is seen at
             // once: `closed` resolves for a session that has ended.
-            self.state
-                .send_replace(RuntimeState::Ready(process.clone()));
             *watcher.lock().unwrap() = Some(tokio::spawn(watch_exit(
                 process,
                 self.state.clone(),

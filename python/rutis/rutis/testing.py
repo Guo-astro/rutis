@@ -473,7 +473,10 @@ class _Context(sdk.Context):
     def use(self, name: str) -> Any:
         plugin = self._loaded._plugin
         if name not in plugin.inject:
-            raise PluginTestError(f"the plugin uses {name} without declaring it in inject")
+            raise PluginTestError(
+                f"service {name} is not available to this plugin, which does not declare it "
+                f"in inject: add '{name}' to its inject"
+            )
         service = self._services[name]
         return _cross(service, f"service {name}") if self._loaded._strict else service
 

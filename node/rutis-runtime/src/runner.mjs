@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isAbsolute } from 'node:path'
 import { statSync } from 'node:fs'
+import { Worker } from 'node:worker_threads'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
@@ -65,6 +66,12 @@ let announce = false
 const rows = new Map() // key -> { fiber, inner, config, exports, loading, scope, labelOf, chain, abort }
 // rutis services registered one by one (`hosts.*`): id -> withdraw
 const hosts = new Map()
+// Those whose name a row's plugin provided first in their scope (#682):
+// rutis refuses that row's service, since the host has the name, and the
+// row fails; until its service is withdrawn, the host's waits here, so
+// the rows leasing it do not fail for the other row's mistake (they see
+// it in a scope of their own). id -> { scope, name, proxy }
+const waitingHosts = new Map()
 // What this runner supports beyond protocol 2, reported by `mount`.
 // rows.announce: the services a row provides (a Cordis plugin's, or a leaf
 // plugin's `ctx.provide`) reach rutis without a declaration, announced with
@@ -313,6 +320,42 @@ ctx.on('internal/service', () => {
   if (slots.size) refresh()
   discoverLater()
 })
+// A host service waits for a name in any scope, an isolated one included,
+// whose changes the root's listener above does not hear (Cordis filters
+// internal/service by isolation): this one hears them all.
+ctx.on('internal/service', () => provideWaitingLater(), { global: true })
+
+// What holds `name` in `scope`, if anything does.
+function holder(scope, name) {
+  const key = scope[Context.isolate][name]
+  return key ? ctx.reflect.store[key] : undefined
+}
+
+// Whether a row's plugin (or a fiber it started) holds `name` in `scope`.
+function takenByRow(scope, name) {
+  const impl = holder(scope, name)
+  return Boolean(impl && rowOf(impl.fiber))
+}
+
+// Register the host services whose name was taken once it is free again
+// (the row unloading may have left `rows` before its service goes).
+// Cordis emits internal/service from inside its own bookkeeping: they are
+// registered once it is done.
+let providingWaiting = false
+function provideWaitingLater() {
+  if (providingWaiting || !waitingHosts.size) return
+  providingWaiting = true
+  queueMicrotask(() => {
+    providingWaiting = false
+    for (const [id, { scope, name, proxy }] of [...waitingHosts]) {
+      if (holder(scope, name)) continue
+      waitingHosts.delete(id)
+      try { hosts.set(id, scope.provide(name, proxy)) } catch (error) {
+        process.stderr.write(`rutis runtime: cannot register host service ${id}: ${error?.message ?? error}\n`)
+      }
+    }
+  })
+}
 ctx.on('internal/set', (_ctx, _name, _value, _error, next) => {
   const result = next()
   if (slots.size) refresh()
@@ -364,24 +407,30 @@ const undeclared = name => {
   if (fibers && !announce) tellOldHost(name)
 }
 
-async function pluginOf(entry) {
+// `rowInject`: the names the row's own `inject` adds, which a leaf plugin
+// may use too.
+async function pluginOf(entry, rowInject = []) {
   entry = located(entry)
   const declared = await declaredOf(entry, described)
-  return isLeaf(declared) ? toCordis(declared, undeclared) : declared
+  return isLeaf(declared) ? toCordis(declared, undeclared, rowInject) : declared
 }
 
 // A plugin definition this runtime handed over, back as a row's entry (a
 // copy) or to be described: a leaf plugin, or a Cordis plugin by Cordis's
 // own rule, a function or a class, or an object with `apply`. A leaf one is
-// wrapped once, so its copies are one plugin in Cordis.
+// wrapped once per row `inject` (`rowInject`), so its copies are one plugin
+// in Cordis.
 const isCordisPlugin = value => typeof value === 'function' || (value !== null && typeof value === 'object' && typeof value.apply === 'function')
 const wrappedDefinitions = new WeakMap()
-function definedPlugin(value) {
+function definedPlugin(value, rowInject = []) {
   if (isLeaf(value)) {
-    let wrapped = wrappedDefinitions.get(value)
+    let wrappings = wrappedDefinitions.get(value)
+    if (!wrappings) wrappedDefinitions.set(value, wrappings = new Map())
+    const key = rowInject.join('\0')
+    let wrapped = wrappings.get(key)
     if (!wrapped) {
-      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared)
-      wrappedDefinitions.set(value, wrapped)
+      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared, rowInject)
+      wrappings.set(key, wrapped)
     }
     return wrapped
   }
@@ -477,7 +526,7 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
     if (owner || slots.has(id)) throw new Error(`service ${id} is already exported${owner ? ` by row ${owner[0]}` : ''}`)
   }
   // A module's path, or a plugin definition this runtime handed over.
-  const plugin = typeof entry === 'string' ? await pluginOf(entry) : definedPlugin(entry)
+  const plugin = typeof entry === 'string' ? await pluginOf(entry, inject ?? []) : definedPlugin(entry, inject ?? [])
   let scope = ctx
   for (const [name, label] of isolate ?? []) {
     scopedId(name, label)
@@ -550,6 +599,8 @@ async function unloadRow(key) {
   await bus.settle(key, deadline)
   await row.fiber.dispose()
   bus.forgetRow(key)
+  // What it provided is gone: a host service waiting for the name takes it.
+  provideWaitingLater()
   return null
 }
 
@@ -763,12 +814,17 @@ function dispatch(target, method, args) {
         // rows isolating the name with that label see it.
         const [name, methods, label] = args ?? []
         const id = scopedId(name, label)
-        if (hosts.has(id)) throw new Error(`host service ${id} is already provided`)
+        if (hosts.has(id) || waitingHosts.has(id)) throw new Error(`host service ${id} is already provided`)
         const scope = label ? ctx.isolate(name, isolated(name, label)) : ctx
-        hosts.set(id, scope.provide(name, hostProxy(id, methods ?? {})))
+        const proxy = hostProxy(id, methods ?? {})
+        // A row's plugin provided the name here first: the host's waits
+        // for it to go (see `waitingHosts`).
+        if (takenByRow(scope, name)) waitingHosts.set(id, { scope, name, proxy })
+        else hosts.set(id, scope.provide(name, proxy))
         return null
       }
       case 'hosts.withdraw': {
+        waitingHosts.delete(args?.[0])
         const withdraw = hosts.get(args?.[0])
         hosts.delete(args?.[0])
         return withdraw ? Promise.resolve(withdraw()).then(() => null) : null
@@ -779,7 +835,7 @@ function dispatch(target, method, args) {
         for (const runtime of ctx.registry.values()) live += runtime.fibers.length
         return {
           rows: [...rows.keys()],
-          hosts: [...hosts.keys()],
+          hosts: [...hosts.keys(), ...waitingHosts.keys()],
           slots: [...slots.keys()],
           handles: [...handles.keys()],
           plugins: ctx.registry.size,
@@ -810,9 +866,35 @@ function dispatch(target, method, args) {
   return result
 }
 
+// A watchdog on a thread of its own: once the channel ended, this process
+// unloads its rows and exits within the shutdown deadline (below). A
+// plugin keeping this thread busy keeps it from both, and from even seeing
+// that the session ended, which the I/O thread sees: a second after the
+// deadline, counted from when the I/O thread saw the end, the watchdog
+// ends the process, so it never outlives its host. It sleeps until then
+// (the wait's timeout is the clock), and process.exit ends it as any other.
+const channelEnded = new Int32Array(new SharedArrayBuffer(4))
+watch(channelEnded, deadline + 1000)
+function watch(ended, after) {
+  const watchdog = new Worker(`
+    const { workerData: { ended, after } } = require('node:worker_threads')
+    const { writeSync } = require('node:fs')
+    Atomics.wait(ended, 0, 0)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, after)
+    try {
+      writeSync(2, 'rutis runtime: the session ended ' + after / 1000 + ' s ago and this process has not exited (a plugin keeps it busy); ending it\\n')
+    } catch {}
+    process.kill(process.pid, 'SIGKILL')
+  `, { eval: true, workerData: { ended, after } })
+  watchdog.unref()
+  watchdog.on('error', error => process.stderr.write(`rutis runtime: the watchdog failed: ${error?.message ?? error}\n`))
+}
+
 // Calls on exported objects and functions may replace services too.
 try {
   peer = await Process.connect(channelSpec, dispatch, () => { if (slots.size && !closing) refresh() }, endpoint, {
+    // The channel's end, seen by the watchdog.
+    ended: channelEnded,
     // `plugins.read` only reads: answered even while a synchronous call
     // waits (a definition handed to a synchronous host method).
     inline: ['events.elsewhere', 'plugins.read'],

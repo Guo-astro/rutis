@@ -24,6 +24,7 @@ import sys
 import threading
 import traceback
 
+from .channel import SocketChannel
 from .peer import EVENTS_REFUSAL, Incompatible, Peer
 from .runner import Runtime, shutdown_deadline
 
@@ -124,7 +125,7 @@ async def run(channel: str, endpoint: dict | None, project: str) -> int:
         return 0
     if channel.startswith("dial:"):
         return await dial_out(channel[len("dial:"):], endpoint)
-    session = Session(open_channel(channel), endpoint)
+    session = Session(Watched(SocketChannel(open_channel(channel))), endpoint)
     session.start()
     await session.peer.closed
     if isinstance(session.peer.closed_error, Incompatible):
@@ -140,14 +141,51 @@ async def run(channel: str, endpoint: dict | None, project: str) -> int:
     return 0
 
 
+class Watched:
+    """The channel of the session a host started this process for: once it
+    ends, the deadline to exit starts at once, on the thread that reads it
+    (`give_up_after`). The event loop starts it too when it sees the end;
+    a plugin keeping the loop busy keeps it from that, and from unloading
+    the rows, and the process would outlive its host (#682)."""
+
+    def __init__(self, channel):
+        self._channel = channel
+
+    def send(self, message: bytes) -> None:
+        self._channel.send(message)
+
+    def recv(self) -> bytes | None:
+        try:
+            message = self._channel.recv()
+        except BaseException:
+            give_up_after(shutdown_deadline())
+            raise
+        if message is None:
+            give_up_after(shutdown_deadline())
+        return message
+
+    def close(self, reason: str = "") -> None:
+        self._channel.close(reason)
+
+
+_giving_up = threading.Lock()
+_given_up = False
+
+
 def give_up_after(seconds: float) -> None:
     """End the process in `seconds` unless it ended before (main exits it
-    once the cleanups ran)."""
+    once the cleanups ran). Once: a later call leaves the first deadline."""
+    global _given_up
+    with _giving_up:
+        if _given_up:
+            return
+        _given_up = True
 
     def give_up() -> None:
         try:
             print(
-                f"rutis: cleanups did not finish within {seconds:g} s after the session ended; exiting",
+                f"rutis: cleanups did not finish within {seconds:g} s after the session ended "
+                "(or a plugin keeps the runtime busy); exiting",
                 file=sys.stderr,
                 flush=True,
             )

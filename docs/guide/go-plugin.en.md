@@ -6,6 +6,8 @@ Go plugins follow the same conventions as TypeScript and Python plugins (see the
 
 ## 1. Create the project
 
+The `rutis-host` below (to create the project, run it in a local host, check it) needs installing first, in one of the ways in [rutis-host: installation](rutis-host.en.md#installation): for example `npm install -g @arcships/rutis-host`, or the binary from GitHub Releases on your `PATH`; without installing, write each command as `npx @arcships/rutis-host …`.
+
 ```bash
 rutis-host new weather --lang go
 cd weather
@@ -24,6 +26,8 @@ The project:
 | `.github/workflows/release.yml` | On a `v*` tag: tests, then binaries for every platform on a GitHub release |
 
 ## 2. Write the plugin
+
+The generated `plugin.go` is a `greeter` that uses no service, and `plugin_test.go` is its test. Here it becomes a `weather` that uses an `llm` service: replace `plugin.go` with the code below, and `plugin_test.go` with the one in §3 at the same time (the two files go together).
 
 ```go
 package weather
@@ -63,13 +67,17 @@ func (w *Weather) Unit() string { return "celsius" }
 var Plugin = rutis.Define(rutis.Plugin[Config]{
 	Name:     "weather",
 	Inject:   []string{"llm"},                                                       // runs only while all are there
-	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // optional: marks Unit sync; methods are async by default
+	Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}, // declares what it provides (check knows before running); Unit sync, the rest async
 	Apply: func(ctx *rutis.Ctx, config Config) error {
 		var llm LLM
 		if err := ctx.Use("llm", &llm); err != nil {
 			return err
 		}
-		ctx.Provide("weather", &Weather{llm: llm, city: config.City})
+		city := config.City
+		if city == "" {
+			city = "Oslo" // a field the row leaves out is its zero value: the default goes here
+		}
+		ctx.Provide("weather", &Weather{llm: llm, city: city})
 		ctx.Effect(func(context.Context) error { return nil }) // a cleanup, optional
 		return nil
 	},
@@ -83,6 +91,7 @@ In short:
 | Method names | An exported method's wire name has its first letter lowercased (`Today` → `today`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `rutis.Rename` overrides it |
 | Sync or async | `async` by default; `rutis.Sync("Unit")` marks synchronous ones. A sync method blocks a Node caller's event loop: keep methods that do I/O `async` |
 | Signatures | `func (T) M([ctx context.Context,] params...) ([result,] [error])` |
+| Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description); a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`). The `Schema` field takes a hand-written JSON Schema instead, which `rutis-host check` prints, but it fills in no defaults |
 | Using services | A struct of function fields may list only the methods it uses; or call by name with `*rutis.Service`: `svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads; goroutines the plugin starts use `ctx.Go(...)` or watch `ctx.Done()` |
 | Concurrency | Every incoming call runs on its own goroutine: provided objects must be safe for concurrent use; do not hold a lock while calling another service |
@@ -200,11 +209,28 @@ Pass on the context your caller gave you, as with service calls. `errors.Is(err,
 `rutistest` needs no host, but the plugin runs in its real runtime and values cross a real session:
 
 ```go
+package weather
+
+import (
+	"context"
+	"testing"
+
+	"github.com/arcships/rutis/go/rutis/rutistest"
+)
+
+// A fake llm: a Go value whose exported methods are the service's (Ask is ask).
+type fakeLLM struct{}
+
+func (fakeLLM) Ask(ctx context.Context, question string) (string, error) { return "sunny", nil }
+
 func TestToday(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, Config{City: "Oslo"}, map[string]any{"llm": fakeLLM{}})
 	var today string
 	if err := loaded.Service("weather").Call(context.Background(), "today", &today); err != nil {
 		t.Fatal(err)
+	}
+	if today != "sunny in Oslo" {
+		t.Fatalf("got %q", today)
 	}
 }
 ```
@@ -213,7 +239,7 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
-`Provides` is optional: what `ctx.Provide` provides reaches rutis by itself, its methods the value's exported ones, all called as `async`. When present it applies (`Sync` marks synchronous methods, `Rename` renames them), and `rutis-host check` knows before running what the plugin provides.
+`Provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). When present it applies (`Sync` marks synchronous methods, `Rename` renames them). It also runs without one: what `ctx.Provide` provides still reaches rutis by itself, its methods the value's exported ones, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
 Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
 
@@ -249,7 +275,46 @@ A plugin definition the plugin hands to a test double (the double's method takes
 rutis-host dev
 ```
 
-`dev` builds `cmd/weather` and runs each of its plugins as the runtime `go-weather`; a change to `.go` files, `go.mod` or `go.sum` rebuilds it and restarts only that runtime, and a failed build keeps the old one running. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). When their files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
+`dev` builds `cmd/weather` and runs each of its plugins as the runtime `go-weather`; a change to `.go` files, `go.mod` or `go.sum` rebuilds it and restarts only that runtime, and a failed build keeps the old one running.
+
+In `rutis.dev.json`, the row with the plugin's id (here `weather`) has no `name`: it gives the plugin itself its configuration; the other rows are plugins that run with it. The other services the plugin needs are such rows, Python or TypeScript plugins, their languages under `runtimes`. For example a fake `llm` in Python, in the project's `dev/`:
+
+```json
+{
+  "format": 1,
+  "runtimes": { "py": { "project": "dev" } },
+  "rows": [
+    { "id": "weather", "config": { "city": "Oslo" } },
+    { "id": "llm", "name": "py:fake_llm" }
+  ]
+}
+```
+
+```python
+# dev/fake_llm.py
+from rutis import define_plugin
+
+
+class FakeLlm:
+    async def ask(self, question):
+        return "sunny"
+
+
+def apply(ctx, config):
+    ctx.provide("llm", FakeLlm())
+
+
+plugin = define_plugin(apply, provides={"llm": FakeLlm})
+```
+
+```bash
+uv venv dev/.venv                                  # the Python runtime's environment: <project>/.venv
+uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # the version of your rutis-host
+```
+
+The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project` (here `dev`), and that environment needs `rutis`; `dev/` holds no Go code, so `go build ./...` is not affected. In TypeScript it is the same: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row named `./dev/fake-llm.ts`.
+
+When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
 
 ## 5. Publish
 

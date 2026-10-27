@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::report::{Provider, RowStatus, Supply};
+use rutis_loader::report::{Clash, CycleLink, Provider, Requirement, RowStatus, Supply};
 
 mod dev;
 mod reload;
@@ -331,9 +331,12 @@ async fn check(args: &[String]) -> Result<(), String> {
     warn(&config);
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
-    outln!(
-        "plugin API for Go and Swift binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
-    );
+    // Only with binaries to check (#668).
+    if config.runtimes.go.is_some() || config.runtimes.swift.is_some() {
+        outln!(
+            "plugin API for Go and Swift binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
+        );
+    }
     // Each local runtime: what implements it and what it runs on.
     for (name, runtime) in &host.runtimes {
         if let Some(process) = runtime.ready().await {
@@ -364,11 +367,36 @@ async fn check(args: &[String]) -> Result<(), String> {
             RowStatus::Disabled => outln!("{id} ({name}): disabled"),
             RowStatus::Failed(error) => {
                 outln!("{id} ({name}): {error}");
-                if let rutis_loader::LoaderError::NotFound { .. } = error {
-                    outln!(
-                        "  install it where its runtime finds it (a runtime under runtimes), \
-                         or correct the row's name"
-                    );
+                if let rutis_loader::LoaderError::NotFound { name } = error {
+                    // A compiled language's row with no runtime declared:
+                    // its binaries have to be named (#666).
+                    // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
+                    // remote runtime's rows.)
+                    let remote = config
+                        .runtimes
+                        .remote
+                        .iter()
+                        .any(|remote| name.starts_with(&format!("{}:", remote.name)));
+                    let undeclared = languages::LANGUAGES.iter().find(|language| {
+                        let key = language.key();
+                        let named = name.starts_with(&format!("{key}:"))
+                            || (name.starts_with(&format!("{key}-")) && name.contains(':'));
+                        matches!(key, "go" | "swift")
+                            && named
+                            && !remote
+                            && !language.configured(&config.runtimes)
+                    });
+                    match undeclared {
+                        Some(language) => outln!(
+                            "  declare runtimes.{key} with the binaries that have it \
+                             (\"runtimes\": {{ \"{key}\": {{ \"dir\": \"<directory>\" }} }})",
+                            key = language.key()
+                        ),
+                        None => outln!(
+                            "  install it where its runtime finds it (a runtime under runtimes), \
+                             or correct the row's name"
+                        ),
+                    }
                 }
             }
             RowStatus::Checked {
@@ -382,24 +410,44 @@ async fn check(args: &[String]) -> Result<(), String> {
                 // Names no row declares, which undeclared services may
                 // provide once the rows run: a warning, an error with
                 // `--strict`.
-                let undeclared: Vec<(&str, &[String])> = requires
+                let undeclared: Vec<&Requirement> = requires
                     .iter()
-                    .filter_map(|requirement| match &requirement.supply {
-                        Supply::Announced(rows) => {
-                            Some((requirement.service.as_str(), rows.as_slice()))
-                        }
-                        _ => None,
+                    .filter(|requirement| {
+                        matches!(
+                            requirement.supply,
+                            Supply::Announced(_) | Supply::OnlyDisabled { .. }
+                        )
                     })
                     .collect();
                 match (missing.is_empty(), strict && !undeclared.is_empty()) {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
                         failed += 1;
-                        let names: Vec<&str> =
-                            undeclared.iter().map(|(service, _)| *service).collect();
+                        // What no row declares, and what only disabled
+                        // rows do.
+                        let names = |only_disabled: bool| -> Vec<&str> {
+                            undeclared
+                                .iter()
+                                .filter(|requirement| {
+                                    matches!(requirement.supply, Supply::OnlyDisabled { .. })
+                                        == only_disabled
+                                })
+                                .map(|requirement| requirement.service.as_str())
+                                .collect()
+                        };
+                        let mut why = Vec::new();
+                        if !names(false).is_empty() {
+                            why.push(format!("nothing declares {}", names(false).join(", ")));
+                        }
+                        if !names(true).is_empty() {
+                            why.push(format!(
+                                "only disabled rows declare {}",
+                                names(true).join(", ")
+                            ));
+                        }
                         outln!(
-                            "{id} ({name}): cannot run with --strict: nothing declares {}",
-                            names.join(", ")
+                            "{id} ({name}): cannot run with --strict: {}",
+                            why.join("; ")
                         )
                     }
                     (false, _) => outln!(
@@ -407,16 +455,25 @@ async fn check(args: &[String]) -> Result<(), String> {
                         missing.join(", ")
                     ),
                 }
-                for (service, rows) in &undeclared {
-                    let between_cordis_rows = cordis.contains(id.as_str())
-                        && rows.iter().any(|row| cordis.contains(row.as_str()));
+                for requirement in &undeclared {
+                    let line = match &requirement.supply {
+                        Supply::Announced(rows) => {
+                            let between_cordis_rows = cordis.contains(id.as_str())
+                                && rows.iter().any(|row| cordis.contains(row.as_str()));
+                            undeclared_line(id, &requirement.service, rows, between_cordis_rows)
+                        }
+                        Supply::OnlyDisabled { disabled, .. } => {
+                            disabled_line(id, &requirement.service, disabled)
+                        }
+                        _ => continue,
+                    };
                     errln!(
-                        "rutis-host: {}: {}",
+                        "rutis-host: {}: {line}{}",
                         match strict {
                             true => "error",
                             false => "warning",
                         },
-                        undeclared_line(id, service, rows, between_cordis_rows)
+                        did_you_mean(requirement.like.as_deref())
                     );
                 }
                 // A plugin needing a newer plugin API does not resolve: its
@@ -432,12 +489,20 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
                 for requirement in requires {
                     if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
-                        outln!("  {line}");
+                        outln!("  {line}{}", did_you_mean(requirement.like.as_deref()));
                     }
                 }
             }
             _ => outln!("{id} ({name}): not checked"),
         }
+    }
+    // Warnings only, in 0.17.2: a configuration that passed still passes
+    // (errors from 0.18, #676).
+    for cycle in &report.cycles {
+        errln!("rutis-host: warning: {}", cycle_line(cycle));
+    }
+    for clash in &report.clashes {
+        errln!("rutis-host: warning: {}", clash_line(clash));
     }
     for binaries in &host.binaries {
         outln!("{} binaries:", binaries.key);
@@ -513,15 +578,65 @@ fn undeclared_line(row: &str, service: &str, rows: &[String], between_cordis_row
     )
 }
 
+/// `check`'s warning for the row `row` waiting for `service`, which only
+/// the disabled rows `disabled` declare (#666).
+fn disabled_line(row: &str, service: &str, disabled: &[String]) -> String {
+    let rows = match disabled {
+        [one] => format!("row {one}, which is disabled: enable it"),
+        _ => format!("rows {}, which are disabled: enable one", some_of(disabled)),
+    };
+    format!("{row}: {service} is declared only by {rows}, or add a row that provides {service}")
+}
+
+/// `; did you mean <like>?` for a service name close to one that is
+/// declared; nothing without one.
+fn did_you_mean(like: Option<&str>) -> String {
+    like.map(|like| format!("; did you mean {like}?"))
+        .unwrap_or_default()
+}
+
+/// `check`'s warning for rows waiting for each other's services.
+fn cycle_line(cycle: &[CycleLink]) -> String {
+    let rows: Vec<&str> = cycle.iter().map(|link| link.row.as_str()).collect();
+    let links: Vec<String> = cycle
+        .iter()
+        .map(|link| {
+            format!(
+                "{} waits for {} from {}",
+                link.row, link.service, link.provider
+            )
+        })
+        .collect();
+    format!(
+        "rows {} wait for each other ({}): none of them starts; break the cycle in their inject",
+        rows.join(", "),
+        links.join(", ")
+    )
+}
+
+/// `check`'s warning for several rows declaring one service in one scope.
+fn clash_line(clash: &Clash) -> String {
+    format!(
+        "rows {} all provide {}: only the first to start provides it, the others fail; \
+         keep one, or isolate the name in each row",
+        clash.rows.join(", "),
+        clash.service
+    )
+}
+
 /// `check`'s line for a service a row waits for: what to do when nothing
 /// provides it, what may when that is not known; none when it is provided
 /// (or no row declares it: [`undeclared_line`] says so).
 fn supply_line(service: &str, supply: &Supply) -> Option<String> {
     match supply {
-        Supply::Missing { disabled } if !disabled.is_empty() => Some(format!(
-            "{service}: only disabled rows provide it ({}): enable one, or add a row that provides it",
-            disabled.join(", ")
-        )),
+        Supply::Missing { disabled } | Supply::OnlyDisabled { disabled, .. }
+            if !disabled.is_empty() =>
+        {
+            Some(format!(
+                "{service}: only disabled rows provide it ({}): enable one, or add a row that provides it",
+                disabled.join(", ")
+            ))
+        }
         Supply::Missing { .. } => Some(format!(
             "{service}: add a row that provides it, or import it from a peer (import: [\"{service}\"])"
         )),
@@ -591,12 +706,12 @@ mod tests {
     #[test]
     fn check_says_what_runs_each_runtime() {
         let about = json!({
-            "implementation": { "name": "@arcships/rutis-bun", "version": "0.17.1" },
+            "implementation": { "name": "@arcships/rutis-bun", "version": "0.17.2" },
             "engine": { "name": "bun", "version": "1.4.3" },
         });
         assert_eq!(
             runtime_line("bun", &about).as_deref(),
-            Some("runtime bun: @arcships/rutis-bun 0.17.1, bun 1.4.3")
+            Some("runtime bun: @arcships/rutis-bun 0.17.2, bun 1.4.3")
         );
         let partial = json!({ "implementation": { "name": "rutis" } });
         assert_eq!(

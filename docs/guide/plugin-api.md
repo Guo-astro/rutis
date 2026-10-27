@@ -8,14 +8,14 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | --- | --- | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | `inject = listOf("llm")` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
 | 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | `provides = mapOf("weather" to service<Weather>(sync = setOf("unit")))`（`@RutisService` 类的 public 成员函数，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
-| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema；宿主据此校验和展示配置 |
+| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema；`rutis-host check` 打印它，目前不按它检查配置（0.18 起检查，#669） |
 | 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }`（`async throws`） | `{ ctx, config -> }`，可以挂起；抛异常即装载失败 | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
 
 ## ctx
 
 | 方法 | 作用 |
 | --- | --- |
-| `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理 |
+| `ctx.use(name)` | `inject` 里声明的服务。同一个运行时进程里的插件提供的，是对象本身；其他进程、其他语言、其他机器提供的，是代理。插件和它的行都没在 `inject` 里声明的服务拿不到时，报 `service <name> is not available to this plugin, which does not declare it in inject: add '<name>' to its inject`（只有声明了的服务才一定给它）；调用需要调用方的行的宿主服务方法（例如带 `&Ctx` 参数的 Rust 方法）时，也提示把服务写进 `inject` |
 | `ctx.provide(name, value)` | 提供服务，直到插件卸载，或调用返回的函数。服务自动对外，别的语言、别的进程按名字使用；`provides` 没有声明它时，方法取 `value` 上的公开方法（JavaScript：自身和原型链上的函数，不含 `constructor`；Python：不以 `_` 开头的可调用属性；Go：导出方法），都按 `async` 调用，字段不算方法。推断按各语言自己的规则，同一个服务用两种语言写时方法可能不同：继承 `EventEmitter` 的 JavaScript 类也会带上 `on`、`emit` 等方法；只想对外其中几个时在 `provides` 里列出它们 |
 | `ctx.effect(cleanup)` | 插件卸载时运行 `cleanup`（可以是 async） |
 | `ctx.on(name, listener, options?)` | 监听事件：不论在哪里发出（另一个插件、另一个运行时、宿主、相连的节点），只要是这个 root 总线上的同名事件，就送到 `listener`。随插件卸载注销；返回的函数立即注销。见下面的[事件](#事件) |
@@ -228,7 +228,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 所以 `apply` 里拿到的服务在插件运行期间一直有效，不需要处理"服务中途消失"。
 
-一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
+一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。只有这个插件失败：其他插件（同一运行时里的也一样）继续用原来的提供者。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
 
 0.12 的运行时被比 0.12 旧的宿主挂载时，宿主不接收没有声明的服务，它们只在本进程里可见；插件提供这样的服务时，运行时按名字只在 stderr 提示一次：`rutis: service <名字> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`。在 `provides` 里声明它，或者升级 rutis-host。
 
@@ -366,6 +366,10 @@ async 方法的调用方放弃等待（例如超时）时，调用被取消：�
 
 ## 版本
 
-插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；插件依赖 SDK 的大版本范围即可，不需要与宿主版本对齐。
+插件上标记着它所用的插件 API 版本（`definePlugin` / `define_plugin` / `rutis.Define` 自动标记）。运行时比插件旧时，加载失败并说明需要升级什么；比插件新时照常加载。插件对 SDK 的依赖：
+
+- JavaScript、TypeScript：`^` 范围（`"@arcships/rutis": "^0.17.2"`）。插件用它写时那个次版本的 SDK，宿主里装着别的版本时 npm 给它装自己的一份，几个版本可以并存。
+- Python：只写下限（`rutis>=0.17`）。插件和 Python 运行时是宿主环境里的同一个 `rutis` 包，写了上限（`<0.18`），装插件会把运行时降级，或者让宿主升级不了。所以 Python 的 `rutis` 在插件 API 版本不变时，不删、不改插件导入的名字：要去掉的名字保留下来，用到时给出弃用警告，到插件 API 版本增加时才删。
+- Go、Swift：SDK 编进二进制（`require`、`from:`），与宿主装的版本无关。
 
 插件 API 3（rutis 0.13）增加 `parallel`、`serial`、`waterfall`、`bail` 与 `filter`，事件成为一个逻辑总线；0.13 的运行时继续加载 API 2 的插件，API 3 的插件被旧运行时以现有的信息拒绝。0.13 的事件协议不与 0.12 及更早的运行时、节点混用（见上面的[与 0.12 及更早的端混用](#与-012-及更早的端混用)）。插件 API 2 增加了叶子事件，API 1 的插件仍可加载。

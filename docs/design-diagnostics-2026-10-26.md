@@ -97,7 +97,7 @@ site: {
 | --- | --- | --- |
 | `not-declared` | 用了没写进 `inject` 的服务 | `{service}` |
 | `unavailable` | 服务现在没有提供者 | `{service, reason}`（`Loader::waits` 的原因） |
-| `no-method` | 方法不存在 | `{service, method, methods}` |
+| `no-method` | 方法不存在 | `{service, method, methods}`；对象调用是 `{object, method, methods}`（`object` 是类名，普通对象为 `null`，见[对象引用](design-object-refs-2026-10-27.md) §八） |
 | `bad-argument` | 参数个数或类型不对 | `{service, method, argument, expected}` |
 | `bad-value` | 值传不过去，或消息超过上限 | `{argument?, part, limit?}` |
 | `peer-gone` | 调用进行中对面的运行时退出或断开 | `{runtime, reason}` |
@@ -265,7 +265,7 @@ TypeScript 为例；其他语言同样的内容，位置写法各自的。这些
 | 3 | 方法不存在 / 参数错 | `chat: weather has no method tomorow (methods: today, tomorrow)`；`chat: weather.tomorrow: argument 1 should be a number, got "x"` |
 | 4 | `apply` 里出错 | `weather: failed in apply: KeyError: 'region'` + `weather.py:12 in apply` |
 | 5 | 导入错误 | `weather: cannot load src/util.ts: SyntaxError … (src/util.ts:3:7)`（写出错的子模块） |
-| 6 | 值传不过去 | `chat: weather.tomorrow: argument 0 cannot be sent: a sparse array (index 1 is empty)`；运行时不退出（#675） |
+| 6 | 值传不过去 | `chat: weather.tomorrow: argument 1 cannot be sent: NaN cannot cross processes`；运行时不退出（#675）。稀疏数组的空位是值（`null`），不在此列（[对象引用](design-object-refs-2026-10-27.md) §七） |
 | 7 | 监听器出错 | `weather: listener of weather/asked failed: …` + 位置；`parallel` 的调用方看到 `2 listeners of weather/asked failed`，下面逐个列出行与位置 |
 | 8 | 调用不返回 | `rutis-host status`：`chat → weather.tomorrow  42s` |
 | 9 | 互相调用 / 互相依赖 | `chat: weather.today would wait on itself: chat → weather → chat (synchronous calls)`；互相 `inject`：`check` 报错（§九） |

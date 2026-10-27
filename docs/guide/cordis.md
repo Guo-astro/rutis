@@ -75,7 +75,7 @@ ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['session/*'] })
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/dsh-credentials-local": "0.2.0-rc.1",
-    "@arcships/rutis-runtime": "0.17.1"
+    "@arcships/rutis-runtime": "0.17.2"
   }
 }
 ```

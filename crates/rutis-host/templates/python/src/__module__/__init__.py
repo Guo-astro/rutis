@@ -7,7 +7,7 @@ class Greeter:
     def __init__(self, greeting: str) -> None:
         self.greeting = greeting
 
-    def hello(self, name: str) -> str:
+    async def hello(self, name: str) -> str:
         return f"{self.greeting}, {name}!"
 
 
@@ -21,10 +21,10 @@ plugin = define_plugin(
     apply,
     # Services this plugin uses: inject=["llm"], then ctx.use("llm").
     inject=[],
-    # What ctx.provide provides reaches rutis by itself, every method async.
-    # Declare provides={"greeter": Greeter} only to make methods sync (those
-    # not `async def`), or for `rutis-host check` to know it before the
-    # plugin runs.
+    # What it provides, so that `rutis-host check` (and `check --strict` in a
+    # host's CI) knows it before the plugin runs. The class's public methods
+    # are the service's: `async def` ones async, the others sync.
+    provides={"greeter": Greeter},
     # The JSON Schema of its config.
     config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
 )

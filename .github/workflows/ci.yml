@@ -188,6 +188,12 @@ jobs:
               - node/rutis-host/scripts/**
             docs:
               - '**/*.md'
+            # Guides whose Rust examples are doctests (crates/rutis and
+            # crates/rutis-loader include them): they run the Rust tests as
+            # code does, though `code` leaves out Markdown.
+            doctested:
+              - docs/guide/rust-plugin*.md
+              - docs/guide/rust-host*.md
             # The Bun runtime, and the Rust crates that start and run it.
             bun:
               - bun/**
@@ -257,6 +263,7 @@ jobs:
           FULL: ${{ inputs.all }}
           ALL: ${{ steps.paths.outputs.all }}
           CODE: ${{ steps.code.outputs.code }}
+          DOCTESTED: ${{ steps.paths.outputs.doctested }}
           DYLIB: ${{ steps.paths.outputs.dylib }}
           PACKAGING: ${{ steps.paths.outputs.packaging }}
           DOCS: ${{ steps.paths.outputs.docs }}
@@ -286,9 +293,12 @@ jobs:
           if [ "$all" = true ] && [ "$SPECS_INPUT" = false ]; then specs=false; fi
           sdk_repro=false
           if [ "$all" = true ] && [ "$SDK_REPRO_INPUT" != false ]; then sdk_repro=true; fi
+          # A doctested guide is code for the Rust jobs.
+          code=$CODE
+          if [ "$DOCTESTED" = true ]; then code=true; fi
           {
             echo "all=$all"
-            echo "code=$(pick "$CODE")"
+            echo "code=$(pick "$code")"
             echo "dylib=$(pick "$DYLIB")"
             echo "packaging=$(pick "$PACKAGING")"
             echo "docs=$(pick "$DOCS")"

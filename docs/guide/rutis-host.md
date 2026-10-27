@@ -2,6 +2,59 @@
 
 `rutis-host` 是不需要写 Rust 的宿主：它把内核、插件加载、本机的 Node / Python / Go / Swift 运行时和网络连接组装好，由一份 `rutis.json` 驱动。插件作者用它在本地开发，也可以直接用它部署。需要自定义 Rust 服务的应用见 [在 Rust 应用里嵌入](rust-host.md)。
 
+## 快速上手
+
+给别人发布的两个插件做一个宿主：一个 TypeScript 插件，npm 上的 `@your-name/weather`，它用 `llm` 服务；一个 Python 插件，PyPI 上的 `your-name-llm`，它的入口点 `llm` 提供这个服务。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
+
+1. 在宿主自己的目录里装 `rutis-host` 和两个插件：
+
+```bash
+mkdir app && cd app
+npm init -y                                                # TypeScript 插件装进的 Node 项目
+npm install @arcships/rutis-host @your-name/weather        # rutis-host 带着 Node 运行时
+uv venv                                                    # .venv：Python 插件运行的环境
+uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-llm   # Python 运行时与 rutis-host 同版本，和插件
+```
+
+2. 写 `rutis.json`：要启动的运行时，每个插件一行（`name` 是 npm 包名，或 `py:` 加入口点名；`config` 是插件的配置）：
+
+```json
+{
+  "format": 1,
+  "runtimes": { "node": {}, "py": {} },
+  "rows": [
+    { "id": "llm", "name": "py:llm" },
+    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
+  ]
+}
+```
+
+3. 先检查，再运行：
+
+```bash
+npx rutis-host check --strict        # 每一行 ok，每一行用到的服务都有别的行声明；以 0 退出
+npx rutis-host run --watch-config
+```
+
+```text
+llm: running
+weather: running
+```
+
+每一行的状态变化时打印一行（还有 `starting`、`waiting for its services` 等，见 [run 打印什么](#run-打印什么)）。
+
+4. 运行中改配置：把 `rutis.json` 里的 `"Oslo"` 改成 `"Bergen"` 并保存。有 `--watch-config` 时宿主重新读这个文件，只重启变了的那一行：
+
+```text
+rutis-host: reloaded rutis.json (1 row changed)
+```
+
+Unix 上不加 `--watch-config`，发 SIGUSR1 也一样，见 [运行中改配置](#运行中改配置)。
+
+5. Ctrl-C 停止：每个插件的清理都运行，运行时退出，`rutis-host` 以 0 退出。
+
+还没发布的插件也这样从文件装：`npm install ../weather/your-name-weather-0.1.0.tgz`（插件项目里 `npm pack` 打出的包），`uv pip install --python .venv/bin/python ../llm`（插件的项目目录）。其他语言见 [宿主怎样装插件](#宿主怎样装插件)。
+
 ## 安装
 
 | 方式 | 命令 |
@@ -13,6 +66,23 @@
 
 npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自带 Python 运行时（`rutis`）：项目里没有自己的运行时时用它们。Go 与 Swift 插件是编译好的二进制，运行它们不需要别的包，也不需要 Go 或 Swift 工具链（Swift 插件在 macOS 上运行）。
 
+## 宿主怎样装插件
+
+每种语言的插件装到它的运行时找得到的地方，再由一行写出插件名：
+
+| 插件 | 用什么装 | 装到哪里 | 行的 `name` |
+| --- | --- | --- | --- |
+| TypeScript、JavaScript（npm） | `npm install <包名>` | Node 项目（`runtimes.node.project`，默认是 `rutis.json` 所在目录），和 `@arcships/rutis-runtime` 在一处（或用 npm 版 `rutis-host` 自带的那份） | 包名（`@your-name/weather`）或它的子路径；单个文件写 `./plugins/tool.ts` |
+| Bun | `bun add @arcships/rutis-bun <包名>` | Bun 项目（`runtimes.bun.project`） | `bun:<包名>`（[Bun 插件](bun-plugin.md#3-在宿主里运行)） |
+| Python | 先 `uv venv` 一次，再 `uv pip install --python .venv/bin/python "rutis==<rutis-host 的版本>" <分发包名>`（用 pip：`.venv/bin/python -m pip install …`） | `runtimes.py.python` 的环境（默认先 `$VIRTUAL_ENV`，再 `<runtimes.py.project>/.venv`）；那里的 `rutis` 就是 Python 运行时，和 rutis-host 同版本 | `py:<入口点名>`（`py:llm`），`runtimes.py.project` 里的模块文件写 `py:<模块名>` |
+| Go | `rutis-host go add <模块>/cmd/<二进制>@<版本>`（用本机的 Go 工具链），或从插件的 release 下载本平台的二进制 | `runtimes.go.dir` | `go:<插件名>`（[Go 插件](go-plugin.md#6-被宿主使用)） |
+| Swift（macOS） | 从插件的 release 下载二进制 | `runtimes.swift.dir` | `swift:<插件名>`（[Swift 插件](swift-plugin.md#7-被宿主使用)） |
+| Rust | 不用 `rutis-host`：Rust 应用自己挂它的 Rust 插件 | | [在 Rust 应用里嵌入](rust-host.md) |
+
+- 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。Python 插件对 `rutis` 只写下限，所以装插件不会把运行时降级；TypeScript 插件各自带着它写时那个版本的 SDK，几份可以并存（[插件 API：版本](plugin-api.md#版本)）。
+- 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）；没写的按默认设置启用，并给出告警（见 [runtimes](#runtimes)）。
+- 装好后，`rutis-host check --strict` 告诉你每一行能不能运行、每一行用到的服务是否都有别的行声明；放进 CI，不满足时失败。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -22,6 +92,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
+| `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
 
 ## run 打印什么
 
@@ -33,16 +104,37 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 rutis-host: listening on <监听器名> <地址:端口>
 ```
 
-之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for its services`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+
+等待的行写明在等什么、为什么（0.17.2 起，#676）。在等自己的运行时时只写运行时；否则每个缺的服务写成 `<服务> (<原因>)`，多个用 `; ` 隔开：
+
+| 输出 | 含义 |
+| --- | --- |
+| `waiting for runtime <名字> (starting)` | 这一行的运行时还在启动（重启中也是） |
+| `waiting for runtime <名字> (down: <原因>)` | 这一行的运行时结束了，原因同 `runtime <名字>: down` |
+| `waiting for runtime <名字> (stopped)` / `waiting for runtime <名字>` | 运行时被宿主停下；或运行时已运行、正在重新解析它的行（远程运行时也这样写） |
+| `waiting for lmm (no row provides it; did you mean llm?)` | 没有行声明提供它；有名字相近的服务时给出（多半是写错了名字） |
+| `waiting for llm (no enabled row provides it; rutis-host check says whether a disabled row does)` | 没有启用的行提供它，但有被禁用的行（自己或所在的组被禁用）在运行时没有解析过，不知道它们提供什么；`rutis-host check` 会解析它们，写明是不是被禁用的行提供。有相近的名字时同样在 `it` 后面加 `, did you mean llm?` |
+| `waiting for llm (row model failed: <错误第一行>)` | 提供它的行失败了 |
+| `waiting for llm (row model, which provides it, is disabled)` | 提供它的行被禁用；只在这一行的插件已经解析过时这样写（例如另一行启用了同一个插件），否则是上面 `no enabled row provides it` 那种写法 |
+| `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | 提供它的行在等自己的运行时（宿主不知道远程运行时的状态，只写在等它） |
+| `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
+| `waiting for llm (row model waits too, for x)` | 提供它的行自己也在等 |
+| `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如节点行的 link 断了） |
+| `waiting for its services` | rutis 说不出在等什么时 |
+
+原因变化时（例如提供者从 `starting` 变成失败）再打印一行。
 
 本机的运行时（`node`、`py`、`bun`、Go 的 `go-<二进制>`、Swift 的 `swift-<二进制>`）进程自己结束或起不来时打印一行，恢复运行时再打印一行；`rutis-host` 停止它们（停止宿主、Go 或 Swift 运行时空闲停下）时不打印：
 
 | 输出 | 含义 |
 | --- | --- |
-| `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for its services`，其他运行时和它们的行不受影响 |
+| `runtime <名字>: down (<原因>)` | 运行时进程结束了，原因写它怎样结束，例如 `exited with signal: 9 (SIGKILL)`、`exited with exit status: 1`；或者它没能启动、原因是启动失败的错误。它的行回到 `waiting for runtime <名字> (down: …)`，其他运行时和它们的行不受影响 |
 | `runtime <名字>: running` | 打印过 `down` 的运行时重新运行了（`dev` 里重新构建的 Go 或 Swift 运行时） |
 
 一个运行时停在 `down` 时只打印一次；重新启动后又结束的，再打印一次，不论它运行了多久。括号里的原因是给人看的，不保证措辞。
+
+运行时结束后，它的各行只是在等它，不管是哪个插件让进程退出的；运行时结束时还在启动的行不会报成 `failed`。正在进行的、对这些行的调用失败时写明进程怎样结束。运行时自己写出的内容（例如错误和调用栈）和以前一样在输出里。
 
 节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
 
@@ -91,9 +183,29 @@ rutis-host: warning: <行>: nothing declares <服务>; it may be provided at run
 
 最多列三行，多的写成 `and N more`；这一行和可能提供它的行里有 Cordis 行时，后面再加 `; between Cordis rows of one runtime it resolves in Cordis`——同一个 Node 运行时里的 Cordis 行之间的依赖在 Cordis 里解析。声明了的名字照常算作提供者。
 
-`check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`，以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
+唯一声明某个服务的行被禁用时，告警指出这一行，而不是那些可能在运行时提供它的行：
 
-插件自己的配置由它的运行时在加载时校验，`check` 只打印它的 Schema。
+```
+rutis-host: warning: <行>: <服务> is declared only by row <被禁用的行>, which is disabled: enable it, or add a row that provides <服务>
+```
+
+缺的服务名和某个已声明的名字只差一两个字符时，上面的告警和缺服务的说明后面加 `; did you mean <名字>?`。
+
+`check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`（只有被禁用的行声明的写 `only disabled rows declare <服务>`），以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
+
+下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 写告警（0.17 里只是告警，退出码不变，`--strict` 也一样；0.18 起改为错误）：
+
+```
+rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+```
+
+- 几行的 `inject` 互相等对方提供的服务（一个环）：谁也起不来。只看只有一行提供的服务：还有别的行提供时，可以先从那一行起来，不算环。
+- 几行在同一个作用域里声明提供同一个服务：只有先起来的那行提供，其余的失败。用 `isolate` 把名字隔离到各自作用域的行不算；永远起不来的行（等着没有任何行提供的服务）不算。
+
+行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
+
+rutis-host 目前不按插件的 Schema 检查它的配置（0.18 起检查，[#669](https://github.com/arcships/rutis/issues/669)），`check` 只打印 Schema。配置有没有被检查，取决于插件的语言怎样读它：例如 Rust 插件把配置解码成类型 `C`，解码不了时这一行装载失败。
 
 ## 停止与退出码
 
@@ -101,7 +213,7 @@ rutis-host: warning: <行>: nothing declares <服务>; it may be provided at run
 
 清理的总时长有截止时间，默认 10 秒，用 `--shutdown-timeout <秒>` 或环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 修改（命令行优先，可以是小数，必须大于 0）。超过截止时间，或在停止过程中再收到一次信号（再按一次 Ctrl-C），`rutis-host` 打印还在停止的插件，结束运行时进程和它们启动的进程（不再等它们的清理），立即退出。启动失败时，已经起来的部分也按同样的规则关闭。
 
-`rutis-host` 把截止时间传给它启动的运行时进程（环境变量 `RUTIS_SHUTDOWN_TIMEOUT`）。`rutis-host` 自己没来得及停止它们就结束了（`kill -9`、崩溃）时，每个运行时发现连接断开，在这个截止时间内自己卸载各行，然后退出，不管插件留下了什么；Windows 上它们随 `rutis-host` 一起结束（Job Object），清理不执行。
+`rutis-host` 把截止时间传给它启动的运行时进程（环境变量 `RUTIS_SHUTDOWN_TIMEOUT`）。`rutis-host` 自己没来得及停止它们就结束了（`kill -9`、崩溃）时，每个运行时发现连接断开，在这个截止时间内自己卸载各行，然后退出，不管插件留下了什么；Windows 上它们随 `rutis-host` 一起结束（Job Object），清理不执行。插件让运行时一直在忙（处理函数不返回，运行时别的什么都做不了）时也一样：截止时间过后再过一秒，运行时自己结束，跑不了的清理不再执行。截止时间从运行时发现连接断开时算起，它在一个单独的线程上发现这件事（Node 和 Bun 运行时是负责读写的线程，再告诉一个看门狗线程；Python 运行时是读连接的线程）。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -162,7 +274,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 | --- | --- |
 | `<行 id>: reloaded (<文件> changed)` | 这一行运行新的代码；文件是相对项目的路径 |
 | `<行 id>: cannot reload: <原因>; the previous version keeps running` | 新代码导入不了，这一行继续运行原来的版本。新代码让另一行失败时，原因先写那一行：`<另一行> failed with it: …`。没有 `; the previous version keeps running` 时（例如新代码的 `apply` 失败），这一行现在没有运行 |
-| `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）或 `<Go 或 Swift 运行时> restarted`；这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
+| `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）、`<Go 或 Swift 运行时> restarted`，或者 `<行> restarted`：它用到的、随这次变化重启的行（`llm` 重新加载、`greeter` 用到 `llm` 时，打印 `caller: restarted (greeter restarted)`）。写出的原因一定是这一行用到的行；不知道它用到哪些行时（依赖在运行时内部，Cordis 行之间），不写原因：`<行 id>: restarted`。这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
 | `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
@@ -173,7 +285,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 
 | `restart` | 做法 |
 | --- | --- |
-| `"no"`（默认） | 不处理：它的行回到 `waiting for its services`，其他运行时和它们的行照常运行；要让它回来，重启宿主 |
+| `"no"`（默认） | 不处理：它的行回到 `waiting for runtime <名字> (down: …)`，其他运行时和它们的行照常运行；要让它回来，重启宿主 |
 | `"on-failure"` | 等一会儿后重新启动它，它的行随之恢复运行（重新加载，插件的 `apply` 再执行一次）；打印 `runtime <名字>: restarting`，起来后打印 `runtime <名字>: running` |
 | `"exit"` | 卸载其他所有行（每个清理执行一次）后以 3 退出，由 systemd、Kubernetes 等重启整个宿主；stderr 打印 `rutis-host: runtime <名字> ended (<原因>), and its restart is "exit": stopping; …` |
 
@@ -186,6 +298,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 其他说明：
 
 - 进程内存里的状态随崩溃丢失，重启不会多丢；正在进行的调用已经显式失败，不会自动重试。会再执行一次的是插件启动时做的事（`apply`），和手动重启宿主一样。
+- 运行时结束不算到别的行头上：结束时还在启动的行和其他行一样等它，和它们一起再运行。
 - 宿主停止时（收到终止信号、`exit` 策略）不再重启任何运行时；[运行中改配置](#运行中改配置)删掉的运行时也不会重启。
 - `restart` 是运行时的设置，运行中改它要重启宿主。
 - `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"`、`"swift"` 等）（项目自己的那个运行时只取 `restart`）。在 `dev` 里停着的运行时，它的某一行下一次变化时也会重新启动（见 [用 dev 开发插件](#用-dev-开发插件)）。
@@ -262,7 +375,17 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
-缺少运行时包时，启动失败并给出安装命令。
+缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
+
+行用到某种语言、`runtimes` 里却没有声明它时（例如有 `py:llmbox` 行、没有 `runtimes.py`），宿主按默认设置启用这个运行时，等于写了 `"py": {}`，并在 stderr 写一条告警：
+
+```
+rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
+```
+
+`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算；`runtimes.remote` 里有同名运行时（Node 是有 `language: node` 的远程运行时）时不启用。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`、`go-<二进制>:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。`rutis-host dev` 里，项目自己的运行时由 `dev` 设置：`rutis.dev.json` 里在这个运行时运行的行（TypeScript 项目的 `./dev/fake-llm.ts`、Python 项目的 `py:fake_llm`）没有告警；由别的运行时运行的行（TypeScript 项目里的 `py:` 行）告警一次，重新读 `rutis.dev.json` 时不再重复。
+
+这样启用的运行时按默认设置起不来时（例如没有 `package.json`、没装 `@arcships/rutis-runtime`，或 Python 环境里没有 `rutis`），宿主不退出：stderr 写一条告警，说明原因和该怎么做（`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`），它的行和以前一样失败（`unresolved: no plugin named …`），其他行照常运行。在 `runtimes` 里写明的运行时起不来时，仍然启动失败。
 
 `node`、`py`、`bun`、`go`、`swift` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办（`go`、`swift` 是其每个运行时各自的），见 [运行时结束时](#运行时结束时)。
 
@@ -335,4 +458,4 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 
 用 npm 安装时（`ExecStart=/srv/app/node_modules/.bin/rutis-host run /srv/app/rutis.json`），`MAINPID` 是启动器 `bin/rutis-host.mjs`，一个运行 `rutis-host` 二进制的 Node 进程。它把 SIGTERM 和 SIGUSR1 转发给二进制，所以 `systemctl stop`、`systemctl reload` 和直接运行二进制时一样，二进制怎样退出它就怎样退出。SIGINT 和 SIGHUP 它不转发（终端会直接发给二进制）：单独发给启动器的 SIGINT 不起作用，停止时发 SIGTERM。GitHub Releases、crates.io 的二进制，以及用 PyPI 安装时放进环境里的那个（`.venv/bin/rutis-host`），都没有启动器。
 
-停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出。
+停止时让进程管理器只给 `rutis-host` 发 SIGTERM，由它卸载各行：systemd 默认（`KillMode=control-group`）会同时给运行时进程发 SIGTERM，它们来不及执行清理，应设 `KillMode=mixed`，并让 `TimeoutStopSec` 大于清理截止时间。`rutis-host` 被强制结束（SIGKILL、Windows 上结束进程）时没有机会卸载各行：Windows 上运行时进程随之被结束；Unix 上运行时进程发现通道断开，自己卸载各行后退出；被插件占着一直在忙的运行时，在清理截止时间过后一秒结束。
