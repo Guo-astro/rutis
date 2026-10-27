@@ -1,6 +1,7 @@
 package arcships.rutis.internal
 
 import arcships.rutis.Ctx
+import arcships.rutis.DecodePaths
 import arcships.rutis.Plugin
 import arcships.rutis.Rutis
 import arcships.rutis.RutisException
@@ -359,7 +360,38 @@ class RuntimeState(plugins: List<Plugin>) {
         }
     }
 
-    private fun decodeConfig(plugin: Plugin, config: Any?): Any? {
+    private fun decodeConfig(plugin: Plugin, raw: Any?): Any? {
+        // Defaults filled and the config validated against the plugin's
+        // schema before decoding (config schema design §2.2); a decoder
+        // error after that is the schema and the type disagreeing (§3.3).
+        var config = raw
+        val schema = plugin.schema
+        if (schema is kotlinx.serialization.json.JsonObject) {
+            // A config of plain data (one holding dates or bytes, which only
+            // Kotlin's own callers send, is decoded as it is).
+            val data = try {
+                Result.success(ConfigSchema.fromValue(raw))
+            } catch (e: ConfigSchema.NotData) {
+                Result.failure(e)
+            }
+            if (data.isSuccess) {
+                val checked = ConfigSchema.check(ConfigSchema.fromValue(schema), data.getOrNull())
+                if (checked.errors.isNotEmpty()) throw configError(checked.errors)
+                config = ConfigSchema.toJson(checked.config)
+            }
+            // No config: `{}` for a class, as before (a nullable value gets null).
+            val kind = plugin.config.descriptor.kind
+            val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
+            val absent = config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull
+            return try {
+                RutisFormat.decode(plugin.config, if (absent && structured) JsonObject(emptyMap()) else config)
+            } catch (e: Exception) {
+                // Any failure of decoding (the decoder's, or an `init` check
+                // of the type's): one sentence, as in Swift.
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                throw configError(listOf(ConfigSchema.Issue(DecodePaths.of(e), "${ConfigSchema.pathText(DecodePaths.of(e))} is not a value the plugin accepts")))
+            }
+        }
         val value = if ((config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull) &&
             plugin.config.descriptor.kind.let { it == kotlinx.serialization.descriptors.StructureKind.CLASS || it == kotlinx.serialization.descriptors.StructureKind.OBJECT }
         ) {
@@ -375,6 +407,19 @@ class RuntimeState(plugins: List<Plugin>) {
             throw IllegalArgumentException("config: ${e.message}", e)
         }
     }
+
+    /**
+     * The error a row fails with when its config does not match: a
+     * BindingError with code `bad-config`, its message a `config: …` line
+     * per problem, its data `{ issues: [{ path, message }] }` (design §5.2).
+     */
+    private fun configError(issues: List<ConfigSchema.Issue>): arcships.rutis.RutisException =
+        arcships.rutis.RutisException(
+            "BindingError",
+            ConfigSchema.lines(issues).joinToString("\n"),
+            code = "bad-config",
+            data = mapOf("issues" to issues.map { mapOf("path" to it.path, "message" to it.message) }),
+        )
 
     /**
      * Unloads row `key`. Returns false when it gave up (listeners or

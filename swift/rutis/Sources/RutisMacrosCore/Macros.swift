@@ -287,7 +287,9 @@ public struct ClientMacro: PeerMacro {
 
 /// `@RutisConfig` on a configuration type: its JSON Schema from the stored
 /// properties, each `///` comment its description; optional properties are
-/// not required.
+/// not required, and neither are `var`s with a literal initial value
+/// (`var units = "metric"`), whose literal is their `default` (config schema
+/// design §3.3): rutis fills it in before decoding.
 public struct ConfigMacro: ExtensionMacro {
     public static func expansion(of _: AttributeSyntax, attachedTo declaration: some DeclGroupSyntax,
                                  providingExtensionsOf type: some TypeSyntaxProtocol, conformingTo protocols: [TypeSyntax],
@@ -309,16 +311,26 @@ public struct ConfigMacro: ExtensionMacro {
                 // decoded.
                 if binding.accessorBlock != nil { continue }
                 if isLet, binding.initializer != nil { continue }
-                guard let annotation = binding.typeAnnotation else {
+                // The type as written, or that of a literal initial value
+                // (`var units = "metric"`).
+                let typeSyntax: TypeSyntax
+                if let annotation = binding.typeAnnotation {
+                    typeSyntax = bareType(annotation.type)
+                } else if let inferred = binding.initializer.flatMap({ literalType($0.value) }) {
+                    typeSyntax = TypeSyntax(stringLiteral: inferred)
+                } else {
                     context.diagnose(Diagnostic(node: binding, message: MacroError(
                         "@RutisConfig: \(pattern.identifier.text) needs a type annotation for its schema")))
                     continue
                 }
-                let typeSyntax = bareType(annotation.type)
                 let optional = typeSyntax.is(OptionalTypeSyntax.self) || typeSyntax.is(ImplicitlyUnwrappedOptionalTypeSyntax.self)
                     || trimmed(typeSyntax).hasPrefix("Optional<")
-                let quoted = description.map { "\"" + $0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"" } ?? "nil"
-                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted))")
+                let quoted = description.map(swiftString) ?? "nil"
+                // A literal initial value is the default; any other initial
+                // value is not, and the property stays required.
+                let literal = binding.initializer.map(\.value).flatMap { isLiteral($0) ? $0 : nil }
+                let defaulted = literal.map { ", default: Rutis.Schema.literal(\($0.trimmed) as \(trimmed(typeSyntax)))" } ?? ""
+                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted)\(defaulted))")
             }
         }
         return [try ExtensionDeclSyntax("""
@@ -328,6 +340,52 @@ public struct ConfigMacro: ExtensionMacro {
             }
         }
         """)]
+    }
+
+    /// The type Swift gives a plain literal: `String`, `Int`, `Double`,
+    /// `Bool`; `nil` for anything else.
+    static func literalType(_ expression: ExprSyntax) -> String? {
+        if expression.is(StringLiteralExprSyntax.self) { return "String" }
+        if expression.is(IntegerLiteralExprSyntax.self) { return "Int" }
+        if expression.is(FloatLiteralExprSyntax.self) { return "Double" }
+        if expression.is(BooleanLiteralExprSyntax.self) { return "Bool" }
+        if let prefix = expression.as(PrefixOperatorExprSyntax.self), prefix.operator.text == "-" {
+            let inner = literalType(prefix.expression)
+            return inner == "Int" || inner == "Double" ? inner : nil
+        }
+        return nil
+    }
+
+    /// `text` as a Swift string literal.
+    static func swiftString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n") + "\""
+    }
+
+    /// Whether `expression` is a literal: a string without interpolation,
+    /// a number, a boolean, or an array or string-keyed dictionary of them.
+    /// The compiler reads its value (the default is written as the
+    /// expression, typed as the property).
+    static func isLiteral(_ expression: ExprSyntax) -> Bool {
+        if let string = expression.as(StringLiteralExprSyntax.self) {
+            return string.segments.allSatisfy { $0.is(StringSegmentSyntax.self) }
+        }
+        if expression.is(IntegerLiteralExprSyntax.self) || expression.is(FloatLiteralExprSyntax.self)
+            || expression.is(BooleanLiteralExprSyntax.self)
+        {
+            return true
+        }
+        if let prefix = expression.as(PrefixOperatorExprSyntax.self), prefix.operator.text == "-" {
+            return prefix.expression.is(IntegerLiteralExprSyntax.self) || prefix.expression.is(FloatLiteralExprSyntax.self)
+        }
+        if let array = expression.as(ArrayExprSyntax.self) {
+            return array.elements.allSatisfy { isLiteral($0.expression) }
+        }
+        if let dictionary = expression.as(DictionaryExprSyntax.self) {
+            guard case let .elements(elements) = dictionary.content else { return true }
+            return elements.allSatisfy { $0.key.is(StringLiteralExprSyntax.self) && isLiteral($0.key) && isLiteral($0.value) }
+        }
+        return false
     }
 
     /// The text of `///` comments before a declaration.

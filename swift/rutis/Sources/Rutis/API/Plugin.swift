@@ -133,6 +133,13 @@ extension Rutis {
                     inner.append(("description", .string(description)))
                     schema = .object(inner)
                 }
+                if let fallback = property.defaultJSON, case var .object(inner) = schema {
+                    guard let value = try? JSONReader.parse(fallback) else {
+                        preconditionFailure("rutis: \(property.name): its default is not JSON: \(fallback)")
+                    }
+                    inner.append(("default", value))
+                    schema = .object(inner)
+                }
                 fields.append((property.name, schema))
                 if property.required { required.append(.string(property.name)) }
             }
@@ -147,12 +154,22 @@ extension Rutis {
             public var schema: Schema
             public var required: Bool
             public var description: String?
-
+            /// Its `default`, as JSON text (`@RutisConfig`'s literal initial
+            /// value).
+            public var defaultJSON: String?
             public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil) {
                 self.name = name
                 self.schema = schema
                 self.required = required
                 self.description = description
+            }
+
+            /// A property with a literal default (`@RutisConfig`'s `var units
+            /// = "metric"`): not required when the default has a JSON form
+            /// (one without, a `Character`, is no default).
+            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil, default defaultJSON: String?) {
+                self.init(name, schema, required: required && defaultJSON == nil, description: description)
+                self.defaultJSON = defaultJSON
             }
         }
 
@@ -160,6 +177,40 @@ extension Rutis {
         /// floats, booleans, arrays, string-keyed dictionaries, nested
         /// configuration types, String-valued enums; `{}` for any other.
         public static func of<T>(_ type: T.Type) -> Schema { Schema(schema(of: type, depth: 0)) }
+
+        /// The JSON text of a literal default (what `@RutisConfig` writes
+        /// for `var units = "metric"`).
+        /// `nil` for a value with no JSON form (a `Character`, say): the
+        /// property then has no default and stays required.
+        public static func literal<T>(_ value: T) -> String? {
+            guard let encoded = try? ValueCodec.encodeAny(value), let json = jsonOf(encoded) else { return nil }
+            return String(decoding: JSONWriter.write(json), as: UTF8.self)
+        }
+
+        /// A literal's value as JSON: sets as arrays, decimals and big
+        /// integers as their numbers; `nil` for what JSON has no form of.
+        static func jsonOf(_ value: Value) -> JSON? {
+            switch value {
+            case let .data(json): return json
+            case let .list(items), let .set(items):
+                var out: [JSON] = []
+                for item in items {
+                    guard let json = jsonOf(item) else { return nil }
+                    out.append(json)
+                }
+                return .array(out)
+            case let .record(fields):
+                var out: [(String, JSON)] = []
+                for (key, item) in fields {
+                    guard let json = jsonOf(item) else { return nil }
+                    out.append((key, json))
+                }
+                return .object(out)
+            case let .decimal(text): return .number(text)
+            case let .bigint(big): return .number(big.description)
+            default: return nil
+            }
+        }
 
         /// Whether a property of type `T` may be left out.
         public static func isOptional<T>(_: T.Type) -> Bool { T.self is OptionalProtocol.Type }
@@ -220,7 +271,7 @@ extension Rutis {
         public let name: String
         let inject: [String]
         let provides: [String: Shape]
-        let schema: JSON
+        package let schema: JSON
         let version: String?
         let api: Int
         let apply: (Ctx, Value) async throws -> Void
@@ -267,23 +318,60 @@ extension Rutis {
                 }
             }
         }
+        // The schema the host checks rows with (`check`) and this runtime
+        // validates them with: the type's own (`@RutisConfig`,
+        // `rutisSchema`), or what its type says (a `String` config:
+        // `{"type": "string"}`); a type that says nothing more takes any
+        // object, checked only when decoded.
         let schema: JSON
+        let validates: Bool
         if C.self == NoConfig.self {
-            schema = .null
+            (schema, validates) = (.null, false)
         } else if let configurable = C.self as? RutisConfigurable.Type {
-            schema = configurable.rutisSchema.json
+            (schema, validates) = (configurable.rutisSchema.json, true)
+        } else if case var .object(fields) = Schema.of(C.self).json, !fields.isEmpty {
+            // An optional config type takes no config too.
+            if C.self is OptionalProtocol.Type, let index = fields.firstIndex(where: { $0.0 == "type" }), case let .string(type) = fields[index].1 {
+                fields[index].1 = .array([.string(type), .string("null")])
+                if let at = fields.firstIndex(where: { $0.0 == "enum" }), case let .array(values) = fields[at].1 {
+                    fields[at].1 = .array(values + [.null])
+                }
+            }
+            (schema, validates) = (.object(fields), true)
         } else {
-            schema = Schema.anyObject.json
+            (schema, validates) = (Schema.anyObject.json, false)
         }
         let apply = plugin.apply
         return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
                           version: plugin.version, api: pluginAPI)
         { ctx, config in
+            // Defaults filled and the config validated against the schema
+            // before decoding (config schema design §2.2); a decoder error
+            // after that is the schema and the type disagreeing (§3.3).
+            // Only a schema of the type's own (`@RutisConfig` or
+            // `rutisSchema`): the `{"type": "object"}` other Decodable types
+            // get is checked only when decoded (a `String` config, say).
+            var value = config
+            if validates {
+                // A config of plain data (one holding tagged values, which
+                // only Swift's own callers send, is decoded as it is).
+                var json: JSON??
+                switch config {
+                case .undefined: json = .some(nil)
+                case let .data(data): json = .some(data == .null ? nil : data)
+                default: json = config.isNullish ? .some(nil) : nil
+                }
+                if let json {
+                    let checked = ConfigSchema.check(schema, json)
+                    if !checked.errors.isEmpty { throw ConfigSchema.error(checked.errors) }
+                    value = .data(checked.config)
+                }
+            }
             let decoded: C
             do {
-                decoded = try ValueCodec.decode(C.self, from: config.isNullish ? .data(.object([])) : config)
+                decoded = try ValueCodec.decode(C.self, from: value.isNullish ? .data(.object([])) : value)
             } catch {
-                throw RutisError(name: "Error", message: "config: \(errorMessage(error))")
+                throw ConfigSchema.error([ConfigSchema.issue(ConfigSchema.path(of: error), "is not a value the plugin accepts")])
             }
             try await apply(ctx, decoded)
         }

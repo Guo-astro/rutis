@@ -191,6 +191,8 @@ final class Invocation: EventEntry, @unchecked Sendable {
 /// The runtime under test and the host side of its session.
 final class Harness: @unchecked Sendable {
     let plugin: Rutis.Definition
+    /// The rows and config values warned about.
+    var warned: Set<String> = []
     let services: [String: RutisExportable]
     let runtimeName: String
     var session: Peer!
@@ -273,6 +275,25 @@ final class Harness: @unchecked Sendable {
         return harness
     }
 
+    /// The extra keys of `config` for row `row`, on standard error as the
+    /// host's loader writes them (`<row>: config: …`), once per row and
+    /// config value (config schema design §3.2).
+    func warn(row: String, _ config: Value) {
+        guard case .object = plugin.schema else { return }
+        let json: JSON?
+        switch config {
+        case .undefined: json = nil
+        case let .data(data): json = data == .null ? nil : data
+        default: return
+        }
+        let warnings = ConfigSchema.check(plugin.schema, json).warnings
+        let seen = "\(row)\u{0}\(json.map { String(decoding: JSONWriter.write($0), as: UTF8.self) } ?? "")"
+        guard !warnings.isEmpty, lock.withLock({ warned.insert(seen).inserted }) else { return }
+        for warning in warnings {
+            FileHandle.standardError.write(Data("\(row): config: \(warning.message)\n".utf8))
+        }
+    }
+
     func load(config: Any?, row: String, scope: [Rutis.Scope]) async throws -> Loaded {
         let exports: Value = try lock.withLock {
             if scopes[row] != nil { throw RutisError(name: "Error", message: "RutisTest: a row \(row) is already loaded") }
@@ -285,6 +306,7 @@ final class Harness: @unchecked Sendable {
             }))
         }
         let configValue = config.map { try? ValueCodec.encodeAny($0) } ?? .null
+        warn(row: row, configValue ?? .null)
         let placed = Value.data(.object([("scope", .array(scope.map { .object([("id", .string($0.id)), ("group", .string($0.group))]) }))]))
         do {
             _ = try await session.call(target: "", method: "rows.load", args: [
@@ -546,6 +568,7 @@ public final class Loaded: @unchecked Sendable {
     public func update(config: Any?) async throws {
         harness.lock.withLock { harness.withdrawRow(row) }
         let value = try config.map { try ValueCodec.encodeAny($0) } ?? .null
+        harness.warn(row: row, value)
         _ = try await harness.session.call(target: "", method: "rows.update", args: [.data(.string(row)), value], sync: false)
     }
 
