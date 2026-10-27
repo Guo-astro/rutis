@@ -277,7 +277,7 @@ let report = handle.reconcile(layers, None).await?;
 - **默认值现在会补上**：判断「配置里有没有这个键」的插件代码会看到默认值；代码里为默认值写的兜底可以去掉，也可以留着。
 - **多余的键**（Schema 没写、但允许的键）：只是警告，每行每个配置值一次；`check --strict` 时是错误。
 - **Go**：生成的 Schema 不再有 `required`（不写的字段是零值，和 `encoding/json` 一样）；手写的 `Schema` 里的 `default` 现在会补上。旧版 SDK 构建的二进制，`check` 忽略它的 `required`。指针字段也接受 `null`。要在测试里检查配置被拒绝，用新的 `rutistest.TryLoad`。
-- **Swift**：带字面量初值的 `var` 字段（`var units = "metric"`）不再必填，不写时取这个值。没有 `@RutisConfig` 的普通 `Decodable` 配置类型和以前一样只解码。
-- **Rust**：loader 行的配置错误在 `ReconcileReport` 里的文字从 `config validation failed: [...]` 变成 `config: <路径> …`；类型不变，内核 `ErrorKind::Validation` 的显示文字也不变。`Builtins` 注册的行、dylib 的行、嵌入方自己的 resolver 给了 Schema（`Resolved::with_schema`）的行，由 loader 在 `build` 之前补默认值并校验。`Definition` 的配置和没写 `schema:` 的 dylib 解码时用同样的错误句子。多余的键默认写到标准错误；`Loader::on_config_warning` 可以改为交给你。
+- **Swift**：带字面量初值的 `var` 字段（`var units = "metric"`）不再必填，不写时取这个值。没有 `@RutisConfig` 的普通 `Decodable` 结构体和以前一样只解码。
+- **Rust**：loader 行的配置错误在 `ReconcileReport` 里的文字从 `config validation failed: [...]` 变成 `config: <路径> …`；类型不变，内核 `ErrorKind::Validation` 的显示文字也不变。`Builtins` 注册的行、dylib 的行、嵌入方自己的 resolver 给了 Schema（`Resolved::with_schema`）的行，由 loader 在 `build` 之前补默认值并校验；dylib 照每次发布一样要用 0.18 重新构建，旧的 dylib 不会被装载。`Definition` 的配置和没写 `schema:` 的 dylib 解码时用同样的错误句子。多余的键默认写到标准错误；`Loader::on_config_warning` 可以改为交给你。
 - **Node、Bun**：`definePlugin` 的 `config` 是 Standard Schema 对象（schemastery、zod 等）时报错：这种 Schema 以前只用来显示，从没生效。Cordis 行和以前一样由 Cordis 用它自己的 `Config` 校验，问题现在也写成 `config: …`。
 - **0.18 以前的 SDK 构建的运行时**加载行时不检查配置；`check` 照样检查它们。

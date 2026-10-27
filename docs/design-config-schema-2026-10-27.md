@@ -289,7 +289,7 @@ $ echo $?
 
 （沿用 `check` 现有的版式 `<行> (<插件>): cannot run: …`；一行有几个问题时每个问题一行。）
 
-测试工具（以 Node 为例）：`load(plugin, { units: 'kelvin' })` 失败，抛出的 `BindingError` 的 `code` 是 `bad-config`，消息是 `config: units should be "metric" or "imperial", got "kelvin"`；Go 的 `rutistest.Load` 返回同样的错误（`errors.As` 得到 `*rutis.BindingError`）。
+测试工具（以 Node 为例）：`load(plugin, { units: 'kelvin' })` 失败，抛出的 `BindingError` 的 `code` 是 `bad-config`，消息是 `config: units should be "metric" or "imperial", got "kelvin"`；Go 的 `rutistest.Load` 让测试失败，`rutistest.TryLoad` 交还同样的错误（`*rutis.RemoteError`，`Name` 为 `BindingError`，`Code` 为 `bad-config`）。
 
 ## 十、兼容与迁移
 

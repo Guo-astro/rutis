@@ -104,6 +104,7 @@ func touch(value any) any {
 	return value
 }
 
+// guarantee: sdk/config-schema (the shared case list)
 func TestEveryCase(t *testing.T) {
 	for _, c := range cases(t) {
 		t.Run(c.Name, func(t *testing.T) {

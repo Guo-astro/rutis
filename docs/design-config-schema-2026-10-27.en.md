@@ -289,7 +289,7 @@ $ echo $?
 
 (The existing `check` format `<row> (<plugin>): cannot run: …` is kept; a row with several problems gets one line per problem.)
 
-Testing tools (Node, for example): `load(plugin, { units: 'kelvin' })` fails, throwing a `BindingError` whose `code` is `bad-config` and whose message is `config: units should be "metric" or "imperial", got "kelvin"`; Go's `rutistest.Load` returns the same error (`errors.As` yields a `*rutis.BindingError`).
+Testing tools (Node, for example): `load(plugin, { units: 'kelvin' })` fails, throwing a `BindingError` whose `code` is `bad-config` and whose message is `config: units should be "metric" or "imperial", got "kelvin"`; Go's `rutistest.Load` fails the test, and `rutistest.TryLoad` gives back the same error (a `*rutis.RemoteError` with `Name` `BindingError` and `Code` `bad-config`).
 
 ## 10. Compatibility and migration
 

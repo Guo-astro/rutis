@@ -274,7 +274,14 @@ rutis-host: reloaded <文件> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <原因>; nothing changed
 ```
 
-被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
+被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。因为某一行的配置不符合 Schema 而被拒绝时，先每个问题一行，再是拒绝的那一行：
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 

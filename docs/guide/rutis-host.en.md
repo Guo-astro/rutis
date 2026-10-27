@@ -274,7 +274,14 @@ rutis-host: reloaded <file> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <reason>; nothing changed
 ```
 
-Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
+Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Refused because a row's config does not match its schema, a line per problem comes first, then the rejection:
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
 
 Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 
