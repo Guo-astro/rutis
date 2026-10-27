@@ -6,7 +6,9 @@
 //! - fake timers → 确定性同步点(Notify 门 + 状态观察),不做 sleep 计时断言;
 //! - 字符串事件名 → 类型化事件(Ping);generator effect → Effect::Many /
 //!   分段装配(Staged);Proxy 属性断言 → 状态/get 断言;
-//! - 执行错误走 await 通道、不重复进 ErrorSink(TS 同时记 logger);
+//! - 执行错误走 await 通道,并以 `StartFailed` 进 ErrorSink 一次(TS 同时记
+//!   logger;0.18 起 Rust 也一样,#678)。`sink_ctx` 只收其余错误,
+//!   `plugin_error` 断言这一条;
 //! - fiber 级 dispose 返回清理错误(TS resolve + 记 logger;Rust 按 D6/D20
 //!   经 dispose 任务通道返回,错误仍恰好观察一次)。
 
@@ -159,12 +161,18 @@ fn err(msg: &'static str) -> Error {
     Error::from(ErrorKind::ServiceNotFound(msg.to_string()))
 }
 
+/// A root whose sink collects every error but the failed starts the
+/// kernel reports besides the await channel (`plugin_error` checks those).
 fn sink_ctx() -> (Ctx, Arc<Mutex<Vec<Arc<ErrorKind>>>>) {
     let collected: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::new(Mutex::new(Vec::new()));
     let to = collected.clone();
     let ctx = Ctx::root_with_sink(
         Handle::current(),
-        Arc::new(move |e: Arc<ErrorKind>| to.lock().unwrap().push(e)),
+        Arc::new(move |e: Arc<ErrorKind>| {
+            if !matches!(*e, ErrorKind::StartFailed { .. }) {
+                to.lock().unwrap().push(e)
+            }
+        }),
     );
     (ctx, collected)
 }
@@ -291,7 +299,7 @@ impl DynPlugin for Staged {
 
 // tests/reentrant.spec.ts:29
 // 执行错误走 await 通道,回滚清理错误走 ErrorSink,终态 FAILED。
-// 偏差:TS 把执行错误也记一次 logger;Rust 只经 await 通道返回(设计 §八)。
+// 执行错误另以 StartFailed 进 sink 一次(同 TS 记 logger,见 plugin_error)。
 #[tokio::test]
 async fn keeps_plugin_execution_failure_separate_from_rollback_cleanup_failure() {
     let (ctx, sink) = sink_ctx();
@@ -1378,10 +1386,16 @@ async fn inertia_lock_3() {
 
 // tests/fiber.spec.ts:65
 // apply 抛错 → FAILED;失败 fiber 注册的监听器已回滚、不再触发。
-// 偏差:执行错误不进 logger(Rust 走 await 通道)。
+// 执行错误经 await 通道返回,并像 TS 记 logger 一样进 sink 一次
+// (StartFailed,写明插件名;0.18 起,#678)。
 #[tokio::test]
 async fn plugin_error() {
-    let (ctx, sink) = sink_ctx();
+    let sink: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::default();
+    let to = sink.clone();
+    let ctx = Ctx::root_with_sink(
+        Handle::current(),
+        Arc::new(move |e: Arc<ErrorKind>| to.lock().unwrap().push(e)),
+    );
     let hits = counter();
     let fail = {
         let hits = hits.clone();
@@ -1410,7 +1424,20 @@ async fn plugin_error() {
     assert_eq!(fiber1.state().state, FiberState::Failed);
     (&fiber2).await.expect("fiber2 loads");
     assert_eq!(fiber2.state().state, FiberState::Active);
-    assert!(sink.lock().unwrap().is_empty()); // 偏差:不记 logger
+    {
+        let logged = sink.lock().unwrap();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(matches!(
+            &*logged[0],
+            ErrorKind::StartFailed { plugin, error }
+                if plugin == "apply-fail"
+                    && matches!(**error, ErrorKind::ServiceNotFound(ref m) if m == "plugin error")
+        ));
+        assert_eq!(
+            logged[0].to_string(),
+            r#"apply-fail: failed: service "plugin error" not found in scope"#
+        );
+    }
 
     ctx.serial(Ping { value: 1 }).await.unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1); // 只有成功 fiber 的监听器

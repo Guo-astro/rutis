@@ -68,7 +68,7 @@ async fn a_plugin_waiting_long_for_its_deps_is_reported_once() {
     assert_eq!(
         said,
         [format!(
-            "plugin printer is still waiting after 0.1s for {}: it starts once that is provided",
+            "printer: still waiting after 0.1s for {}: it starts once that is provided",
             std::any::type_name::<Greeting>()
         )]
     );

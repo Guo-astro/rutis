@@ -285,7 +285,9 @@ pub rutis::host::diagnostics::PluginDiagnostics::injects: alloc::vec::Vec<rutis:
 pub rutis::host::diagnostics::PluginDiagnostics::instance: rutis::host::InstanceId
 pub rutis::host::diagnostics::PluginDiagnostics::name: alloc::string::String
 pub rutis::host::diagnostics::PluginDiagnostics::parent: core::option::Option<rutis::host::PluginId>
+pub rutis::host::diagnostics::PluginDiagnostics::platform: bool
 pub rutis::host::diagnostics::PluginDiagnostics::resolved_dependencies: alloc::vec::Vec<rutis::host::diagnostics::ResolvedDependency>
+pub rutis::host::diagnostics::PluginDiagnostics::row: core::option::Option<alloc::string::String>
 pub rutis::host::diagnostics::PluginDiagnostics::state: rutis::host::FiberState
 impl core::clone::Clone for rutis::host::diagnostics::PluginDiagnostics
 pub fn rutis::host::diagnostics::PluginDiagnostics::clone(&self) -> Self
@@ -322,6 +324,8 @@ pub rutis::host::diagnostics::RuntimeDiagnostics::shutting_down: bool
 impl core::clone::Clone for rutis::host::diagnostics::RuntimeDiagnostics
 pub fn rutis::host::diagnostics::RuntimeDiagnostics::clone(&self) -> Self
 impl core::fmt::Debug for rutis::host::diagnostics::RuntimeDiagnostics
+pub fn rutis::host::diagnostics::RuntimeDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::diagnostics::RuntimeDiagnostics
 pub fn rutis::host::diagnostics::RuntimeDiagnostics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for rutis::host::diagnostics::RuntimeDiagnostics
 impl core::marker::Send for rutis::host::diagnostics::RuntimeDiagnostics
@@ -389,6 +393,7 @@ pub rutis::host::DisposeWaitError::TimedOut::elapsed: core::time::Duration
 pub rutis::host::DisposeWaitError::TimedOut::generation: u64
 pub rutis::host::DisposeWaitError::TimedOut::plugin_id: rutis::host::PluginId
 pub rutis::host::DisposeWaitError::TimedOut::state: rutis::host::FiberState
+pub rutis::host::DisposeWaitError::TimedOut::stuck: alloc::vec::Vec<rutis::host::Stuck>
 impl core::error::Error for rutis::host::DisposeWaitError
 impl core::fmt::Debug for rutis::host::DisposeWaitError
 pub fn rutis::host::DisposeWaitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -469,15 +474,23 @@ pub rutis::host::ErrorKind::ListenersFailed::name: alloc::string::String
 pub rutis::host::ErrorKind::ListenersStillRunning
 pub rutis::host::ErrorKind::ListenersStillRunning::listeners: alloc::string::String
 pub rutis::host::ErrorKind::ListenersStillRunning::seconds: f64
+pub rutis::host::ErrorKind::NotServedByName
+pub rutis::host::ErrorKind::NotServedByName::service: alloc::string::String
 pub rutis::host::ErrorKind::PluginFailed(alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>)
 pub rutis::host::ErrorKind::ReservedEvent
 pub rutis::host::ErrorKind::ReservedEvent::name: alloc::string::String
+pub rutis::host::ErrorKind::RuntimeDown
+pub rutis::host::ErrorKind::RuntimeDown::reason: alloc::string::String
+pub rutis::host::ErrorKind::RuntimeDown::runtime: alloc::string::String
 pub rutis::host::ErrorKind::ServiceExists(alloc::string::String)
 pub rutis::host::ErrorKind::ServiceNotFound(alloc::string::String)
 pub rutis::host::ErrorKind::ServiceRead(rutis::host::ServiceReadError)
 pub rutis::host::ErrorKind::StaleGeneration
 pub rutis::host::ErrorKind::StaleGeneration::current: u64
 pub rutis::host::ErrorKind::StaleGeneration::expected: u64
+pub rutis::host::ErrorKind::StartFailed
+pub rutis::host::ErrorKind::StartFailed::error: alloc::rcs::arc::Arc<rutis::host::ErrorKind>
+pub rutis::host::ErrorKind::StartFailed::plugin: alloc::string::String
 pub rutis::host::ErrorKind::StillWaiting
 pub rutis::host::ErrorKind::StillWaiting::missing: alloc::vec::Vec<alloc::string::String>
 pub rutis::host::ErrorKind::StillWaiting::plugin: alloc::string::String
@@ -833,6 +846,26 @@ impl core::marker::Unpin for rutis::host::Snapshot
 impl core::marker::UnsafeUnpin for rutis::host::Snapshot
 impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::Snapshot
 impl !core::panic::unwind_safe::UnwindSafe for rutis::host::Snapshot
+#[non_exhaustive] pub struct rutis::host::Stuck
+pub rutis::host::Stuck::doing: alloc::string::String
+pub rutis::host::Stuck::plugin: alloc::string::String
+impl core::clone::Clone for rutis::host::Stuck
+pub fn rutis::host::Stuck::clone(&self) -> Self
+impl core::cmp::Eq for rutis::host::Stuck
+impl core::cmp::PartialEq for rutis::host::Stuck
+pub fn rutis::host::Stuck::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rutis::host::Stuck
+pub fn rutis::host::Stuck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for rutis::host::Stuck
+pub fn rutis::host::Stuck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rutis::host::Stuck
+impl core::marker::Freeze for rutis::host::Stuck
+impl core::marker::Send for rutis::host::Stuck
+impl core::marker::Sync for rutis::host::Stuck
+impl core::marker::Unpin for rutis::host::Stuck
+impl core::marker::UnsafeUnpin for rutis::host::Stuck
+impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::Stuck
+impl core::panic::unwind_safe::UnwindSafe for rutis::host::Stuck
 pub struct rutis::host::TypeKey
 impl rutis::host::TypeKey
 pub fn rutis::host::TypeKey::describe(&self) -> alloc::string::String

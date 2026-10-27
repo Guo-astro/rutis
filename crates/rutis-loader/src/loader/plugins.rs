@@ -149,6 +149,10 @@ impl LoaderPlugin {
 }
 
 impl DynPlugin for LoaderPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "rutis-loader"
     }

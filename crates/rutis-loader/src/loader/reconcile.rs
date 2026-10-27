@@ -664,6 +664,7 @@ impl Inner {
                 scope,
                 value: value.to_string(),
                 unavailable: false,
+                plugin: false,
             };
             if !out.contains(&failing) {
                 out.push(failing);
@@ -725,6 +726,11 @@ impl Inner {
                 scope: failing.scope,
             };
             failing.unavailable = state.rejected.get(&slot).is_some_and(Unavailable::is);
+            failing.plugin = !state.rejected.contains_key(&slot)
+                && state
+                    .running
+                    .get(&slot)
+                    .is_some_and(|running| running.view.state().state == FiberState::Failed);
         }
         out
     }
@@ -1006,12 +1012,35 @@ impl Inner {
                 .iter()
                 .filter(|f| !f.unavailable && !before.contains(f)),
         );
-        ReconcileReport {
+        // A row that cannot start reaches the error sink (stderr, by
+        // default), as a plugin that fails does from the kernel (#678).
+        let refused: Vec<Arc<ErrorKind>> = after
+            .iter()
+            .filter(|f| !f.plugin && !f.unavailable && !before.contains(f))
+            .map(|failing| {
+                Arc::new(ErrorKind::StartFailed {
+                    plugin: failing.failure.id.clone(),
+                    error: Arc::new(ErrorKind::PluginFailed(
+                        failing.failure.error.clone().into(),
+                    )),
+                })
+            })
+            .collect();
+        let root = state.groups.get(&None).map(|g| g.ctx.clone());
+        let report = ReconcileReport {
             warnings: state.desired.warnings.clone(),
             issues: state.desired.issues.clone(),
             new_failures,
             failures: Failing::public(after.iter()),
+        };
+        drop(state);
+        if let Some(root) = root {
+            let sink = rutis::host::CtxHost::error_sink(&root);
+            for error in refused {
+                sink(error);
+            }
         }
+        report
     }
 
     /// Wait until no running record is in transition: every record, or with

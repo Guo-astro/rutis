@@ -54,15 +54,119 @@ pub struct PluginId(pub u64);
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DisposeWaitError {
-    #[error("fiber {plugin_id:?} generation {generation} still {state:?} after {elapsed:?}")]
+    /// The time ran out. `plugin_id`, `generation` and `state` are those
+    /// of the plugin waited for (the root, for a shutdown); `stuck` says
+    /// which plugins below it are still busy, and with what (#678).
+    #[error("{}", timed_out(*.elapsed, .stuck, *.state))]
     TimedOut {
         plugin_id: PluginId,
         generation: u64,
         state: FiberState,
         elapsed: Duration,
+        stuck: Vec<Stuck>,
     },
     #[error("fiber disposal failed: {0}")]
     Failed(Arc<ErrorKind>),
+}
+
+/// A plugin that a shutdown or dispose that ran out of time still waits
+/// for, and what it is doing ([`DisposeWaitError::TimedOut`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Stuck {
+    /// Its row's name (`Ctx::mark_row`), else its plugin's.
+    pub plugin: String,
+    /// What it is still doing: `still running the cleanup registered at
+    /// src/lib.rs:12:9` (a `ctx.effect`), `still withdrawing calendar`,
+    /// `still running the cleanup its apply returned`, `its apply has not
+    /// returned`.
+    pub doing: String,
+}
+
+impl std::fmt::Display for Stuck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.plugin, self.doing)
+    }
+}
+
+fn timed_out(elapsed: Duration, stuck: &[Stuck], state: FiberState) -> String {
+    // Whole milliseconds: `3s`, `20ms`.
+    let elapsed = Duration::from_millis(elapsed.as_millis() as u64);
+    if stuck.is_empty() {
+        return format!("not finished after {elapsed:?}: still {state:?}");
+    }
+    let each: Vec<String> = stuck.iter().map(ToString::to_string).collect();
+    format!("not finished after {elapsed:?}: {}", each.join("; "))
+}
+
+/// What the plugins at and below `top` are still busy with, for a
+/// shutdown or dispose that ran out of time: each plugin whose own work is
+/// unfinished (a child plugin's unload is left to the child), in tree
+/// order.
+pub(crate) fn stuck_below(top: &Arc<FiberInner>) -> Vec<Stuck> {
+    use crate::effect::Origin;
+    let name = waiting::key_names(top.ctx.shared());
+    let mut out = Vec::new();
+    let mut pending = vec![top.clone()];
+    while let Some(fiber) = pending.pop() {
+        let mut children: Vec<Arc<FiberInner>> = fiber
+            .children
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        children.reverse();
+        pending.extend(children);
+        let plugin = fiber.display_name();
+        match fiber.state_snapshot().state {
+            FiberState::Loading => out.push(Stuck {
+                plugin,
+                doing: "its apply has not returned".into(),
+            }),
+            FiberState::Unloading => {
+                let records: Vec<Arc<EffectRecord>> = fiber
+                    .effect_index
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .collect();
+                let mut child = false;
+                let mut own = Vec::new();
+                for record in &records {
+                    let Some((origin, label)) = record.draining() else {
+                        continue;
+                    };
+                    let doing = match origin {
+                        Origin::Mount => {
+                            child = true;
+                            continue;
+                        }
+                        Origin::Effect(at) => format!(
+                            "still running the cleanup registered at {}:{}:{}",
+                            at.file(),
+                            at.line(),
+                            at.column()
+                        ),
+                        Origin::Provide(key) => format!("still withdrawing {}", name(key)),
+                        Origin::Apply => "still running the cleanup its apply returned".into(),
+                        Origin::Other => format!("still running the cleanup {label}"),
+                    };
+                    own.push(doing);
+                }
+                if own.is_empty() && !child {
+                    own.push("still waiting for its event calls to finish".into());
+                }
+                out.extend(own.into_iter().map(|doing| Stuck {
+                    plugin: plugin.clone(),
+                    doing,
+                }));
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
@@ -198,6 +302,8 @@ pub(crate) struct FiberInner {
     pub instance: InstanceId,
     pub name: String,
     pub is_root: bool,
+    /// The root, or a plugin of rutis itself ([`DynPlugin::platform`]).
+    pub platform: bool,
     pub plugin: Option<Arc<dyn DynPlugin>>,
     /// 工厂模式(D32):与 `plugin` 互斥(工厂模式 plugin 为 None)。
     pub factory: Option<Arc<dyn ErasedFactory>>,
@@ -319,6 +425,15 @@ where
 }
 
 impl FiberInner {
+    /// The name a report gives it: its row (`Ctx::mark_row`), else its
+    /// plugin's name.
+    pub(crate) fn display_name(&self) -> String {
+        match self.row.get() {
+            Some(row) => row.to_string(),
+            None => self.name.clone(),
+        }
+    }
+
     pub(crate) fn push_effect(&self, record: Arc<EffectRecord>) {
         self.effects.lock().unwrap().push(record.clone());
         self.effect_index
@@ -776,9 +891,10 @@ impl FiberInner {
         let result: Result<Effect, Error> = outcome.unwrap_or_else(|p| Err(panic_error(p)));
         match result {
             Ok(effect) => {
-                let record = EffectRecord::new(
+                let record = EffectRecord::from(
                     effect,
                     format!("plugin apply: {}", this.name),
+                    crate::effect::Origin::Apply,
                     Arc::downgrade(this),
                 );
                 this.push_effect(record);
@@ -862,10 +978,20 @@ impl FiberInner {
         let arc = aggregate_arcs(combined).expect("failure present");
         {
             let mut tr = this.transition.lock().unwrap();
-            tr.error = Some(arc);
+            tr.error = Some(arc.clone());
             Self::set_state(this, &mut tr, FiberState::Failed);
         }
         this.flush_status();
+        // Seen without anyone reading the result (#678): an embedding's
+        // default sink prints it. rutis's own plugins report their own.
+        if !this.platform {
+            let error = ErrorKind::StartFailed {
+                plugin: this.display_name(),
+                error: arc,
+            };
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(Arc::new(error))));
+        }
     }
 
     /// ④ EffectRecord 严格 LIFO 串行清理 + 消费边/依赖快照/提供表复位。
@@ -1286,6 +1412,7 @@ fn spawn_fiber_inner(
             .or_else(|| factory.as_ref().map(|f| f.name().to_string()))
             .unwrap_or_else(|| "root".to_string())
     };
+    let platform = is_root || (!known_closed && plugin.as_ref().is_some_and(|p| p.platform()));
     let declared_injects: Vec<TypeKey> = if known_closed {
         Vec::new()
     } else if let Some(plugin) = &plugin {
@@ -1350,6 +1477,7 @@ fn spawn_fiber_inner(
             instance,
             name: if closed { "closed".to_string() } else { name },
             is_root,
+            platform,
             plugin,
             factory,
             config: Mutex::new(config),
@@ -1601,6 +1729,7 @@ impl FiberView {
                         generation: snapshot.generation,
                         state: snapshot.state,
                         elapsed: started.elapsed(),
+                        stuck: stuck_below(&inner),
                     })
                 }
             }

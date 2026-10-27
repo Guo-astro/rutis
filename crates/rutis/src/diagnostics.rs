@@ -9,6 +9,21 @@ use crate::{FiberState, InstanceId, PluginId, ServiceReadFailure, TypeKey};
 /// Fields are collected under separate locks, so concurrent lifecycle changes
 /// can make entries reflect different moments. A retained snapshot does not
 /// update itself; call [`CtxHost::diagnostics`](crate::host::CtxHost::diagnostics) again for a fresh view.
+///
+/// Its `Display` is for people: one item a line, plugins by their row's or
+/// their own name, services by the names reports give them
+/// ([`CtxHost::name_keys_with`](crate::host::CtxHost::name_keys_with)), and
+/// rutis's own plugins (transports, links, runtimes, the loader) left out;
+/// `{:#}` lists those too. `Debug` has every field.
+///
+/// ```text
+/// plugins:
+///   weather: running
+///   chat: waiting for calendar (service missing)
+///   broken: failed: no API key
+/// services:
+///   forecast: provided by weather
+/// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RuntimeDiagnostics {
@@ -17,6 +32,117 @@ pub struct RuntimeDiagnostics {
     pub bindings: Vec<BindingDiagnostics>,
     /// Event keys with `emit`s waiting or running, longest waiting first.
     pub event_backlogs: Vec<EventBacklog>,
+    pub(crate) key_names: KeyNames,
+}
+
+/// The names the key namers gave the keys of a snapshot.
+#[derive(Clone, Default)]
+pub(crate) struct KeyNames(Vec<(TypeKey, String)>);
+
+impl KeyNames {
+    pub(crate) fn insert(&mut self, key: &TypeKey, name: &impl Fn(&TypeKey) -> String) {
+        if !self.0.iter().any(|(known, _)| known == key) {
+            self.0.push((key.clone(), name(key)));
+        }
+    }
+
+    fn get(&self, key: &TypeKey) -> String {
+        self.0
+            .iter()
+            .find(|(known, _)| known == key)
+            .map_or_else(|| key.describe(), |(_, name)| name.clone())
+    }
+}
+
+impl std::fmt::Debug for KeyNames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("..")
+    }
+}
+
+impl PluginDiagnostics {
+    /// The name people know it by: its row's, else its plugin's.
+    fn display_name(&self) -> &str {
+        self.row.as_deref().unwrap_or(&self.name)
+    }
+}
+
+impl std::fmt::Display for RuntimeDiagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let all = f.alternate();
+        let shown = |plugin: &&PluginDiagnostics| all || !plugin.platform;
+        if self.shutting_down {
+            writeln!(f, "shutting down")?;
+        }
+        writeln!(f, "plugins:")?;
+        for plugin in self.plugins.iter().filter(shown) {
+            let state = match plugin.state {
+                FiberState::Pending => {
+                    let waits: Vec<String> = plugin
+                        .injects
+                        .iter()
+                        .filter(|dep| dep.status != DependencyStatus::Ready)
+                        .map(|dep| format!("{} ({})", self.key_names.get(&dep.key), dep.status))
+                        .collect();
+                    if waits.is_empty() {
+                        "waiting".to_owned()
+                    } else {
+                        format!("waiting for {}", waits.join("; "))
+                    }
+                }
+                FiberState::Loading => "starting".to_owned(),
+                FiberState::Active => "running".to_owned(),
+                FiberState::Unloading => "stopping".to_owned(),
+                FiberState::Failed => match &plugin.error {
+                    Some(error) => format!("failed: {error}"),
+                    None => "failed".to_owned(),
+                },
+                FiberState::Disposed => "stopped".to_owned(),
+            };
+            writeln!(f, "  {}: {state}", plugin.display_name())?;
+        }
+        let provider = |id: PluginId| self.plugins.iter().find(|plugin| plugin.id == id);
+        let services: Vec<String> = self
+            .bindings
+            .iter()
+            .filter_map(|binding| {
+                let by = match provider(binding.provider) {
+                    // Provided on the root: by the host itself.
+                    Some(plugin) if plugin.parent.is_none() => "the host",
+                    Some(plugin) if all || !plugin.platform => plugin.display_name(),
+                    Some(_) => return None,
+                    None if all => "a plugin that is gone",
+                    None => return None,
+                };
+                let mut line = format!("  {}: provided by {by}", self.key_names.get(&binding.key));
+                if let Some(scope) = &binding.scope {
+                    line.push_str(&format!(" in {scope}"));
+                }
+                if binding.removing {
+                    line.push_str(" (being withdrawn)");
+                }
+                Some(line)
+            })
+            .collect();
+        if !services.is_empty() {
+            writeln!(f, "services:")?;
+            for line in services {
+                writeln!(f, "{line}")?;
+            }
+        }
+        if !self.event_backlogs.is_empty() {
+            writeln!(f, "events waiting:")?;
+            for backlog in &self.event_backlogs {
+                let oldest = std::time::Duration::from_millis(backlog.oldest.as_millis() as u64);
+                writeln!(
+                    f,
+                    "  {}: {} not finished, oldest {oldest:?} ago",
+                    backlog.name, backlog.pending
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The `emit`s of one event key that were accepted and have not finished.
@@ -39,6 +165,11 @@ pub struct PluginDiagnostics {
     pub instance: InstanceId,
     pub parent: Option<PluginId>,
     pub name: String,
+    /// The loader row it is (`Ctx::mark_row`), once it has started.
+    pub row: Option<String>,
+    /// Whether it is part of rutis itself (a transport, a link, a runtime,
+    /// the loader) or the root: the readable `Display` leaves it out.
+    pub platform: bool,
     pub state: FiberState,
     pub generation: u64,
     pub error: Option<Arc<ErrorKind>>,

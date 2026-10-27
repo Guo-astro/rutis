@@ -605,14 +605,20 @@ impl Ctx {
     /// })?;
     /// # Ok(()) }
     /// ```
+    ///
+    /// Where it is called is kept: a shutdown that runs out of time names
+    /// the cleanup by it (`the cleanup registered at src/lib.rs:12:9`).
+    #[track_caller]
     pub fn effect<Fut>(&self, f: impl FnOnce() -> Fut) -> Result<Disposer, Error>
     where
         Fut: Future<Output = Result<(), Error>> + Send + 'static,
     {
-        self.effect_named("anonymous", move || {
+        let origin = crate::effect::Origin::Effect(std::panic::Location::caller());
+        let record = self.register_effect_named("anonymous".into(), origin, move || {
             let cleanup = f();
             Effect::AsyncDisposer(Box::new(move || Box::pin(cleanup)))
-        })
+        })?;
+        Ok(self.record_disposer(record))
     }
 
     fn provide_inner<T: ?Sized + Send + Sync + 'static>(
@@ -646,6 +652,14 @@ impl Ctx {
             crate::service::marked::<T>(self)
         };
         let Some(entries) = marked else {
+            if !mutable && key.name().is_none() {
+                if let Some(service) = crate::service::unserved::<T>(self) {
+                    let note = ErrorKind::NotServedByName {
+                        service: service.to_owned(),
+                    };
+                    self.error_sink()(Arc::new(note));
+                }
+            }
             return self.provide_native(key, value, check, mutable);
         };
         // Both slots are checked before anything is registered: a provide
@@ -717,8 +731,9 @@ impl Ctx {
         let label = format!("service provide: {}", key.describe());
         let inserted = Arc::new(Mutex::new(None));
         let inserted_slot = inserted.clone();
+        let origin = crate::effect::Origin::Provide(key.clone());
         let disposer =
-            self.register_internal_effect_named(label, move |fiber, provider_gen, state| {
+            self.register_internal_effect(label, origin, move |fiber, provider_gen, state| {
                 // Admission and the fiber transition lock cover both the binding and
                 // its cleanup record, so shutdown cannot miss a committed service.
                 let binding = shared.registry.insert_binding(
@@ -805,6 +820,17 @@ impl Ctx {
         label: String,
         f: impl FnOnce(&Arc<FiberInner>, u64, FiberState) -> Result<Effect, Error>,
     ) -> Result<Disposer, Error> {
+        self.register_internal_effect(label, crate::effect::Origin::Other, f)
+    }
+
+    /// [`register_internal_effect_named`](Self::register_internal_effect_named),
+    /// saying where the cleanup comes from.
+    pub(crate) fn register_internal_effect(
+        &self,
+        label: String,
+        origin: crate::effect::Origin,
+        f: impl FnOnce(&Arc<FiberInner>, u64, FiberState) -> Result<Effect, Error>,
+    ) -> Result<Disposer, Error> {
         let _admission = self.0.shared.admission.lock().unwrap();
         self.registration_open()?;
         let fiber = self.0.fiber.upgrade().ok_or(ErrorKind::InactiveEffect)?;
@@ -814,7 +840,7 @@ impl Ctx {
             return Err(ErrorKind::InactiveEffect.into());
         }
         let effect = f(&fiber, tr.generation, tr.state)?;
-        let record = EffectRecord::new(effect, label, self.0.fiber.clone());
+        let record = EffectRecord::from(effect, label, origin, self.0.fiber.clone());
         fiber.push_effect(record.clone());
         drop(tr);
         let handle = self.handle().clone();
@@ -841,9 +867,10 @@ impl Ctx {
         if matches!(tr.state, FiberState::Unloading | FiberState::Disposed) {
             return Err(ErrorKind::InactiveEffect.into());
         }
-        let record = EffectRecord::new(
+        let record = EffectRecord::from(
             make(),
             format!("plugin mount: {} #{}", child.name, child.id.0),
+            crate::effect::Origin::Mount,
             self.0.fiber.clone(),
         );
         parent.push_effect(record.clone());
@@ -851,11 +878,22 @@ impl Ctx {
         Ok(record)
     }
 
+    /// The disposer of a cleanup record: drains it early, once.
+    pub(crate) fn record_disposer(&self, record: Arc<EffectRecord>) -> Disposer {
+        let handle = self.handle().clone();
+        Disposer::new(Box::new(move || {
+            let record = record.clone();
+            let handle = handle.clone();
+            Box::pin(async move { record.drain(&handle).await })
+        }))
+    }
+
     /// `effect` 的内部形态:返回记录本体,供 mount 登记等持有引用。
     /// Disposer 语义不变:drop 不触发清理,fiber 卸载仍兜底(D28)。
     pub(crate) fn register_effect_named(
         &self,
         label: String,
+        origin: crate::effect::Origin,
         f: impl FnOnce() -> Effect,
     ) -> Result<Arc<EffectRecord>, Error> {
         let fiber = self.0.fiber.upgrade();
@@ -883,7 +921,7 @@ impl Ctx {
         // factory 锁外执行;但"状态检查 + effects 入队"必须在同一临界区
         //(transition → effects 嵌套,锁序无反向):否则检查通过后驱动恰好
         // 卸载取走 effects,新记录漏掉本轮清理而泄漏(评审 P1)
-        let record = EffectRecord::new(f(), label, self.0.fiber.clone());
+        let record = EffectRecord::from(f(), label, origin, self.0.fiber.clone());
         let handle = self.handle().clone();
         {
             let tr = fiber.transition.lock().unwrap();
@@ -1168,6 +1206,8 @@ impl crate::host::CtxHost for Ctx {
                         .and_then(Weak::upgrade)
                         .map(|p| p.id),
                     name: fiber.name.clone(),
+                    row: fiber.row.get().map(ToString::to_string),
+                    platform: fiber.platform,
                     state: snapshot.state,
                     generation: snapshot.generation,
                     error: snapshot.error,
@@ -1177,11 +1217,23 @@ impl crate::host::CtxHost for Ctx {
                 });
             }
         }
+        let bindings = self.0.shared.registry.bindings_snapshot();
+        // The names reports give keys, for the readable form.
+        let name = crate::fiber::waiting::key_names(&self.0.shared);
+        let mut key_names = crate::diagnostics::KeyNames::default();
+        let keys = plugins
+            .iter()
+            .flat_map(|plugin| plugin.injects.iter().map(|dep| &dep.key))
+            .chain(bindings.iter().map(|binding| &binding.key));
+        for key in keys {
+            key_names.insert(key, &name);
+        }
         RuntimeDiagnostics {
             shutting_down: self.is_shutting_down(),
             plugins,
-            bindings: self.0.shared.registry.bindings_snapshot(),
+            bindings,
             event_backlogs: self.events().backlogs(),
+            key_names,
         }
     }
 
@@ -1233,6 +1285,7 @@ impl crate::host::CtxHost for Ctx {
                         generation: snapshot.generation,
                         state: snapshot.state,
                         elapsed: started.elapsed(),
+                        stuck: crate::fiber::stuck_below(&root.inner),
                     })
                 }
             }
@@ -1523,13 +1576,8 @@ impl crate::internal::CtxInternal for Ctx {
         label: impl Into<String>,
         f: impl FnOnce() -> Effect,
     ) -> Result<Disposer, Error> {
-        let record = self.register_effect_named(label.into(), f)?;
-        let handle = self.handle().clone();
-        Ok(Disposer::new(Box::new(move || {
-            let record = record.clone();
-            let handle = handle.clone();
-            Box::pin(async move { record.drain(&handle).await })
-        })))
+        let record = self.register_effect_named(label.into(), crate::effect::Origin::Other, f)?;
+        Ok(self.record_disposer(record))
     }
 
     fn refresh(&self) {

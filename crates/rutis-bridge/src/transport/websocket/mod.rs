@@ -59,6 +59,10 @@ impl WebSocketPlugin {
 }
 
 impl DynPlugin for WebSocketPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "rutis-bridge/websocket"
     }

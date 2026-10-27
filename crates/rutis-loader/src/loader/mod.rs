@@ -416,6 +416,9 @@ struct Failing {
     /// The copy is [`Unavailable`](crate::Unavailable) in its instance: it
     /// fails there alone, and never counts as a new failure of a change.
     unavailable: bool,
+    /// Its plugin failed (the kernel reports that), rather than the row
+    /// being refused before it ran.
+    plugin: bool,
 }
 
 impl Failing {

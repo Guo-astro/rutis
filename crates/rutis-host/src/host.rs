@@ -162,15 +162,22 @@ impl Host {
         }
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
-        // the kernel prints them.
+        // the kernel prints them. A row that failed to start and a runtime
+        // that went down are on the host's status lines already.
         let fallback = rutis::host::default_sink();
-        let sink: rutis::host::ErrorSink =
-            std::sync::Arc::new(
-                move |error| match rutis_bridge::events::report_line(&error) {
-                    Some(line) => eprintln!("{line}"),
-                    None => fallback(error),
-                },
-            );
+        let sink: rutis::host::ErrorSink = std::sync::Arc::new(move |error| {
+            if matches!(
+                &*error,
+                rutis::host::ErrorKind::StartFailed { .. }
+                    | rutis::host::ErrorKind::RuntimeDown { .. }
+            ) {
+                return;
+            }
+            match rutis_bridge::events::report_line(&error) {
+                Some(line) => eprintln!("{line}"),
+                None => fallback(error),
+            }
+        });
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
@@ -1217,6 +1224,10 @@ impl Drop for Unmount {
 }
 
 impl DynPlugin for Released {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "runtime-rows-released"
     }

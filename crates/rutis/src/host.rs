@@ -19,7 +19,7 @@ pub use crate::error::{
 pub use crate::events::kinds::ListenerKind;
 pub use crate::fiber::{
     shutdown_deadline, DisposeWaitError, FiberState, FiberStatusChanged, FiberView, PluginId,
-    Snapshot,
+    Snapshot, Stuck,
 };
 pub use crate::future::BoxFuture;
 pub use crate::key::{InstanceId, Key, TypeKey};
@@ -108,8 +108,9 @@ pub trait CtxHost: sealed::Sealed {
     /// After how long a plugin waiting for services nothing provides (its
     /// `Deps`, its `injects`) is reported: once each time it starts
     /// waiting, the error sink gets [`ErrorKind::StillWaiting`] naming them
-    /// (by default a `[rutis] plugin … is still waiting after 10s for …`
-    /// line on stderr). 10 s by default; `None` reports nothing. For the
+    /// (by default a `printer: still waiting after 10s for …` line on
+    /// stderr). rutis's own plugins (a link waiting for its peer) are not
+    /// reported. 10 s by default; `None` reports nothing. For the
     /// whole tree of this context's root; a plugin already waiting keeps
     /// the setting it started waiting with.
     fn report_waiting_after(&self, after: Option<Duration>);
@@ -129,7 +130,9 @@ pub trait CtxHost: sealed::Sealed {
     /// stream. Dependency checks are never called here: their status is the
     /// last result recorded by normal gate resolution, or `CheckPending` if
     /// that binding has not been checked yet. Reading does not call plugin
-    /// `name`, `injects`, or other user code and does not advance a fiber.
+    /// `name`, `injects`, or other user code and does not advance a fiber;
+    /// it calls the key namers ([`name_keys_with`](Self::name_keys_with))
+    /// for the names its `Display` gives services.
     fn diagnostics(&self) -> RuntimeDiagnostics;
 
     /// 最终关闭 root。重复或并发调用共享同一完成结果；现有 `dispose`
@@ -138,10 +141,20 @@ pub trait CtxHost: sealed::Sealed {
     /// 会独立关闭；其返回的 `FiberView::shutdown()` 可等待该 driver 退出。
     /// root 的完成结果不包含这种未挂载子 fiber。
     /// 不协作的代码可能使等待无限延长，可用 `shutdown_with_timeout` 限制等待。
+    /// It has no time limit of its own: how long to wait is the host's
+    /// choice (rutis-host waits 10 s).
     fn shutdown(&self) -> crate::BoxFuture<'static, Result<(), Arc<ErrorKind>>>;
 
     /// 限制等待最终关闭的时间。超时后关闭仍在后台进行，重复调用
     /// `shutdown()` 可继续 join 同一结果。
+    ///
+    /// When the time runs out, [`DisposeWaitError::TimedOut`] names the
+    /// plugins still busy and with what ([`Stuck`]): a cleanup registered
+    /// with `ctx.effect` by where it was registered, a service being
+    /// withdrawn by its name, the cleanup a plugin's `apply` returned (a
+    /// loader row's) by the plugin or row:
+    /// `not finished after 3s: weather: still running the cleanup
+    /// registered at src/weather.rs:12:9`.
     fn shutdown_with_timeout(
         &self,
         limit: Duration,
