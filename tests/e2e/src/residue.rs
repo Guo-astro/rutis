@@ -599,7 +599,8 @@ fn list() -> Vec<Process> {
 }
 
 /// Socket files anywhere in the scenario directory (links not followed:
-/// `node_modules` links into the checkout).
+/// `node_modules` links into the checkout), but rutis-host's `status`
+/// sockets a killed host leaves (see [`temporary`]).
 fn sockets(dir: &Path, residue: &mut Residue) {
     let mut stack = vec![dir.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -618,7 +619,10 @@ fn sockets(dir: &Path, residue: &mut Residue) {
             // (its job is empty) by the time this runs.
             #[cfg(not(unix))]
             let socket = entry.path().extension().is_some_and(|ext| ext == "sock");
-            if socket {
+            let status = dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("rutis-host-"));
+            if socket && !status {
                 residue
                     .found
                     .push(format!("socket file {}", entry.path().display()));
@@ -636,6 +640,9 @@ fn sockets(dir: &Path, residue: &mut Residue) {
 /// toolchain (`swift build` in a Swift project, run by its tests and by
 /// `dev`) its build's directories (`TemporaryDirectory.<random>`,
 /// `swift-generated-sources`) and SwiftPM its locks (`_<a path>.lock`).
+/// rutis-host keeps its `status` sockets in `rutis-host-<uid>` (when there
+/// is no `XDG_RUNTIME_DIR`): a host that ends removes its own, but a killed
+/// one cannot, and the next host for the same configuration replaces it.
 fn temporary(tmp: &Path, residue: &mut Residue) {
     for entry in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -644,7 +651,8 @@ fn temporary(tmp: &Path, residue: &mut Residue) {
             || (name.starts_with("uv-") && name.ends_with(".lock"))
             || name.starts_with("TemporaryDirectory.")
             || name == "swift-generated-sources"
-            || (name.starts_with('_') && name.ends_with(".lock"));
+            || (name.starts_with('_') && name.ends_with(".lock"))
+            || name.starts_with("rutis-host-");
         if !kept {
             residue
                 .found

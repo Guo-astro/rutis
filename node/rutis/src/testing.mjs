@@ -35,6 +35,7 @@
 // text); what works only in one process fails here too.
 
 import { PLUGIN_API, isPlugin } from './index.mjs'
+import { checkConfig, configError, schemaOf } from './config.mjs'
 import { Bus, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
@@ -477,7 +478,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
     /** The failures `emit` reported (§5.6): `{ line, event, row, error }`. */
     get reported() { return [...reported] },
     /** Load `plugin` as a row (key `row`, scope path `scope`), with `config` and its own `services`. */
-    async load(plugin, { config = {}, services: own = {}, scope, row: key, ...more } = {}) {
+    async load(plugin, { config, services: own = {}, scope, row: key, ...more } = {}) {
       refuse(more)
       if (closed) throw new PluginTestError('the host is unloaded')
       plugin = isPlugin(plugin) ? plugin : plugin?.default
@@ -549,7 +550,29 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
   async function applyRow(row, ctx, config) {
     const { plugin } = row
     try {
-      const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
+      // As a runtime loads a row: defaults filled, the config validated
+      // against the plugin's schema (config schema design §2.2); extra keys
+      // warned about on standard error, as the host's loader would.
+      // The config crosses first, as it reaches a runtime.
+      if (strict && config !== undefined) config = cross(config, 'config')
+      const schema = schemaOf(plugin.config)
+      if (schema !== undefined) {
+        const checked = checkConfig(schema, config)
+        // Once per row and config value, as the host's loader warns.
+        let seen
+        try { seen = JSON.stringify(config, (_, value) => (typeof value === 'bigint' ? `${value}n` : value)) ?? '' } catch {}
+        row.warned ??= new Set()
+        if (checked.warnings.length && (seen === undefined || !row.warned.has(seen))) {
+          if (seen !== undefined) row.warned.add(seen)
+          for (const warning of checked.warnings) process.stderr.write(`${row.key}: config: ${warning.message}\n`)
+        }
+        if (checked.errors.length) throw configError(checked.errors)
+        config = checked.config
+      } else if (config === undefined) {
+        // No schema: what it is given, `{}` when nothing (as before).
+        config = strict ? cross({}, 'config') : {}
+      }
+      const returned = await plugin.apply(ctx, config)
       if (returned !== undefined && returned !== null) {
         if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
         row.cleanups.push(returned)

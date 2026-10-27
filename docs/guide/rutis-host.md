@@ -90,6 +90,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
+| `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 | `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
@@ -307,6 +308,33 @@ rutis-host: reload rejected: <原因>; nothing changed
 
 - Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。`runtimes.swift.restart` 对 Swift 运行时相同（打印 `runtime swift-<名字>: restarting`）。
 - 远程运行时和节点行的 link 自己重连，不受它影响。
+
+## 查看当前状态
+
+`run` 和 `dev` 运行时，另开一个终端，在同一个目录里运行 `rutis-host status`（或 `rutis-host status path/to/rutis.json`、`rutis-host status <dev 的项目目录>`），打印一次宿主现在的状态。启动卡住时（一行的 `apply` 在等一个不返回的调用，`run` 还没开始打印状态行）也能问：
+
+```
+rows:
+  slow: running
+  caller: starting
+services:
+  slow: slow
+runtimes:
+  node: running (pid 4242)
+  py: running (pid 4243)
+calls:
+  caller → slow.wait  42s
+```
+
+- `rows`：每一行（实例里的行每个实例一份，写 `<行> in <分组> #<编号>`）的状态：`running`、`starting`、`stopped`、`disabled`，说不出在等什么的等待行写 `waiting`；等待的行写在等什么（和 `run` 的等待行同样的话）；失败的行写失败的第一行。运行时退出时，它的行马上显示为在等这个运行时。
+- `services`：每个服务的名字和提供它的行；宿主（Rust）提供的写 `host`。
+- `runtimes`：每个运行时的状态（`running`、`starting`、`down`、`stopped`），退出的写怎样退出，本机运行时写进程号。
+- `calls`：调用了一个行的服务、还没返回的调用：谁调用（不在行里发起的写 `host`）、哪个服务的哪个方法、已经多久；被调用的行名和服务名不同时写 `(row <行>)`。看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」，没有方法名）；进程内的 Rust 插件发起的调用记为 `host`。
+- rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
+
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），只回答 `status` 这一个请求，什么都不改。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+
+停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
 
 ## 输出
 

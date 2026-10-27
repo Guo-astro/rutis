@@ -117,6 +117,9 @@ pub mod code {
     pub const BAD_VALUE: &str = "bad-value";
     /// The far end's runtime ended or went away during the call.
     pub const PEER_GONE: &str = "peer-gone";
+    /// A row's config does not match its plugin's schema (config schema
+    /// design §5.2); its message is `config: <problem>`, one line each.
+    pub const BAD_CONFIG: &str = "bad-config";
 }
 
 impl Error {

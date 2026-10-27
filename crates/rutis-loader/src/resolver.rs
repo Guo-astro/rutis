@@ -18,8 +18,13 @@ use crate::LoaderError;
 #[non_exhaustive]
 pub struct Resolved {
     pub factory: Arc<dyn PluginFactory<Value>>,
-    /// JSON Schema of the config, for forms and comparison only; the
-    /// factory's `validate_config` stays the authority.
+    /// JSON Schema of the config. For the rows the loader fills (those
+    /// without `foreign_scope`: `Builtins`, dylibs, an embedder's own
+    /// resolver) the loader fills a copy of the config with its defaults
+    /// and validates it against the schema before `validate_config` /
+    /// `build` (config schema design §2.1); the factory's own checks come
+    /// after. For other runtimes' rows their SDK does that, and the loader
+    /// only warns of extra keys.
     pub schema: Option<Value>,
     /// Diagnostics: version, source path, hash and the like.
     pub meta: Value,
@@ -115,6 +120,9 @@ pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
 pub struct Build {
     /// Innermost first.
     pub(crate) chain: Vec<BuildLink>,
+    /// The id of the row the copy is of, when known: the factory of a
+    /// runtime that dials in names it in its config warnings.
+    pub(crate) row: Option<String>,
 }
 
 #[derive(Clone)]
@@ -125,6 +133,12 @@ pub(crate) struct BuildLink {
 }
 
 impl Build {
+    /// This build, for a copy of row `row`.
+    pub(crate) fn for_row(mut self, row: &str) -> Self {
+        self.row = Some(row.to_owned());
+        self
+    }
+
     /// The `ctx.instance()` of the enclosing instance of `group`: plugins in
     /// that instance can provide and read keys qualified with it.
     pub fn instance(&self, group: &str) -> Result<InstanceId, Error> {
@@ -174,6 +188,13 @@ pub trait Resolver: Send + Sync + 'static {
     /// Resolve a module name. Return [`LoaderError::NotFound`] for names this
     /// resolver does not handle, so a [`Chain`] can try the next one.
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>>;
+
+    /// The runtimes whose rows it resolves, for [`Loader::status`](crate::Loader::status):
+    /// none by default.
+    #[cfg(feature = "runtimes")]
+    fn runtimes(&self) -> Vec<rutis_bridge::runtime::RuntimeHandle> {
+        Vec::new()
+    }
 }
 
 /// Plugins compiled into the host, by exact name. Any name works, including
@@ -209,7 +230,9 @@ impl Builtins {
             name: name.clone(),
             factory: build_fn(build),
         };
-        self.insert(name, Arc::new(Json::<C, _>::new(factory)), schema_of::<C>())
+        let schema = schema_of::<C>();
+        let json = Json::<C, _>::new(factory, schema.is_some());
+        self.insert(name, Arc::new(json), schema)
     }
 
     /// Register a factory that takes the raw JSON config: for a plugin
@@ -237,6 +260,8 @@ impl Builtins {
         let name = name.into();
         let build = Arc::new(build);
         let label = name.clone();
+        let schema = schema_of::<C>();
+        let has_schema = schema.is_some();
         let scoped: ScopedFactory = Arc::new(move |at: &Build| {
             let at = at.clone();
             let build = build.clone();
@@ -244,11 +269,12 @@ impl Builtins {
                 name: label.clone(),
                 factory: build_fn(move |config: &C| build(&at, config)),
             };
-            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, _>::new(factory));
+            let factory: Arc<dyn PluginFactory<Value>> =
+                Arc::new(Json::<C, _>::new(factory, has_schema));
             Ok(factory)
         });
         let factory = Arc::new(Unscoped { name: name.clone() });
-        self.insert_resolved(name, factory, schema_of::<C>(), Some(scoped))
+        self.insert_resolved(name, factory, schema, Some(scoped))
     }
 
     fn insert(
@@ -363,37 +389,40 @@ impl Resolver for Chain {
             })
         })
     }
+
+    #[cfg(feature = "runtimes")]
+    fn runtimes(&self) -> Vec<rutis_bridge::runtime::RuntimeHandle> {
+        self.resolvers
+            .iter()
+            .flat_map(|resolver| resolver.runtimes())
+            .collect()
+    }
 }
 
 /// Adapts a `PluginFactory<C>` to JSON config.
 struct Json<C, F> {
     inner: F,
+    /// `C` has a schema the loader validates against first.
+    schema: bool,
     _config: PhantomData<fn() -> C>,
 }
 
 impl<C, F> Json<C, F> {
-    fn new(inner: F) -> Self {
+    /// `schema`: `C` has a schema the loader validates against first.
+    fn new(inner: F, schema: bool) -> Self {
         Self {
             inner,
+            schema,
             _config: PhantomData,
         }
     }
 }
 
-fn decode<C: DeserializeOwned>(value: &Value) -> Result<C, Error> {
-    let first = serde_json::from_value::<C>(value.clone());
-    match (first, value) {
-        (Ok(config), _) => Ok(config),
-        (Err(_), Value::Null) => serde_json::from_value::<C>(Value::Object(Default::default()))
-            .map_err(|e| {
-                rutis::Error::from(ErrorKind::Validation {
-                    issues: vec![e.to_string()],
-                })
-            }),
-        (Err(e), _) => Err(rutis::Error::from(ErrorKind::Validation {
-            issues: vec![e.to_string()],
-        })),
-    }
+/// `value` as `C`. With a schema the loader validated it first, and a
+/// decoder error is one sentence; without one it is written by its kind
+/// (config schema design §3.3).
+fn decode<C: DeserializeOwned>(value: &Value, schema: bool) -> Result<C, Error> {
+    rutis::internal::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
 }
 
 impl<C, F> PluginFactory<Value> for Json<C, F>
@@ -410,11 +439,12 @@ where
     }
 
     fn validate_config(&self, config: &Value) -> Result<(), Error> {
-        self.inner.validate_config(&decode::<C>(config)?)
+        self.inner
+            .validate_config(&decode::<C>(config, self.schema)?)
     }
 
     fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
-        self.inner.build(&decode::<C>(config)?)
+        self.inner.build(&decode::<C>(config, self.schema)?)
     }
 }
 
