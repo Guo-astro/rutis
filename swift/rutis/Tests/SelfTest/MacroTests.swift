@@ -38,7 +38,7 @@ struct ServiceMacroTests {
         expect(diagnostics.isEmpty, "\(diagnostics)")
         let code = squeezed(out)
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"today\", \"unit\", \"each\", \"reset\"] }")), "\(out)")
-        expect(code.contains(squeezed("let a0 = try args.decode(0, as: (String).self)")), "\(out)")
+        expect(code.contains(squeezed("let a0 = try args.decode(0, as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
         expect(code.contains(squeezed("return try Rutis.encode(try await self.today(a0, days: a1))")), "\(out)")
         expect(code.contains(squeezed("return try Rutis.encode(self.unit())")), "\(out)")
         expect(code.contains(squeezed("let a0: (String) async throws -> String = try args.function(0)")), "\(out)")
@@ -113,8 +113,10 @@ struct ClientMacroTests {
         let code = squeezed(out)
         expect(code.contains(squeezed("public struct LLMProxy: LLM, RutisProxy {")), "\(out)")
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"ask\", \"each\"] }")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis.encode(question), try Rutis.encode(model)], as: (String).self)")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis.export(f)], as: (Void).self)")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis.encode(question), try Rutis.encode(model)], as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis.export(f)], as: (Void).self, object: rutisObjectProxy((Void).self))")), "\(out)")
+        // An object of another process received as `any LLM` is its proxy (#687).
+        expect(code.contains(squeezed("public func rutisObjectProxy(_: (any LLM).Type) -> ((Rutis.Client) -> any LLM)? { { LLMProxy(rutisClient: $0) } }")), "\(out)")
     }
 
     func aMethodMustBeAsyncThrows() {
@@ -138,6 +140,14 @@ struct ConfigMacroTests {
             var days: Int?
             let fixed = 3
             var computed: Int { 1 }
+            var units = "metric"
+            var limit: Int = -5
+            var tags: [String] = ["a", "b\\"c"]
+            var made: String = String(repeating: "x", count: 2)
+            var path = #"C:\\path"#
+            var ratio = -1.5
+            var count = 5
+            var weights: [String: Int] = ["a": 1]
         }
         """)
         expect(diagnostics.isEmpty, "\(diagnostics)")
@@ -146,5 +156,16 @@ struct ConfigMacroTests {
         expect(code.contains(squeezed(".init(\"city\", .of((String).self), required: true, description: \"the city to report on\")")), "\(out)")
         expect(code.contains(squeezed(".init(\"days\", .of((Int?).self), required: false, description: nil)")), "\(out)")
         expect(!code.contains("\"fixed\"") && !code.contains("\"computed\""), "\(out)")
+        // A literal initial value is the default, written as the literal
+        // typed as the property, and not required; any other initial value
+        // is no default (config schema design §3.3).
+        for (name, type, literal) in [("units", "String", #""metric""#), ("limit", "Int", "-5"), ("tags", "[String]", #"["a", "b\"c"]"#),
+                                      ("path", "String", ##"#"C:\path"#"##), ("ratio", "Double", "-1.5"), ("count", "Int", "5"),
+                                      ("weights", "[String: Int]", #"["a": 1]"#)]
+        {
+            let expected = ".init(\"\(name)\", .of((\(type)).self), required: true, description: nil, default: Rutis.Schema.literal(\(literal) as \(type)))"
+            expect(code.contains(squeezed(expected)), "\(name): \(out)")
+        }
+        expect(code.contains(squeezed(".init(\"made\", .of((String).self), required: true, description: nil)")), "\(out)")
     }
 }

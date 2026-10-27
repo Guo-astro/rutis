@@ -12,7 +12,12 @@
 //! row's status line landed after the first piece: `plugin py-row line
 //! py-row: running`. Deterministic: the first piece is written while the
 //! row starts, before the host can say that it runs, and the newline only
-//! once the test has read that line.
+//! once the test has read that line. The host's status lines are on
+//! stderr (#678), where the plugins write their `err` pieces.
+//!
+//! guarantee: host/output-prefix — with `--prefix-output` each line a
+//! plugin writes starts with its row's name; without it (`run`'s default),
+//! it is as written; the host's own lines have no name either way.
 //!
 //! Unix only: the host is ended with SIGTERM, as in `signals.rs`; CI does
 //! not run the rutis-host tests on Windows.
@@ -20,7 +25,7 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -112,7 +117,8 @@ fn project(dir: &Path) -> PathBuf {
     file
 }
 
-/// The host, its stdout read line by line, its stderr whole.
+/// The host, its stdout and stderr read line by line (in one channel), its
+/// stderr whole too.
 struct Host {
     child: Child,
     lines: Receiver<String>,
@@ -122,9 +128,14 @@ struct Host {
 
 impl Host {
     fn start(config: &Path, dir: &Path) -> Self {
+        Self::start_with(config, dir, &[])
+    }
+
+    fn start_with(config: &Path, dir: &Path, flags: &[&str]) -> Self {
         use std::os::unix::process::CommandExt;
         let mut child = Command::new(env!("CARGO_BIN_EXE_rutis-host"))
             .arg("run")
+            .args(flags)
             .arg(config)
             .current_dir(dir)
             .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"))
@@ -135,6 +146,7 @@ impl Host {
             .spawn()
             .expect("the rutis-host binary");
         let (send, lines) = mpsc::channel();
+        let lines_too = send.clone();
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -144,10 +156,14 @@ impl Host {
             }
         });
         let (send, stderr) = mpsc::channel();
-        let mut error = child.stderr.take().unwrap();
+        let error = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             let mut text = String::new();
-            let _ = error.read_to_string(&mut text);
+            for line in BufReader::new(error).lines().map_while(Result::ok) {
+                text.push_str(&line);
+                text.push('\n');
+                let _ = lines_too.send(line);
+            }
             let _ = send.send(text);
         });
         Self {
@@ -174,7 +190,7 @@ impl Host {
     }
 
     /// Wait for the host to exit, and its output to end; its status, its
-    /// stderr and every line it wrote on stdout.
+    /// stderr and every line it wrote (on stdout and stderr).
     fn exit(mut self) -> (std::process::ExitStatus, String, Vec<String>) {
         let pid = self.child.id() as i32;
         let (send, exited) = mpsc::channel();
@@ -250,11 +266,13 @@ fn plugin_lines_written_in_pieces_come_out_whole() {
         .iter()
         .flat_map(|row| [format!("plugin {row} line"), format!("plugin {row} last")])
         .collect();
+    let pieces_on_stderr: Vec<String> =
+        ROWS.iter().map(|row| format!("plugin {row} err")).collect();
     for line in &seen {
         match wanted.iter().position(|want| want == line) {
             Some(found) => drop(wanted.remove(found)),
             None => assert!(
-                !line.contains("plugin "),
+                !line.contains("plugin ") || pieces_on_stderr.contains(line),
                 "a broken line {line:?}; output: {:#?}",
                 seen
             ),
@@ -274,4 +292,99 @@ fn plugin_lines_written_in_pieces_come_out_whole() {
             "a broken stderr line: {stderr}"
         );
     }
+}
+
+/// A Python and a Node row each writing a line as they start.
+fn greeting_project(dir: &Path) -> PathBuf {
+    std::fs::write(
+        dir.join("greet.py"),
+        "def apply(ctx, config):\n    print(f\"hello {config['row']}\", flush=True)\n",
+    )
+    .unwrap();
+    let sdk = repo()
+        .join("node/rutis/src/index.mjs")
+        .canonicalize()
+        .unwrap();
+    std::fs::write(
+        dir.join("greet.mjs"),
+        format!(
+            "import {{ definePlugin }} from '{}'\n\
+             export default definePlugin({{ apply(ctx, config) {{ console.log(`hello ${{config.row}}`) }} }})\n",
+            url::Url::from_file_path(&sdk).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{ "name": "greet", "type": "module" }"#,
+    )
+    .unwrap();
+    let mut py = json!({ "project": "." });
+    if let Some(python) = std::env::var_os("RUTIS_PYTHON") {
+        py["python"] = json!(python.to_str().unwrap());
+    }
+    let config = json!({
+        "id": "greet",
+        "runtimes": {
+            "py": py,
+            "node": { "project": ".", "runtime": repo().join("node/rutis-runtime") },
+        },
+        "rows": [
+            { "id": "weather", "name": "py:greet", "config": { "row": "weather" } },
+            { "id": "chat", "name": "./greet.mjs", "config": { "row": "chat" } },
+        ]
+    });
+    let file = dir.join("rutis.json");
+    std::fs::write(&file, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    file
+}
+
+/// The lines `run` with `flags` writes until both rows run and greeted.
+fn greetings(flags: &[&str]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let config = greeting_project(dir.path());
+    let mut host = Host::start_with(&config, dir.path(), flags);
+    let mut greeted = 0;
+    let mut running = 0;
+    while greeted < 2 || running < 2 {
+        let line = host.wait_line(|line| line.contains("hello ") || line.ends_with(": running"));
+        match line.contains("hello ") {
+            true => greeted += 1,
+            false => running += 1,
+        }
+    }
+    // SAFETY: plain kill(2).
+    assert_eq!(
+        unsafe { libc::kill(host.child.id() as i32, libc::SIGTERM) },
+        0
+    );
+    let (status, stderr, seen) = host.exit();
+    assert!(status.success(), "{status}; stderr: {stderr}");
+    // The host's own lines are on stderr, without a name.
+    for row in ["weather", "chat"] {
+        assert!(
+            stderr.lines().any(|line| line == format!("{row}: running")),
+            "{stderr}"
+        );
+    }
+    seen
+}
+
+/// guarantee: host/output-prefix (#678)
+#[test]
+fn prefix_output_starts_each_plugin_line_with_its_row() {
+    let seen = greetings(&["--prefix-output"]);
+    for line in ["[weather] hello weather", "[chat] hello chat"] {
+        assert!(seen.iter().any(|seen| seen == line), "{line}: {seen:#?}");
+    }
+}
+
+/// guarantee: host/output-prefix (#678)
+#[test]
+fn run_writes_plugin_lines_as_written_by_default() {
+    let seen = greetings(&[]);
+    for line in ["hello weather", "hello chat"] {
+        assert!(seen.iter().any(|seen| seen == line), "{line}: {seen:#?}");
+    }
+    assert!(!seen.iter().any(|line| line.starts_with('[')), "{seen:#?}");
 }

@@ -14,7 +14,7 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -390,9 +390,7 @@ def apply(ctx, config):
     /// Wait until `state` says what `want` looks for.
     async fn until(handle: &RuntimeHandle, what: &str, want: fn(&RuntimeState) -> bool) {
         COLD.within(what, async {
-            while !want(&handle.state()) {
-                handle.changed().await;
-            }
+            handle.wait_for(want).await;
         })
         .await;
     }
@@ -635,6 +633,8 @@ impl Running {
             .spawn()
             .expect("the rutis-host binary");
         let (send, lines) = mpsc::channel();
+        // The host's own lines are on stderr (#678): read with stdout's.
+        let lines_too = send.clone();
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -644,10 +644,14 @@ impl Running {
             }
         });
         let (send, stderr) = mpsc::channel();
-        let mut error = child.stderr.take().unwrap();
+        let error = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             let mut text = String::new();
-            let _ = error.read_to_string(&mut text);
+            for line in BufReader::new(error).lines().map_while(Result::ok) {
+                text.push_str(&line);
+                text.push('\n');
+                let _ = lines_too.send(line);
+            }
             let _ = send.send(text);
         });
         Self {

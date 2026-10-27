@@ -250,12 +250,41 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。
 
+一个服务方法一口气占住运行时 5 秒（固定，0.18 起，#678）时，运行时在 stderr 写一次是哪一行的哪个方法、这期间其他行都在等、怎么改，例如：
+
+```text
+runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it blocks the event loop (a def method, or a blocking call in an async def one); make it async def and await what it waits for (asyncio.sleep, an async client, asyncio.to_thread for a blocking call), and it will not hold the runtime
+```
+
+Python 里看方法的每一段：`def` 方法整个，`async def` 方法两次 `await` 之间的每一段（例如里面的 `time.sleep`、`requests.get`）；改成 `async def`，等待的东西用 `await`（`asyncio.sleep`、异步的客户端，阻塞的调用放进 `asyncio.to_thread`）。Node、Bun 里看方法开始到它第一次 `await` 之前同步运行的那一段（`readFileSync`、`execSync`、忙等），`await` 之后的阻塞不提示；改用异步调用并 `await`，或者把计算放进 worker 线程。`apply` 和监听器里的阻塞不提示。只写一次、只写不打断：方法照常运行完。`rutis-host dev --debug` 下不写（停在断点上的运行时可以停多久都行）。Go、Swift、Kotlin 的同步方法不占住整个运行时，没有这个提示。
+
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
 - **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
 - **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`（只列插件自己的帧，一帧都不是插件的时候列出完整堆栈），哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
 - **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
 - Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
+
+## 输出
+
+插件写到标准输出、标准错误的内容（`console.log`、`print`、`fmt.Println`）进宿主的终端，各写各的流。`rutis-host dev` 下每一行前面加上写它的行的名字（0.18 起，#678）：
+
+```text
+[weather] fetching forecast for Berlin
+```
+
+- Node、Bun、Python 的几行共用一个进程，运行时按当前在跑的行加前缀：行的 `apply` 与清理、服务方法、监听器、交出去的函数，以及它们启动的异步工作（Node、Bun 的异步上下文，Python 的 contextvars）。追不到是哪一行的输出加运行时的名字（`[py] `）：Python 插件自己开的线程，以及不在任何一行里运行的代码。直接写文件描述符的输出（子进程、`os.write`、原生模块）运行时看不到，原样传过去。
+- Go、Swift 一个进程只有一个插件：宿主读它的输出时加运行时的名字（`[go-weather] `），SDK 不变。
+- Bun 的 `console` 自己直接写文件描述符：加前缀时运行时换上一个经过 `process.stdout` / `process.stderr` 写的 `console`，对象按 Node 的格式打印在一行里（`{ a: 1 }`），不是 Bun 平时的多行格式。
+- `rutis-host run` 默认不加（生产环境里插件的输出原样不动）；`--prefix-output` / `--no-prefix-output` 打开或关掉，见 [rutis-host](rutis-host.md#输出)。
+
+Python 的 `logging` 不改：默认只显示 WARNING 及以上，这是 Python 自己的规则。要看 INFO，在插件里配置日志：
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+```
 
 ## 值怎样传递
 
@@ -269,17 +298,17 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | 日期时间、二进制、Map、Set、大整数、Decimal、UUID | 复制，各语言收到本语言的类型，见下面的[十种值](#十种值) |
 | `Error` / 异常 | 作为值传递时复制为数据 `{ name, message }`（TypeScript 另带 `stack`）；抛出时另一端得到同名、同消息的错误（TypeScript 中内置错误类保留类，其余是 `Error`；Python 中是 `rutis.RemoteError`，`name` 是原来的类名；Go 中是 `*rutis.RemoteError`）。任何语言抛出的错误都可以带 code 和 data：TypeScript 中是字符串属性 `code` 和属性 `data`，Python 中是字符串属性 `code` 和属性 `data`，Go 中是方法 `Code() string` 和 `Data() any`，Rust 中是 [`rutis_bridge::exports::failure`](rust-host.md#手写-hostdispatch)（[导出的 Rust 服务](rust-host.md#导出服务参考)的 `Err(e)` 就变成它）。收到的一方从 `code`、`data` 读到它们（Go：`Code`、`Data`；Rust：`Error::code()`、`Error::data()`），再次抛出时继续传。`data` 按数据传（大整数为 bigint）；传不过去的 data 被略去，错误的其余部分照常传。其他属性不传 |
 | 函数、Promise / 协程 | 按引用：另一端调用或 await 的是原来那个 |
-| 带方法的对象、类的实例 | 只传给 Rust，按引用：另一端拿到代理，调用的是原对象。传给其他语言（Node、Bun、Python、Go、Swift、Kotlin）时这次调用失败，错误说明原因；改传普通数据或函数。所有语言按引用传见 [#687](https://github.com/arcships/rutis/issues/687)（0.18） |
+| 带方法的对象、类的实例 | 按引用，传给任何语言：另一端拿到代理，方法调用的是原对象。哪些值算对象、各语言怎样收，见下面的[带方法的对象](#带方法的对象) |
 | 插件定义（`definePlugin` 的结果；Node 里的 Cordis 插件；Python 的 `define_plugin` 结果；Go 的 `*rutis.Definition`；Swift、Kotlin 的 `Rutis.define` 结果） | 按引用，只交回定义它的运行时：Rust 服务把参数或返回值类型写成 `rutis::Definition`，收到的就是一个可以挂的插件定义，见下面的[插件定义](#插件定义)。Node、Bun、Python、Go、Swift、Kotlin 都能交出 |
-| 数据里的 `undefined` | 变成 `null`（Python 收到 `None`） |
-| 数组的空位（`[1, , 3]`） | 与 `undefined` 相同 |
+| `undefined` | 只在作为整个参数或整个返回值时保留：作为参数是"没有给"（Python 少收一个参数或收到 `None`，Go 是零值）；作为返回值 JS 收到 `undefined`，其他语言收到各自的空值。在数组、对象、Map、Set 里任何一层都变成 `null`（Python 收到 `None`） |
+| 数组的空位（`[1, , 3]`） | 与数组里的 `undefined` 相同：`null` |
 | Go 的结构体、切片、map | 复制：结构体字段、切片和 map 的元素逐个按本节的规则传，字段名遵循 `json` 标签；结构体一律是数据，要按引用传对象写 `rutis.Ref(v)`。`map[string]T` 是对象，键不是字符串的 map 是 Map，`map[K]struct{}` 是 Set |
 | 超出 ±(2^53−1) 的整数 | 自动按大整数传，见[十种值](#十种值) |
 | symbol、循环引用、`NaN` / `Infinity`、JS 的其他类型化数组（如 `Int16Array`）、带时区的 Python `time`、Go 的 channel | 不能跨进程（调用失败） |
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
 | 编码后超过 16 MiB 的调用或返回值 | 不能跨进程（这次调用失败，见下） |
 
-不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 TypeScript 把类的实例传给 Python 的服务时得到 `weather.store: argument 2 cannot be sent: an object with methods cannot cross to py; pass plain data or a function instead`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
+不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 0.18 的宿主要把 Node 交出的对象转给 0.18 之前的 Python 运行时时，这次调用得到 `weather.store: argument 2 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
 
 嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 
@@ -298,6 +327,45 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 - NaN、±Infinity 不能跨进程。
 
 同一个进程里没有复制，所以"传过去之后改原对象，另一端也看到"这类写法在单元测试里可能成立、跨进程就不成立。测试工具的严格模式（默认）按上表传值，提前暴露这种问题。
+
+### 带方法的对象
+
+复制还是按引用，由发出的值决定，与另一端期望什么无关：
+
+| 语言 | 复制（数据） | 按引用（另一端拿到代理） |
+| --- | --- | --- |
+| JS（Node、Bun） | 原型是 `Object.prototype` 或 `null`、没有函数值属性的普通对象；数组 | 类的实例；带函数值属性的普通对象（`{ get() {}, set() {} }`） |
+| Python | `dict`、`list`、`tuple`、dataclass（复制为 dict） | 其他类的实例（带 `__call__` 的实例按函数传） |
+| Go | 结构体、切片、map | `rutis.Ref(v)` |
+| Swift | `Codable` 结构体和类 | `@RutisService` 类型的实例 |
+| Kotlin | `@Serializable` 类 | `@RutisService` 类的实例 |
+| Rust | serde 值 | 不发出自己的对象；转发别的进程的对象 |
+
+数组、字典里的对象也各自按引用传。收到的对象和 `ctx.use` 得到的服务代理是同一种东西：每个方法都是对原对象的异步调用，没有数据字段；要数据，让方法返回它。
+
+| 语言 | 怎样收 | 拿到什么 |
+| --- | --- | --- |
+| JS（Node、Bun） | 不用声明 | 代理：`await cache.get('a')` |
+| Python | 不用声明 | 代理：`await cache.get("a")` |
+| Go | 参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样）；或写 `any` | 调用各个方法的函数字段（阻塞）；`any` 收到 `*rutis.Service` |
+| Swift | 参数类型写 `@RutisClient` 协议（`any Cache`）；或写 `Any` | 这个协议的代理；`Any` 收到 `Rutis.Client` |
+| Kotlin | 参数类型写 `@RutisClient` 接口；或写 `Any?` | 这个接口的代理；`Any?` 收到 `RemoteObject` |
+| Rust | 手写的 `HostDispatch` | `rutis_bridge::session::Reference`（`call_method`、`call_method_async`），Cordis 绑定里是 `ObjectRef`；`#[rutis::service]` 的参数不收对象（`bad-argument`） |
+
+- 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象；交给第三个进程，仍是同一个对象。
+- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`，`data` 是 `{object, method, methods}`。
+- 声明的参数类型收不了对象时（Go、Swift、Kotlin 的数据类型），这次调用以 `bad-argument` 失败，错误写明对象要怎样收。
+- 生命周期和函数引用相同：收的一方不再持有代理，或它的进程退出后，发出方放掉对象。对象不跟行走：交出它的行卸载后，对象照常可以调用。
+- 发出方的运行时退出或断开后，对它的对象的调用以 `peer-gone` 失败（`a call on an object from py failed: runtime py exited`），只有这些调用失败。
+- 0.18 之前的一端不收对象：要把对象交给它的调用以 `bad-value` 失败（`… an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`），会话继续。升级那一端。
+- 各语言的细节见各自的指南：[TypeScript](typescript-plugin.md#带方法的对象)、[Bun](bun-plugin.md#带方法的对象)、[Python](python-plugin.md#带方法的对象)、[Go](go-plugin.md#带方法的对象)、[Swift](swift-plugin.md#带方法的对象)、[Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust](rust-plugin.md#对其他语言提供服务)。
+
+#### 同一个进程与跨进程的差别
+
+- **同一个进程**（同一个运行时里的行）拿到的是对象本身：方法照旧是同步的，字段可以读。
+- **跨进程**只有方法，每次调用都是异步的。读字段、依赖同步结果的写法在同一个进程里成立、跨进程就失败；测试工具的严格模式按跨进程的样子交出代理，在测试里先失败。
+- **空闲停止**：按需启动的运行时（Go、Swift）在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行。停下后对这些对象的调用以 `peer-gone` 失败：`a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`。要一直可用，让交出它们的行保持加载，或者把运行时设成 `eager`。
+- **身份**：同一个对象收到几次是同一个代理，交回原来的进程是原对象，各语言都一样（Go 只有 `*rutis.Service` 如此）。
 
 ### 十种值
 
@@ -358,10 +426,10 @@ export default definePlugin({
 | Python：跨过边界的异常是 `RemoteError`，它的 `__cause__` 是原来的异常 | 方便调试；真实运行时的 `RemoteError` 没有 `__cause__` |
 | 描述里的 `runtime` 是语言名（`node`、`bun`、`python`、`go`；宿主用配置里给的名字）；卸载最多等 `RUTIS_SHUTDOWN_TIMEOUT`，与运行时相同，或用工具自己的选项：TypeScript `host({ deadline })` / `load(…, { deadline, runtime })`（毫秒），Python `load(…, deadline=, runtime=)`（秒），Go `rutistest.RuntimeName` 等选项 | 各工具的选项按各自语言的习惯 |
 | TypeScript：只能加载 `definePlugin` 写的插件，不能加载 Cordis 插件 | 测试工具没有 Cordis 的插件模型、服务与依赖门控 |
-| 带方法的对象、类的实例总是按引用传，不检查 16 MiB 的消息上限 | 测试工具不知道服务由哪种语言提供，值也不编码成消息；真实运行时只把这样的对象传给 Rust，消息超过上限时这次调用失败（见[值怎样传递](#值怎样传递)） |
+| 不检查 16 MiB 的消息上限 | 测试工具不把值编码成消息；真实运行时在消息超过上限时让这次调用失败（见[值怎样传递](#值怎样传递)） |
 | 事件：全部监听器都在测试的进程里（总是本地分发），没有别的进程、节点，也不发出 `rutis/*` | 测试工具在一个进程里运行插件。五种方式、过滤、作用域（TypeScript `host()` 的 `scope`、Python `Bus` 与 `scope=`、Go `rutistest.InScope`）、卸载等待与取消、`emit` 失败的报告（`reported`）与真实运行时相同，对同一份[事件期望文件](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)比对 |
 
-十种值在两边按同样的规则传递，这不是差异。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
+十种值在两边按同样的规则传递，这不是差异。带方法的对象也不是：严格模式下，每种语言的测试工具都按跨进程的样子交出代理（只有方法，每次调用都是异步的），与真实运行时相同。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
 ## 同步调用与可重入
 
@@ -380,6 +448,21 @@ export default definePlugin({
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 
 `async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。各个支持的 Python 版本都是这样（3.12 起是 asyncio 自带的 eager start，3.10、3.11 由 rutis 实现）。
+
+## 调用等多久
+
+rutis 不给调用设时限，也不替双方取消调用：一个调用该等多久是调用方的业务。要限时，用调用方自己语言的写法，取消会传到对面（见[取消](#取消)）：
+
+| 语言 | 写法 |
+| --- | --- |
+| Python | `await asyncio.wait_for(weather.tomorrow(), timeout=5)` |
+| Go | `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`，把 `ctx` 传给调用 |
+| Swift | 在一个 `Task` 里调用，到时取消这个 `Task` |
+| Kotlin | `withTimeout(5_000) { weather.tomorrow() }` |
+| Rust | `tokio::time::timeout(Duration::from_secs(5), weather.tomorrow())`（丢弃 future 即取消） |
+| TypeScript | `Promise.race` 加一个定时器；对面不会被取消，与原生 JS 一样（promise 本身不能取消） |
+
+看一个调用已经等了多久，用 `rutis-host status`（它列出进行中的调用）。
 
 ## 取消
 

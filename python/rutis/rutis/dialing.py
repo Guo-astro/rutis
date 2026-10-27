@@ -15,8 +15,9 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import sys
 from dataclasses import dataclass
+
+from ._output import say
 
 RETRYABLE, AUTH_REJECTED, INCOMPATIBLE = "retryable", "auth-rejected", "incompatible"
 # The close code of an access point rejecting the id this side greeted with.
@@ -105,7 +106,7 @@ def seconds(wait: float) -> str:
 
 
 def report(line: str) -> None:
-    print(f"rutis: {line}", file=sys.stderr, flush=True)
+    say(f"rutis: {line}")
 
 
 async def keep_dialing(address: str, dial, start, stopping: asyncio.Event, retry: Retry | None = None, say=report) -> int:

@@ -99,6 +99,8 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 `run` 和 `dev` 的输出是给人看、也给脚本和测试读的，格式如下，改动按不兼容的变化处理。
 
+这些状态行都写到标准错误（0.18 起；以前写到标准输出），插件自己的输出按它写的流（见[输出](#输出)）：`rutis-host run > plugins.log` 只留下插件写到标准输出的内容。
+
 启动时，每个 [`listen`](#listen) 监听器打印一次它实际绑定的地址（端口写 0 时是系统挑的端口）：
 
 ```
@@ -357,7 +359,26 @@ calls:
 
 ## 输出
 
-运行时进程（Node、Bun、Python、Go、Swift）的标准输出和标准错误不直接写到 `rutis-host` 的输出上：`rutis-host` 经管道读出它们，一次一整行地写出——插件写到 stdout 的行出现在 `rutis-host` 的 stdout，写到 stderr 的出现在 stderr，内容原样，不加前缀。`rutis-host` 自己的状态行同样一次写一整行。所以插件的行和 `rutis-host` 的行、两个运行时的行不会拼到一起，即使插件把一行分几次写（Python 的 `print` 先写内容、再写换行），也即使 stdout 和 stderr 是同一个文件（`2>&1`）。
+运行时进程（Node、Bun、Python、Go、Swift）的标准输出和标准错误不直接写到 `rutis-host` 的输出上：`rutis-host` 经管道读出它们，一次一整行地写出——插件写到 stdout 的行出现在 `rutis-host` 的 stdout，写到 stderr 的出现在 stderr。`rutis-host` 自己的状态行写到 stderr，同样一次写一整行。所以插件的行和 `rutis-host` 的行、两个运行时的行不会拼到一起，即使插件把一行分几次写（Python 的 `print` 先写内容、再写换行），也即使 stdout 和 stderr 是同一个文件（`2>&1`）。
+
+插件写的每一行可以带上写它的行的名字（0.18 起，#678）：
+
+```text
+[weather] fetching forecast for Berlin
+[go-net-probe] probing 10.0.0.1
+```
+
+| | 默认 | 切换 |
+| --- | --- | --- |
+| `rutis-host dev` | 加 | `--no-prefix-output` |
+| `rutis-host run` | 不加，插件的输出原样 | `--prefix-output` |
+
+- Node、Bun、Python 运行时里几行共用一个进程，运行时按当前在跑的行加名字；追不到是哪一行的输出（Python 插件自己开的线程、不在任何一行里运行的代码）加运行时的名字（`[py] `）。直接写文件描述符的输出（插件启动的子进程、`os.write`、原生模块）不加。规则见[插件 API](plugin-api.md#输出)。
+- Go、Swift 运行时一个进程一个插件，`rutis-host` 读它们的输出时加运行时的名字（`[go-<二进制>] `、`[swift-<二进制>] `），SDK 不变。
+- `rutis-host` 自己的行和运行时自己的行（`runtime py: …`）不加。
+- `dev --debug` 下 Python 运行时读这个终端（pdb），它的输出不经管道，不加名字也不等换行；Node、Bun、Go 照常加。
+
+Node、Bun、Python 运行时里，一个服务方法一口气占住运行时 5 秒时，运行时在 stderr 写一次是哪一行的哪个方法、其他行在等、怎么改（`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`，见[插件 API](plugin-api.md#同一运行时里的插件共用一个进程)）。只写不打断；`dev --debug` 下不写。
 
 - 一行在它的换行到来时写出，没有按时间的刷新：不带换行的提示、用 `\r` 重画的进度条，要到换行时才出现。运行时结束时，没有换行的最后一行作为单独的一行写出。
 - 超过 64 KiB 还没有换行的行分段写出。

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rutis::host::FiberState;
 
-use crate::outln;
+use crate::errln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
 use rutis_loader::peer::PeerResolver;
@@ -363,7 +363,7 @@ pub fn follow(followed: Followed) {
         let mut shown = Shown::default();
         loop {
             for line in shown.changes(&followed) {
-                outln!("{line}");
+                errln!("{line}");
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }

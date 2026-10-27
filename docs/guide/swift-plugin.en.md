@@ -83,7 +83,7 @@ In short:
 | Call chain | It travels with the Task (`@TaskLocal`): plugin code passes no context. Tasks a plugin starts with `ctx.spawn { ... }` carry it and are cancelled at unload; the unload waits for them at most until the shutdown deadline it shares with the listeners, so a Task that ignores cancellation does not hold it |
 | Concurrency | Every incoming call runs in a Task of its own: provided objects must be safe for concurrent use |
 | Cancellation | A caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation |
-| Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay`, `Rutis.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference; a parameter of type `Any` receives native values |
+| Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay`, `Rutis.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference (see [Objects with methods](#objects-with-methods)); a parameter of type `Any` receives native values, and an object of another process as a `Rutis.Client` |
 | Errors | A thrown error crosses with its type's name (`QuotaError`), its message (`LocalizedError`'s `errorDescription`, else its description), and the stored properties `code` and `data` when it has them, which the caller reads as its error's `code` and `data`. An error received is a `RutisError` (`name`, `message`, `code`, `data`, `errors`, `cause`), matched by `name` |
 | `fatalError`, `try!`, a force unwrap | Not catchable in Swift: the runtime process ends, its rows stop, and the host does what `restart` says ([When a runtime ends](rutis-host.en.md#when-a-runtime-ends)) |
 
@@ -124,6 +124,42 @@ let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
 - Handed to a test double of `RutisTest`, the double receives the definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
 - The parameter or result must be a `Rutis.Definition` (or `Rutis.Definition?`) itself. Plugin definitions inside an array, a dictionary or a struct (such as `[Rutis.Definition]`) are not supported: make one call per definition.
 - The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+
+### Objects with methods
+
+Data (`Codable` structs and classes) is copied; an instance of a `@RutisService` type goes to another language by reference: the far end gets a proxy whose calls reach the original object here. For an object another process passes, type the parameter with a `@RutisClient` protocol, or as `Any`:
+
+```swift
+/// How to use an object another process passes: declared at file level.
+@RutisClient
+protocol Cache {
+    func get(_ key: String) async throws -> Int?
+    func set(_ key: String, _ value: Int) async throws
+}
+
+@RutisService
+final class Warmer: @unchecked Sendable {
+    func warm(_ cache: any Cache) async throws -> Int? {
+        try await cache.set("a", 1)          // every method is async, a call of the far end's object
+        return try await cache.get("a")
+    }
+
+    /// When you do not know what arrives, take Any: an object is a Rutis.Client, called by name.
+    func peek(_ value: Any) async throws -> Int? {
+        guard let cache = value as? Rutis.Client else { return nil }
+        return try await cache.call("get", values: ["a"], as: Int?.self)
+    }
+}
+```
+
+- A parameter typed with a `@RutisClient` protocol (`any Cache`) gets that protocol's proxy, the same kind of proxy as `ctx.use("cache", CacheProxy.self)`; so does the result of a `@RutisClient` method. A parameter typed `Any` gets a `Rutis.Client`: `try await client.call("get", [Rutis.encode("a")], as: Int?.self)` or `call("get", values: ["a"], as: Int?.self)`. Objects inside arrays and dictionaries, and in event arguments, arrive through `Any` as `Rutis.Client`; `[any Cache]` is not supported in 0.18.
+- Only a `@RutisClient` protocol declared at file level receives objects: the `rutisObjectProxy` overload the macro generates for it is visible to Swift only at file scope. A `@RutisClient` protocol nested in another type still works with `ctx.use`, but a parameter typed with it does not take an object (`bad-argument`). An optional parameter or result (`(any Cache)?`) does not take an object in 0.18 either; write `any Cache`.
+- A parameter of a data type (a `Codable` type, `String` and so on) fails the call with `bad-argument`: `warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`.
+- A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
+- One object passed several times is one proxy here; a received proxy or `Rutis.Client` passed on sends the original object, and passed back to its process it is the original there.
+- An object does not follow its row: after the row that passed it unloads, it can still be called. An on-demand Swift runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from swift-plugin-binary failed: runtime swift-plugin-binary stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`. Once the far end's runtime has exited, calls fail with `peer-gone` too.
+- Objects cannot go to an end older than 0.18: connected directly to one, the call fails with `bad-value` (`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`), and the session goes on.
+- Rows in the same runtime get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
 
 ### Events
 

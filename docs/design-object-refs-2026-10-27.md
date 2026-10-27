@@ -2,7 +2,7 @@
 
 [English](design-object-refs-2026-10-27.en.md)
 
-状态：定稿，实施中（O-1 实施时改正：§八 里发出值失败的文字按诊断设计已有的写法 `warmer.warm: argument 1 cannot be sent: …`，不是 `argument 1 of warmer.warm: …`；0.17.2 宿主的文字照它当时的写法引用；§十 的期望文件在 `crates/rutis-bridge/src/runtime/testing/objects.expected.json`）。日期：2026-10-27（同日修订四次。第四次：同步调用的等待环、持有方进程退出时的释放。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
+状态：定稿，实施中（O-4 实施时改正：0.17.2 之前的宿主照常转发对象（§七、§十）；嵌在别的类型里的 `@RutisClient` 协议不收对象（§四）；Rust 宿主服务在一个会话的调用里调另一个会话的对象或函数时，调用链按那个会话转发（之前没有转发，链里的编号可能与目标会话自己的相同）。O-1 实施时改正：§八 里发出值失败的文字按诊断设计已有的写法 `warmer.warm: argument 1 cannot be sent: …`，不是 `argument 1 of warmer.warm: …`；0.17.2 宿主的文字照它当时的写法引用；§十 的期望文件在 `crates/rutis-bridge/src/runtime/testing/objects.expected.json`）。日期：2026-10-27（同日修订四次。第四次：同步调用的等待环、持有方进程退出时的释放。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
 Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https://github.com/arcships/rutis/issues/675) 拆出，属于 [#663](https://github.com/arcships/rutis/issues/663)）。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」；[设计哲学](design-philosophy.md) §七；[值类型](design-value-types-2026-10-15.md)（V0 开发者无感、V4 能力协商、V10 `undefined`）；[插件定义](design-plugin-values-2026-10-25.md)（加一种引用的先例）；[诊断](design-diagnostics-2026-10-26.md)（错误码 `bad-value`、`bad-argument`、`no-method`、`peer-gone`，§十）。
 
@@ -63,7 +63,7 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 | Kotlin | 参数类型写成 `@RutisClient` 接口；`Any?` 收到 `RemoteObject` | KSP 生成的同一个代理；`suspend` 方法挂起，普通方法阻塞（和服务客户端一样）。`RemoteObject` 与 `RemoteFunction` 对应，有按名字的 `call`：Kotlin 没有公开的按名字调用的客户端，所以只有它加一个类型 |
 | Rust | 宿主手写分发、Cordis 绑定用 `rutis_bridge::session::ObjectRef`（已有） | `call` / `call_async` |
 
-- **Swift 怎样认出客户端协议**：不按名字推（`any X` → `XProxy`）。`@RutisService` 现在对每个 `any P` 参数都写 `args.decode(i, as: (any P).self)`，`any Sendable`、`any Hashable` 这样的参数靠它照常解码，按名字推会让它们编译失败。改为 `@RutisClient` 为它的协议多生成一个重载 `rutisObjectProxy(_: (any Cache).Type)`；生成的代码调用 `rutisObjectProxy`，这个重载优先于一个泛型的兜底版本，兜底版本保持现在的解码。所以只有 `@RutisClient` 协议的参数收对象，其他 `any P` 不变。`@RutisClient` 方法的返回类型用同一个机制（现在 `ClientMacro` 的 `call(..., as: (any Cache).self)` 会失败）。
+- **Swift 怎样认出客户端协议**：不按名字推（`any X` → `XProxy`）。`@RutisService` 现在对每个 `any P` 参数都写 `args.decode(i, as: (any P).self)`，`any Sendable`、`any Hashable` 这样的参数靠它照常解码，按名字推会让它们编译失败。改为 `@RutisClient` 为它的协议多生成一个重载 `rutisObjectProxy(_: (any Cache).Type)`；生成的代码调用 `rutisObjectProxy`，这个重载优先于一个泛型的兜底版本，兜底版本保持现在的解码。所以只有 `@RutisClient` 协议的参数收对象，其他 `any P` 不变。`@RutisClient` 方法的返回类型用同一个机制（现在 `ClientMacro` 的 `call(..., as: (any Cache).self)` 会失败）。O-4 实施时发现：这个重载由宏作为协议的 peer 生成，Swift 只在文件顶层看得到它，所以只有写在文件顶层的 `@RutisClient` 协议收对象；嵌在别的类型里的 `@RutisClient` 协议照常可以 `ctx.use`，用作参数类型时走兜底版本、收不了对象（`bad-argument`）。这条限制写进 Swift 的指南。
 - **在数据里**：数组、字典里的对象和事件参数，Swift 按 `Any` 收到 `Rutis.Client`，Kotlin 按 `Any?` 收到 `RemoteObject`。Kotlin 的 KSP 接口参数经 `Tables.clientFactory` 能收，但 `List<Cache>` 这样嵌套的类型没有序列化器；Swift 的 `[any Cache]` 也不在 0.18 里。
 - **对象的调用不查方法表**：线上的引用只有 `{id, home, kind, origin}`，对象没有方法表。现在 Go 的 `Service.Call`、`bind` 和 Swift 的 `Client.call` 在方法表里找不到方法时报 "has no method"，并从表里取 `sync`；对对象，它们跳过这一步（`*rutis.Service` 的 `Methods()` 为 `nil`，`Rutis.Client` 的方法表为空）。调用以 `call` 帧（不是服务的 `invoke`）发给对象；`sync` 只给 Go 结构体的阻塞函数字段用，和 `RemoteFunction` 的 `Call(ctx, args, true)` 一样。没有的方法由对象所在的一端以 `no-method` 回答。
 - **同一个对象**：同一个对象交出几次，接收方拿到同一个代理（JS `===`、Python `is`）；代理交回原来的进程，那边拿到的就是原对象。交给第三个进程时，宿主照常转发。各语言怎样把代理再交出：
@@ -91,7 +91,7 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 - **与 0.17 混用**：
   - 0.18 宿主下，对象要转发给 0.17 的运行时：它没有声明 `objects`，宿主拒绝，这次调用以 `bad-value` 失败，会话继续。0.17 的一端从不会收到对象。
   - 0.18 宿主下，0.17 的运行时发出的对象转发给 0.18 的运行时：现在可用（过去失败）。
-  - 0.18 的运行时在 0.17.2 宿主下：宿主认不出它们的 `objects`，在两个运行时之间转发对象时按 0.17.2 的文字拒绝（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`），只有这次调用失败，会话继续。0.18 的运行时把对象交给 0.17 宿主自己的 Rust 代码（`ObjectRef`，`live_objects.rs`）照常可用。
+  - 0.18 的运行时在 0.17.2 宿主下：宿主认不出它们的 `objects`，在两个运行时之间转发对象时按 0.17.2 的文字拒绝（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`），只有这次调用失败，会话继续。0.17.2 之前的宿主（0.13–0.17.1）不检查对象，照常转发，0.18 运行时之间的对象可用。0.18 的运行时把对象交给 0.17 宿主自己的 Rust 代码（`ObjectRef`，`live_objects.rs`）照常可用。
   - 0.18 的运行时与 0.17 的运行时直接经 endpoint 会话相连：对方没有声明 `objects`，发出方用自己已有的文字拒绝（§八），只有这次调用失败。
   - 不升协议版本，不加新能力名。
 - **同步调用的等待环**：Go 结构体的阻塞函数字段以带 `sync` 的 `call` 帧调用对象的方法。宿主转发同步调用前的等待环检查（`bridge/sync-wait-cycle-refused`，#228 / #261）已经覆盖它：转发对象调用走的是同一个 `request_sync` → `send` → `waits::forward`，进来的带 `sync` 的帧不论种类都记入等待图。所以两个运行时经对象互相同步调用时，这次调用以 `SyncWaitCycle` 失败，不会卡死。现在的测试只用服务和函数，O-1 补一条经对象的测试。
@@ -203,7 +203,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | 测试工具的严格模式给出跨进程样子的代理 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `undefined` 在任何深度是 `null`，作为整个参数保留 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-跨版本：发布门的跨版本相遇加这几条：0.18 宿主把对象转发给 0.17 的运行时（`bad-value`，会话继续）；0.18 宿主下 0.17 运行时的对象交给 0.18 运行时（可用）；0.17.2 宿主下两个 0.18 运行时之间传对象（按 0.17.2 的文字只让这次调用失败，会话继续），以及 0.18 运行时把对象交给 0.17.2 宿主的 `ObjectRef`（照常）。[保证表](guarantees.md)新增 `bridge/object-refs`（§三到§六），各写明验证它的测试。
+跨版本：发布门的跨版本相遇加这几条：0.18 宿主把对象转发给 0.17 的运行时（`bad-value`，会话继续）；0.18 宿主下 0.17 运行时的对象交给 0.18 运行时（可用）；0.17.2 宿主下两个 0.18 运行时之间传对象（按 0.17.2 的文字只让这次调用失败，会话继续）；0.17.2 之前的宿主照常转发（可用）。0.18 运行时把对象交给 0.17.2 宿主的 `ObjectRef` 不进发布门：发布的 rutis-host 里没有收对象的 Rust 代码，这条没有可以下载来相遇的一方（O-4 实施时改正）。[保证表](guarantees.md)新增 `bridge/object-refs`（§三到§六），各写明验证它的测试。
 
 ## 十一、兼容与迁移
 

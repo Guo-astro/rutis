@@ -121,11 +121,37 @@ impl RuntimeHandle {
         self.starts.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Resolves at the next change of [`RuntimeHandle::state`].
+    /// Resolves at the next change of [`RuntimeHandle::state`]. A change
+    /// between a look at the state and this call is not seen: to wait for a
+    /// state, use [`RuntimeHandle::wait_for`].
     pub async fn changed(&self) {
         let mut state = self.state.clone();
         state.borrow_and_update();
         let _ = state.changed().await;
+    }
+
+    /// Waits until the state is one `until` accepts, and gives it. The
+    /// state as it is now counts, so nothing between an earlier look and
+    /// this wait is missed. A runtime whose plugin is gone no longer
+    /// changes: unless its last state is accepted, this does not resolve.
+    pub async fn wait_for(&self, mut until: impl FnMut(&RuntimeState) -> bool) -> RuntimeState {
+        let mut state = self.state.clone();
+        // Cloned out at once: the borrow holds the state's lock.
+        let found = state
+            .wait_for(|now| until(now))
+            .await
+            .map(|now| now.clone());
+        match found {
+            Ok(now) => now,
+            Err(_) => std::future::pending().await,
+        }
+    }
+
+    /// The state as a receiver of its own: a loop waiting on it next to
+    /// something else marks what it looked at (`borrow_and_update`), so a
+    /// change right after the look still wakes it.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<RuntimeState> {
+        self.state.clone()
     }
 
     /// Whether the runtime runs elsewhere ([`RuntimePlugin::remote`]): its
@@ -515,5 +541,45 @@ async fn withdraw(service: &Mutex<Option<Disposer>>) {
         if let Err(error) = disposer.dispose().await {
             eprintln!("cannot withdraw a runtime that went away: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A state reached after a look at the state but before the wait is the
+    /// one the wait gives. Missed, a loop waiting for its runtime to start
+    /// woke only when the process later ended and took that for a failed
+    /// start (multilang.rs::a_dead_python_process_stops_only_its_rows on CI).
+    #[tokio::test]
+    async fn a_state_reached_before_the_wait_is_not_missed() {
+        let runtime = RuntimePlugin::session("py", ".");
+        let handle = runtime.handle();
+        runtime.starting();
+        assert!(matches!(handle.state(), RuntimeState::Starting));
+        runtime.failed("crashed");
+        let state = tokio::time::timeout(
+            Duration::from_secs(5),
+            handle.wait_for(|state| matches!(state, RuntimeState::Down(_))),
+        )
+        .await
+        .expect("the state it was waiting for had already come");
+        assert!(matches!(state, RuntimeState::Down(reason) if reason == "crashed"));
+
+        // A loop of its own marks what it looked at: a change right after
+        // the look still wakes it.
+        let mut states = handle.subscribe();
+        assert!(matches!(*states.borrow_and_update(), RuntimeState::Down(_)));
+        runtime.starting();
+        tokio::time::timeout(Duration::from_secs(5), states.changed())
+            .await
+            .expect("a change after the look wakes the wait")
+            .unwrap();
+        assert!(matches!(
+            *states.borrow_and_update(),
+            RuntimeState::Starting
+        ));
     }
 }

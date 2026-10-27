@@ -68,6 +68,39 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 
 - 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；解码之前先按它校验，配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。有默认参数或可空的字段不必填；默认参数由 kotlinx 解码时补上（Schema 里看不到）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
 
+### 带方法的对象
+
+`@Serializable` 类是数据，复制；`@RutisService` 类的实例按引用交给别的语言：对方拿到代理，调用的是这里的原对象。两个注解都没有的类传不过去：`a Cache cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it`。别的进程交来的对象，参数类型写 `@RutisClient` 接口，或者写 `Any?`：
+
+```kotlin
+/** 怎样使用别的进程交来的对象。 */
+@RutisClient
+interface Cache {
+    suspend fun get(key: String): Long?
+    suspend fun set(key: String, value: Long)
+}
+
+@RutisService
+class Warmer {
+    suspend fun warm(cache: Cache): Long? {
+        cache.set("a", 1)                    // 调用的是对方的原对象
+        return cache.get("a")
+    }
+
+    /** 不知道是什么时写 Any?：对象是 RemoteObject，按名字调用。 */
+    suspend fun peek(value: Any?): Any? = (value as? RemoteObject)?.call("get", "a")
+}
+```
+
+- 参数类型写 `@RutisClient` 接口时拿到 KSP 生成的代理，和 `ctx.use<Cache>("cache")` 是同一种：`suspend` 方法挂起，普通方法阻塞（不能在主线程上调用）。`@RutisClient` 方法的返回值也一样。
+- 参数写 `Any?` 时拿到 `arcships.rutis.RemoteObject`：`suspend fun call(method, vararg args)` 挂起，`fun callBlocking(method, vararg args)` 阻塞，参数和结果都是普通的 Kotlin 值；`release()` 立即交还引用，不等它被回收。列表、map 里的对象和事件参数里的对象，经 `Any?` 拿到 `RemoteObject`；`List<Cache>` 这类集合里的接口类型不支持。
+- 参数类型是数据（`@Serializable` 类、`String` 等）时，这次调用以 `bad-argument` 失败：`argument 1 should be a Point, got an object (an object is received only as a @RutisClient interface or Any?)`。
+- 代理上没有数据字段：要数据，让方法返回它。调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`。
+- 同一个对象交出几次，这里拿到同一个代理；把收到的代理或 `RemoteObject` 再交出去，发出的是原来那个对象，交回原来的进程，那边拿到的是原对象。
+- 对象不跟行走：交出它的行卸载后照常可以调用。应用交出的对象在应用的进程里：应用 `stop()` 或断开后，别处对它的调用以 `peer-gone` 失败；对方的进程退出后，这里的调用同样以 `peer-gone` 失败。
+- 对象不能交给 0.18 之前的一端：这次调用以 `bad-value` 失败，错误提示升级，会话继续。
+- 同一个进程里拿到的是对象本身。`RutisTest` 按跨进程的样子给代理。规则见 [插件 API](plugin-api.md#带方法的对象)。
+
 ## 3. 接入 rutis
 
 ```kotlin

@@ -194,6 +194,38 @@ rutis-host: listeners public and private: link row mac and link row pi both acce
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime or the peer node that connects in present the new token). With both rows enabled, such a configuration had one side that could not connect in 0.17 either; once fixed, it does.
 
+## Objects with methods go to every language (#687)
+
+In 0.17 objects with methods (class instances and the like) went only to Rust; handed to Node, Bun, Python, Go, Swift or Kotlin, the call failed (`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`). From 0.18 they go to every language by reference: the far end gets a proxy whose methods call the original object ([design](design-object-refs-2026-10-27.en.md); the rules are in the Plugin API's [Objects with methods](guide/plugin-api.en.md#objects-with-methods)). What goes by reference and what is copied has not changed: JS class instances and plain objects with function-valued properties, Python instances other than dataclasses, Go's `rutis.Ref(v)`, and Swift and Kotlin `@RutisService` instances. What Rust hosts and Cordis bindings receive does not change.
+
+What to change:
+
+- **Code that relied on the failure**: code that passed an object, and on failure passed data instead (turning it into a dict or plain object in a `catch` and calling again), no longer reaches the `catch`: the far end gets a proxy, whose methods are all asynchronous calls and which has no data fields. When the far end wants data, pass data.
+- **The receiver's parameter types**: in Go, Swift and Kotlin, a parameter of a data type that receives an object fails the call with `bad-argument` (before, the sender's `bad-value`), and the error says how to receive an object: in Go a struct of function fields or `any`, in Swift a `@RutisClient` protocol or `Any`, in Kotlin a `@RutisClient` interface or `Any?`. A Rust `#[rutis::service]` parameter takes no objects and fails with `bad-argument`; pass functions instead.
+- **Upgrade both ends**: runtimes older than 0.18 do not take objects. When a 0.18 host would forward an object to one, the call fails with `bad-value`, and the session goes on:
+
+  ```
+  chat: warmer.warm: argument 1 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it
+  ```
+
+  Connected directly to an old end, the SDK refuses by itself: `… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`. A 0.17.2 host does not know that 0.18 runtimes take objects, so objects between runtimes under it still fail with 0.17.2's text; upgrade the host.
+
+### `undefined`
+
+`undefined` is kept only as a whole argument or a whole result; inside arrays, objects, Maps and Sets it is `null` at any depth (`None` in Python), in every language. Before, `undefined` inside an array passed as an argument was kept as a special value (a placeholder in Python, `undefined` in JS), against the docs. JS code that checks whether an array element is `undefined` should check for `null` as well (`x == null`).
+
+### Swift
+
+- A parameter, or the result of a `@RutisClient` method, typed with a `@RutisClient` protocol (`any Cache`) receives an object as that protocol's proxy; typed `Any`, as a `Rutis.Client` (`call(_:_:as:)`, `call(_:values:as:)`). Objects inside arrays, dictionaries and event arguments arrive through `Any` as `Rutis.Client`; `[any Cache]` is not supported.
+- Only a `@RutisClient` protocol declared at file level receives objects; a protocol nested in another type still works with `ctx.use`, but as a parameter type it takes no object (`bad-argument`). To receive objects, move the protocol to file level.
+- `RutisProxy` gains `rutisClient`: a proxy passed on sends the original object. Code implementing `RutisProxy` itself (not through `@RutisClient`) must add it.
+
+### Kotlin
+
+- New type `arcships.rutis.RemoteObject`: a parameter of type `Any?` receives an object as one; `call(method, vararg args)` suspends, `callBlocking(method, vararg args)` blocks, and `release()` gives the reference back now. It is the only new type plugin code uses for objects in 0.18 (`arcships.rutis.ObjectProxy` is public too, but only the proxies KSP generates implement it; plugin code does not use it, as with `ServiceHandle`).
+- A parameter, or the result of a `@RutisClient` method, typed with a `@RutisClient` interface receives an object as the KSP-generated proxy.
+- Code that treated an `Any?` parameter as receiving only data (`Map`, `List`, primitives) may now receive a `RemoteObject` too.
+
 ## Rust embedding (behaviour changes) (#678)
 
 In 0.17 a Rust program embedding rutis printed next to nothing by default: a plugin failing to start that nobody awaited, a loader row failing to load, a language runtime's process ending were only in return values nobody read. From 0.18 the default error sink (`default_sink()`, installed by `Ctx::root()` and `Ctx::root_with(handle)`) writes them to standard error, each line beginning with the plugin, row or runtime name ([default output](guide/rust-host.en.md#default-output)):
@@ -206,7 +238,7 @@ runtime py: down (runtime process exited with exit status: 1)
 - **The default output no longer begins with `[rutis]`.** The wait report begins with the plugin's name: `printer: still waiting after 10s for app::Greeting: it starts once that is provided` (0.17.2: `[rutis] plugin printer is still waiting …`). rutis's own plugins (links, runtimes and the like) no longer report waits, and their internal names do not appear in the reports. Scripts matching these texts on standard error need changing.
 - **New error sink variants**: `ErrorKind::StartFailed { plugin, error }`, `ErrorKind::RuntimeDown { runtime, reason }`, `ErrorKind::NotServedByName { service }` (a type marked `#[rutis::service]` provided in a program that does not link rutis-bridge, once per service). A program with its own sink (`Ctx::root_with_sink`) gets them too; filter out by variant what it does not want. A `view.await` on the plugin still gets the error, so a program that both awaits and keeps the default sink sees one failure twice: either do not print the error from `view.await`, or filter `StartFailed` in the sink.
 - **To turn it off**: replace the sink, as in the example under [default output](guide/rust-host.en.md#default-output).
-- **rutis-host**: its state lines do not change, and it does not print `StartFailed` or `RuntimeDown` (its state lines say them). What changes: the other errors it hands to the default sink (a cleanup that failed, say) no longer begin with `[rutis]`, and the timeout in `runtime <name>: stopping after killing it: …`, after a Go runtime is killed, names the stuck plugins.
+- **rutis-host**: its state lines read as before (they now go to stderr: see "`rutis-host` output" below), and it does not print `StartFailed` or `RuntimeDown` (its state lines say them). What changes: the other errors it hands to the default sink (a cleanup that failed, say) no longer begin with `[rutis]`, and the timeout in `runtime <name>: stopping after killing it: …`, after a Go runtime is killed, names the stuck plugins.
 - **One cause can print several lines**: a plugin that fails to start reports the errors of the cleanups its rollback ran, then `StartFailed` (whose error holds them too); a parent failing because a child failed reports once for each; errors gathered together print over several lines.
 - **`shutdown()` does not change**: it still has no time limit, how long to wait is the host's choice. The error of `shutdown_with_timeout` / `dispose_with_timeout` running out names the plugins and cleanups not finished (`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`) instead of `fiber PluginId(1) generation 0 still Unloading after …`; `DisposeWaitError::TimedOut` gained a field `stuck: Vec<Stuck>`, so code destructuring it with every field adds `..`.
 - `root.diagnostics()` implements `Display` (one item a line, by names, without rutis's own plugins by default); `PluginDiagnostics` gained the fields `row` and `platform`.
@@ -228,6 +260,13 @@ let report = handle.reconcile(layers, None).await?;
 ```
 
 `rutis-host` is not affected: it still counts as started once every runtime is up and every row has been through its load.
+
+## `rutis-host`'s output: status lines on standard error, plugins' lines named under `dev` (#678)
+
+- **The status lines of `run` and `dev` go to standard error** (standard output before): `weather: running`, `runtime py: down (…)`, `rutis-host: listening on …`, `rutis-host: reloaded …`, `dev`'s `reloaded`, `building` and the like. `rutis-host check` without arguments in a Go or Swift project builds the project first, and its `building` and `built in` lines go to standard error too; what `check` says of each row stays on standard output. Plugins' output goes to the stream they write it to, as before. A script reading status lines from `rutis-host`'s standard output reads standard error instead (or `2>&1`).
+- **Under `dev` each line a plugin writes starts with its row's name**: `[weather] fetching forecast for Berlin`; Go's and Swift's with the runtime's name (`[go-weather] `). A script or test matching plugins' output by whole lines passes `--no-prefix-output` to `dev`, or drops the prefix before comparing. `run` is unchanged by default; `--prefix-output` turns it on.
+
+See [Output in the rutis-host guide](guide/rutis-host.en.md#output).
 
 ## Configs are filled with defaults and validated before `apply` (#669)
 

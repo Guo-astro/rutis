@@ -5,14 +5,12 @@
 //! supervised by their plugin instead ([`crate::host::Host::supervise`]),
 //! with the same [`Backoff`].
 
-use std::time::Duration;
-
 use rutis::host::{ErrorKind, FiberView};
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use tokio::time::Instant;
 
 use crate::config::Restart;
-use crate::outln;
+use crate::errln;
 
 /// The backoff and its numbers: rutis-loader's, which the Go runtimes'
 /// restarts use too.
@@ -54,14 +52,14 @@ pub async fn supervise(
             Restart::OnFailure => {}
         }
         let Some(wait) = backoff.next(Instant::now(), started.elapsed()) else {
-            outln!(
+            errln!(
                 "runtime {name}: gave up after {LIMIT} restarts within {} minutes",
                 WINDOW.as_secs() / 60
             );
             return Supervised::GaveUp;
         };
         tokio::time::sleep(wait).await;
-        outln!("runtime {name}: restarting");
+        errln!("runtime {name}: restarting");
         started = Instant::now();
         // It runs again, or its start failed and it is down once more,
         // which counts as one more end.
@@ -75,16 +73,12 @@ pub async fn supervise(
 
 /// Wait until the runtime's process has ended on its own: why.
 async fn ended(handle: &RuntimeHandle) -> String {
-    loop {
-        if let RuntimeState::Down(why) = handle.state() {
-            return why;
-        }
-        // Looked at again now and then too: a change between the look and
-        // the wait would otherwise be missed.
-        tokio::select! {
-            () = handle.changed() => {}
-            () = tokio::time::sleep(Duration::from_millis(500)) => {}
-        }
+    match handle
+        .wait_for(|state| matches!(state, RuntimeState::Down(_)))
+        .await
+    {
+        RuntimeState::Down(why) => why,
+        _ => unreachable!("only a down runtime is waited for"),
     }
 }
 
@@ -97,6 +91,7 @@ mod tests {
     use rutis_bridge::runtime::RuntimePlugin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// The numbers: 1 s, doubling up to 30 s; five restarts within five
     /// minutes, the sixth end gives up; a runtime that ran a minute starts

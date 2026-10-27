@@ -26,6 +26,8 @@ import traceback
 import weakref
 from typing import Any, Callable
 
+from ._output import say
+
 # The key of the row whose code is running (None: no row's).
 current_row: contextvars.ContextVar[str | None] = contextvars.ContextVar("rutis_row", default=None)
 
@@ -178,7 +180,7 @@ def install_exit(name_row: Callable[[str | None, list[str]], str | None], runtim
             files = [frame.filename for frame in traceback.extract_stack()]
             row = name_row(current_row.get(), files)
             if row is not None:
-                print(f"runtime {runtime()}: row {row} called os._exit({code})", file=sys.stderr, flush=True)
+                say(f"runtime {runtime()}: row {row} called os._exit({code})")
         except BaseException:  # noqa: BLE001 - the process exits whatever happens here
             pass
         exit(code)

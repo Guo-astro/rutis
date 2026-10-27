@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
+from ._output import BlockingWatch, install_prefix, say
 from .config import configured
 from ._unhandled import (
     as_row,
@@ -367,6 +368,9 @@ class Runtime:
         self.stamps: dict[str, tuple | None] = {}
         # Listeners run as their row's code (#688).
         self.bus.within = as_row
+        # A row's synchronous method holding the loop for 5 s is said
+        # (#678).
+        self.blocking = BlockingWatch(self._runtime_name)
         # The loop whose unhandled exceptions this runtime takes (#688).
         self._handling: asyncio.AbstractEventLoop | None = None
         try:
@@ -398,7 +402,7 @@ class Runtime:
                 row.announced.append(id)
             elif self.mounted and name not in self.told:
                 self.told.add(name)
-                print(old_host(name), file=sys.stderr, flush=True)
+                say(old_host(name))
         self._refresh(id)
 
         def withdraw() -> None:
@@ -607,6 +611,19 @@ class Runtime:
     def _runtime_name(self) -> str:
         return self.bus.runtime or "py"
 
+    def output_name(self) -> str:
+        """Who writes now: the id of the row whose code runs, else this
+        runtime's name (#678)."""
+        key = current_row.get()
+        if key is None:
+            return self._runtime_name()
+        return self.bus.row_id(key) or key
+
+    def prefix_output(self) -> None:
+        """Start each line written to stdout and stderr with the name of
+        whoever writes it ([`output_name`])."""
+        install_prefix(self.output_name)
+
     def charge(self, kind: str, error: BaseException, key: str | None) -> None:
         """An exception nobody handled, traced to row `key` (None: to no
         row): the row fails (rutis restarts it, and the restart fails with
@@ -615,7 +632,7 @@ class Runtime:
         row = self.rows.get(key) if key is not None else None
         name = self._runtime_name()
         if row is None or self.closing or self.peer is None:
-            print(f"runtime {name}: an unhandled error from an unknown row: {report_text(error)}", file=sys.stderr, flush=True)
+            say(f"runtime {name}: an unhandled error from an unknown row: {report_text(error)}")
             return
         why = failure_text(kind, error)
         if row.failing is not None:
@@ -625,14 +642,14 @@ class Runtime:
         # Once: the row is on its way out; what else it leaves unhandled
         # until it has gone is written here.
         if row.failed:
-            print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+            say(f"runtime {name}: row {self.bus.row_id(key)}: {why}")
             return
         row.failed = True
 
         def told(done) -> None:
             # A host older than 0.18 fails no row so: the row goes on.
             if done.cancelled() or done.exception() is not None:
-                print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+                say(f"runtime {name}: row {self.bus.row_id(key)}: {why}")
 
         try:
             # What it was, and the error as a raised one crosses: its code,
@@ -644,7 +661,7 @@ class Runtime:
             args = [key, kind_text(kind, error)] + ([encoded] if encoded is not None else [])
             self._request("rows.failed", args).add_done_callback(told)
         except Exception:  # noqa: BLE001 - the session is gone
-            print(f"runtime {name}: row {self.bus.row_id(key)}: {why}", file=sys.stderr, flush=True)
+            say(f"runtime {name}: row {self.bus.row_id(key)}: {why}")
 
     def name_row(self, key: str | None, files: list[str]) -> str | None:
         """The id of the row whose code runs (`key`), else of the one row
@@ -1086,7 +1103,18 @@ class Runtime:
         check_arguments(service, method, function, args)
         # The method runs as the code of the row whose service it is (#688).
         owner = slot.row if slot is not None else None
-        return as_row(owner, lambda: function(*args))
+        if owner is None and entry["name"] in self.services:
+            owner = self.services[entry["name"]][0]
+        shown = self._runtime_name() if owner is None else (self.bus.row_id(owner) or owner)
+        # One that holds the loop for 5 s is said (#678): a `def` method, or
+        # a step of an `async def` one.
+        label = f"{service}.{method}"
+
+        def call() -> Any:
+            value = self.blocking.held(shown, label, lambda: function(*args))
+            return self.blocking.watched(shown, label, value)
+
+        return as_row(owner, call)
 
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":

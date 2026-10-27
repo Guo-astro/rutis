@@ -37,7 +37,22 @@ extension Rutis {
         /// The argument at `index` as a `T`. A missing argument is nil: a
         /// non-optional `T` then fails the call.
         public func decode<T>(_ index: Int, as type: T.Type = T.self) throws -> T {
+            try decode(index, as: type, object: nil)
+        }
+
+        /// `decode(_:as:)` for a parameter that may take an object of
+        /// another process: made into a `T` by `object` (a @RutisClient
+        /// protocol's proxy, `rutisObjectProxy`), or a `Rutis.Client` for
+        /// `Any`; any other type takes none (#687 §四).
+        public func decode<T>(_ index: Int, as type: T.Type = T.self, object proxy: ((Rutis.Client) -> T)?) throws -> T {
             let value = index < values.count ? values[index] : .undefined
+            if case let .remoteObject(far) = value {
+                if let proxy { return proxy(Rutis.Client.of(far)) }
+                if let client = Rutis.Client.of(far) as? T { return client }
+                let callee = callee ?? Refusal.Callee(method: "")
+                throw Refusal.badArgument(callee, index, expected: Refusal.expected(T.self),
+                                          actual: "an object (an object is received only as a @RutisClient protocol or Any)")
+            }
             do {
                 return try ValueCodec.decode(type, from: value)
             } catch {

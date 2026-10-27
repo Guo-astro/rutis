@@ -447,8 +447,10 @@ impl Drop for Host {
 }
 
 /// Whether `text` has a probe's line (`{"probe": …}`, one JSON object per
-/// line) in it without being one whole: lines ran into each other.
+/// line, maybe after its row's name) in it without being one whole: lines
+/// ran into each other.
 fn broken(text: &str) -> bool {
+    let text = crate::unprefixed(text);
     text.contains("{\"probe\"")
         && !(text.starts_with("{\"probe\"")
             && serde_json::from_str::<serde_json::Value>(text).is_ok())
@@ -460,6 +462,9 @@ mod tests {
     fn a_probe_line_run_into_another_is_broken() {
         assert!(!super::broken(r#"{"probe": "p", "event": "started"}"#));
         assert!(!super::broken("demo: running"));
+        assert!(!super::broken(
+            r#"[probe] {"probe": "p", "event": "started"}"#
+        ));
         assert!(super::broken(
             r#"{"probe": "p", "event": "started"}demo: running"#
         ));

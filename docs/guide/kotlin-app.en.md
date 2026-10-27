@@ -68,6 +68,39 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 
 - The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the config is validated against it before it is decoded, and a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
 
+### Objects with methods
+
+A `@Serializable` class is data and is copied; an instance of a `@RutisService` class goes to another language by reference: the far end gets a proxy whose calls reach the original object here. A class with neither annotation cannot cross: `a Cache cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it`. For an object another process passes, type the parameter with a `@RutisClient` interface, or as `Any?`:
+
+```kotlin
+/** How to use an object another process passes. */
+@RutisClient
+interface Cache {
+    suspend fun get(key: String): Long?
+    suspend fun set(key: String, value: Long)
+}
+
+@RutisService
+class Warmer {
+    suspend fun warm(cache: Cache): Long? {
+        cache.set("a", 1)                    // a call of the far end's object
+        return cache.get("a")
+    }
+
+    /** When you do not know what arrives, take Any?: an object is a RemoteObject, called by name. */
+    suspend fun peek(value: Any?): Any? = (value as? RemoteObject)?.call("get", "a")
+}
+```
+
+- A parameter typed with a `@RutisClient` interface gets the KSP-generated proxy, the same kind as `ctx.use<Cache>("cache")`: `suspend` methods suspend, plain methods block (and cannot be called on the main thread). So does the result of a `@RutisClient` method.
+- A parameter typed `Any?` gets an `arcships.rutis.RemoteObject`: `suspend fun call(method, vararg args)` suspends, `fun callBlocking(method, vararg args)` blocks, and arguments and results are ordinary Kotlin values; `release()` gives the reference back now instead of when it is collected. Objects inside lists and maps, and in event arguments, arrive through `Any?` as `RemoteObject`; interface types inside collections, such as `List<Cache>`, are not supported.
+- A parameter of a data type (a `@Serializable` class, `String` and so on) fails the call with `bad-argument`: `argument 1 should be a Point, got an object (an object is received only as a @RutisClient interface or Any?)`.
+- A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
+- One object passed several times is one proxy here; a received proxy or `RemoteObject` passed on sends the original object, and passed back to its process it is the original there.
+- An object does not follow its row: after the row that passed it unloads, it can still be called. Objects the application hands over live in its process: after the application calls `stop()` or disconnects, calls on them elsewhere fail with `peer-gone`; once the far end's process has exited, calls here fail with `peer-gone` too.
+- Objects cannot go to an end older than 0.18: the call fails with `bad-value`, the error says to upgrade, and the session goes on.
+- In the same process you get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
+
 ## 3. Connecting to rutis
 
 ```kotlin

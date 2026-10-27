@@ -9,8 +9,8 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use rutis_host::config::{read_text, HostConfig};
+use rutis_host::errln;
 use rutis_host::host::Host;
-use rutis_host::{errln, outln};
 
 const FLAG: &str = "--watch-config";
 
@@ -135,7 +135,7 @@ pub async fn reload(host: &mut Host, path: &Path, triggers: &mut Triggers) {
     let config = match read {
         Ok(config) => config,
         Err(error) => {
-            outln!("rutis-host: reload rejected: {error}; nothing changed");
+            errln!("rutis-host: reload rejected: {error}; nothing changed");
             return;
         }
     };
@@ -145,14 +145,14 @@ pub async fn reload(host: &mut Host, path: &Path, triggers: &mut Triggers) {
             for warning in warnings {
                 errln!("rutis-host: warning: {warning}");
             }
-            outln!("rutis-host: reloaded {} ({reloaded})", path.display());
+            errln!("rutis-host: reloaded {} ({reloaded})", path.display());
             for warning in &reloaded.warnings {
                 errln!("rutis-host: warning: {warning}");
             }
         }
         Err(error) => {
             for line in crate::host::rejected_lines(&error) {
-                outln!("{line}");
+                errln!("{line}");
             }
         }
     }

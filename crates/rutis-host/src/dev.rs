@@ -23,7 +23,7 @@ use rutis_bridge::runtime::RuntimeState;
 use rutis_host::config::{read_text, HostConfig};
 use rutis_host::host::{Host, RowChange};
 use rutis_host::languages::{self, DevBuild};
-use rutis_host::{errln, outln, project, status};
+use rutis_host::{errln, project, status};
 use rutis_loader::report::EntryStatus;
 use rutis_loader::LoaderError;
 
@@ -40,6 +40,9 @@ const POLL: Duration = Duration::from_millis(400);
 pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
     let (debug, args) = debug_flag(&args);
+    // Each line a plugin writes says which row wrote it, unless asked not
+    // to (#678).
+    let (prefix_output, args) = crate::prefix_flag(args, true);
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
     let given = PathBuf::from(args.first().map(String::as_str).unwrap_or("."));
@@ -76,7 +79,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     });
     let (config, id) = match &compiled {
         Some((_, project)) => {
-            outln!("{}: building", project.name());
+            errln!("{}: building", project.name());
             let started = std::time::Instant::now();
             let built = tokio::select! {
                 built = project.rebuild(1) => built,
@@ -86,7 +89,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
                 }
             };
             let binary = built?;
-            outln!(
+            errln!(
                 "{}: built in {:.1}s",
                 project.name(),
                 started.elapsed().as_secs_f64()
@@ -97,16 +100,17 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     };
     let mut config = config;
     config.runtimes.debug = debug;
+    config.runtimes.prefix_output = prefix_output;
     warn(&config);
     if debug {
         for line in debugging(&config)? {
-            outln!("{line}");
+            errln!("{line}");
         }
     }
     let mut host = Host::start(&config).await?;
     let _status = crate::answer_status(&dir, &host);
     for line in status::listening(&host.listening) {
-        outln!("{line}");
+        errln!("{line}");
     }
     let started = host.start_rows(config.rows());
     match start(&host, started, deadline, &mut signals).await {
@@ -118,7 +122,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     }
     // Before saying it runs: a change made once it says so is a change.
     let mut seen = project::sources(&dir);
-    outln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
+    errln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
     status::follow(host.followed());
     let mut exits = host.supervise();
     let mut project = Project {
@@ -127,6 +131,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         compiled,
         build: 1,
         debug,
+        prefix_output,
         stale: Vec::new(),
         // Printed at the start (`warn`).
         warned: config.warnings.iter().cloned().collect(),
@@ -232,6 +237,8 @@ struct Project {
     build: u32,
     /// Its runtimes run under their debuggers (`--debug`).
     debug: bool,
+    /// Its plugins' lines start with their row's name.
+    prefix_output: bool,
     /// Builds no runtime runs any more, still to delete: Windows refuses
     /// while it still holds the image of a process that just ended.
     stale: Vec<PathBuf>,
@@ -250,19 +257,19 @@ impl Project {
         let Some(running) = host.binaries_of(key) else {
             return;
         };
-        outln!("{}: building", project.name());
+        errln!("{}: building", project.name());
         let started = std::time::Instant::now();
         let binary = match project.rebuild(self.build + 1).await {
             Ok(binary) => binary,
             Err(errors) => {
-                outln!(
+                errln!(
                     "{}: the build failed; the last build keeps running\n{errors}",
                     project.name()
                 );
                 return;
             }
         };
-        outln!(
+        errln!(
             "{}: built in {:.1}s",
             project.name(),
             started.elapsed().as_secs_f64()
@@ -272,7 +279,7 @@ impl Project {
         match running.restart_runtime(project.runtime()).await {
             Ok(()) => {
                 self.build += 1;
-                outln!("{}: rebuilt and restarted", project.runtime());
+                errln!("{}: rebuilt and restarted", project.runtime());
                 // Not the build the next start uses: once nothing runs it,
                 // it can go.
                 self.stale.push(project.binary(self.build - 1));
@@ -291,7 +298,7 @@ impl Project {
                     .map(|entry| (entry.id, said.clone()))
                     .collect();
                 for line in Rows::of(host).restarted(&before, &causes, &|id| own(id)) {
-                    outln!("{line}");
+                    errln!("{line}");
                 }
             }
             Err(error) => {
@@ -299,7 +306,7 @@ impl Project {
                 // build, and point the runtime back at the previous one, so
                 // a later change can retry.
                 running.replace(project.runtime(), &project.binary(self.build));
-                outln!(
+                errln!(
                     "{}: cannot restart: {error}; the previous build is kept",
                     project.runtime()
                 );
@@ -337,20 +344,20 @@ impl Project {
             match host.loader.reload(id).await {
                 Ok(_) => {
                     host.loader.settled().await;
-                    outln!("{id}: reloaded ({} changed)", self.files(files));
+                    errln!("{id}: reloaded ({} changed)", self.files(files));
                     reloaded.insert(id.clone());
                     let cause = [(id.clone(), format!("{id} reloaded"))];
                     affected.add(&before, &Rows::of(host), &cause);
                 }
                 Err(error) => {
                     let running = Rows::of(host).active(id);
-                    outln!("{}", cannot_reload(id, &error, running));
+                    errln!("{}", cannot_reload(id, &error, running));
                 }
             }
         }
 
         for line in affected.lines(&|id| reloaded.contains(id) || skip.contains(id)) {
-            outln!("{line}");
+            errln!("{line}");
         }
     }
 
@@ -434,7 +441,7 @@ impl Project {
         let new = match self.config(host.config()) {
             Ok(new) => new,
             Err(error) => {
-                outln!("rutis-host: reload rejected: {error}; nothing changed");
+                errln!("rutis-host: reload rejected: {error}; nothing changed");
                 return;
             }
         };
@@ -448,16 +455,16 @@ impl Project {
                         errln!("rutis-host: warning: {warning}");
                     }
                 }
-                outln!("rutis-host: reloaded {DEV_FILE} ({reloaded})");
+                errln!("rutis-host: reloaded {DEV_FILE} ({reloaded})");
                 for warning in &reloaded.warnings {
                     errln!("rutis-host: warning: {warning}");
                 }
                 for (id, change) in &changes {
                     match change {
-                        RowChange::Added => outln!("{id}: added"),
-                        RowChange::Removed => outln!("{id}: removed"),
+                        RowChange::Added => errln!("{id}: added"),
+                        RowChange::Removed => errln!("{id}: removed"),
                         RowChange::Changed => {
-                            outln!("{id}: updated (its row in {DEV_FILE} changed)")
+                            errln!("{id}: updated (its row in {DEV_FILE} changed)")
                         }
                     }
                 }
@@ -475,7 +482,7 @@ impl Project {
                     .collect();
                 let changed: HashSet<&str> = changes.iter().map(|(id, _)| id.as_str()).collect();
                 for line in Rows::of(host).restarted(&before, &causes, &|id| changed.contains(id)) {
-                    outln!("{line}");
+                    errln!("{line}");
                 }
                 // Rows that changed, of a runtime that is down: it starts
                 // again for them.
@@ -491,7 +498,7 @@ impl Project {
             }
             Err(error) => {
                 for line in rutis_host::host::rejected_lines(&error) {
-                    outln!("{line}");
+                    errln!("{line}");
                 }
             }
         }
@@ -503,6 +510,7 @@ impl Project {
     fn config(&self, running: &HostConfig) -> Result<HostConfig, String> {
         let mut config = self.config_as_read(running)?;
         config.runtimes.debug = self.debug;
+        config.runtimes.prefix_output = self.prefix_output;
         Ok(config)
     }
 
@@ -616,20 +624,20 @@ fn down_runtimes(host: &Host, plan: &[(String, Vec<PathBuf>)]) -> Vec<(String, V
 /// their code as it is then.
 async fn start_again(host: &Host, runtime: &str, why: &str) {
     if let Some(RuntimeState::Starting) = runtime_state(host, runtime) {
-        outln!("runtime {runtime}: starting; its rows start with the code as it is then ({why})");
+        errln!("runtime {runtime}: starting; its rows start with the code as it is then ({why})");
         return;
     }
     if host.restarts_by_itself(runtime) {
-        outln!(
+        errln!(
             "runtime {runtime}: down; its restart starts it again, its rows with the code as it is then ({why})"
         );
         return;
     }
-    outln!("runtime {runtime}: starting again ({why})");
+    errln!("runtime {runtime}: starting again ({why})");
     if let Err(error) = host.start_runtime_again(runtime).await {
         // Down again: its state line says why, unless it is not.
         if !matches!(runtime_state(host, runtime), Some(RuntimeState::Down(_))) {
-            outln!("runtime {runtime}: {error}");
+            errln!("runtime {runtime}: {error}");
         }
     }
 }

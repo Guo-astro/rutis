@@ -194,6 +194,38 @@ rutis-host: listeners public and private: link row mac and link row pi both acce
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时、对端节点那一边也出示这个新 token）。两行都启用时，这样的配置在 0.17 里本来就有一边连不上，改好之后才能用。
 
+## 带方法的对象传给任何语言（#687）
+
+0.17 里带方法的对象（类的实例等）只能传给 Rust；传给 Node、Bun、Python、Go、Swift、Kotlin 时这次调用失败（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`）。0.18 起它们按引用传给任何语言：对方拿到代理，方法调用的是原对象（[设计](design-object-refs-2026-10-27.md)，规则见插件 API 的[带方法的对象](guide/plugin-api.md#带方法的对象)）。什么按引用、什么复制没有变：JS 的类实例和带函数值属性的普通对象，Python 里 dataclass 以外的实例，Go 的 `rutis.Ref(v)`，Swift、Kotlin 的 `@RutisService` 实例。Rust 宿主和 Cordis 绑定收到的值不变。
+
+要改的：
+
+- **靠这个失败的代码**：以前先传对象、失败后改传数据（`catch` 里转成 dict 或普通对象再调一次）的代码，现在不会走到 `catch`：对方收到的是代理，方法都是异步调用，没有数据字段。对方要的是数据时，直接传数据。
+- **收的一方的参数类型**：Go、Swift、Kotlin 里参数是数据类型时，收到对象的调用以 `bad-argument` 失败（以前是发送方的 `bad-value`），错误写明对象要怎样收：Go 是函数字段的结构体或 `any`，Swift 是 `@RutisClient` 协议或 `Any`，Kotlin 是 `@RutisClient` 接口或 `Any?`。Rust 的 `#[rutis::service]` 参数不收对象，以 `bad-argument` 失败，改传函数。
+- **两端都要升级**：0.18 之前的运行时不收对象。0.18 的宿主要把对象转给这样的运行时时，这次调用以 `bad-value` 失败，会话继续：
+
+  ```
+  chat: warmer.warm: argument 1 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it
+  ```
+
+  直接连着旧的一端时，SDK 自己拒绝：`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`。0.17.2 的宿主不认得 0.18 运行时收对象，它下面的运行时之间传对象照旧以 0.17.2 的文字失败；升级宿主。
+
+### `undefined`
+
+`undefined` 只在作为整个参数或整个返回值时保留；在数组、对象、Map、Set 里任何一层都是 `null`（Python 收到 `None`），各语言一样。以前作为参数的数组里的 `undefined` 保留成特殊值（Python 收到一个占位值，JS 收到 `undefined`），与文档不符。比较数组元素是不是 `undefined` 的 JS 代码改为同时看 `null`（`x == null`）。
+
+### Swift
+
+- 参数或 `@RutisClient` 方法的返回值类型写 `@RutisClient` 协议（`any Cache`）时，收到对象拿到这个协议的代理；类型写 `Any` 时拿到 `Rutis.Client`（`call(_:_:as:)`、`call(_:values:as:)`）。数组、字典、事件参数里的对象经 `Any` 拿到 `Rutis.Client`；`[any Cache]` 不支持。
+- 只有写在文件顶层的 `@RutisClient` 协议能收对象；嵌在别的类型里的协议照常可以 `ctx.use`，但用作参数类型时收不了对象（`bad-argument`）。要收对象，把协议移到文件顶层。
+- `RutisProxy` 多了 `rutisClient`：代理再交出去时发出原来那个对象。自己实现 `RutisProxy` 的代码（不经 `@RutisClient`）要加上它。
+
+### Kotlin
+
+- 新类型 `arcships.rutis.RemoteObject`：类型为 `Any?` 的参数收到对象时拿到它，`call(method, vararg args)` 挂起，`callBlocking(method, vararg args)` 阻塞，`release()` 立即交还引用。这是 0.18 里插件代码为对象要用的唯一新类型（`arcships.rutis.ObjectProxy` 也是公开的，但只由 KSP 生成的代理实现，插件代码不用它，和 `ServiceHandle` 一样）。
+- 参数或 `@RutisClient` 方法的返回值类型写 `@RutisClient` 接口时，收到对象拿到 KSP 生成的代理。
+- 以前把 `Any?` 参数当作只会收到数据（`Map`、`List`、基本类型）的代码，现在还可能收到 `RemoteObject`。
+
 ## Rust 嵌入（行为变化）（#678）
 
 0.17 里嵌入 rutis 的 Rust 程序默认几乎什么都不打印：没人等的插件启动失败、loader 的行加载失败、语言运行时的进程结束，都只在没人读的返回值里。0.18 起默认的错误汇集（`Ctx::root()`、`Ctx::root_with(handle)` 装的 `default_sink()`）把它们写到标准错误，每行以插件、行或运行时的名字开头（[默认输出](guide/rust-host.md#默认输出)）：
@@ -206,7 +238,7 @@ runtime py: down (runtime process exited with exit status: 1)
 - **默认输出不再以 `[rutis]` 开头。** 等待的提示改为以插件名开头：`printer: still waiting after 10s for app::Greeting: it starts once that is provided`（0.17.2 是 `[rutis] plugin printer is still waiting …`）。rutis 自己的插件（链路、运行时等）不再报等待，提示里也不出现它们的内部名字。按这些文字匹配标准错误的脚本要改。
 - **新的错误汇集变体**：`ErrorKind::StartFailed { plugin, error }`、`ErrorKind::RuntimeDown { runtime, reason }`、`ErrorKind::NotServedByName { service }`（标了 `#[rutis::service]` 的类型被提供、而程序没链接 rutis-bridge 时，每个服务报一次）。自己装了汇集（`Ctx::root_with_sink`）的程序也会收到它们；不想要的按变体过滤掉。等插件的 `view.await` 照样收到错误，所以既等结果又用默认汇集的程序会看到同一个失败两次，要么不打印 `view.await` 的错误，要么在汇集里滤掉 `StartFailed`。
 - **要关掉**：换掉汇集，见[默认输出](guide/rust-host.md#默认输出)里的例子。
-- **rutis-host**：状态行不变，它不打印 `StartFailed`、`RuntimeDown`（状态行已经写了）。变的是：它交给默认汇集的其余错误（例如清理出错）不再以 `[rutis]` 开头；Go 运行时被强制结束后那一句 `runtime <名字>: stopping after killing it: …` 里的超时文字改为写明卡住的插件。
+- **rutis-host**：状态行的文字不变（它们改写到标准错误，见下面「`rutis-host` 的输出」一节），它不打印 `StartFailed`、`RuntimeDown`（状态行已经写了）。变的是：它交给默认汇集的其余错误（例如清理出错）不再以 `[rutis]` 开头；Go 运行时被强制结束后那一句 `runtime <名字>: stopping after killing it: …` 里的超时文字改为写明卡住的插件。
 - **同一件事可能打印几行**：插件启动失败时先报回滚中清理的错误，再报 `StartFailed`（它的错误里也有那些清理错误）；父插件因子插件失败而失败时两者各报一次；几个错误聚在一起时分几行打印。
 - **`shutdown()` 不变**，仍然不限时，等多久由宿主决定。`shutdown_with_timeout` / `dispose_with_timeout` 到时的错误改为写明还没结束的插件和清理（`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`），不再是 `fiber PluginId(1) generation 0 still Unloading after …`；`DisposeWaitError::TimedOut` 多了字段 `stuck: Vec<Stuck>`，列出全部字段解构它的代码加上 `..`。
 - `root.diagnostics()` 实现了 `Display`（一项一行，用名字，默认不列 rutis 自己的插件）；`PluginDiagnostics` 多了 `row`、`platform` 两个字段。
@@ -228,6 +260,13 @@ let report = handle.reconcile(layers, None).await?;
 ```
 
 `rutis-host` 不受影响：它仍然在所有运行时起来、每一行都装载过之后才算启动。
+
+## `rutis-host` 的输出：状态行写到标准错误，`dev` 里插件的行带行名（#678）
+
+- **`run` 和 `dev` 的状态行写到标准错误**（以前写到标准输出）：`weather: running`、`runtime py: down (…)`、`rutis-host: listening on …`、`rutis-host: reloaded …`、`dev` 的 `reloaded`、`building` 等。在 Go、Swift 项目里不带参数运行的 `rutis-host check` 先构建项目，它的 `building`、`built in` 两行也写到标准错误；`check` 对每一行的描述仍在标准输出。插件的输出照旧按它写的流。从 `rutis-host` 的标准输出里读状态行的脚本改为读标准错误（或 `2>&1`）。
+- **`dev` 里插件写的每一行前面带上行名**：`[weather] fetching forecast for Berlin`；Go、Swift 的是运行时名（`[go-weather] `）。按整行匹配插件输出的脚本或测试，在 `dev` 下加 `--no-prefix-output`，或者去掉前缀再比。`run` 默认不变，`--prefix-output` 打开。
+
+详见 [rutis-host 指南的输出](guide/rutis-host.md#输出)。
 
 ## 配置在 `apply` 之前补默认值并校验（#669）
 
