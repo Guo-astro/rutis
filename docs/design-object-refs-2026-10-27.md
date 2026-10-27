@@ -2,7 +2,7 @@
 
 [English](design-object-refs-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订三次。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
+状态：定稿，未实现。日期：2026-10-27（同日修订四次。第四次：同步调用的等待环、持有方进程退出时的释放。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
 Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https://github.com/arcships/rutis/issues/675) 拆出，属于 [#663](https://github.com/arcships/rutis/issues/663)）。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」；[设计哲学](design-philosophy.md) §七；[值类型](design-value-types-2026-10-15.md)（V0 开发者无感、V4 能力协商、V10 `undefined`）；[插件定义](design-plugin-values-2026-10-25.md)（加一种引用的先例）；[诊断](design-diagnostics-2026-10-26.md)（错误码 `bad-value`、`bad-argument`、`no-method`、`peer-gone`，§十）。
 
@@ -79,6 +79,7 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 - **不跟行走**：交出对象的行卸载后，对象照常存在、照常可以调用，和同一个进程里 Cordis 的对象一样。要在卸载时停用，由作者在清理里自己处理（和函数相同）。插件定义跟行走，是因为它会被挂出副本；对象没有这回事。
 - **空闲停止**：按需启动的运行时（Go、Swift）在最后一行卸载 `idle` 秒后停下（已有）。别处还持有它的对象，**不**让它保持运行：持有引用的一方不是行，宿主不按引用计算进程的生死，和函数引用一样。停下之后对这些对象的调用以 `peer-gone` 失败，信息写明运行时因空闲停下。要一直可用，让交出它的行保持加载，或者把运行时设成 `eager`。
 - **进程不在**：发出方的运行时退出、断开或空闲停止后，对代理的调用失败，错误码 `peer-gone`；进行中的调用也是。只有这次调用失败，代理之后的调用都同样失败。不会自动换到新进程（新进程里没有这个对象）。
+- **持有方进程退出**：持有代理的一方没有发 `Release` 就退出时，发出方照样放掉它交给那个会话的对象，不会一直留在内存里。这和函数引用现在的做法相同，不用新代码：会话关闭时，宿主清空这个会话的导出与导入（`Connection::close`），其中的转发对象随之放掉，向源头的会话发 `Release`；各 SDK 的会话关闭时也清空自己的导出（Node、Bun、Python、Go、Swift、Kotlin 都是这样），直接相连的 endpoint 会话由此释放。
 
 ## 六、线上格式与能力
 
@@ -93,6 +94,7 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
   - 0.18 的运行时在 0.17.2 宿主下：宿主认不出它们的 `objects`，在两个运行时之间转发对象时按 0.17.2 的文字拒绝（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`），只有这次调用失败，会话继续。0.18 的运行时把对象交给 0.17 宿主自己的 Rust 代码（`ObjectRef`，`live_objects.rs`）照常可用。
   - 0.18 的运行时与 0.17 的运行时直接经 endpoint 会话相连：对方没有声明 `objects`，发出方用自己已有的文字拒绝（§八），只有这次调用失败。
   - 不升协议版本，不加新能力名。
+- **同步调用的等待环**：Go 结构体的阻塞函数字段以带 `sync` 的 `call` 帧调用对象的方法。宿主转发同步调用前的等待环检查（`bridge/sync-wait-cycle-refused`，#228 / #261）已经覆盖它：转发对象调用走的是同一个 `request_sync` → `send` → `waits::forward`，进来的带 `sync` 的帧不论种类都记入等待图。所以两个运行时经对象互相同步调用时，这次调用以 `SyncWaitCycle` 失败，不会卡死。现在的测试只用服务和函数，O-1 补一条经对象的测试。
 
 ## 七、`undefined`
 
@@ -192,6 +194,8 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | 通过方法调用取消（调用方放弃，对面收到取消） | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
 | 没有的方法：调用时 `no-method`，只有这次调用失败 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 接收方放掉代理：发出方的对象被释放 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
+| 持有代理的进程被杀：发出方的对象被释放 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
+| 两个运行时经对象互相同步调用：`SyncWaitCycle`，不卡死 | — | — | — | ✓（阻塞函数字段） | — | — | ✓ |
 | 发出方进程被杀：调用 `peer-gone`，会话和其他行不受影响 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 空闲停止：按需运行时停下后，它的对象以 `peer-gone` 失败，写明因空闲停下 | — | — | — | ✓ | ✓ | — | ✓ |
 | 对方没有声明 `objects`：调用失败，会话继续 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -221,7 +225,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 
 | 阶段 | 内容 |
 | --- | --- |
-| O-1 | 规范与宿主：协议设计里的 `objects`、`undefined` 规则；`COMPAT_DECLARED` 加 `objects`；转发拒绝、`peer-gone`（含空闲停止）、`#[rutis::service]` 参数收到对象的文字与码（码表随 #677）；Rust 编解码里 `undefined` 在容器中写读为 `null`；共用的一致性期望文件与 Rust 列；保证条目 |
+| O-1 | 规范与宿主：协议设计里的 `objects`、`undefined` 规则；`COMPAT_DECLARED` 加 `objects`；转发拒绝、`peer-gone`（含空闲停止）、`#[rutis::service]` 参数收到对象的文字与码（码表随 #677）；Rust 编解码里 `undefined` 在容器中写读为 `null`；共用的一致性期望文件与 Rust 列，含经对象的等待环、持有方被杀后的释放两条测试；保证条目 |
 | O-2 | Node、Bun：声明 `objects`；收对象的代理；`no-method` 的文字与 `data`；endpoint 会话上拒绝时的升级提示；测试工具严格模式；`undefined`；指南 |
 | O-3 | Python、Go：声明 `objects`；Python 的代理；Go 的函数字段结构体参数与 `any` 收到 `*rutis.Service`，调用对象时不查方法表，`*rutis.Service` 经 `toPeer` 的钩子原样交出；测试工具；`undefined`；指南 |
 | O-4 | Swift、Kotlin：声明 `objects`；`@RutisClient` 类型的参数与返回值收对象（Swift 用 `rutisObjectProxy` 重载，`Rutis/API/Macros.swift:10` 的宏声明改为 `@attached(peer, names: suffixed(Proxy), named(rutisObjectProxy))`）、Swift `Any` 收到 `Rutis.Client`、Kotlin `RemoteObject`；客户端代理再交出时发原来的引用（`rutisClient`、`Native.fromNative`）；调用对象时不查方法表；测试工具；指南；《迁移到 0.18》与插件 API 指南的最终改写 |
