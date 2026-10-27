@@ -64,6 +64,8 @@ impl Connection {
             executor,
             business: true,
             origin,
+            // Already in this session's terms.
+            chain: None,
             body: Body::Relay(import.clone()),
         });
         let mut exports = self.0.exports.lock().unwrap();
