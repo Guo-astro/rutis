@@ -2,7 +2,7 @@
 
 [English](design-object-refs-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订四次。第四次：同步调用的等待环、持有方进程退出时的释放。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
+状态：定稿，实施中（O-1 实施时改正：§八 里发出值失败的文字按诊断设计已有的写法 `warmer.warm: argument 1 cannot be sent: …`，不是 `argument 1 of warmer.warm: …`；§十 的期望文件在 `crates/rutis-bridge/src/runtime/testing/objects.expected.json`）。日期：2026-10-27（同日修订四次。第四次：同步调用的等待环、持有方进程退出时的释放。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
 Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https://github.com/arcships/rutis/issues/675) 拆出，属于 [#663](https://github.com/arcships/rutis/issues/663)）。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」；[设计哲学](design-philosophy.md) §七；[值类型](design-value-types-2026-10-15.md)（V0 开发者无感、V4 能力协商、V10 `undefined`）；[插件定义](design-plugin-values-2026-10-25.md)（加一种引用的先例）；[诊断](design-diagnostics-2026-10-26.md)（错误码 `bad-value`、`bad-argument`、`no-method`、`peer-gone`，§十）。
 
@@ -91,7 +91,7 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 - **与 0.17 混用**：
   - 0.18 宿主下，对象要转发给 0.17 的运行时：它没有声明 `objects`，宿主拒绝，这次调用以 `bad-value` 失败，会话继续。0.17 的一端从不会收到对象。
   - 0.18 宿主下，0.17 的运行时发出的对象转发给 0.18 的运行时：现在可用（过去失败）。
-  - 0.18 的运行时在 0.17.2 宿主下：宿主认不出它们的 `objects`，在两个运行时之间转发对象时按 0.17.2 的文字拒绝（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`），只有这次调用失败，会话继续。0.18 的运行时把对象交给 0.17 宿主自己的 Rust 代码（`ObjectRef`，`live_objects.rs`）照常可用。
+  - 0.18 的运行时在 0.17.2 宿主下：宿主认不出它们的 `objects`，在两个运行时之间转发对象时按 0.17.2 的文字拒绝（`warmer.warm: argument 1 cannot be sent: an object with methods cannot cross to py; pass plain data or a function instead`），只有这次调用失败，会话继续。0.18 的运行时把对象交给 0.17 宿主自己的 Rust 代码（`ObjectRef`，`live_objects.rs`）照常可用。
   - 0.18 的运行时与 0.17 的运行时直接经 endpoint 会话相连：对方没有声明 `objects`，发出方用自己已有的文字拒绝（§八），只有这次调用失败。
   - 不升协议版本，不加新能力名。
 - **同步调用的等待环**：Go 结构体的阻塞函数字段以带 `sync` 的 `call` 帧调用对象的方法。宿主转发同步调用前的等待环检查（`bridge/sync-wait-cycle-refused`，#228 / #261）已经覆盖它：转发对象调用走的是同一个 `request_sync` → `send` → `waits::forward`，进来的带 `sync` 的帧不论种类都记入等待图。所以两个运行时经对象互相同步调用时，这次调用以 `SyncWaitCycle` 失败，不会卡死。现在的测试只用服务和函数，O-1 补一条经对象的测试。
@@ -159,11 +159,11 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | JS 代理上把数据字段当方法读 | `… Cache has no method size (size is a field; objects passed by reference expose only their methods)` | 对象所在的一端 | `no-method` |
 | 对方进程已经退出 | `chat: a call on an object from py failed: runtime py exited` | 宿主（本机运行时的对方总是宿主；经宿主转发的调用也是） | `peer-gone`，`data`：`{runtime, reason}` |
 | 对方因空闲停下 | `chat: a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle` | 宿主 | `peer-gone` |
-| 0.18 宿主转发给 0.17 的运行时 | `chat: argument 1 of warmer.warm: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it` | 宿主 | `bad-value` |
-| 0.17.2 宿主下的 0.18 运行时之间 | 0.17.2 的文字：`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead` | 0.17.2 宿主 | 无（0.17 没有码） |
-| 0.18 运行时经 endpoint 会话直接发给 0.17 运行时 | 发出方已有的文字，加升级提示：`argument 1 of warmer.warm: an object with methods (Cache) cannot cross to py; pass plain data or a function instead, or upgrade py to rutis 0.18` | 发出方 | `bad-value` |
-| Swift 没标注的类 | `argument 1 of warmer.warm: a Cache cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it` | 发出方 | `bad-value` |
-| Kotlin 没标注的类 | `argument 1 of warmer.warm: a Cache cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it` | 发出方 | `bad-value` |
+| 0.18 宿主转发给 0.17 的运行时 | `chat: warmer.warm: argument 1 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it` | 宿主 | `bad-value` |
+| 0.17.2 宿主下的 0.18 运行时之间 | 0.17.2 的文字：`warmer.warm: argument 1 cannot be sent: an object with methods cannot cross to py; pass plain data or a function instead` | 0.17.2 宿主 | 无（0.17 没有码） |
+| 0.18 运行时经 endpoint 会话直接发给 0.17 运行时 | 发出方已有的文字，加升级提示：`warmer.warm: argument 1 cannot be sent: an object with methods (Cache) cannot cross to py; pass plain data or a function instead, or upgrade py to rutis 0.18` | 发出方 | `bad-value` |
+| Swift 没标注的类 | `warmer.warm: argument 1 cannot be sent: a Cache cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it` | 发出方 | `bad-value` |
+| Kotlin 没标注的类 | `warmer.warm: argument 1 cannot be sent: a Cache cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it` | 发出方 | `bad-value` |
 | Go 参数类型收不了对象（不是结构体，或结构体有数据字段） | `chat: warmer.warm: argument 1 should be a string, got an object`；`chat: warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)` | 收的一方 | `bad-argument` |
 | Swift / Kotlin 参数类型收不了对象 | `chat: warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a @RutisClient protocol or Any)`（Kotlin：`interface or Any?`） | 收的一方 | `bad-argument` |
 | 对象到了 Rust 服务（`#[rutis::service]`）的参数 | `chat: store.put: argument 1 should be a Config, got an object from py; store takes data and functions, so pass a function for each method` | 宿主 | `bad-argument` |
@@ -180,7 +180,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 
 ## 十、一致性用例
 
-一份共用的期望文件（和事件、值类型的一样），每种语言一列，测试工具的严格模式对同一份比对。
+一份共用的期望文件（和事件、值类型的一样），每种语言一列，测试工具的严格模式对同一份比对：`crates/rutis-bridge/src/runtime/testing/objects.expected.json`。一个测试带标记 `objects-case(<语言>): <用例>` 就算那一列跑了这个用例；`crates/rutis-bridge/tests/objects_expected.rs` 检查已实施的语言（文件里的 `enforced`）每个 ✓ 与"转发"格都有测试，每个阶段把它的语言加进去。
 
 | 用例 | Node | Bun | Python | Go | Swift | Kotlin | Rust |
 | --- | --- | --- | --- | --- | --- | --- | --- |

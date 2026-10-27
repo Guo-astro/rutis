@@ -2159,6 +2159,11 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
+                    // Calls on its objects held elsewhere say why it went
+                    // (#687 §五): the references do not keep it running.
+                    if let RuntimeState::Ready(process) = previous.handle.state() {
+                        process.connection().ending("stopped because it was idle");
+                    }
                     stop(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);
