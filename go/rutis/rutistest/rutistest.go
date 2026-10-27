@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -44,6 +45,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/internal/config"
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/events"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
@@ -174,6 +176,9 @@ type harness struct {
 	dispatches  int64
 	reported    []string
 	closed      bool
+	// The extra-key warnings written, by row, config and warning: each
+	// once, as the host's loader warns once per row and config value.
+	warned map[string]bool
 	// Serializes events.elsewhere, which is sent without mu.
 	pushing sync.Mutex
 }
@@ -333,10 +338,89 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"announce": true, "runtime": h.runtime}}, false); err != nil {
 		t.Fatalf("rutistest: mount: %v", err)
 	}
-	loaded := h.load(config, opts)
+	// Registered first: the runtime ends with the test also when the
+	// first row fails to load.
 	t.Cleanup(h.close)
-	return loaded
+	return h.load(config, opts)
 }
+
+// warn writes the extra keys of `given` against `schema` to standard
+// error, `<row>: config: <problem>`, each once per row and config.
+func (h *harness) warn(row string, schema json.RawMessage, given any) {
+	if len(schema) == 0 || string(schema) == "null" {
+		return
+	}
+	checking, err := config.Decode(schema)
+	if err != nil {
+		return
+	}
+	var value any
+	switch x := given.(type) {
+	case json.RawMessage:
+		if string(x) != "null" {
+			value, err = config.Decode(x)
+		}
+	default:
+		value, err = config.Normalize(x)
+	}
+	if err != nil {
+		return
+	}
+	text, _ := json.Marshal(value)
+	for _, warning := range config.Check(checking, value, true).Warnings {
+		key := row + "\x00" + string(text) + "\x00" + warning.Message
+		h.mu.Lock()
+		if h.warned == nil {
+			h.warned = map[string]bool{}
+		}
+		seen := h.warned[key]
+		h.warned[key] = true
+		h.mu.Unlock()
+		if !seen {
+			fmt.Fprintf(os.Stderr, "%s: config: %s\n", row, warning.Message)
+		}
+	}
+}
+
+// TryLoad is Load giving back why the plugin did not load instead of
+// failing the test: a config that does not match the plugin's schema is a
+// *rutis.RemoteError named BindingError with code `bad-config`, its
+// message a line `config: <problem>` per problem (config schema design
+// §9), as the runtime fails it under a host. Other mistakes of the test
+// (a service the plugin injects not given, say) still fail the test.
+func TryLoad(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) (loaded *Loaded, err error) {
+	t.Helper()
+	catcher := &loadCatcher{TB: t, active: true}
+	defer func() {
+		catcher.active = false
+		raised := recover()
+		if raised == nil {
+			return
+		}
+		if caught, ok := raised.(loadFailed); ok && caught.catcher == catcher {
+			loaded, err = nil, caught.err
+			return
+		}
+		panic(raised)
+	}()
+	return Load(catcher, plugin, config, services, opts...), nil
+}
+
+// loadCatcher is the test as TryLoad lends it to Load: a failure to load
+// the row (rows.load refused) unwinds back to TryLoad with its error.
+type loadCatcher struct {
+	testing.TB
+	// Only while TryLoad loads: a later Update or Load of the row fails
+	// the test as usual.
+	active bool
+}
+
+type loadFailed struct {
+	catcher *loadCatcher
+	err     error
+}
+
+func (c *loadCatcher) Helper() {}
 
 // servedName is what a plugin without a name is served under.
 const servedName = "rutistest-plugin"
@@ -588,6 +672,13 @@ func (h *harness) start(l *Loaded, config any) {
 	if configValue == nil {
 		configValue = json.RawMessage("null")
 	}
+	// Extra keys warned about on standard error, as the host's loader
+	// would (config schema design §3.2): the runtime checks the config and
+	// reports its errors itself. Not for a copy of a definition (its config
+	// is the plugin's code's, not a person's).
+	if !l.copy {
+		h.warn(l.row, l.declared.Config, configValue)
+	}
 	scope := make([]any, len(l.scope))
 	for i, s := range l.scope {
 		scope[i] = map[string]any{"id": s.ID, "group": s.Group}
@@ -602,6 +693,12 @@ func (h *harness) start(l *Loaded, config any) {
 		leased = append(leased, lease.name)
 	}
 	if _, err := h.session.Call(ctx, "", "rows.load", []any{l.row, l.entry, configValue, isolate, []any{}, exports, placed}, false); err != nil {
+		if catcher, ok := t.(*loadCatcher); ok && catcher.active {
+			h.forgetRow(l.row)
+			h.forgetOwn(l.row)
+			h.withdraw(t, l.row, leased)
+			panic(loadFailed{catcher, err})
+		}
 		failed("rutistest: load %s: %v", l.row, err)
 	}
 }
@@ -680,6 +777,8 @@ type declaration struct {
 	Name     *string                      `json:"name"`
 	Inject   []string                     `json:"inject"`
 	Provides map[string]map[string]string `json:"provides"`
+	// The JSON Schema of its config (null: none).
+	Config json.RawMessage `json:"config"`
 }
 
 func describe(t testing.TB, plugin *rutis.Definition, entry string) declaration {
