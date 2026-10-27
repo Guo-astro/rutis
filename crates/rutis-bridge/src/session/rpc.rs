@@ -302,8 +302,12 @@ impl Reference {
             ReferenceInner::Local(object) => object.call(args),
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
+                let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection.request_sync(Operation::Call(import.id, None, args))
+                    connection.request_sync_within(
+                        Operation::Call(import.id, None, args),
+                        deadline.as_ref(),
+                    )
                 })
             }
             ReferenceInner::Home(_) => Err(not_callable()),
@@ -314,11 +318,11 @@ impl Reference {
             ReferenceInner::Local(object) => object.call(args),
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                forwarded_async(
-                    &connection,
-                    connection.request_async(Operation::Call(import.id, None, args)),
-                )
-                .await
+                let call = connection.request_async(Operation::Call(import.id, None, args));
+                match self.deadline(&connection) {
+                    Some(deadline) => forwarded_async(&connection, deadline.bound(call)).await,
+                    None => forwarded_async(&connection, call).await,
+                }
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -372,11 +376,12 @@ impl Reference {
             ReferenceInner::Local(object) => object.wait(false, current_path()).await,
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                forwarded_async(
-                    &connection,
-                    connection.request_async(Operation::Await(import.id, import.origin.clone())),
-                )
-                .await
+                let call =
+                    connection.request_async(Operation::Await(import.id, import.origin.clone()));
+                match self.deadline(&connection) {
+                    Some(deadline) => forwarded_async(&connection, deadline.bound(call)).await,
+                    None => forwarded_async(&connection, call).await,
+                }
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -385,8 +390,12 @@ impl Reference {
         match &self.0 {
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
+                let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection.request_sync(Operation::Await(import.id, import.origin.clone()))
+                    connection.request_sync_within(
+                        Operation::Await(import.id, import.origin.clone()),
+                        deadline.as_ref(),
+                    )
                 })
             }
             ReferenceInner::Local(_) => {
@@ -934,6 +943,9 @@ struct Import {
     /// may be gone by the time a call fails.
     source: String,
     end: Arc<std::sync::OnceLock<String>>,
+    /// For a future a limited call returned: when it must have settled
+    /// (`limits`).
+    deadline: std::sync::OnceLock<limits::Deadline>,
 }
 impl Import {
     fn connection(&self) -> Result<Connection, Error> {
@@ -1333,6 +1345,9 @@ struct SessionState {
     /// The far end's `events.*` operations, run one after another in
     /// arrival order by one task, never on the reader ([`Ordered`]).
     ordered: Mutex<Ordered>,
+    /// The host's limit on calls into the far end (a runtime's plugin
+    /// code), if it set one (`limits`).
+    limit: std::sync::OnceLock<Arc<limits::CallLimit>>,
 }
 
 /// The event operations of a session waiting for their turn (events
@@ -1444,6 +1459,7 @@ impl Connection {
                 changed: Notify::new(),
             }),
             ordered: Mutex::default(),
+            limit: std::sync::OnceLock::new(),
         }));
         // Greet before reading (#239). A side that finds the far end's
         // greeting incompatible closes the channel; had it not greeted yet,
@@ -2328,6 +2344,7 @@ impl Connection {
                             origin,
                             source: self.far_name(),
                             end: self.0.end.clone(),
+                            deadline: std::sync::OnceLock::new(),
                         });
                         imports.insert(id, Arc::downgrade(&import));
                         drop(imports);
@@ -3169,6 +3186,7 @@ fn ended(label: &str, error: ChannelError) -> Error {
 }
 
 pub(crate) mod crossing;
+pub(crate) mod limits;
 mod relay;
 pub(crate) mod waits;
 use relay::Relayed;
