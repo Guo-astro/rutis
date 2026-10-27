@@ -127,7 +127,7 @@ class RemoteError(Exception):
         return f"{self.name}: {self.message}"
 
 
-def _code_and_data(graph: Any) -> tuple:
+def _code_and_data(graph: Any) -> tuple[str | None, Any]:
     """The `code` and `data` of the error a graph's root refers to."""
     try:
         nodes = graph["nodes"]

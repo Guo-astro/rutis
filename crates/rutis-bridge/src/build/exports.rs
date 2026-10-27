@@ -39,7 +39,9 @@ type Result<T> = std::result::Result<T, String>;
 #[derive(Default)]
 pub struct Exports {
     declared: Vec<(String, String)>,
+    declared_python: Vec<(String, String)>,
     typescript: Option<PathBuf>,
+    python: Option<PathBuf>,
     contract: Option<PathBuf>,
 }
 
@@ -58,11 +60,32 @@ impl Exports {
         self
     }
 
+    /// Declare the Python type of a type declared with
+    /// [`Exports::declared`], written as given into the Python module
+    /// (which imports `typing` and `rutis`): for example
+    /// `.declared_python("notes::Text", "str")`. Without it the type is
+    /// `typing.Any` in Python, with a warning.
+    pub fn declared_python(mut self, path: &str, python: &str) -> Self {
+        self.declared_python
+            .push((path.to_owned(), python.to_owned()));
+        self
+    }
+
     /// Write the TypeScript declarations to `path` (relative to the
     /// package's `Cargo.toml`), where the rows' TypeScript finds them. It is
     /// written only when it changes.
     pub fn typescript(mut self, path: impl AsRef<Path>) -> Self {
         self.typescript = Some(path.as_ref().to_owned());
+        self
+    }
+
+    /// Write the Python types to `path` (relative to the package's
+    /// `Cargo.toml`): a module for Python 3.10 and later, where each service
+    /// is a `typing.Protocol` and each struct a `typing.TypedDict`, for
+    /// `notes: Notes = ctx.use("notes")`. It is written only when it
+    /// changes.
+    pub fn python(mut self, path: impl AsRef<Path>) -> Self {
+        self.python = Some(path.as_ref().to_owned());
         self
     }
 
@@ -77,13 +100,15 @@ impl Exports {
         self
     }
 
-    /// Write the files named with [`Exports::typescript`] and
-    /// [`Exports::contract`], and have Cargo run the build script again
+    /// Write the files named with [`Exports::typescript`],
+    /// [`Exports::python`] and [`Exports::contract`], and have Cargo run the
+    /// build script again
     /// when a source it read changes.
     pub fn generate(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        if self.typescript.is_none() && self.contract.is_none() {
+        if self.typescript.is_none() && self.python.is_none() && self.contract.is_none() {
             return Err(
-                "nothing to generate: name a file with .typescript(path) or .contract(path)".into(),
+                "nothing to generate: name a file with .typescript(path), .python(path) or .contract(path)"
+                    .into(),
             );
         }
         println!("cargo:rerun-if-changed=build.rs");
@@ -118,8 +143,9 @@ impl Exports {
     }
 
     /// What `rutis-host types` does: generate for the crate in
-    /// `crate_dir`, write the files named with [`Exports::typescript`] and
-    /// [`Exports::contract`] (relative to the current directory), and
+    /// `crate_dir`, write the files named with [`Exports::typescript`],
+    /// [`Exports::python`] and [`Exports::contract`] (relative to the
+    /// current directory), and
     /// return the TypeScript declarations.
     pub fn write(
         self,
@@ -142,6 +168,7 @@ impl Exports {
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let files = [
             (&self.typescript, &generated.typescript),
+            (&self.python, &generated.python),
             (&self.contract, &generated.contract),
         ];
         for (path, text) in files {
@@ -166,6 +193,8 @@ impl Exports {
         let mut generator = Generator {
             sources,
             declared: HashMap::new(),
+            python: self.python.is_some(),
+            untyped: HashSet::new(),
             named: HashMap::new(),
             names: HashSet::new(),
             declarations: Vec::new(),
@@ -173,6 +202,10 @@ impl Exports {
             warnings: Vec::new(),
             cyclic: HashMap::new(),
             contract_types: BTreeMap::new(),
+            py_declarations: Vec::new(),
+            py_names: HashSet::new(),
+            py_classes: HashSet::new(),
+            py_thrown: BTreeMap::new(),
         };
         for (path, typescript) in &self.declared {
             let parsed: syn::Path =
@@ -181,7 +214,27 @@ impl Exports {
                 .sources
                 .resolve(root, &parsed)?
                 .ok_or_else(|| format!("declared type {path} is not found"))?;
-            generator.declared.insert(res, typescript.clone());
+            let python = self
+                .declared_python
+                .iter()
+                .rev()
+                .find(|(declared, _)| declared == path)
+                .map(|(_, python)| python.clone());
+            generator.declared.insert(
+                res,
+                Declared {
+                    path: path.clone(),
+                    typescript: typescript.clone(),
+                    python,
+                },
+            );
+        }
+        for (path, _) in &self.declared_python {
+            if !self.declared.iter().any(|(declared, _)| declared == path) {
+                return Err(format!(
+                    "declared_python(\"{path}\", ..) needs its TypeScript too: add .declared(\"{path}\", ..)"
+                ));
+            }
         }
         let mut services_ts = String::new();
         let mut services_contract = serde_json::Map::new();
@@ -212,6 +265,30 @@ impl Exports {
         typescript.push_str(&format!(
             "\n/** The exported services by name: `ctx.use<Services['name']>('name')`. */\nexport interface Services {{\n{services_ts}}}\n"
         ));
+        let mut body = String::new();
+        for declaration in generator
+            .py_declarations
+            .iter()
+            .chain(generator.py_thrown.values())
+        {
+            body.push_str("\n\n");
+            body.push_str(declaration);
+        }
+        let mut imports = String::new();
+        for module in ["datetime", "decimal", "typing", "uuid"] {
+            if body.contains(&format!("{module}.")) {
+                imports.push_str(&format!("import {module}\n"));
+            }
+        }
+        let python = format!(
+            "# Generated from the service declarations; do not edit.\n\n\
+             from __future__ import annotations\n\n\
+             {imports}\n\
+             import rutis\n\n\
+             #: What a method's `Err(e)` raises: named after e's type, `code` its variant,\n\
+             #: `message` its Display, `data` its serde value.\n\
+             RustError = rutis.RemoteError\n{body}"
+        );
         let contract = serde_json::json!({
             "version": CONTRACT_VERSION,
             "services": services_contract,
@@ -224,6 +301,7 @@ impl Exports {
         warnings.extend(generator.warnings);
         Ok(Generated {
             typescript,
+            python,
             contract,
             warnings,
         })
@@ -233,6 +311,8 @@ impl Exports {
 #[derive(Debug)]
 pub(super) struct Generated {
     pub(super) typescript: String,
+    /// The Python module.
+    pub(super) python: String,
     /// The contract description, as JSON.
     pub(super) contract: String,
     pub(super) warnings: Vec<String>,
@@ -266,9 +346,9 @@ enum Ty {
     Param(String),
     /// A plugin definition.
     Definition,
-    /// Only its TypeScript is known: a type the application declared, or
-    /// one whose form the contract does not describe.
-    Ts(String),
+    /// Its TypeScript and its Python are given: a type the application
+    /// declared, or one whose form the contract does not describe.
+    Ts(String, String),
 }
 
 impl Ty {
@@ -288,7 +368,7 @@ impl Ty {
                     let text = inner.ts();
                     if matches!(
                         inner.as_ref(),
-                        Ty::Ts(_) | Ty::Definition | Ty::Named(..) | Ty::Param(_)
+                        Ty::Ts(..) | Ty::Definition | Ty::Named(..) | Ty::Param(_)
                     ) && text.contains(['|', '&', '='])
                     {
                         format!("({text})[]")
@@ -309,7 +389,35 @@ impl Ty {
             ),
             Ty::Param(name) => name.clone(),
             Ty::Definition => DEFINITION_TS.into(),
-            Ty::Ts(text) => text.clone(),
+            Ty::Ts(text, _) => text.clone(),
+        }
+    }
+
+    /// Its Python type annotation (Python 3.10), in a module that imports
+    /// `typing` and `rutis`.
+    fn py(&self) -> String {
+        match self {
+            Ty::Unit => "None".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Int(_) => "int".into(),
+            Ty::Float => "float".into(),
+            Ty::Str => "str".into(),
+            Ty::Json | Ty::Param(_) => "typing.Any".into(),
+            Ty::Option(inner) => match inner.as_ref() {
+                Ty::Unit | Ty::Option(_) => inner.py(),
+                _ => format!("{} | None", inner.py()),
+            },
+            Ty::Array(inner) => format!("list[{}]", inner.py()),
+            Ty::Tuple(items) => format!(
+                "tuple[{}]",
+                items.iter().map(Ty::py).collect::<Vec<_>>().join(", ")
+            ),
+            Ty::Record(value) => format!("dict[str, {}]", value.py()),
+            // Generic declarations are not generic in Python 3.10's
+            // TypedDict: their parameters are Any.
+            Ty::Named(name, _) => name.clone(),
+            Ty::Definition => "rutis.Plugin".into(),
+            Ty::Ts(_, py) => py.clone(),
         }
     }
 
@@ -348,7 +456,7 @@ impl Ty {
             Ty::Record(value) => json!({ "kind": "map", "values": value.contract() }),
             Ty::Named(name, args) if args.is_empty() => json!({ "kind": "ref", "name": name }),
             Ty::Definition => json!({ "kind": "plugin" }),
-            Ty::Json | Ty::Named(..) | Ty::Param(_) | Ty::Ts(_) => json!({ "kind": "any" }),
+            Ty::Json | Ty::Named(..) | Ty::Param(_) | Ty::Ts(..) => json!({ "kind": "any" }),
         }
     }
 }
@@ -397,6 +505,20 @@ impl Scope {
     }
 }
 
+/// A type the application declares (`Exports::declared`), by its path.
+struct Declared {
+    path: String,
+    typescript: String,
+    python: Option<String>,
+}
+
+/// A method of a service, as each output writes it.
+struct Method {
+    typescript: String,
+    contract: serde_json::Value,
+    python: String,
+}
+
 /// A parameter that takes a function.
 struct Callback {
     args: Vec<Ty>,
@@ -405,7 +527,12 @@ struct Callback {
 
 struct Generator<'a> {
     sources: &'a mut Sources,
-    declared: HashMap<Res, String>,
+    declared: HashMap<Res, Declared>,
+    /// Whether the Python module is written: a declared type without a
+    /// Python type is then a warning.
+    python: bool,
+    /// The declared types already warned of having no Python type.
+    untyped: HashSet<String>,
     /// Declared items and their TypeScript names.
     named: HashMap<(usize, usize), String>,
     names: HashSet<String>,
@@ -417,6 +544,14 @@ struct Generator<'a> {
     cyclic: HashMap<(usize, usize), bool>,
     /// The contract descriptions of the declared types, by name.
     contract_types: BTreeMap<String, serde_json::Value>,
+    /// The Python declarations, in order.
+    py_declarations: Vec<String>,
+    /// The names of the Python module's helper declarations.
+    py_names: HashSet<String>,
+    /// The `TypedDict` classes of the Python module.
+    py_classes: HashSet<String>,
+    /// The Python `<Name>Thrown` declarations, by error type.
+    py_thrown: BTreeMap<String, String>,
 }
 
 /// `rutis::Error`, `rutis::host::ErrorKind` (or 0.16's `rutis::CordisError`),
@@ -563,8 +698,20 @@ impl Generator<'_> {
                 let res = self
                     .resolve_type(scope, &path.path)?
                     .ok_or_else(|| format!("`{}` is not found", path.to_token_stream()))?;
-                if let Some(typescript) = self.declared.get(&res) {
-                    return Ok(Ty::Ts(typescript.clone()));
+                if let Some(declared) = self.declared.get(&res) {
+                    let py = match &declared.python {
+                        Some(py) => py.clone(),
+                        None => {
+                            if self.python && self.untyped.insert(declared.path.clone()) {
+                                self.warnings.push(format!(
+                                    "{} has no Python type: declare it with .declared_python (written as Any)",
+                                    declared.path
+                                ));
+                            }
+                            "typing.Any".into()
+                        }
+                    };
+                    return Ok(Ty::Ts(declared.typescript.clone(), py));
                 }
                 let args = Self::type_args(segment);
                 self.named_or_known(scope, &res, &args, ty)
@@ -664,11 +811,15 @@ impl Generator<'_> {
             return Ok(Ty::Record(Box::new(self.arg(scope, args, 1, ty)?)));
         }
         if path_is(path, &[&["std", "time", "Duration"]]) {
-            return Ok(Ty::Ts("{ secs: number | bigint; nanos: number }".into()));
+            return Ok(Ty::Ts(
+                "{ secs: number | bigint; nanos: number }".into(),
+                "dict[str, int]".into(),
+            ));
         }
         if path_is(path, &[&["std", "time", "SystemTime"]]) {
             return Ok(Ty::Ts(
                 "{ secs_since_epoch: number | bigint; nanos_since_epoch: number }".into(),
+                "dict[str, int]".into(),
             ));
         }
         if is_rutis_definition(path) {
@@ -694,19 +845,29 @@ impl Generator<'_> {
         if krate == "rutis_bridge" {
             // The tagged values (#308), as rutis_bridge::session names them.
             return match last {
-                "Instant" => Ok(Ty::Ts("Date".into())),
-                "BigInt" => Ok(Ty::Ts("bigint".into())),
-                "Bytes" => Ok(Ty::Ts("Uint8Array".into())),
-                "DateTime" | "Date" | "TimeOfDay" | "Decimal" | "Uuid" => Ok(Ty::Str),
+                "Instant" => Ok(Ty::Ts("Date".into(), "datetime.datetime".into())),
+                "BigInt" => Ok(Ty::Ts("bigint".into(), "int".into())),
+                "Bytes" => Ok(Ty::Ts("Uint8Array".into(), "bytes".into())),
+                "DateTime" => Ok(Ty::Ts("string".into(), "datetime.datetime".into())),
+                "Date" => Ok(Ty::Ts("string".into(), "datetime.date".into())),
+                "TimeOfDay" => Ok(Ty::Ts("string".into(), "datetime.time".into())),
+                "Decimal" => Ok(Ty::Ts("string".into(), "decimal.Decimal".into())),
+                "Uuid" => Ok(Ty::Ts("string".into(), "uuid.UUID".into())),
                 "ValueMap" => {
                     let (key, value) =
                         (self.arg(scope, args, 0, ty)?, self.arg(scope, args, 1, ty)?);
-                    Ok(Ty::Ts(format!("Map<{}, {}>", key.ts(), value.ts())))
+                    Ok(Ty::Ts(
+                        format!("Map<{}, {}>", key.ts(), value.ts()),
+                        format!("dict[{}, {}]", key.py(), value.py()),
+                    ))
                 }
-                "ValueSet" => Ok(Ty::Ts(format!(
-                    "Set<{}>",
-                    self.arg(scope, args, 0, ty)?.ts()
-                ))),
+                "ValueSet" => {
+                    let element = self.arg(scope, args, 0, ty)?;
+                    Ok(Ty::Ts(
+                        format!("Set<{}>", element.ts()),
+                        format!("set[{}]", element.py()),
+                    ))
+                }
                 _ => Err(format!("`{}` cannot cross between languages", joined(path))),
             };
         }
@@ -728,6 +889,9 @@ impl Generator<'_> {
             self.named.clone(),
             self.names.clone(),
             self.contract_types.clone(),
+            self.py_declarations.len(),
+            self.py_names.clone(),
+            self.py_classes.clone(),
         );
         let declared = self.declare_new(module, index);
         if declared.is_err() {
@@ -735,6 +899,9 @@ impl Generator<'_> {
             self.named = snapshot.1;
             self.names = snapshot.2;
             self.contract_types = snapshot.3;
+            self.py_declarations.truncate(snapshot.4);
+            self.py_names = snapshot.5;
+            self.py_classes = snapshot.6;
         }
         declared
     }
@@ -787,15 +954,26 @@ impl Generator<'_> {
         } else {
             format!("{name}<{}>", ts_params.join(", "))
         };
-        let body = match &item {
-            Item::Struct(item) => self
-                .struct_body(&scope, &item.fields, &serde, serde.rename_all.as_deref())
-                .map_err(|error| format!("{location}: {ident}: {error}"))?,
-            Item::Enum(item) => self
-                .enum_body(&scope, item, &serde)
-                .map_err(|error| format!("{location}: {ident}: {error}"))?,
+        let (body, enum_py) = match &item {
+            Item::Struct(item) => (
+                self.struct_body(&scope, &item.fields, &serde, serde.rename_all.as_deref())
+                    .map_err(|error| format!("{location}: {ident}: {error}"))?,
+                None,
+            ),
+            Item::Enum(item) => {
+                let (body, py) = self
+                    .enum_body(&scope, item, &serde, &name)
+                    .map_err(|error| format!("{location}: {ident}: {error}"))?;
+                (body, Some(py))
+            }
             _ => unreachable!(),
         };
+        let py_docs = py_doc_lines(&attrs);
+        let py_declaration = match enum_py {
+            Some(py) => py_alias(&name, &py, &py_docs),
+            None => self.py_struct(&name, &body, &py_docs),
+        };
+        self.py_declarations.push(py_declaration);
         let contract = match &item {
             _ if !ts_params.is_empty() || !derives(&attrs, "Deserialize") || serde.asymmetric => {
                 serde_json::json!({ "kind": "any" })
@@ -927,13 +1105,17 @@ impl Generator<'_> {
     }
 
     /// What each variant is as serde writes it, and the codes they give.
+    /// Its TypeScript body, and its Python type expression (helper
+    /// `TypedDict`s for its variants are declared first).
     fn enum_body(
         &mut self,
         scope: &Scope,
         item: &syn::ItemEnum,
         serde: &SerdeAttrs,
-    ) -> Result<Body> {
+        enum_name: &str,
+    ) -> Result<(Body, String)> {
         let mut alternatives = Vec::new();
+        let mut py_alternatives = Vec::new();
         for (variant, name) in self.variants(scope, item, serde)? {
             let attrs = SerdeAttrs::of(&variant.attrs)?;
             let rename_all = attrs
@@ -945,6 +1127,13 @@ impl Generator<'_> {
                 syn::Fields::Unit => None,
                 fields => Some(self.struct_body(scope, fields, &attrs, rename_all)?),
             };
+            py_alternatives.push(self.py_variant(
+                serde,
+                &format!("{enum_name}{}", variant.ident),
+                &name,
+                body.as_ref(),
+                &py_doc_lines(&variant.attrs),
+            ));
             // An internally tagged variant's fields sit beside the tag.
             if let (
                 Some(tag),
@@ -962,7 +1151,7 @@ impl Generator<'_> {
                         docs: Vec::new(),
                         key: tag.clone(),
                         optional: false,
-                        ty: Ty::Ts(literal.clone()),
+                        ty: Ty::Ts(literal.clone(), format!("typing.Literal[{literal}]")),
                     },
                 );
                 let merged = Body::Object {
@@ -1001,23 +1190,199 @@ impl Generator<'_> {
             };
             alternatives.push(format!("{}{alternative}", inline_doc(&variant.attrs)));
         }
+        let py = py_union(&py_alternatives);
         if alternatives.is_empty() {
-            return Ok(Body::Alias(Ty::Ts("never".into())));
+            return Ok((Body::Alias(Ty::Ts("never".into(), py.clone())), py));
         }
         let long = alternatives.iter().map(String::len).sum::<usize>() > 80
             || alternatives
                 .iter()
                 .any(|alternative| alternative.starts_with("/**"));
-        if long {
-            Ok(Body::Alias(Ty::Ts(
-                alternatives
-                    .iter()
-                    .map(|alternative| format!("\n  | {alternative}"))
-                    .collect(),
-            )))
+        let ts = if long {
+            alternatives
+                .iter()
+                .map(|alternative| format!("\n  | {alternative}"))
+                .collect()
         } else {
-            Ok(Body::Alias(Ty::Ts(alternatives.join(" | "))))
+            alternatives.join(" | ")
+        };
+        Ok((Body::Alias(Ty::Ts(ts, py.clone())), py))
+    }
+
+    // ── Python ───────────────────────────────────────────────────
+
+    /// A name for a helper declaration of the Python module, `_`-prefixed:
+    /// taken by no declaration (TypeScript's names are Python's too).
+    fn py_helper(&mut self, base: &str) -> String {
+        let base = format!("_{base}");
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.names.contains(&name) || !self.py_names.insert(name.clone()) {
+            name = format!("{base}{n}");
+            n += 1;
         }
+        name
+    }
+
+    /// The Python declaration of a struct `name` with `body`.
+    fn py_struct(&mut self, name: &str, body: &Body, docs: &[String]) -> String {
+        match body {
+            Body::Alias(ty) => py_alias(name, &ty.py(), docs),
+            Body::Object {
+                fields, flattened, ..
+            } => {
+                // Flattened structs are base classes; anything else
+                // flattened cannot be written as a TypedDict.
+                let mut bases = Vec::new();
+                for ty in flattened {
+                    match ty {
+                        Ty::Named(base, _) if self.py_classes.contains(base) => {
+                            bases.push(base.clone())
+                        }
+                        _ => return py_alias(name, "dict[str, typing.Any]", docs),
+                    }
+                }
+                let fields: Vec<PyField> = fields.iter().map(PyField::of).collect();
+                self.typed_dict(name, &fields, docs, &bases)
+            }
+        }
+    }
+
+    /// The Python type of a variant `name` (serde's) of an enum, declaring
+    /// the helper `TypedDict` it needs (`helper` names it).
+    fn py_variant(
+        &mut self,
+        serde: &SerdeAttrs,
+        helper: &str,
+        name: &str,
+        body: Option<&Body>,
+        docs: &[String],
+    ) -> String {
+        let literal = format!("typing.Literal[{name:?}]");
+        let tag_field = |tag: &str| PyField {
+            key: tag.to_owned(),
+            optional: false,
+            py: literal.clone(),
+            docs: Vec::new(),
+        };
+        let fields = match (&serde.tag, &serde.content, serde.untagged, body) {
+            (_, _, true, None) => return "None".into(),
+            (_, _, true, Some(body)) => return self.py_content(helper, body, docs),
+            (None, _, _, None) => return literal,
+            (Some(tag), _, _, None) => vec![tag_field(tag)],
+            (Some(tag), Some(content), _, Some(body)) => {
+                let content_py = self.py_content(&format!("{helper}Content"), body, &[]);
+                vec![
+                    tag_field(tag),
+                    PyField {
+                        key: content.clone(),
+                        optional: false,
+                        py: content_py,
+                        docs: Vec::new(),
+                    },
+                ]
+            }
+            (
+                Some(tag),
+                None,
+                _,
+                Some(Body::Object {
+                    fields, flattened, ..
+                }),
+            ) if flattened.is_empty() => std::iter::once(tag_field(tag))
+                .chain(fields.iter().map(PyField::of))
+                .collect(),
+            // A newtype beside a tag: an intersection Python cannot write.
+            (Some(_), None, _, Some(_)) => return "typing.Any".into(),
+            (None, _, _, Some(body)) => {
+                let content_py = self.py_content(&format!("{helper}Content"), body, &[]);
+                vec![PyField {
+                    key: name.to_owned(),
+                    optional: false,
+                    py: content_py,
+                    docs: Vec::new(),
+                }]
+            }
+        };
+        let helper = self.py_helper(helper);
+        let declaration = self.typed_dict(&helper, &fields, docs, &[]);
+        self.py_declarations.push(declaration);
+        helper
+    }
+
+    /// The Python type of a variant's content.
+    fn py_content(&mut self, helper: &str, body: &Body, docs: &[String]) -> String {
+        match body {
+            Body::Alias(ty) => ty.py(),
+            Body::Object { flattened, .. } if !flattened.is_empty() => {
+                "dict[str, typing.Any]".into()
+            }
+            Body::Object { fields, .. } => {
+                let fields: Vec<PyField> = fields.iter().map(PyField::of).collect();
+                let helper = self.py_helper(helper);
+                let declaration = self.typed_dict(&helper, &fields, docs, &[]);
+                self.py_declarations.push(declaration);
+                helper
+            }
+        }
+    }
+
+    /// A `TypedDict` `name` with `fields` (the optional ones in a
+    /// `total=False` parent, as Python 3.10 has no `NotRequired`), on
+    /// `bases`. Keys that are not identifiers take the functional form.
+    fn typed_dict(
+        &mut self,
+        name: &str,
+        fields: &[PyField],
+        docs: &[String],
+        bases: &[String],
+    ) -> String {
+        self.py_classes.insert(name.to_owned());
+        let required: Vec<&PyField> = fields.iter().filter(|field| !field.optional).collect();
+        let optional: Vec<&PyField> = fields.iter().filter(|field| field.optional).collect();
+        let mut text = String::new();
+        let mut parents = Vec::new();
+        if fields.iter().all(|field| py_identifier(&field.key)) {
+            if !optional.is_empty() {
+                let helper = self.py_helper(&format!("{name}Optional"));
+                text.push_str(&py_class(
+                    &helper,
+                    &["typing.TypedDict".into(), "total=False".into()],
+                    &[],
+                    &optional,
+                ));
+                text.push_str(
+                    "
+
+",
+                );
+                parents.push(helper);
+            }
+            parents.extend(bases.iter().cloned());
+            if parents.is_empty() {
+                parents.push("typing.TypedDict".into());
+            }
+            text.push_str(&py_class(name, &parents, docs, &required));
+        } else {
+            if !required.is_empty() || (optional.is_empty() && bases.is_empty()) {
+                let helper = self.py_helper(&format!("{name}Required"));
+                text.push_str(&py_functional(&helper, &required, true));
+                parents.push(helper);
+            }
+            if !optional.is_empty() {
+                let helper = self.py_helper(&format!("{name}Optional"));
+                text.push_str(&py_functional(&helper, &optional, false));
+                parents.push(helper);
+            }
+            parents.extend(bases.iter().cloned());
+            text.push_str(
+                "
+
+",
+            );
+            text.push_str(&py_class(name, &parents, docs, &[]));
+        }
+        text
     }
 
     /// The variants serde writes, each with its name as serde writes it.
@@ -1188,6 +1553,7 @@ impl Generator<'_> {
         };
         let mut methods_ts = String::new();
         let mut methods_contract = serde_json::Map::new();
+        let mut methods_py = String::new();
         let mut seen = HashSet::new();
         for candidate in self.sources.crate_modules(module) {
             let impls: Vec<(usize, syn::ItemImpl)> = self.sources.modules[candidate]
@@ -1254,9 +1620,22 @@ impl Generator<'_> {
                     }
                     let scope = Scope::of(impl_module);
                     match self.method(&scope, method) {
-                        Ok((signature, params)) => {
-                            methods_ts.push_str(&signature);
-                            methods_contract.insert(js, serde_json::json!({ "params": params }));
+                        Ok(declared) => {
+                            methods_ts.push_str(&declared.typescript);
+                            if !py_identifier(&js) {
+                                if self.python {
+                                    self.warnings.push(format!(
+                                        "{location}: {ident}::{rust_name} has no Python declaration: {js} is a Python keyword"
+                                    ));
+                                }
+                            } else {
+                                if !methods_py.is_empty() {
+                                    methods_py.push('\n');
+                                }
+                                methods_py.push_str(&declared.python);
+                            }
+                            methods_contract
+                                .insert(js, serde_json::json!({ "params": declared.contract }));
                         }
                         Err(reason) => {
                             // The service still has it: callable, with its
@@ -1282,16 +1661,26 @@ impl Generator<'_> {
         self.declarations.push(format!(
             "{docs}export interface {interface} {{\n{methods_ts}}}\n"
         ));
+        let py_docs = py_docstring(&py_doc_lines(&item_attrs), "    ");
+        let separator = if py_docs.is_empty() || methods_py.is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        let body = if py_docs.is_empty() && methods_py.is_empty() {
+            "    pass\n"
+        } else {
+            &methods_py
+        };
+        self.py_declarations.push(format!(
+            "class {interface}(typing.Protocol):\n{py_docs}{separator}{body}"
+        ));
         Ok((interface, serde_json::Value::Object(methods_contract)))
     }
 
-    /// One method's TypeScript signature and the contract descriptions of
-    /// its parameters, or why it cannot be declared.
-    fn method(
-        &mut self,
-        scope: &Scope,
-        method: &syn::ImplItemFn,
-    ) -> Result<(String, serde_json::Value)> {
+    /// One method's TypeScript and Python signatures and the contract
+    /// descriptions of its parameters, or why it cannot be declared.
+    fn method(&mut self, scope: &Scope, method: &syn::ImplItemFn) -> Result<Method> {
         let sig = &method.sig;
         if sig.unsafety.is_some() {
             return Err("it is unsafe".into());
@@ -1325,6 +1714,7 @@ impl Generator<'_> {
         }
         let mut params_ts = Vec::new();
         let mut params_contract = Vec::new();
+        let mut params_py = Vec::new();
         let mut count = 0;
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(input) = input else {
@@ -1341,6 +1731,7 @@ impl Generator<'_> {
                 name
             };
             let js = camel(name.strip_prefix("r#").unwrap_or(&name));
+            let py_name = py_param(name.strip_prefix("r#").unwrap_or(&name));
             // The calling row's context: not a parameter for the caller.
             if is_ctx(self, scope, &input.ty)? {
                 if matches!(input.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some())
@@ -1357,6 +1748,7 @@ impl Generator<'_> {
                 }
                 params_ts.push(format!("{js}: {DEFINITION_TS}"));
                 params_contract.push(Ty::Definition.contract());
+                params_py.push(format!("{py_name}: {}", Ty::Definition.py()));
                 count += 1;
                 continue;
             }
@@ -1372,6 +1764,16 @@ impl Generator<'_> {
                     "{js}: ({}) => {ok} | Promise<{ok}>",
                     args_ts.join(", ")
                 ));
+                let ok_py = callback.ok.py();
+                params_py.push(format!(
+                    "{py_name}: typing.Callable[[{}], {ok_py} | typing.Awaitable[{ok_py}]]",
+                    callback
+                        .args
+                        .iter()
+                        .map(Ty::py)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
                 params_contract.push(serde_json::json!({
                     "kind": "function",
                     "params": callback.args.iter().map(Ty::contract).collect::<Vec<_>>(),
@@ -1386,6 +1788,7 @@ impl Generator<'_> {
             let ty = self.ty(scope, &input.ty)?;
             params_ts.push(format!("{js}: {}", ty.ts()));
             params_contract.push(ty.contract());
+            params_py.push(format!("{py_name}: {}", ty.py()));
             count += 1;
         }
         // Trailing optional parameters may be left out.
@@ -1400,6 +1803,9 @@ impl Generator<'_> {
             if let Some((name, rest)) = param.split_once(": ") {
                 *param = format!("{name}?: {rest}");
             }
+        }
+        for param in &mut params_py[optional..] {
+            param.push_str(" = None");
         }
         let output = match &sig.output {
             ReturnType::Default => None,
@@ -1423,20 +1829,35 @@ impl Generator<'_> {
                 None => (self.ty(scope, ty)?, None),
             },
         };
+        let mut py_docs = py_doc_lines(&method.attrs);
         let mut docs = doc_lines(&method.attrs);
-        if let Some(thrown) = error_ts {
+        if let Some(thrown) = &error_ts {
             docs.push(format!("@throws {{{thrown}}}"));
+            if !py_docs.is_empty() {
+                py_docs.push(String::new());
+            }
+            py_docs.push(format!("Raises {thrown}."));
         }
         let docs = render_jsdoc(&docs, "  ");
         let js = camel(&sig.ident.to_string());
-        Ok((
-            format!(
+        let py = std::iter::once("self".to_owned())
+            .chain(params_py)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let py = format!(
+            "    async def {js}({py}) -> {}:\n{}        ...\n",
+            ok.py(),
+            py_docstring(&py_docs, "        ")
+        );
+        Ok(Method {
+            typescript: format!(
                 "{docs}  {js}({}): Promise<{}>\n",
                 params_ts.join(", "),
                 ok.returned()
             ),
-            serde_json::Value::Array(params_contract),
-        ))
+            contract: serde_json::Value::Array(params_contract),
+            python: py,
+        })
     }
 
     /// `X` of a future type: `BoxFuture<'_, X>`, `Pin<Box<dyn Future<Output
@@ -1671,6 +2092,21 @@ impl Generator<'_> {
                 self.thrown.insert(thrown_name.clone(), declaration);
             }
         }
+        let codes_py = match codes.as_str() {
+            "string" => "str".to_owned(),
+            "never" => "typing.NoReturn".to_owned(),
+            codes => format!("typing.Literal[{}]", codes.replace(" | ", ", ")),
+        };
+        self.py_thrown.insert(
+            thrown_name.clone(),
+            format!(
+                "#: What a method returning `Err({ident})` raises: a RustError named {name:?}, its\n\
+                 #: `code` one of {thrown_name}Code.\n\
+                 {thrown_name} = RustError\n\
+                 {thrown_name}Code: typing.TypeAlias = {}\n",
+                py_quoted(&codes_py)
+            ),
+        );
         Ok(Some(thrown_name))
     }
 
@@ -1886,6 +2322,174 @@ fn object(fields: &[Field], compact: bool) -> String {
     }
     text.push('}');
     text
+}
+
+// ── Python ──────────────────────────────────────────────────────
+
+/// A key of a Python `TypedDict`.
+struct PyField {
+    key: String,
+    optional: bool,
+    py: String,
+    docs: Vec<String>,
+}
+
+impl PyField {
+    fn of(field: &Field) -> Self {
+        Self {
+            key: field.key.clone(),
+            optional: field.optional,
+            py: field.ty.py(),
+            docs: field
+                .docs
+                .iter()
+                .map(|line| line.replace("*\\/", "*/"))
+                .collect(),
+        }
+    }
+}
+
+/// Python's keywords, which a name may not be.
+const PY_KEYWORDS: [&str; 35] = [
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+/// A Python identifier that is not a keyword.
+fn py_identifier(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !PY_KEYWORDS.contains(&name)
+}
+
+/// A Python parameter name for the Rust one.
+fn py_param(name: &str) -> String {
+    if PY_KEYWORDS.contains(&name) || name == "self" {
+        format!("{name}_")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// The doc lines of `attrs`, as Python writes them.
+fn py_doc_lines(attrs: &[syn::Attribute]) -> Vec<String> {
+    doc_lines(attrs)
+        .into_iter()
+        .map(|line| line.replace("*\\/", "*/"))
+        .collect()
+}
+
+/// A docstring of `lines` at `indent`, or nothing.
+fn py_docstring(lines: &[String], indent: &str) -> String {
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|line| line.replace('\\', "\\\\").replace("\"\"\"", "\\\"\"\""))
+        .collect();
+    match lines.as_slice() {
+        [] => String::new(),
+        [line] => format!("{indent}\"\"\"{line}\"\"\"\n"),
+        lines => {
+            let mut text = format!("{indent}\"\"\"{}\n", lines[0]);
+            for line in &lines[1..] {
+                if line.is_empty() {
+                    text.push('\n');
+                } else {
+                    text.push_str(&format!("{indent}{line}\n"));
+                }
+            }
+            text.push_str(&format!("{indent}\"\"\"\n"));
+            text
+        }
+    }
+}
+
+/// `#:` comment lines of `lines`, before a module-level name.
+fn py_comment(lines: &[String]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                "#:\n".to_owned()
+            } else {
+                format!("#: {line}\n")
+            }
+        })
+        .collect()
+}
+
+/// `text` as a Python string literal (a forward reference).
+fn py_quoted(text: &str) -> String {
+    if !text.contains('"') {
+        format!("\"{text}\"")
+    } else if !text.contains('\'') {
+        format!("'{text}'")
+    } else {
+        format!("{text:?}")
+    }
+}
+
+/// `name` as a type alias of `py`, quoted so that it may name what is
+/// declared after it.
+fn py_alias(name: &str, py: &str, docs: &[String]) -> String {
+    format!(
+        "{}{name}: typing.TypeAlias = {}\n",
+        py_comment(docs),
+        py_quoted(py)
+    )
+}
+
+/// The union of `alternatives`: one `Literal` for names only.
+fn py_union(alternatives: &[String]) -> String {
+    if alternatives.is_empty() {
+        return "typing.NoReturn".into();
+    }
+    let literals: Option<Vec<&str>> = alternatives
+        .iter()
+        .map(|alternative| {
+            alternative
+                .strip_prefix("typing.Literal[")
+                .and_then(|rest| rest.strip_suffix(']'))
+        })
+        .collect();
+    match literals {
+        Some(names) => format!("typing.Literal[{}]", names.join(", ")),
+        None => alternatives.join(" | "),
+    }
+}
+
+/// A class `name(parents)` with `docs` and the annotated `fields`.
+fn py_class(name: &str, parents: &[String], docs: &[String], fields: &[&PyField]) -> String {
+    let mut text = format!("class {name}({}):\n", parents.join(", "));
+    text.push_str(&py_docstring(docs, "    "));
+    if !docs.is_empty() && !fields.is_empty() {
+        text.push('\n');
+    }
+    for field in fields {
+        text.push_str(&format!("    {}: {}\n", field.key, field.py));
+        text.push_str(&py_docstring(&field.docs, "    "));
+    }
+    if docs.is_empty() && fields.is_empty() {
+        text.push_str("    pass\n");
+    }
+    text
+}
+
+/// A `TypedDict` in the functional form, for keys that are not
+/// identifiers; its types are forward references.
+fn py_functional(name: &str, fields: &[&PyField], total: bool) -> String {
+    let keys: Vec<String> = fields
+        .iter()
+        .map(|field| format!("{:?}: {}", field.key, py_quoted(&field.py)))
+        .collect();
+    let total = if total { "" } else { ", total=False" };
+    format!(
+        "{name} = typing.TypedDict({name:?}, {{{}}}{total})\n",
+        keys.join(", ")
+    )
 }
 
 /// The TypeScript of a plugin definition: a `definePlugin` result or a
@@ -2689,6 +3293,158 @@ impl Board {
         for any in ["Shape", "Flat", "Aliased", "Page"] {
             assert_eq!(types[any], serde_json::json!({ "kind": "any" }), "{any}");
         }
+    }
+
+    const PY_SOURCE: &str = r#"
+use std::collections::HashMap;
+use rutis::host::BoxFuture;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Item { pub item_name: String, #[serde(default)] pub done: bool, pub note: Option<String> }
+
+#[derive(Serialize, Deserialize)]
+pub struct Odd { #[serde(rename = "due-at")] pub due_at: u32, pub class: Option<u8> }
+
+#[derive(Serialize, Deserialize)]
+pub struct Meta { pub at: f64 }
+
+#[derive(Serialize, Deserialize)]
+pub struct Flat { pub name: String, #[serde(flatten)] pub meta: Meta }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level { Low, High }
+
+#[derive(Serialize, Deserialize)]
+pub enum Shape { Dot, Line(u8), Box { w: u8, h: u8 } }
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum Tagged { Plain, Sized { size: u32 } }
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "t", content = "c")]
+pub enum Adjacent { Empty, Text(String) }
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Either { Number(f64), Words(Vec<String>) }
+
+#[derive(Serialize, Deserialize)]
+pub struct Page<T> { pub items: Vec<T> }
+
+#[derive(Serialize, Deserialize)]
+pub struct Pair(pub u8, pub String);
+
+#[derive(Debug, Serialize)]
+pub enum Problem { Missing, TooBig(u64) }
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("problem") }
+}
+
+pub struct Text(pub String);
+
+/// The board.
+pub struct Board;
+
+#[rutis::service]
+impl Board {
+    /// Put an item.
+    pub fn put(&self, item: Item, odd: Odd, flat: Flat, level: Level) -> Result<u32, Problem> { Ok(0) }
+    pub fn shapes(&self, shape: Shape, tagged: Tagged, adjacent: Adjacent, either: Either) {}
+    pub fn more(&self, page: Page<u8>, pair: Pair, map: HashMap<String, Vec<u64>>, from: String, limit: Option<u8>) -> Option<Item> { None }
+    pub fn each(&self, visit: impl Fn(Item, u32) -> BoxFuture<'static, rutis::Result<String>> + Send) {}
+    pub fn load(&self, def: rutis::Definition, text: Text) {}
+}
+"#;
+
+    /// The Python module: Protocols, TypedDicts (optional keys in a
+    /// `total=False` parent), Literals and unions of TypedDicts.
+    #[test]
+    fn python_types_follow_serde() {
+        let generated = generate(
+            Exports::new()
+                .python("services.py")
+                .declared("dep_crate::Text", "string"),
+            &[("lib.rs", PY_SOURCE)],
+        )
+        .unwrap();
+        let py = &generated.python;
+        for expected in [
+            "# Generated from the service declarations; do not edit.\n\nfrom __future__ import annotations\n\nimport typing\n\nimport rutis\n",
+            "RustError = rutis.RemoteError\n",
+            "class _ItemOptional(typing.TypedDict, total=False):\n    done: bool\n    note: str | None\n",
+            "class Item(_ItemOptional):\n    itemName: str\n",
+            "_OddRequired = typing.TypedDict(\"_OddRequired\", {\"due-at\": \"int\"})\n",
+            "_OddOptional = typing.TypedDict(\"_OddOptional\", {\"class\": \"int | None\"}, total=False)\n",
+            "class Odd(_OddRequired, _OddOptional):\n    pass\n",
+            "class Flat(Meta):\n    name: str\n",
+            "Level: typing.TypeAlias = 'typing.Literal[\"low\", \"high\"]'\n",
+            "class _ShapeLine(typing.TypedDict):\n    Line: int\n",
+            "class _ShapeBoxContent(typing.TypedDict):\n    w: int\n    h: int\n",
+            "Shape: typing.TypeAlias = 'typing.Literal[\"Dot\"] | _ShapeLine | _ShapeBox'\n",
+            "class _TaggedSized(typing.TypedDict):\n    kind: typing.Literal[\"Sized\"]\n    size: int\n",
+            "Tagged: typing.TypeAlias = \"_TaggedPlain | _TaggedSized\"\n",
+            "class _AdjacentText(typing.TypedDict):\n    t: typing.Literal[\"Text\"]\n    c: str\n",
+            "Either: typing.TypeAlias = \"float | list[str]\"\n",
+            "class Page(typing.TypedDict):\n    items: list[typing.Any]\n",
+            "Pair: typing.TypeAlias = \"tuple[int, str]\"\n",
+            "class Board(typing.Protocol):\n    \"\"\"The board.\"\"\"\n\n    async def put(self, item: Item, odd: Odd, flat: Flat, level: Level) -> int:\n        \"\"\"Put an item.\n\n        Raises ProblemThrown.\n        \"\"\"\n        ...\n",
+            "    async def more(self, page: Page, pair: Pair, map: dict[str, list[int]], from_: str, limit: int | None = None) -> Item | None:\n",
+            "    async def each(self, visit: typing.Callable[[Item, int], str | typing.Awaitable[str]]) -> None:\n",
+            "    async def load(self, def_: rutis.Plugin, text: typing.Any) -> None:\n",
+            "ProblemThrown = RustError\nProblemThrownCode: typing.TypeAlias = 'typing.Literal[\"Missing\", \"TooBig\"]'\n",
+        ] {
+            assert!(py.contains(expected), "{expected}\n---\n{py}");
+        }
+        // A declared type without a Python type is Any, with a warning.
+        assert!(
+            generated.warnings.iter().any(|warning| warning
+                == "dep_crate::Text has no Python type: declare it with .declared_python (written as Any)"),
+            "{:?}",
+            generated.warnings
+        );
+        // Without the Python module, no such warning.
+        let generated = generate(
+            Exports::new().declared("dep_crate::Text", "string"),
+            &[("lib.rs", PY_SOURCE)],
+        )
+        .unwrap();
+        assert!(!generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Python")));
+    }
+
+    /// `.declared_python` gives a declared type its Python type; alone, it
+    /// is an error.
+    #[test]
+    fn declared_python_gives_a_declared_type_its_python() {
+        let generated = generate(
+            Exports::new()
+                .python("services.py")
+                .declared("dep_crate::Text", "string")
+                .declared_python("dep_crate::Text", "str"),
+            &[("lib.rs", PY_SOURCE)],
+        )
+        .unwrap();
+        assert!(generated.python.contains("def_: rutis.Plugin, text: str)"));
+        assert!(!generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Python")));
+        let error = generate(
+            Exports::new().declared_python("dep_crate::Text", "str"),
+            &[("lib.rs", PY_SOURCE)],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "declared_python(\"dep_crate::Text\", ..) needs its TypeScript too: add .declared(\"dep_crate::Text\", ..)"
+        );
     }
 
     /// Two marked types given one name are an error naming both.

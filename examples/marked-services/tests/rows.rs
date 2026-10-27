@@ -170,9 +170,9 @@ async fn a_python_row_calls_the_same_service() {
     fixture.root.shutdown().await.unwrap();
 }
 
-/// The command that writes rows/services.d.ts and
+/// The command that writes rows/services.d.ts, rows/services.py and
 /// rows/services.contract.json, from the repository's root.
-const TYPES: &str = "rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --contract examples/marked-services/rows/services.contract.json";
+const TYPES: &str = "rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --python examples/marked-services/rows/services.py --contract examples/marked-services/rows/services.contract.json";
 
 /// rows/services.d.ts is what `rutis-host types` writes for this crate,
 /// and the rows written against it pass `tsc --strict`.
@@ -234,5 +234,65 @@ fn the_contract_description_is_current() {
         std::fs::read_to_string(here().join("rows/services.contract.json")).unwrap(),
         std::fs::read_to_string(&file).unwrap(),
         "rows/services.contract.json is stale: run `{TYPES}`"
+    );
+}
+
+/// rows/services.py is what `rutis-host types --python` writes for this
+/// crate; it and the Python row written against it pass pyright in strict
+/// mode (Python 3.10), and a call against the types is marked.
+#[test]
+fn the_python_types_are_current_and_pass_pyright_strict() {
+    let dir = rows();
+    let file = dir.path().join("written.py");
+    rutis_bridge::build::Exports::new()
+        .python(&file)
+        .write(here())
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(here().join("rows/services.py")).unwrap(),
+        std::fs::read_to_string(&file).unwrap(),
+        "rows/services.py is stale: run `{TYPES}`"
+    );
+    std::fs::remove_file(&file).unwrap();
+    let pyright = |dir: &Path| {
+        std::fs::write(
+            dir.join("pyrightconfig.json"),
+            json!({
+                "typeCheckingMode": "strict",
+                "pythonVersion": "3.10",
+                "extraPaths": [repo().join("python/rutis")],
+                "include": ["."],
+                "exclude": ["node_modules"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::process::Command::new("node")
+            .arg(repo().join("node/rutis-runtime/node_modules/pyright/index.js"))
+            .arg("-p")
+            .arg(dir)
+            .output()
+            .expect("node is on PATH")
+    };
+    let output = pyright(dir.path());
+    assert!(
+        output.status.success(),
+        "pyright --strict:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A wrong argument is marked before the row runs.
+    std::fs::write(
+        dir.path().join("calendar_row.py"),
+        std::fs::read_to_string(here().join("rows/calendar_row.py"))
+            .unwrap()
+            .replace("await calendar.get(99)", "await calendar.get(\"99\")"),
+    )
+    .unwrap();
+    let output = pyright(dir.path());
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success() && said.contains("calendar_row.py") && said.contains("\"get\""),
+        "pyright should mark calendar.get(\"99\"):\n{said}"
     );
 }
