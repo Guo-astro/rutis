@@ -2,19 +2,19 @@
 
 [English](faults.en.md) · [发布流程](release.md) · [CI](ci.md)
 
-[#663](https://github.com/arcships/rutis/issues/663) 的调试评估在每种语言里逐种制造 14 种故障，看开发者看到什么。这些故障不另写一套测试（[#690](https://github.com/arcships/rutis/issues/690)）：[#677](https://github.com/arcships/rutis/issues/677)、[#678](https://github.com/arcships/rutis/issues/678)、[#676](https://github.com/arcships/rutis/issues/676)、[#669](https://github.com/arcships/rutis/issues/669) 等各自的验收测试已经制造这种故障，逐字比较输出（行名、服务.方法、原因和改法、没有 rutis 内部的词），并确认故障不波及别的插件。下表列出每种故障 × 每种语言由哪些测试负责。
+[#663](https://github.com/arcships/rutis/issues/663) 的调试评估在每种语言里逐种制造 14 种故障，看开发者看到什么。这些故障不另写一套测试（[#690](https://github.com/arcships/rutis/issues/690)）：[#677](https://github.com/arcships/rutis/issues/677)、[#678](https://github.com/arcships/rutis/issues/678)、[#676](https://github.com/arcships/rutis/issues/676)、[#669](https://github.com/arcships/rutis/issues/669) 等各自的验收测试已经制造这种故障，比较开发者看到的输出（行名、服务.方法、原因和改法、没有 rutis 内部的词），并确认故障不波及别的插件。下表列出每种故障 × 每种语言由哪些测试负责。
 
 ## 在哪里运行
 
-- 表里的测试都是 `ci.yml` 的任务里的测试：Rust、rutis-host、rutis-loader、rutis-bridge 的测试在 `rust`，端到端场景在 `e2e`，Node 与 Python 的包在 `js-py`，Bun 在 `runtimes-bun`，Go 在 `runtimes-go`。发布门（release.yml）和每晚运行（nightly.yml）都以 `all=true` 调用 `ci.yml`，所以其中任何一个失败，就不发布。
+- 表里的测试都在 `ci.yml` 的任务里运行：Rust、rutis-host、rutis-loader、rutis-bridge 的测试在 `rust`，端到端场景在 `e2e`，Node 与 Python 的包在 `js-py`，Bun 在 `runtimes-bun`，Go 在 `runtimes-go`。发布门（release.yml）和每晚运行（nightly.yml）都以 `all=true` 调用 `ci.yml`，所以发布时其中任何一个失败，发布门就不通过，什么都不发布；每晚运行失败时开问题单（[CI](ci.md) §7）。
 - 不会悄悄跳过：Go 的 Delve 测试在 `rust` 任务里设了 `RUTIS_TEST_DELVE=required`，没装 `dlv` 就失败；事件一致性测试设了 `RUTIS_EVENTS_REQUIRE=node,python,go,bun`，少了哪种语言就失败；只在 Unix 上运行的测试在 Linux 上运行。
 - `links` 任务运行 `node tools/check-faults.mjs`：表里列的测试改了名或删掉了、或者本页与 `tests/faults.json` 不一致，就失败；它还把下表写进这次运行的摘要。
 
 ## 怎样更新
 
-表来自 `tests/faults.json`。改了验收测试（改名、新增、补上「无测试」或「待接」的格子）时改这个文件，再运行 `node tools/check-faults.mjs --write` 重写本页两份。格子里写：
+表来自 `tests/faults.json`。改了验收测试（改名、新增、补上「无测试」或「待接」的格子）时改这个文件，再运行 `node tools/check-faults.mjs --write` 重新生成中英两份。格子里写：
 
-- 「n 项」：有 n 个测试；
+- 「n 个测试」：有 n 个测试负责；
 - 「待接 #N」：这种故障的一部分由还没合并的 #N 负责，合并后补进表里；
 - 「无测试」：还没有测试，要补；
 - 「不适用」：这种语言没有这种故障（Rust 插件和宿主在同一个进程里，没有单独退出的运行时进程）。
@@ -25,20 +25,20 @@
 
 | # | 故障 | TypeScript（Node） | Bun | Python | Go | Rust（插件与嵌入） | issue |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 依赖的服务名写错 | 3 项 | 1 项 | 1 项 | 2 项 | 3 项 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
-| 2 | 服务方法抛错，跨语言 | 3 项 | 2 项 | 3 项 | 2 项 | 3 项 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 3 | 方法不存在、参数个数或类型错 | 2 项 | 2 项 | 3 项 | 2 项 | 3 项 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 4 | `apply` 里出错 | 3 项 | 2 项 | 1 项 | 1 项 | 2 项 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 5 | 语法 / 导入 / 编译错误 | 2 项 | 3 项 | 3 项 | 1 项 | 1 项 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 6 | 跨语言传对面接不住的值 | 3 项 | 3 项 | 3 项 | 3 项 | 2 项 | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
-| 7 | 事件监听器出错 | 1 项 | 1 项 | 1 项 | 1 项 | 1 项 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 8 | 调用一直不返回 | 2 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 2 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 2 项 | [#678](https://github.com/arcships/rutis/issues/678) |
-| 9 | 互相调用、互相依赖 | 2 项 | 1 项 | 2 项 | 1 项 | 2 项 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
-| 10 | 运行时进程中途退出 | 2 项 | 1 项 | 3 项 | 2 项 | 不适用 | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
-| 11 | 下断点、看日志 | 2 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 项，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 项 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
-| 12 | 配置写错 | 3 项 | 2 项 | 2 项 | 无测试，待接 [#752](https://github.com/arcships/rutis/issues/752) | 3 项 | [#669](https://github.com/arcships/rutis/issues/669) |
-| 13 | 两个插件提供同名服务 | 3 项 | 2 项 | 2 项 | 1 项 | 2 项 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
-| 14 | 查看现在的运行状态 | 1 项 | 无测试 | 1 项 | 无测试 | 2 项 | [#678](https://github.com/arcships/rutis/issues/678) |
+| 1 | 依赖的服务名写错 | 3 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | 3 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
+| 2 | 服务方法抛错，跨语言 | 3 个测试 | 2 个测试 | 3 个测试 | 2 个测试 | 1 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
+| 3 | 方法不存在、参数个数或类型错 | 2 个测试 | 2 个测试 | 3 个测试 | 2 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
+| 4 | `apply` 里出错 | 3 个测试 | 2 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
+| 5 | 语法 / 导入 / 编译错误 | 2 个测试 | 3 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
+| 6 | 跨语言传对面接不住的值 | 3 个测试 | 3 个测试 | 3 个测试 | 3 个测试 | 2 个测试 | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
+| 7 | 事件监听器出错 | 1 个测试 | 1 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
+| 8 | 调用一直不返回 | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 2 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
+| 9 | 互相调用、互相依赖 | 2 个测试 | 1 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
+| 10 | 运行时进程中途退出 | 2 个测试 | 2 个测试 | 4 个测试 | 2 个测试 | 不适用 | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
+| 11 | 下断点、看日志 | 2 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
+| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 无测试，待接 [#752](https://github.com/arcships/rutis/issues/752) | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
+| 13 | 两个插件提供同名服务 | 3 个测试 | 2 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
+| 14 | 查看现在的运行状态 | 1 个测试 | 无测试 | 1 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 
 ### 1. 依赖的服务名写错
 
@@ -50,11 +50,11 @@
 
 ### 2. 服务方法抛错，跨语言
 
-- TypeScript（Node）：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`crates/rutis-loader/tests/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`，`node/rutis-runtime/test/errors.test.mjs` “thrown on adds where it was thrown on to its root (#677)”
-- Bun：`bun/rutis-bun/test/errors.test.ts` “thrown on adds where it was thrown on to its root (#677)”，`bun/rutis-bun/test/bad-values.test.ts` “an error answering a call has the caller's stack, and a rethrow adds it (#677)”
+- TypeScript（Node）：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`crates/rutis-loader/tests/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`，`node/rutis-runtime/test/errors.test.mjs` “an error from the other side thrown on adds where it was thrown on to its root (#677)”
+- Bun：`bun/rutis-bun/test/errors.test.ts` “an error from the other side thrown on adds where it was thrown on to its root (#677)”，`bun/rutis-bun/test/bad-values.test.ts` “an error answering a call has the caller's stack, and a rethrow adds it (#677)”
 - Python：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`python/rutis/tests/test_peer.py` `test_a_remote_error_thrown_on_crosses_with_its_whole_graph`，`python/rutis/tests/test_plain_texts.py` `test_a_traceback_through_a_host_service_names_the_service_and_method`
 - Go：`go/rutis/errors_location_test.go` `TestAServiceErrorCrossesWithItsMethodsPosition`，`go/rutis/errors_location_test.go` `TestAReceivedErrorThrownOnRecordsTheMethodInRethrown`
-- Rust（插件与嵌入）：`crates/rutis-bridge/tests/error_shape.rs` `nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip`，`crates/rutis-bridge/src/report.rs` `each_site_gives_its_headline`，`crates/rutis-host/src/status.rs` `a_failed_row_prints_where_its_error_came_from`
+- Rust（插件与嵌入）：`crates/rutis-bridge/tests/marked_services.rs` `a_provided_marked_type_is_served_by_name`
 
 ### 3. 方法不存在、参数个数或类型错
 
@@ -62,7 +62,7 @@
 - Bun：`bun/rutis-bun/test/errors.test.ts` “the errors this runtime makes have their code, data and text (#677)”，`bun/rutis-bun/test/bad-values.test.ts` “a method an object passed by reference lacks is no-method, saying what it has”
 - Python：`python/rutis/tests/test_plain_texts.py` `test_no_method`，`python/rutis/tests/test_plain_texts.py` `test_too_many_arguments`，`python/rutis/tests/test_plain_texts.py` `test_a_missing_argument`
 - Go：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`go/rutis/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
-- Rust（插件与嵌入）：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`，`crates/rutis/tests/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
+- Rust（插件与嵌入）：`crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`，`crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`
 
 ### 4. `apply` 里出错
 
@@ -94,14 +94,14 @@
 - Bun：`crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_bun_plugin`
 - Python：`crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_python_plugin`
 - Go：`crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_go_plugin`
-- Rust（插件与嵌入）：`crates/rutis-bridge/src/events/errors.rs` `a_listener_error_records_its_row_and_event`
+- Rust（插件与嵌入）：`crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_node_leaf_plugin`，`crates/rutis-bridge/src/events/errors.rs` `a_listener_error_records_its_row_and_event`
 
 ### 8. 调用一直不返回
 
-- TypeScript（Node）：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-host/tests/busy_runtime.rs` `ctrl_c_ends_busy_runtimes_past_the_deadline`，待接 [#746](https://github.com/arcships/rutis/issues/746)
+- TypeScript（Node）：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，待接 [#746](https://github.com/arcships/rutis/issues/746)
 - Bun：无测试，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Python：`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`，`crates/rutis-loader/tests/slow_runtime.rs` `a_runtime_still_starting_holds_up_only_its_own_rows`，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Go：无测试，待接 [#746](https://github.com/arcships/rutis/issues/746)
+- Python：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`，待接 [#746](https://github.com/arcships/rutis/issues/746)
+- Go：无测试
 - Rust（插件与嵌入）：`crates/rutis/tests/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
 ### 9. 互相调用、互相依赖
@@ -115,8 +115,8 @@
 ### 10. 运行时进程中途退出
 
 - TypeScript（Node）：`crates/rutis-loader/tests/fault_containment.rs` `node_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Bun：`crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`
-- Python：`crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`，`tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`
+- Bun：`crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Python：`crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`，`crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`，`tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`，`crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
 - Go：`crates/rutis-loader/tests/go_rows.rs` `a_crash_stops_only_its_runtimes_rows_and_is_not_restarted`，`crates/rutis-host/tests/runtimes.rs` `a_go_runtime_restarted_on_failure_brings_its_rows_back`
 - Rust（插件与嵌入）：不适用
 

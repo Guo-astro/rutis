@@ -364,6 +364,7 @@ jobs:
       # lists is still there, and the page is what tests/faults.json gives.
       # The tests run in the jobs below; the table goes into this job's summary.
       - name: fault acceptance summary
+        if: success() || failure()
         run: node tools/check-faults.mjs
       - name: self-hosted runner, end
         if: always() && runner.environment == 'self-hosted'

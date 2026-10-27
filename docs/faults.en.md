@@ -2,17 +2,17 @@
 
 [中文](faults.md) · [Release process](release.en.md) · [CI](ci.en.md)
 
-The debugging evaluation of [#663](https://github.com/arcships/rutis/issues/663) causes 14 faults, one at a time, in each language and looks at what developers see. These faults get no test suite of their own ([#690](https://github.com/arcships/rutis/issues/690)): the acceptance tests of [#677](https://github.com/arcships/rutis/issues/677), [#678](https://github.com/arcships/rutis/issues/678), [#676](https://github.com/arcships/rutis/issues/676), [#669](https://github.com/arcships/rutis/issues/669) and others already cause each fault, compare the output word for word (row name, service.method, cause and fix, no words internal to rutis), and check that the fault does not spread to other plugins. The table below lists the tests that cover each fault × each language.
+The debugging evaluation of [#663](https://github.com/arcships/rutis/issues/663) causes 14 faults, one at a time, in each language and looks at what developers see. These faults get no test suite of their own ([#690](https://github.com/arcships/rutis/issues/690)): the acceptance tests of [#677](https://github.com/arcships/rutis/issues/677), [#678](https://github.com/arcships/rutis/issues/678), [#676](https://github.com/arcships/rutis/issues/676), [#669](https://github.com/arcships/rutis/issues/669) and others already cause each fault, check the output the developer sees (row name, service.method, cause and fix, no words internal to rutis), and check that the fault does not spread to other plugins. The table below lists the tests that cover each fault × each language.
 
 ## Where they run
 
-- Every test in the table is in a job of `ci.yml`: the tests of rutis, rutis-host, rutis-loader and rutis-bridge in `rust`, the end-to-end scenarios in `e2e`, the Node and Python packages in `js-py`, Bun in `runtimes-bun`, Go in `runtimes-go`. The release gate (release.yml) and the nightly run (nightly.yml) both call `ci.yml` with `all=true`, so if any of them fails, nothing is released.
+- Every test in the table is in a job of `ci.yml`: the tests of rutis, rutis-host, rutis-loader and rutis-bridge in `rust`, the end-to-end scenarios in `e2e`, the Node and Python packages in `js-py`, Bun in `runtimes-bun`, Go in `runtimes-go`. The release gate (release.yml) and the nightly run (nightly.yml) both call `ci.yml` with `all=true`, so when one of them fails in a release, the gate fails and nothing is published; a nightly failure opens an issue ([CI](ci.en.md) §7).
 - None skips quietly: the Go Delve test runs in the `rust` job with `RUTIS_TEST_DELVE=required`, so a missing `dlv` fails it; the event conformance tests run with `RUTIS_EVENTS_REQUIRE=node,python,go,bun`, so a missing language fails them; the Unix-only tests run on Linux.
 - The `links` job runs `node tools/check-faults.mjs`: it fails when a test the table lists is renamed or removed, or this page differs from `tests/faults.json`; it also writes the table into the run's summary.
 
 ## Updating it
 
-The table comes from `tests/faults.json`. When an acceptance test changes (renamed, added, or filling a "no test" or "pending" cell), change that file and run `node tools/check-faults.mjs --write` to rewrite both copies of this page. A cell says:
+The table comes from `tests/faults.json`. When an acceptance test changes (renamed, added, or filling a "no test" or "pending" cell), change that file and run `node tools/check-faults.mjs --write` to regenerate both language copies of this page. A cell says:
 
 - "n tests": n tests cover it;
 - "pending #N": part of this fault is covered by #N, not merged yet; added to the table once it is;
@@ -26,15 +26,15 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 | # | Fault | TypeScript (Node) | Bun | Python | Go | Rust (plugin and embedding) | Issues |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | A dependency's service name misspelt | 3 tests | 1 test | 1 test | 2 tests | 3 tests | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
-| 2 | A service method throws, across languages | 3 tests | 2 tests | 3 tests | 2 tests | 3 tests | [#677](https://github.com/arcships/rutis/issues/677) |
-| 3 | No such method, wrong number or type of arguments | 2 tests | 2 tests | 3 tests | 2 tests | 3 tests | [#677](https://github.com/arcships/rutis/issues/677) |
+| 2 | A service method throws, across languages | 3 tests | 2 tests | 3 tests | 2 tests | 1 test | [#677](https://github.com/arcships/rutis/issues/677) |
+| 3 | No such method, wrong number or type of arguments | 2 tests | 2 tests | 3 tests | 2 tests | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
 | 4 | An error in `apply` | 3 tests | 2 tests | 1 test | 1 test | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
 | 5 | A syntax, import or compile error | 2 tests | 3 tests | 3 tests | 1 test | 1 test | [#677](https://github.com/arcships/rutis/issues/677) |
 | 6 | A value passed across languages that the other side cannot take | 3 tests | 3 tests | 3 tests | 3 tests | 2 tests | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
-| 7 | An event listener throws | 1 test | 1 test | 1 test | 1 test | 1 test | [#677](https://github.com/arcships/rutis/issues/677) |
-| 8 | A call that never returns | 2 tests; pending [#746](https://github.com/arcships/rutis/issues/746) | no test; pending [#746](https://github.com/arcships/rutis/issues/746) | 2 tests; pending [#746](https://github.com/arcships/rutis/issues/746) | no test; pending [#746](https://github.com/arcships/rutis/issues/746) | 2 tests | [#678](https://github.com/arcships/rutis/issues/678) |
+| 7 | An event listener throws | 1 test | 1 test | 1 test | 1 test | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
+| 8 | A call that never returns | 1 test; pending [#746](https://github.com/arcships/rutis/issues/746) | no test; pending [#746](https://github.com/arcships/rutis/issues/746) | 2 tests; pending [#746](https://github.com/arcships/rutis/issues/746) | no test | 2 tests | [#678](https://github.com/arcships/rutis/issues/678) |
 | 9 | Plugins calling or depending on each other | 2 tests | 1 test | 2 tests | 1 test | 2 tests | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
-| 10 | A runtime process exits midway | 2 tests | 1 test | 3 tests | 2 tests | n/a | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
+| 10 | A runtime process exits midway | 2 tests | 2 tests | 4 tests | 2 tests | n/a | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
 | 11 | Breakpoints and logs | 2 tests; pending [#746](https://github.com/arcships/rutis/issues/746) | 1 test; pending [#746](https://github.com/arcships/rutis/issues/746) | 1 test; pending [#746](https://github.com/arcships/rutis/issues/746) | 1 test; pending [#746](https://github.com/arcships/rutis/issues/746) | 1 test | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
 | 12 | A wrong config | 3 tests | 2 tests | 2 tests | no test; pending [#752](https://github.com/arcships/rutis/issues/752) | 3 tests | [#669](https://github.com/arcships/rutis/issues/669) |
 | 13 | Two plugins provide a service of the same name | 3 tests | 2 tests | 2 tests | 1 test | 2 tests | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
@@ -50,11 +50,11 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 
 ### 2. A service method throws, across languages
 
-- TypeScript (Node): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-loader/tests/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`; `node/rutis-runtime/test/errors.test.mjs` “thrown on adds where it was thrown on to its root (#677)”
-- Bun: `bun/rutis-bun/test/errors.test.ts` “thrown on adds where it was thrown on to its root (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “an error answering a call has the caller's stack, and a rethrow adds it (#677)”
+- TypeScript (Node): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-loader/tests/runtime_rows.rs` `an_error_from_a_service_method_says_where_it_came_from`; `node/rutis-runtime/test/errors.test.mjs` “an error from the other side thrown on adds where it was thrown on to its root (#677)”
+- Bun: `bun/rutis-bun/test/errors.test.ts` “an error from the other side thrown on adds where it was thrown on to its root (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “an error answering a call has the caller's stack, and a rethrow adds it (#677)”
 - Python: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `python/rutis/tests/test_peer.py` `test_a_remote_error_thrown_on_crosses_with_its_whole_graph`; `python/rutis/tests/test_plain_texts.py` `test_a_traceback_through_a_host_service_names_the_service_and_method`
 - Go: `go/rutis/errors_location_test.go` `TestAServiceErrorCrossesWithItsMethodsPosition`; `go/rutis/errors_location_test.go` `TestAReceivedErrorThrownOnRecordsTheMethodInRethrown`
-- Rust (plugin and embedding): `crates/rutis-bridge/tests/error_shape.rs` `nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip`; `crates/rutis-bridge/src/report.rs` `each_site_gives_its_headline`; `crates/rutis-host/src/status.rs` `a_failed_row_prints_where_its_error_came_from`
+- Rust (plugin and embedding): `crates/rutis-bridge/tests/marked_services.rs` `a_provided_marked_type_is_served_by_name`
 
 ### 3. No such method, wrong number or type of arguments
 
@@ -62,7 +62,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - Bun: `bun/rutis-bun/test/errors.test.ts` “the errors this runtime makes have their code, data and text (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “a method an object passed by reference lacks is no-method, saying what it has”
 - Python: `python/rutis/tests/test_plain_texts.py` `test_no_method`; `python/rutis/tests/test_plain_texts.py` `test_too_many_arguments`; `python/rutis/tests/test_plain_texts.py` `test_a_missing_argument`
 - Go: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `go/rutis/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`; `crates/rutis/tests/compile_errors.rs` `author_mistakes_are_reported_in_the_authors_terms`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`
 
 ### 4. An error in `apply`
 
@@ -94,14 +94,14 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - Bun: `crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_bun_plugin`
 - Python: `crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_python_plugin`
 - Go: `crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_go_plugin`
-- Rust (plugin and embedding): `crates/rutis-bridge/src/events/errors.rs` `a_listener_error_records_its_row_and_event`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/events_conformance.rs` `events_with_x_a_node_leaf_plugin`; `crates/rutis-bridge/src/events/errors.rs` `a_listener_error_records_its_row_and_event`
 
 ### 8. A call that never returns
 
-- TypeScript (Node): `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`; `crates/rutis-host/tests/busy_runtime.rs` `ctrl_c_ends_busy_runtimes_past_the_deadline`; pending [#746](https://github.com/arcships/rutis/issues/746)
+- TypeScript (Node): `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`; pending [#746](https://github.com/arcships/rutis/issues/746)
 - Bun: no test; pending [#746](https://github.com/arcships/rutis/issues/746)
-- Python: `crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`; `crates/rutis-loader/tests/slow_runtime.rs` `a_runtime_still_starting_holds_up_only_its_own_rows`; pending [#746](https://github.com/arcships/rutis/issues/746)
-- Go: no test; pending [#746](https://github.com/arcships/rutis/issues/746)
+- Python: `crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`; `crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`; pending [#746](https://github.com/arcships/rutis/issues/746)
+- Go: no test
 - Rust (plugin and embedding): `crates/rutis/tests/embedding_output.rs` `an_apply_that_does_not_return_is_named`; `crates/rutis/tests/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
 ### 9. Plugins calling or depending on each other
@@ -115,8 +115,8 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 ### 10. A runtime process exits midway
 
 - TypeScript (Node): `crates/rutis-loader/tests/fault_containment.rs` `node_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
-- Bun: `crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`
-- Python: `crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`; `tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`
+- Bun: `crates/rutis-loader/tests/fault_containment.rs` `bun_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
+- Python: `crates/rutis-loader/tests/fault_containment.rs` `python_a_runtime_that_exits_blames_no_other_row`; `crates/rutis-host/tests/runtimes.rs` `a_killed_runtime_is_reported_with_how_it_ended`; `tests/e2e/tests/runtime_crash.rs` `a_killed_runtime_fails_its_calls_and_a_restart_recovers`; `crates/rutis-host/tests/unhandled.rs` `a_plugin_ending_its_process_is_named`
 - Go: `crates/rutis-loader/tests/go_rows.rs` `a_crash_stops_only_its_runtimes_rows_and_is_not_restarted`; `crates/rutis-host/tests/runtimes.rs` `a_go_runtime_restarted_on_failure_brings_its_rows_back`
 - Rust (plugin and embedding): n/a
 

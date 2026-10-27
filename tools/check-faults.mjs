@@ -16,29 +16,40 @@ const { languages, faults } = JSON.parse(read('tests/faults.json'))
 
 const problems = []
 
-// A test is there when its file has its name: as a whole word for a function,
-// as written for a Node or Bun test's title (quotes in it may be escaped).
+// A test is there when its file defines it: `fn name` (Rust), `def name`
+// (Python), `func name(` (Go), or `test('title'` / `it('title'` (Node, Bun;
+// quotes in the title may be escaped). A name in a comment does not count.
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const definition = (file, name) => {
+  if (/\.(mjs|js|ts)$/.test(file)) {
+    return new RegExp(`\\b(test|it)\\(\\s*(['"\`])${escape(name)}\\2`)
+  }
+  if (file.endsWith('.py')) return new RegExp(`\\bdef ${escape(name)}\\b`)
+  if (file.endsWith('.go')) return new RegExp(`\\bfunc ${escape(name)}\\(`)
+  return new RegExp(`\\bfn ${escape(name)}\\b`)
+}
+const keys = new Set(['tests', 'missing', 'na', 'pending'])
 for (const [index, fault] of faults.entries()) {
-  for (const { id } of languages) {
-    const cell = fault[id]
+  for (const language of languages) {
+    const where = `fault ${index + 1} (${fault.en}), ${language.en}`
+    const cell = fault[language.id]
     if (!cell) {
-      problems.push(`fault ${index + 1} (${fault.en}) has no entry for ${id}`)
+      problems.push(`${where}: no entry`)
       continue
     }
-    if (!cell.tests && !cell.missing && !cell.na && !cell.pending) {
-      problems.push(`fault ${index + 1} (${fault.en}), ${id}: give tests, missing, na or pending`)
+    for (const key of Object.keys(cell)) {
+      if (!keys.has(key)) problems.push(`${where}: unknown key ${key} (use tests, missing, na or pending)`)
+    }
+    if (!cell.tests && !cell.missing && !cell.na) {
+      problems.push(`${where}: give tests, missing or na`)
     }
     for (const [file, name] of cell.tests ?? []) {
       if (!existsSync(new URL(file, root))) {
-        problems.push(`fault ${index + 1}, ${id}: ${file} does not exist`)
+        problems.push(`${where}: ${file} does not exist`)
         continue
       }
-      const text = read(file)
-      const found = /^\w+$/.test(name)
-        ? new RegExp(`\\b${escape(name)}\\b`).test(text)
-        : text.replace(/\\(['"`])/g, '$1').includes(name)
-      if (!found) problems.push(`fault ${index + 1}, ${id}: ${file} has no test ${name}`)
+      const text = read(file).replace(/\\(['"`])/g, '$1')
+      if (!definition(file, name).test(text)) problems.push(`${where}: ${file} defines no test ${name}`)
     }
   }
 }
@@ -46,7 +57,7 @@ for (const [index, fault] of faults.entries()) {
 const words = {
   zh: {
     head: ['#', '故障', ...languages.map(l => l.zh), 'issue'],
-    tests: n => `${n} 项`,
+    tests: n => `${n} 个测试`,
     pending: issue => `待接 ${issue}`,
     missing: '无测试',
     na: '不适用',
