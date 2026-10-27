@@ -680,6 +680,7 @@ impl Inner {
                 scope,
                 value: value.to_string(),
                 unavailable: false,
+                running: false,
             };
             if !out.contains(&failing) {
                 out.push(failing);
@@ -741,6 +742,7 @@ impl Inner {
                 scope: failing.scope,
             };
             failing.unavailable = state.rejected.get(&slot).is_some_and(Unavailable::is);
+            failing.running = state.running.contains_key(&slot);
         }
         out
     }
@@ -1032,12 +1034,41 @@ impl Inner {
                 .iter()
                 .filter(|f| !f.unavailable && !before.contains(f)),
         );
-        ReconcileReport {
+        // A row that cannot start reaches the error sink (stderr, by
+        // default), as a plugin that fails does from the kernel (#678). A
+        // copy in an instance says which.
+        let refused: Vec<Arc<ErrorKind>> = after
+            .iter()
+            .filter(|f| !f.running && !f.unavailable && !before.contains(f))
+            .map(|failing| {
+                let id = &failing.failure.id;
+                let plugin = match failing.scope.and_then(|n| state.instances.get(&n)) {
+                    Some(instance) => format!("{id} in {} {}", instance.group, instance.kernel),
+                    None => id.clone(),
+                };
+                Arc::new(ErrorKind::StartFailed {
+                    plugin,
+                    error: Arc::new(ErrorKind::PluginFailed(
+                        failing.failure.error.clone().into(),
+                    )),
+                })
+            })
+            .collect();
+        let root = state.groups.get(&None).map(|g| g.ctx.clone());
+        let report = ReconcileReport {
             warnings: state.desired.warnings.clone(),
             issues: state.desired.issues.clone(),
             new_failures,
             failures: Failing::public(after.iter()),
+        };
+        drop(state);
+        if let Some(root) = root {
+            let sink = rutis::host::CtxHost::error_sink(&root);
+            for error in refused {
+                sink(error);
+            }
         }
+        report
     }
 
     /// Wait until no running record is in transition: every record, or with

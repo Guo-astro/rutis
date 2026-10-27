@@ -7,11 +7,22 @@ use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::runtime::{Launcher, RuntimeState};
 
+/// Also checks what the error sink heard (stderr in an embedding, by
+/// default): the runtime down, once, by its name, and no failed start of
+/// rutis's own plugins.
 async fn failed_with(launcher: Launcher) -> String {
+    use rutis::host::ErrorKind;
+    use std::sync::{Arc, Mutex};
+
     let dir = tempfile::tempdir().unwrap();
     let runtime = LocalRuntime::launcher("broken", launcher, dir.path());
     let handle = runtime.handle();
-    let root = Ctx::root().unwrap();
+    let sunk: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::default();
+    let into = sunk.clone();
+    let root = Ctx::root_with_sink(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |error| into.lock().unwrap().push(error)),
+    );
     let view = root.plugin(runtime);
     let _ = (&view).await;
     assert_eq!(view.state().state, FiberState::Failed);
@@ -19,7 +30,14 @@ async fn failed_with(launcher: Launcher) -> String {
         RuntimeState::Down(reason) => reason,
         _ => panic!("the runtime should be down"),
     };
+    rutis_test_support::eventually(
+        || (!sunk.lock().unwrap().is_empty()).then_some(()),
+        "the report",
+    )
+    .await;
     root.shutdown().await.unwrap();
+    let heard: Vec<String> = sunk.lock().unwrap().iter().map(|e| e.to_string()).collect();
+    assert_eq!(heard, [format!("runtime broken: down ({reason})")]);
     reason
 }
 

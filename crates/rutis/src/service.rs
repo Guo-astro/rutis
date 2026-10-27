@@ -512,6 +512,24 @@ pub(crate) fn marked<T: ?Sized + 'static>(ctx: &Ctx) -> Option<Vec<&'static Entr
     (!entries.is_empty()).then_some(entries)
 }
 
+/// The name of the marked service `T` the first time it is provided while
+/// nothing serves marked services by name (rutis-bridge is not linked
+/// into the program), so that is said once (#678); `None` otherwise.
+pub(crate) fn unserved<T: ?Sized + 'static>(ctx: &Ctx) -> Option<&'static str> {
+    static SAID: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    if EXPOSER.get().is_some() {
+        return None;
+    }
+    let generation = ctx.code_generation().map(Generation);
+    let name = entries_of(TypeId::of::<T>(), generation).first()?.name();
+    let mut said = SAID.lock().unwrap_or_else(|poison| poison.into_inner());
+    if said.contains(&name) {
+        return None;
+    }
+    said.push(name);
+    Some(name)
+}
+
 /// Whether a marked service can be served by name ([`Exposer::admit`]).
 pub(crate) fn admit(exposure: &Exposure<'_>) -> Result<(), Error> {
     match EXPOSER.get() {

@@ -228,6 +228,10 @@ impl LocalRuntime {
 }
 
 impl DynPlugin for LocalRuntime {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
@@ -295,6 +299,10 @@ struct Carrier {
 }
 
 impl DynPlugin for Carrier {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

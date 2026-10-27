@@ -192,3 +192,20 @@ rutis-host: listeners public and private: link row mac and link row pi both acce
 ```
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时、对端节点那一边也出示这个新 token）。两行都启用时，这样的配置在 0.17 里本来就有一边连不上，改好之后才能用。
+
+## Rust 嵌入（行为变化）（#678）
+
+0.17 里嵌入 rutis 的 Rust 程序默认几乎什么都不打印：没人等的插件启动失败、loader 的行加载失败、语言运行时的进程结束，都只在没人读的返回值里。0.18 起默认的错误汇集（`Ctx::root()`、`Ctx::root_with(handle)` 装的 `default_sink()`）把它们写到标准错误，每行以插件、行或运行时的名字开头（[默认输出](guide/rust-host.md#默认输出)）：
+
+```
+weather: failed: no API key
+runtime py: down (runtime process exited with exit status: 1)
+```
+
+- **默认输出不再以 `[rutis]` 开头。** 等待的提示改为以插件名开头：`printer: still waiting after 10s for app::Greeting: it starts once that is provided`（0.17.2 是 `[rutis] plugin printer is still waiting …`）。rutis 自己的插件（链路、运行时等）不再报等待，提示里也不出现它们的内部名字。按这些文字匹配标准错误的脚本要改。
+- **新的错误汇集变体**：`ErrorKind::StartFailed { plugin, error }`、`ErrorKind::RuntimeDown { runtime, reason }`、`ErrorKind::NotServedByName { service }`（标了 `#[rutis::service]` 的类型被提供、而程序没链接 rutis-bridge 时，每个服务报一次）。自己装了汇集（`Ctx::root_with_sink`）的程序也会收到它们；不想要的按变体过滤掉。等插件的 `view.await` 照样收到错误，所以既等结果又用默认汇集的程序会看到同一个失败两次，要么不打印 `view.await` 的错误，要么在汇集里滤掉 `StartFailed`。
+- **要关掉**：换掉汇集，见[默认输出](guide/rust-host.md#默认输出)里的例子。
+- **rutis-host**：状态行不变，它不打印 `StartFailed`、`RuntimeDown`（状态行已经写了）。变的是：它交给默认汇集的其余错误（例如清理出错）不再以 `[rutis]` 开头；Go 运行时被强制结束后那一句 `runtime <名字>: stopping after killing it: …` 里的超时文字改为写明卡住的插件。
+- **同一件事可能打印几行**：插件启动失败时先报回滚中清理的错误，再报 `StartFailed`（它的错误里也有那些清理错误）；父插件因子插件失败而失败时两者各报一次；几个错误聚在一起时分几行打印。
+- **`shutdown()` 不变**，仍然不限时，等多久由宿主决定。`shutdown_with_timeout` / `dispose_with_timeout` 到时的错误改为写明还没结束的插件和清理（`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`），不再是 `fiber PluginId(1) generation 0 still Unloading after …`；`DisposeWaitError::TimedOut` 多了字段 `stuck: Vec<Stuck>`，列出全部字段解构它的代码加上 `..`。
+- `root.diagnostics()` 实现了 `Display`（一项一行，用名字，默认不列 rutis 自己的插件）；`PluginDiagnostics` 多了 `row`、`platform` 两个字段。

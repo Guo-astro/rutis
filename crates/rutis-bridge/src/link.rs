@@ -211,6 +211,10 @@ impl LinkPlugin {
 }
 
 impl DynPlugin for LinkPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
