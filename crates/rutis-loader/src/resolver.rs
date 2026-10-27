@@ -174,6 +174,13 @@ pub trait Resolver: Send + Sync + 'static {
     /// Resolve a module name. Return [`LoaderError::NotFound`] for names this
     /// resolver does not handle, so a [`Chain`] can try the next one.
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>>;
+
+    /// The runtimes whose rows it resolves, for [`Loader::status`](crate::Loader::status):
+    /// none by default.
+    #[cfg(feature = "runtimes")]
+    fn runtimes(&self) -> Vec<rutis_bridge::runtime::RuntimeHandle> {
+        Vec::new()
+    }
 }
 
 /// Plugins compiled into the host, by exact name. Any name works, including
@@ -362,6 +369,14 @@ impl Resolver for Chain {
                 name: name.to_owned(),
             })
         })
+    }
+
+    #[cfg(feature = "runtimes")]
+    fn runtimes(&self) -> Vec<rutis_bridge::runtime::RuntimeHandle> {
+        self.resolvers
+            .iter()
+            .flat_map(|resolver| resolver.runtimes())
+            .collect()
     }
 }
 
