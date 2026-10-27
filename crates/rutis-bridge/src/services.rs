@@ -200,10 +200,7 @@ async fn announce(peer: Arc<Peer>, name: String, service: Value, shape: Json, ve
                 )
                 .await;
             if let Err(error) = announced {
-                eprintln!(
-                    "rutis-bridge: cannot announce {name} to {}: {error}",
-                    peer.id()
-                );
+                eprintln!("{}: cannot offer {name}: {error}", peer.id());
             }
         }
         announced_to = offered;
@@ -255,6 +252,8 @@ struct Remote {
     target: Target,
     asynchronous: HashSet<String>,
     shape: Json,
+    /// Its name, for messages.
+    name: String,
     /// The peer that offers it.
     peer: PeerId,
 }
@@ -272,11 +271,12 @@ enum Call {
 impl HostDispatch for Remote {
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let unknown = || {
-            Error::binding(
-                crate::session::code::NO_METHOD,
-                format!("the service {} offers has no method {method}", self.peer),
-                Some(serde_json::json!({ "method": method })),
-            )
+            let methods = self
+                .shape
+                .as_object()
+                .map(|methods| methods.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            Error::no_method(&self.name, method, methods)
         };
         let call = match &self.target {
             Target::Functions(methods) => {
@@ -407,6 +407,7 @@ impl Importer {
                     target,
                     asynchronous,
                     shape,
+                    name: name.clone(),
                     peer: self.peer.clone(),
                 }),
             )

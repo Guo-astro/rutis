@@ -490,9 +490,10 @@ impl Shared {
             let reason = match ending {
                 Ending::Stopped => "the access point stopped".to_owned(),
                 Ending::Revoked => format!("{id}: identity revoked"),
-                Ending::Closed => session
-                    .close_reason()
-                    .map_or_else(|| "the session ended".to_owned(), |error| error.to_string()),
+                Ending::Closed => session.close_reason().map_or_else(
+                    || "the connection ended".to_owned(),
+                    |error| error.to_string(),
+                ),
             };
             if let Ending::Revoked = ending {
                 // Closed before the release: calls in flight fail at once,

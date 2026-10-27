@@ -60,6 +60,9 @@ impl RuntimeRows {
 /// Mount it after the runtime and the loader, with the resolver the loader
 /// uses (`Chain::with_shared`).
 pub struct RuntimeRowsPlugin {
+    /// The runtime's name.
+    runtime: String,
+    /// Its plugin name: `rows of runtime <runtime>`.
     name: String,
     resolver: Arc<dyn RowsSource>,
     injects: [TypeKey; 2],
@@ -70,7 +73,8 @@ impl RuntimeRowsPlugin {
         let name = resolver.runtime_name().to_owned();
         Self {
             injects: [Runtime::key(&name).erase(), TypeKey::of::<Loader>()],
-            name,
+            name: format!("rows of runtime {name}"),
+            runtime: name,
             resolver,
         }
     }
@@ -78,7 +82,7 @@ impl RuntimeRowsPlugin {
 
 impl DynPlugin for RuntimeRowsPlugin {
     fn name(&self) -> &str {
-        "runtime-rows"
+        &self.name
     }
 
     fn injects(&self) -> Vec<TypeKey> {
@@ -87,8 +91,8 @@ impl DynPlugin for RuntimeRowsPlugin {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            let runtime = ctx.require_at::<Runtime>(&Runtime::key(&self.name))?;
-            let key = RuntimeRows::key(&self.name);
+            let runtime = ctx.require_at::<Runtime>(&Runtime::key(&self.runtime))?;
+            let key = RuntimeRows::key(&self.runtime);
             let loader = ctx.require::<Loader>()?;
             let stale = self.resolver.take_stale();
             let rows: Vec<String> = loader
@@ -102,6 +106,7 @@ impl DynPlugin for RuntimeRowsPlugin {
                 .map(|entry| entry.id)
                 .collect();
             let owner = ctx.clone();
+            let runtime_name = self.runtime.clone();
             // In a task, not in apply: reloading takes the loader's lock,
             // which a reconcile that (re)started this plugin may hold.
             let refresh = tokio::spawn(async move {
@@ -109,13 +114,13 @@ impl DynPlugin for RuntimeRowsPlugin {
                     // A row that fails to resolve reports it in its status;
                     // the others still start.
                     if let Err(error) = loader.refresh(&id).await {
-                        eprintln!("rutis-loader: cannot resolve row {id} again: {error}");
+                        eprintln!("{id}: cannot load: {error}");
                     }
                 }
                 if let Err(error) = owner.provide_key(key, Arc::new(RuntimeRows { runtime })) {
                     // Disposed meanwhile: nothing to provide to.
                     if !owner.cancellation_token().is_cancelled() {
-                        eprintln!("rutis-loader: cannot release the rows: {error}");
+                        eprintln!("runtime {runtime_name}: cannot release its rows: {error}");
                     }
                 }
             });

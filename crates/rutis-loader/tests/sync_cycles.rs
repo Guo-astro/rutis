@@ -152,8 +152,8 @@ class Back:
     def s2(self):
         try:
             return f"s2 got {self.ctx.use('n_back').back()}"
-        except SyncWaitCycle:
-            return "s2: SyncWaitCycle"
+        except SyncWaitCycle as error:
+            return f"s2: SyncWaitCycle: {error}"
 
 
 provides = {"p2_back": Back}
@@ -584,9 +584,9 @@ async fn one_node_and_two_python_runtimes() {
     let kick = call(&fixture.root, "p1_svc", "kick");
     let kicked = answer(&kick, "p1.kick");
     let kicked = kicked.as_str().unwrap();
-    assert!(
-        kicked == "p1 kicked s2: SyncWaitCycle",
-        "s2's call back is refused: {kicked}"
+    assert_eq!(
+        kicked, "p1 kicked s2: SyncWaitCycle: SyncWaitCycle: n_back.back would wait on itself: p2b → nb → n → p2 → p1 → p2b (synchronous calls)",
+        "s2's call back is refused, the rows named (§8.1 row 9)"
     );
     opener.open("slow");
     assert_eq!(

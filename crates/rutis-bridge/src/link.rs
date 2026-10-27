@@ -195,7 +195,7 @@ pub struct LinkPlugin {
 impl LinkPlugin {
     pub fn new(config: LinkConfig) -> Self {
         Self {
-            name: format!("rutis-bridge/link#{}", config.peer),
+            name: format!("link to {}", config.peer),
             injects: [
                 transport_key(&config.transport).erase(),
                 identity_key(&config.identity).erase(),
@@ -543,10 +543,10 @@ impl Link {
                         // end's id) is an authentication failure.
                         let ended = live.session.close_reason();
                         let reason = ended.as_ref().map_or_else(
-                            || "the session ended".to_owned(),
+                            || "the connection ended".to_owned(),
                             |error| error.to_string(),
                         );
-                        live.end("session ended").await;
+                        live.end("the connection ended").await;
                         (ended.as_ref().map_or(Failure::Retryable, classify), reason)
                     }
                 },
@@ -652,7 +652,7 @@ impl Link {
                 }
                 () = ended => {
                     if let Some(old) = current.take() {
-                        old.end("session ended").await;
+                        old.end("the connection ended").await;
                     }
                     self.state.send_replace(LinkState::Connecting);
                 }

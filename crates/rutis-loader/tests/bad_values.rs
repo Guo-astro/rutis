@@ -275,7 +275,7 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     // host, which knows the far end takes no objects.
     let object_to = |service: &str, far: &str| {
         [
-            format!("argument 1 of {service}.take: an object with methods cannot cross to {far}"),
+            format!("{service}.take: argument 1 cannot be sent: an object with methods cannot cross to {far}"),
             PASS_DATA.to_owned(),
         ]
     };
@@ -305,7 +305,7 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
         &fixture,
         "js object from py failed: ",
         &[
-            "the result of py_taker.obj: an object with methods cannot cross to node",
+            "py_taker.obj: the result cannot be sent: an object with methods cannot cross to node",
             PASS_DATA,
         ],
     )
@@ -314,7 +314,7 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
         &fixture,
         "py object from js failed: ",
         &[
-            "the result of js_taker.obj: an object with methods cannot cross to py",
+            "js_taker.obj: the result cannot be sent: an object with methods cannot cross to py",
             PASS_DATA,
         ],
     )
@@ -325,25 +325,37 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     expect(
         &fixture,
         "js big to py failed: ",
-        &["argument 1 of py_taker.take: the message would be ", OVER],
+        &[
+            "py_taker.take: argument 1 cannot be sent: the message would be ",
+            OVER,
+        ],
     )
     .await;
     expect(
         &fixture,
         "js big from py failed: ",
-        &["the result of py_taker.big: the message would be ", OVER],
+        &[
+            "py_taker.big: the result cannot be sent: the message would be ",
+            OVER,
+        ],
     )
     .await;
     expect(
         &fixture,
         "py big to js failed: ",
-        &["argument 1 of js_taker.take: the message would be ", OVER],
+        &[
+            "js_taker.take: argument 1 cannot be sent: the message would be ",
+            OVER,
+        ],
     )
     .await;
     expect(
         &fixture,
         "py big from js failed: ",
-        &["the result of js_taker.big: the message would be ", OVER],
+        &[
+            "js_taker.big: the result cannot be sent: the message would be ",
+            OVER,
+        ],
     )
     .await;
     // A thrown string, relayed by Go's `return err`, is the string again.

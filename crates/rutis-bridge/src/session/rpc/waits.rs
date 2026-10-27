@@ -60,6 +60,9 @@ struct Hop {
     chain: Vec<Global>,
     /// An entry: no caller waits for it (`src` and `sid` are empty).
     entry: bool,
+    /// The row that made the call and the row it went to, when a row's
+    /// service forwarded it ([`with_rows`]): for the cycle's text.
+    rows: Option<(String, String)>,
 }
 
 impl Hop {
@@ -177,10 +180,11 @@ pub(super) fn forward(
     seq: u64,
     path: &[String],
     synchronous: bool,
-) -> Result<bool, Vec<String>> {
+) -> Result<bool, Cycle> {
     if crate::session::rpc::unchained_now() || (MARKS.load(Ordering::SeqCst) == 0 && !synchronous) {
         return Ok(false);
     }
+    let rows = ROWS.with(|rows| rows.borrow().clone());
     let mut waits = WAITS.lock().unwrap();
     let mut chain = decode(path, dst);
     let caller = chain
@@ -200,6 +204,7 @@ pub(super) fn forward(
             seq,
             chain,
             entry: false,
+            rows: rows.clone(),
         },
         // The caller waits synchronously but no marked call is on its chain:
         // the host's own `invoke`/`request_sync`, say. It is a hop all the
@@ -213,6 +218,7 @@ pub(super) fn forward(
             seq,
             chain,
             entry: false,
+            rows: rows.clone(),
         },
         // Nobody waits for it: a boundary of the chains made under it, and,
         // in a runtime with one stack, a call stack order holds for.
@@ -224,16 +230,71 @@ pub(super) fn forward(
             seq,
             chain,
             entry: true,
+            rows: rows.clone(),
         },
     };
     if !hop.entry {
-        if let Some(cycle) = cycle_among(waits.hops.values(), &hop, &waits.profiles) {
-            return Err(cycle);
+        if let Some(calls) = cycle_among(waits.hops.values(), &hop, &waits.profiles) {
+            let rows = rows_of(&calls, &waits.hops, &hop);
+            return Err(Cycle { calls, rows });
         }
     }
     waits.hops.insert(hop.gid(), hop);
     waits.counted();
     Ok(true)
+}
+
+/// A wait cycle a call would close: its calls (`session/id`), and, when
+/// rows made every call of it, the rows in order (`chat`, `weather`,
+/// `chat`).
+#[derive(Debug)]
+pub(super) struct Cycle {
+    #[cfg_attr(not(test), allow(dead_code))] // read by the tests
+    pub calls: Vec<String>,
+    pub rows: Option<Vec<String>>,
+}
+
+thread_local! {
+    /// The calling row and the row called, while a row's service forwards
+    /// a call ([`with_rows`]).
+    static ROWS: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, a call from row `from` into row `to`'s service: the hops it
+/// records carry both, so a cycle can be written with row names.
+pub(crate) fn with_rows<R>(rows: Option<(String, String)>, f: impl FnOnce() -> R) -> R {
+    let previous = ROWS.with(|current| current.replace(rows));
+    let result = f();
+    ROWS.with(|current| current.replace(previous));
+    result
+}
+
+/// The rows of the cycle `calls` (`new` first): for each call, the row
+/// that made it and the row it went to. `None` when a call of it was not
+/// a row's.
+fn rows_of(calls: &[String], hops: &HashMap<Global, Hop>, new: &Hop) -> Option<Vec<String>> {
+    let mut rows = Vec::new();
+    for (index, call) in calls.iter().enumerate() {
+        let hop = match index {
+            0 => new,
+            _ => {
+                let (session, id) = call.split_once('/')?;
+                hops.get(&(session.to_owned(), id.to_owned()))?
+            }
+        };
+        let (from, to) = hop.rows.as_ref()?;
+        // Each call's rows, a row met twice in a row once.
+        for row in [from, to] {
+            if rows.last() != Some(row) {
+                rows.push(row.clone());
+            }
+        }
+    }
+    // The cycle ends where it began.
+    if rows.last() != rows.first() {
+        rows.push(rows.first()?.clone());
+    }
+    Some(rows)
 }
 
 /// The cycle that `new` would close among `hops`, if any.
@@ -387,6 +448,7 @@ mod tests {
             seq,
             chain,
             entry: false,
+            rows: None,
         }
     }
 
@@ -403,6 +465,7 @@ mod tests {
             seq,
             chain,
             entry: true,
+            rows: None,
         }
     }
 
@@ -539,9 +602,11 @@ mod tests {
         let cycle = forward("cycle_a", "rust:3", 3, &["cycle_b/node:2".to_owned()], true)
             .expect_err("the host's call into A closes the cycle");
         assert!(
-            cycle.iter().any(|call| call == "cycle_a/rust:3"),
+            cycle.calls.iter().any(|call| call == "cycle_a/rust:3"),
             "{cycle:?}"
         );
+        // Made by no row's service: no rows to name.
+        assert_eq!(cycle.rows, None);
         returned("cycle_a", "rust:1");
         returned("cycle_b", "rust:2");
         answered("cycle_a", "node:1");

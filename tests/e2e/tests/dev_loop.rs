@@ -535,8 +535,11 @@ fn dev_loop(kind: Kind) {
     // A7: the error names the file and line 5, on that line (Python) or in
     // the compiler's report on the following lines (`index.ts:5:…`,
     // `plugin.go:5:…`).
-    let located =
-        |line: &str| line.contains(&file) && (line.contains(":5:") || line.contains("line 5"));
+    // Python writes it `(demo/__init__.py:5)` (#677).
+    let located = |line: &str| {
+        line.contains(&file)
+            && (line.contains(":5:") || line.contains(":5)") || line.contains("line 5"))
+    };
     if !located(&error) {
         dev.wait_for(&format!("the error's location ({file}, line 5)"), located);
     }

@@ -48,6 +48,13 @@ struct Marked {
     type_name: &'static str,
 }
 
+impl Marked {
+    /// The name it is served by, for messages.
+    fn name(&self) -> &'static str {
+        exported_name(&self.entries).unwrap_or_else(|_| short(self.type_name))
+    }
+}
+
 impl HostDispatch for Marked {
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let Some(entry) = self
@@ -55,23 +62,12 @@ impl HostDispatch for Marked {
             .iter()
             .find(|entry| entry.methods().contains(&method))
         else {
-            let mut methods: Vec<&str> = self
+            let methods: Vec<&str> = self
                 .entries
                 .iter()
                 .flat_map(|entry| entry.methods().iter().copied())
                 .collect();
-            methods.sort_unstable();
-            let service = short(self.type_name);
-            return Err(Error::binding(
-                crate::session::code::NO_METHOD,
-                format!(
-                    "{service} has no method {method} (methods: {})",
-                    methods.join(", ")
-                ),
-                Some(
-                    serde_json::json!({ "service": service, "method": method, "methods": methods }),
-                ),
-            ));
+            return Err(Error::no_method(self.name(), method, methods));
         };
         // Read interceptors apply with the calling row as the reader, as
         // for a Rust reader in its place; with no row (a Rust or peer
@@ -81,19 +77,28 @@ impl HostDispatch for Marked {
         let service = entry
             .resolve(&self.ctx, &self.native, &self.provision, actor)
             .map_err(|why| {
-                let service = short(self.type_name);
+                let service = self.name();
                 Error::binding(
                     crate::session::code::UNAVAILABLE,
-                    format!("{service} is not available: {why}"),
+                    // The kernel's reason names its own ids and paths: it
+                    // goes in `data` only.
+                    format!("service {service} is not available"),
                     Some(serde_json::json!({ "service": service, "reason": why.to_string() })),
                 )
             })?;
+        let name = self.name();
         match entry.invoke(&service, method, Encoded(Box::new(args)), &WIRE) {
             Ok(Answer::Ready(value)) => Ok(value_of(value)),
-            Ok(Answer::Later(future)) => Ok(Value::future(async move {
-                future.await.map(value_of).map_err(error_of)
-            })),
-            Err(error) => Err(error_of(error)),
+            Ok(Answer::Later(future)) => {
+                let method = method.to_owned();
+                Ok(Value::future(async move {
+                    future
+                        .await
+                        .map(value_of)
+                        .map_err(|error| error_in(error, name, &method))
+                }))
+            }
+            Err(error) => Err(error_in(error, name, method)),
         }
     }
 
@@ -398,23 +403,197 @@ fn default_name(ident: &str) -> String {
 // ── The wire ────────────────────────────────────────────────────
 
 /// The `count` arguments of a call, those not passed being undefined.
-fn arguments(args: Value, count: usize) -> Result<std::vec::IntoIter<Value>, Error> {
+fn arguments(args: Value, count: usize) -> Result<std::vec::IntoIter<Value>, CallError> {
     let mut args = match args {
         Value::Undefined => Vec::new(),
-        args => args.list()?,
+        args => args.list().map_err(call_error)?,
     };
     if args.len() > count {
-        return Err(Error::binding(
-            crate::session::code::BAD_ARGUMENT,
-            format!(
-                "expected at most {count} arguments, received {}",
-                args.len()
-            ),
-            Some(serde_json::json!({ "expected": count, "received": args.len() })),
-        ));
+        return Err(BadArgument::TooMany {
+            expected: count,
+            received: args.len(),
+        }
+        .into());
     }
     args.resize(count, Value::Undefined);
     Ok(args.into_iter())
+}
+
+/// An argument of a call a marked service's method cannot take. The
+/// call (`service.method`) is named where the error leaves the service
+/// ([`error_in`]).
+#[derive(Debug, Clone, PartialEq)]
+enum BadArgument {
+    TooMany {
+        expected: usize,
+        received: usize,
+    },
+    /// Argument `argument` (from 1) not passed.
+    Missing {
+        argument: usize,
+        expected: String,
+    },
+    /// Argument `argument` (from 1) of the wrong type or value.
+    Wrong {
+        argument: usize,
+        expected: String,
+        actual: String,
+    },
+    /// Argument `argument` (from 1) not valid for another reason, said
+    /// in `why`.
+    Invalid {
+        argument: usize,
+        why: String,
+    },
+}
+
+impl BadArgument {
+    /// The text after `service.method` (`: argument 1 should be …`, or
+    /// ` takes 1 argument, got 2`).
+    fn text(&self) -> String {
+        match self {
+            Self::TooMany { expected, received } => {
+                let plural = if *expected == 1 { "" } else { "s" };
+                format!(" takes {expected} argument{plural}, got {received}")
+            }
+            Self::Missing { argument, .. } => format!(": argument {argument} is missing"),
+            Self::Wrong {
+                argument,
+                expected,
+                actual,
+            } => format!(": argument {argument} should be {expected}, got {actual}"),
+            Self::Invalid { argument, why } => format!(": argument {argument} is not valid: {why}"),
+        }
+    }
+
+    /// The error of a call to `service.method` (code `bad-argument`).
+    fn error(&self, service: &str, method: &str) -> Error {
+        let mut data = serde_json::json!({ "service": service, "method": method });
+        match self {
+            Self::TooMany { expected, received } => {
+                data["expected"] = (*expected).into();
+                data["received"] = (*received).into();
+            }
+            Self::Missing { argument, expected }
+            | Self::Wrong {
+                argument, expected, ..
+            } => {
+                data["argument"] = (*argument).into();
+                data["expected"] = expected.clone().into();
+            }
+            Self::Invalid { argument, .. } => data["argument"] = (*argument).into(),
+        }
+        Error::binding(
+            crate::session::code::BAD_ARGUMENT,
+            format!("{service}.{method}{}", self.text()),
+            Some(data),
+        )
+    }
+
+    /// What decoding argument `argument` (`value`) said (`why`), in the
+    /// caller's words: `Missing` for an argument not passed, `Wrong` for a
+    /// value of another type, saying what it should be and what it is.
+    fn of_decoding(argument: usize, value: &Value, why: &str) -> Self {
+        let expected = why
+            .rsplit_once(", expected ")
+            .map(|(_, expected)| expected_in_words(expected));
+        if let (Value::Undefined, Some(expected)) = (value, expected.clone()) {
+            return Self::Missing { argument, expected };
+        }
+        let unexpected = why
+            .strip_prefix("invalid type: ")
+            .or_else(|| why.strip_prefix("invalid value: "))
+            .and_then(|rest| rest.rsplit_once(", expected "))
+            .map(|(actual, _)| actual);
+        match (expected, unexpected) {
+            (Some(expected), Some(actual)) => Self::Wrong {
+                argument,
+                expected,
+                actual: tagged_in_words(value).unwrap_or_else(|| actual_in_words(actual)),
+            },
+            _ => Self::Invalid {
+                argument,
+                why: why.to_owned(),
+            },
+        }
+    }
+}
+
+impl From<BadArgument> for CallError {
+    fn from(bad: BadArgument) -> Self {
+        CallError::with_raw(
+            bad.text().trim_start_matches(": ").trim().to_owned(),
+            Box::new(bad),
+        )
+    }
+}
+
+/// What a Rust type expects, as a developer of any language reads it.
+fn expected_in_words(expected: &str) -> String {
+    let expected = expected.trim();
+    match expected {
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" => "an integer".into(),
+        "f32" | "f64" => "a number".into(),
+        "a borrowed string" | "a string" | "a char" => "a string".into(),
+        "a boolean" => "a boolean".into(),
+        "a sequence" => "a list".into(),
+        "a map" => "an object".into(),
+        "unit" => "nothing".into(),
+        _ if expected.starts_with("struct ") || expected.starts_with("a map") => "an object".into(),
+        _ if expected.starts_with("a tuple") || expected.starts_with("tuple") => "a list".into(),
+        _ if expected.starts_with("enum ") => "one of its values".into(),
+        other => other.trim_matches('`').to_owned(),
+    }
+}
+
+/// A value as serde names it (`string "x"`, `integer `5``, `map`), shown
+/// short: `"x"`, `5`, `an object`.
+fn actual_in_words(actual: &str) -> String {
+    let actual = actual.trim();
+    if let Some(text) = actual.strip_prefix("string ") {
+        return text.to_owned();
+    }
+    if let (Some(start), Some(end)) = (actual.find('`'), actual.rfind('`')) {
+        if start < end {
+            return actual[start + 1..end].to_owned();
+        }
+    }
+    match actual {
+        "map" => "an object".into(),
+        "sequence" => "a list".into(),
+        "null" | "unit value" | "unit" | "Option value" => "null".into(),
+        other => other.to_owned(),
+    }
+}
+
+/// A value of a kind not every language has, named (`a bigint`, `bytes`).
+fn tagged_in_words(value: &Value) -> Option<String> {
+    Some(
+        match value {
+            Value::BigInt(_) => "a bigint",
+            Value::Bytes(_) => "bytes",
+            Value::Instant(_) => "a point in time",
+            Value::DateTime(_) => "a date and time",
+            Value::Date(_) => "a date",
+            Value::Time(_) => "a time of day",
+            Value::Decimal(_) => "a decimal",
+            Value::Uuid(_) => "a UUID",
+            Value::Map(_) => "a map",
+            Value::Set(_) => "a set",
+            Value::Reference(reference) if reference.is_function() => "a function",
+            Value::Reference(_) => "an object reference",
+            _ => return None,
+        }
+        .to_owned(),
+    )
+}
+
+/// An argument of a call, as [`BridgeWire::arguments`] hands it out: its
+/// position (from 1) kept for messages.
+struct Argument {
+    position: usize,
+    value: Value,
 }
 
 /// The plugin definition passed as a parameter (`rutis::Definition`): the
@@ -437,13 +616,26 @@ fn definition(value: Value) -> BoxFuture<'static, Result<rutis::Definition, Erro
     })
 }
 
+/// How the text for a plugin that does not declare `name` ends.
+fn undeclared_tail(name: &str) -> String {
+    format!(": add '{name}' to its inject")
+}
+
 struct BridgeWire;
 static WIRE: BridgeWire = BridgeWire;
 
 fn value_of(encoded: Encoded) -> Value {
+    argument_of(encoded).1
+}
+
+/// A value and, for an argument of the call, its position (from 1).
+fn argument_of(encoded: Encoded) -> (Option<usize>, Value) {
     match encoded.0.downcast::<Value>() {
-        Ok(value) => *value,
-        Err(_) => Value::Undefined,
+        Ok(value) => (None, *value),
+        Err(other) => match other.downcast::<Argument>() {
+            Ok(argument) => (Some(argument.position), argument.value),
+            Err(_) => (None, Value::Undefined),
+        },
     }
 }
 
@@ -451,7 +643,28 @@ fn error_of(error: CallError) -> Error {
     let (message, raw) = error.into_raw();
     match raw.map(|raw| raw.downcast::<Error>()) {
         Some(Ok(error)) => *error,
-        _ => Error::Value(message),
+        Some(Err(raw)) => match raw.downcast::<BadArgument>() {
+            // Outside a call to a named service (a function passed back).
+            Ok(bad) => Error::binding(
+                crate::session::code::BAD_ARGUMENT,
+                bad.text().trim_start_matches(": ").trim().to_owned(),
+                None,
+            ),
+            Err(_) => Error::Value(message),
+        },
+        None => Error::Value(message),
+    }
+}
+
+/// [`error_of`] for a call to `service.method`: an argument it cannot
+/// take named as one of that call.
+fn error_in(error: CallError, service: &str, method: &str) -> Error {
+    match error
+        .raw()
+        .and_then(|raw| raw.downcast_ref::<BadArgument>())
+    {
+        Some(bad) => bad.error(service, method),
+        None => error_of(error),
     }
 }
 
@@ -485,8 +698,16 @@ impl Function for Passed {
 
 impl Wire for BridgeWire {
     fn arguments(&self, args: Encoded, count: usize) -> Result<Vec<Encoded>, CallError> {
-        let args = arguments(value_of(args), count).map_err(call_error)?;
-        Ok(args.map(|arg| Encoded(Box::new(arg))).collect())
+        let args = arguments(value_of(args), count)?;
+        Ok(args
+            .enumerate()
+            .map(|(index, value)| {
+                Encoded(Box::new(Argument {
+                    position: index + 1,
+                    value,
+                }))
+            })
+            .collect())
     }
 
     fn decode(
@@ -496,11 +717,23 @@ impl Wire for BridgeWire {
             &mut dyn erased_serde::Deserializer<'static>,
         ) -> Result<(), erased_serde::Error>,
     ) -> Result<(), CallError> {
-        crate::session::decode_data_with(value_of(value), |json| {
+        let (position, value) = argument_of(value);
+        let Some(position) = position else {
+            return crate::session::decode_data_with(value, |json| {
+                into(&mut <dyn erased_serde::Deserializer>::erase(json))
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(call_error);
+        };
+        let shown = value.clone();
+        crate::session::decode_data_with(value, |json| {
             into(&mut <dyn erased_serde::Deserializer>::erase(json))
                 .map_err(|error| error.to_string())
         })
-        .map_err(call_error)
+        .map_err(|error| match error {
+            Error::Value(why) => BadArgument::of_decoding(position, &shown, &why).into(),
+            error => call_error(error),
+        })
     }
 
     fn encode(&self, value: &dyn erased_serde::Serialize) -> Result<Encoded, CallError> {
@@ -539,7 +772,8 @@ impl Wire for BridgeWire {
             // A plugin using the service it does not declare (#676).
             Some(name) => format!(
                 "{method} needs the calling row's context, which a call carries only when the \
-                 calling plugin declares {name} in its inject: add '{name}' to its inject"
+                 calling plugin declares {name} in its inject{}",
+                undeclared_tail(&name)
             ),
             None => format!(
                 "{method} needs the calling row's context: only a row of a language runtime can call it"
@@ -548,6 +782,17 @@ impl Wire for BridgeWire {
     }
 
     fn error(&self, message: String) -> CallError {
+        // The call of a plugin that does not declare the service it uses
+        // (`no_caller`): `not-declared`.
+        if let Some(name) = crate::session::unleased() {
+            if message.ends_with(&undeclared_tail(&name)) {
+                return call_error(Error::binding(
+                    crate::session::code::NOT_DECLARED,
+                    message,
+                    Some(serde_json::json!({ "service": name })),
+                ));
+            }
+        }
         call_error(Error::Value(message))
     }
 
@@ -596,7 +841,16 @@ mod tests {
             args.collect::<Vec<_>>(),
             [serde_json::json!(1).into(), Value::Undefined]
         );
-        assert!(arguments(Value::List(vec![Value::Undefined; 3]), 2).is_err());
+        let too_many = arguments(Value::List(vec![Value::Undefined; 3]), 2).unwrap_err();
+        assert_eq!(
+            error_in(too_many, "adder", "add").to_string(),
+            "adder.add takes 2 arguments, got 3"
+        );
+        let one = arguments(Value::List(vec![Value::Undefined; 2]), 1).unwrap_err();
+        assert_eq!(
+            error_in(one, "adder", "add").to_string(),
+            "adder.add takes 1 argument, got 2"
+        );
     }
 
     #[test]
@@ -613,6 +867,83 @@ mod tests {
         pub fn ping(&self) -> u32 {
             1
         }
+    }
+
+    pub struct Adder;
+
+    #[rutis::service]
+    impl Adder {
+        pub fn add(&self, a: u32, label: String) -> String {
+            format!("{label}{a}")
+        }
+    }
+
+    /// A call that is wrong says which service, method and argument, in
+    /// words of any language, with code `bad-argument` / `no-method`
+    /// (#677).
+    #[tokio::test]
+    async fn wrong_calls_name_the_service_method_and_argument() {
+        let root = Ctx::root().unwrap();
+        root.provide(Adder).unwrap();
+        let service = root.get_at::<dyn HostDispatch>(&host_key("adder")).unwrap();
+        let call = |method: &str, args: Vec<Value>| service.invoke(method, Value::List(args));
+        let refused = |reply: Reply| async move {
+            match reply {
+                Err(error) => error,
+                Ok(value) => settle(value).await.unwrap_err(),
+            }
+        };
+        let cases: Vec<(&str, Vec<Value>, &str, &str)> = vec![
+            (
+                "add",
+                vec![serde_json::json!("x").into(), serde_json::json!("n").into()],
+                "adder.add: argument 1 should be an integer, got \"x\"",
+                "bad-argument",
+            ),
+            (
+                "add",
+                vec![Value::Bytes(vec![1]), serde_json::json!("n").into()],
+                "adder.add: argument 1 should be an integer, got bytes",
+                "bad-argument",
+            ),
+            (
+                "add",
+                vec![serde_json::json!(1).into()],
+                "adder.add: argument 2 is missing",
+                "bad-argument",
+            ),
+            (
+                "add",
+                vec![serde_json::json!(1).into(), serde_json::json!(2).into()],
+                "adder.add: argument 2 should be a string, got 2",
+                "bad-argument",
+            ),
+            (
+                "add",
+                vec![Value::Undefined; 3],
+                "adder.add takes 2 arguments, got 3",
+                "bad-argument",
+            ),
+            (
+                "ad",
+                vec![],
+                "adder has no method ad (methods: add)",
+                "no-method",
+            ),
+        ];
+        for (method, args, text, code) in cases {
+            let error = refused(call(method, args)).await;
+            assert_eq!(error.to_string(), text);
+            assert_eq!(error.code(), Some(code), "{text}");
+        }
+        let error = refused(call("add", vec![serde_json::json!(1).into()])).await;
+        assert_eq!(
+            error.data(),
+            Some(
+                serde_json::json!({ "service": "adder", "method": "add", "argument": 2, "expected": "a string" })
+            )
+        );
+        root.shutdown().await.unwrap();
     }
 
     /// A plugin that hands out its context, and runs `then` on it first.

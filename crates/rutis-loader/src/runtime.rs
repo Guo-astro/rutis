@@ -745,8 +745,16 @@ fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
 }
 
 /// The row failed for a reason rutis states.
+/// A row refused a service name another provider has: printed as the
+/// row's state on its own (`b: forecast is already provided by a`).
 fn refused(reason: String) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(reason.into()))
+    rutis::Error::from(ErrorKind::PluginFailed(Box::new(
+        rutis_bridge::session::Error::Remote {
+            name: "ProvideError".into(),
+            message: reason,
+            graph: None,
+        },
+    )))
 }
 
 impl DynPlugin for JsRow {

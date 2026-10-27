@@ -938,7 +938,7 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
     .await;
     assert!(
         matches!(&failed, Err(Error::Value(message))
-            if message.starts_with("argument 1 of echo: the message would be ")
+            if message.starts_with("echo: argument 1 cannot be sent: the message would be ")
                 && message.ends_with(" bytes, over the limit of 65536 bytes")),
         "a value over the limit fails explicitly: {:?}",
         failed.as_ref().map(|_| "a reply")

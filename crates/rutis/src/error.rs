@@ -159,7 +159,7 @@ pub enum ErrorKind {
     InstanceOutOfScope { instance: InstanceId },
     /// `parallel` had failures: one per failed listener, in registration
     /// order (`AggregateError`, also for a single failure).
-    #[error("{} listeners of {name} failed", errors.len())]
+    #[error("{}", listeners_failed(errors.len(), name))]
     ListenersFailed {
         name: String,
         errors: Vec<Arc<ErrorKind>>,
@@ -519,6 +519,14 @@ pub(crate) fn join_panic_error(join_err: tokio::task::JoinError) -> Error {
     }
 }
 
+/// `1 listener of <event> failed` / `<n> listeners of <event> failed`.
+fn listeners_failed(count: usize, event: &str) -> String {
+    match count {
+        1 => format!("1 listener of {event} failed"),
+        n => format!("{n} listeners of {event} failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,6 +554,17 @@ mod tests {
             std::error::Error::source(&error).unwrap().to_string(),
             "outer cause"
         );
+    }
+
+    /// One failed listener is `1 listener`, more are `n listeners` (#677).
+    #[test]
+    fn listeners_failed_counts_in_words() {
+        let failed = |count: usize| ErrorKind::ListenersFailed {
+            name: "weather/asked".into(),
+            errors: (0..count).map(|_| Arc::new(ErrorKind::Closed)).collect(),
+        };
+        assert_eq!(failed(1).to_string(), "1 listener of weather/asked failed");
+        assert_eq!(failed(2).to_string(), "2 listeners of weather/asked failed");
     }
 
     #[test]

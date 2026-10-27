@@ -684,7 +684,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
         .answer(&mut a, rung)
         .expect_err("a parallel to a listener cut off by the outage fails");
     // The AggregateError's message (a probe reports messages only).
-    assert_eq!(error, "1 listeners of t/ring failed");
+    assert_eq!(error, "1 listener of t/ring failed");
     assert_eq!(
         ringer.call(&mut a, "bell", "ring", json!(["meanwhile"])),
         Ok(json!(null)),

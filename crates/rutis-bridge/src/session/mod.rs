@@ -39,13 +39,15 @@ pub use values::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid};
 pub enum Error {
     #[error("{0}")]
     Transport(String),
-    #[error("{name}: {message}")]
+    /// Printed `<name>: <message>`; the names of [`MESSAGE_ALONE`] as the
+    /// message alone: `"need 5 words"`, `cannot load src/util.ts: …`.
+    #[error("{}", remote_text(name, message))]
     Remote {
         name: String,
         message: String,
         graph: Option<serde_json::Value>,
     },
-    #[error("synchronous wait cycle: {0}")]
+    #[error("{0}")]
     SyncWaitCycle(String),
     /// A value that cannot cross, or a call this side refused: only that
     /// call fails. The text says which call, which argument (or the
@@ -67,6 +69,25 @@ pub enum Error {
         message: String,
         data: Option<serde_json::Value>,
     },
+}
+
+/// The error names whose message says all there is, printed alone: a
+/// thrown value that is not an error (`ThrownValue`: `"need 5 words"`), a
+/// row that cannot load (`LoadError`: `cannot load src/util.ts: …`), a row
+/// providing a name another has (`ProvideError`: `forecast is already
+/// provided by a`), and a call refused (`BindingError`: `weather has no
+/// method tomorow (methods: …)`).
+pub(crate) const MESSAGE_ALONE: [&str; 4] =
+    ["ThrownValue", "LoadError", "ProvideError", "BindingError"];
+
+/// How a far end's error reads: `<name>: <message>`, or the message alone
+/// for the names of [`MESSAGE_ALONE`].
+fn remote_text(name: &str, message: &str) -> String {
+    if MESSAGE_ALONE.contains(&name) {
+        message.to_owned()
+    } else {
+        format!("{name}: {message}")
+    }
 }
 
 /// The codes of the `BindingError`s rutis raises (the diagnostics design
@@ -94,6 +115,46 @@ impl Error {
             code: Some(code),
             message,
             data,
+        }
+    }
+
+    /// `service` has no method `method`: `weather has no method tomorow
+    /// (methods: today, tomorrow)`, the methods sorted, `(no methods)`
+    /// when it has none (code `no-method`).
+    pub fn no_method(service: &str, method: &str, mut methods: Vec<&str>) -> Self {
+        methods.sort_unstable();
+        methods.dedup();
+        let listed = match methods.is_empty() {
+            true => "no methods".to_owned(),
+            false => format!("methods: {}", methods.join(", ")),
+        };
+        Self::binding(
+            code::NO_METHOD,
+            format!("{service} has no method {method} ({listed})"),
+            Some(serde_json::json!({ "service": service, "method": method, "methods": methods })),
+        )
+    }
+
+    /// This error as a far end reads it: a `BindingError` (or a value
+    /// error) as a `BindingError` with its code and data in an error graph,
+    /// which [`Error::with_site`] can then record a site on.
+    pub(crate) fn graphed(self) -> Self {
+        match self {
+            Self::Remote { .. } | Self::SyncWaitCycle(_) | Self::Handshake(_) => self,
+            error => {
+                let failure = protocol::Failure::from(error);
+                let graph = failure.graph.or_else(|| {
+                    Some(serde_json::json!({
+                        "root": { "type": "reference", "value": 0 },
+                        "nodes": [{ "type": "error", "name": failure.name, "message": failure.message }],
+                    }))
+                });
+                Self::Remote {
+                    name: failure.name,
+                    message: failure.message,
+                    graph,
+                }
+            }
         }
     }
 
@@ -126,6 +187,9 @@ impl Error {
     pub fn data(&self) -> Option<serde_json::Value> {
         if let Self::Binding { data, .. } = self {
             return data.clone();
+        }
+        if let Self::Value(message) = self {
+            return Some(rpc::crossing::value_data(message));
         }
         let Self::Remote { graph, .. } = self else {
             return None;

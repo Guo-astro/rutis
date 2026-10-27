@@ -494,10 +494,11 @@ impl Dispatch for Imports {
                     .get(name)
                     .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
                     .ok_or_else(|| {
+                        let service = name_of(name);
                         Error::binding(
                             crate::session::code::UNAVAILABLE,
-                            format!("{name} is not available here"),
-                            Some(serde_json::json!({ "service": name })),
+                            format!("service {service} is not available"),
+                            Some(serde_json::json!({ "service": service })),
                         )
                     })?;
                 // Through the registration rows share, of a service rows
@@ -689,6 +690,8 @@ pub struct Process {
     /// Those that belong to the process itself (handed over outside any
     /// row's call): they end when its session does.
     owned: Arc<Mutex<Vec<rutis::Definition>>>,
+    /// The runtime's name, as the mount gave it, for messages.
+    name: Option<String>,
 }
 
 /// What a plugin module declares, for rutis-loader (see
@@ -979,6 +982,7 @@ impl Process {
             scope: scope.clone(),
             definitions: Mutex::default(),
             owned: Arc::default(),
+            name: runtime.clone(),
         });
         let _ = process.imports.process.set(Arc::downgrade(&process));
         // The plugin definitions the process owns end with its session.
@@ -1636,9 +1640,14 @@ impl Process {
         let status = child.exited().await;
         result?;
         if status != "exited normally" {
-            return Err(Error::Transport(format!("Cordis process {status}")));
+            return Err(Error::Transport(format!("the runtime process {status}")));
         }
         Ok(())
+    }
+
+    /// The runtime's name, as the mount gave it.
+    pub(crate) fn runtime_name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// How the Node process ended (for example `exited with signal: 9

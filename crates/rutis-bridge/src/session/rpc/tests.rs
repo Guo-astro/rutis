@@ -446,8 +446,10 @@ async fn a_running_synchronous_call_cancelled_keeps_its_mark() {
             closing.1.close(Error::Transport("test over".into()));
         }
         assert!(
-            matches!(refused, Ok(Err(Error::SyncWaitCycle(_)))),
-            "the forward closing the cycle is refused: {refused:?}"
+            matches!(&refused, Ok(Err(Error::SyncWaitCycle(message)))
+                if message.ends_with(" would wait on itself (synchronous calls)")
+                    && !message.contains(':')),
+            "the forward closing the cycle is refused, naming the call: {refused:?}"
         );
         assert!(matches!(far_a.read(), Frame::Return { id, .. } if id == "node:1"));
         far_a.ret(work, data(json!("worked")));
@@ -2069,7 +2071,7 @@ async fn integers_beyond_2_53_cross_as_bigints() {
     {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "argument 1 of t.m: cannot send the integer 18446744073709551615, beyond \
+            "t.m: argument 1 cannot be sent: cannot send the integer 18446744073709551615, beyond \
              ±(2^53-1) and so a bigint: the far end does not take bigint values (it did not declare the capability \
              value-bigint)"
         ),
@@ -2208,7 +2210,7 @@ async fn a_tagged_value_to_a_far_end_without_its_capability_fails_only_that_call
     {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "argument 1 of t.m: cannot send bytes: the far end does not take bytes values \
+            "t.m: argument 1 cannot be sent: cannot send bytes: the far end does not take bytes values \
              (it did not declare the capability value-bytes)"
         ),
         other => panic!("a value error expected, got {other:?}"),
@@ -2664,7 +2666,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     match b.invoke_async("host:svc\0scope", "take", call).await {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "argument 2 of svc.take: an object with methods cannot cross to py; \
+            "svc.take: argument 2 cannot be sent: an object with methods cannot cross to py; \
              pass plain data or a function instead"
         ),
         other => panic!("a value error expected, got {other:?}"),
@@ -2684,7 +2686,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
         match function.call_async(Value::List(vec![argument])).await {
             Err(Error::Value(message)) => assert_eq!(
                 message,
-                "argument 1 of a function: an object with methods cannot cross to py; \
+                "a function: argument 1 cannot be sent: an object with methods cannot cross to py; \
                  pass plain data or a function instead"
             ),
             other => panic!("a value error expected, got {other:?}"),
@@ -2694,7 +2696,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     let (message, _runtime) = runtime.await.unwrap();
     assert_eq!(
         message,
-        "the result of svc.get: an object with methods cannot cross to py; \
+        "svc.get: the result cannot be sent: an object with methods cannot cross to py; \
          pass plain data or a function instead"
     );
     assert!(b.close_reason().is_none() && a.close_reason().is_none());
@@ -2791,7 +2793,7 @@ async fn a_message_over_the_limit_fails_only_its_call() {
     ]);
     match peer.invoke_async("svc", "m", args).await {
         Err(Error::Value(message)) => assert!(
-            message.starts_with("argument 2 of svc.m: the message would be ")
+            message.starts_with("svc.m: argument 2 cannot be sent: the message would be ")
                 && message.ends_with(" bytes, over the limit of 1024 bytes"),
             "{message}"
         ),
@@ -2809,12 +2811,12 @@ async fn a_message_over_the_limit_fails_only_its_call() {
     );
     let ([message, awaited], _far) = script.await.unwrap();
     assert!(
-        message.starts_with("the result of svc.big: the message would be "),
+        message.starts_with("svc.big: the result cannot be sent: the message would be "),
         "{message}"
     );
     // An async result names the call that returned it.
     assert!(
-        awaited.starts_with("the result of svc.later: the message would be "),
+        awaited.starts_with("svc.later: the result cannot be sent: the message would be "),
         "{awaited}"
     );
     assert!(peer.close_reason().is_none());

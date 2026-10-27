@@ -808,22 +808,37 @@ impl Host {
         dependencies
     }
 
-    /// What has not stopped yet: the plugins stopping (or still starting),
-    /// and how many others wait for them to stop first.
+    /// What has not stopped yet: the rows (and runtimes) stopping, or
+    /// still starting, and how many other rows wait for them to stop
+    /// first.
     pub fn still_running(&self) -> (Vec<String>, usize) {
         use rutis::host::FiberState;
         let root = self.root.root_view().map(|root| root.id);
         let mut stopping = Vec::new();
         let mut waiting = 0;
+        let mut rows = std::collections::HashSet::new();
+        for entry in self.loader.entries() {
+            rows.extend(entry.plugin);
+            let rutis_loader::report::EntryStatus::Running(snapshot) = &entry.status else {
+                continue;
+            };
+            match snapshot.state {
+                FiberState::Disposed | FiberState::Failed => {}
+                FiberState::Unloading => stopping.push(entry.id),
+                FiberState::Loading => stopping.push(format!("{} (still starting)", entry.id)),
+                _ => waiting += 1,
+            }
+        }
+        // What is not a row (a runtime, a link) and still stops is named
+        // too; the rest of rutis's own plugins are not counted.
         for plugin in self.root.diagnostics().plugins {
-            if Some(plugin.id) == root {
+            if Some(plugin.id) == root || rows.contains(&plugin.id) {
                 continue;
             }
             match plugin.state {
-                FiberState::Disposed | FiberState::Failed => {}
                 FiberState::Unloading => stopping.push(plugin.name),
                 FiberState::Loading => stopping.push(format!("{} (still starting)", plugin.name)),
-                _ => waiting += 1,
+                _ => {}
             }
         }
         (stopping, waiting)

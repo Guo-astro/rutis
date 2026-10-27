@@ -28,7 +28,12 @@ pub fn describe(status: &EntryStatus) -> String {
             FiberState::Pending => "waiting for its services".into(),
             FiberState::Loading => "starting".into(),
             FiberState::Active => "running".into(),
+            // A headline already says what failed (`failed in apply: …`,
+            // `call to forecast.tomorrow failed: …`).
             FiberState::Failed => match &snapshot.error {
+                Some(error) if rutis_bridge::report::headline(error).is_some() => {
+                    rutis_bridge::report::report(error)
+                }
                 Some(error) => format!("failed: {}", rutis_bridge::report::report(error)),
                 None => "failed".into(),
             },
@@ -153,8 +158,8 @@ pub fn describe_link(state: &LinkState, was_ready: bool) -> Option<String> {
     };
     Some(match state {
         LinkState::Idle => return None,
-        // A listening link whose session ended waits for the far end.
-        LinkState::Connecting if was_ready => "link down (the session ended)".into(),
+        // A listening link whose connection ended waits for the far end.
+        LinkState::Connecting if was_ready => "link down (the connection ended)".into(),
         LinkState::Connecting => return None,
         LinkState::Ready { .. } => "link connected".into(),
         LinkState::Waiting {
@@ -424,8 +429,38 @@ mod tests {
         });
         assert_eq!(
             describe(&status),
-            "failed: KeyError: 'region'\n    in weather, in apply\n    File \"weather.py\", line 12, in apply"
+            "failed in apply: KeyError: 'region'\n    in weather:\n    File \"weather.py\", line 12, in apply"
         );
+    }
+
+    /// A row whose call failed says which call; an error with no site
+    /// prints after `failed: ` (§8.1 rows 2 and 4).
+    #[test]
+    fn a_failed_call_is_the_state_and_an_error_without_a_site_follows_failed() {
+        let failed = |graph: Option<serde_json::Value>| {
+            EntryStatus::Running(rutis::host::Snapshot {
+                generation: 1,
+                state: FiberState::Failed,
+                error: Some(std::sync::Arc::new(rutis::host::ErrorKind::PluginFailed(
+                    Box::new(rutis_bridge::session::Error::Remote {
+                        name: "KeyError".into(),
+                        message: "'region'".into(),
+                        graph,
+                    }),
+                ))),
+            })
+        };
+        assert_eq!(
+            describe(&failed(Some(serde_json::json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{
+                    "type": "error", "name": "KeyError", "message": "'region'",
+                    "site": { "row": "weather", "doing": "call", "service": "forecast", "method": "tomorrow" }
+                }]
+            })))),
+            "call to forecast.tomorrow failed: KeyError: 'region'\n    in weather:"
+        );
+        assert_eq!(describe(&failed(None)), "failed: KeyError: 'region'");
     }
 
     fn waiting(failure: Failure, error: &str, retry_in: Duration) -> LinkState {
@@ -445,7 +480,7 @@ mod tests {
             (
                 LinkState::Connecting,
                 true,
-                Some("link down (the session ended)"),
+                Some("link down (the connection ended)"),
             ),
             (LinkState::Ready { generation: 3 }, false, Some("link connected")),
             (
@@ -626,12 +661,12 @@ mod tests {
                         "llm",
                         WaitReason::ProviderFailed {
                             row: row("model"),
-                            error: "plugin failed: boom\n    at apply".into(),
+                            error: "Error: boom\n    at apply".into(),
                         },
                     ),
                     Wait::new("blob", WaitReason::NoProvider { like: None }),
                 ],
-                "waiting for llm (row model failed: plugin failed: boom); blob (no row provides it)",
+                "waiting for llm (row model failed: Error: boom); blob (no row provides it)",
             ),
             (
                 vec![Wait::new(

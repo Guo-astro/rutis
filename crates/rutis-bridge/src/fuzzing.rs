@@ -36,7 +36,9 @@ pub fn error_graph(data: &[u8]) {
     let error = error.with_site(&site);
     let kind = rutis::host::ErrorKind::PluginFailed(Box::new(error));
     let printed = crate::report::report(&kind);
-    assert!(printed.starts_with("E: m"), "{printed}");
+    // The first line is the error's text, or a headline ending with it.
+    let first = printed.lines().next().unwrap_or_default();
+    assert!(first.ends_with("E: m"), "{printed}");
     assert!(
         crate::report::whereabouts(&kind).len() <= crate::report::MAX_FRAMES + 2,
         "bounded"

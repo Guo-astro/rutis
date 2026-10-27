@@ -1008,12 +1008,7 @@ async fn a_service_provided_twice_fails_the_later_row() {
         panic!("s has no fiber");
     };
     let error = snapshot.error.expect("why it failed").to_string();
-    assert!(
-        error.contains(
-            "service store is already provided by the application: row s cannot provide it too"
-        ),
-        "{error}"
-    );
+    assert_eq!(error, "store is already provided by the host");
 
     root.shutdown().await.unwrap();
 }

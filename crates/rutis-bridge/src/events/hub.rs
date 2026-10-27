@@ -635,7 +635,7 @@ impl SessionEvents {
                 .unwrap()
                 .get(key)
                 .map(|(_, id)| Some(id.clone()))
-                .ok_or_else(|| binding(format!("row {key} is not loaded in this runtime"))),
+                .ok_or_else(|| binding("the calling row is not loaded in this runtime".to_owned())),
         }
     }
 
@@ -656,7 +656,9 @@ impl SessionEvents {
             Some(key) => rows
                 .get(key)
                 .map(|(scope, id)| (scope.clone(), Some(id.clone())))
-                .ok_or_else(|| binding(format!("row {key} is not loaded in this runtime")))?,
+                .ok_or_else(|| {
+                    binding("the calling row is not loaded in this runtime".to_owned())
+                })?,
         };
         #[cfg(test)]
         tests::REGISTERING.with(|hook| {
@@ -1094,7 +1096,7 @@ impl WireEntry {
     fn connection(&self) -> Result<Connection, RutisError> {
         self.connection
             .upgrade()
-            .ok_or_else(|| to_cordis(Error::Transport("session closed".into())))
+            .ok_or_else(|| to_cordis(Error::Transport("the connection closed".into())))
     }
 
     fn request(&self, call: Invocation<'_>) -> Result<Value, RutisError> {
@@ -1226,7 +1228,7 @@ impl RemoteListener for WireEntry {
             tokio::select! {
                 biased;
                 out = answer => out,
-                () = unloading => Err(to_cordis(Error::Transport("session closed".into()))),
+                () = unloading => Err(to_cordis(Error::Transport("the connection closed".into()))),
             }
         };
         match source {

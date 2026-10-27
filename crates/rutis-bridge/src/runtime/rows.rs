@@ -89,6 +89,7 @@ impl HostDispatch for RowService {
             Some("async") => {
                 let connection = target.clone();
                 let site = self.site(method);
+                let process = self.process.clone();
                 let (handle, method) = (self.handle.clone(), method.to_owned());
                 let call = async move {
                     let settled = async {
@@ -97,10 +98,13 @@ impl HostDispatch for RowService {
                         )
                         .await
                     };
-                    settled.await.map_err(|error| match &site {
-                        Some(site) => error.with_site(site),
-                        None => error,
-                    })
+                    settled
+                        .await
+                        .map_err(|error| gone(&process, error))
+                        .map_err(|error| match &site {
+                            Some(site) => error.with_site(site),
+                            None => error,
+                        })
                 };
                 Ok(match source {
                     Some(source) => RpcValue::future(target.forward_async(&source, call)),
@@ -108,35 +112,32 @@ impl HostDispatch for RowService {
                 })
             }
             Some(_) => {
-                let reply = match source {
+                // From which row to which: a wait cycle it closes is
+                // written with their names.
+                let rows = crate::session::caller_row()
+                    .zip(self.owner.as_ref())
+                    .map(|(from, to)| (from.id().to_owned(), to.id().to_owned()));
+                let reply = crate::session::rpc::waits::with_rows(rows, || match source {
                     Some(source) => {
                         target.forward(&source, || target.invoke(&self.handle, method, args))
                     }
                     None => target.invoke(&self.handle, method, args),
-                };
-                reply.map_err(|error| match self.site(method) {
-                    Some(site) => error.with_site(&site),
-                    None => error,
-                })
+                });
+                reply
+                    .map_err(|error| gone(&self.process, error))
+                    .map_err(|error| match self.site(method) {
+                        Some(site) => error.with_site(&site),
+                        None => error,
+                    })
             }
             None => {
-                let mut methods: Vec<&str> = self
+                let methods: Vec<&str> = self
                     .methods
                     .as_object()
                     .map(|methods| methods.keys().map(String::as_str).collect())
                     .unwrap_or_default();
-                methods.sort_unstable();
                 let service = self.service.as_deref().unwrap_or(&self.handle);
-                Err(crate::runtime::Error::binding(
-                    crate::session::code::NO_METHOD,
-                    format!(
-                        "{service} has no method {method} (methods: {})",
-                        methods.join(", ")
-                    ),
-                    Some(
-                        serde_json::json!({ "service": service, "method": method, "methods": methods }),
-                    ),
-                ))
+                Err(crate::runtime::Error::no_method(service, method, methods))
             }
         }
     }
@@ -156,6 +157,31 @@ impl HostDispatch for RowService {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
+}
+
+/// A call in progress when the runtime went away: `runtime py exited
+/// during the call` (code `peer-gone`, data `{runtime, reason}`); another
+/// error as it is.
+fn gone(process: &Process, error: crate::runtime::Error) -> crate::runtime::Error {
+    let crate::runtime::Error::Transport(reason) = &error else {
+        return error;
+    };
+    let Some(runtime) = process.runtime_name() else {
+        return error;
+    };
+    let how = if process.exit_status().is_some() || reason.starts_with("the process ") {
+        "exited"
+    } else {
+        "disconnected"
+    };
+    // With a graph, so the call's site is recorded on it: printed, it
+    // reads `call to weather.tomorrow failed: runtime py exited …`.
+    crate::runtime::Error::binding(
+        crate::session::code::PEER_GONE,
+        format!("runtime {runtime} {how} during the call"),
+        Some(serde_json::json!({ "runtime": runtime, "reason": reason })),
+    )
+    .graphed()
 }
 
 impl Drop for RowService {
@@ -254,10 +280,13 @@ fn row_slot(
         provider.to_owned(),
         move |ctx| {
             let holder = ctx.get_key::<dyn HostDispatch>(holder.clone())?;
+            // A row or a peer by its name; anything else (a Rust service,
+            // whose type path a plugin author never wrote) is the host's.
             Some(
                 holder
                     .provider()
-                    .unwrap_or_else(|| "the application".to_owned()),
+                    .filter(|by| by.starts_with("row ") || by.starts_with("peer "))
+                    .unwrap_or_else(|| "the host".to_owned()),
             )
         },
     );

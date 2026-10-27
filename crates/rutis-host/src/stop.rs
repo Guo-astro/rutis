@@ -261,7 +261,7 @@ pub async fn finish(host: &Host, deadline: Duration, signals: &mut Signals) -> S
         errln!("  still stopping: {plugin}");
     }
     if waiting > 0 {
-        errln!("  and {waiting} plugin(s) waiting for them");
+        errln!("  {}", waiting_line(waiting));
     }
     let processes = rutis_bridge::transport::local::running_processes();
     if !processes.is_empty() {
@@ -271,6 +271,14 @@ pub async fn finish(host: &Host, deadline: Duration, signals: &mut Signals) -> S
     Stopped::Unfinished
 }
 
+/// `and 1 row waiting for them` / `and 5 rows waiting for them`.
+fn waiting_line(rows: usize) -> String {
+    match rows {
+        1 => "and 1 row waiting for them".to_owned(),
+        n => format!("and {n} rows waiting for them"),
+    }
+}
+
 fn seconds(duration: Duration) -> String {
     format!("{}s", duration.as_secs_f64())
 }
@@ -278,6 +286,14 @@ fn seconds(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rows still waiting are counted as rows, in the right number
+    /// (#680).
+    #[test]
+    fn the_rows_waiting_are_counted_as_rows() {
+        assert_eq!(waiting_line(1), "and 1 row waiting for them");
+        assert_eq!(waiting_line(5), "and 5 rows waiting for them");
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()

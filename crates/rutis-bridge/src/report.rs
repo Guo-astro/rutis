@@ -9,8 +9,6 @@
 
 use rutis::host::ErrorKind;
 
-use crate::session::Site;
-
 /// At most this many bytes of a message or of one line of a stack.
 pub const MAX_TEXT: usize = 4096;
 /// At most this many frames of a stack.
@@ -35,18 +33,19 @@ pub fn printable(text: &str) -> String {
     out
 }
 
-/// The lines that say where `error` came from, to print under its text:
-/// `in <row>, <what it was doing>`, then the frames of the stack the
-/// plugin's language gave (without its first line, which repeats the
-/// error's own text), at most [`MAX_FRAMES`]. None for an error with no
-/// site and no stack, such as one rutis or Rust code raised.
+/// The lines that say where `error` came from, to print under its
+/// [`headline`]: `in <row>:`, then the frames of the stack the plugin's
+/// language gave (without its first line, which repeats the error's own
+/// text), then `called from:` and the frames of each caller that threw it
+/// on, at most [`MAX_FRAMES`] frames in all. None for an error with no
+/// site and no stack, such as one raised on this side.
 pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
     let Some(thrown) = crate::thrown(error) else {
         return Vec::new();
     };
     let mut lines = Vec::new();
     if let Some(site) = thrown.site() {
-        lines.push(printable(&doing(&site)));
+        lines.push(printable(&format!("in {}:", site.row)));
     }
     // The other side's frames, then each caller's that threw it on, at
     // most MAX_FRAMES in all.
@@ -92,32 +91,60 @@ pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
     lines
 }
 
-/// `error` as printed: its own text, then [`whereabouts`], each on a line
-/// of its own indented under it.
-pub fn report(error: &ErrorKind) -> String {
-    let mut out = printable(&error.to_string());
-    for line in whereabouts(error) {
-        out.push_str("\n    ");
-        out.push_str(&line);
+/// The first line printed for `error`, saying what failed when its site
+/// tells: `call to forecast.tomorrow failed: KeyError: 'region'`,
+/// `failed in apply: …`, `failed in cleanup: …`, `listener of
+/// weather/asked failed: …`; a row that cannot load (`LoadError`) as its
+/// message: `cannot load src/util.ts: …`. None when it does not say (no
+/// site, or one that says too little), and the error's own text is
+/// printed alone.
+pub fn headline(error: &ErrorKind) -> Option<String> {
+    let thrown = crate::thrown(error)?;
+    let text = error.to_string();
+    // A row that cannot load, or provides a name another has, says so
+    // itself: `cannot load src/util.ts: …`, `forecast is already provided
+    // by a`.
+    if matches!(thrown, crate::session::Error::Remote { name, .. }
+        if name == "LoadError" || name == "ProvideError")
+    {
+        return Some(printable(&text));
     }
-    out
-}
-
-/// What a site says, as a line: `in weather, calling forecast.tomorrow`.
-fn doing(site: &Site) -> String {
-    let what = match (
+    let site = thrown.site()?;
+    let line = match (
         site.doing.as_str(),
         &site.service,
         &site.method,
         &site.event,
     ) {
-        ("call", Some(service), Some(method), _) => format!("serving {service}.{method}"),
-        ("listener", _, _, Some(event)) => format!("listening to {event}"),
-        ("apply", ..) => "in apply".to_owned(),
-        ("cleanup", ..) => "in its cleanup".to_owned(),
-        (other, ..) => other.to_owned(),
+        // A text that names the call already (`weather has no method
+        // tomorow …`, `weather.tomorrow: argument 1 …`) is not wrapped.
+        ("call", Some(service), Some(method), _)
+            if text.starts_with(&format!("{service}.{method}"))
+                || text.starts_with(&format!("{service} ")) =>
+        {
+            text
+        }
+        ("call", Some(service), Some(method), _) => {
+            format!("call to {service}.{method} failed: {text}")
+        }
+        ("apply", ..) => format!("failed in apply: {text}"),
+        ("cleanup", ..) => format!("failed in cleanup: {text}"),
+        ("listener", _, _, Some(event)) => format!("listener of {event} failed: {text}"),
+        _ => return None,
     };
-    format!("in {}, {what}", site.row)
+    Some(printable(&line))
+}
+
+/// `error` as printed: its [`headline`] (or its own text when there is
+/// none), then [`whereabouts`], each on a line of its own indented under
+/// it.
+pub fn report(error: &ErrorKind) -> String {
+    let mut out = headline(error).unwrap_or_else(|| printable(&error.to_string()));
+    for line in whereabouts(error) {
+        out.push_str("\n    ");
+        out.push_str(&line);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -146,8 +173,40 @@ mod tests {
         }));
         assert_eq!(
             report(&error),
-            "KeyError: 'region'\n    in weather, serving forecast.tomorrow\n    File \"weather.py\", line 31, in tomorrow"
+            "call to forecast.tomorrow failed: KeyError: 'region'\n    in weather:\n    File \"weather.py\", line 31, in tomorrow"
         );
+    }
+
+    /// Each kind of site gives its headline; a site that says too little
+    /// gives none (#677).
+    #[test]
+    fn each_site_gives_its_headline() {
+        let with = |site: serde_json::Value| {
+            remote(json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{ "type": "error", "name": "KeyError", "message": "'region'", "site": site }]
+            }))
+        };
+        for (site, expected) in [
+            (
+                json!({ "row": "weather", "doing": "apply" }),
+                "failed in apply: KeyError: 'region'\n    in weather:",
+            ),
+            (
+                json!({ "row": "weather", "doing": "cleanup" }),
+                "failed in cleanup: KeyError: 'region'\n    in weather:",
+            ),
+            (
+                json!({ "row": "weather", "doing": "listener", "event": "weather/asked" }),
+                "listener of weather/asked failed: KeyError: 'region'\n    in weather:",
+            ),
+            (
+                json!({ "row": "weather", "doing": "call" }),
+                "KeyError: 'region'\n    in weather:",
+            ),
+        ] {
+            assert_eq!(report(&with(site.clone())), expected, "{site}");
+        }
     }
 
     /// Whatever the graph holds, printing gives at least the error's text
@@ -208,7 +267,7 @@ mod tests {
         }));
         assert_eq!(
             report(&error),
-            "KeyError: 'region'\n    in weather, serving forecast.tomorrow\n    File \"weather.py\", line 31, in tomorrow\n    called from:\n    at ask (src/chat.ts:14:36)\n    called from:\n    at Chat.reply (chat.rs:9)"
+            "call to forecast.tomorrow failed: KeyError: 'region'\n    in weather:\n    File \"weather.py\", line 31, in tomorrow\n    called from:\n    at ask (src/chat.ts:14:36)\n    called from:\n    at Chat.reply (chat.rs:9)"
         );
     }
 
@@ -222,6 +281,23 @@ mod tests {
             graph: None,
         }));
         assert_eq!(report(&error), "Error: boom");
+        // A thrown value that is not an error prints as the value.
+        let error = ErrorKind::PluginFailed(Box::new(Error::Remote {
+            name: "ThrownValue".into(),
+            message: "\"need 5 words\"".into(),
+            graph: None,
+        }));
+        assert_eq!(report(&error), "\"need 5 words\"");
+        // A row that cannot load: its message is the headline.
+        let error = ErrorKind::PluginFailed(Box::new(Error::Remote {
+            name: "LoadError".into(),
+            message: "cannot load src/util.ts: SyntaxError: x (src/util.ts:3:7)".into(),
+            graph: None,
+        }));
+        assert_eq!(
+            headline(&error).as_deref(),
+            Some("cannot load src/util.ts: SyntaxError: x (src/util.ts:3:7)")
+        );
         assert_eq!(report(&ErrorKind::Closed), ErrorKind::Closed.to_string());
     }
 }
