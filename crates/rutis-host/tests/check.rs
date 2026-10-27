@@ -377,14 +377,15 @@ async fn check_fails_on_a_service_nothing_provides() {
 }
 
 /// Rows that inject each other, rows that declare one service, and a
-/// misspelt name: check warns of the first two and suggests the name meant
-/// (#676); the exit status is what it was (a cycle and a clash are
-/// warnings in 0.17). Rows of a language whose runtime is not declared
+/// misspelt name: check fails on the first two, naming the rows and the
+/// fix, and suggests the name meant (#676; a cycle and a clash were
+/// warnings in 0.17.2). The rows that cannot run are the cycle's two and
+/// the clash's second. Rows of a language whose runtime is not declared
 /// enable it with its defaults, saying so (#666).
 /// risk: A6
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
-async fn check_warns_of_cycles_clashes_and_misspelt_names() {
+async fn check_fails_on_cycles_and_clashes_and_suggests_misspelt_names() {
     let dir = tempfile::tempdir().unwrap();
     let config = serde_json::json!({
         "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
@@ -451,10 +452,46 @@ async fn check_warns_of_cycles_clashes_and_misspelt_names() {
         checked.stderr,
         "rutis-host: warning: rutis.json: rows use the py runtime (py:geo), which runtimes does not declare: it runs with its defaults; declare \"runtimes\": { \"py\": {} } to say so\n\
          rutis-host: warning: weather: nothing declares lmm; it may be provided at runtime by a, b, one and 2 more; did you mean llm?\n\
-         rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject\n\
-         rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n"
+         rutis-host: error: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject\n\
+         rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: 3 row(s) or binaries cannot run\n"
     );
-    assert_eq!(checked.status, 0);
+    assert_eq!(checked.status, 1);
+}
+
+/// Two rows providing the same two services, nothing else wrong: check
+/// fails on each name, and counts the row that cannot run once (#676).
+/// risk: A6
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_counts_a_row_clashing_on_two_names_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
+        "rows": [
+            { "id": "one", "name": "./llm.mjs" },
+            { "id": "two", "name": "./llm.mjs" },
+        ]
+    });
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "llm.mjs",
+                &injecting("[]", "{ llm: { ask: 'sync' }, embed: { of: 'sync' } }"),
+            ),
+            ("rutis.json", &config.to_string()),
+        ],
+    );
+    let checked = check(dir.path(), &["rutis.json"], &[]).await;
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: error: rows one, two all provide embed: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: 1 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(checked.status, 1);
 }
 
 /// Cordis rows that declare nothing (published packages): what one injects
