@@ -2,7 +2,7 @@
 
 [English](design-config-schema-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
+状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
 Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同，不出现它 §4.5 的禁用词。
 
 范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），不再校验一遍；Standard Schema 作为 `definePlugin` 的配置。
@@ -26,7 +26,7 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 | --- | --- | --- |
 | C1 | 每种语言的 SDK 在装载一行、调用 `apply` 之前补默认值并校验（运行时和测试工具走同一段代码）；`check` 用 Rust 实现做同样的事；loader 不对别的运行时的行再校验一遍 | 2.1 |
 | C2 | 一个 JSON Schema 子集，14 个关键字；其他关键字不检查，也不告警 | 3.1 |
-| C3 | 多出来的键：告警并原样交给 `apply`，告警由 loader 在它已有的配置步骤里按 Schema 算出，每个配置值打印一次；Schema 写了 `additionalProperties: false` 时是错误；`check --strict` 把告警当错误 | 3.2 |
+| C3 | 多出来的键：告警并原样交给 `apply`，告警由 loader 的 `EntryFactory` 按 Schema 算出，每行每个配置值打印一次；Schema 写了 `additionalProperties: false` 时是错误；`check --strict` 把告警当错误 | 3.2 |
 | C4 | 类型化配置（Go、Swift、Kotlin、Rust）的 Schema 由类型生成，只写语言自己的解码器本来就有的规则；Schema 通过后解码器还报错时写 `is not a value the plugin accepts`，不出现解码器原文 | 3.3 |
 | C5 | 默认值按"对象在才补它的属性"逐层补，跟着 `$ref`、`allOf`，不进 `anyOf` / `oneOf`；没给配置时对象根是 `{}` | 四 |
 | C6 | 所有问题按路径排序一次列出，每个一行：`<行>: config: <路径> should be …, got …`；错误码 `bad-config` | 五 |
@@ -40,7 +40,7 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 - **类型化语言本来就要在这里解码。** Go、Swift、Kotlin、Rust 在交给 `apply` 之前把配置解码进类型；先按 Schema 补默认值、校验，再解码，出错文字就和其他语言一样。
 - **一份规则，靠用例表保持一致**（§六、§八），而不是靠一份代码：反正每种语言都要有一份（测试工具），用例表让 7 份和 `check` 逐字相同。
 - 0.18 以前的 SDK 构建的运行时，运行时不检查；`check` 照样检查它们的行（§七）。
-- **进程内的 Rust 行没有单独的运行时**：`Builtins` 登记的行和 dylib 的行，由 loader 在 `build` 之前用 Rust 实现补默认值并校验（行有 Schema 时；dylib 的 Schema 来自它导出的 `rutis_plugin_config_schema`）。dylib 里 rutis-sdk 的解码随后照旧进行。
+- **进程内的 Rust 行没有单独的运行时**：loader 在 `EntryFactory`（`loader/plugins.rs`）里做：它的 `validate_config` 和 `build` 都从 `config.resolved.schema` 补出一份副本再校验，`build` 用这份副本。只对 `Resolved.foreign_scope` 为假的行（`Builtins` 登记的、dylib 的、嵌入者自己的解析器给的；dylib 的 Schema 来自它导出的 `rutis_plugin_config_schema`）；别的运行时的行由它们的 SDK 做，不在这里再做一遍（否则会做两遍、0.18 以前的 SDK 的行会失败、Cordis 行会按转换出来的 Schema 校验）。`EntryConfig.value` 与 `Running.config` 仍是原来的值，不存补过的：否则每次 reconcile 都会看到两者不同，把这一行再更新一遍。改配置（`view.update` / `view.set_config`）经内核同样到达 `EntryFactory`，所以第一次装载和改配置走的是同一处。
 
 ### 2.2 每一行经过的步骤
 
@@ -85,8 +85,8 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 
 - 对象写了 `properties`、没写 `additionalProperties`：多出来的键告警，值原样交给 `apply`（JSON Schema 的本义，旧配置不会因此起不来）。拼写接近已有的键时给出建议（§6.1）。
 - **已知的键**：对象的 Schema 与它经 `$ref`、`allOf` 合进来的部分里所有 `properties` 的键的并集；它也是拼写建议的候选。`anyOf` / `oneOf` 分支里的对象不告警多出来的键（不知道值是按哪个分支写的）。
-- **告警由 loader 给**，不由运行时进程写：loader 在它已有的配置步骤里（`reconcile.rs`、`commit.rs` 调用 `validate_config` 的地方），用这一行已有的 Schema（`rows.schema` / `plugins.read` / 清单）和同一份 Rust 实现算出多出来的键，写进宿主的输出（`rutis-host` 写到标准错误，Rust 嵌入写进诊断设计 §七 的默认输出），不带插件输出的 `[weather]` 前缀。同一行同一个配置值只告警一次，重启不再重复。远程运行时、0.18 以前的 SDK 的行也由本机的 loader 告警。连进来的运行时（应用里的）的行在解析时没有 Schema，每个连接的 Schema 在实例的 factory 里才有：由实例的 factory 告警，每个实例一次。SDK 只报错误。
-- Cordis 行（`RowSchema.cordis` 为真）不告警多出来的键，按 Cordis 的规则（§2.3）。
+- **告警由 loader 给**，不由运行时进程写：loader 在同一处（`EntryFactory`），对所有有 Schema 的行（不论 `foreign_scope`），用这一行已有的 Schema（`rows.schema` / `plugins.read` / 清单）和同一份 Rust 实现算出多出来的键，写进宿主的输出（`rutis-host` 写到标准错误，Rust 嵌入写进诊断设计 §七 的默认输出），不带插件输出的 `[weather]` 前缀。同一行同一个配置值只告警一次，重启不再重复；记录已告警的状态在 `commit.rs` 的试运行与真正提交之间共用，试运行不会让真正提交漏掉或重复告警。远程运行时、0.18 以前的 SDK 的行也由本机的 loader 告警。连进来的运行时（应用里的）的行在解析时没有 Schema（`Resolved.schema` 是 `None`），每个连接的 Schema 在实例的 `factory()` 里才有：由实例的 factory 告警，每个实例一次。SDK 只报错误。
+- Cordis 行（loader 里看 `Resolved.meta["cordis"]`）不告警多出来的键，按 Cordis 的规则（§2.3）。
 - 测试工具没有 loader，自己写同样的告警到标准错误。
 - `additionalProperties: false`：由 SDK 作为错误报出（§五），这一行失败。
 - `check --strict`：告警算错误，以 1 退出（与 `--strict` 对其他告警的处理相同）。
@@ -102,11 +102,11 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 | Swift（`@RutisConfig`） | 可选类型（`T?`）和带字面量初始值的 `var` 不必填，其余必填 | `var units = "metric"` 的字面量成为 `default`（字符串、数字、布尔、由它们组成的数组和字典）；非字面量的初始值不算默认值，字段必填 | 告警 |
 | Kotlin（`@Serializable`） | 有默认参数（`isElementOptional`）或可空的不必填 | 由 kotlinx 解码时填（`SerialDescriptor` 看不到默认值，Schema 里没有，`check` 不显示） | 告警 |
 | Rust（`serde` + `schemars`） | schemars 已有的规则：`Option<T>`、`#[serde(default)]` 不必填 | schemars 写进 Schema 的 `default`；先补进 JSON，`serde(default)` 照常有效，两者是同一个值 | 告警；`#[serde(deny_unknown_fields)]` 生成 `additionalProperties: false`，是错误 |
-| Rust（Rust 里做的定义，没有 Schema） | `serde` 解码 | `serde(default)` | `serde` 的规则 |
+| Rust（没有 Schema：`Definition`，以及 `export_plugin!` 没写 `schema:` 的 dylib） | `serde` 解码 | `serde(default)` | `serde` 的规则 |
 
 **解码器的错误**：有 Schema 时先按 Schema 校验，通过了解码器还报错，说明 Schema 和类型不一致，一律写 `<路径> is not a value the plugin accepts`，不出现解码器的原文。路径由各语言的解码器给出；Kotlin 的 `RutisFormat` 现在的 `ValueException` 不带路径，要补上。
 
-只有 Rust 里做的定义（`Definition`，配置类型只要求 `DeserializeOwned`，没有 Schema）按种类改写：
+没有 Schema 的 Rust 解码按种类改写：`Definition`（配置类型只要求 `DeserializeOwned`），以及 `export_plugin!` 没写 `schema:` 的 dylib（`schema:` 是可选的，多数不写）：
 
 | 种类 | 句子 |
 | --- | --- |
@@ -116,7 +116,7 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 | `unknown_field` | `<路径> is not a config key (did you mean …?)` |
 | 其他 | `<路径> is not a value the plugin accepts` |
 
-为此 Rust 要一个基于 `serde_json::Value` 的 `Deserializer`，用自己的错误类型（`serde::de::value` 对错误类型是泛型的），解码时记下路径和被调用的方法，不解析 serde 的文字。
+为此 Rust 要一个基于 `serde_json::Value` 的 `Deserializer`，用自己的错误类型（`serde::de::value` 对错误类型是泛型的），解码时记下路径和被调用的方法，不解析 serde 的文字。它放在 `rutis` 里，rutis-sdk（dylib）也用它；有 Schema 时同一个解码器只给出那一句 `is not a value the plugin accepts`，没有 Schema 时按上表的种类。
 
 ## 四、默认值
 
@@ -161,7 +161,7 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 - 错误是 `BindingError`，错误码 `bad-config`。诊断设计 §4.3 写明"表在实施时可以加行，不改已有的行"，本稿在那张表加一行：`bad-config`，什么时候：配置不符合 Schema，`data`：`{ issues: [{ path: ["home", "lat"], message: "home.lat should be a number, got \"north\"" }] }`（`path` 的数组项是键或下标）。
 - SDK 只发 `code` 与 `data`；`site`（这一行、`doing: "apply"`，诊断设计 §4.1）由 loader 在边界上补；测试工具里没有 `site`。rutis 打印时见到 `bad-config` 写 `config:`，不写 `failed in apply:`。
 - Cordis 行的 `ValidationError` 也是 `bad-config`（§2.3）。
-- Rust 的行（`Builtins`、dylib）：loader 自己的配置步骤失败时，错误是 `ErrorKind::Validation { issues }`，`issues` 是上面每一行的文字；loader 自己写 `config: …` 放进 `ReconcileReport` 的 `Failure`。内核的 `ErrorKind::Validation` 不只用于配置，它的显示文字不改。
+- Rust 的行（`foreign_scope` 为假的行）：`EntryFactory` 的配置步骤失败时，返回一个带标记的错误（loader 自己的类型包着 `ErrorKind::Validation { issues }`，`issues` 是上面每一行的文字）。一行的错误只在 `Loader::failures` 里变成字符串（`reconcile.rs` 的 `rejected.to_string()`），这个字符串同时给 `Failure.error` 和等待原因 `WaitReason::ProviderFailed`（`status.rs` 打印它）。`failures()` 见到带标记的错误时写成 `config: <问题>`，每个问题一行，于是 `ReconcileReport` 与 §九 的等待行（`chat: waiting for weather (row weather failed: config: …)`）都对；也和插件自己 `validate_config` 返回的错误、内核的 `config type mismatch` 分得开。内核的 `ErrorKind::Validation` 不只用于配置，它的显示文字不改。
 - 宿主认出其他语言的行（含 Cordis 行）的配置错误，用诊断设计 §4.2 / §8.2 的 `rutis_bridge::thrown(&e)` 读错误码：`code() == "bad-config"`。不按文字匹配。
 
 ### 5.3 记在哪一行，之后怎样
@@ -180,7 +180,7 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 
 - 编辑距离按 Unicode 标量值计，一次编辑是插入、删除、替换、交换相邻两个（OSA 距离）。
 - 键长 0–2 个标量：不建议；3–6 个：距离不超过 1；7 个以上：不超过 2。
-- 候选是这个对象已知的键（§3.2，不含它自己）；取距离最小的。`closest` 用 `min_by_key`，距离相同时取第一个：配置模块先把候选按 Unicode 码点排序再交给它，于是取码点最小的；`closest` 本身不改。其他语言照这条规则实现。
+- 候选是这个对象已知的键（§3.2，不含它自己）；取距离最小的，距离相同时取按 Unicode 码点最小的（配置模块先把候选排序再交给 `closest`，`closest` 本身不改）。
 
 ### 6.2 `got` 的值
 
@@ -205,7 +205,7 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 
 - 对每一行用它已经打印的 Schema、按同样的规则补默认值并校验（Rust 实现，与 loader 的行共用），不运行插件。
 - 有错误：按现有版式写 `<行> (<插件>): cannot run: config: …`，每个问题一行，以 1 退出。多出来的键是告警，写到标准错误，以 0 退出；`--strict` 时以 1 退出。
-- 0.18 以前的 SDK 构建的 Go、Swift 二进制（清单里的 `sdk` 早于 0.18）：`check` 不看清单里的 `required`，其余照常检查。旧的 Go 清单把没有 `omitempty` 的字段都列为必填，按它检查会误报；旧的 Swift 二进制在运行时仍由解码器报出缺的字段。
+- 0.18 以前的 SDK 构建的 Go 二进制（清单里的 `sdk` 早于 0.18）：`check` 不看清单里的 `required`，其余照常检查。旧的 Go 清单把没有 `omitempty` 的字段都列为必填，按它检查会误报。Swift 的旧清单不需要特例：旧的宏按「是否可选」写 `required`，合成的 `Decodable` 要的正是这些键。
 - 检查时不知道 Schema 的行（没连上的远程运行时、`peer:` 行）写 `config not checked: its schema is known only when it runs`，不算告警。Cordis 行见 §2.3。
 - `check` 的输出与运行时的错误逐字相同（同一份用例表锁住）。
 
@@ -294,7 +294,8 @@ $ echo $?
 - **默认值现在会补上**：判断"配置里有没有这个键"的插件代码会看到默认值；为默认值写的兜底可以去掉，也可以留着。
 - **Go**：生成的 Schema 不再有 `required`（与 Go 的零值一致；0.18 以前的二进制，`check` 也不看它的 `required`）；手写的 `Schema` 里的 `default` 现在会补上（Go 插件指南"不会替你填默认值"一句改写）。
 - **Swift**：带字面量初始值的 `var` 字段不再必填，没写时用初始值。
-- **Rust**：loader 的行的配置错误在 `ReconcileReport` 里的文字从 `config validation failed: [...]` 变为 `config: <路径> …`；类型不变，内核 `ErrorKind::Validation` 的显示文字不变。dylib 的行在 `build` 之前由 loader 校验；0.18 以前的 rutis-sdk 构建的 dylib，Schema 通过之后 dylib 里解码器还报错时（Schema 与类型不一致）仍是 serde 的原文，重新构建后改为 §3.3 的句子。
+- **Rust**：loader 的行的配置错误在 `ReconcileReport` 里的文字从 `config validation failed: [...]` 变为 `config: <路径> …`；类型不变，内核 `ErrorKind::Validation` 的显示文字不变。dylib 的行在 `build` 之前由 loader 校验；dylib 照每次发布一样要用 0.18 重新构建（rutis-dylib 核对 SDK 的标识与散列，旧的 dylib 不会被装载）。
+- **嵌入者自己的解析器**：用 `with_schema` 给了 Schema 的行，现在会按它补默认值并校验（`Resolved.schema` 的文档注释同步写明）。
 - **Node、Bun**：`definePlugin` 的 `config` 传 Standard Schema 对象时报错。只影响本来就不对的代码：这样的 Schema 以前只被打印，从没生效。
 - **0.18 以前的 SDK 构建的运行时**：运行时不检查它们的行的配置；`check` 照样检查。升级 SDK 后才在运行时生效。
 - **多出来的键**：只告警；`check --strict` 下是错误。
@@ -305,7 +306,7 @@ $ echo $?
 | 步 | PR 内容 |
 | --- | --- |
 | 1a | 用例表 `specs/config-schema/`；Rust 实现（rutis-loader 的 `config` 模块：补默认值、校验、§六 的规则）；`check` 的检查、告警与退出码 |
-| 1b | Rust 的行：`Builtins::register` / `register_with` / `register_raw` 与 dylib 的行在 `build` 之前补默认值并校验；`Definition` 基于 `Value` 的 `Deserializer` 与 §3.3 的错误改写；rutis-sdk 的 dylib 解码错误改为 §3.3 的句子；loader 写进 `Failure` 的 `config: …` 文字；loader 对多出来的键的告警（含实例的 factory）；`site` 的补法 |
+| 1b | loader：`EntryFactory` 的 `validate_config` / `build` 对 `foreign_scope` 为假的行补默认值并校验（原值不变）；`failures()` 对带标记的错误写 `config: …`；对多出来的键的告警（含实例的 factory、试运行共用的去重）；`site` 的补法；`Resolved.schema` 的文档注释。`rutis` 里基于 `Value` 的 `Deserializer` 与 §3.3 的错误改写，`Definition` 与 rutis-sdk 的 dylib 解码都用它 |
 | 2 | Node 与 Bun：`definePlugin` 的行与测试工具；Cordis `ValidationError` 换成 `bad-config`；拒绝 Standard Schema 对象 |
 | 3 | Python：模块行、`define_plugin` 的行与测试工具 |
 | 4 | Go：校验后再解码；生成的 Schema 去掉 `required`；`rutistest` |

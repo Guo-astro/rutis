@@ -2,7 +2,7 @@
 
 [中文](design-config-schema-2026-10-27.md)
 
-Status: final, not implemented. Date: 2026-10-27 (revised the same day: dropped the "keyword not checked" warning; decoder errors rewritten into the same sentences; extra keys warned about by the loader; the rules the 7 implementations must match word for word written down; revised again: the kernel's `Validation` text unchanged, `config_issues` removed, dylib rows, rows of app runtimes and pre-0.18 binaries covered, decoder errors simplified). Baseline: `main` `85678323` (after 0.17.2). Scheduled for: 0.18 (breaking, covered in "Migrating to 0.18").
+Status: final, not implemented. Date: 2026-10-27 (revised the same day: dropped the "keyword not checked" warning; decoder errors rewritten into the same sentences; extra keys warned about by the loader; the rules the 7 implementations must match word for word written down; revised again: the kernel's `Validation` text unchanged, `config_issues` removed, dylib rows, rows of app runtimes and pre-0.18 binaries covered, decoder errors simplified; third revision: where the loader does this and how its failure text is written, the exceptions for old dylibs and old Swift binaries removed). Baseline: `main` `85678323` (after 0.17.2). Scheduled for: 0.18 (breaking, covered in "Migrating to 0.18").
 Issue: [#669](https://github.com/arcships/rutis/issues/669). Consistent with [Diagnostics for 0.18](design-diagnostics-2026-10-26.en.md): errors carry an error code per its §4.3, are recorded on the row whose config is wrong per §4.7, print as in its §8.1 fault 12, and use none of the forbidden words of its §4.5.
 
 Out of scope: finer constraints such as `pattern`, `format` and string lengths (anything outside the list in §3.1); type coercion (`"5"` does not become `5`); generating config forms or types (#684); Cordis rows are validated by Cordis itself (§2.3) and not again; Standard Schema as the config of `definePlugin`.
@@ -26,7 +26,7 @@ The plugin API guide has long said "JSON Schema; the host validates and shows th
 | --- | --- | --- |
 | C1 | Each language's SDK fills defaults and validates when it loads a row, before calling `apply` (the runtime and the testing tool run the same code); `check` does the same with the Rust implementation; the loader does not validate rows of other runtimes again | 2.1 |
 | C2 | One JSON Schema subset of 14 keywords; other keywords are neither checked nor warned about | 3.1 |
-| C3 | Extra keys: a warning, and passed to `apply` as they are; the loader works the warning out from the schema in its existing config step and prints it once per config value; an error when the schema says `additionalProperties: false`; `check --strict` treats the warning as an error | 3.2 |
+| C3 | Extra keys: a warning, and passed to `apply` as they are; the loader's `EntryFactory` works the warning out from the schema and prints it once per row and config value; an error when the schema says `additionalProperties: false`; `check --strict` treats the warning as an error | 3.2 |
 | C4 | Typed configs (Go, Swift, Kotlin, Rust) get their schema from the type, stating only the rules the language's own decoder already has; a decoder error after the schema passed is written `is not a value the plugin accepts`, never the decoder's text | 3.3 |
 | C5 | Defaults are filled level by level, "an object that is there gets its properties filled", following `$ref` and `allOf`, not `anyOf` / `oneOf`; with no config an object root is `{}` | 4 |
 | C6 | All problems are listed at once, sorted by path, one per line: `<row>: config: <path> should be …, got …`; error code `bad-config` | 5 |
@@ -40,7 +40,7 @@ The plugin API guide has long said "JSON Schema; the host validates and shows th
 - **Typed languages decode here anyway.** Go, Swift, Kotlin and Rust decode the config into a type before `apply`; filling defaults and validating against the schema first makes the error text the same as in the other languages.
 - **One set of rules, kept identical by the case list** (§6, §8) rather than by one piece of code: every language needs its own copy regardless (for its testing tool), and the case list makes the 7 copies and `check` agree word for word.
 - Runtimes built with an SDK older than 0.18 do not check at run time; `check` checks their rows all the same (§7).
-- **In-process Rust rows have no runtime of their own**: rows registered with `Builtins` and dylib rows are filled with defaults and validated by the loader, with the Rust implementation, before `build` (when the row has a schema; a dylib's schema comes from its exported `rutis_plugin_config_schema`). rutis-sdk's decoding inside the dylib then runs as before.
+- **In-process Rust rows have no runtime of their own**: the loader does it in `EntryFactory` (`loader/plugins.rs`): both its `validate_config` and its `build` fill a copy from `config.resolved.schema` and validate it, and `build` uses that copy. Only for rows whose `Resolved.foreign_scope` is false (registered with `Builtins`, dylib rows, rows from an embedder's own resolver; a dylib's schema comes from its exported `rutis_plugin_config_schema`); rows of other runtimes are done by their SDKs and not again here (otherwise they would be checked twice, rows of pre-0.18 SDKs would fail, and Cordis rows would be checked against the converted schema). `EntryConfig.value` and `Running.config` keep the raw value, not the filled one: otherwise every reconcile would see the two differ and update the row again. A config change (`view.update` / `view.set_config`) reaches `EntryFactory` through the kernel as well, so the first load and a config change go through the same place.
 
 ### 2.2 The steps every row goes through
 
@@ -85,8 +85,8 @@ Cordis rows (Cordis plugins that export `Config`) follow Cordis's rules: Cordis 
 
 - An object with `properties` and no `additionalProperties`: an extra key is a warning, and its value goes to `apply` as it is (what JSON Schema means; old configs keep starting). A spelling close to a known key gets a suggestion (§6.1).
 - **Known keys**: the union of the `properties` keys of the object's schema and of what it takes in through `$ref` and `allOf`; they are also the candidates for suggestions. Objects inside `anyOf` / `oneOf` branches get no extra-key warnings (which branch the value was written for is unknown).
-- **The loader gives the warning**, not the runtime process: in its existing config step (where `reconcile.rs` and `commit.rs` call `validate_config`), the loader works out the extra keys with the row's schema it already has (`rows.schema` / `plugins.read` / manifests) and the same Rust implementation, and writes them to the host's output (`rutis-host` to standard error, a Rust embedding to the default output of the diagnostics design §7), without the `[weather]` prefix of plugin output. One warning per row and config value: restarts do not repeat it. Rows of remote runtimes and of pre-0.18 SDKs are warned about by the local loader too. Rows of runtimes that dial in (in apps) have no schema when they resolve; each connection's schema is known in the instance factory, so the instance factory warns, once per instance. SDKs report errors only.
-- Cordis rows (`RowSchema.cordis` true) get no extra-key warnings: Cordis's rules apply (§2.3).
+- **The loader gives the warning**, not the runtime process: at the same place (`EntryFactory`), for every row with a schema (whatever its `foreign_scope`), the loader works out the extra keys with the row's schema it already has (`rows.schema` / `plugins.read` / manifests) and the same Rust implementation, and writes them to the host's output (`rutis-host` to standard error, a Rust embedding to the default output of the diagnostics design §7), without the `[weather]` prefix of plugin output. One warning per row and config value: restarts do not repeat it; the record of what was warned about is shared between `commit.rs`'s dry run and the real commit, so a dry run neither suppresses nor duplicates a warning. Rows of remote runtimes and of pre-0.18 SDKs are warned about by the local loader too. Rows of runtimes that dial in (in apps) have no schema when they resolve (`Resolved.schema` is `None`); each connection's schema is known in the instance's `factory()`, so the instance factory warns, once per instance. SDKs report errors only.
+- Cordis rows (in the loader, `Resolved.meta["cordis"]`) get no extra-key warnings: Cordis's rules apply (§2.3).
 - Testing tools have no loader and write the same warning to standard error themselves.
 - `additionalProperties: false`: the SDK reports it as an error (§5); the row fails.
 - `check --strict`: warnings count as errors, exit status 1 (as `--strict` treats its other warnings).
@@ -102,11 +102,11 @@ A generated schema states only the rules the language's own decoder already has;
 | Swift (`@RutisConfig`) | Optional types (`T?`) and `var`s with a literal initial value are not required; the rest are | The literal of `var units = "metric"` becomes the `default` (strings, numbers, booleans, and arrays and dictionaries of them); a non-literal initial value is not a default, and the field is required | Warning |
 | Kotlin (`@Serializable`) | Not required when it has a default argument (`isElementOptional`) or is nullable | Filled by kotlinx when decoding (`SerialDescriptor` cannot see default values, so the schema has none and `check` does not show them) | Warning |
 | Rust (`serde` + `schemars`) | schemars's existing rules: `Option<T>` and `#[serde(default)]` are not required | The `default` schemars writes into the schema; filled into the JSON first, so `serde(default)` still works and both are the same value | Warning; `#[serde(deny_unknown_fields)]` generates `additionalProperties: false`, an error |
-| Rust (definitions made in Rust, no schema) | `serde` decoding | `serde(default)` | `serde`'s rules |
+| Rust (no schema: `Definition`, and dylibs whose `export_plugin!` has no `schema:`) | `serde` decoding | `serde(default)` | `serde`'s rules |
 
 **Decoder errors**: with a schema, validation runs first; a decoder error after the schema passed means the schema and the type disagree, and is always written `<path> is not a value the plugin accepts`, never the decoder's own text. The path comes from each language's decoder; Kotlin's `RutisFormat` needs one added (its `ValueException` has no path today).
 
-Only definitions made in Rust (`Definition`, whose config type only needs `DeserializeOwned` and has no schema) are rewritten by kind:
+Rust decoding without a schema is rewritten by kind: `Definition` (whose config type only needs `DeserializeOwned`), and dylibs whose `export_plugin!` has no `schema:` (it is optional, and most leave it out):
 
 | Kind | Sentence |
 | --- | --- |
@@ -116,7 +116,7 @@ Only definitions made in Rust (`Definition`, whose config type only needs `Deser
 | `unknown_field` | `<path> is not a config key (did you mean …?)` |
 | Anything else | `<path> is not a value the plugin accepts` |
 
-For this Rust needs a `Deserializer` over `serde_json::Value` with an error type of its own (`serde::de::value` is generic over the error type) that records the path and the method called while decoding, instead of parsing serde's text.
+For this Rust needs a `Deserializer` over `serde_json::Value` with an error type of its own (`serde::de::value` is generic over the error type) that records the path and the method called while decoding, instead of parsing serde's text. It lives in `rutis`, so rutis-sdk (dylibs) uses it too; with a schema the same decoder gives only the one sentence `is not a value the plugin accepts`, without one it goes by the kinds above.
 
 ## 4. Defaults
 
@@ -161,7 +161,7 @@ One line per problem, all problems at once (order in §6.4; at most 20, the rest
 - The error is a `BindingError` with code `bad-config`. The diagnostics design §4.3 says "rows may be added to the table during implementation; existing rows do not change"; this design adds one row to that table: `bad-config`, when: the config does not match the schema, `data`: `{ issues: [{ path: ["home", "lat"], message: "home.lat should be a number, got \"north\"" }] }` (the items of `path` are keys or indices).
 - SDKs send only `code` and `data`; `site` (the row, `doing: "apply"`, diagnostics design §4.1) is filled by the loader at the boundary; testing tools have no `site`. When rutis prints a `bad-config` error it writes `config:`, not `failed in apply:`.
 - Cordis rows' `ValidationError` is `bad-config` too (§2.3).
-- Rust rows (`Builtins`, dylib): when the loader's own config step fails, the error is `ErrorKind::Validation { issues }` with each line above as an issue; the loader writes `config: …` itself and puts that text in `ReconcileReport`'s `Failure`. The kernel's `ErrorKind::Validation` is used for more than config, and its display text does not change.
+- Rust rows (rows whose `foreign_scope` is false): when `EntryFactory`'s config step fails, it returns a marked error (a loader-owned type wrapping `ErrorKind::Validation { issues }`, with each line above as an issue). A row's error becomes a string only in `Loader::failures` (`rejected.to_string()` in `reconcile.rs`), and that string feeds both `Failure.error` and the wait reason `WaitReason::ProviderFailed` (which `status.rs` prints). `failures()` writes a marked error as `config: <problem>`, one line per problem, so both `ReconcileReport` and the waiting line of §9 (`chat: waiting for weather (row weather failed: config: …)`) come out right, and it stays distinct from an error a plugin's own `validate_config` returns and from the kernel's `config type mismatch`. The kernel's `ErrorKind::Validation` is used for more than config, and its display text does not change.
 - A host recognises config errors of rows of other languages (Cordis rows included) by the error code, with `rutis_bridge::thrown(&e)` of the diagnostics design §4.2 / §8.2: `code() == "bad-config"`. No matching on text.
 
 ### 5.3 Which row, and what then
@@ -180,7 +180,7 @@ The same as rutis-host's suggestions for service names, with `closest` in `rutis
 
 - Edit distance counted in Unicode scalar values; one edit is an insertion, a deletion, a substitution or a swap of two neighbours (OSA distance).
 - Keys of 0–2 scalars: no suggestion; 3–6: distance at most 1; 7 or more: at most 2.
-- Candidates are the object's known keys (§3.2, not the key itself); the smallest distance wins. `closest` uses `min_by_key`, so on a tie the first candidate wins: the config module sorts the candidates by Unicode code point before handing them over, so the smallest by code point wins; `closest` itself does not change. Other languages implement this rule.
+- Candidates are the object's known keys (§3.2, not the key itself); the smallest distance wins, ties going to the smallest by Unicode code point (the config module sorts the candidates before handing them to `closest`, which itself does not change).
 
 ### 6.2 The `got` value
 
@@ -205,7 +205,7 @@ Sorted by path: paths compare segment by segment, keys by Unicode code point, in
 
 - For every row, with the schema it already prints, it fills defaults and validates by the same rules (the Rust implementation shared with loader rows), without running plugins.
 - Errors: written in the existing format `<row> (<plugin>): cannot run: config: …`, one line per problem; exit status 1. Extra keys are warnings on standard error with exit status 0; 1 with `--strict`.
-- Go and Swift binaries built with a pre-0.18 SDK (the manifest's `sdk` older than 0.18): `check` ignores `required` in the manifest and checks the rest as usual. Old Go manifests list every field without `omitempty` as required, which would give false failures; old Swift binaries still have the decoder report missing fields at run time.
+- Go binaries built with a pre-0.18 SDK (the manifest's `sdk` older than 0.18): `check` ignores `required` in the manifest and checks the rest as usual. Old Go manifests list every field without `omitempty` as required, which would give false failures. Old Swift manifests need no exception: the old macro writes `required` by whether a field is optional, and the synthesized `Decodable` requires exactly those keys.
 - Rows whose schema is unknown at check time (remote runtimes not connected, `peer:` rows) say `config not checked: its schema is known only when it runs`, which is not a warning. Cordis rows: see §2.3.
 - `check` prints the same text as the runtime, word for word (locked by the same case list).
 
@@ -294,7 +294,8 @@ In "Migrating to 0.18" (both languages):
 - **Defaults are now filled**: plugin code that checks "is this key in the config" sees the defaults; fallbacks written for defaults can be removed or kept.
 - **Go**: the generated schema no longer has `required` (matching Go's zero values; for pre-0.18 binaries `check` ignores their `required` too); `default` in a hand-written `Schema` is now filled (the Go plugin guide's "does not fill defaults for you" is rewritten).
 - **Swift**: `var` fields with a literal initial value are no longer required; when not written they take that value.
-- **Rust**: the text of loader rows' config errors in `ReconcileReport` changes from `config validation failed: [...]` to `config: <path> …`; the types do not change, nor does the display text of the kernel's `ErrorKind::Validation`. Dylib rows are validated by the loader before `build`; for dylibs built with a pre-0.18 rutis-sdk, a decoder error inside the dylib after the schema passed (schema and type disagreeing) is still serde's text, and becomes the §3.3 sentence once rebuilt.
+- **Rust**: the text of loader rows' config errors in `ReconcileReport` changes from `config validation failed: [...]` to `config: <path> …`; the types do not change, nor does the display text of the kernel's `ErrorKind::Validation`. Dylib rows are validated by the loader before `build`; dylibs are rebuilt against 0.18 as with every release (rutis-dylib checks the SDK's id and hash, so old dylibs are not loaded).
+- **An embedder's own resolver**: a row given a schema with `with_schema` now has defaults filled and is validated against it (the doc comment of `Resolved.schema` says so too).
 - **Node, Bun**: `definePlugin` with a Standard Schema object as `config` fails. Only code that was already wrong is affected: such a schema was only printed and never took effect.
 - **Runtimes built with a pre-0.18 SDK**: their rows' configs are not checked at run time; `check` still checks them. Checking at run time starts once the SDK is upgraded.
 - **Extra keys**: only a warning; an error under `check --strict`.
@@ -305,7 +306,7 @@ In "Migrating to 0.18" (both languages):
 | Step | PR |
 | --- | --- |
 | 1a | The case list `specs/config-schema/`; the Rust implementation (a `config` module of rutis-loader: filling defaults, validation, the rules of §6); `check`'s checking, warnings and exit status |
-| 1b | Rust rows: `Builtins::register` / `register_with` / `register_raw` and dylib rows filled and validated before `build`; the `Value` `Deserializer` of `Definition` and the error rewriting of §3.3; rutis-sdk's dylib decoding errors turned into the §3.3 sentence; the `config: …` text the loader puts in `Failure`; the loader's extra-key warning (including the instance factory); filling `site` |
+| 1b | Loader: `EntryFactory`'s `validate_config` / `build` fill and validate rows whose `foreign_scope` is false (the raw value kept); `failures()` writes `config: …` for marked errors; the extra-key warning (including the instance factory, with dedup shared with dry runs); filling `site`; the doc comment of `Resolved.schema`. The `Value` `Deserializer` in `rutis` and the error rewriting of §3.3, used by `Definition` and by rutis-sdk's dylib decoding |
 | 2 | Node and Bun: rows and testing tools of `definePlugin`; Cordis's `ValidationError` turned into `bad-config`; Standard Schema objects refused |
 | 3 | Python: module rows, `define_plugin` rows and the testing tool |
 | 4 | Go: validate, then decode; no `required` in the generated schema; `rutistest` |
