@@ -274,10 +274,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
-    let started = async {
-        host.runtimes_ready().await?;
-        host.load(config.rows()).await
-    };
+    let started = host.start_rows(config.rows());
     let ended = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
             status::follow(host.followed());

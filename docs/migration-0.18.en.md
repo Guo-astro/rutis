@@ -204,6 +204,24 @@ runtime py: down (runtime process exited with exit status: 1)
 - **`shutdown()` does not change**: it still has no time limit, how long to wait is the host's choice. The error of `shutdown_with_timeout` / `dispose_with_timeout` running out names the plugins and cleanups not finished (`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`) instead of `fiber PluginId(1) generation 0 still Unloading after …`; `DisposeWaitError::TimedOut` gained a field `stuck: Vec<Stuck>`, so code destructuring it with every field adds `..`.
 - `root.diagnostics()` implements `Display` (one item a line, by names, without rutis's own plugins by default); `PluginDiagnostics` gained the fields `row` and `platform`.
 
+## Rust embedding: `reconcile` does not wait for a runtime still starting (#678)
+
+In 0.17, while a runtime was still starting, the loader waited for it to resolve its rows, and `reconcile` waited with it; one runtime stuck (waiting for a debugger, say) held up every row. From 0.18 it does not wait: that runtime's rows wait for it first, and start once it is up and they are resolved again; the other rows start as usual, and `reconcile` returns.
+
+What you see: a `reconcile` called before the runtimes are up has nothing in its report of how their rows load (their errors are not in `failures` either); those rows wait for their runtime first. `Loader::check` and `Loader::schema_of` do not have their schema and declarations then either. For the full report as before, wait for the runtimes first:
+
+```rust
+let runtimes = [node.handle(), python.handle()];
+root.plugin(node);
+root.plugin(python);
+for runtime in &runtimes {
+    runtime.ready().await;
+}
+let report = handle.reconcile(layers, None).await?;
+```
+
+`rutis-host` is not affected: it still counts as started once every runtime is up and every row has been through its load.
+
 ## `rutis-host`'s output: status lines on standard error, plugins' lines named under `dev` (#678)
 
 - **The status lines of `run` and `dev` go to standard error** (standard output before): `weather: running`, `runtime py: down (…)`, `rutis-host: listening on …`, `rutis-host: reloaded …`, `dev`'s `reloaded`, `building` and the like. `rutis-host check` without arguments in a Go or Swift project builds the project first, and its `building` and `built in` lines go to standard error too; what `check` says of each row stays on standard output. Plugins' output goes to the stream they write it to, as before. A script reading status lines from `rutis-host`'s standard output reads standard error instead (or `2>&1`).

@@ -441,6 +441,7 @@ let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&cata
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
 let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
 let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+let runtimes = [node.handle(), python.handle()];
 root.plugin(node);
 root.plugin(python);
 
@@ -459,6 +460,11 @@ let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
     { "id": "web", "name": "weather-plugin", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "py:llm_gateway" }
 ] }]))?;
+// Wait for the runtimes before reconciling: only then does the report have
+// how their rows loaded (otherwise those rows wait for their runtime first).
+for runtime in &runtimes {
+    runtime.ready().await;
+}
 // Returns once every row has been loaded: see below.
 let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
 for failure in &report.failures {
@@ -479,7 +485,7 @@ for failure in &report.failures {
 # }
 ```
 
-- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waiting_for(&entry)` says what for. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
+- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waiting_for(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
 - Paths: each runtime's process starts in a directory of its own (Python and Go: their project; Node: the runtime's package), and is given the paths as written. Relative paths would then be read from that directory, not the application's: give absolute ones, as above.
 - A runtime is a plugin. Its process starts with the plugin and exits when the plugin is unloaded. If the process exits unexpectedly, the runtime stops and its rows wait; `RuntimeHandle::state()` reports `Down(reason)`, including why the process ended. The application decides whether to restart it by calling `restart` on the runtime fiber.
 - No row is blamed for its runtime ending: a row that was still loading in it waits for it as the others do, it does not fail. The runtime's `Down` reason says how its process ended, and calls in progress to its rows fail saying so.

@@ -204,6 +204,24 @@ runtime py: down (runtime process exited with exit status: 1)
 - **`shutdown()` 不变**，仍然不限时，等多久由宿主决定。`shutdown_with_timeout` / `dispose_with_timeout` 到时的错误改为写明还没结束的插件和清理（`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`），不再是 `fiber PluginId(1) generation 0 still Unloading after …`；`DisposeWaitError::TimedOut` 多了字段 `stuck: Vec<Stuck>`，列出全部字段解构它的代码加上 `..`。
 - `root.diagnostics()` 实现了 `Display`（一项一行，用名字，默认不列 rutis 自己的插件）；`PluginDiagnostics` 多了 `row`、`platform` 两个字段。
 
+## Rust 嵌入：`reconcile` 不等还在启动的运行时（#678）
+
+0.17 里，运行时还在启动时，loader 解析它的行要等它起来，`reconcile` 也就跟着等；一个运行时卡住（比如在等调试器），所有行都不加载。0.18 起不等：它的行先在等这个运行时，等它起来、重新解析之后再启动；其他行照常启动，`reconcile` 照常返回。
+
+看得到的不同：在运行时起来之前调用 `reconcile`，报告里没有这些行装载的结果（`failures` 里也不会有它们的错误），这些行先停在等运行时。`Loader::check`、`Loader::schema_of` 这时也拿不到它们的 Schema 和声明。要和以前一样拿到完整的报告，先等运行时：
+
+```rust
+let runtimes = [node.handle(), python.handle()];
+root.plugin(node);
+root.plugin(python);
+for runtime in &runtimes {
+    runtime.ready().await;
+}
+let report = handle.reconcile(layers, None).await?;
+```
+
+`rutis-host` 不受影响：它仍然在所有运行时起来、每一行都装载过之后才算启动。
+
 ## `rutis-host` 的输出：状态行写到标准错误，`dev` 里插件的行带行名（#678）
 
 - **`run` 和 `dev` 的状态行写到标准错误**（以前写到标准输出）：`weather: running`、`runtime py: down (…)`、`rutis-host: listening on …`、`rutis-host: reloaded …`、`dev` 的 `reloaded`、`building` 等。在 Go、Swift 项目里不带参数运行的 `rutis-host check` 先构建项目，它的 `building`、`built in` 两行也写到标准错误；`check` 对每一行的描述仍在标准输出。插件的输出照旧按它写的流。从 `rutis-host` 的标准输出里读状态行的脚本改为读标准错误（或 `2>&1`）。
