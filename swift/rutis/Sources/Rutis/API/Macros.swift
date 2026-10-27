@@ -7,7 +7,7 @@ public macro RutisService() = #externalMacro(module: "RutisMacros", type: "Servi
 
 /// On a protocol listing the methods of a service a plugin uses (each
 /// `async throws`): generates `<Protocol>Proxy` for `ctx.use`.
-@attached(peer, names: suffixed(Proxy))
+@attached(peer, names: suffixed(Proxy), named(rutisObjectProxy))
 public macro RutisClient() = #externalMacro(module: "RutisMacros", type: "ClientMacro")
 
 /// On a configuration type: generates its JSON Schema from its stored

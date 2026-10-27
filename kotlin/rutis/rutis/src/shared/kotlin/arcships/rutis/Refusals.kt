@@ -95,6 +95,9 @@ internal object Refusals {
     private fun simpleName(descriptor: SerialDescriptor): String =
         descriptor.serialName.removeSuffix("?").substringAfterLast('.')
 
+    /** `a Cache`, `an Item`. */
+    fun article(name: String): String = (if (name.firstOrNull()?.lowercaseChar()?.let { it in "aeiou" } == true) "an " else "a ") + name
+
     private fun named(descriptor: SerialDescriptor): String? {
         val name = simpleName(descriptor)
         if (name.isEmpty()) return null
@@ -111,6 +114,7 @@ internal object Refusals {
         is JsonArray, is List<*> -> "a list"
         is JsonObject, is Map<*, *> -> "an object"
         is Exported, is RemoteFunction -> "a function"
+        is RemoteObject, is arcships.rutis.internal.peer.ExportedObject -> "an object"
         is ExportedObject -> "an object"
         is RemoteFuture -> "an asynchronous result"
         else -> describe(value)

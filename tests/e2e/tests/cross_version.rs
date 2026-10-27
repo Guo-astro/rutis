@@ -35,6 +35,8 @@
 //! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it is announced and reaches rows of either runtime; the current `check` warns |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
 //! | `@arcships/rutis` (the SDK a plugin was built against) | the current host, Node and Bun runtimes | its plugins run and are called (#672: a JavaScript plugin keeps the SDK of its caret range, a copy of its own) |
+//! | `@arcships/rutis-runtime` | the current host, Python runtime | objects with methods (#687): its object reaches the current runtime and is called; the current runtime's object sent to it fails just that call (`bad-value`, upgrade it) before 0.18 |
+//! | rutis-host | the current runtimes (Node, Python) | objects with methods between them: refused by a 0.17.2 host in its own words, just that call; forwarded by an older one |
 //!
 //! "Events both ways": a listener on the old side answers a `serial` the
 //! current side emits, and a listener on the current side answers one the
@@ -312,6 +314,94 @@ export default definePlugin({
   },
 })
 "#;
+
+/// `tsobjects` in TypeScript, for the SDK of either version: `counter`
+/// returns an object with a method (a class instance, by reference).
+const OBJECTS_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+class Counter { n = 0; inc() { return ++this.n } }
+
+export default definePlugin({
+  provides: { tsobjects: { counter: 'async' } },
+  apply(ctx) {
+    ctx.provide('tsobjects', { counter: async () => new Counter() })
+  },
+})
+"#;
+
+/// `tstaker` in TypeScript, for the SDK of either version: `poke` gets
+/// `pyobjects`' counter and calls its method twice.
+const TAKER_TS: &str = r#"import { definePlugin } from '@arcships/rutis'
+
+type Counter = { inc(): Promise<number> }
+type Py = { counter(): Promise<Counter> }
+
+export default definePlugin({
+  inject: ['pyobjects'],
+  provides: { tstaker: { poke: 'async' } },
+  apply(ctx) {
+    const py = ctx.use<Py>('pyobjects')
+    ctx.provide('tstaker', {
+      async poke() {
+        const counter = await py.counter()
+        await counter.inc()
+        return `count ${await counter.inc()}`
+      },
+    })
+  },
+})
+"#;
+
+/// `pyobjects` in Python (current package): `counter` returns an object
+/// with a method; `poke` gets `tsobjects`' counter and calls its method
+/// twice; `hello` is a plain call.
+const OBJECTS_PY: &str = r#"from rutis import define_plugin
+
+
+class Counter:
+    def __init__(self):
+        self.n = 0
+
+    def inc(self):
+        self.n += 1
+        return self.n
+
+
+class PyObjects:
+    def __init__(self, ts):
+        self.ts = ts
+
+    def counter(self):
+        return Counter()
+
+    async def poke(self):
+        counter = await self.ts.counter()
+        await counter.inc()
+        return f"count {await counter.inc()}"
+
+    def hello(self):
+        return "hello"
+
+
+def apply(ctx, config):
+    ctx.provide("pyobjects", PyObjects(ctx.use("tsobjects")))
+
+
+plugin = define_plugin(apply, inject=["tsobjects"], provides={"pyobjects": PyObjects})
+"#;
+
+/// The rows of the object meetings: `tsobjects` and `tstaker` in Node,
+/// `pyobjects` in Python, and `probe`.
+fn objects_rows(s: &Scenario) -> Probe {
+    s.write("tsobjects.ts", OBJECTS_TS);
+    s.write("tstaker.ts", TAKER_TS);
+    s.write("pyobjects.py", OBJECTS_PY);
+    s.probe(
+        "probe",
+        Lang::Python,
+        &["tsobjects", "pyobjects", "tstaker"],
+    )
+}
 
 /// Errors cross between the versions (#677): an error carrying what the
 /// current side adds (`site`, `rethrown`, real stacks) or lacking it (from
@@ -1521,6 +1611,110 @@ fn previous_runtimes_lease_per_row_and_name_the_calling_row() {
         assert_eq!(keys.len(), 4, "{keys:?}");
         host.send_line("stop");
         assert!(host.wait_exit().success(), "the application stopped");
+        s.finish();
+    });
+}
+
+// ── Objects with methods (#687) ──
+
+/// The previous `@arcships/rutis-runtime` under the current host, with the
+/// current Python runtime: an object of the old runtime reaches the
+/// current one, whose calls on it work; an object of the current one sent
+/// to the old runtime (which does not declare `objects` before 0.18) fails
+/// just that call with `bad-value`, saying to upgrade it, and the session
+/// goes on.
+///
+/// guarantee: bridge/object-refs, bridge/cross-version-meetings
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn objects_between_a_previous_node_runtime_and_the_current_one() {
+    each("prev-node-objects", Meeting::Works, |release, s| {
+        link_sdk(&s, "", &release.node_sdk());
+        let probe = objects_rows(&s);
+        s.write_json(
+            "rutis.json",
+            &json!({
+                "runtimes": { "node": { "runtime": release.node_runtime() }, "py": {} },
+                "rows": [
+                    { "id": "tsobjects", "name": "./tsobjects.ts" },
+                    { "id": "pyobjects", "name": "py:pyobjects" },
+                    { "id": "tstaker", "name": "./tstaker.ts" },
+                    probe.row(),
+                ],
+            }),
+        );
+        let mut host = s.host(["run", "rutis.json"]);
+        host.expect("tstaker: running");
+        probe.started(&mut host);
+        assert_eq!(
+            probe.call(&mut host, "pyobjects", "poke", json!([])),
+            Ok(json!("count 2")),
+            "the old runtime's object reaches the current one"
+        );
+        let poked = probe.call(&mut host, "tstaker", "poke", json!([]));
+        if release.older_than("0.18.0") {
+            let failed = poked.expect_err("the old runtime takes no objects");
+            assert!(
+                failed.contains("an object from py cannot cross to node: node does not take objects (older than rutis 0.18); upgrade it"),
+                "{failed}"
+            );
+        } else {
+            assert_eq!(poked, Ok(json!("count 2")));
+        }
+        assert_eq!(
+            probe.call(&mut host, "pyobjects", "hello", json!([])),
+            Ok(json!("hello"))
+        );
+        stop(host);
+        s.finish();
+    });
+}
+
+/// The previous rutis-host with the current Node and Python runtimes: a
+/// 0.17.2 host does not know they take objects, so it refuses an object
+/// between them with its own words, failing just that call; the session
+/// goes on. A host before 0.17.2 refuses nothing: it forwards the object
+/// and the calls on it work.
+///
+/// guarantee: bridge/object-refs, bridge/cross-version-meetings
+#[test]
+#[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
+fn objects_between_the_current_runtimes_under_a_previous_host() {
+    each("prev-host-objects", Meeting::Works, |release, s| {
+        s.link_node_sdk();
+        let probe = objects_rows(&s);
+        s.write_json(
+            "rutis.json",
+            &json!({
+                "runtimes": { "node": {}, "py": {} },
+                "rows": [
+                    { "id": "tsobjects", "name": "./tsobjects.ts" },
+                    { "id": "pyobjects", "name": "py:pyobjects" },
+                    { "id": "tstaker", "name": "./tstaker.ts" },
+                    probe.row(),
+                ],
+            }),
+        );
+        let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
+        host.expect("tstaker: running");
+        probe.started(&mut host);
+        for (service, far) in [("pyobjects", "py"), ("tstaker", "node")] {
+            let poked = probe.call(&mut host, service, "poke", json!([]));
+            if !release.older_than("0.17.2") && release.older_than("0.18.0") {
+                let failed = poked.expect_err("a 0.17.2 host forwards no objects");
+                assert!(
+                    failed.contains(&format!("an object with methods cannot cross to {far}")),
+                    "{failed}"
+                );
+            } else {
+                assert_eq!(poked, Ok(json!("count 2")));
+            }
+        }
+        assert_eq!(
+            probe.call(&mut host, "pyobjects", "hello", json!([])),
+            Ok(json!("hello"))
+        );
+        stop(host);
         s.finish();
     });
 }

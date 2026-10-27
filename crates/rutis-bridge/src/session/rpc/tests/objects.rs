@@ -603,3 +603,66 @@ async fn an_object_given_twice_is_one_relay_and_comes_back_as_itself() {
     let (_far_b, relays) = holder.await.unwrap();
     assert_eq!(relays[0], relays[1], "one relay for one object");
 }
+
+/// Calls `get` on the object it holds, later, as a host service given an
+/// object of another runtime does.
+struct Poke(Arc<std::sync::OnceLock<Value>>);
+impl Dispatch for Poke {
+    fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
+        let object = self.0.get().unwrap().clone().reference()?;
+        Ok(Value::future(async move {
+            object.call_method_async("get", Value::List(vec![])).await
+        }))
+    }
+}
+
+/// A host service handling a call of session `b` calls an object of
+/// session `a`: the chain `a` gets is in `a`'s terms, `b`'s ids tagged with
+/// `b`, so an id of `b`'s never looks like one of `a`'s own (a runtime
+/// refuses a call whose chain holds its own id).
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
+    let (_a, mut far_a, object) = owner("node").await;
+    let held = Arc::new(std::sync::OnceLock::new());
+    held.set(object).unwrap();
+    let (b, far_b) = connected(Arc::new(Poke(held)));
+    let mut far_b =
+        tokio::task::spawn_blocking(move || Remote::start_declaring(far_b, &TAKES_OBJECTS))
+            .await
+            .unwrap();
+    b.ready().await.unwrap();
+    let tag = b.tag().to_owned();
+    let path = tokio::task::spawn_blocking(move || {
+        far_b.send(Frame::Invoke {
+            id: "node:1".into(),
+            path: vec!["rust:9".into()],
+            target: "t".into(),
+            method: "poke".into(),
+            args: data(json!([])),
+            sync: false,
+        });
+        // Its answer is a future; awaited, it runs.
+        let Frame::Return { value, .. } = far_b.read() else {
+            panic!("return expected")
+        };
+        far_b.send(Frame::Await {
+            id: "node:2".into(),
+            path: vec![],
+            reference: granted(&value).0,
+            sync: false,
+        });
+        let path = loop {
+            if let Frame::Call { id, path, .. } = far_a.read() {
+                far_a.ret(id, data(json!(1)));
+                break path;
+            }
+        };
+        (path, far_a, far_b)
+    });
+    let (path, _far_a, _far_b) = tokio::time::timeout(STEP, path)
+        .await
+        .expect("the object's method called")
+        .unwrap();
+    assert_eq!(path, vec![format!("{tag}/rust:9"), format!("{tag}/node:1")]);
+}
