@@ -633,3 +633,65 @@ async fn check_passes_a_service_that_may_come_from_a_remote_runtime() {
     assert_eq!(checked.stderr, "");
     assert_eq!(checked.status, 0);
 }
+
+/// A listening link row and a runtime dialing in to the same listener, the
+/// tokens of both from the environment.
+fn sharing_a_listener(dir: &Path) {
+    let config = serde_json::json!({
+        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
+        "runtimes": {
+            "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
+        },
+        "rows": [
+            { "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } },
+            { "id": "phone", "group": true, "instanced": true, "config": [] }
+        ]
+    });
+    write(dir, &[("rutis.json", &config.to_string())]);
+}
+
+/// Both falling back to RUTIS_TOKEN, the link row and the runtime would
+/// accept the same token on one listener, and a connection presenting it
+/// is refused as ambiguous: check (and run, which starts the same way)
+/// fails at once, naming both and the variable to set (#702).
+/// risk: A6
+/// guarantee: host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn check_refuses_two_entries_accepting_one_token_on_a_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    sharing_a_listener(dir.path());
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_TOKEN", Path::new("shared"))],
+    )
+    .await;
+    assert_eq!(checked.stdout, "");
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: listener public: link row main and remote runtime phone both accept \
+         RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
+         RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// The same listener, the runtime with a token of its own: check passes.
+/// risk: A6
+/// guarantee: host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn check_passes_entries_with_tokens_of_their_own_on_a_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    sharing_a_listener(dir.path());
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[
+            ("RUTIS_TOKEN", Path::new("shared")),
+            ("RUTIS_TOKEN_PHONE", Path::new("phone-token")),
+        ],
+    )
+    .await;
+    assert_eq!(checked.stderr, "");
+    assert_eq!(checked.status, 0);
+}
