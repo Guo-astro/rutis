@@ -16,13 +16,34 @@
 // At most this many problems are written; the rest as one last line.
 const SHOWN = 20
 const TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array', 'null']
-const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+// A plain object: what a JSON object is (a Date, Map or class instance is
+// not one, and is left as it is).
+const isObject = value => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+// The schema a plugin declares as `config`, to fill and validate with:
+// `undefined` when it has none, or not a JSON Schema object (a function
+// of an older SDK, say). A Standard Schema object (schemastery, zod, …) is
+// refused as `definePlugin` refuses it (config schema design §2.3).
+export function schemaOf(config) {
+  const standard = config?.['~standard']
+  if (standard !== undefined) {
+    throw new TypeError(`config of definePlugin should be a JSON Schema object, got ${standard?.vendor === 'schemastery' ? 'a schemastery Schema' : 'a Standard Schema'}`)
+  }
+  return isObject(config) ? config : undefined
+}
 
 // Fill `config` (undefined or null: no config) with the defaults of
 // `schema`, then validate it: `{ config, errors, warnings }`, each problem
 // `{ path, message }` (`path` a list of keys and indices), sorted by path.
 // `config` is a copy: changing it changes nothing of the `config` given.
 export function checkConfig(schema, config, { required = true } = {}) {
+  // The schema as the host sees it (JSON): `undefined` keywords gone,
+  // shared objects apart.
+  try { schema = JSON.parse(JSON.stringify(schema)) } catch {}
   const doc = new Document(schema)
   const none = config === undefined || config === null
   let value
@@ -173,11 +194,19 @@ function issue(path, reason) {
   return { path: [...path], message: `${pathText(path)} ${reason}` }
 }
 
-// A JSON value copied: its objects and arrays new.
+// A JSON value copied: its arrays and plain objects new (a key whose value
+// is `undefined` left out, as JSON has none); other values as they are.
 function copy(value) {
   if (Array.isArray(value)) return value.map(copy)
-  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copy(item)]))
-  return value
+  if (!isObject(value)) return value
+  const out = {}
+  for (const [key, item] of Object.entries(value)) if (item !== undefined) put(out, key, copy(item))
+  return out
+}
+
+// `object[key] = value`, `__proto__` included as an own key.
+function put(object, key, value) {
+  Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true })
 }
 
 // JSON equality: numbers by value, objects regardless of key order.
@@ -231,8 +260,10 @@ class Document {
     let node = this.root
     for (const raw of reference.slice(2).split('/')) {
       const key = raw.replaceAll('~1', '/').replaceAll('~0', '~')
-      if (!isObject(node) || !Object.hasOwn(node, key)) return undefined
-      node = node[key]
+      // An array's item by its index (no leading zero), as a JSON Pointer.
+      if (Array.isArray(node) && /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < node.length) node = node[Number(key)]
+      else if (isObject(node) && Object.hasOwn(node, key)) node = node[key]
+      else return undefined
     }
     return node
   }
@@ -293,7 +324,7 @@ class Document {
         for (const [key, property] of Object.entries(part.properties)) {
           if (Object.hasOwn(value, key)) continue
           const fallback = this.defaultOf([property])
-          if (fallback !== undefined) value[key] = copy(fallback)
+          if (fallback !== undefined) put(value, key, copy(fallback))
         }
       }
       const known = new Set(Document.known(parts))

@@ -2,7 +2,7 @@
 // case list against this runtime's copy, and a row's config filled and
 // validated before `apply`.
 import { expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { checkConfig, configLines } from '../src/config.mjs'
@@ -42,4 +42,6 @@ test("a row's config is filled, and a wrong one fails the row with bad-config", 
   expect(failed?.code).toBe('bad-config')
   expect(failed?.message).toBe('config: city is required\nconfig: units should be "metric" or "imperial", got "kelvin"')
   expect((globalThis as any).weather.length).toBe(1)
+  delete (globalThis as any).weather
+  rmSync(dir, { recursive: true, force: true })
 })

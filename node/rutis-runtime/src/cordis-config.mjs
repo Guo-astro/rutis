@@ -4,7 +4,11 @@ import { configError, pathText } from './config.mjs'
 // Schema, such as schemastery), as Cordis will: its problems as a
 // `bad-config` error written as every runtime writes them (config schema
 // design §2.3), the path from each issue's `path`, the text from its
-// `message`, instead of Cordis's ValidationError.
+// `message`, instead of Cordis's ValidationError (which keeps no issues).
+// Checked before the fiber runs, on the config as the row has it: a hook
+// of Cordis's `internal/config` waterfall that would make it valid does not
+// run here, and a schemastery transform runs again when Cordis resolves
+// the config itself.
 export function cordisConfig(plugin, config) {
   const standard = plugin?.Config?.['~standard']
   if (typeof standard?.validate !== 'function') return

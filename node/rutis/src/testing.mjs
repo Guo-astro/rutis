@@ -35,7 +35,7 @@
 // text); what works only in one process fails here too.
 
 import { PLUGIN_API, isPlugin } from './index.mjs'
-import { checkConfig, configError } from './config.mjs'
+import { checkConfig, configError, schemaOf } from './config.mjs'
 import { Bus, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
@@ -486,16 +486,25 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       // As a runtime loads a row: defaults filled, the config validated
       // against the plugin's schema (config schema design §2.2); extra keys
       // warned about on standard error, as the host's loader would.
-      if (plugin.config !== undefined && plugin.config !== null) {
-        const checked = checkConfig(plugin.config, config)
-        for (const warning of checked.warnings) process.stderr.write(`${row.key}: config: ${warning.message}\n`)
+      // The config crosses first, as it reaches a runtime.
+      if (strict && config !== undefined) config = cross(config, 'config')
+      const schema = schemaOf(plugin.config)
+      if (schema !== undefined) {
+        const checked = checkConfig(schema, config)
+        // Once per row and config value, as the host's loader warns.
+        const seen = JSON.stringify(config) ?? ''
+        row.warned ??= new Set()
+        if (checked.warnings.length && !row.warned.has(seen)) {
+          row.warned.add(seen)
+          for (const warning of checked.warnings) process.stderr.write(`${row.key}: config: ${warning.message}\n`)
+        }
         if (checked.errors.length) throw configError(checked.errors)
         config = checked.config
       } else if (config === undefined) {
         // No schema: what it is given, `{}` when nothing (as before).
-        config = {}
+        config = strict ? cross({}, 'config') : {}
       }
-      const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
+      const returned = await plugin.apply(ctx, config)
       if (returned !== undefined && returned !== null) {
         if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
         row.cleanups.push(returned)

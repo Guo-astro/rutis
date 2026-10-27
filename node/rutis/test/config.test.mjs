@@ -87,6 +87,21 @@ test('the testing tool fills defaults, validates and warns as the runtime does',
   assert.deepEqual(seen.at(-1), { city: 'Oslo', cty: 'x', units: 'metric' })
 })
 
+test('an update with a wrong config fails, and the row is unloaded', async () => {
+  const seen = []
+  const t = await load(weather(seen), { config: { city: 'Oslo' } })
+  await assert.rejects(t.update({ city: 3 }), { code: 'bad-config', message: 'config: city should be a string, got 3' })
+  assert.equal(seen.length, 1)
+  await t.unload()
+})
+
+test('a Standard Schema as a module config is refused at load', async () => {
+  const plugin = definePlugin({ apply() {} })
+  const smuggled = { ...plugin, config: { '~standard': { version: 1, vendor: 'zod', validate: () => ({}) } } }
+  Object.defineProperty(smuggled, Symbol.for('rutis.leaf-plugin'), { value: true })
+  await assert.rejects(load(smuggled), { message: 'config of definePlugin should be a JSON Schema object, got a Standard Schema' })
+})
+
 test('a plugin without a schema gets what it is given', async () => {
   const seen = []
   const plugin = definePlugin({ apply(ctx, config) { seen.push(config) } })
