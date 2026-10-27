@@ -78,6 +78,23 @@ test('greets through events', async () => {
 })
 ```
 
+### Objects with methods
+
+A class instance, or a plain object with function-valued properties, goes to another language by reference: the far end gets a proxy whose calls reach the original object here. An object another process passes here is a proxy too:
+
+```ts
+const cache = await ctx.use('store').cache()
+await cache.set('a', 1)          // every method is an asynchronous call of the far end's object
+const value = await cache.get('a')
+```
+
+- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it); it has no data fields: to get data, have a method return it. `console.log` shows `[remote object]`.
+- One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there.
+- An object does not follow its row: after the row that passed it unloads, it can still be called. Once its runtime has exited, calls on it fail with `peer-gone`.
+- Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set)`.
+- `undefined` inside an array or object arrives as `null`; only a whole argument or a whole result keeps it.
+- Rows in the same runtime get the object itself (its methods synchronous as usual, its fields readable). The testing tool's strict mode gives the cross-process proxy.
+
 ## 3. Run it in a host
 
 ```bash

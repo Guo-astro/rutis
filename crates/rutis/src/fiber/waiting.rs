@@ -41,7 +41,7 @@ fn watches() -> &'static Arc<Watches> {
             .name("rutis-waiting".into())
             .spawn(move || keep(&keeper));
         if let Err(error) = started {
-            eprintln!("[rutis] cannot report plugins that wait long: {error}");
+            eprintln!("cannot report plugins that wait long: {error}");
         }
         watches
     })
@@ -85,6 +85,12 @@ fn keep(watches: &Watches) {
 /// `generation`: report it once its root's delay has passed, if it still
 /// waits then.
 pub(crate) fn watch(fiber: &Arc<FiberInner>, generation: u64) {
+    // rutis's own plugins (a link waiting for its peer, a runtime's rows)
+    // are not reported: their state says what they wait for, and their
+    // names mean nothing to the developer (#678).
+    if fiber.platform {
+        return;
+    }
     let Some(after) = *fiber.ctx.shared().waiting_report.lock().unwrap() else {
         return;
     };
@@ -112,6 +118,30 @@ pub(crate) fn watch(fiber: &Arc<FiberInner>, generation: u64) {
 /// is gone.
 const PURGE_EVERY: usize = 32;
 
+/// How reports name keys: by the names a namer gives them (a loader's
+/// services, a row's runtime), else described.
+pub(crate) fn key_names(shared: &crate::ctx::Shared) -> impl Fn(&crate::TypeKey) -> String {
+    let namers = namers(shared);
+    move |key| {
+        namers
+            .iter()
+            .find_map(|namer| namer(key))
+            .unwrap_or_else(|| key.describe())
+    }
+}
+
+/// The key namers added to the root (`CtxHost::name_keys_with`), still
+/// held by whoever added them.
+pub(crate) fn namers(shared: &crate::ctx::Shared) -> Vec<Arc<crate::host::KeyNamer>> {
+    shared
+        .key_namers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect()
+}
+
 /// Report `fiber` to its error sink when it still waits in `generation`
 /// for services nothing provides.
 fn report(fiber: &Arc<FiberInner>, generation: u64, after: Duration) {
@@ -131,26 +161,11 @@ fn report(fiber: &Arc<FiberInner>, generation: u64, after: Duration) {
     if missing.is_empty() {
         return;
     }
-    // By the names a namer gives them (a loader's services), else described.
-    let namers: Vec<Arc<crate::host::KeyNamer>> = shared
-        .key_namers
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .collect();
+    let name = key_names(shared);
     let error = ErrorKind::StillWaiting {
-        plugin: fiber.name.clone(),
+        plugin: fiber.display_name(),
         seconds: after.as_secs_f64(),
-        missing: missing
-            .iter()
-            .map(|key| {
-                namers
-                    .iter()
-                    .find_map(|namer| namer(key))
-                    .unwrap_or_else(|| key.describe())
-            })
-            .collect(),
+        missing: missing.iter().map(name).collect(),
     };
     (shared.error_sink)(Arc::new(error));
 }

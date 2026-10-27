@@ -90,6 +90,7 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | `rutis-host run [rutis.json]` | Runs the configuration (reading it again while it runs on SIGUSR1 on Unix, or with `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs)) and prints each row's status changes, the state of node rows' links and local runtimes that end (see [What `run` prints](#what-run-prints)). Press Ctrl-C to stop (see [Stopping and exit status](#stopping-and-exit-status)). |
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
+| `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
 | `rutis-host types [directory] [-o file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; see [Embed in a Rust application](rust-host.en.md#mark-the-type-rutisservice). |
@@ -308,6 +309,33 @@ Also:
 - Go: `runtimes.go.restart` applies to every Go runtime, each on its own (its own waits and limit; `runtime go-<name>: restarting`). A runtime stopped for being idle did not end on its own; nor did one whose binary's handshake was refused (an old SDK), which is not restarted until its file changes. Whatever `restart` says, a crashed Go runtime also starts again when a row uses it once its binary changed. Changing `runtimes.go` while the host runs needs a restart, as before. `runtimes.swift.restart` is the same for the Swift runtimes (`runtime swift-<name>: restarting`).
 - Remote runtimes and peer rows' links reconnect by themselves and are not affected.
 
+## Seeing the current state
+
+While `run` or `dev` runs, run `rutis-host status` in another terminal in the same directory (or `rutis-host status path/to/rutis.json`, `rutis-host status <the dev project's directory>`) to print the host's state now, once. It answers while starting is stuck too (a row's `apply` waiting on a call that does not return, before `run` prints any state line):
+
+```
+rows:
+  slow: running
+  caller: starting
+services:
+  slow: slow
+runtimes:
+  node: running (pid 4242)
+  py: running (pid 4243)
+calls:
+  caller → slow.wait  42s
+```
+
+- `rows`: each row (a row inside instances once per instance, as `<row> in <group> #<number>`) and its state: `running`, `starting`, `stopped`, `disabled`, and `waiting` for a waiting row when rutis cannot say for what; a waiting row says what it waits for (in the words of `run`'s waiting lines); a failed row, the first line of its failure. When a runtime exits, its rows show at once that they wait for it.
+- `services`: each service by name and the row providing it; one the host (Rust) provides says `host`.
+- `runtimes`: each runtime's state (`running`, `starting`, `down`, `stopped`), how one that exited ended, and a local runtime's process id.
+- `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
+- rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
+
+`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers one request, `status`, and changes nothing. It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
+
+When stopping does not finish by the deadline (see [Stopping and exit status](#stopping-and-exit-status)), the calls not returned are listed too, after the plugins still stopping: `call not returned: caller → slow.wait  12s`.
+
 ## Output
 
 The standard output and standard error of the runtime processes (Node, Bun, Python, Go, Swift) are not written straight onto `rutis-host`'s: `rutis-host` reads them through pipes and writes them a whole line at a time — a line a plugin writes to stdout comes out on `rutis-host`'s stdout, one written to stderr on its stderr, unchanged, with no prefix. `rutis-host` writes its own status lines a whole line at a time too. So a plugin's line and a line of `rutis-host`'s, or lines of two runtimes, never run into each other, also when the plugin writes a line in pieces (Python's `print` writes the text, then the newline) and when stdout and stderr are the same file (`2>&1`).
@@ -373,7 +401,7 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `node` | `project` (default `.`), `runtime`, `restart` | Starts the Node runtime. Plugin packages are resolved from `project`'s `package.json`. Install `@arcships/rutis-runtime` there, specify it with `runtime`, or use the copy included with the npm distribution of rutis-host. |
 | `bun` | `project` (default `.`), `runtime`, `program`, `restart` | Starts the Bun runtime, with rows named `bun:<module>`. Modules resolve from `project` (packages in `node_modules`, `./relative-paths`). Install `@arcships/rutis-bun` there or specify it with `runtime`; `program` is the Bun executable, by default `bun` on `PATH`. See [Write a Bun plugin](bun-plugin.en.md). |
 | `py` | `project` (default `.`), `python`, `restart` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
-| `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one; `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
+| `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one (objects it handed out and that are held elsewhere do not count as use: once it stopped, calls on them fail with `peer-gone`); `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
 | `remote` | `name`, `language`, `listen`, `instances` | A runtime on another machine: connected through a node row with `"runtime": "<name>"`, see [Connect nodes](nodes.en.md); or, with `listen` and `instances`, one that connects in, see below. |
 
@@ -450,7 +478,7 @@ Do not put credentials in the file; they are read from the environment when a li
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 
-On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own: when two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
+On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own; listening peer rows must, on different listeners too (they share the host's one identity; a row with an identity or transport of its own counts when the other uses the host's), disabled ones included (enabling one would clash). When two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
 
 ```
 rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own

@@ -10,7 +10,11 @@
     "rust"
   ],
   "enforced": [
-    "rust"
+    "rust",
+    "node",
+    "bun",
+    "python",
+    "go"
   ],
   "cases": [
     {
@@ -99,7 +103,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "JavaScript sends no cancel of its own (it has no way to give a call up); its cell is the far end's cancel reaching the method's AbortSignal. Python and Rust also give up calls through a proxy."
     },
     {
       "id": "no-method",
@@ -121,7 +126,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "Node's test also releases on collection; Bun's, Python's and Go's tests release explicitly (their proxies release on collection too, untested)."
     },
     {
       "id": "holder-killed-releases",
@@ -132,7 +138,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "The host releasing the object when the holder's process goes is the Rust cell; a language's cell is its owner letting the object go on that release."
     },
     {
       "id": "sync-wait-cycle",

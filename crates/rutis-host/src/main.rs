@@ -4,6 +4,7 @@
 //! rutis-host run [rutis.json]      run what the file names
 //! rutis-host dev                   run the plugin project here, reloading it as it changes
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
+//! rutis-host status [rutis.json]   what a running host is doing now
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
 //! rutis-host types [crate dir] [-o file]
@@ -11,7 +12,7 @@
 
 use std::collections::HashSet;
 
-use rutis_host::{config, errln, host, languages, new, outln, project, status};
+use rutis_host::{config, control, errln, host, languages, new, outln, project, status};
 use rutis_loader::report::{
     Clash, ConfigStatus, CycleLink, Provider, Requirement, RowStatus, Supply,
 };
@@ -56,6 +57,10 @@ usage:
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
                                               no row declares, which --strict fails
+  rutis-host status [rutis.json | dir]        what the host running that configuration (or
+                                              that dev project) does now: each row's state and
+                                              why, each service's provider, the runtimes, the
+                                              calls not returned yet (not on Windows)
   rutis-host new <name> --lang node|bun|python|go|swift
                                               create a plugin project
   rutis-host go add <module>@<version> [rutis.json]
@@ -90,6 +95,7 @@ fn main() {
             outln!("{USAGE}");
             Ok(Stopped::Done)
         }
+        Some("status") => status_command(&args[1..]).map(|()| Stopped::Done),
         Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
@@ -160,6 +166,39 @@ fn types(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `rutis-host status [rutis.json | dir]`: ask the host running that
+/// configuration (by default the one here) what it does now.
+fn status_command(args: &[String]) -> Result<(), String> {
+    let target = match args {
+        [] => std::path::PathBuf::from("."),
+        [target] if !target.starts_with('-') => std::path::PathBuf::from(target),
+        _ => return Err("usage: rutis-host status [rutis.json | dir]".into()),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let said = runtime.block_on(control::status(&target))?;
+    outln!("{}", said.trim_end());
+    Ok(())
+}
+
+/// Answer `rutis-host status` for `target` while the host runs; a host
+/// that cannot says why and runs on.
+pub(crate) fn answer_status(
+    target: &std::path::Path,
+    host: &host::Host,
+) -> Option<control::Serving> {
+    match control::serve(target, host.loader.clone()) {
+        Ok(serving) => Some(serving),
+        Err(_) if cfg!(windows) => None,
+        Err(why) => {
+            errln!("rutis-host: warning: rutis-host status cannot reach this host: {why}");
+            None
+        }
+    }
+}
+
 fn new_project(args: &[String]) -> Result<(), String> {
     let mut name = None;
     let mut lang = None;
@@ -225,13 +264,11 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     let config = config::HostConfig::read(&path)?;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
+    let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
         outln!("{line}");
     }
-    let started = async {
-        host.runtimes_ready().await?;
-        host.load(config.rows()).await
-    };
+    let started = host.start_rows(config.rows());
     let ended = match start(&host, started, deadline, &mut signals).await {
         Started::Running => {
             status::follow(host.followed());

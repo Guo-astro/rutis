@@ -612,6 +612,10 @@ impl crate::Handler for Handler {
 }
 
 impl DynPlugin for LinkEventsPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

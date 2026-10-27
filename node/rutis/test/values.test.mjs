@@ -73,9 +73,9 @@ test('the testing tool crosses tagged values as the runtimes do', async () => {
   assert.deepEqual(texts, ['2026-10-15', '1.10'])
   assert.ok(texts.every(text => typeof text === 'string'), 'plain strings, not objects')
   assert.equal(back(5n), 5n)
-  // In plain objects and arrays, next to undefined, which stays undefined
-  // outside data as on the runtimes.
-  assert.deepEqual(back({ at: when, none: undefined, list: [1n] }), { at: when, none: undefined, list: [1n] })
+  // In plain objects and arrays, next to undefined, which is null inside a
+  // value as on the runtimes (#687 §七).
+  assert.deepEqual(back({ at: when, none: undefined, list: [1n] }), { at: when, none: null, list: [1n] })
   assert.deepEqual(await async(new Map([[1, 2n]])), new Map([[1, 2n]]))
 })
 

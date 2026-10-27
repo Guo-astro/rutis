@@ -223,9 +223,10 @@ pub enum ErrorKind {
     /// the error sink each time it starts waiting, after
     /// [`CtxHost::report_waiting_after`](crate::host::CtxHost::report_waiting_after)
     /// (10 s by default). It goes on waiting: the report is all that
-    /// happens.
+    /// happens. Plugins of rutis itself (a link waiting for its peer, say)
+    /// are not reported: their state says what they wait for.
     #[error(
-        "plugin {plugin} is still waiting after {seconds}s for {}: it starts once that is provided",
+        "{plugin}: still waiting after {seconds}s for {}: it starts once that is provided",
         missing.join(", ")
     )]
     StillWaiting {
@@ -233,6 +234,28 @@ pub enum ErrorKind {
         seconds: f64,
         missing: Vec<String>,
     },
+    /// The plugin, or loader row, `plugin` failed to start: reported once
+    /// to the error sink each time it fails, besides whoever awaits it, so
+    /// an embedding that reads no result still sees it (on stderr, by
+    /// default). Plugins of rutis itself report their own failures.
+    #[error("{plugin}: failed: {error}")]
+    StartFailed {
+        plugin: String,
+        error: Arc<ErrorKind>,
+    },
+    /// The language runtime `runtime` went down: its process ended, or did
+    /// not start (`reason` says how). Reported to the error sink; its rows
+    /// wait for it.
+    #[error("runtime {runtime}: down ({reason})")]
+    RuntimeDown { runtime: String, reason: String },
+    /// A type marked `#[rutis::service]` was provided, but nothing serves
+    /// marked services by name in this program (rutis-bridge is not
+    /// linked): reported once per service, the first time it is provided.
+    #[error(
+        "service {service} is provided by type but not registered by name: depend on \
+         rutis-bridge to use it by name and to check clashes"
+    )]
+    NotServedByName { service: String },
 }
 
 /// How a waterfall's `next` was misused (protocol spec §11 `WaterfallNext`).
@@ -424,10 +447,14 @@ impl From<Error> for anyhow::Error {
 /// (D25),而 `Error` 刻意不 Clone(D11),见 §八 实现记录。
 pub type ErrorSink = Arc<dyn Fn(Arc<ErrorKind>) + Send + Sync>;
 
-/// The sink `Ctx::root` / `Ctx::root_with` install: one `[rutis] ...` line on
-/// stderr per error. A host installing its own sink can delegate to it.
+/// The sink `Ctx::root` / `Ctx::root_with` install: each error on stderr
+/// as its text says, with no prefix of rutis's. A plugin's or row's failed
+/// start, a long wait and a runtime that went down begin with the name of
+/// the plugin, row or runtime (`weather: failed: ...`). A host installing
+/// its own sink ([`Ctx::root_with_sink`](crate::host::CtxHost::root_with_sink))
+/// replaces it, and can delegate to it or drop what it reports itself.
 pub fn default_sink() -> ErrorSink {
-    Arc::new(|e: Arc<ErrorKind>| eprintln!("[rutis] {}", format_for_sink(&e)))
+    Arc::new(|e: Arc<ErrorKind>| eprintln!("{}", format_for_sink(&e)))
 }
 
 fn format_for_sink(error: &ErrorKind) -> String {
@@ -478,6 +505,10 @@ fn format_for_sink(error: &ErrorKind) -> String {
                         }
                     }
                 }
+            }
+            ErrorKind::StartFailed { plugin, error } => {
+                out.push_str(&format!("{plugin}: failed: "));
+                write_error(error, out, indent);
             }
             _ => out.push_str(&error.to_string()),
         }
@@ -565,6 +596,43 @@ mod tests {
         };
         assert_eq!(failed(1).to_string(), "1 listener of weather/asked failed");
         assert_eq!(failed(2).to_string(), "2 listeners of weather/asked failed");
+    }
+
+    /// The default sink's lines start with the plugin, row or runtime they
+    /// are about, with no platform name before it (#678).
+    /// guarantee: core/features.default-output
+    #[test]
+    fn default_sink_lines_start_with_the_name_they_are_about() {
+        let failed = ErrorKind::StartFailed {
+            plugin: "weather".into(),
+            error: Arc::new(ErrorKind::Aggregate {
+                errors: vec![
+                    Arc::new(ErrorKind::PluginFailed("no API key".into())),
+                    Arc::new(ErrorKind::PluginFailed("cleanup detail".into())),
+                ],
+            }),
+        };
+        assert_eq!(
+            format_for_sink(&failed),
+            "weather: failed: multiple errors:\n1. no API key\n2. cleanup detail"
+        );
+        let down = ErrorKind::RuntimeDown {
+            runtime: "py".into(),
+            reason: "runtime process exited with exit status: 1".into(),
+        };
+        assert_eq!(
+            format_for_sink(&down),
+            "runtime py: down (runtime process exited with exit status: 1)"
+        );
+        let waiting = ErrorKind::StillWaiting {
+            plugin: "chat".into(),
+            seconds: 10.0,
+            missing: vec!["calendar".into()],
+        };
+        assert_eq!(
+            format_for_sink(&waiting),
+            "chat: still waiting after 10s for calendar: it starts once that is provided"
+        );
     }
 
     #[test]

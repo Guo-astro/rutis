@@ -293,6 +293,10 @@ impl RuntimeResolver {
 }
 
 impl Resolver for RuntimeResolver {
+    fn runtimes(&self) -> Vec<RuntimeHandle> {
+        vec![self.runtime.clone()]
+    }
+
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move {
             let Some(entry) = self.naming.entry(&self.runtime, name) else {
@@ -310,13 +314,22 @@ impl Resolver for RuntimeResolver {
                     return Ok(found.clone());
                 }
             }
-            // The declarations need Node. Without a running runtime the row
-            // still resolves (it waits for the runtime like any dependency),
-            // and says why it has no schema; it is not cached, and
-            // `RuntimeRowsPlugin` resolves it again once the runtime is up,
-            // before the row may start.
-            let Some(process) = self.runtime.ready().await else {
-                self.offline.lock().unwrap().insert(name.to_owned());
+            // The declarations need the runtime. Without a running runtime
+            // (one still starting included: it may take long, as one waiting
+            // for a debugger does, and the other runtimes' rows must not
+            // wait for it) the row still resolves (it waits for the runtime
+            // like any dependency), and says why it has no schema; it is not
+            // cached, and `RuntimeRowsPlugin` resolves it again once the
+            // runtime is up, before the row may start.
+            // Marked to be resolved again first: a runtime turning ready
+            // between reading its state and marking the name would leave
+            // the name unmarked.
+            let marked_before = !self.offline.lock().unwrap().insert(name.to_owned());
+            let running = match self.runtime.state() {
+                RuntimeState::Ready(process) => Some(process),
+                _ => None,
+            };
+            let Some(process) = running else {
                 let module = JsModule {
                     name: name.to_owned(),
                     runtime: self.runtime.name().to_owned(),
@@ -347,23 +360,24 @@ impl Resolver for RuntimeResolver {
                     ))),
                 }));
             };
-            let described = process
-                .describe_row(&entry)
-                .await
-                .map_err(|error| match error {
-                    // The runtime looked and found no such plugin.
-                    rutis_bridge::session::Error::Remote { name: kind, .. }
-                        if kind == "NotFound" =>
-                    {
-                        LoaderError::NotFound {
-                            name: name.to_owned(),
-                        }
-                    }
-                    error => LoaderError::Resolve {
+            let described = process.describe_row(&entry).await;
+            if described.is_err() && !marked_before {
+                // Resolved with the runtime, if to an error: not again,
+                // unless it was waiting to be (a restart may help).
+                self.offline.lock().unwrap().remove(name);
+            }
+            let described = described.map_err(|error| match error {
+                // The runtime looked and found no such plugin.
+                rutis_bridge::session::Error::Remote { name: kind, .. } if kind == "NotFound" => {
+                    LoaderError::NotFound {
                         name: name.to_owned(),
-                        message: error.to_string(),
-                    },
-                })?;
+                    }
+                }
+                error => LoaderError::Resolve {
+                    name: name.to_owned(),
+                    message: error.to_string(),
+                },
+            })?;
             // A leaf runtime has no dependency resolution of its own: every
             // service its plugins inject waits in rutis. In Cordis, only the
             // shared names do; the others resolve natively.

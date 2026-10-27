@@ -205,6 +205,10 @@ impl MemoryPlugin {
 }
 
 impl DynPlugin for MemoryPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "rutis-bridge/memory"
     }

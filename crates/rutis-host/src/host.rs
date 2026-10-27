@@ -162,15 +162,22 @@ impl Host {
         }
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
-        // the kernel prints them.
+        // the kernel prints them. A row that failed to start and a runtime
+        // that went down are on the host's status lines already.
         let fallback = rutis::host::default_sink();
-        let sink: rutis::host::ErrorSink =
-            std::sync::Arc::new(
-                move |error| match rutis_bridge::events::report_line(&error) {
-                    Some(line) => eprintln!("{line}"),
-                    None => fallback(error),
-                },
-            );
+        let sink: rutis::host::ErrorSink = std::sync::Arc::new(move |error| {
+            if matches!(
+                &*error,
+                rutis::host::ErrorKind::StartFailed { .. }
+                    | rutis::host::ErrorKind::RuntimeDown { .. }
+            ) {
+                return;
+            }
+            match rutis_bridge::events::report_line(&error) {
+                Some(line) => eprintln!("{line}"),
+                None => fallback(error),
+            }
+        });
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
@@ -298,6 +305,13 @@ impl Host {
             },
         );
         let loader = plugin.handle();
+        // Extra config keys, in order with what plugins print (config
+        // schema design §3.2).
+        loader.on_config_warning(std::sync::Arc::new(
+            |row: &str, issue: &rutis::ConfigIssue| {
+                crate::errln!("{row}: config: {}", issue.message)
+            },
+        ));
         (&root.plugin(plugin))
             .await
             .map_err(|error| format!("the loader: {error}"))?;
@@ -549,6 +563,21 @@ impl Host {
         result
     }
 
+    /// Load `rows` while the runtimes start, not after: a runtime that
+    /// takes long to start (one waiting for its debugger) holds up only its
+    /// own rows, which wait for it; the others start as soon as they can.
+    /// Done, as before, once every runtime runs ([`Host::runtimes_ready`])
+    /// and every row has been through its load: the rows are loaded again
+    /// then, which changes nothing but waits for the rows the runtimes
+    /// released. An error says which runtime could not start, or why the
+    /// rows could not load.
+    pub async fn start_rows(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
+        let (ready, loaded) = tokio::join!(self.runtimes_ready(), self.load(rows.clone()));
+        ready?;
+        loaded?;
+        self.load(rows).await
+    }
+
     /// Load `rows` (replacing what was loaded before).
     pub async fn load(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
         self.loader
@@ -608,19 +637,19 @@ impl Host {
             .map(|entry| entry.id)
             .collect();
         let checked = self.loader.check(&[layer(new.rows())?]).await;
-        let failing: Vec<String> = checked
+        let failing: Vec<(String, String)> = checked
             .rows
             .iter()
             .filter(|row| !failing_now.contains(&row.id))
             .filter_map(|row| match &row.status {
                 rutis_loader::report::RowStatus::Failed(error) => {
-                    Some(format!("row {}: {error}", row.id))
+                    Some((row.id.clone(), error.to_string()))
                 }
                 _ => None,
             })
             .collect();
         if !failing.is_empty() {
-            return Err(failing.join("; "));
+            return Err(rejection(&failing));
         }
 
         let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
@@ -633,14 +662,13 @@ impl Host {
             .map_err(|error| error.to_string());
         let failed = match applied {
             Ok(report) if report.new_failures.is_empty() => None,
-            Ok(report) => Some(
-                report
+            Ok(report) => Some(rejection(
+                &report
                     .new_failures
                     .iter()
-                    .map(|failure| format!("row {}: {}", failure.id, failure.error))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            ),
+                    .map(|failure| (failure.id.clone(), failure.error.clone()))
+                    .collect::<Vec<_>>(),
+            )),
             Err(error) => Some(error),
         };
         if let Some(why) = failed {
@@ -1217,6 +1245,10 @@ impl Drop for Unmount {
 }
 
 impl DynPlugin for Released {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "runtime-rows-released"
     }
@@ -1885,5 +1917,77 @@ mod tests {
         .unwrap();
         assert_eq!(reply.json().unwrap(), json!("netkit pong far"));
         child.start_kill().unwrap();
+    }
+}
+
+/// Why a reload is refused, the rows that would fail and their errors:
+/// `row <id>: <error>` joined by `; `. A config that does not match its
+/// schema (`config: …`, a line per problem) comes first as one
+/// `<id>: config: …` line per problem, and the summary says `row <id>'s
+/// config does not match its plugin's schema` ([`rejected_lines`] prints
+/// them).
+fn rejection(failing: &[(String, String)]) -> String {
+    let mut lines = Vec::new();
+    let mut why = Vec::new();
+    for (id, error) in failing {
+        let problems: Vec<&str> = error.lines().collect();
+        if !problems.is_empty() && problems.iter().all(|line| line.starts_with("config: ")) {
+            lines.extend(problems.iter().map(|line| format!("{id}: {line}")));
+            why.push(format!(
+                "row {id}'s config does not match its plugin's schema"
+            ));
+        } else {
+            why.push(format!("row {id}: {error}"));
+        }
+    }
+    lines.push(why.join("; "));
+    lines.join("\n")
+}
+
+/// The lines printed for a reload refused with `error`: its lines but the
+/// last as they are (rows' config problems, `<row>: config: …`), then
+/// `rutis-host: reload rejected: <last>; nothing changed`.
+pub fn rejected_lines(error: &str) -> Vec<String> {
+    let mut lines: Vec<String> = error.split('\n').map(str::to_owned).collect();
+    let last = lines.pop().unwrap_or_default();
+    let problems = !lines.is_empty() && lines.iter().all(|line| line.contains(": config: "));
+    if !problems {
+        return vec![format!(
+            "rutis-host: reload rejected: {error}; nothing changed"
+        )];
+    }
+    lines.push(format!(
+        "rutis-host: reload rejected: {last}; nothing changed"
+    ));
+    lines
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::{rejected_lines, rejection};
+
+    /// A row's config problems print a line each, named after the row;
+    /// the reload's own line stays one line (config schema design §9).
+    #[test]
+    fn config_problems_print_a_line_each() {
+        let error = rejection(&[
+            (
+                "weather".into(),
+                "config: a is required\nconfig: b is required".into(),
+            ),
+            ("chat".into(), "SyntaxError".into()),
+        ]);
+        assert_eq!(
+            rejected_lines(&error),
+            [
+                "weather: config: a is required",
+                "weather: config: b is required",
+                "rutis-host: reload rejected: row weather's config does not match its plugin's schema; row chat: SyntaxError; nothing changed",
+            ]
+        );
+        assert_eq!(
+            rejected_lines("rows.json:3: expected ,\nat line 3"),
+            ["rutis-host: reload rejected: rows.json:3: expected ,\nat line 3; nothing changed"]
+        );
     }
 }

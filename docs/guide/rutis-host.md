@@ -90,6 +90,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
+| `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 | `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
@@ -308,6 +309,33 @@ rutis-host: reload rejected: <原因>; nothing changed
 - Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。`runtimes.swift.restart` 对 Swift 运行时相同（打印 `runtime swift-<名字>: restarting`）。
 - 远程运行时和节点行的 link 自己重连，不受它影响。
 
+## 查看当前状态
+
+`run` 和 `dev` 运行时，另开一个终端，在同一个目录里运行 `rutis-host status`（或 `rutis-host status path/to/rutis.json`、`rutis-host status <dev 的项目目录>`），打印一次宿主现在的状态。启动卡住时（一行的 `apply` 在等一个不返回的调用，`run` 还没开始打印状态行）也能问：
+
+```
+rows:
+  slow: running
+  caller: starting
+services:
+  slow: slow
+runtimes:
+  node: running (pid 4242)
+  py: running (pid 4243)
+calls:
+  caller → slow.wait  42s
+```
+
+- `rows`：每一行（实例里的行每个实例一份，写 `<行> in <分组> #<编号>`）的状态：`running`、`starting`、`stopped`、`disabled`，说不出在等什么的等待行写 `waiting`；等待的行写在等什么（和 `run` 的等待行同样的话）；失败的行写失败的第一行。运行时退出时，它的行马上显示为在等这个运行时。
+- `services`：每个服务的名字和提供它的行；宿主（Rust）提供的写 `host`。
+- `runtimes`：每个运行时的状态（`running`、`starting`、`down`、`stopped`），退出的写怎样退出，本机运行时写进程号。
+- `calls`：调用了一个行的服务、还没返回的调用：谁调用（不在行里发起的写 `host`）、哪个服务的哪个方法、已经多久；被调用的行名和服务名不同时写 `(row <行>)`。看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」，没有方法名）；进程内的 Rust 插件发起的调用记为 `host`。
+- rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
+
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），只回答 `status` 这一个请求，什么都不改。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+
+停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
+
 ## 输出
 
 运行时进程（Node、Bun、Python、Go、Swift）的标准输出和标准错误不直接写到 `rutis-host` 的输出上：`rutis-host` 经管道读出它们，一次一整行地写出——插件写到 stdout 的行出现在 `rutis-host` 的 stdout，写到 stderr 的出现在 stderr，内容原样，不加前缀。`rutis-host` 自己的状态行同样一次写一整行。所以插件的行和 `rutis-host` 的行、两个运行时的行不会拼到一起，即使插件把一行分几次写（Python 的 `print` 先写内容、再写换行），也即使 stdout 和 stderr 是同一个文件（`2>&1`）。
@@ -373,7 +401,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `node` | `project`（默认 `.`）、`runtime`、`restart` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
 | `bun` | `project`（默认 `.`）、`runtime`、`program`、`restart` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
-| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
+| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
@@ -450,7 +478,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token：两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
 
 ```
 rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own

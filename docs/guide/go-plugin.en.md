@@ -204,6 +204,30 @@ Python or TypeScript plugins, or Rust code in the host, listening to the same na
 
 Pass on the context your caller gave you, as with service calls. `errors.Is(err, rutis.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
 
+### Objects with methods
+
+Structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`: the far end gets a proxy whose calls reach the original here. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*rutis.Service`:
+
+```go
+type Cache struct {
+	Get func(ctx context.Context, key string) (any, error)
+	Set func(ctx context.Context, key string, value any) error
+}
+
+func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
+	if err := cache.Set(ctx, "a", 1); err != nil {
+		return nil, err
+	}
+	return cache.Get(ctx, "a")
+}
+```
+
+- A function field's call blocks; its first parameter is a `context.Context`. A struct with a field that is not a function, or a parameter of another type, fails the call with `bad-argument`: `warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`.
+- `any` receives a `*rutis.Service`, the type `ctx.Use` gives: `Call(ctx, method, result, args...)`. An object has no method table, so `Methods()` returns `nil`, and a method it lacks is answered `no-method` by the object's own process.
+- Only a `*rutis.Service` keeps its identity: one object received several times is one `*rutis.Service`, and handed back to its process it is the original there. A struct of function fields is data: handed over, each field becomes a new function reference; to hand over the object itself, make the parameter `any`.
+- An object does not follow its row: after the row that passed it unloads, it can still be called. But an on-demand runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
+- An object's methods may be called concurrently.
+
 ## 3. Test
 
 `rutistest` needs no host, but the plugin runs in its real runtime and values cross a real session:

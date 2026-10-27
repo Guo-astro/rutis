@@ -156,6 +156,21 @@ pub fn fixture_tenants_program() -> PathBuf {
         .clone()
 }
 
+/// The small host of the host owner's check (`tests/e2e/fixture-toolhost`,
+/// #690): a Rust application whose plugins register tools.
+/// `RUTIS_E2E_FIXTURE_TOOLHOST`, else the one `cargo build -p
+/// rutis-e2e-fixture-toolhost` builds from this checkout (once per run). It
+/// is on the side under test: the harness only runs it.
+pub fn fixture_toolhost_program() -> PathBuf {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| match std::env::var_os("RUTIS_E2E_FIXTURE_TOOLHOST") {
+            Some(program) => PathBuf::from(program),
+            None => build("rutis-e2e-fixture-toolhost"),
+        })
+        .clone()
+}
+
 /// `cargo build -p <package>` in this checkout: its executable of the same
 /// name.
 fn build(package: &str) -> PathBuf {
@@ -556,6 +571,19 @@ impl Scenario {
         S: AsRef<std::ffi::OsStr>,
     {
         self.start_with_input(fixture_tenants_program(), "", args, env, true)
+    }
+
+    /// Start the host owner's small host ([`fixture_toolhost_program`]) in
+    /// the project's subdirectory `dir`, with stdin open for
+    /// [`Host::send_line`].
+    pub fn fixture_toolhost(&self, dir: &str, env: &[(&str, &str)]) -> Host {
+        self.start_with_input(
+            fixture_toolhost_program(),
+            dir,
+            Vec::<String>::new(),
+            env,
+            true,
+        )
     }
 
     /// Start `rutis-host <args>` in the project's subdirectory `dir` (as a

@@ -217,7 +217,7 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 		Arrive:         rt.arrive,
 		Endpoint:       endpoint,
 		Implementation: map[string]string{"name": Implementation, "version": Version},
-		Capabilities:   append([]string{"signals", "reentrant-sync", "sync-wait", peer.EventsCapability}, peer.ValueCapabilities...),
+		Capabilities:   append([]string{"objects", "signals", "reentrant-sync", "sync-wait", peer.EventsCapability}, peer.ValueCapabilities...),
 		// A host older than 0.13 is refused right after its handshake (#464 §2.2).
 		Require: []string{peer.EventsCapability},
 		Refuse:  func(string) string { return oldEventsHost },

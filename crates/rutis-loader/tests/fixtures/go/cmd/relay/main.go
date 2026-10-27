@@ -6,4 +6,4 @@ import (
 	"github.com/arcships/rutis/go/rutis"
 )
 
-func main() { rutis.Serve(relay.Plugin) }
+func main() { rutis.Serve(relay.Plugin, relay.ObjectPlugin) }

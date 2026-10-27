@@ -189,6 +189,10 @@ impl AccessPointPlugin {
 }
 
 impl DynPlugin for AccessPointPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
