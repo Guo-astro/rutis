@@ -2,7 +2,7 @@
 
 [English](design-try-and-test-plugins-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#670](https://github.com/arcships/rutis/issues/670)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 A5、A6、H5）。
 与 0.18 的关系：建在 [0.18 的诊断](design-diagnostics-2026-10-26.md)上，不重复、不改它：`call` 用它 §5.3 的本地 socket 与找法，`dev` 列出的服务就是它 §5.1 `Loader::status()` 的 `services`，出错文字按它 §4（`site`、错误码、§4.5 的禁用词）。依赖 [#678](https://github.com/arcships/rutis/issues/678) 先合并。
 与其他 0.19 设计的关系：从宿主的 `#[rutis::service]` 生成严格假服务、装进测试工具，归 [#684](https://github.com/arcships/rutis/issues/684)；本稿只管插件作者自己写的假依赖和测试工具的 `on`。SDK 默认入口归 [#692](https://github.com/arcships/rutis/issues/692)：本稿不往 SDK 根上加名字，`on` 加在测试工具装载出来的对象上。限制插件能用哪些服务归 [#683](https://github.com/arcships/rutis/issues/683)，它限制的是插件，`call` 是宿主自己的调用。
@@ -296,23 +296,6 @@ rutis-host dev: services: forecast (weather), llm (llm)
 
 0.18 的 socket 多答一种请求；`run` 不加 `--allow-call` 时与 0.18 完全相同。
 
-## 十、自审：是不是太重了
-
-| 项 | 使用方 | 已有的东西 | 结论 |
-| --- | --- | --- | --- |
-| `call` | 4 种语言的作者、宿主作者都另写了调用插件 | socket、`call_service` | 保留；不新开通道 |
-| `run --allow-call` | issue 要求对 `run` 也能调用；运维核对部署 | 0.18 的只读默认 | 保留，默认关 |
-| 对端凭据核对 | 没有：0600 已只让同一用户连 | 0.18 的 socket | 删去 |
-| 结果的非 JSON 值表 | 没有专门的使用方 | `Value::json()`、各值的 `Display`、`describe()` | 删去，用已有的文字 |
-| 另设"命令行"调用方 | 没有 | "宿主" | 删去 |
-| 从命令行写日期、二进制等 | 没有具体的使用方，测试里能做 | — | 删去，写进范围外 |
-| `dev` 服务行 | issue 第 2 条 | `Loader::status()` | 保留；每次都打印 |
-| 第二个二进制 | Go 作者为假依赖建了 Node 项目 | `GoDev`、`dev_rows`、`binaries` | 保留，只在 dev |
-| 按依赖重新构建 | 改假依赖不重启插件 | 构建缓存、比较构建结果 | 改成全部重建、只重启内容变了的 |
-| 一个目录多个插件、`./dir:<插件>` | 没有 | — | 删去，报错说明 |
-| `new` 生成假依赖 | 只对模板例子有用 | — | 删去，模板归 #671 |
-| 测试工具 `on` | TS、Python 作者另装监听插件 | Go、Swift、Kotlin 已有 | 保留，同一形式 |
-| "收集事件"的便捷写法 | 一行列表就够 | — | 删去 |
 
 ## 十一、实施
 

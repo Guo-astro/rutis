@@ -2,7 +2,7 @@
 
 [中文](design-try-and-test-plugins-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Baseline: `main` `103c0d22` (after 0.17.2). Scheduled for: 0.19.
+Status: final, not implemented. Date: 2026-10-27. Baseline: `main` `103c0d22` (after 0.17.2). Scheduled for: 0.19.
 Issue: [#670](https://github.com/arcships/rutis/issues/670) (A5, A6 and H5 of [#663](https://github.com/arcships/rutis/issues/663)).
 Relation to 0.18: built on [diagnostics for 0.18](design-diagnostics-2026-10-26.en.md), without repeating or changing it: `call` uses the local socket and the way of finding it from its §5.3, the services `dev` lists are the `services` of its §5.1 `Loader::status()`, and error text follows its §4 (`site`, error codes, the banned words of §4.5). Depends on [#678](https://github.com/arcships/rutis/issues/678) being merged first.
 Relation to other 0.19 designs: generating strict fakes from the host's `#[rutis::service]` and putting them into the test tools belongs to [#684](https://github.com/arcships/rutis/issues/684); this design only covers fakes plugin authors write themselves and the test tools' `on`. SDK default entry points belong to [#692](https://github.com/arcships/rutis/issues/692): this design adds no names to an SDK root; `on` goes on the object the test tool loads. Limiting which services a plugin may use belongs to [#683](https://github.com/arcships/rutis/issues/683); it limits plugins, and `call` is the host's own call.
@@ -296,23 +296,6 @@ All additions; nothing goes into "Migrating to 0.19":
 
 0.18's socket answers one more request; a `run` without `--allow-call` behaves exactly as in 0.18.
 
-## 10. Self-review: is it too heavy?
-
-| Item | User | Already there | Result |
-| --- | --- | --- | --- |
-| `call` | Authors in 4 languages and the host author each wrote a caller plugin | The socket, `call_service` | Kept; no new channel |
-| `run --allow-call` | The issue asks for `run` too; operators checking a deployment | 0.18's read-only default | Kept, off by default |
-| Peer credential check | None: 0600 already admits only the same user | 0.18's socket | Removed |
-| Table for non-JSON results | No user of its own | `Value::json()`, each value's `Display`, `describe()` | Removed; existing text used |
-| A separate "command line" caller | None | "the host" | Removed |
-| Dates, bytes etc. on the command line | No concrete user; tests can do it | — | Removed, out of scope |
-| `dev` service line | Item 2 of the issue | `Loader::status()` | Kept; printed every time |
-| Second binary | The Go author made a Node project for a fake | `GoDev`, `dev_rows`, `binaries` | Kept, dev only |
-| Rebuilding by dependency | Changing the fake does not restart the plugin | Build caches, comparing build results | Changed to: rebuild all, restart only changed ones |
-| Several plugins per directory, `./dir:<plugin>` | None | — | Removed; an error explains |
-| `new` generating fakes | Only helps the template's example | — | Removed; templates belong to #671 |
-| Test tool `on` | TS and Python authors added listener plugins | Go, Swift, Kotlin have it | Kept, same form |
-| A "collect events" shortcut | A list and one line suffice | — | Removed |
 
 ## 11. Implementation
 
