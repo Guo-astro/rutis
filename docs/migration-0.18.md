@@ -25,3 +25,13 @@
   改法：只留一行；两份都要时，用 `isolate` 把这个名字隔离开：`{ "llm": "标签" }` 让提供它的行和用它的行带同一个标签，各用各的一份（`{ "llm": true }` 是这一行自己用的一份，别的行用不到）。
 
 升级前用 0.17.2 跑一遍 `rutis-host check`：0.17.2 对这两种情况写的告警，就是 0.18 会报的错。
+
+## 同一监听器上两个条目接受同一个 token：启动即报错（#702）
+
+同一个监听器上，监听的节点行和连进来的运行时（`runtimes.remote` 的 `listen` + `instances`）会接受同一个 token 时（例如都没有单独的 token、都退回 `RUTIS_TOKEN`），0.17 照常启动，但连接到达时以 403 拒绝（分不出是给谁的），运行时每 30 秒重试。0.18 起 `run`、`check`、重新读配置在启动前报错。同一个监听器上任意两个条目都一样：两个连进来的运行时（0.17 同样以 403 拒绝）、两个监听的节点行（0.17 里连接都到了后一行，前一行永远连不上）。
+
+```
+rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+```
+
+改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
