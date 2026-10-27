@@ -38,7 +38,7 @@ struct ServiceMacroTests {
         expect(diagnostics.isEmpty, "\(diagnostics)")
         let code = squeezed(out)
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"today\", \"unit\", \"each\", \"reset\"] }")), "\(out)")
-        expect(code.contains(squeezed("let a0 = try args.decode(0, as: (String).self)")), "\(out)")
+        expect(code.contains(squeezed("let a0 = try args.decode(0, as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
         expect(code.contains(squeezed("return try Rutis.encode(try await self.today(a0, days: a1))")), "\(out)")
         expect(code.contains(squeezed("return try Rutis.encode(self.unit())")), "\(out)")
         expect(code.contains(squeezed("let a0: (String) async throws -> String = try args.function(0)")), "\(out)")
@@ -113,8 +113,10 @@ struct ClientMacroTests {
         let code = squeezed(out)
         expect(code.contains(squeezed("public struct LLMProxy: LLM, RutisProxy {")), "\(out)")
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"ask\", \"each\"] }")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis.encode(question), try Rutis.encode(model)], as: (String).self)")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis.export(f)], as: (Void).self)")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis.encode(question), try Rutis.encode(model)], as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis.export(f)], as: (Void).self, object: rutisObjectProxy((Void).self))")), "\(out)")
+        // An object of another process received as `any LLM` is its proxy (#687).
+        expect(code.contains(squeezed("public func rutisObjectProxy(_: (any LLM).Type) -> ((Rutis.Client) -> any LLM)? { { LLMProxy(rutisClient: $0) } }")), "\(out)")
     }
 
     func aMethodMustBeAsyncThrows() {

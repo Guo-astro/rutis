@@ -2,6 +2,7 @@ package arcships.rutis.internal.peer
 
 import arcships.rutis.Plugin
 import arcships.rutis.RemoteFunction
+import arcships.rutis.RemoteObject
 import arcships.rutis.RutisException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -51,7 +52,7 @@ const val EVENTS_CAPABILITY: String = "events-v2"
  * synchronous calls say so); `reentrant-sync` (a thread per incoming call);
  * not `sync-stack`; `events-v2`; every `value-<tag>`.
  */
-val SESSION_CAPABILITIES: List<String> = listOf("signals", "reentrant-sync", "sync-wait", EVENTS_CAPABILITY) + VALUE_CAPABILITIES
+val SESSION_CAPABILITIES: List<String> = listOf("objects", "signals", "reentrant-sync", "sync-wait", EVENTS_CAPABILITY) + VALUE_CAPABILITIES
 
 private val endpointId = Regex("^[a-z0-9-]+$")
 private val compatOrigin = Regex("^(node|rust|s[0-9]+/[a-z0-9-]+):[1-9][0-9]*$")
@@ -148,6 +149,7 @@ class Imported internal constructor(val id: Long, val kind: String, val origin: 
     internal var function: WeakReference<RemoteFunction>? = null
     internal var future: WeakReference<RemoteFuture>? = null
     internal var plugin: WeakReference<RemotePlugin>? = null
+    internal var obj: WeakReference<RemoteObject>? = null
 }
 
 /**
@@ -167,6 +169,9 @@ class RemoteFuture internal constructor(internal val peer: Peer, internal val re
 private class Decoding(val call: String?) {
     val fresh = ArrayList<Imported>()
     var refused: Throwable? = null
+
+    /** The value is a call's argument list, whose items keep undefined (#687 §七); only the outermost list. */
+    var arguments = false
 
     fun refuse(error: Throwable) {
         if (refused == null) refused = error
@@ -448,7 +453,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     /** Whether `value` holds a reference, a tagged value or undefined, so it crosses as a list or record. */
     private fun marked(value: Any?): Boolean = when (value) {
         is JsonElement -> false
-        is Exported, is ExportedObject, is RemoteFunction, is RemoteFuture, is Plugin, is RemotePlugin, SignalArgument, Undefined -> true
+        is Exported, is ExportedObject, is RemoteFunction, is RemoteFuture, is RemoteObject, is Plugin, is RemotePlugin, SignalArgument, Undefined -> true
         is Long -> value > MAX_SAFE || value < -MAX_SAFE
         is List<*> -> value.any(::marked)
         is Map<*, *> -> value.values.any(::marked)
@@ -489,6 +494,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 check(value.record)
                 homeReference(value.record)
             }
+            is RemoteObject -> {
+                check(value.record)
+                homeReference(value.record)
+            }
             is RemotePlugin -> {
                 check(value.record)
                 homeReference(value.record)
@@ -515,13 +524,15 @@ class Peer(private val channel: Channel, private val opts: Options) {
                 data(JsonPrimitive(value), depth)
             }
             is List<*> -> if (marked(value)) {
-                wire("list", JsonArray(value.map { encode(it, grants, origin, depth + 1) }))
+                // Undefined inside a value is null (#687 §七); an argument
+                // list (depth -1) keeps it, as an omitted argument.
+                wire("list", JsonArray(value.map { encode(if (it === Undefined && depth >= 0) null else it, grants, origin, depth + 1) }))
             } else {
                 data(plain(value), depth)
             }
             is Map<*, *> -> if (marked(value)) {
                 wire("record", JsonObject(value.entries.associate { (key, item) ->
-                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(item, grants, origin, depth + 1)
+                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(if (item === Undefined) null else item, grants, origin, depth + 1)
                 }))
             } else {
                 data(plain(value), depth)
@@ -603,11 +614,16 @@ class Peer(private val channel: Channel, private val opts: Options) {
             "data" -> value ?: JsonNull
             "list" -> {
                 val items = value as? JsonArray ?: throw ProtocolException("invalid list")
-                items.map { decode(it, d) }
+                // Undefined inside a value is null, also from an older far
+                // end (#687 §七); the items of an argument list keep it.
+                val keep = d.arguments
+                d.arguments = false
+                items.map { decode(it, d).let { item -> if (item === Undefined && !keep) JsonNull else item } }
             }
             "record" -> {
                 val items = value as? JsonObject ?: throw ProtocolException("invalid record")
-                LinkedHashMap<String, Any?>().apply { for ((k, v) in items) put(k, decode(v, d)) }
+                d.arguments = false
+                LinkedHashMap<String, Any?>().apply { for ((k, v) in items) put(k, decode(v, d).let { item -> if (item === Undefined) JsonNull else item }) }
             }
             "signal" -> {
                 val call = d.call ?: throw ProtocolException("a signal is only valid as a call argument")
@@ -690,20 +706,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             if (entry == null || entry.kind != kind) throw ProtocolException("unknown, released or mismatched reference")
             return entry.value
         }
-        if (kind == "object") {
-            // Only this call fails (#675). Imported all the same, so that the
-            // refused call gives it back.
-            d.refuse(objectReceived())
-            val existing = imports[id]
-            if (existing != null && existing.kind == "object" && !existing.released) {
-                existing.grants++
-            } else {
-                val record = Imported(id, kind, origin)
-                imports[id] = record
-                d.fresh.add(record)
-            }
-            return Undefined
-        }
         // Only a test host takes the far end's plugin definitions; rutis
         // never sends one that is not this side's.
         if (kind == "plugin" && !opts.host) throw ProtocolException("plugin definitions from the far end are not supported")
@@ -711,6 +713,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             val proxy: Any? = when (record.kind) {
                 "function" -> record.function?.get()
                 "plugin" -> record.plugin?.get()
+                "object" -> record.obj?.get()
                 else -> record.future?.get()
             }
             if (proxy != null) {
@@ -726,6 +729,12 @@ class Peer(private val channel: Channel, private val opts: Options) {
             val proxy = RemotePlugin(this, record, opts.localPlugin?.invoke(id))
             record.plugin = WeakReference(proxy)
             proxy.local?.let { heldPlugins[it] = proxy }
+            Collector.watch(proxy, this, record)
+            return proxy
+        }
+        if (kind == "object") {
+            val proxy = RemoteObject(this, record)
+            record.obj = WeakReference(proxy)
             Collector.watch(proxy, this, record)
             return proxy
         }
@@ -1005,6 +1014,23 @@ class Peer(private val channel: Channel, private val opts: Options) {
         return settleSuspend(waitSuspend(id, waiter, !sync))
     }
 
+    /** Calls the method `method` of an object of the far end, blocking this thread. */
+    fun callMethod(target: RemoteObject, method: String, args: List<Any?>, sync: Boolean = true): Any? {
+        refuseOnMainThread("an object of the far end")
+        synchronized(lock) { check(target.record) }
+        val fields = waiting(mapOf("reference" to JsonPrimitive(target.record.id), "method" to JsonPrimitive(method)), sync)
+        val (id, waiter) = request("call", fields, args, emptyList(), CallChain.current())
+        return settle(waitBlocking(id, waiter, !sync))
+    }
+
+    /** Calls the method `method` of an object of the far end, suspending. */
+    suspend fun callMethodSuspend(target: RemoteObject, method: String, args: List<Any?>, sync: Boolean = false): Any? {
+        synchronized(lock) { check(target.record) }
+        val fields = waiting(mapOf("reference" to JsonPrimitive(target.record.id), "method" to JsonPrimitive(method)), sync)
+        val (id, waiter) = request("call", fields, args, emptyList(), CallChain.current())
+        return settleSuspend(waitSuspend(id, waiter, !sync))
+    }
+
     private fun awaitRequest(future: RemoteFuture): Pair<String, CompletableFuture<Outcome>> {
         synchronized(lock) { check(future.record) }
         return request("await", mapOf("reference" to JsonPrimitive(future.record.id)), null, future.record.origin, CallChain.current())
@@ -1235,6 +1261,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             if (op == "get") property = string(frame, "property", "invalid property")
             if (op == "invoke" || op == "call") {
                 val d = Decoding(id)
+                d.arguments = true
                 args = arguments(decode(frame["args"], d))
                 // Arguments this side cannot take fail the call: it is
                 // answered by a throw, and the references they carried go back.

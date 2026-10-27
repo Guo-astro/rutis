@@ -35,7 +35,3 @@ func ofArgument(_ reason: String, _ index: Int, _ call: String, limit: Int? = ni
     if let limit { data["limit"] = limit }
     return ValueError("\(call): argument \(index + 1) cannot be sent: \(reason)", data: data)
 }
-
-/// An object reference received from the far end (an older host's, say):
-/// only its call fails.
-let objectReceived = "received an object with methods, which Swift cannot take; pass plain data or a function instead"

@@ -139,7 +139,7 @@ package enum Refusal {
         case .list: return "a list"
         case .record: return "an object"
         case .function, .remoteFunction: return "a function"
-        case .object: return "an object"
+        case .object, .remoteObject: return "an object"
         case .remoteFuture: return "an asynchronous result"
         default: return value.described
         }
