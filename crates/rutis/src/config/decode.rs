@@ -19,7 +19,15 @@ pub fn decode<T: DeserializeOwned>(value: &Value, schema: bool) -> Result<T, Con
     let first = T::deserialize(De::new(value.clone(), Vec::new()));
     let result = match (first, value) {
         (Ok(config), _) => return Ok(config),
-        (Err(_), Value::Null) => T::deserialize(De::new(Value::Object(Map::new()), Vec::new())),
+        // No config where `T` is an object: as `{}`, so that a missing
+        // field is named. Where `T` is not an object, the first error.
+        (Err(error), Value::Null) => {
+            match T::deserialize(De::new(Value::Object(Map::new()), Vec::new())) {
+                Ok(config) => return Ok(config),
+                Err(retry) if retry.at_root_type() => Err(error),
+                Err(retry) => Err(retry),
+            }
+        }
         (Err(error), _) => Err(error),
     };
     result.map_err(|error| ConfigError::new(vec![error.issue(schema)]))
@@ -65,6 +73,11 @@ impl DecodeError {
             self.path = Some(path.to_vec());
         }
         self
+    }
+
+    /// A wrong type at the root: `{}` is not what the type takes.
+    fn at_root_type(&self) -> bool {
+        matches!(self.kind, Kind::Type { .. }) && self.path.as_deref().is_none_or(<[_]>::is_empty)
     }
 
     /// The problem as a config issue.
@@ -155,11 +168,43 @@ impl de::Error for DecodeError {
 struct De {
     value: Value,
     path: Vec<PathSegment>,
+    /// An object's key: numbers and booleans are read from its text, as
+    /// serde_json reads map keys (`HashMap<u32, _>` from `{"1": …}`).
+    key: bool,
 }
 
 impl De {
     fn new(value: Value, path: Vec<PathSegment>) -> Self {
-        De { value, path }
+        De {
+            value,
+            path,
+            key: false,
+        }
+    }
+
+    fn key(key: String, path: Vec<PathSegment>) -> Self {
+        De {
+            value: Value::String(key),
+            path,
+            key: true,
+        }
+    }
+
+    /// A key's text as the number or boolean it spells, if it does.
+    fn parsed(&self) -> Option<Value> {
+        let Value::String(text) = &self.value else {
+            return None;
+        };
+        if !self.key {
+            return None;
+        }
+        match text.as_str() {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => serde_json::from_str::<serde_json::Number>(text)
+                .ok()
+                .map(Value::Number),
+        }
     }
 
     /// `value` is not what the method called (`expected`) takes.
@@ -172,6 +217,9 @@ impl De {
     }
 
     fn integer<'de, V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+        if let Some(Value::Number(n)) = self.parsed() {
+            return De::new(Value::Number(n), self.path).integer(visitor);
+        }
         let path = self.path.clone();
         let result = match &self.value {
             Value::Number(n) if n.is_u64() => visitor.visit_u64(n.as_u64().unwrap()),
@@ -221,6 +269,11 @@ impl<'de> de::Deserializer<'de> for De {
         deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64 deserialize_u128);
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+        if let Some(Value::Bool(b)) = self.parsed() {
+            return visitor
+                .visit_bool(b)
+                .map_err(|e: DecodeError| e.at(&self.path));
+        }
         match self.value {
             Value::Bool(b) => visitor
                 .visit_bool(b)
@@ -234,6 +287,9 @@ impl<'de> de::Deserializer<'de> for De {
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DecodeError> {
+        if let Some(Value::Number(n)) = self.parsed() {
+            return De::new(Value::Number(n), self.path).deserialize_f64(visitor);
+        }
         match self.value.as_f64() {
             Some(f) => visitor
                 .visit_f64(f)
@@ -348,7 +404,11 @@ impl<'de> de::Deserializer<'de> for De {
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DecodeError> {
-        self.deserialize_map(visitor)
+        // A struct from an array of its fields, as serde_json takes it.
+        match self.value {
+            Value::Array(_) => self.deserialize_seq(visitor),
+            _ => self.deserialize_map(visitor),
+        }
     }
 
     fn deserialize_enum<V: Visitor<'de>>(
@@ -451,7 +511,7 @@ impl<'de> de::MapAccess<'de> for Fields {
         };
         let mut path = self.path.clone();
         path.push(PathSegment::Key(key.clone()));
-        let decoded = seed.deserialize(De::new(Value::String(key.clone()), path))?;
+        let decoded = seed.deserialize(De::key(key.clone(), path))?;
         self.value = Some((key, value));
         Ok(Some(decoded))
     }
@@ -688,5 +748,26 @@ mod tests {
         );
         let raw: serde_json::Value = decode(&json!({ "a": [1, "b"] }), false).unwrap();
         assert_eq!(raw, json!({ "a": [1, "b"] }));
+        // Keys read as numbers and booleans, as serde_json reads them.
+        let numbered: BTreeMap<u32, String> = decode(&json!({ "1": "a" }), false).unwrap();
+        assert_eq!(numbered[&1], "a");
+        let flags: BTreeMap<bool, u8> = decode(&json!({ "true": 1 }), false).unwrap();
+        assert_eq!(flags[&true], 1);
+        assert_eq!(
+            decode::<BTreeMap<u32, u8>>(&json!({ "x": 1 }), false)
+                .unwrap_err()
+                .to_string(),
+            "config: x should be an integer, got \"x\""
+        );
+        // A struct from an array of its fields.
+        let home: Home = decode(&json!([2.5]), false).unwrap();
+        assert_eq!(home, Home { lat: 2.5 });
+        // No config where the type is not an object: its own error.
+        assert_eq!(
+            decode::<Vec<String>>(&json!(null), false)
+                .unwrap_err()
+                .to_string(),
+            "config: config should be an array, got null"
+        );
     }
 }

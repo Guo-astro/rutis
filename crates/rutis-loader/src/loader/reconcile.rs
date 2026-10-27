@@ -82,24 +82,24 @@ impl Inner {
             });
             current = instance.parent.as_ref().and_then(|p| p.scope);
         }
-        Build { chain }
+        Build { chain, row: None }
     }
 
     /// The factory `resolved` gives a copy in `scope`.
     pub(super) fn slot_factory(
         state: &State,
         resolved: &Resolved,
-        scope: Option<u64>,
+        slot: &Slot,
     ) -> Result<Arc<dyn PluginFactory<Value>>, Error> {
         match &resolved.scoped {
             None => Ok(resolved.factory.clone()),
             Some(scoped) => {
-                catch_unwind(AssertUnwindSafe(|| scoped(&Self::build_for(state, scope))))
-                    .unwrap_or_else(|_| {
-                        Err(rutis::Error::from(ErrorKind::PluginFailed(
-                            "factory panicked".into(),
-                        )))
-                    })
+                let build = Self::build_for(state, slot.scope).for_row(&slot.row);
+                catch_unwind(AssertUnwindSafe(|| scoped(&build))).unwrap_or_else(|_| {
+                    Err(rutis::Error::from(ErrorKind::PluginFailed(
+                        "factory panicked".into(),
+                    )))
+                })
             }
         }
     }
@@ -353,7 +353,7 @@ impl Inner {
             id: id.clone(),
             error: Arc::new(error.into_kind()),
         };
-        let factory = match Self::slot_factory(state, &resolved, slot.scope) {
+        let factory = match Self::slot_factory(state, &resolved, &slot) {
             Ok(factory) => factory,
             Err(error) => {
                 state.rejected.insert(slot, rejected(error));
@@ -795,8 +795,7 @@ impl Inner {
                     let name = row.name.clone().unwrap_or_default();
                     match state.resolved.get(&name) {
                         Some(Ok(resolved)) => {
-                            let Ok(factory) = Self::slot_factory(state, resolved, slot.scope)
-                            else {
+                            let Ok(factory) = Self::slot_factory(state, resolved, slot) else {
                                 continue;
                             };
                             let build = Self::build_for(state, slot.scope);
@@ -887,7 +886,7 @@ impl Inner {
                 let Some(Ok(resolved)) = state.resolved.get(&name) else {
                     continue;
                 };
-                let Ok(factory) = Self::slot_factory(state, resolved, slot.scope) else {
+                let Ok(factory) = Self::slot_factory(state, resolved, slot) else {
                     continue;
                 };
                 // Expressions are evaluated where the plugin runs.

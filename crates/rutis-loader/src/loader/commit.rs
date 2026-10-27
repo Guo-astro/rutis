@@ -287,7 +287,7 @@ impl Inner {
             };
             let checked = catch_unwind(AssertUnwindSafe(|| {
                 let factory = match &resolved.scoped {
-                    Some(scoped) => scoped(&build)?,
+                    Some(scoped) => scoped(&build.clone().for_row(&row.id))?,
                     None => resolved.factory.clone(),
                 };
                 factory.validate_config(&config)?;

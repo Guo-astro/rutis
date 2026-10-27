@@ -368,7 +368,9 @@ impl RuntimeInstances {
         // and validates.
         Ok(Arc::new(Warning {
             loader: self.inner.loader.lock().unwrap().clone(),
-            row: row.to_owned(),
+            // The row's id; its plugin's name only where the copy's row is
+            // not known.
+            row: build.row.clone().unwrap_or_else(|| row.to_owned()),
             instance: format!("{instance:?}"),
             schema,
             cordis,

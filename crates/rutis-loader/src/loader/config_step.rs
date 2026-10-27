@@ -28,21 +28,32 @@ pub(super) fn standard_error() -> ConfigWarnings {
 }
 
 /// What the loader warned about: each row (and instance, for a runtime
-/// that dials in) and config value once, shared by dry runs and loads, so
-/// restarts do not repeat a warning.
+/// that dials in), config value and warning once, shared by dry runs and
+/// loads, so restarts do not repeat a warning (a schema that changes what
+/// is extra warns again).
 #[derive(Default)]
 pub(super) struct Warned {
-    seen: Mutex<HashSet<(String, Option<String>, String)>>,
+    seen: Mutex<HashSet<WarnedKey>>,
 }
 
+/// A row, its instance, its config value and the warnings given.
+type WarnedKey = (String, Option<String>, String, Vec<String>);
+
 impl Warned {
-    /// Whether this row, instance and value were not warned about yet
-    /// (and now are).
-    fn first(&self, row: &str, instance: Option<&str>, config: &Value) -> bool {
+    /// Whether this row, instance, value and warnings were not warned about
+    /// yet (and now are).
+    fn first(
+        &self,
+        row: &str,
+        instance: Option<&str>,
+        config: &Value,
+        warnings: &[ConfigIssue],
+    ) -> bool {
         self.seen.lock().unwrap().insert((
             row.to_owned(),
             instance.map(str::to_owned),
             config.to_string(),
+            warnings.iter().map(|w| w.message.clone()).collect(),
         ))
     }
 }
@@ -181,7 +192,9 @@ impl Inner {
                 true
             }
             Purpose::Run { row, instance } => {
-                if !checked.warnings.is_empty() && self.warned.first(row, instance, config) {
+                if !checked.warnings.is_empty()
+                    && self.warned.first(row, instance, config, &checked.warnings)
+                {
                     let sink = self.config_warnings.lock().unwrap().clone();
                     for warning in &checked.warnings {
                         sink(row, warning);

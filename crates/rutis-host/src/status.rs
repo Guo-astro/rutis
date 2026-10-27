@@ -379,19 +379,19 @@ impl Shown {
     }
 }
 
-/// A row's line, `<id>: <line>`; each further line of it that is not
-/// indented (one problem each of a config error) gets the prefix too, the
-/// indented ones (where an error came from) are left as they are.
+/// A row's line, `<id>: <line>`; each further line of a config error
+/// (`config: …`, one problem each) gets the prefix too, other lines (where
+/// an error came from) are left as they are.
 fn prefixed(id: &str, line: &str) -> Vec<String> {
     let mut lines = line.split('\n');
     let mut out = vec![format!("{id}: {}", lines.next().unwrap_or_default())];
     for more in lines {
-        match more.starts_with(char::is_whitespace) {
-            true => out
+        match more.starts_with("config: ") {
+            false => out
                 .last_mut()
                 .expect("a first line")
                 .push_str(&format!("\n{more}")),
-            false => out.push(format!("{id}: {more}")),
+            true => out.push(format!("{id}: {more}")),
         }
     }
     out

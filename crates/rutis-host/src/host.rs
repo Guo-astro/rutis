@@ -615,19 +615,19 @@ impl Host {
             .map(|entry| entry.id)
             .collect();
         let checked = self.loader.check(&[layer(new.rows())?]).await;
-        let failing: Vec<String> = checked
+        let failing: Vec<(String, String)> = checked
             .rows
             .iter()
             .filter(|row| !failing_now.contains(&row.id))
             .filter_map(|row| match &row.status {
                 rutis_loader::report::RowStatus::Failed(error) => {
-                    Some(format!("row {}: {error}", row.id))
+                    Some((row.id.clone(), error.to_string()))
                 }
                 _ => None,
             })
             .collect();
         if !failing.is_empty() {
-            return Err(failing.join("; "));
+            return Err(rejection(&failing));
         }
 
         let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
@@ -640,14 +640,13 @@ impl Host {
             .map_err(|error| error.to_string());
         let failed = match applied {
             Ok(report) if report.new_failures.is_empty() => None,
-            Ok(report) => Some(
-                report
+            Ok(report) => Some(rejection(
+                &report
                     .new_failures
                     .iter()
-                    .map(|failure| format!("row {}: {}", failure.id, failure.error))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            ),
+                    .map(|failure| (failure.id.clone(), failure.error.clone()))
+                    .collect::<Vec<_>>(),
+            )),
             Err(error) => Some(error),
         };
         if let Some(why) = failed {
@@ -1892,5 +1891,77 @@ mod tests {
         .unwrap();
         assert_eq!(reply.json().unwrap(), json!("netkit pong far"));
         child.start_kill().unwrap();
+    }
+}
+
+/// Why a reload is refused, the rows that would fail and their errors:
+/// `row <id>: <error>` joined by `; `. A config that does not match its
+/// schema (`config: …`, a line per problem) comes first as one
+/// `<id>: config: …` line per problem, and the summary says `row <id>'s
+/// config does not match its plugin's schema` ([`rejected_lines`] prints
+/// them).
+fn rejection(failing: &[(String, String)]) -> String {
+    let mut lines = Vec::new();
+    let mut why = Vec::new();
+    for (id, error) in failing {
+        let problems: Vec<&str> = error.lines().collect();
+        if !problems.is_empty() && problems.iter().all(|line| line.starts_with("config: ")) {
+            lines.extend(problems.iter().map(|line| format!("{id}: {line}")));
+            why.push(format!(
+                "row {id}'s config does not match its plugin's schema"
+            ));
+        } else {
+            why.push(format!("row {id}: {error}"));
+        }
+    }
+    lines.push(why.join("; "));
+    lines.join("\n")
+}
+
+/// The lines printed for a reload refused with `error`: its lines but the
+/// last as they are (rows' config problems, `<row>: config: …`), then
+/// `rutis-host: reload rejected: <last>; nothing changed`.
+pub fn rejected_lines(error: &str) -> Vec<String> {
+    let mut lines: Vec<String> = error.split('\n').map(str::to_owned).collect();
+    let last = lines.pop().unwrap_or_default();
+    let problems = !lines.is_empty() && lines.iter().all(|line| line.contains(": config: "));
+    if !problems {
+        return vec![format!(
+            "rutis-host: reload rejected: {error}; nothing changed"
+        )];
+    }
+    lines.push(format!(
+        "rutis-host: reload rejected: {last}; nothing changed"
+    ));
+    lines
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::{rejected_lines, rejection};
+
+    /// A row's config problems print a line each, named after the row;
+    /// the reload's own line stays one line (config schema design §9).
+    #[test]
+    fn config_problems_print_a_line_each() {
+        let error = rejection(&[
+            (
+                "weather".into(),
+                "config: a is required\nconfig: b is required".into(),
+            ),
+            ("chat".into(), "SyntaxError".into()),
+        ]);
+        assert_eq!(
+            rejected_lines(&error),
+            [
+                "weather: config: a is required",
+                "weather: config: b is required",
+                "rutis-host: reload rejected: row weather's config does not match its plugin's schema; row chat: SyntaxError; nothing changed",
+            ]
+        );
+        assert_eq!(
+            rejected_lines("rows.json:3: expected ,\nat line 3"),
+            ["rutis-host: reload rejected: rows.json:3: expected ,\nat line 3; nothing changed"]
+        );
     }
 }

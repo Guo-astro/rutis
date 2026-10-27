@@ -120,6 +120,9 @@ pub(crate) type Values = Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>;
 pub struct Build {
     /// Innermost first.
     pub(crate) chain: Vec<BuildLink>,
+    /// The id of the row the copy is of, when known: the factory of a
+    /// runtime that dials in names it in its config warnings.
+    pub(crate) row: Option<String>,
 }
 
 #[derive(Clone)]
@@ -130,6 +133,12 @@ pub(crate) struct BuildLink {
 }
 
 impl Build {
+    /// This build, for a copy of row `row`.
+    pub(crate) fn for_row(mut self, row: &str) -> Self {
+        self.row = Some(row.to_owned());
+        self
+    }
+
     /// The `ctx.instance()` of the enclosing instance of `group`: plugins in
     /// that instance can provide and read keys qualified with it.
     pub fn instance(&self, group: &str) -> Result<InstanceId, Error> {
@@ -214,7 +223,9 @@ impl Builtins {
             name: name.clone(),
             factory: build_fn(build),
         };
-        self.insert(name, Arc::new(Json::<C, _>::new(factory)), schema_of::<C>())
+        let schema = schema_of::<C>();
+        let json = Json::<C, _>::new(factory, schema.is_some());
+        self.insert(name, Arc::new(json), schema)
     }
 
     /// Register a factory that takes the raw JSON config: for a plugin
@@ -242,6 +253,8 @@ impl Builtins {
         let name = name.into();
         let build = Arc::new(build);
         let label = name.clone();
+        let schema = schema_of::<C>();
+        let has_schema = schema.is_some();
         let scoped: ScopedFactory = Arc::new(move |at: &Build| {
             let at = at.clone();
             let build = build.clone();
@@ -249,11 +262,12 @@ impl Builtins {
                 name: label.clone(),
                 factory: build_fn(move |config: &C| build(&at, config)),
             };
-            let factory: Arc<dyn PluginFactory<Value>> = Arc::new(Json::<C, _>::new(factory));
+            let factory: Arc<dyn PluginFactory<Value>> =
+                Arc::new(Json::<C, _>::new(factory, has_schema));
             Ok(factory)
         });
         let factory = Arc::new(Unscoped { name: name.clone() });
-        self.insert_resolved(name, factory, schema_of::<C>(), Some(scoped))
+        self.insert_resolved(name, factory, schema, Some(scoped))
     }
 
     fn insert(
@@ -378,11 +392,12 @@ struct Json<C, F> {
     _config: PhantomData<fn() -> C>,
 }
 
-impl<C: JsonSchema + 'static, F> Json<C, F> {
-    fn new(inner: F) -> Self {
+impl<C, F> Json<C, F> {
+    /// `schema`: `C` has a schema the loader validates against first.
+    fn new(inner: F, schema: bool) -> Self {
         Self {
             inner,
-            schema: schema_of::<C>().is_some(),
+            schema,
             _config: PhantomData,
         }
     }

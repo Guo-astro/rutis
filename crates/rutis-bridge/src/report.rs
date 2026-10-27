@@ -188,6 +188,29 @@ mod tests {
         );
     }
 
+    /// A config that does not match its schema, raised in `apply` by a
+    /// runtime's SDK (code `bad-config`), says so itself: no `failed in
+    /// apply:` (config schema design §5.2).
+    #[test]
+    fn a_bad_config_is_its_own_headline() {
+        let error = ErrorKind::PluginFailed(Box::new(Error::Remote {
+            name: "BindingError".into(),
+            message: "config: city is required".into(),
+            graph: Some(json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{
+                    "type": "error", "name": "BindingError", "message": "config: city is required",
+                    "code": "bad-config",
+                    "site": { "row": "weather", "doing": "apply" }
+                }]
+            })),
+        }));
+        assert_eq!(
+            headline(&error).as_deref(),
+            Some("config: city is required")
+        );
+    }
+
     /// Each kind of site gives its headline; a site that says too little
     /// gives none (#677).
     #[test]

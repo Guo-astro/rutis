@@ -348,7 +348,7 @@ impl Loader {
                     })
             })
             .collect();
-        crate::Build { chain }
+        crate::Build { chain, row: None }
     }
 
     #[cfg(feature = "runtimes")]

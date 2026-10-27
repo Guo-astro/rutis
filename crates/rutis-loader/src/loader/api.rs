@@ -37,6 +37,8 @@ impl Loader {
     /// Write a row's extra config keys (keys its plugin's schema does not
     /// name, where it allows them) with `warnings` instead of on standard
     /// error: once per row and config value (config schema design §3.2).
+    /// It is called while the loader works on its rows: it must not call
+    /// the loader.
     pub fn on_config_warning(&self, warnings: super::ConfigWarnings) {
         *self.inner.config_warnings.lock().unwrap() = warnings;
     }
