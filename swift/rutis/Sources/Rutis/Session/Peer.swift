@@ -22,10 +22,10 @@ package let eventsCapability = "events-v2"
 /// What this side declares in the compat format, where older hosts ignore
 /// it. `sync-wait`: its synchronous calls say so (`sync: true`). Not
 /// `sync-stack`: every incoming call runs in a Task of its own.
-package let compatCapabilities = ["signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
+package let compatCapabilities = ["objects", "signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
 
 /// What every runtime of this SDK declares in the endpoint format.
-package let runtimeCapabilities = ["signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
+package let runtimeCapabilities = ["objects", "signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
 
 /// How deep a value crossing a session may nest (#279): each array, object,
 /// map or set is a level, so 64 nested arrays cross and 65 do not; a call's
@@ -152,6 +152,7 @@ final class Imported: @unchecked Sendable {
     weak var function: FarFunction?
     weak var future: FarFuture?
     weak var plugin: FarPlugin?
+    weak var object: FarObject?
 
     init(id: Int64, kind: String, origin: [String]) {
         self.id = id
@@ -200,6 +201,39 @@ package final class FarFunction: @unchecked Sendable {
     package func call(_ args: [Value], sync: Bool) async throws -> Value {
         try peer.check(record)
         let fields = peer.waiting([("reference", .int(record.id))], sync)
+        let value = try await peer.call(op: "call", fields: fields, args: args, origin: [], cancellable: !sync)
+        return sync ? value : try await settle(value)
+    }
+
+    /// Gives the reference back now instead of when it goes.
+    package func release() { peer.release(record) }
+}
+
+/// An object with methods of the far end (#687): calls of its methods reach
+/// the original object. It has no method table: a method it lacks is the far
+/// end's to answer (no-method).
+package final class FarObject: @unchecked Sendable {
+    let peer: Peer
+    let record: Imported
+    let lock = Lock()
+    /// Its client, while one is held: one object is one client.
+    weak var client: Rutis.Client?
+
+    init(peer: Peer, record: Imported) {
+        self.peer = peer
+        self.record = record
+    }
+
+    deinit {
+        let peer = self.peer, record = self.record
+        DispatchQueue.global().async { peer.release(record) }
+    }
+
+    /// Calls the method `method` asynchronously (cancelling the Task cancels
+    /// the call).
+    package func call(_ method: String, _ args: [Value], sync: Bool) async throws -> Value {
+        try peer.check(record)
+        let fields = peer.waiting([("reference", .int(record.id)), ("method", .string(method))], sync)
         let value = try await peer.call(op: "call", fields: fields, args: args, origin: [], cancellable: !sync)
         return sync ? value : try await settle(value)
     }
@@ -343,6 +377,9 @@ final class Decoding {
     let call: String?
     var fresh: [Imported] = []
     var refused: Error?
+    /// The value is a call's argument list, whose items are whole arguments
+    /// and keep undefined (#687 §七); only the outermost list.
+    var arguments = false
 
     init(call: String?) { self.call = call }
 
@@ -662,11 +699,13 @@ package final class Peer: @unchecked Sendable {
         case let .list(items):
             var out: [JSON] = []
             out.reserveCapacity(items.count)
-            for item in items { out.append(try encode(item, &grants, origin, depth + 1)) }
+            // Undefined inside a value is null (#687 §七); an argument list
+            // (depth -1) keeps it, as an omitted argument.
+            for item in items { out.append(try encode(item.isUndefined && depth >= 0 ? .null : item, &grants, origin, depth + 1)) }
             return .object([("type", .string("list")), ("value", .array(out))])
         case let .record(fields):
             var out: [(String, JSON)] = []
-            for (key, item) in fields { out.append((key, try encode(item, &grants, origin, depth + 1))) }
+            for (key, item) in fields { out.append((key, try encode(item.isUndefined ? .null : item, &grants, origin, depth + 1))) }
             return .object([("type", .string("record")), ("value", .object(out))])
         case let .map(entries):
             try checkKeys(entries.map(\.0), "map key")
@@ -699,7 +738,8 @@ package final class Peer: @unchecked Sendable {
                     shown = String(describing: Swift.type(of: object))
                 }
                 let far = greeting?.endpoint ?? "the far end"
-                throw ValueError("an object with methods (\(shown)) cannot cross to \(far); pass plain data or a function instead")
+                // One older than rutis 0.18 takes none.
+                throw ValueError("an object with methods (\(shown)) cannot cross to \(far); pass plain data or a function instead, or upgrade \(far) to rutis 0.18")
             }
             return export(.object(object), kind: "object", identity: object.identity, origin: origin, grants: &grants)
         case let .plugin(definition):
@@ -718,6 +758,9 @@ package final class Peer: @unchecked Sendable {
         case let .remoteFunction(function):
             if function.record.released { throw RutisError(name: "Error", message: "reference released") }
             return homeReference(function.record)
+        case let .remoteObject(object):
+            if object.record.released { throw RutisError(name: "Error", message: "reference released") }
+            return homeReference(object.record)
         case let .remoteFuture(future):
             if future.record.released { throw RutisError(name: "Error", message: "reference released") }
             return homeReference(future.record)
@@ -749,10 +792,15 @@ package final class Peer: @unchecked Sendable {
         case "data": return .data(inner ?? .null)
         case "list":
             guard let items = inner?.arrayValue else { throw Malformed("invalid list") }
-            return .list(try items.map { try decode($0, decoding) })
+            // Undefined inside a value is null, also from an older far end
+            // (#687 §七); the items of an argument list keep it.
+            let keep = decoding.arguments
+            decoding.arguments = false
+            return .list(try items.map { let item = try decode($0, decoding); return item.isUndefined && !keep ? .null : item })
         case "record":
             guard let fields = inner?.objectValue else { throw Malformed("invalid record") }
-            return .record(try fields.map { ($0.0, try decode($0.1, decoding)) })
+            decoding.arguments = false
+            return .record(try fields.map { let item = try decode($0.1, decoding); return ($0.0, item.isUndefined ? .null : item) })
         case "signal":
             guard let call = decoding.call else { throw Malformed("a signal is only valid as a call argument") }
             if let signal = signals[call] { return .signal(signal) }
@@ -816,19 +864,6 @@ package final class Peer: @unchecked Sendable {
             case let .plugin(definition): return .plugin(definition)
             }
         }
-        if kind == "object" {
-            // Only this call fails (#675). Imported all the same, so that the
-            // refused call gives it back.
-            decoding.refuse(ValueError(objectReceived))
-            if let record = imports[id], record.kind == "object", !record.released {
-                record.grants += 1
-            } else {
-                let record = Imported(id: id, kind: kind, origin: origin)
-                imports[id] = record
-                decoding.fresh.append(record)
-            }
-            return .undefined
-        }
         // Only a test host takes the far end's plugin definitions; rutis
         // never sends one that is not this side's.
         if kind == "plugin", !options.host { throw Malformed("plugin definitions from the far end are not supported") }
@@ -837,6 +872,7 @@ package final class Peer: @unchecked Sendable {
             switch record.kind {
             case "function": live = record.function.map(Value.remoteFunction)
             case "plugin": live = record.plugin.map(Value.remotePlugin)
+            case "object": live = record.object.map(Value.remoteObject)
             default: live = record.future.map(Value.remoteFuture)
             }
             if let live {
@@ -852,6 +888,11 @@ package final class Peer: @unchecked Sendable {
             let proxy = FarFunction(peer: self, record: record)
             record.function = proxy
             return .remoteFunction(proxy)
+        }
+        if kind == "object" {
+            let proxy = FarObject(peer: self, record: record)
+            record.object = proxy
+            return .remoteObject(proxy)
         }
         if kind == "plugin" {
             let proxy = FarPlugin(peer: self, record: record, local: options.localPlugin?(id))
@@ -1267,6 +1308,7 @@ package final class Peer: @unchecked Sendable {
         }
         if op == "invoke" || op == "call" {
             let decoding = Decoding(call: id)
+            decoding.arguments = true
             let decoded = try decode(frame["args"], decoding)
             job.args = arguments(decoded)
             // Arguments this side cannot take fail the call: it is answered

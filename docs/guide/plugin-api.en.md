@@ -259,17 +259,17 @@ A plugin and the services it uses may run in different processes. Across process
 | Dates and times, binary data, maps, sets, big integers, decimals, UUIDs | Copied; each language receives its own types, see [the ten values](#the-ten-values) below |
 | `Error` / exceptions | Passed as a value: copied as data `{ name, message }` (in TypeScript also `stack`). Thrown: the other side receives an error with the same name and message (in TypeScript a built-in error class keeps its class, any other is an `Error`; in Python a `rutis.RemoteError` whose `name` is the original class name; in Go a `*rutis.RemoteError`). An error thrown in any language may also carry a code and data: in TypeScript a string `code` property and a `data` property, in Python a str `code` attribute and a `data` attribute, in Go the methods `Code() string` and `Data() any`, in Rust [`rutis_bridge::exports::failure`](rust-host.en.md#write-a-hostdispatch-by-hand) (what the `Err(e)` of an [exported Rust service](rust-host.en.md#exported-services-reference) becomes). The receiver reads them as `code` and `data` (Go: `Code`, `Data`; Rust: `Error::code()`, `Error::data()`), and they pass on when it throws the error again. `data` crosses as data (big integers as bigints); data that cannot cross is left out, and the rest of the error still crosses. Other attributes are not passed |
 | Functions, Promises / coroutines | Passed by reference: the other side calls or awaits the original |
-| Objects with methods, class instances | Only to Rust, by reference: the other side receives a proxy that calls the original object. To any other language (Node, Bun, Python, Go, Swift, Kotlin) the call fails, saying why; pass plain data or a function instead. Passing them by reference to every language is [#687](https://github.com/arcships/rutis/issues/687) (0.18) |
+| Objects with methods, class instances | Passed by reference, to every language: the other side receives a proxy whose methods call the original object. Which values count as objects and how each language receives them: see [Objects with methods](#objects-with-methods) below |
 | Plugin definitions (the result of `definePlugin`; Cordis plugins in Node; the result of Python's `define_plugin`; Go's `*rutis.Definition`; the result of `Rutis.define` in Swift and Kotlin) | By reference, going back only to the runtime that defined them: a Rust service whose parameter or return type is `rutis::Definition` receives a plugin definition it can mount; see [Plugin definitions](#plugin-definitions) below. Node, Bun, Python, Go, Swift and Kotlin can hand them over |
-| `undefined` inside data | Becomes `null` (`None` in Python) |
-| Empty slots of an array (`[1, , 3]`) | The same as `undefined` |
+| `undefined` | Kept only as a whole argument or a whole result: as an argument it means "not given" (Python receives one argument fewer or `None`, Go the zero value); as a result JS receives `undefined` and other languages their empty value. Inside arrays, objects, Maps and Sets it becomes `null` at any depth (`None` in Python) |
+| Empty slots of an array (`[1, , 3]`) | The same as `undefined` inside an array: `null` |
 | Go structs, slices, maps | Copied: struct fields and the items of slices and maps each follow the rules of this section, with field names by their `json` tags; a struct is always data, `rutis.Ref(v)` passes an object by reference. A `map[string]T` is an object, a map whose keys are not strings is a map, and a `map[K]struct{}` is a set |
 | Integers beyond ±(2^53−1) | Cross as big integers automatically, see [the ten values](#the-ten-values) |
 | Symbols, cyclic references, `NaN` / `Infinity`, other JS typed arrays (such as `Int16Array`), Python `time` with a time zone, Go channels | Cannot cross processes (the call fails) |
 | Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 | A call or result over 16 MiB once encoded | Cannot cross processes (the call fails, see below) |
 
-A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, TypeScript passing a class instance to a Python service gets `weather.store: argument 2 cannot be sent: an object with methods cannot cross to py; pass plain data or a function instead`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument or the result (`{part, argument?, limit?}`); not the name or the text.
+A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, when a 0.18 host would forward an object from Node to a Python runtime older than 0.18, the call gets `weather.store: argument 2 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument or the result (`{part, argument?, limit?}`); not the name or the text.
 
 Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), map, set, and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
 
@@ -288,6 +288,45 @@ Numbers have the limits below. They describe current behaviour and are **not gua
 - NaN and ±Infinity cannot cross.
 
 Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
+
+### Objects with methods
+
+The value being sent decides whether it is copied or goes by reference, whatever the other side expects:
+
+| Language | Copied (data) | By reference (the other side gets a proxy) |
+| --- | --- | --- |
+| JS (Node, Bun) | Plain objects (prototype `Object.prototype` or `null`) with no function-valued property; arrays | Class instances; plain objects with function-valued properties (`{ get() {}, set() {} }`) |
+| Python | `dict`, `list`, `tuple`, dataclasses (copied as dicts) | Instances of other classes (instances with `__call__` go as functions) |
+| Go | Structs, slices, maps | `rutis.Ref(v)` |
+| Swift | `Codable` structs and classes | Instances of `@RutisService` types |
+| Kotlin | `@Serializable` classes | Instances of `@RutisService` classes |
+| Rust | serde values | Does not send its own objects; forwards objects of other processes |
+
+Objects inside arrays and dictionaries each go by reference too. A received object is the same kind of thing as the service proxy `ctx.use` returns: each method is an asynchronous call on the original object, and there are no data fields; to get data, have a method return it.
+
+| Language | How to receive | What you get |
+| --- | --- | --- |
+| JS (Node, Bun) | Nothing to declare | A proxy: `await cache.get('a')` |
+| Python | Nothing to declare | A proxy: `await cache.get("a")` |
+| Go | A parameter whose type is a struct of function fields (as for a `ctx.Use` target); or `any` | Function fields that call the methods (blocking); `any` receives `*rutis.Service` |
+| Swift | A parameter typed with a `@RutisClient` protocol (`any Cache`); or `Any` | The protocol's proxy; `Any` receives `Rutis.Client` |
+| Kotlin | A parameter typed with a `@RutisClient` interface; or `Any?` | The interface's proxy; `Any?` receives `RemoteObject` |
+| Rust | Hand-written `HostDispatch` | `rutis_bridge::session::Reference` (`call_method`, `call_method_async`), `ObjectRef` in Cordis bindings; a `#[rutis::service]` parameter does not take objects (`bad-argument`) |
+
+- One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there, and passed to a third process it is still the same object.
+- Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`, with `data` `{object, method, methods}`.
+- A parameter whose declared type cannot take an object (data in Go, Swift and Kotlin) fails the call with `bad-argument`, saying how to receive one.
+- Lifetime is that of a function reference: the sender lets the object go once the receiver no longer holds the proxy, or the receiver's process exits. An object does not follow its row: after the row that passed it unloads, it can still be called.
+- Once the sender's runtime has exited or disconnected, calls on its objects fail with `peer-gone` (`a call on an object from py failed: runtime py exited`), and only those calls fail.
+- An end older than 0.18 does not take objects: a call that would hand it one fails with `bad-value` (`… an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`), and the session goes on. Upgrade that end.
+- The details for each language are in its guide: [TypeScript](typescript-plugin.en.md#objects-with-methods), [Bun](bun-plugin.en.md#objects-with-methods), [Python](python-plugin.en.md#objects-with-methods), [Go](go-plugin.en.md#objects-with-methods), [Swift](swift-plugin.en.md#objects-with-methods), [Swift app](swift-app.en.md#objects-with-methods), [Kotlin app](kotlin-app.en.md#objects-with-methods), [Rust](rust-plugin.en.md#serve-a-service-to-other-languages).
+
+#### The same process versus across processes
+
+- **In the same process** (rows of the same runtime) the receiver gets the object itself: methods stay synchronous and fields stay readable.
+- **Across processes** there are only methods, and every call is asynchronous. Code that reads a field or relies on a synchronous result works in one process and fails across processes; the test tool's strict mode hands out proxies shaped as across processes, so it fails in tests first.
+- **Idle stop**: an on-demand runtime (Go, Swift) stops `idle` seconds after its last row unloads. Its objects held elsewhere do not keep it running. After it stops, calls on them fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
+- **Identity**: one object received several times is one proxy, and handed back home it is the original object, in every language (Go: only through `*rutis.Service`).
 
 ### The ten values
 
@@ -348,10 +387,10 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) an
 | Python: an exception that crosses is a `RemoteError` whose `__cause__` is the original exception | For debugging; a real runtime's `RemoteError` has no `__cause__` |
 | Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: TypeScript `host({ deadline })` / `load(…, { deadline, runtime })` in ms, Python `load(…, deadline=, runtime=)` in seconds, Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
 | TypeScript: only plugins written with `definePlugin` load, not Cordis plugins | The tool has no Cordis plugin model, services or dependency gating |
-| Objects with methods and class instances always pass by reference, and the 16 MiB message limit is not checked | The tool does not know which language provides a service, and does not encode values into messages; the real runtimes pass such objects only to Rust, and fail a call whose message is over the limit (see [Passing values](#passing-values)) |
+| The 16 MiB message limit is not checked | The tool does not encode values into messages; the real runtimes fail a call whose message is over the limit (see [Passing values](#passing-values)) |
 | Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
 
-The ten values cross by the same rules on both sides, so they are not a difference. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
+The ten values cross by the same rules on both sides, so they are not a difference. Nor are objects with methods: in strict mode the test tool of every language hands them over as a proxy shaped as across processes (methods only, every call asynchronous), as a real runtime does. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
 
 ## Synchronous calls and reentrancy
 

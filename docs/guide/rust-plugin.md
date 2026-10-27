@@ -200,6 +200,8 @@ plugin = define_plugin(apply, inject=["calendar"])
 
 没标注的类型不对外。能传什么、错误怎样抛、带 `&Ctx` 参数的方法，见 [在类型上标注 `#[rutis::service]`](rust-host.md#在类型上标注-rutisservice)。同一个服务要多份时，用 rutis-loader 的实例：每个实例里各装一份，实例里的行用自己那份。
 
+服务的参数收数据和函数，不收带方法的对象：别的语言把对象（类的实例、`@RutisService` 实例、`rutis.Ref(v)` 等）交给这样的参数时，这次调用以 `bad-argument` 失败，错误建议改传函数：`store.put: argument 1 should be a Config, got an object from py; store takes data and functions, so pass a function for each method`。要用对方的行为，参数写成函数（`impl Fn`），对方为每个方法传一个函数。Rust 插件在 0.18 不发出也不接收自己的对象；对象经过 Rust 宿主时由宿主照常转发。手写的 [`HostDispatch`](rust-host.md#手写-hostdispatch) 收到的对象是 `rutis_bridge::session::Reference`，用 `call_method` / `call_method_async` 调用它的方法；在处理另一个会话的调用时发出的这种调用，自动代那个会话转发。
+
 ### 插件定义
 
 `Plugin` 是一个实例：配置写在字段里，交给 `ctx.plugin` 就用掉了。要把插件交给别处、由那边挂很多次（例如每个 Session 一份），用 `rutis::Definition`：`Definition::new(ctx, build)` 造一个定义，`build` 拿到挂载位置的 `ctx` 和这一份的配置，返回一个 `Plugin`；挂的一方写 `ctx.plugin(def.at(&ctx, config)?)`。

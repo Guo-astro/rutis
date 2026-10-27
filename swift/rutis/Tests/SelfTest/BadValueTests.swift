@@ -30,7 +30,7 @@ private func send(_ channel: Channel, _ text: String) throws {
 /// #675: what a call cannot send (a message over 16 MiB, an object with
 /// methods to a far end that does not take objects) fails only that call,
 /// on the side that would send it, naming the call, the argument or the
-/// result and why; an object reference received fails only its call; a
+/// result and why; an object received is a proxy of its methods; a
 /// relayed thrown value that is not an error crosses whole. The session
 /// goes on.
 struct BadValueTests {
@@ -96,6 +96,7 @@ struct BadValueTests {
         XCTAssertNil(runtime.error)
     }
 
+    // objects-case(swift): no-objects-declared
     func testAnObjectGoesOnlyToAFarEndThatTakesObjects() async throws {
         let (a, b) = try Channels.pair()
         var runtimeOptions = PeerOptions()
@@ -104,6 +105,8 @@ struct BadValueTests {
         let runtime = try Peer(channel: a, options: runtimeOptions)
         var hostOptions = PeerOptions()
         hostOptions.endpoint = Endpoint(local: "main", expected: "swift")
+        // A far end older than 0.18: it does not declare `objects`.
+        hostOptions.capabilities = runtimeCapabilities.filter { $0 != "objects" }
         let host = try Peer(channel: b, options: hostOptions)
         try runtime.start()
         try host.start()
@@ -117,21 +120,32 @@ struct BadValueTests {
             _ = try await host.call(target: "t", method: "object", args: [], sync: true)
             XCTFail("expected an error")
         } catch let error as RutisError {
-            XCTAssertEqual(error.message, "t.object: the result cannot be sent: an object with methods (Gadget) cannot cross to main; pass plain data or a function instead")
+            XCTAssertEqual(error.message, "t.object: the result cannot be sent: an object with methods (Gadget) cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18")
         }
         let fine = try await host.call(target: "t", method: "echo", args: [.data(.string("after"))], sync: true)
         XCTAssertEqual(fine.plainJSON, .string("after"))
         XCTAssertEqual(runtime.referenceTables.exports, 0, "the object is left exported")
     }
 
-    func testAReceivedObjectFailsOnlyItsCall() async throws {
-        let refused = "received an object with methods, which Swift cannot take; pass plain data or a function instead"
+    // objects-case(swift): receiver-releases
+    // objects-case(swift): undefined-nested-null
+    func testAReceivedObjectIsAProxyOfItsMethods() async throws {
         func reference(_ id: Int) -> String {
             #"{"type":"reference","value":{"id":\#(id),"kind":"object","home":false,"origin":[]}}"#
         }
         let (a, far) = try Channels.pair()
         var options = PeerOptions()
-        options.dispatch = { _, _, args in args.first ?? .undefined }
+        let kept = SavedValue()
+        options.dispatch = { _, method, args in
+            if method == "keep" {
+                kept.value = .list(args)
+                return .undefined
+            }
+            if method == "poke", case let .remoteObject(object)? = args.first {
+                return try await object.call("get", [], sync: false)
+            }
+            return args.first ?? .undefined
+        }
         let runtime = try Peer(channel: a, options: options)
         try runtime.start()
         defer {
@@ -140,36 +154,44 @@ struct BadValueTests {
         }
         let hello = try await next(far)
         XCTAssertEqual(hello["op"]?.stringValue, "hello")
-        try send(far, #"{"op":"hello","version":2,"capabilities":["events-v2"]}"#)
+        XCTAssertTrue(hello["capabilities"]?.arrayValue?.contains(.string("objects")) == true, "the runtime takes objects")
+        try send(far, #"{"op":"hello","version":2,"capabilities":["events-v2","objects"]}"#)
         await runtime.ready()
 
-        // As a call's argument: the call is answered with a throw, and the
-        // reference is given back.
+        // Sent back, the object goes home as itself; the runtime's hold on
+        // it is given back.
         try send(far, #"{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"echo","args":{"type":"list","value":["# + reference(7) + "]}}")
         var frames: [String: JSON] = [:]
         for _ in 0 ..< 2 {
             let frame = try await next(far)
             frames[frame["op"]?.stringValue ?? ""] = frame
         }
+        XCTAssertEqual(frames["return"]?["value"]?["value"]?["id"]?.int64Value, 7)
+        XCTAssertEqual(frames["return"]?["value"]?["value"]?["home"], .bool(true))
         XCTAssertEqual(frames["release"]?["reference"]?.int64Value, 7)
-        XCTAssertEqual(frames["release"]?["count"]?.int64Value, 1)
-        XCTAssertEqual(frames["throw"]?["error"]?["message"]?.stringValue, refused)
 
-        // As a reply: the call waiting for it fails.
-        let call = Task { try await runtime.call(target: "t", method: "make", args: [], sync: true) }
-        let invoke = try await next(far)
-        XCTAssertEqual(invoke["op"]?.stringValue, "invoke")
-        let id = invoke["id"]?.stringValue ?? ""
-        try send(far, #"{"op":"return","id":"\#(id)","value":"# + reference(8) + "}")
-        let result = await call.result
-        XCTAssertThrowsError(try result.get()) { XCTAssertEqual("\($0)", refused) }
-        let release = try await next(far)
-        XCTAssertEqual(release["reference"]?.int64Value, 8)
+        // A method call is a call frame naming the method.
+        try send(far, #"{"op":"invoke","id":"rust:2","path":[],"target":"t","method":"poke","args":{"type":"list","value":["# + reference(8) + "]}}")
+        let call = try await next(far)
+        XCTAssertEqual(call["op"]?.stringValue, "call")
+        XCTAssertEqual(call["reference"]?.int64Value, 8)
+        XCTAssertEqual(call["method"]?.stringValue, "get")
+        let id = call["id"]?.stringValue ?? ""
+        try send(far, #"{"op":"return","id":"\#(id)","value":{"type":"data","value":5}}"#)
+        frames = [:]
+        for _ in 0 ..< 2 {
+            let frame = try await next(far)
+            frames[frame["op"]?.stringValue ?? ""] = frame
+        }
+        XCTAssertEqual(frames["return"]?["value"]?["value"]?.int64Value, 5)
+        XCTAssertEqual(frames["release"]?["reference"]?.int64Value, 8)
 
-        // The session goes on.
-        try send(far, #"{"op":"invoke","id":"rust:2","path":[],"target":"t","method":"echo","args":{"type":"data","value":["after"]}}"#)
-        let reply = try await next(far)
-        XCTAssertEqual(reply["op"]?.stringValue, "return")
+        // Undefined: kept as a whole argument, null inside a value.
+        try send(far, #"{"op":"invoke","id":"rust:3","path":[],"target":"t","method":"keep","args":{"type":"list","value":[{"type":"undefined"},{"type":"list","value":[{"type":"undefined"}]}]}}"#)
+        _ = try await next(far)
+        guard case let .list(args)? = kept.value, args.count == 2 else { return XCTFail("\(String(describing: kept.value))") }
+        guard case .undefined = args[0] else { return XCTFail("a whole argument keeps undefined: \(args[0])") }
+        XCTAssertEqual(args[1].plainJSON, .array([.null]), "inside a value, null")
         XCTAssertNil(runtime.error)
     }
 

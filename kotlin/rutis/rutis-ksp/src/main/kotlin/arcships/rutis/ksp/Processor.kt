@@ -120,6 +120,22 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
     /** A plugin definition: it crosses as a `plugin` reference, not by a serializer. */
     private fun isPlugin(type: KSType): Boolean = expand(type).declaration.qualifiedName?.asString() == "arcships.rutis.Plugin"
 
+    /** A `@RutisClient` interface: it takes an object of another process, as its proxy (#687 §四). */
+    private fun isClient(type: KSType): Boolean {
+        val declaration = expand(type).declaration as? KSClassDeclaration ?: return false
+        return declaration.classKind == ClassKind.INTERFACE &&
+            declaration.annotations.any { it.annotationType.resolve().declaration.qualifiedName?.asString() == CLIENT }
+    }
+
+    /** A `@RutisService` class: its instances cross by reference (#687 §三). */
+    private fun isService(type: KSType): Boolean {
+        val declaration = expand(type).declaration as? KSClassDeclaration ?: return false
+        return declaration.annotations.any { it.annotationType.resolve().declaration.qualifiedName?.asString() == SERVICE }
+    }
+
+    /** `type`'s class, without nullability, as Kotlin source. */
+    private fun classOf(type: KSType): String = render(expand(type).makeNotNullable()) + "::class.java"
+
     private fun isUnit(type: KSType): Boolean = expand(type).declaration.qualifiedName?.asString() == "kotlin.Unit" && !type.isMarkedNullable
 
     /** `type` as Kotlin source. */
@@ -157,6 +173,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         isAny(type) -> if (type.isMarkedNullable) "$G.toNative($value)" else "($G.toNative($value) ?: throw IllegalArgumentException(\"null where a value was expected\"))"
         isFunction(type) -> remoteFunction(type, "$G.remoteResult($value)")
         isPlugin(type) -> if (type.isMarkedNullable) "$G.pluginResult($value, true)" else "$G.pluginResult($value, false)!!"
+        isClient(type) -> if (type.isMarkedNullable) "$G.clientResult($value, ${classOf(type)}, true)" else "$G.clientResult($value, ${classOf(type)}, false)!!"
         else -> "$G.decode(${serializer(type)}, $value)"
     }
 
@@ -166,6 +183,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         isAny(type) -> "$G.nativeResult($value)"
         isFunction(type) -> if (type.isMarkedNullable) "$value?.let { f -> ${exportFunction(type.makeNotNullable(), "f")} }" else exportFunction(type, value)
         isPlugin(type) -> "$G.plugin($value)"
+        isClient(type) || isService(type) -> "$G.clientValue($value)"
         else -> "$G.encode(${serializer(type)}, $value)"
     }
 
@@ -226,6 +244,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
                         if (type.isMarkedNullable) "($local ?: if ($i < args.size && args[$i] is arcships.rutis.RemoteFunction) $remote else null)" else "($local ?: $remote)"
                     }
                     isPlugin(type) -> if (type.isMarkedNullable) "$G.pluginArg(args, $i, \"$method\", true)" else "$G.pluginArg(args, $i, \"$method\", false)!!"
+                    isClient(type) -> if (type.isMarkedNullable) "$G.clientArg(args, $i, \"$method\", ${classOf(type)}, true)" else "$G.clientArg(args, $i, \"$method\", ${classOf(type)}, false)!!"
                     else -> "$G.arg(args, $i, ${serializer(type)}, \"$method\")"
                 }
             }
@@ -269,7 +288,10 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         out.append("@Suppress(\"UNCHECKED_CAST\", \"RedundantSuppression\", \"UNUSED_ANONYMOUS_PARAMETER\", \"USELESS_CAST\", \"unused\")\n")
         out.append("${visibility(type)}class $name : arcships.rutis.ClientFactory<$target>() {\n")
         out.append("    override val methods: List<String> = listOf(${functions.joinToString(", ") { "\"${it.simpleName.asString()}\"" }})\n\n")
-        out.append("    override fun create(handle: arcships.rutis.ServiceHandle): $target = object : $target {\n")
+        // The proxy is also an ObjectProxy: handed on, a proxy of another
+        // process's object is that object (#687).
+        out.append("    override fun create(handle: arcships.rutis.ServiceHandle): $target = object : $target, arcships.rutis.ObjectProxy {\n")
+        out.append("        override val rutisHandle: arcships.rutis.ServiceHandle = handle\n")
         for (function in functions) {
             val method = function.simpleName.asString()
             if (function.typeParameters.isNotEmpty()) {

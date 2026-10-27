@@ -32,6 +32,8 @@ package indirect enum Value: @unchecked Sendable {
     case object(SessionObject)
     /// A function of the far end.
     case remoteFunction(FarFunction)
+    /// An object with methods of the far end (#687).
+    case remoteObject(FarObject)
     /// An asynchronous result of the far end.
     case remoteFuture(FarFuture)
     /// A plugin definition of this side (`Rutis.define`): the far end gets
@@ -78,7 +80,7 @@ package indirect enum Value: @unchecked Sendable {
         case .list: return "an array"
         case .record: return "an object"
         case .instant: return "an instant"
-        case .function, .object, .remoteFunction, .remoteFuture: return "a reference"
+        case .function, .object, .remoteFunction, .remoteFuture, .remoteObject: return "a reference"
         case .plugin, .remotePlugin: return "a plugin definition"
         case .signal: return "a signal"
         case .bytes: return "bytes"

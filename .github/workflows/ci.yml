@@ -228,6 +228,7 @@ jobs:
               - crates/rutis-loader/src/runtime/swift.rs
               - crates/rutis-loader/tests/swift_rows.rs
               - crates/rutis-loader/tests/multilang_swift.rs
+              - crates/rutis-loader/tests/objects_cross.rs
               - crates/rutis-loader/tests/plugin_values.rs
               - crates/rutis-host/src/languages/swift.rs
               - crates/rutis-host/tests/swift.rs
@@ -1052,6 +1053,7 @@ jobs:
       - name: cargo test (Kotlin rows)
         run: |
           cargo test -p rutis-loader --features node,python,kotlin --test multilang_kotlin
+          cargo test -p rutis-loader --features node,python,kotlin --test objects_cross kotlin
           cargo test -p rutis-loader --features kotlin --test plugin_values kotlin
       # The events conformance with X Kotlin, and Kotlin as Y of the others
       # (the written placements on pull requests, a sample in full runs).
@@ -1139,6 +1141,7 @@ jobs:
         run: |
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift
           cargo test -p rutis-loader --features node,python,swift --test caller_rows --test sync_cycles swift
+          cargo test -p rutis-loader --features node,python,swift --test objects_cross swift
           cargo test -p rutis-loader --features swift --test plugin_values swift
       # runtimes.swift in rutis-host (rows, restart, check), and the plugin
       # author's loop: new --lang swift, swift test, check, dev rebuilding;
