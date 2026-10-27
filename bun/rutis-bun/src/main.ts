@@ -15,7 +15,9 @@
 // speak the compat protocol unless `--format endpoint`; remote ones the
 // endpoint format, as `--id`, expecting `--peer` as the controller when
 // given. Plugin modules resolve from <project>.
+import { realpathSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { Client } from './client.ts'
 import { takeToken } from './channel.ts'
@@ -45,15 +47,44 @@ function checkBun() {
 }
 
 checkBun()
-// An uncaught error ends the process, and with it every service of this
-// runtime (boundary rule 8): no plugin runs on in a state nobody handled.
-// Bun alone reports some (a timer's throw) and carries on.
+// An error nobody handled is reported, and the process goes on: its rows
+// share it, and Bun cannot tell which row the error came from (#688,
+// docs/design-diagnostics-2026-10-26.en.md §4.7). A plugin calling
+// process.exit still ends it.
+// The line before says which row called it: the one row whose plugin file
+// is on the stack, when there is one.
+let current: Runtime | undefined
+const runtimeName = () => current?.name ?? 'bun'
 for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
   process.on(event, (error: any) => {
-    process.stderr.write(`rutis-bun: ${event === 'uncaughtException' ? 'uncaught error' : 'unhandled rejection'}: ${error?.stack ?? error}\n`)
-    process.exit(1)
+    const text = typeof error?.stack === 'string' && error.stack ? error.stack : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
+    process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
   })
 }
+// The source files on a stack, as real paths.
+function stackFiles(stack: string | undefined): Set<string> {
+  const files = new Set<string>()
+  for (const line of String(stack ?? '').split('\n')) {
+    const frame = line.trim()
+    if (!frame.startsWith('at ')) continue
+    let where = /\((.*)\)$/.exec(frame)?.[1] ?? frame.slice(3)
+    where = where.replace(/(:\d+){1,2}$/, '').replace(/\?.*$/, '')
+    try {
+      if (where.startsWith('file:')) where = fileURLToPath(where)
+      else if (!where.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(where)) continue
+      files.add(realpathSync(where))
+    } catch {}
+  }
+  return files
+}
+const exit = process.exit
+process.exit = function (code?: number) {
+  try {
+    const row = current?.rowOfFiles(stackFiles(new Error().stack))
+    if (row !== undefined) writeSync(2, `runtime ${runtimeName()}: row ${row} called process.exit(${code ?? process.exitCode ?? 0})\n`)
+  } catch {}
+  return Reflect.apply(exit, process, [code]) as never
+} as typeof process.exit
 // What was written to stderr, written out: a pipe takes it asynchronously,
 // and exiting at once can lose the last lines (a refusal, say).
 const flushed = () => new Promise<void>(resolve => { process.stderr.write('', () => resolve()) })
@@ -85,6 +116,7 @@ const dialed = flags.supervisor === 'dial'
 const token = takeToken()
 
 const runtime = new Runtime(project)
+current = runtime
 // The process lives until the session ends. The worker and its port should
 // keep it alive, but Bun 1.2 may end a process whose only pending work is
 // there (exiting normally, mid-session); a timer keeps it, and leaving

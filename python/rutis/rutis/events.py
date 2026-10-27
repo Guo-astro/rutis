@@ -201,6 +201,10 @@ class Bus:
         self.starting: dict[str, set] = {}
         self._report = report
         self.runtime = runtime
+        # `within(row, call)`: calls a listener of `row` as that row's code
+        # (the runtime traces which row an unhandled error comes from, #688).
+        # `awaited=False`: a synchronous dispatch, which refuses an awaitable.
+        self.within: Callable[..., Any] = lambda _row, call, awaited=True: call()
         self._ids = 0
         # The id each row's configuration gives it, by row key (`rows.load`'s
         # `id`): descriptors and reported lines call the row so (§4.2).
@@ -299,7 +303,7 @@ class Bus:
     def call(self, entry: Entry, args: list) -> tuple:
         """Call `entry`'s listener now; (a future of what it returns, None),
         or (None, the value) when it returned no awaitable."""
-        value = entry.listener(*args)
+        value = self.within(entry.row, lambda: entry.listener(*args))
         if not inspect.isawaitable(value):
             return None, value
         started = asyncio.get_running_loop().create_future()
@@ -444,7 +448,7 @@ class Bus:
             )
             if entry.kind == "async":
                 raise refused
-            value = entry.listener(*args)
+            value = self.within(entry.row, lambda entry=entry: entry.listener(*args), awaited=False)
             if inspect.isawaitable(value):
                 discard(value)
                 raise refused

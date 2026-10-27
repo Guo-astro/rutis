@@ -1,7 +1,9 @@
 //! One row's or one runtime's problem stays its own (#682): a row providing
 //! a service the host already provides fails alone; rows of a runtime whose
 //! process exits wait for it instead of failing, and the runtime says how
-//! its process ended.
+//! its process ended. An error a row's code leaves unhandled fails that row
+//! alone where the runtime traces it, and is reported as from an unknown
+//! row where it does not; the runtime's process goes on (#688).
 #![cfg(any(feature = "node", feature = "python", feature = "bun"))]
 
 mod common;
@@ -54,6 +56,9 @@ impl HostDispatch for Gate {
 enum Language {
     #[cfg(feature = "node")]
     Node,
+    /// Node as `rutis-host dev` runs it (`RUTIS_DEV=1`): it traces rows.
+    #[cfg(feature = "node")]
+    NodeDev,
     #[cfg(feature = "python")]
     Python,
     #[cfg(all(unix, feature = "bun"))]
@@ -66,7 +71,7 @@ impl Language {
         let _ = dir;
         match self {
             #[cfg(feature = "node")]
-            Language::Node => dir
+            Language::Node | Language::NodeDev => dir
                 .join(format!("{stem}.mjs"))
                 .to_string_lossy()
                 .into_owned(),
@@ -83,7 +88,9 @@ impl Language {
         let _ = (js, py);
         match self {
             #[cfg(feature = "node")]
-            Language::Node => std::fs::write(dir.join(format!("{stem}.mjs")), sdk_plugin(js)),
+            Language::Node | Language::NodeDev => {
+                std::fs::write(dir.join(format!("{stem}.mjs")), sdk_plugin(js))
+            }
             #[cfg(feature = "python")]
             Language::Python => std::fs::write(dir.join(format!("{stem}.py")), py),
             #[cfg(all(unix, feature = "bun"))]
@@ -100,6 +107,16 @@ impl Language {
             Language::Node => {
                 let package = repo().join("node/rutis-runtime");
                 let runtime = LocalRuntime::node(&package, package.join("package.json"));
+                let resolver = RuntimeResolver::node(runtime.handle());
+                (runtime, resolver)
+            }
+            #[cfg(feature = "node")]
+            Language::NodeDev => {
+                let package = repo().join("node/rutis-runtime");
+                let launcher =
+                    rutis_bridge::runtime::Launcher::node(&package).env("RUTIS_DEV", "1");
+                let runtime =
+                    LocalRuntime::launcher("node", launcher, package.join("package.json"));
                 let resolver = RuntimeResolver::node(runtime.handle());
                 (runtime, resolver)
             }
@@ -470,13 +487,14 @@ async def apply(ctx, config):
     await asyncio.sleep(10)
 "#;
 
-/// Makes its runtime exit once the slowpoke loads: a promise rejection
-/// nobody handles (JavaScript), `os._exit` (Python).
+/// Makes its runtime exit once the slowpoke loads: `process.exit`
+/// (JavaScript), `os._exit` (Python). (An error nobody handles no longer
+/// ends a runtime, #688.)
 const CRASHER_JS: &str = r#"{
   inject: ['loading', 'probe'],
   apply(ctx) {
     ctx.use('probe').record('crasher: started')
-    setTimeout(() => { Promise.reject(new Error('boom')) }, 200)
+    setTimeout(() => { process.exit(1) }, 200)
   },
 }"#;
 
@@ -621,4 +639,232 @@ async fn python_a_runtime_that_exits_blames_no_other_row() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_runtime_that_exits_blames_no_other_row() {
     a_runtime_that_exits_blames_no_other_row(Language::Bun).await;
+}
+
+// ── An error a row's code leaves unhandled (#688) ───────────────
+
+/// Runs on, and records the first line of every report of an error from an
+/// unknown row the runtime writes to its standard error.
+const WITNESS_JS: &str = r#"{
+  inject: ['probe'],
+  apply(ctx) {
+    const probe = ctx.use('probe')
+    const write = process.stderr.write
+    process.stderr.write = function (chunk, ...rest) {
+      const text = String(chunk)
+      if (text.includes('an unhandled error from an unknown row')) {
+        setImmediate(() => probe.record('reported: ' + text.split('\n')[0]))
+      }
+      return write.call(this, chunk, ...rest)
+    }
+    ctx.effect(() => { process.stderr.write = write })
+    probe.record('witness: started')
+  },
+}"#;
+
+const WITNESS_PY: &str = r#"
+inject = ["probe"]
+
+
+def apply(ctx, config):
+    ctx.use("probe").record("witness: started")
+"#;
+
+/// Leaves a promise rejection (an exception in a task) unhandled once it
+/// has loaded.
+const FAULTY_JS: &str = r#"{
+  inject: ['probe'],
+  apply(ctx) {
+    ctx.use('probe').record('faulty: started')
+    setTimeout(() => { Promise.reject(new Error('boom after load')) }, 300)
+  },
+}"#;
+
+const FAULTY_PY: &str = r#"
+import asyncio
+
+inject = ["probe"]
+
+
+async def boom():
+    await asyncio.sleep(0.3)
+    raise ValueError("boom after load")
+
+
+def apply(ctx, config):
+    ctx.use("probe").record("faulty: started")
+    asyncio.get_running_loop().create_task(boom())
+"#;
+
+/// Leaves an exception unhandled while it loads (a timer's, a task's).
+const EARLY_JS: &str = r#"{
+  inject: ['probe'],
+  async apply(ctx) {
+    ctx.use('probe').record('early: loading')
+    setTimeout(() => { throw new Error('boom while loading') }, 50)
+    await new Promise(resolve => setTimeout(resolve, 10000))
+  },
+}"#;
+
+const EARLY_PY: &str = r#"
+import asyncio
+
+inject = ["probe"]
+
+
+async def boom():
+    raise ValueError("boom while loading")
+
+
+async def apply(ctx, config):
+    ctx.use("probe").record("early: loading")
+    asyncio.get_running_loop().create_task(boom())
+    await asyncio.sleep(10)
+"#;
+
+/// Where the runtime traces rows (Node under `dev`, Python): an error a
+/// row's code leaves unhandled fails that row, saying what and where, also
+/// while it loads; the other rows of the runtime run on, and so does its
+/// process (#688).
+/// guarantee: loader/unhandled-errors
+async fn an_unhandled_error_fails_only_its_row(language: Language) {
+    let dir = tempfile::tempdir().unwrap();
+    for (stem, js, py) in [
+        ("witness", WITNESS_JS, WITNESS_PY),
+        ("faulty", FAULTY_JS, FAULTY_PY),
+        ("early", EARLY_JS, EARLY_PY),
+    ] {
+        language.write(dir.path(), stem, js, py);
+    }
+    let fixture = fixture(language, dir.path()).await;
+    let (loader, probe) = (&fixture.loader, &fixture.probe);
+    let row = |id: &str| json!({ "id": id, "name": language.row_name(dir.path(), id) });
+    let reconcile = tokio::spawn({
+        let loader = loader.clone();
+        let rows = vec![row("witness"), row("faulty"), row("early")];
+        async move { loader.reconcile(layer(rows), None).await }
+    });
+    let early = failure(loader, "early").await;
+    let faulty = failure(loader, "faulty").await;
+    reconcile.await.unwrap().unwrap();
+    let (exception, file) = match language {
+        #[cfg(feature = "python")]
+        Language::Python => ("ValueError", ".py:"),
+        #[allow(unreachable_patterns)]
+        _ => ("Error", ".mjs:"),
+    };
+    // What failed and where: the plugin's own file.
+    for (error, what) in [(&early, "boom while loading"), (&faulty, "boom after load")] {
+        assert!(
+            error.contains(&format!("{exception}: {what}")),
+            "{language:?}: {error}"
+        );
+        assert!(
+            error.contains("(at ") && error.contains(file),
+            "{language:?}: {error}"
+        );
+    }
+    let rejection = match language {
+        #[cfg(feature = "python")]
+        Language::Python => "unhandled exception",
+        #[allow(unreachable_patterns)]
+        _ => "unhandled rejection",
+    };
+    assert!(faulty.contains(rejection), "{language:?}: {faulty}");
+    // The others run on, in a runtime that is up.
+    assert!(probe.has("witness: started"));
+    assert_eq!(row_state(loader, "witness"), Some(FiberState::Active));
+    assert!(
+        matches!(
+            fixture.handle.state(),
+            rutis_bridge::runtime::RuntimeState::Ready(_)
+        ),
+        "{language:?}: the runtime is up"
+    );
+    assert!(
+        !probe
+            .lines()
+            .iter()
+            .any(|line| line.starts_with("reported: ")),
+        "{:?}",
+        probe.lines()
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "node")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_dev_an_unhandled_error_fails_only_its_row() {
+    an_unhandled_error_fails_only_its_row(Language::NodeDev).await;
+}
+
+#[cfg(feature = "python")]
+#[tokio::test(flavor = "multi_thread")]
+async fn python_an_unhandled_error_fails_only_its_row() {
+    an_unhandled_error_fails_only_its_row(Language::Python).await;
+}
+
+/// Where the runtime does not trace rows (Node outside `dev`, Bun): an
+/// error a row's code leaves unhandled is reported as from an unknown row;
+/// no row fails, and the runtime's process goes on (#688).
+/// guarantee: loader/unhandled-errors
+async fn an_unhandled_error_from_an_unknown_row_is_reported(language: Language) {
+    let dir = tempfile::tempdir().unwrap();
+    for (stem, js, py) in [
+        ("witness", WITNESS_JS, WITNESS_PY),
+        ("faulty", FAULTY_JS, FAULTY_PY),
+    ] {
+        language.write(dir.path(), stem, js, py);
+    }
+    let fixture = fixture(language, dir.path()).await;
+    let (loader, probe) = (&fixture.loader, &fixture.probe);
+    let row = |id: &str| json!({ "id": id, "name": language.row_name(dir.path(), id) });
+    loader
+        .reconcile(layer(vec![row("witness"), row("faulty")]), None)
+        .await
+        .unwrap();
+    probe.wait_for("faulty: started").await;
+    let reported = COLD
+        .eventually(
+            || {
+                probe
+                    .lines()
+                    .into_iter()
+                    .find(|line| line.starts_with("reported: "))
+            },
+            "the runtime to report the error",
+        )
+        .await;
+    assert!(
+        reported.contains(": an unhandled error from an unknown row: Error: boom after load"),
+        "{language:?}: {reported}"
+    );
+    // Nothing failed, and the runtime is up.
+    for id in ["witness", "faulty"] {
+        assert_eq!(
+            row_state(loader, id),
+            Some(FiberState::Active),
+            "{language:?}: {id}"
+        );
+    }
+    assert!(
+        matches!(
+            fixture.handle.state(),
+            rutis_bridge::runtime::RuntimeState::Ready(_)
+        ),
+        "{language:?}: the runtime is up"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "node")]
+#[tokio::test(flavor = "multi_thread")]
+async fn node_an_unhandled_error_from_an_unknown_row_is_reported() {
+    an_unhandled_error_from_an_unknown_row_is_reported(Language::Node).await;
+}
+
+#[cfg(all(unix, feature = "bun"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn bun_an_unhandled_error_from_an_unknown_row_is_reported() {
+    an_unhandled_error_from_an_unknown_row_is_reported(Language::Bun).await;
 }

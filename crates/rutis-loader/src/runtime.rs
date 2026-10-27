@@ -984,35 +984,45 @@ impl JsRow {
         }
         // One it provides afterwards fails it the same way: the fiber
         // restarts, and that load fails with why.
-        let refused = self.refused.clone();
-        let restarting = ctx.clone();
         let tasks = tokio::runtime::Handle::current();
-        projection.on_refused(move |why| {
-            let generation = restarting.cancellation_token();
-            if generation.is_cancelled() {
-                return; // already unloading or restarted
-            }
-            refused.record(restarting.instance(), why);
-            let ctx = restarting.clone();
-            let refused = refused.clone();
-            tasks.spawn(async move {
-                let instance = ctx.instance();
-                let view = ctx
-                    .diagnostics()
-                    .plugins
-                    .into_iter()
-                    .find(|plugin| plugin.instance == instance)
-                    .and_then(|plugin| ctx.view(plugin.id));
-                // Gone or restarting anyway: nothing to fail.
-                if let Some(view) = view.filter(|_| !generation.is_cancelled()) {
-                    refused.arm(instance);
-                    let _ = view.restart().await;
-                }
-                refused.forget(instance);
-            });
+        let (refused, restarting, spawner) = (self.refused.clone(), ctx.clone(), tasks.clone());
+        projection.on_refused(move |why| fail_running(&restarting, &refused, &spawner, why));
+        // So does an error its code left unhandled, which the runtime
+        // traced to it (#688): the runtime and its other rows go on.
+        let (refused, restarting) = (self.refused.clone(), ctx.clone());
+        process.on_row_failed(&key, move |why| {
+            fail_running(&restarting, &refused, &tasks, why)
         });
         Ok((key, projection))
     }
+}
+
+/// Fail the running row of `restarting` with `why`: its fiber restarts,
+/// and that apply fails with why ([`Refusals`]). A row a service clash
+/// refused fails so, and one whose code left an error unhandled (#688).
+fn fail_running(restarting: &Ctx, refused: &Refused, tasks: &tokio::runtime::Handle, why: String) {
+    let generation = restarting.cancellation_token();
+    if generation.is_cancelled() {
+        return; // already unloading or restarted
+    }
+    refused.record(restarting.instance(), why);
+    let ctx = restarting.clone();
+    let refused = refused.clone();
+    tasks.spawn(async move {
+        let instance = ctx.instance();
+        let view = ctx
+            .diagnostics()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.instance == instance)
+            .and_then(|plugin| ctx.view(plugin.id));
+        // Gone or restarting anyway: nothing to fail.
+        if let Some(view) = view.filter(|_| !generation.is_cancelled()) {
+            refused.arm(instance);
+            let _ = view.restart().await;
+        }
+        refused.forget(instance);
+    });
 }
 
 /// Mounts the copies of plugin definitions other languages hand over: each

@@ -161,7 +161,7 @@ These are registered in `docs/guarantees.md` (new entries: error formatting, whe
 - Config does not match the schema: recorded on the row whose config is wrong, not on the caller (#669 makes schemas take effect; its errors belong to rows by the rule here).
 - Unhandled rejections / exceptions (#688). A runtime process is shared by several plugins, and how the process handles such errors is the platform's business:
   - Node: in `dev`, `async_hooks` records which row a promise belongs to, and that row fails; in `run` this is off (it adds cost to every promise), and the message is "an unhandled error in runtime node, source unknown".
-  - Python: traced to the row through the task's context (`Task.get_context()` from 3.12; `_context` on 3.10 and 3.11).
+  - Python: traced to the row through the task's context (`Task.get_context()` from 3.12; on 3.10 and 3.11 the C tasks do not show `_context`, so the loop's task factory records the row of each task as it is created).
   - Bun: cannot be traced; always "source unknown".
   - When it cannot be traced, the process does not exit. When a plugin itself calls `process.exit` / `os._exit`, the process exits as usual, and the report names the row that called it.
   - This changes "boundary rule 8" (an uncaught error ends the runtime process) and the handling in Bun's `main.ts`; `docs/guarantees.md` and the "plugins in the same runtime share one process" section of the plugin API guide are rewritten to match.

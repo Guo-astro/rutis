@@ -236,6 +236,17 @@ When the host stops, it unloads every plugin, each cleanup runs once, and then t
 
 Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
 
+## Plugins in one runtime share its process
+
+The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance.
+
+An error a plugin leaves unhandled (an unhandled promise rejection or an exception thrown in a timer in JavaScript, an exception nobody retrieves from a Python task) does not end the process (from 0.18, #688):
+
+- **Where the row is traced, that row fails**, saying what and where, for example `weather: failed: unhandled rejection: Error: no region (at file:///…/weather.mjs:12:9)`; a row still loading fails to load. The other rows of the runtime run on. Python always traces: a row's `apply`, service methods and listeners run with the row in their context, and so do the tasks they start (read from the task's context from 3.12, recorded when the task is created on 3.10 and 3.11). Node traces only under `rutis-host dev`: it records the row each promise belongs to (`async_hooks`), which costs something on every promise.
+- **Where it is not, the source is unknown**: `runtime node: an unhandled error from an unknown row: <stack>`, and no row fails. So it is for Node under `rutis-host run` and always for Bun, and in Python for a task or callback that runs in no row. An exception a Python thread leaves unhandled is printed by Python's own rules; the thread ends and the process goes on. Run under `rutis-host dev` to find the row.
+- **A plugin ending its process** (`process.exit`, `os._exit`): the process ends as before, the rows of the runtime stop and wait for it (see [Lifecycle](#lifecycle)), and the runtime first writes `runtime node: row weather called process.exit(1)`. The row is the one running for Node under `dev` and for Python, else the one whose plugin file is on the stack (named only when exactly one row matches); Bun drops the plugin's frame in a tail call (`() => process.exit(1)`), and then names no row.
+- The Go, Swift and Kotlin runtimes are unchanged: a panic or an uncaught exception follows the language's own rules.
+
 ## Passing values
 
 A plugin and the services it uses may run in different processes. Across processes:

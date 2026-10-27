@@ -88,7 +88,7 @@ export function apply(ctx) {
   ctx.provide('crasher', {
     crash(reason) {
       setTimeout(() => { throw new Error(reason) })
-      return new Promise(() => {})
+      return 'scheduled'
     },
   })
 }
@@ -192,9 +192,9 @@ fn output(host: &Host) -> Vec<String> {
 /// risk: F8 (mounted from rutis.json, a Cordis plugin behaves otherwise
 /// than mounted by a library, or than in Cordis)
 ///
-/// guarantee: boundary/5.8 (an error a Cordis plugin leaves uncaught ends
-/// the Node runtime, its services are withdrawn), host/row-state-lines,
-/// host/runtime-state-lines
+/// guarantee: boundary/5.8 (an error a Cordis plugin leaves uncaught is
+/// reported, under `run` as from an unknown row, and the Node runtime goes
+/// on), host/row-state-lines, host/runtime-state-lines
 #[test]
 fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     let s = Scenario::new("cordis");
@@ -352,31 +352,33 @@ fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     );
 
     // 5. Boundary rule 8 broken: an error a Cordis plugin leaves uncaught
-    //    ends the Node runtime. The error reaches the host's stderr, the
-    //    host says the runtime is down and how it ended, the Node rows and
-    //    the probe using `crasher` wait; nothing is quietly degraded. The
-    //    Python rows go on. (The call in progress is not observed: the
-    //    probe that made it stops as its service goes, and whether its
-    //    call fails before that is not fixed.)
+    //    (#688). Under `run` the runtime does not trace rows: it reports
+    //    the error as from an unknown row and goes on. No row fails or
+    //    waits, the plugin answers again, and the Python rows go on.
     host.skip_written();
-    let _crash = breaker.send("crasher", "crash", json!(["uncaught in crasher"]));
-    host.expect("Error: uncaught in crasher");
-    let down = host.expect("runtime node: down (");
-    assert!(down.contains("exited with"), "{down}");
-    for id in ids.iter().chain(&["persona", "crasher", "breaker"]) {
-        host.expect(&format!("{id}: waiting for "));
+    let mark = host.lines().len();
+    for reason in ["uncaught in crasher", "uncaught again"] {
+        assert_eq!(
+            breaker.call(&mut host, "crasher", "crash", json!([reason])),
+            Ok(json!("scheduled"))
+        );
+        host.expect(&format!(
+            "runtime node: an unhandled error from an unknown row: Error: {reason}"
+        ));
     }
-    breaker.event(&mut host, "stopped");
     assert_eq!(
         reader.call(&mut host, "prompts", "sections", json!([])),
         Ok(phases["restore"]["sections"].clone()),
         "the Python rows go on"
     );
-    let failed: Vec<String> = output(&host)
+    let changed: Vec<String> = output(&host)
         .into_iter()
-        .filter(|line| line.contains(": failed"))
+        .skip(mark)
+        .filter(|line| {
+            line.contains(": failed") || line.contains(": waiting for ") || line.contains(": down")
+        })
         .collect();
-    assert!(failed.is_empty(), "rows failed: {failed:?}");
+    assert!(changed.is_empty(), "rows or runtimes changed: {changed:?}");
 
     // 6. Stopped; nothing is left (the residue checks).
     host.ctrl_c();
