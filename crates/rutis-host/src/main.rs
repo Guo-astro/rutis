@@ -12,7 +12,9 @@
 use std::collections::HashSet;
 
 use rutis_host::{config, errln, host, languages, new, outln, project, status};
-use rutis_loader::report::{Clash, CycleLink, Provider, Requirement, RowStatus, Supply};
+use rutis_loader::report::{
+    Clash, ConfigStatus, CycleLink, Provider, Requirement, RowStatus, Supply,
+};
 
 mod dev;
 mod reload;
@@ -365,6 +367,13 @@ async fn check(args: &[String]) -> Result<(), String> {
         let (id, name) = (&row.id, &row.name);
         match &row.status {
             RowStatus::Disabled => outln!("{id} ({name}): disabled"),
+            // A config that does not match its plugin's schema: one line
+            // per problem.
+            RowStatus::Failed(error) if error.config().is_some() => {
+                for line in error.config().into_iter().flat_map(|config| config.lines()) {
+                    outln!("{id} ({name}): cannot run: {line}");
+                }
+            }
             RowStatus::Failed(error) => {
                 outln!("{id} ({name}): {error}");
                 if let rutis_loader::LoaderError::NotFound { name } = error {
@@ -400,8 +409,20 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
             }
             RowStatus::Checked {
-                resolved, requires, ..
+                resolved,
+                requires,
+                config: checked_config,
+                ..
             } => {
+                // Extra keys in its config: warnings, errors with
+                // `--strict`.
+                let extra: Vec<String> = match checked_config {
+                    ConfigStatus::Checked { warnings } => warnings
+                        .iter()
+                        .map(|warning| format!("config: {}", warning.message))
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 let missing: Vec<&str> = requires
                     .iter()
                     .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
@@ -419,7 +440,8 @@ async fn check(args: &[String]) -> Result<(), String> {
                         )
                     })
                     .collect();
-                match (missing.is_empty(), strict && !undeclared.is_empty()) {
+                let strictly = strict && (!undeclared.is_empty() || !extra.is_empty());
+                match (missing.is_empty(), strictly) {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
                         failed += 1;
@@ -445,10 +467,15 @@ async fn check(args: &[String]) -> Result<(), String> {
                                 names(true).join(", ")
                             ));
                         }
-                        outln!(
-                            "{id} ({name}): cannot run with --strict: {}",
-                            why.join("; ")
-                        )
+                        if !why.is_empty() {
+                            outln!(
+                                "{id} ({name}): cannot run with --strict: {}",
+                                why.join("; ")
+                            );
+                        }
+                        for line in &extra {
+                            outln!("{id} ({name}): cannot run with --strict: {line}");
+                        }
                     }
                     (false, _) => outln!(
                         "{id} ({name}): cannot run: nothing provides {}",
@@ -476,6 +503,15 @@ async fn check(args: &[String]) -> Result<(), String> {
                         did_you_mean(requirement.like.as_deref())
                     );
                 }
+                for line in &extra {
+                    errln!(
+                        "rutis-host: {}: {id}: {line}",
+                        match strict {
+                            true => "error",
+                            false => "warning",
+                        }
+                    );
+                }
                 // A plugin needing a newer plugin API does not resolve: its
                 // runtime refuses it, saying what to upgrade.
                 let meta = &resolved.meta;
@@ -486,6 +522,9 @@ async fn check(args: &[String]) -> Result<(), String> {
                 }
                 if let Some(schema) = &resolved.schema {
                     outln!("  config: {schema}");
+                }
+                if matches!(checked_config, ConfigStatus::NotYet) {
+                    outln!("  config not checked: its schema is known only when it runs");
                 }
                 for requirement in requires {
                     if let Some(line) = supply_line(&requirement.service, &requirement.supply) {

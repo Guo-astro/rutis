@@ -1,0 +1,2429 @@
+{
+  "cases": [
+    {
+      "name": "no config, object root: {} with defaults",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "then": {
+        "config": {
+          "city": "Tromso",
+          "units": "metric"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, [object, null] root: {} with defaults",
+      "schema": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "a": {
+            "default": 1
+          }
+        }
+      },
+      "then": {
+        "config": {
+          "a": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, root with properties and no type: no {} made",
+      "schema": {
+        "properties": {
+          "a": {
+            "default": 1
+          }
+        }
+      },
+      "then": {
+        "config": null
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, the root's default, then its properties' defaults",
+      "schema": {
+        "type": "object",
+        "default": {
+          "city": "Oslo"
+        },
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "units": {
+            "default": "metric"
+          }
+        }
+      },
+      "then": {
+        "config": {
+          "city": "Oslo",
+          "units": "metric"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, root through $ref: an object root",
+      "schema": {
+        "$ref": "#/$defs/Config",
+        "$defs": {
+          "Config": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "default": "Tromso"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "config": {
+          "city": "Tromso"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, string root: config is required",
+      "schema": {
+        "type": "string"
+      },
+      "then": {
+        "errors": [
+          "config: config is required"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, enum root without null: config is required",
+      "schema": {
+        "enum": [
+          "a",
+          "b"
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: config is required"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "no config, root allowing null",
+      "schema": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "then": {
+        "config": null
+      },
+      "warnings": []
+    },
+    {
+      "name": "null is no config",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": null,
+      "then": {
+        "config": {
+          "city": "Tromso",
+          "units": "metric"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "a bare string as config",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": "Oslo",
+      "then": {
+        "errors": [
+          "config: config should be an object, got \"Oslo\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "missing required",
+      "schema": {
+        "type": "object",
+        "required": [
+          "city"
+        ],
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "errors": [
+          "config: city is required"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "required with a default is filled first",
+      "schema": {
+        "type": "object",
+        "required": [
+          "city"
+        ],
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "city": "Tromso"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "wrong types",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string"
+          },
+          "n": {
+            "type": "number"
+          },
+          "i": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "boolean"
+          },
+          "a": {
+            "type": "array"
+          },
+          "o": {
+            "type": "object"
+          },
+          "z": {
+            "type": "null"
+          }
+        }
+      },
+      "config": {
+        "s": 42,
+        "n": "1",
+        "i": 1.5,
+        "b": "yes",
+        "a": {},
+        "o": [
+          1,
+          2
+        ],
+        "z": 0
+      },
+      "then": {
+        "errors": [
+          "config: a should be an array, got an object",
+          "config: b should be a boolean, got \"yes\"",
+          "config: i should be an integer, got 1.5",
+          "config: n should be a number, got \"1\"",
+          "config: o should be an object, got an array of 2",
+          "config: s should be a string, got 42",
+          "config: z should be null, got 0"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "right types pass",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string"
+          },
+          "n": {
+            "type": "number"
+          },
+          "i": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "boolean"
+          },
+          "a": {
+            "type": "array"
+          },
+          "o": {
+            "type": "object"
+          },
+          "z": {
+            "type": "null"
+          }
+        }
+      },
+      "config": {
+        "s": "x",
+        "n": 1.5,
+        "i": 2,
+        "b": false,
+        "a": [],
+        "o": {},
+        "z": null
+      },
+      "then": {
+        "config": {
+          "s": "x",
+          "n": 1.5,
+          "i": 2,
+          "b": false,
+          "a": [],
+          "o": {},
+          "z": null
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "enum of two",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "units": "kelvin"
+      },
+      "then": {
+        "errors": [
+          "config: units should be \"metric\" or \"imperial\", got \"kelvin\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "enum of three",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "enum": [
+              "a",
+              "b",
+              "c"
+            ]
+          }
+        }
+      },
+      "config": {
+        "m": "d"
+      },
+      "then": {
+        "errors": [
+          "config: m should be one of \"a\", \"b\", \"c\", got \"d\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "enum of one",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "enum": [
+              3
+            ]
+          }
+        }
+      },
+      "config": {
+        "m": 4
+      },
+      "then": {
+        "errors": [
+          "config: m should be 3, got 4"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "enum compares objects by JSON equality, not key order",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "enum": [
+              {
+                "a": 1,
+                "b": [
+                  1,
+                  2
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "m": {
+          "b": [
+            1,
+            2
+          ],
+          "a": 1
+        }
+      },
+      "then": {
+        "config": {
+          "m": {
+            "b": [
+              1,
+              2
+            ],
+            "a": 1
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "const",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "const": "fast"
+          }
+        }
+      },
+      "config": {
+        "mode": "slow"
+      },
+      "then": {
+        "errors": [
+          "config: mode should be \"fast\", got \"slow\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "minimum, equal passes",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "days": 1
+      },
+      "then": {
+        "config": {
+          "city": "Tromso",
+          "units": "metric",
+          "days": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "maximum, equal passes",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "days": 14
+      },
+      "then": {
+        "config": {
+          "city": "Tromso",
+          "units": "metric",
+          "days": 14
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "below minimum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "days": 0
+      },
+      "then": {
+        "errors": [
+          "config: days should be at least 1, got 0"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "above maximum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "days": 30
+      },
+      "then": {
+        "errors": [
+          "config: days should be at most 14, got 30"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "bounds written as numbers",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "r": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 2.0
+          }
+        }
+      },
+      "config": {
+        "r": 3
+      },
+      "then": {
+        "errors": [
+          "config: r should be at most 2, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "nested object there: its defaults filled",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "object",
+            "properties": {
+              "lat": {
+                "type": "number",
+                "default": 0
+              },
+              "lon": {
+                "type": "number",
+                "default": 0
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "home": {
+          "lat": 5
+        }
+      },
+      "then": {
+        "config": {
+          "home": {
+            "lat": 5,
+            "lon": 0
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "nested object absent: none made",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "object",
+            "properties": {
+              "lat": {
+                "type": "number",
+                "default": 0
+              },
+              "lon": {
+                "type": "number",
+                "default": 0
+              }
+            }
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {}
+      },
+      "warnings": []
+    },
+    {
+      "name": "nested object with default {}: made and filled",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "object",
+            "properties": {
+              "lat": {
+                "type": "number",
+                "default": 0
+              },
+              "lon": {
+                "type": "number",
+                "default": 0
+              }
+            },
+            "default": {}
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "home": {
+            "lat": 0,
+            "lon": 0
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "defaults filled into array items",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "n": {
+                  "default": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "list": [
+          {},
+          {
+            "n": 2
+          }
+        ]
+      },
+      "then": {
+        "config": {
+          "list": [
+            {
+              "n": 1
+            },
+            {
+              "n": 2
+            }
+          ]
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "defaults filled into dictionary values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "hosts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "port": {
+                  "default": 80
+                }
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "hosts": {
+          "a": {}
+        }
+      },
+      "then": {
+        "config": {
+          "hosts": {
+            "a": {
+              "port": 80
+            }
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "defaults follow $ref and allOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "$ref": "#/$defs/A"
+          }
+        },
+        "allOf": [
+          {
+            "properties": {
+              "b": {
+                "type": "string",
+                "default": "from allOf"
+              }
+            }
+          }
+        ],
+        "$defs": {
+          "A": {
+            "type": "string",
+            "default": "from $ref"
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "a": "from $ref",
+          "b": "from allOf"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "a default beside $ref comes first",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "$ref": "#/$defs/A",
+            "default": "beside"
+          }
+        },
+        "$defs": {
+          "A": {
+            "type": "string",
+            "default": "target"
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "a": "beside"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "defaults do not follow anyOf or oneOf",
+      "schema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "properties": {
+              "c": {
+                "default": 1
+              }
+            }
+          }
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "d": {
+                "default": 2
+              }
+            }
+          }
+        ]
+      },
+      "config": {},
+      "then": {
+        "config": {}
+      },
+      "warnings": []
+    },
+    {
+      "name": "an array item wrong",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "cities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "config": {
+        "cities": [
+          "a",
+          "b",
+          3
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: cities[2] should be a string, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "an object in an array",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "cities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        }
+      },
+      "config": {
+        "cities": [
+          {
+            "name": "a"
+          },
+          {}
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: cities[1].name is required"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a dictionary",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "config": {
+        "headers": {
+          "x-api": "k",
+          "retries": 3
+        }
+      },
+      "then": {
+        "errors": [
+          "config: headers.retries should be a string, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a dictionary's keys are not extra",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "config": {
+        "headers": {
+          "accept": "a"
+        }
+      },
+      "then": {
+        "config": {
+          "headers": {
+            "accept": "a"
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "an extra key: a warning, kept as it is",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "default": "Tromso"
+          },
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "metric"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 14
+          }
+        }
+      },
+      "config": {
+        "cty": "Oslo"
+      },
+      "then": {
+        "config": {
+          "city": "Tromso",
+          "units": "metric",
+          "cty": "Oslo"
+        }
+      },
+      "warnings": [
+        "config: cty is not a config key (did you mean city?)"
+      ]
+    },
+    {
+      "name": "keys of 2 scalars get no suggestion",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ab": {}
+        }
+      },
+      "config": {
+        "ac": 1
+      },
+      "then": {
+        "config": {
+          "ac": 1
+        }
+      },
+      "warnings": [
+        "config: ac is not a config key"
+      ]
+    },
+    {
+      "name": "keys of 3-6 scalars: distance 2 gets no suggestion",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "units": {}
+        }
+      },
+      "config": {
+        "unti": 1
+      },
+      "then": {
+        "config": {
+          "unti": 1
+        }
+      },
+      "warnings": [
+        "config: unti is not a config key"
+      ]
+    },
+    {
+      "name": "keys of 3-6 scalars: distance 1 is suggested",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "timeout": {}
+        }
+      },
+      "config": {
+        "timout": 1
+      },
+      "then": {
+        "config": {
+          "timout": 1
+        }
+      },
+      "warnings": [
+        "config: timout is not a config key (did you mean timeout?)"
+      ]
+    },
+    {
+      "name": "keys of 7 or more scalars: distance 2 is suggested",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "interval": {}
+        }
+      },
+      "config": {
+        "interrvall": 1
+      },
+      "then": {
+        "config": {
+          "interrvall": 1
+        }
+      },
+      "warnings": [
+        "config: interrvall is not a config key (did you mean interval?)"
+      ]
+    },
+    {
+      "name": "keys of 7 or more scalars: distance 3 gets no suggestion",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "interval": {}
+        }
+      },
+      "config": {
+        "interrvalll": 1
+      },
+      "then": {
+        "config": {
+          "interrvalll": 1
+        }
+      },
+      "warnings": [
+        "config: interrvalll is not a config key"
+      ]
+    },
+    {
+      "name": "a swap of neighbours is one edit",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {}
+        }
+      },
+      "config": {
+        "ctiy": 1
+      },
+      "then": {
+        "config": {
+          "ctiy": 1
+        }
+      },
+      "warnings": [
+        "config: ctiy is not a config key (did you mean city?)"
+      ]
+    },
+    {
+      "name": "ties go to the smallest by code point",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "cat": {},
+          "car": {},
+          "caT": {}
+        }
+      },
+      "config": {
+        "cax": 1
+      },
+      "then": {
+        "config": {
+          "cax": 1
+        }
+      },
+      "warnings": [
+        "config: cax is not a config key (did you mean caT?)"
+      ]
+    },
+    {
+      "name": "lengths are counted in scalar values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "日本語": {}
+        }
+      },
+      "config": {
+        "日本": 1
+      },
+      "then": {
+        "config": {
+          "日本": 1
+        }
+      },
+      "warnings": [
+        "config: config[\"日本\"] is not a config key"
+      ]
+    },
+    {
+      "name": "several extra keys sorted",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "city": {}
+        }
+      },
+      "config": {
+        "zz": 1,
+        "cty": 2
+      },
+      "then": {
+        "config": {
+          "zz": 1,
+          "cty": 2
+        }
+      },
+      "warnings": [
+        "config: cty is not a config key (did you mean city?)",
+        "config: zz is not a config key"
+      ]
+    },
+    {
+      "name": "an object without properties warns of nothing",
+      "schema": {
+        "type": "object"
+      },
+      "config": {
+        "anything": 1
+      },
+      "then": {
+        "config": {
+          "anything": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "extra keys in nested objects",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "object",
+            "properties": {
+              "lat": {}
+            }
+          }
+        }
+      },
+      "config": {
+        "home": {
+          "lat": 1,
+          "lot": 2
+        }
+      },
+      "then": {
+        "config": {
+          "home": {
+            "lat": 1,
+            "lot": 2
+          }
+        }
+      },
+      "warnings": [
+        "config: home.lot is not a config key (did you mean lat?)"
+      ]
+    },
+    {
+      "name": "additionalProperties false: an error",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "cty": "x"
+      },
+      "then": {
+        "errors": [
+          "config: cty is not a config key (did you mean city?)"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "anyOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "proxy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "proxy": 3
+      },
+      "then": {
+        "errors": [
+          "config: proxy should be a string or an object, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "anyOf passes on one branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "proxy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "proxy": "p"
+      },
+      "then": {
+        "config": {
+          "proxy": "p"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "type [string, null]",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "config": {
+        "name": 3
+      },
+      "then": {
+        "errors": [
+          "config: name should be a string or null, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "type [string, null] takes null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "config": {
+        "name": null
+      },
+      "then": {
+        "config": {
+          "name": null
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "three types",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": null
+      },
+      "then": {
+        "errors": [
+          "config: v should be one of a string, a number, a boolean, got null"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "how branches are written: $ref, enum, const, neither",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Fast"
+              },
+              {
+                "const": "slow"
+              },
+              {
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "const": "slow"
+              }
+            ]
+          }
+        },
+        "$defs": {
+          "Fast": {
+            "enum": [
+              "fast",
+              "faster"
+            ]
+          }
+        }
+      },
+      "config": {
+        "mode": {
+          "a": 1
+        }
+      },
+      "then": {
+        "errors": [
+          "config: mode should be one of \"fast\", \"faster\", \"slow\", another accepted value, got an object"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a branch through allOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "allOf": [
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": "x"
+      },
+      "then": {
+        "errors": [
+          "config: v should be an integer or null, got \"x\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a value matching two oneOf branches passes",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "v": 3
+      },
+      "then": {
+        "config": {
+          "v": 3
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "errors inside branches are not listed",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "host"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "p": {}
+      },
+      "then": {
+        "errors": [
+          "config: p should be an object or a string, got an object"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "$ref to $defs and to definitions",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "$ref": "#/$defs/S"
+          },
+          "b": {
+            "$ref": "#/definitions/N"
+          }
+        },
+        "$defs": {
+          "S": {
+            "type": "string"
+          }
+        },
+        "definitions": {
+          "N": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "a": 1,
+        "b": "x"
+      },
+      "then": {
+        "errors": [
+          "config: a should be a string, got 1",
+          "config: b should be a number, got \"x\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "recursive $ref",
+      "schema": {
+        "$ref": "#/$defs/Node",
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Node"
+                }
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "name": "a",
+        "children": [
+          {
+            "name": "b",
+            "children": [
+              {
+                "name": 3
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: children[0].children[0].name should be a string, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "keywords not checked: the value passes, no warning",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "pattern": "^a",
+            "minLength": 5,
+            "format": "email"
+          },
+          "l": {
+            "type": "array",
+            "uniqueItems": true,
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "s": "b",
+        "l": [
+          1,
+          1
+        ]
+      },
+      "then": {
+        "config": {
+          "s": "b",
+          "l": [
+            1,
+            1
+          ]
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "order: code points of keys, parents before children",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "b": {
+            "type": "string"
+          },
+          "B": {
+            "type": "string"
+          },
+          "a": {
+            "type": "object",
+            "required": [
+              "y"
+            ],
+            "properties": {
+              "x": {
+                "type": "string"
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "z"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "b": 1,
+        "B": 1,
+        "a": {
+          "x": 1
+        }
+      },
+      "then": {
+        "errors": [
+          "config: B should be a string, got 1",
+          "config: a should be another accepted value, got an object",
+          "config: a.x should be a string, got 1",
+          "config: a.y is required",
+          "config: b should be a string, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "order at one path: enum, bounds, anyOf, then allOf members",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "enum": [
+              1,
+              2
+            ],
+            "minimum": 5,
+            "anyOf": [
+              {
+                "const": 7
+              }
+            ],
+            "allOf": [
+              {
+                "maximum": 0
+              },
+              {
+                "const": 8
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "n": 3
+      },
+      "then": {
+        "errors": [
+          "config: n should be 1 or 2, got 3",
+          "config: n should be at least 5, got 3",
+          "config: n should be 7, got 3",
+          "config: n should be at most 0, got 3",
+          "config: n should be 8, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "indices sort as numbers",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "l": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "config": {
+        "l": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: l[0] should be a string, got 0",
+          "config: l[1] should be a string, got 1",
+          "config: l[2] should be a string, got 2",
+          "config: l[3] should be a string, got 3",
+          "config: l[4] should be a string, got 4",
+          "config: l[5] should be a string, got 5",
+          "config: l[6] should be a string, got 6",
+          "config: l[7] should be a string, got 7",
+          "config: l[8] should be a string, got 8",
+          "config: l[9] should be a string, got 9",
+          "config: l[10] should be a string, got 10"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "the same problem from two members once",
+      "schema": {
+        "type": "object",
+        "allOf": [
+          {
+            "required": [
+              "city"
+            ]
+          },
+          {
+            "required": [
+              "city"
+            ]
+          }
+        ]
+      },
+      "config": {},
+      "then": {
+        "errors": [
+          "config: city is required"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "more than 20 problems",
+      "schema": {
+        "type": "object",
+        "required": [
+          "k01",
+          "k02",
+          "k03",
+          "k04",
+          "k05",
+          "k06",
+          "k07",
+          "k08",
+          "k09",
+          "k10",
+          "k11",
+          "k12",
+          "k13",
+          "k14",
+          "k15",
+          "k16",
+          "k17",
+          "k18",
+          "k19",
+          "k20",
+          "k21",
+          "k22",
+          "k23"
+        ]
+      },
+      "config": {},
+      "then": {
+        "errors": [
+          "config: k01 is required",
+          "config: k02 is required",
+          "config: k03 is required",
+          "config: k04 is required",
+          "config: k05 is required",
+          "config: k06 is required",
+          "config: k07 is required",
+          "config: k08 is required",
+          "config: k09 is required",
+          "config: k10 is required",
+          "config: k11 is required",
+          "config: k12 is required",
+          "config: k13 is required",
+          "config: k14 is required",
+          "config: k15 is required",
+          "config: k16 is required",
+          "config: k17 is required",
+          "config: k18 is required",
+          "config: k19 is required",
+          "config: k20 is required",
+          "config: and 3 more problems"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a default that does not match its schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "units": {
+            "enum": [
+              "metric",
+              "imperial"
+            ],
+            "default": "kelvin"
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "errors": [
+          "config: units should be \"metric\" or \"imperial\", got \"kelvin\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "paths with keys that are not identifiers",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "headers": {
+            "type": "object",
+            "properties": {
+              "x-api": {
+                "type": "string"
+              }
+            }
+          },
+          "1st": {
+            "type": "string"
+          },
+          "_ok9": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "headers": {
+          "x-api": 1
+        },
+        "1st": 2,
+        "_ok9": 3
+      },
+      "then": {
+        "errors": [
+          "config: config[\"1st\"] should be a string, got 2",
+          "config: _ok9 should be a string, got 3",
+          "config: headers[\"x-api\"] should be a string, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "how got is written",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "number"
+          },
+          "e": {
+            "type": "number"
+          },
+          "f": {
+            "type": "number"
+          },
+          "f40": {
+            "type": "number"
+          },
+          "g": {
+            "type": "number"
+          },
+          "h": {
+            "type": "string"
+          },
+          "i": {
+            "type": "string"
+          },
+          "j": {
+            "type": "string"
+          },
+          "k": {
+            "type": "string"
+          },
+          "l": {
+            "type": "string"
+          },
+          "m": {
+            "type": "string"
+          },
+          "o": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "a": 1.0,
+        "b": 1.5,
+        "c": 1e+21,
+        "d": "q\"b\\s\nt\u0001\t",
+        "e": "日本語",
+        "f": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "f40": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "g": "日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日",
+        "h": {
+          "k": 1
+        },
+        "i": [
+          1,
+          2,
+          3
+        ],
+        "j": true,
+        "k": null,
+        "l": 1e-07,
+        "m": -2.5,
+        "o": "é\u001f"
+      },
+      "then": {
+        "errors": [
+          "config: a should be a string, got 1",
+          "config: b should be a string, got 1.5",
+          "config: c should be a string, got 1e+21",
+          "config: d should be a number, got \"q\\\"b\\\\s\\nt\\u0001\\t\"",
+          "config: e should be a number, got \"日本語\"",
+          "config: f should be a number, got \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…\"",
+          "config: f40 should be a number, got \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+          "config: g should be a number, got \"日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日…\"",
+          "config: h should be a string, got an object",
+          "config: i should be a string, got an array of 3",
+          "config: j should be a string, got true",
+          "config: k should be a string, got null",
+          "config: l should be a string, got 1e-7",
+          "config: m should be a string, got -2.5",
+          "config: o should be a number, got \"é\\u001f\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "escapes count before cutting",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "number"
+          }
+        }
+      },
+      "config": {
+        "q": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\""
+      },
+      "then": {
+        "errors": [
+          "config: q should be a number, got \"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"…\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "defaults are copies",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "opts": {
+            "type": "object",
+            "default": {
+              "tags": [
+                "a"
+              ],
+              "inner": {
+                "n": 1
+              }
+            }
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "opts": {
+            "tags": [
+              "a"
+            ],
+            "inner": {
+              "n": 1
+            }
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "known keys include properties through $ref and allOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/B"
+          }
+        ],
+        "$defs": {
+          "B": {
+            "properties": {
+              "bravo": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "a": "x",
+        "bravo": "y",
+        "brovo": "z"
+      },
+      "then": {
+        "config": {
+          "a": "x",
+          "bravo": "y",
+          "brovo": "z"
+        }
+      },
+      "warnings": [
+        "config: brovo is not a config key (did you mean bravo?)"
+      ]
+    },
+    {
+      "name": "additionalProperties false through $ref",
+      "schema": {
+        "$ref": "#/$defs/C",
+        "$defs": {
+          "C": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "a": {}
+            }
+          }
+        }
+      },
+      "config": {
+        "a": 1,
+        "b": 2
+      },
+      "then": {
+        "errors": [
+          "config: b is not a config key"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "objects inside anyOf / oneOf branches get no warnings",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "p": {
+          "x": "1",
+          "y": 2
+        }
+      },
+      "then": {
+        "config": {
+          "p": {
+            "x": "1",
+            "y": 2
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "additionalProperties false inside a branch fails the branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "x": {}
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "p": {
+          "y": 1
+        }
+      },
+      "then": {
+        "errors": [
+          "config: p should be an object or a string, got an object"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "1.0 passing integer is 1",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer"
+          }
+        }
+      },
+      "config": {
+        "days": 1.0
+      },
+      "then": {
+        "config": {
+          "days": 1
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "1.0 passing integer in a branch is 1",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "days": 2.0
+      },
+      "then": {
+        "config": {
+          "days": 2
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "a wrong type hides enum and bounds",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "enum": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      "config": {
+        "days": "x"
+      },
+      "then": {
+        "errors": [
+          "config: days should be an integer, got \"x\""
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a wrong type hides children",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "object",
+            "required": [
+              "lat"
+            ],
+            "properties": {
+              "lat": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "home": [
+          1
+        ]
+      },
+      "then": {
+        "errors": [
+          "config: home should be an object, got an array of 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a wrong type through $ref hides the rest",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "u": {
+            "$ref": "#/$defs/U",
+            "enum": [
+              "a"
+            ]
+          }
+        },
+        "$defs": {
+          "U": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "u": 3
+      },
+      "then": {
+        "errors": [
+          "config: u should be a string, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "the design's example: several problems at once",
+      "schema": {
+        "type": "object",
+        "required": [
+          "city"
+        ],
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "home": {
+            "type": "object",
+            "properties": {
+              "lat": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "config": {
+        "days": 1.5,
+        "home": {
+          "lat": "north"
+        }
+      },
+      "then": {
+        "errors": [
+          "config: city is required",
+          "config: days should be an integer, got 1.5",
+          "config: home.lat should be a number, got \"north\""
+        ]
+      },
+      "warnings": []
+    }
+  ]
+}
