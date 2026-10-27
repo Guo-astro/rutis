@@ -319,10 +319,7 @@ impl Host {
             // One runtime over a link of its own, which the host makes as
             // a link row's (`docs/design-remote-runtime-consistency-2026-10-26.md`
             // §四); else a link row's, or an embedding's, session.
-            let id = || {
-                PeerId::new(remote.name.clone())
-                    .map_err(|error| format!("remote runtime {}: {error}", remote.name))
-            };
+            let id = || link_peer(&remote.name);
             match remote.connect()? {
                 Connect::Dial(address) => linked.push((
                     remote.name.clone(),
