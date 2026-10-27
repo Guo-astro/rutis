@@ -25,6 +25,7 @@ import threading
 from http import HTTPStatus
 from urllib.parse import urlsplit
 
+from ._output import say
 from .dialing import AUTH_REJECTED, INCOMPATIBLE, RETRYABLE, DialError
 
 try:
@@ -84,7 +85,7 @@ class _Quiet(logging.Handler):
             text = f"rutis: websockets: {record.getMessage()}"
             if record.exc_info:
                 text += "\n" + logging.Formatter().formatException(record.exc_info)
-            print(text, file=sys.stderr, flush=True)
+            say(text)
         except Exception:  # noqa: BLE001 - as logging.Handler.handleError
             self.handleError(record)
 
@@ -211,7 +212,7 @@ def protocol_refusal(ours: str, offered: list[str]) -> str:
 
 
 def _print_address(address: str) -> None:
-    print(f"rutis: listening on {address}", file=sys.stderr, flush=True)
+    say(f"rutis: listening on {address}")
 
 
 class Listener:

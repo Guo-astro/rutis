@@ -51,6 +51,9 @@ usage:
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)
+    run and dev: --prefix-output, --no-prefix-output
+                                              start each line a plugin writes with its
+                                              row's name ([weather]); on in dev, off in run
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
@@ -255,18 +258,21 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
     let (watch, args) = reload::watch_flag(args);
+    // Plugins' output as they write it, unless asked (#678).
+    let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
     let path = config_file(&args);
     // From the start: SIGUSR1 before the host runs reloads once it does,
     // instead of ending it.
     let mut triggers = reload::Triggers::listen(&path, watch)?;
-    let config = config::HostConfig::read(&path)?;
+    let mut config = config::HostConfig::read(&path)?;
+    config.runtimes.prefix_output = prefix;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
     let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
-        outln!("{line}");
+        errln!("{line}");
     }
     let started = host.start_rows(config.rows());
     let ended = match start(&host, started, deadline, &mut signals).await {
@@ -290,6 +296,22 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
         Started::Failed(stopped) => return Ok(stopped.failed()),
     };
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
+}
+
+/// `--prefix-output` and `--no-prefix-output` taken out of `args`: whether
+/// each line a plugin writes starts with its row's name (the last of them
+/// given, else `default`), and the rest.
+fn prefix_flag(args: Vec<String>, default: bool) -> (bool, Vec<String>) {
+    let mut prefix = default;
+    let mut rest = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.as_str() {
+            "--prefix-output" => prefix = true,
+            "--no-prefix-output" => prefix = false,
+            _ => rest.push(arg),
+        }
+    }
+    (prefix, rest)
 }
 
 /// `rutis-host go add <module>@<version> [rutis.json]`: `go install` the

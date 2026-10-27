@@ -330,17 +330,23 @@ pub(crate) fn command(
     command
         .args(&launcher.args)
         .envs(launcher.env.iter().map(|(name, value)| (name, value)))
-        .stdin(launcher.stdin.process(None).map_err(cannot)?)
+        .stdin(launcher.stdin.process(None, None).map_err(cannot)?)
         .stdout(
             launcher
                 .stdout
-                .process(Some(OutputStream::Stdout))
+                .process(
+                    Some(OutputStream::Stdout),
+                    launcher.output_prefix.as_deref(),
+                )
                 .map_err(cannot)?,
         )
         .stderr(
             launcher
                 .stderr
-                .process(Some(OutputStream::Stderr))
+                .process(
+                    Some(OutputStream::Stderr),
+                    launcher.output_prefix.as_deref(),
+                )
                 .map_err(cannot)?,
         );
     // Without a directory of its own, it runs where the application does.

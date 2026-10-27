@@ -99,6 +99,8 @@ Each language's plugins go where that language's runtime finds them, and a row n
 
 The output of `run` and `dev` is read by people, scripts and tests. Its format is as follows; changes to it are treated as incompatible changes.
 
+These status lines all go to standard error (from 0.18; standard output before), and plugins' own output goes to the stream they write it to (see [Output](#output)): `rutis-host run > plugins.log` keeps only what plugins write to standard output.
+
 At start, each [`listen`](#listen) listener prints once the address it is actually bound to (with port 0, the port the system picked):
 
 ```
@@ -338,7 +340,26 @@ When stopping does not finish by the deadline (see [Stopping and exit status](#s
 
 ## Output
 
-The standard output and standard error of the runtime processes (Node, Bun, Python, Go, Swift) are not written straight onto `rutis-host`'s: `rutis-host` reads them through pipes and writes them a whole line at a time — a line a plugin writes to stdout comes out on `rutis-host`'s stdout, one written to stderr on its stderr, unchanged, with no prefix. `rutis-host` writes its own status lines a whole line at a time too. So a plugin's line and a line of `rutis-host`'s, or lines of two runtimes, never run into each other, also when the plugin writes a line in pieces (Python's `print` writes the text, then the newline) and when stdout and stderr are the same file (`2>&1`).
+The standard output and standard error of the runtime processes (Node, Bun, Python, Go, Swift) are not written straight onto `rutis-host`'s: `rutis-host` reads them through pipes and writes them a whole line at a time — a line a plugin writes to stdout comes out on `rutis-host`'s stdout, one written to stderr on its stderr. `rutis-host` writes its own status lines to stderr, a whole line at a time too. So a plugin's line and a line of `rutis-host`'s, or lines of two runtimes, never run into each other, also when the plugin writes a line in pieces (Python's `print` writes the text, then the newline) and when stdout and stderr are the same file (`2>&1`).
+
+Each line a plugin writes can start with the name of the row that wrote it (from 0.18, #678):
+
+```text
+[weather] fetching forecast for Berlin
+[go-net-probe] probing 10.0.0.1
+```
+
+| | Default | Switch |
+| --- | --- | --- |
+| `rutis-host dev` | on | `--no-prefix-output` |
+| `rutis-host run` | off: plugins' output as written | `--prefix-output` |
+
+- The rows of a Node, Bun or Python runtime share its process, so the runtime adds the name of the row running; output whose row cannot be told (a thread a Python plugin started itself, code that runs in no row) starts with the runtime's name (`[py] `). Output written to the file descriptor itself (a child process a plugin started, `os.write`, a native module) has none. The rules are in the [plugin API](plugin-api.en.md#output).
+- Go and Swift runtimes run one plugin per process: `rutis-host` adds the runtime's name as it reads their output (`[go-<binary>] `, `[swift-<binary>] `); the SDKs are unchanged.
+- `rutis-host`'s own lines and the runtimes' own lines (`runtime py: …`) have none.
+- Under `dev --debug` the Python runtime reads this terminal (pdb): its output does not go through a pipe, and has no name and is not held until a line ends; Node, Bun and Go are prefixed as usual.
+
+In the Node, Bun and Python runtimes, when a service method holds the runtime for 5 seconds in one go, the runtime says once on stderr which row's which method it is, that the other rows wait, and what to change (`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`, see the [plugin API](plugin-api.en.md#plugins-in-one-runtime-share-its-process)). It is only said, never interrupted; under `dev --debug` nothing is said.
 
 - A line comes out when its newline comes; nothing is flushed after a time: a prompt without a newline, or a progress bar redrawn with `\r`, shows when the line ends. When a runtime ends, a last line without a newline comes out as a line of its own.
 - A line longer than 64 KiB without a newline comes out in pieces.

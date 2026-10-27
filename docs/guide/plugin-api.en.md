@@ -240,12 +240,41 @@ Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `ruti
 
 The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance.
 
+When a service method holds the runtime for 5 seconds in one go (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
+
+```text
+runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it blocks the event loop (a def method, or a blocking call in an async def one); make it async def and await what it waits for (asyncio.sleep, an async client, asyncio.to_thread for a blocking call), and it will not hold the runtime
+```
+
+In Python every stretch of a method is watched: a whole `def` method, and each stretch of an `async def` method between two `await`s (a `time.sleep` or `requests.get` in it, say); make it `async def` and `await` what it waits for (`asyncio.sleep`, an async client, `asyncio.to_thread` for a blocking call). In Node and Bun, the stretch from a method's start to its first `await` is watched (`readFileSync`, `execSync`, a busy loop), not blocking after an `await`; use asynchronous calls and `await` them, or move the computation to a worker thread. Blocking in `apply` or a listener is not said. It is said once and only said: the method runs on to its end. Under `rutis-host dev --debug` nothing is said (a runtime stopped at a breakpoint may stay there as long as you like). The synchronous methods of Go, Swift and Kotlin do not hold the whole runtime, and have no such line.
+
 An error a plugin leaves unhandled (an unhandled promise rejection or an exception thrown in a timer in JavaScript, an exception nobody retrieves from a Python task) does not end the process (from 0.18, #688):
 
 - **Where the row is traced, that row fails**, saying what and where, for example `weather: failed: unhandled rejection: Error: no region`, with the plugin's own frames under it (`at … (file:///…/weather.mjs:12:9)`); the error's own `code` and `data` go with it. A row still loading fails to load (`failed in apply: unhandled rejection: …`). The other rows of the runtime run on. A row's `apply`, service methods, listeners and the functions it hands over run with the row in their context, and so do the tasks and promises they start. When a row calls a service of another row of the same runtime directly and the innermost plugin file on the error's stack is the other row's, which of the two left it unhandled cannot be told (the stack says where it was thrown, not who dropped it): it is reported as from an unknown row, and no row is charged. Python always traces so (read from the task's context from 3.12, recorded when the task is created on 3.10 and 3.11); an exception in a task the plugin still holds is not unhandled, and is not reported. Node traces only under `rutis-host dev`: it records the row each promise belongs to (`async_hooks`), which costs something on every promise.
 - **Where it is not, the source is unknown**: `runtime node: an unhandled error from an unknown row: <stack>` (only the plugin's own frames, or the whole stack when none is the plugin's), and no row fails. So it is for Node under `rutis-host run` and always for Bun, and in Python for a task or callback that runs in no row. An exception a Python thread leaves unhandled is printed by Python's own rules; the thread ends and the process goes on. Run under `rutis-host dev` to find the row.
 - **A plugin ending its process** (`process.exit`, `os._exit`): the process ends as before, the rows of the runtime stop and wait for it (see [Lifecycle](#lifecycle)), and the runtime first writes `runtime node: row weather called process.exit(1)`. The row is the one running for Node under `dev` and for Python, else the one whose plugin file is on the stack (named only when exactly one row matches); Bun drops the plugin's frame in a tail call (`() => process.exit(1)`), and then names no row.
 - The Go, Swift and Kotlin runtimes are unchanged: a panic or an uncaught exception follows the language's own rules.
+
+## Output
+
+What a plugin writes to standard output and standard error (`console.log`, `print`, `fmt.Println`) goes to the host's terminal, each to its own stream. Under `rutis-host dev` each line starts with the name of the row that wrote it (from 0.18, #678):
+
+```text
+[weather] fetching forecast for Berlin
+```
+
+- The rows of a Node, Bun or Python runtime share its process, so the runtime adds the name of the row running: a row's `apply` and cleanups, its service methods, its listeners and the functions it hands over, and the asynchronous work they start (the async context in Node and Bun, contextvars in Python). Output whose row cannot be told starts with the runtime's name (`[py] `): a thread a Python plugin started itself, and code that runs in no row. What is written to the file descriptor itself (a child process, `os.write`, a native module) the runtime does not see; it is passed on as it is.
+- Go and Swift run one plugin per process: the host adds the runtime's name as it reads the output (`[go-weather] `); the SDKs are unchanged.
+- Bun's `console` writes to the file descriptors itself: under the prefix the runtime puts in a `console` that writes through `process.stdout` / `process.stderr`, which prints objects in Node's format on one line (`{ a: 1 }`), not Bun's usual multi-line one.
+- `rutis-host run` adds nothing by default (plugins' output in production stays as written); `--prefix-output` / `--no-prefix-output` turn it on or off, see [rutis-host](rutis-host.en.md#output).
+
+Python's `logging` is unchanged: by default it shows WARNING and above, which is Python's own rule. To see INFO, configure logging in the plugin:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+```
 
 ## Passing values
 
@@ -409,6 +438,21 @@ The check covers runtimes that declare the `sync-wait` capability (the Node, Pyt
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 
 An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too. This holds on every supported Python (asyncio's own eager start from 3.12, rutis's on 3.10 and 3.11).
+
+## How long a call waits
+
+rutis sets no time limit on a call, and cancels no call for either side: how long a call may take is the caller's business. To limit it, use the caller's own language; the cancellation reaches the far end (see [Cancellation](#cancellation)):
+
+| Language | How |
+| --- | --- |
+| Python | `await asyncio.wait_for(weather.tomorrow(), timeout=5)` |
+| Go | `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`, passing `ctx` to the call |
+| Swift | call in a `Task`, and cancel the `Task` when the time is up |
+| Kotlin | `withTimeout(5_000) { weather.tomorrow() }` |
+| Rust | `tokio::time::timeout(Duration::from_secs(5), weather.tomorrow())` (dropping the future cancels it) |
+| TypeScript | `Promise.race` with a timer; the far end is not cancelled, as in plain JS (a promise cannot be cancelled) |
+
+To see how long a call has been waiting, use `rutis-host status` (it lists the calls in progress).
 
 ## Cancellation
 

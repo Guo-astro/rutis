@@ -54,20 +54,23 @@ pub enum Stdio {
     /// [`MAX_LINE`](super::MAX_LINE) is passed on in pieces. The process
     /// does not see a terminal. A host waits for what is left with
     /// [`output_ended`](super::output_ended) before it exits. As standard
-    /// input, it is [`Stdio::Null`].
+    /// input, it is [`Stdio::Null`]. With an output prefix
+    /// ([`Spawn::output_prefix`]), each line is passed on after it.
     Lines,
 }
 
 impl Stdio {
-    /// The stream to give the process as its `stream` (`None`: its input).
+    /// The stream to give the process as its `stream` (`None`: its input),
+    /// each line of [`Stdio::Lines`] passed on after `prefix`, if any.
     pub(crate) fn process(
         self,
         stream: Option<super::OutputStream>,
+        prefix: Option<&str>,
     ) -> std::io::Result<std::process::Stdio> {
         Ok(match (self, stream) {
             (Stdio::Null, _) | (Stdio::Lines, None) => std::process::Stdio::null(),
             (Stdio::Inherit, _) => std::process::Stdio::inherit(),
-            (Stdio::Lines, Some(stream)) => super::output::pipe(stream)?,
+            (Stdio::Lines, Some(stream)) => super::output::pipe(stream, prefix)?,
         })
     }
 }
@@ -95,6 +98,9 @@ pub struct Spawn {
     pub trailing: Vec<OsString>,
     /// The endpoint the process is: whoever starts a process names it.
     pub peer: PeerId,
+    /// What each line of its output passed on as [`Stdio::Lines`] starts
+    /// with (`[go-weather] `, say): none by default.
+    pub output_prefix: Option<String>,
 }
 
 /// How the process gets its channel. On Windows, every process gets
@@ -126,6 +132,7 @@ impl Spawn {
             stderr: Stdio::Inherit,
             trailing: Vec::new(),
             peer,
+            output_prefix: None,
         }
     }
 
@@ -136,15 +143,15 @@ impl Spawn {
         command
             .args(&self.args)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
-            .stdin(self.stdin.process(None).map_err(cannot)?)
+            .stdin(self.stdin.process(None, None).map_err(cannot)?)
             .stdout(
                 self.stdout
-                    .process(Some(OutputStream::Stdout))
+                    .process(Some(OutputStream::Stdout), self.output_prefix.as_deref())
                     .map_err(cannot)?,
             )
             .stderr(
                 self.stderr
-                    .process(Some(OutputStream::Stderr))
+                    .process(Some(OutputStream::Stderr), self.output_prefix.as_deref())
                     .map_err(cannot)?,
             )
             .kill_on_drop(true);

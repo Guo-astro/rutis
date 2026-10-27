@@ -69,16 +69,20 @@ fn emit(stream: OutputStream, bytes: &[u8]) {
 static OPEN: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 
 /// A pipe for a process's `stream`: the end to give the process. A thread
-/// passes on what it writes, a line at a time, until every process holding
-/// the pipe has closed it (the process, and any process it started that
-/// kept the stream).
-pub(crate) fn pipe(stream: OutputStream) -> std::io::Result<std::process::Stdio> {
+/// passes on what it writes, a line at a time, each after `prefix` if any,
+/// until every process holding the pipe has closed it (the process, and
+/// any process it started that kept the stream).
+pub(crate) fn pipe(
+    stream: OutputStream,
+    prefix: Option<&str>,
+) -> std::io::Result<std::process::Stdio> {
     let (reader, writer) = std::io::pipe()?;
+    let prefix = prefix.map(|prefix| prefix.as_bytes().to_vec());
     *OPEN.0.lock().unwrap() += 1;
     let started = std::thread::Builder::new()
         .name("rutis-output".into())
         .spawn(move || {
-            forward(reader, |bytes| emit(stream, bytes));
+            forward(reader, prefixed(prefix, |bytes| emit(stream, bytes)));
             let mut open = OPEN.0.lock().unwrap();
             *open -= 1;
             OPEN.1.notify_all();
@@ -102,6 +106,24 @@ pub fn output_ended(guard: Duration) -> bool {
         .wait_timeout_while(open.lock().unwrap(), guard, |open| *open > 0)
         .unwrap();
     *open == 0
+}
+
+/// `emit`, given each line (or piece of a long line) after `prefix`: a
+/// line's first piece starts with it, in the same write.
+pub(crate) fn prefixed(prefix: Option<Vec<u8>>, mut emit: impl FnMut(&[u8])) -> impl FnMut(&[u8]) {
+    let mut at_start = true;
+    move |bytes: &[u8]| {
+        match (&prefix, at_start) {
+            (Some(prefix), true) => {
+                let mut line = Vec::with_capacity(prefix.len() + bytes.len());
+                line.extend_from_slice(prefix);
+                line.extend_from_slice(bytes);
+                emit(&line);
+            }
+            _ => emit(bytes),
+        }
+        at_start = bytes.ends_with(b"\n");
+    }
 }
 
 /// Read `reader` to its end, giving `emit` each line with its newline; a
@@ -178,6 +200,38 @@ mod tests {
         assert_eq!(
             lines(&[b"{\"probe\": 1}", b"\n", b"a\nb", b"c\n"]),
             [&b"{\"probe\": 1}\n"[..], b"a\n", b"bc\n"]
+        );
+    }
+
+    /// guarantee: host/output-prefix (#678): each line starts with the
+    /// prefix, written with it in one piece; a long line's pieces after
+    /// the first do not.
+    #[test]
+    fn each_line_is_passed_on_after_the_prefix() {
+        let mut out = Vec::new();
+        let long = vec![b'x'; MAX_LINE + 2];
+        let mut written = long.clone();
+        written.push(b'\n');
+        let chunks = Chunks(
+            [&b"a\nb"[..], b"c\n", &written]
+                .iter()
+                .map(|chunk| chunk.to_vec())
+                .collect(),
+        );
+        forward(
+            chunks,
+            prefixed(Some(b"[go-w] ".to_vec()), |line| out.push(line.to_vec())),
+        );
+        let mut first = b"[go-w] ".to_vec();
+        first.extend(vec![b'x'; MAX_LINE]);
+        assert_eq!(
+            out,
+            [
+                b"[go-w] a\n".to_vec(),
+                b"[go-w] bc\n".to_vec(),
+                first,
+                b"xx\n".to_vec()
+            ]
         );
     }
 

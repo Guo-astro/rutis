@@ -19,7 +19,9 @@ mod common;
 
 use std::process::Command;
 
-use common::process::{alive, cleanups, dev_project, run_project, signal, Host, HANGING_PLUGIN};
+use common::process::{
+    alive, cleanups, dev_project, run_project, signal, unprefixed, Host, HANGING_PLUGIN,
+};
 use common::repo;
 use serde_json::json;
 
@@ -122,7 +124,11 @@ fn dev_ends_on_ctrl_c_while_a_reload_hangs() {
     let mut host = Host::start(&["dev", "--shutdown-timeout", "1", "."], dir.path());
     let pids = host.started(&["marker"]);
     std::fs::write(dir.path().join("marker.py"), HANGING_PLUGIN).unwrap();
-    host.wait_line(|line| line.starts_with("plugin marker hangs in ").then_some(()));
+    host.wait_line(|line| {
+        unprefixed(line)
+            .starts_with("plugin marker hangs in ")
+            .then_some(())
+    });
     signal(&host, libc::SIGINT, true);
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");

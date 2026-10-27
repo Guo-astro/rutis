@@ -318,3 +318,80 @@ async fn a_swift_runtime_that_dials_in_is_an_instance() {
         .await;
     host.shut_down(HANG_GUARD).await.ok();
 }
+
+/// The Swift template, built against this checkout's Swift package, its
+/// row configured as its `rutis.dev.json` says: `check --strict` passes,
+/// with no config error and no extra key (config schema design §11, 1c).
+/// guarantee: host/new
+#[test]
+fn the_swift_template_passes_check_with_its_dev_config() {
+    let dir = tempfile::tempdir().unwrap();
+    rutis_host::new::create(dir.path(), "greeter", "swift").unwrap();
+    let project = dir.path().join("greeter");
+    let manifest = project.join("Package.swift");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let from = text
+        .lines()
+        .find(|line| line.contains(".package(url: \"https://github.com/arcships/rutis\""))
+        .expect("the rutis dependency")
+        .trim()
+        .trim_end_matches(',')
+        .to_owned();
+    // A path dependency is named after its directory.
+    let checkout = repo().canonicalize().unwrap();
+    let identity = checkout
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
+    let text = text
+        .replace(
+            &from,
+            &format!(".package(path: {:?})", checkout.display().to_string()),
+        )
+        .replace("package: \"rutis\"", &format!("package: {identity:?}"));
+    std::fs::write(&manifest, text).unwrap();
+    let status = std::process::Command::new("swift")
+        .args(["build", "--product", "greeter"])
+        .current_dir(&project)
+        .status()
+        .expect("swift is on PATH");
+    assert!(status.success(), "swift build");
+    let output = std::process::Command::new("swift")
+        .args(["build", "--show-bin-path"])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    let bin = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::copy(bin.join("greeter"), plugins.join("greeter")).unwrap();
+    let dev: Value =
+        serde_json::from_str(&std::fs::read_to_string(project.join("rutis.dev.json")).unwrap())
+            .unwrap();
+    std::fs::write(
+        dir.path().join("rutis.json"),
+        json!({
+            "runtimes": { "swift": { "dir": "plugins" } },
+            "rows": [{ "id": "greeter", "name": "swift:greeter", "config": dev["rows"][0]["config"] }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+        .args(["check", "--strict", "rutis.json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(output.status.code(), Some(0), "{context}");
+    assert_eq!(stderr, "", "{context}");
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "greeter (swift:greeter): ok"),
+        "{context}"
+    );
+}

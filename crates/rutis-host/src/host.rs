@@ -25,8 +25,8 @@ use rutis_loader::{
 };
 
 use crate::config::{token, HostConfig, Restart};
+use crate::errln;
 use crate::languages::{self, BinaryHost, Mount, LANGUAGES};
-use crate::{errln, outln};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -235,6 +235,8 @@ impl Host {
             fibers: Vec::new(),
             processes: Vec::new(),
             later: Vec::new(),
+            prefix_output: config.runtimes.prefix_output,
+            debug: config.runtimes.debug,
         };
         // In reverse: Node's resolver, which takes bare npm names, last.
         for language in LANGUAGES.iter().rev() {
@@ -396,7 +398,7 @@ impl Host {
                     }
                     end => {
                         if let Some(line) = end.line() {
-                            outln!("{line}");
+                            errln!("{line}");
                         }
                     }
                 }),
@@ -522,14 +524,11 @@ impl Host {
 
     /// Wait until the runtime `name` runs and its rows may start.
     async fn runtime_ready(&self, name: &str, handle: &RuntimeHandle) -> Result<(), Error> {
-        loop {
-            match handle.state() {
-                RuntimeState::Ready(_) => break,
-                RuntimeState::Down(reason) => {
-                    return Err(format!("the {name} runtime did not start: {reason}"))
-                }
-                _ => handle.changed().await,
-            }
+        let state = handle
+            .wait_for(|state| matches!(state, RuntimeState::Ready(_) | RuntimeState::Down(_)))
+            .await;
+        if let RuntimeState::Down(reason) = state {
+            return Err(format!("the {name} runtime did not start: {reason}"));
         }
         // A running runtime releases its rows ([`RuntimeRows`]) once it
         // has resolved again those resolved before it ran. Rows loaded
@@ -543,11 +542,12 @@ impl Host {
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
-            loop {
-                if let RuntimeState::Down(reason) = handle.state() {
-                    return reason;
-                }
-                handle.changed().await;
+            match handle
+                .wait_for(|state| matches!(state, RuntimeState::Down(_)))
+                .await
+            {
+                RuntimeState::Down(reason) => reason,
+                _ => unreachable!("only a down runtime is waited for"),
             }
         };
         let result = tokio::select! {

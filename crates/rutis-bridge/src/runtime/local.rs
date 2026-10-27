@@ -157,6 +157,7 @@ impl LocalRuntime {
         spawn.stdin = self.launcher.stdin;
         spawn.stdout = self.launcher.stdout;
         spawn.stderr = self.launcher.stderr;
+        spawn.output_prefix = self.launcher.output_prefix.clone();
         spawn.handover = match self.launcher.inherit_fd {
             true => Handover::Inherit,
             false => Handover::DialBack,
@@ -204,6 +205,20 @@ impl LocalRuntime {
     /// line at a time ([`Launcher::stderr`]).
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.launcher.stderr = stdio;
+        self
+    }
+
+    /// Start each line of the runtime process's output passed on as
+    /// [`Stdio::Lines`] with `[<name>] ` ([`Launcher::output_prefix`]).
+    pub fn output_prefix(mut self, name: &str) -> Self {
+        self.launcher = self.launcher.output_prefix(name);
+        self
+    }
+
+    /// Set the environment variable `name` of the runtime process
+    /// ([`Launcher::env`]).
+    pub fn env(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.launcher = self.launcher.env(name, value);
         self
     }
 
@@ -262,19 +277,21 @@ impl DynPlugin for LocalRuntime {
             // Started once the runtime runs, as a runtime plugin starting its
             // own process is: while it starts this is Loading, and a restart
             // or dispose abandons the start (its process ends with the link).
-            let handle = self.runtime.handle();
+            // What is looked at is marked seen, so going Ready right after
+            // the look still wakes the wait: missed, the next change would
+            // be the process ending, taken for a failed start.
+            let mut states = self.runtime.handle().subscribe();
             let failure = loop {
-                if let RuntimeState::Ready(_) = handle.state() {
-                    return Ok(Effect::Done);
-                }
-                if let RuntimeState::Down(reason) = handle.state() {
-                    break reason;
+                match states.borrow_and_update().clone() {
+                    RuntimeState::Ready(_) => return Ok(Effect::Done),
+                    RuntimeState::Down(reason) => break reason,
+                    _ => {}
                 }
                 if let LinkState::Stopped { error, .. } = &*link_state.borrow() {
                     break error.clone();
                 }
                 tokio::select! {
-                    _ = handle.changed() => {}
+                    _ = states.changed() => {}
                     _ = link_state.changed() => {}
                     _ = ctx.cancelled() => {
                         self.runtime.stopped();

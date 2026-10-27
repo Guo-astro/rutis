@@ -452,27 +452,61 @@ private abstract class ElementsDecoder : AbstractDecoder() {
     /** The value of the element at [index]. */
     abstract fun current(): Any?
 
+    /** Where the element at [index] is: its key or index. */
+    abstract fun segment(): Any
+
     private fun element() = ValueDecoder(current())
 
-    override fun <T> decodeSerializableValue(deserializer: DeserializationStrategy<T>): T = element().decodeSerializableValue(deserializer)
+    /** [block], a failure in it recorded as at this element ([DecodePaths]). */
+    private inline fun <T> at(block: () -> T): T = DecodePaths.at(segment(), block)
+
+    override fun <T> decodeSerializableValue(deserializer: DeserializationStrategy<T>): T = at { element().decodeSerializableValue(deserializer) }
     override fun decodeNotNullMark(): Boolean = element().decodeNotNullMark()
     override fun decodeNull(): Nothing? = null
-    override fun decodeBoolean(): Boolean = element().decodeBoolean()
-    override fun decodeByte(): Byte = element().decodeByte()
-    override fun decodeShort(): Short = element().decodeShort()
-    override fun decodeInt(): Int = element().decodeInt()
-    override fun decodeLong(): Long = element().decodeLong()
-    override fun decodeFloat(): Float = element().decodeFloat()
-    override fun decodeDouble(): Double = element().decodeDouble()
-    override fun decodeChar(): Char = element().decodeChar()
-    override fun decodeString(): String = element().decodeString()
-    override fun decodeEnum(enumDescriptor: SerialDescriptor): Int = element().decodeEnum(enumDescriptor)
-    override fun decodeInline(descriptor: SerialDescriptor): Decoder = element().decodeInline(descriptor)
-    override fun beginStructure(descriptor: SerialDescriptor): CompositeDecoder = element().beginStructure(descriptor)
+    override fun decodeBoolean(): Boolean = at { element().decodeBoolean() }
+    override fun decodeByte(): Byte = at { element().decodeByte() }
+    override fun decodeShort(): Short = at { element().decodeShort() }
+    override fun decodeInt(): Int = at { element().decodeInt() }
+    override fun decodeLong(): Long = at { element().decodeLong() }
+    override fun decodeFloat(): Float = at { element().decodeFloat() }
+    override fun decodeDouble(): Double = at { element().decodeDouble() }
+    override fun decodeChar(): Char = at { element().decodeChar() }
+    override fun decodeString(): String = at { element().decodeString() }
+    override fun decodeEnum(enumDescriptor: SerialDescriptor): Int = at { element().decodeEnum(enumDescriptor) }
+    override fun decodeInline(descriptor: SerialDescriptor): Decoder = at { element().decodeInline(descriptor) }
+    override fun beginStructure(descriptor: SerialDescriptor): CompositeDecoder = at { element().beginStructure(descriptor) }
+}
+
+/**
+ * Where a decoding failure happened, as keys and indices from the root:
+ * recorded as the failure passes each element on its way out (a
+ * [ValueException] has no path of its own, nor kotlinx's exceptions).
+ */
+internal object DecodePaths {
+    private val paths = java.util.Collections.synchronizedMap(java.util.WeakHashMap<Throwable, MutableList<Any>>())
+
+    inline fun <T> at(segment: Any, block: () -> T): T = try {
+        block()
+    } catch (e: Throwable) {
+        record(e, segment)
+        throw e
+    }
+
+    fun record(error: Throwable, segment: Any) {
+        synchronized(paths) { paths.getOrPut(error) { ArrayList() }.add(0, segment) }
+    }
+
+    /** The path of [error] (a missing field's name last). */
+    fun of(error: Throwable): List<Any> {
+        val path = synchronized(paths) { paths[error]?.toList() } ?: emptyList()
+        val missing = (error as? kotlinx.serialization.MissingFieldException)?.missingFields?.firstOrNull()
+        return if (missing != null) path + missing else path
+    }
 }
 
 private class ListDecoder(private val items: List<Any?>) : ElementsDecoder() {
     override fun current(): Any? = items[index]
+    override fun segment(): Any = index
     override fun decodeCollectionSize(descriptor: SerialDescriptor): Int = items.size
     override fun decodeElementIndex(descriptor: SerialDescriptor): Int {
         index++
@@ -482,6 +516,7 @@ private class ListDecoder(private val items: List<Any?>) : ElementsDecoder() {
 
 private class MapDecoder(private val entries: List<Pair<Any?, Any?>>) : ElementsDecoder() {
     override fun current(): Any? = entries[index / 2].let { if (index % 2 == 0) it.first else it.second }
+    override fun segment(): Any = entries[index / 2].first.let { if (it is String) it else it.toString() }
     override fun decodeCollectionSize(descriptor: SerialDescriptor): Int = entries.size
     override fun decodeElementIndex(descriptor: SerialDescriptor): Int {
         index++
@@ -493,6 +528,7 @@ private class RecordDecoder(private val fields: Map<String, Any?>) : ElementsDec
     private var position = -1
 
     override fun current(): Any? = fields[name]
+    override fun segment(): Any = name
 
     private var name = ""
 
