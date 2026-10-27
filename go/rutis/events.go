@@ -190,7 +190,7 @@ func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, er
 	// goroutine or timer calling it recovers nothing), as Provide.
 	if rt.rows[c.row.key] != c.row {
 		rt.mu.Unlock()
-		fmt.Fprintf(rowOutput, "rutis: row %s is not active: listener of %s is not registered\n", c.row.key, name)
+		fmt.Fprintf(rowOutput, "rutis: row %s is not active: listener of %s is not registered\n", c.row.name, name)
 		return func() {}
 	}
 	rt.listenerSeq++
@@ -398,7 +398,7 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 	r := c.row
 	if rt.rows[r.key] != r {
 		rt.mu.Unlock()
-		return nil, peer.Errorf("BindingError", "row %s is not loaded in this runtime", r.key)
+		return nil, peer.Errorf("BindingError", "row %s is not loaded in this runtime", r.name)
 	}
 	if rt.viaHost(name, mode) {
 		return rt.dispatchViaHost(ctx, r, name, mode, args, terminal, e.keep)

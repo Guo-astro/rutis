@@ -2,6 +2,10 @@
 // a new test is added here).
 
 let registry: [(String, () async throws -> Void)] = [
+    ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
+    ("ErrorTextTests.anObjectRefusesAMethodByItsTypeName", { try await ErrorTextTests().anObjectRefusesAMethodByItsTypeName() }),
+    ("ErrorTextTests.useSaysWhyAServiceIsNotThere", { try await ErrorTextTests().useSaysWhyAServiceIsNotThere() }),
+    ("ErrorTextTests.aCallFailsSayingTheHostDisconnected", { try await ErrorTextTests().aCallFailsSayingTheHostDisconnected() }),
     ("PeerTests.testCallsAndCallbacks", { try await PeerTests().testCallsAndCallbacks() }),
     ("PeerTests.testCancellingAnAsyncCallAbortsTheCallee", { try await PeerTests().testCancellingAnAsyncCallAbortsTheCallee() }),
     ("PeerTests.testAValueTooDeepFailsOnlyItsCall", { try await PeerTests().testAValueTooDeepFailsOnlyItsCall() }),

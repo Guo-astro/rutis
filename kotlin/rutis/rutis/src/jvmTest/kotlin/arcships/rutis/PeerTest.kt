@@ -221,7 +221,7 @@ class PeerTest {
         repeat(65) { deep = listOf(deep, Instant.EPOCH) }
         val error = assertFailsWith<ValueException> { host.call("t", "echo", listOf(deep), true) }
         assertTrue(error.message!!.contains("64 levels"), error.message)
-        assertTrue(error.message!!.startsWith("argument 1 of t.echo: "), error.message)
+        assertTrue(error.message!!.startsWith("t.echo: argument 1 cannot be sent: "), error.message)
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
     }
 
@@ -239,17 +239,21 @@ class PeerTest {
         val sent = assertFailsWith<ValueException> {
             host.call("host:t\u0000scope", "echo", listOf(JsonPrimitive(1), "x".repeat(over)), true)
         }
-        assertTrue(sent.message!!.startsWith("argument 2 of t.echo: the message would be "), sent.message)
+        assertTrue(sent.message!!.startsWith("t.echo: argument 2 cannot be sent: the message would be "), sent.message)
         assertTrue(sent.message!!.endsWith(limit), sent.message)
+        // guarantee: sdk/error-texts (code bad-value, data {argument, part, limit}: #677)
+        assertEquals("bad-value", sent.code)
+        assertEquals(mapOf("part" to "argument", "argument" to 2, "limit" to MAX_MESSAGE), sent.data)
         // A result the far end would send.
         val result = assertFailsWith<RutisException> { host.call("t", "big", listOf(over.toLong()), true) }
-        assertTrue(result.message.startsWith("the result of t.big: the message would be "), result.message)
+        assertTrue(result.message.startsWith("t.big: the result cannot be sent: the message would be "), result.message)
         assertTrue(result.message.endsWith(limit), result.message)
+        assertEquals("bad-value", result.code)
         // An argument the far end would send to a function of this side, which never runs.
         val called = AtomicBoolean(false)
         val callback = Exported("callback") { called.set(true) }
         val argument = assertFailsWith<RutisException> { host.call("t", "applyBig", listOf(callback, over.toLong()), true) }
-        assertTrue(argument.message.startsWith("argument 1 of a function: the message would be "), argument.message)
+        assertTrue(argument.message.startsWith("a function: argument 1 cannot be sent: the message would be "), argument.message)
         assertTrue(!called.get(), "the function ran")
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
         assertEquals(null, host.error)
@@ -271,7 +275,7 @@ class PeerTest {
         runtime.readyFuture.get(5, TimeUnit.SECONDS)
         val error = assertFailsWith<RutisException> { host.call("t", "object", emptyList(), true) }
         assertEquals(
-            "the result of t.object: an object with methods (Counter) cannot cross to main; pass plain data or a function instead",
+            "t.object: the result cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead",
             error.message,
         )
         assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))

@@ -301,6 +301,10 @@ func (p *Peer) Greeting() *Greeting {
 
 type chainKey struct{}
 
+// String is what a context carrying a chain prints of its key
+// (`context.Background.WithValue(call chain, …)`), not the type's name.
+func (chainKey) String() string { return "call chain" }
+
 // WithChain gives ctx the call chain `chain`.
 func WithChain(ctx context.Context, chain []string) context.Context {
 	return context.WithValue(ctx, chainKey{}, chain)
@@ -361,15 +365,15 @@ func (p *Peer) read() {
 		message, err := p.channel.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				p.Close(errors.New("Rust process disconnected"))
+				p.Close(HostGone(nil))
 			} else {
-				p.Close(fmt.Errorf("session failed: %w", err))
+				p.Close(HostGone(err))
 			}
 			return
 		}
 		var f frame
 		if err := json.Unmarshal(message, &f); err != nil {
-			p.fault(fmt.Errorf("session failed: %w", err))
+			p.fault(HostGone(errors.New("it sent a message that is not JSON")))
 			return
 		}
 		if err := p.receive(&f); err != nil {
@@ -387,7 +391,7 @@ func (p *Peer) Close(err error) {
 		return
 	}
 	if err == nil {
-		err = errors.New("session closed")
+		err = NewCoded("BindingError", "peer-gone", map[string]any{"reason": "closed"}, "the connection to the host is closed")
 	}
 	p.closeErr = err
 	pending := p.pending
@@ -580,7 +584,7 @@ func marked(value any) bool {
 const MaxDepth = 64
 
 // ErrTooDeep is the error of a call whose value nests deeper than MaxDepth.
-var ErrTooDeep = fmt.Errorf("value nested deeper than %d levels, the most a value crossing a session may nest", MaxDepth)
+var ErrTooDeep = fmt.Errorf("value nested deeper than %d levels, the most a value crossing processes may nest", MaxDepth)
 
 // jsonDepth is how deep arrays and objects nest in a JSON text.
 func jsonDepth(text []byte) int {
@@ -1218,9 +1222,9 @@ func (p *Peer) request(ctx context.Context, op string, fields map[string]any, ar
 		// only this call fails, here (#675).
 		call := describeRequest(op, fields)
 		if encoded, ok := frame["args"].(map[string]any); ok && largest(encoded) >= 0 {
-			err = ofArgument(errors.New(overLimit(len(data))), largest(encoded), call)
+			err = ofArgument(&tooLarge{len(data)}, largest(encoded), call)
 		} else {
-			err = valueErrorf("the arguments of %s: %s", call, overLimit(len(data)))
+			err = ofArguments(&tooLarge{len(data)}, call)
 		}
 	}
 	if err != nil {
@@ -1695,7 +1699,7 @@ func (p *Peer) respondTo(id string, value any, failure error, chain []string, ca
 		if err == nil {
 			data, err = marshal(map[string]any{"op": "return", "id": id, "value": encoded})
 			if err == nil && len(data) > MaxMessage {
-				err = errors.New(overLimit(len(data)))
+				err = &tooLarge{len(data)}
 			}
 		}
 		if err != nil {

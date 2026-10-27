@@ -55,9 +55,33 @@ type ValueError struct {
 	Message string
 	// What it says more of (ErrTooDeep, say), for errors.Is.
 	cause error
+	// Which part of a call it is of (#677): "argument" (argument, from
+	// 1), "arguments", "result"; "" when not known. limit is the message
+	// limit it is over, 0 when it is not over it.
+	argument int
+	part     string
+	limit    int
 }
 
 func (e *ValueError) Error() string { return e.Message }
+
+// Code is bad-value: a value that cannot cross (#677).
+func (e *ValueError) Code() string { return "bad-value" }
+
+// Data is {argument?, part, limit?}, nil when the part is not known.
+func (e *ValueError) Data() any {
+	if e.part == "" {
+		return nil
+	}
+	data := map[string]any{"part": e.part}
+	if e.argument > 0 {
+		data["argument"] = e.argument
+	}
+	if e.limit > 0 {
+		data["limit"] = e.limit
+	}
+	return data
+}
 
 // Unwrap is the error it says more of, if any.
 func (e *ValueError) Unwrap() error { return e.cause }

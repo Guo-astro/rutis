@@ -63,10 +63,29 @@ fun validId(id: String): Boolean = endpointId.matches(id)
 
 /** The error of a call whose value nests deeper than [MAX_DEPTH]. */
 fun tooDeep(): ValueException =
-    ValueException("value nested deeper than $MAX_DEPTH levels, the most a value crossing a session may nest")
+    ValueException("value nested deeper than $MAX_DEPTH levels, the most a value crossing processes may nest")
 
 /** The far end greeted in a way this side cannot speak: retrying cannot fix it. */
 open class IncompatibleException(message: String) : IOException(message)
+
+/**
+ * The host went (#677): what calls fail with then, `the host disconnected`
+ * (with why, when known), code peer-gone with `{reason}`. It crosses as a
+ * BindingError.
+ */
+class HostGoneException internal constructor(why: String?, cause: Throwable? = null, message: String? = null) :
+    IOException(message ?: if (why == null) "the host disconnected" else "the host disconnected ($why)", cause) {
+    /** `peer-gone`. */
+    val code: String = "peer-gone"
+
+    /** `{reason}`: `disconnected`, `closed`, or what failed. */
+    val data: Map<String, Any?> = mapOf("reason" to (why ?: "disconnected"))
+
+    internal companion object {
+        /** This side closed the connection. */
+        fun closed() = HostGoneException("closed", message = "the connection to the host is closed")
+    }
+}
 
 /**
  * The far end greeted as another endpoint than the expected one, or as this
@@ -310,7 +329,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             try {
                 channel.send(data)
             } catch (e: Exception) {
-                fault(IOException("session failed: ${e.message}", e))
+                fault(HostGoneException(e.message ?: e.javaClass.simpleName, e))
                 return
             }
         }
@@ -321,19 +340,25 @@ class Peer(private val channel: Channel, private val opts: Options) {
             val message = try {
                 channel.recv()
             } catch (e: Exception) {
-                close(IOException("session failed: ${e.message}", e))
-                channel.close("session failed")
+                close(HostGoneException(e.message ?: e.javaClass.simpleName, e))
+                channel.close("the connection failed")
                 return
             }
             if (message == null) {
-                close(IOException("Rust process disconnected"))
+                close(HostGoneException(null))
                 return
             }
             try {
                 val frame = parseFrame(message)
                 receive(frame)
             } catch (e: Exception) {
-                fault(if (e is IOException) e else IOException("session failed: ${e.message}", e))
+                fault(
+                    when (e) {
+                        is ProtocolException -> HostGoneException(e.message, e)
+                        is IOException -> e
+                        else -> HostGoneException(e.message ?: e.javaClass.simpleName, e)
+                    },
+                )
                 return
             }
         }
@@ -341,13 +366,13 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     private fun parseFrame(message: ByteArray): JsonObject {
         val text = String(message, Charsets.UTF_8)
-        if (text.isNotEmpty() && text[0] == '\uFEFF') throw ProtocolException("session failed: a byte order mark")
+        if (text.isNotEmpty() && text[0] == '\uFEFF') throw ProtocolException("the host sent a message with a byte order mark")
         val element = try {
             frameJson.parseToJsonElement(text)
         } catch (e: Exception) {
-            throw ProtocolException("session failed: ${e.message}")
+            throw ProtocolException("the host sent a message that is not JSON")
         }
-        return element as? JsonObject ?: throw ProtocolException("session failed: a frame is not an object")
+        return element as? JsonObject ?: throw ProtocolException("the host sent a message that is not an object")
     }
 
     /** Ends the session with `error`. */
@@ -355,7 +380,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
         val waiting: Collection<CompletableFuture<Outcome>>
         val drains: List<CompletableFuture<Unit>>
         val cancelled: Collection<Running>
-        val reason = error ?: IOException("session closed")
+        val reason = error ?: HostGoneException.closed()
         synchronized(lock) {
             if (closeError != null) return
             closeError = reason
@@ -816,7 +841,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun tooLarge(size: Int, args: JsonElement?, call: String): ValueException {
         val items = (args as? JsonObject)?.get("value") as? JsonArray
         val index = items?.indices?.maxByOrNull { compact(items[it]).size }
-        return if (index != null) ofArgument(overLimit(size), index, call) else ValueException("the arguments of $call: ${overLimit(size)}")
+        return if (index != null) ofArgument(overLimit(size), index, call, MAX_MESSAGE) else ofArguments(overLimit(size), call, MAX_MESSAGE)
     }
 
     /** Gives up waiting for call `id`; an asynchronous one hears so. */
@@ -1339,7 +1364,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
                         put("id", id)
                         put("value", wire)
                     })
-                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described)
+                    if (bytes.size > MAX_MESSAGE) throw ofResult(overLimit(bytes.size), described, MAX_MESSAGE)
                     encoded = bytes
                 } catch (e: Throwable) {
                     rollback(grants)

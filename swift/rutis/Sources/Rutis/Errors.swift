@@ -57,6 +57,19 @@ public struct RutisError: Error, CustomStringConvertible, LocalizedError, @unche
     package static func binding(_ message: String) -> RutisError {
         RutisError(name: Name.bindingError, message: message)
     }
+
+    /// What a call fails with once the session ended with `error`: when
+    /// the host went, `the host disconnected` with code peer-gone and
+    /// `{reason}` (#677).
+    package static func ended(_ error: Error) -> RutisError {
+        if let ended = error as? SessionEnded, let gone = ended.gone {
+            return RutisError(name: Name.bindingError, message: ended.reason, code: "peer-gone", data: ["reason": gone])
+        }
+        return binding(String(describing: error))
+    }
+
+    /// A call with no session to the host.
+    package static func hostGone() -> RutisError { ended(SessionEnded.hostGone()) }
 }
 
 /// The name an error crosses with: a RutisError's own, else the simple name

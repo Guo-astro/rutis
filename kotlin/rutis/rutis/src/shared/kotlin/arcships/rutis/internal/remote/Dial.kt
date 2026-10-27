@@ -178,8 +178,12 @@ private class OkHttpConnection(
             val chosen = response.header("Sec-WebSocket-Protocol")
             if (chosen != protocol) {
                 webSocket.close(CloseCode.PROTOCOL_ERROR, "no session protocol")
-                val said = if (chosen == null) "the access point chose none" else "the access point chose \"$chosen\""
-                opened.completeExceptionally(DialException(Failure.Incompatible, "$host: session protocol: $said"))
+                val said = if (chosen == null) {
+                    "the access point chose no protocol: it speaks none this process speaks"
+                } else {
+                    "the access point chose the protocol \"$chosen\", which this process does not speak"
+                }
+                opened.completeExceptionally(DialException(Failure.Incompatible, "$host: $said"))
                 return
             }
             lastSeen = System.nanoTime()

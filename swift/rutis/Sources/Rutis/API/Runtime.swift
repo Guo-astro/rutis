@@ -89,12 +89,15 @@ final class Slot {
 
 final class HandleEntry {
     let id: String
+    /// The service's name, as the plugin wrote it.
+    let name: String
     let object: RutisExportable
     let methods: Set<String>?
     var current = true
     var released = false
-    init(id: String, object: RutisExportable, methods: Set<String>?) {
+    init(id: String, name: String, object: RutisExportable, methods: Set<String>?) {
         self.id = id
+        self.name = name
         self.object = object
         self.methods = methods
     }
@@ -409,7 +412,7 @@ final class Runtime: @unchecked Sendable {
             let handle = handleOf(id, slot.generation)
             slot.handle = handle
             if slot.announced { slot.methods = Set(current.rutisMethods().keys) }
-            handles[handle] = HandleEntry(id: id, object: current, methods: slot.methods)
+            handles[handle] = HandleEntry(id: id, name: slot.name, object: current, methods: slot.methods)
         }
         version += 1
         guard live, let session else { return }
@@ -460,12 +463,13 @@ final class Runtime: @unchecked Sendable {
         // outlive its row and the row's next load find it taken.
         guard rows[row.key] === row else {
             lock.unlock()
-            fail(row, RutisError(name: "Error", message: "row \(row.key) is not active"))
+            fail(row, RutisError(name: "Error", message: "row \(row.name) is not active"))
             return {}
         }
         if let existing = services[id] {
+            let owner = rows[existing.row]?.name ?? existing.row
             lock.unlock()
-            fail(row, RutisError(name: "Error", message: "service \(printable(id)) is already provided by row \(existing.row)"))
+            fail(row, RutisError(name: "Error", message: "\(name) is already provided by \(owner)"))
             return {}
         }
         services[id] = Provided(row: row.key, value: value, shape: shape)
@@ -534,7 +538,7 @@ final class Runtime: @unchecked Sendable {
             for service in exports.keys {
                 if service.contains("#") { throw RutisError(name: "Error", message: "service name \(service) cannot be projected") }
                 if let existing = slots[row.id(service)] {
-                    throw RutisError(name: "Error", message: "service \(printable(row.id(service))) is already exported by row \(existing.row)")
+                    throw RutisError(name: "Error", message: "\(service) is already provided by \(rows[existing.row]?.name ?? existing.row)")
                 }
             }
             loaded += 1
@@ -641,7 +645,7 @@ final class Runtime: @unchecked Sendable {
             }
             if let seconds {
                 if await !done.wait(seconds: seconds) {
-                    settings.log("rutis: gave up the cleanups of row \(row.key) and those after it: they did not finish within \(Events.seconds(seconds))s")
+                    settings.log("rutis: gave up the cleanups of row \(row.name) and those after it: they did not finish within \(Events.seconds(seconds))s")
                     return false
                 }
             } else {
@@ -659,13 +663,12 @@ final class Runtime: @unchecked Sendable {
         guard let entry = lock.withLock({ handles[target] }) else {
             throw RutisError(name: "Error", message: "unknown or released service object \(printable(target))")
         }
-        if let methods = entry.methods, !methods.contains(method) {
-            throw RutisError(name: "Error", message: "unknown service method \(printable(entry.id)).\(method)")
+        let callee = Refusal.Callee(service: entry.name, method: method)
+        let table = entry.object.rutisMethods()
+        guard let body = table[method], entry.methods?.contains(method) ?? true else {
+            throw Refusal.noMethod(callee, entry.methods ?? Set(table.keys))
         }
-        guard let body = entry.object.rutisMethods()[method] else {
-            throw RutisError(name: "Error", message: "unknown service method \(printable(entry.id)).\(method)")
-        }
-        return try await body(Rutis.Arguments(args)).value
+        return try await body(Rutis.Arguments(args, callee: callee)).value
     }
 
     private func argument<T: Decodable>(_ args: [Value], _ index: Int, _ type: T.Type = T.self) throws -> T {
@@ -786,7 +789,9 @@ final class Runtime: @unchecked Sendable {
     /// The service `name` as `row` uses it: by its own id.
     func client(_ row: Row, _ name: String) throws -> (Rutis.Client, RutisExportable?) {
         guard row.definition.inject.contains(name) else {
-            throw RutisError(name: "Error", message: "service \(name) is not available to this plugin, which does not declare it in inject: add '\(name)' to its inject")
+            throw RutisError(name: RutisError.Name.bindingError,
+                             message: "service \(name) is not available to this plugin, which does not declare it in inject: add '\(name)' to its inject",
+                             code: "not-declared", data: ["service": name])
         }
         let id = row.id(name)
         let (local, host) = lock.withLock { (services[id], hosts[id]) }
@@ -799,20 +804,22 @@ final class Runtime: @unchecked Sendable {
                 for method in table.keys { methods[method] = "async" }
             }
             let client = Rutis.Client(name: name, methods: methods) { method, args, _ in
-                guard let body = table[method] else { throw RutisError(name: "Error", message: "\(name) has no method \(method)") }
-                return try await body(Rutis.Arguments(args)).value
+                let callee = Refusal.Callee(service: name, method: method)
+                guard let body = table[method] else { throw Refusal.noMethod(callee, methods.keys) }
+                return try await body(Rutis.Arguments(args, callee: callee)).value
             }
             return (client, local.value)
         }
         if let host {
             let client = Rutis.Client(name: name, methods: host) { [weak self] method, args, sync in
-                guard let session = self?.session else { throw RutisError.binding("the runtime has no session") }
+                guard let session = self?.session else { throw RutisError.hostGone() }
                 let value = try await session.call(target: "host:" + id, method: method, args: args, sync: sync)
                 return try await settle(value)
             }
             return (client, nil)
         }
-        throw RutisError(name: "Error", message: "service \(name) is not available")
+        throw RutisError(name: RutisError.Name.bindingError, message: "service \(name) is not available",
+                         code: "unavailable", data: ["service": name])
     }
 }
 
@@ -838,7 +845,7 @@ extension Rutis {
         /// so); the Task waits without holding a thread.
         public func call<R>(_ method: String, _ args: [Encoded], as type: R.Type = R.self) async throws -> R {
             guard let kind = methods[method] else {
-                throw RutisError(name: "Error", message: "\(name) has no method \(method)")
+                throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             let value = try await invoke(method, args.map(\.value), kind == "sync")
             return try ValueCodec.decode(R.self, from: value)

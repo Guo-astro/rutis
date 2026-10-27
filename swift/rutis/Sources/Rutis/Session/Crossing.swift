@@ -20,9 +20,20 @@ func overLimit(_ size: Int, _ limit: Int = maxMessage) -> String {
     return "the message would be \(size) bytes, over the limit of \(limit) bytes\(mib)"
 }
 
-/// `reason` as one of the result of `call`, when known.
-func ofResult(_ reason: String, _ call: String?) -> ValueError {
-    ValueError(call.map { "the result of \($0): \(reason)" } ?? "the result: \(reason)")
+/// `reason` as one of the result of `call`, when known: `<call>: the
+/// result cannot be sent: <why>`, code bad-value (#677).
+func ofResult(_ reason: String, _ call: String?, limit: Int? = nil) -> ValueError {
+    var data: [String: Any] = ["part": "result"]
+    if let limit { data["limit"] = limit }
+    return ValueError(call.map { "\($0): the result cannot be sent: \(reason)" } ?? "the result cannot be sent: \(reason)", data: data)
+}
+
+/// `reason` as one of argument `index` (from 0) of `call`: `<call>:
+/// argument <i> cannot be sent: <why>`, code bad-value.
+func ofArgument(_ reason: String, _ index: Int, _ call: String, limit: Int? = nil) -> ValueError {
+    var data: [String: Any] = ["part": "argument", "argument": index + 1]
+    if let limit { data["limit"] = limit }
+    return ValueError("\(call): argument \(index + 1) cannot be sent: \(reason)", data: data)
 }
 
 /// An object reference received from the far end (an older host's, say):

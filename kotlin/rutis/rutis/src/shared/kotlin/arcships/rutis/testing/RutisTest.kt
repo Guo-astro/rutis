@@ -11,6 +11,8 @@ import arcships.rutis.Scope
 import arcships.rutis.ServiceHandle
 import arcships.rutis.ServiceTable
 import arcships.rutis.Tables
+import arcships.rutis.noMethod
+import arcships.rutis.serve
 import arcships.rutis.internal.Call
 import arcships.rutis.internal.Dispatch
 import arcships.rutis.internal.Entry
@@ -267,8 +269,7 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         if (name == target) throw IllegalArgumentException("the test serves no $target $method")
         val service = services[name] ?: throw IllegalArgumentException("the test gives no service $name")
         val table = tableOf(name)
-        if (method !in table.methods) throw IllegalArgumentException("the test's $name has no method $method")
-        return table.invoke(service, method, args)
+        return table.serve(service, method, args, name)
     }
 
     /** The service `name` the plugin provides: its handle and methods, once provided. */
@@ -645,7 +646,7 @@ class TestService internal constructor(
 
     /** Calls `method` with session values; the result as a session value (for the conformance checks). */
     suspend fun raw(method: String, args: List<Any?>): Any? {
-        val kind = methods[method] ?: throw IllegalArgumentException("$name has no method $method")
+        val kind = methods[method] ?: throw noMethod(name, method, methods.keys)
         return session.settleSuspend(session.callSuspend(handle, method, args, kind == "sync"))
     }
 

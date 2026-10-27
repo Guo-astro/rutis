@@ -24,6 +24,7 @@ import java.util.concurrent.CancellationException
 /** The name a throwable crosses with. */
 fun errorName(error: Throwable): String = when (error) {
     is RutisException -> error.name
+    is HostGoneException -> RutisException.BINDING_ERROR
     is CancellationException -> "CancellationException"
     // The SDK's value errors cross as plain errors, as in the other languages.
     is ValueException -> "Error"
@@ -42,6 +43,7 @@ fun errorMessage(error: Throwable): String = when (error) {
  */
 private fun codeOf(error: Throwable): String? {
     if (error is RutisException) return error.code
+    if (error is ValueException) return error.code
     return try {
         error.javaClass.getMethod("getCode").invoke(error) as? String
     } catch (_: ReflectiveOperationException) {
@@ -54,6 +56,7 @@ private fun codeOf(error: Throwable): String? {
 /** A throwable's `data` property (`getData()`), whether it has one. */
 private fun dataOf(error: Throwable): Pair<Boolean, Any?> {
     if (error is RutisException) return (error.data != null) to error.data
+    if (error is ValueException) return (error.data != null) to error.data
     return try {
         true to error.javaClass.getMethod("getData").invoke(error)
     } catch (_: ReflectiveOperationException) {

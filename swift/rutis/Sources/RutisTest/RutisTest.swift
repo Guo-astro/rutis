@@ -385,10 +385,10 @@ final class Harness: @unchecked Sendable {
         }
         let name = String(target.dropFirst(5))
         guard let service = services[name] else { throw RutisError(name: "Error", message: "the test gives no service \(name)") }
-        guard let body = service.rutisMethods()[method] else {
-            throw RutisError(name: "Error", message: "the test's \(name) has no method \(method)")
-        }
-        return try await body(Rutis.Arguments(args)).value
+        let table = service.rutisMethods()
+        let callee = Refusal.Callee(service: name, method: method)
+        guard let body = table[method] else { throw Refusal.noMethod(callee, table.keys) }
+        return try await body(Rutis.Arguments(args, callee: callee)).value
     }
 
     /// A dispatch of `name` (§5.1); delivery is by name.
@@ -638,7 +638,7 @@ public final class Service: @unchecked Sendable {
 
     /// The result as the session carries it.
     package func callValue(_ method: String, _ args: [Value]) async throws -> Value {
-        guard let kind = methods[method] else { throw RutisError(name: "Error", message: "\(name) has no method \(method)") }
+        guard let kind = methods[method] else { throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys) }
         return try await settle(try await session.call(target: handle, method: method, args: args, sync: kind == "sync"))
     }
 

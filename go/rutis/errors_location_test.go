@@ -39,7 +39,7 @@ func rootStack(t *testing.T, err error) string {
 	return graph.Nodes[graph.Root.Value].Stack
 }
 
-// guarantee: errors/location (an error a Go service method returns crosses
+// guarantee: sdk/error-positions (an error a Go service method returns crosses
 // with the method's declaration, file:line, as its stack's frame; a panic
 // with its whole stack: #677)
 func TestAServiceErrorCrossesWithItsMethodsPosition(t *testing.T) {
@@ -111,7 +111,7 @@ func rethrownGraph(t *testing.T, err error) (map[string]any, []string) {
 	return root, rethrown
 }
 
-// guarantee: errors/location (a received error a Go service method returns
+// guarantee: sdk/error-rethrown (a received error a Go service method returns
 // crosses with the graph it came with; the method's declaration is
 // appended to its root node's rethrown, at most 8 items: #677)
 func TestAReceivedErrorThrownOnRecordsTheMethodInRethrown(t *testing.T) {

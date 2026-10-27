@@ -109,9 +109,20 @@ package struct SessionEnded: Error, CustomStringConvertible, CustomErrorName {
     package enum Kind { case closed, refused, incompatible, mismatch, failed }
     package let kind: Kind
     package let reason: String
-    package init(_ kind: Kind, _ reason: String) {
+    /// Why the host went, for a call's `peer-gone` data (`disconnected`,
+    /// `closed`, or what failed); nil for a refusal.
+    package let gone: String?
+    package init(_ kind: Kind, _ reason: String, gone: String? = nil) {
         self.kind = kind
         self.reason = reason
+        self.gone = gone
+    }
+
+    /// The host disconnected: `the host disconnected`, or with why in
+    /// parentheses.
+    package static func hostGone(_ why: String? = nil) -> SessionEnded {
+        guard let why else { return SessionEnded(.closed, "the host disconnected", gone: "disconnected") }
+        return SessionEnded(.failed, "the host disconnected (\(why))", gone: why)
     }
 
     package var description: String {
@@ -487,11 +498,11 @@ package final class Peer: @unchecked Sendable {
             } catch {
                 // The channel goes too: nothing reads it any more, and its
                 // descriptor would stay open.
-                fault(SessionEnded(.failed, "session failed: \(error)"))
+                fault(SessionEnded.hostGone(errorMessage(error)))
                 return
             }
             guard let message else {
-                close(SessionEnded(.closed, "Rust process disconnected"))
+                close(SessionEnded.hostGone())
                 return
             }
             do {
@@ -501,7 +512,7 @@ package final class Peer: @unchecked Sendable {
                 fault(error)
                 return
             } catch {
-                fault(SessionEnded(.failed, "session failed: \(error)"))
+                fault(SessionEnded.hostGone(errorMessage(error)))
                 return
             }
         }
@@ -514,7 +525,7 @@ package final class Peer: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let error = error ?? SessionEnded(.closed, "session closed")
+        let error = error ?? SessionEnded(.closed, "the connection to the host is closed", gone: "closed")
         closeError = error
         let pending = self.pending
         self.pending = [:]
@@ -528,7 +539,7 @@ package final class Peer: @unchecked Sendable {
         let running = Array(self.running.values)
         lock.unlock()
         readyEvent.fire()
-        let failure = RutisError.binding(String(describing: error))
+        let failure = RutisError.ended(error)
         for waiter in pending.values { waiter.resolve(.failure(failure)) }
         for event in draining { event.fire() }
         for call in running { call.task?.cancel() }
@@ -711,12 +722,12 @@ package final class Peer: @unchecked Sendable {
             if future.record.released { throw RutisError(name: "Error", message: "reference released") }
             return homeReference(future.record)
         case .signal:
-            throw ValueError("a signal cannot cross the session")
+            throw ValueError("a signal cannot cross processes")
         }
     }
 
     private var tooDeep: ValueError {
-        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing a session may nest")
+        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing processes may nest")
     }
 
     private func homeReference(_ record: Imported) -> JSON {
@@ -944,7 +955,7 @@ package final class Peer: @unchecked Sendable {
         lock.lock()
         if let closeError {
             lock.unlock()
-            throw RutisError.binding(String(describing: closeError))
+            throw RutisError.ended(closeError)
         }
         guard handshake else {
             lock.unlock()
@@ -970,7 +981,7 @@ package final class Peer: @unchecked Sendable {
                     do {
                         encoded.append(try encode(arg, &grants, chain, 0))
                     } catch let error as ValueError {
-                        throw ValueError("argument \(index + 1) of \(describe(op: op, fields: fields)): \(error.description)")
+                        throw ofArgument(error.description, index, describe(op: op, fields: fields))
                     }
                 }
                 frame.append(("args", .object([("type", .string("list")), ("value", .array(encoded))])))
@@ -988,9 +999,10 @@ package final class Peer: @unchecked Sendable {
             let sizes = encoded.map { JSONWriter.write($0).count }
             let call = describe(op: op, fields: fields)
             if let index = sizes.indices.max(by: { sizes[$0] < sizes[$1] }) {
-                throw ValueError("argument \(index + 1) of \(call): \(overLimit(data.count))")
+                throw ofArgument(overLimit(data.count), index, call, limit: maxMessage)
             }
-            throw ValueError("\(call): \(overLimit(data.count))")
+            throw ValueError("\(call): the arguments cannot be sent: \(overLimit(data.count))",
+                             data: ["part": "arguments", "limit": maxMessage])
         }
         let waiter = Pending(id: id, answered: answered)
         pending[id] = waiter
@@ -1369,7 +1381,7 @@ package final class Peer: @unchecked Sendable {
                 data = JSONWriter.write(.object([("op", .string("return")), ("id", .string(id)), ("value", encoded)]))
                 if data.count > maxMessage {
                     rollback(grants)
-                    failure = ofResult(overLimit(data.count), call)
+                    failure = ofResult(overLimit(data.count), call, limit: maxMessage)
                     data = []
                 }
             } catch let error as ValueError {

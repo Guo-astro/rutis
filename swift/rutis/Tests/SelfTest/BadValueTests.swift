@@ -60,14 +60,21 @@ struct BadValueTests {
             XCTFail("expected an error")
         } catch {
             let message = "\(error)"
-            XCTAssertTrue(message.hasPrefix("argument 2 of t.echo: the message would be ") && message.hasSuffix(limit), message)
+            XCTAssertTrue(message.hasPrefix("t.echo: argument 2 cannot be sent: the message would be ") && message.hasSuffix(limit), message)
+            // guarantee: sdk/error-texts (code bad-value, data {argument, part, limit}: #677)
+            let (code, data, _) = codeAndData(error)
+            XCTAssertEqual(code, "bad-value")
+            XCTAssertEqual((data as? [String: Any])?["argument"] as? Int, 2)
+            XCTAssertEqual((data as? [String: Any])?["part"] as? String, "argument")
+            XCTAssertEqual((data as? [String: Any])?["limit"] as? Int, maxMessage)
         }
         // A result the far end would send.
         do {
             _ = try await host.call(target: "t", method: "big", args: [.data(.int(Int64(over)))], sync: true)
             XCTFail("expected an error")
         } catch let error as RutisError {
-            XCTAssertTrue(error.message.hasPrefix("the result of t.big: the message would be ") && error.message.hasSuffix(limit), error.message)
+            XCTAssertTrue(error.message.hasPrefix("t.big: the result cannot be sent: the message would be ") && error.message.hasSuffix(limit), error.message)
+            XCTAssertEqual(error.code, "bad-value")
         }
         // An argument the far end would send to a function of this side,
         // which never runs.
@@ -80,7 +87,7 @@ struct BadValueTests {
             _ = try await host.call(target: "t", method: "applyBig", args: [.function(callback), .data(.int(Int64(over)))], sync: true)
             XCTFail("expected an error")
         } catch let error as RutisError {
-            XCTAssertTrue(error.message.hasPrefix("argument 1 of a function: the message would be ") && error.message.hasSuffix(limit), error.message)
+            XCTAssertTrue(error.message.hasPrefix("a function: argument 1 cannot be sent: the message would be ") && error.message.hasSuffix(limit), error.message)
         }
         XCTAssertFalse(called.isSet, "the function ran")
         let fine = try await host.call(target: "t", method: "echo", args: [.data(.string("after"))], sync: true)
@@ -110,7 +117,7 @@ struct BadValueTests {
             _ = try await host.call(target: "t", method: "object", args: [], sync: true)
             XCTFail("expected an error")
         } catch let error as RutisError {
-            XCTAssertEqual(error.message, "the result of t.object: an object with methods (Gadget) cannot cross to main; pass plain data or a function instead")
+            XCTAssertEqual(error.message, "t.object: the result cannot be sent: an object with methods (Gadget) cannot cross to main; pass plain data or a function instead")
         }
         let fine = try await host.call(target: "t", method: "echo", args: [.data(.string("after"))], sync: true)
         XCTAssertEqual(fine.plainJSON, .string("after"))

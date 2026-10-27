@@ -102,17 +102,23 @@ func (f *Future) Await(ctx context.Context, result any) error {
 // (missing ones are zero values, extra ones an error); a trailing error
 // result is the call's error. A panic becomes a peer.PanicError.
 func Call(ctx context.Context, fn reflect.Value, args []any) (any, error) {
-	return call(ctx, fn, args, "")
+	return call(ctx, fn, args, "", Callee{})
+}
+
+// CallAs is Call of a method of the service or object `callee` names, for
+// the texts of a refused call.
+func CallAs(ctx context.Context, fn reflect.Value, args []any, callee Callee) (any, error) {
+	return call(ctx, fn, args, "", callee)
 }
 
 // CallMethod is Call of the method `index` of `recv`, for a caller on the
 // far end: an error the method returns crosses with the method's
-// declaration as its stack's frame (#677).
-func CallMethod(ctx context.Context, recv reflect.Value, index int, args []any) (any, error) {
-	return call(ctx, recv.Method(index), args, MethodFrame(recv.Type(), index))
+// declaration as its stack's frame (#677); a refused call names `callee`.
+func CallMethod(ctx context.Context, recv reflect.Value, index int, args []any, callee Callee) (any, error) {
+	return call(ctx, recv.Method(index), args, MethodFrame(recv.Type(), index), callee)
 }
 
-func call(ctx context.Context, fn reflect.Value, args []any, frame string) (any, error) {
+func call(ctx context.Context, fn reflect.Value, args []any, frame string, callee Callee) (any, error) {
 	return peer.Protect(func() (any, error) {
 		ft := fn.Type()
 		for len(args) > 0 {
@@ -132,7 +138,7 @@ func call(ctx context.Context, fn reflect.Value, args []any, frame string) (any,
 			fixed--
 		}
 		if !ft.IsVariadic() && len(args) > fixed {
-			return nil, fmt.Errorf("%d arguments given, %d expected", len(args), fixed)
+			return nil, tooMany(callee, fixed, len(args))
 		}
 		for i := 0; i < fixed; i++ {
 			var arg any = peer.Undefined
@@ -141,7 +147,7 @@ func call(ctx context.Context, fn reflect.Value, args []any, frame string) (any,
 			}
 			value, err := FromPeer(arg, ft.In(first+i))
 			if err != nil {
-				return nil, fmt.Errorf("argument %d: %w", i, err)
+				return nil, badArgument(callee, i, ft.In(first+i), arg, err)
 			}
 			in = append(in, value)
 		}
@@ -150,7 +156,7 @@ func call(ctx context.Context, fn reflect.Value, args []any, frame string) (any,
 			for i := fixed; i < len(args); i++ {
 				value, err := FromPeer(args[i], elem)
 				if err != nil {
-					return nil, fmt.Errorf("argument %d: %w", i, err)
+					return nil, badArgument(callee, i, elem, args[i], err)
 				}
 				in = append(in, value)
 			}
@@ -327,11 +333,17 @@ type object struct{ rv reflect.Value }
 func Object(v any) peer.Object { return object{reflect.ValueOf(v)} }
 
 func (o object) Call(ctx context.Context, method string, args []any) (any, error) {
-	index, ok := Methods(o.rv.Type())[method]
+	table := Methods(o.rv.Type())
+	callee := Callee{Object: o.TypeName(), Method: method}
+	index, ok := table[method]
 	if !ok {
-		return nil, fmt.Errorf("unknown method %s", method)
+		names := make([]string, 0, len(table))
+		for name := range table {
+			names = append(names, name)
+		}
+		return nil, NoMethod(callee, names)
 	}
-	return CallMethod(ctx, o.rv, index, args)
+	return CallMethod(ctx, o.rv, index, args, callee)
 }
 
 func (o object) Get(_ context.Context, property string) (any, error) {

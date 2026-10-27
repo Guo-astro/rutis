@@ -161,7 +161,7 @@ extension Rutis {
         runtime.lock.withLock { runtime.closing = true }
         let budget = runtime.settings.shutdownTimeout
         if await !runtime.dispose(within: budget) {
-            throw RutisError(name: "Error", message: "cleanups did not finish within \(Events.seconds(budget))s after the session ended")
+            throw RutisError(name: "Error", message: "cleanups did not finish within \(Events.seconds(budget))s after the host disconnected")
         }
     }
 
