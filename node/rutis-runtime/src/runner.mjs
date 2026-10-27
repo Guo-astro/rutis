@@ -10,6 +10,7 @@ import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
 import { rowTracking, install as handleUnhandled, failureText, kindText, realFile, reportText, stackFiles, unhandledError } from './unhandled.mjs'
 import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
+import { prefixOutput, say, watchBlocking } from './output.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -98,8 +99,19 @@ let creating
 const unloaded = new WeakMap()
 // Under `rutis-host dev`, which row each piece of asynchronous work is
 // (#688, ./unhandled.mjs): an error it leaves unhandled fails that row.
-const tracking = rowTracking(process.env.RUTIS_DEV === '1')
+// With RUTIS_PREFIX_OUTPUT=1 (#678, ./output.mjs) the row running is traced
+// too: each line its code writes starts with its name.
+const prefixing = process.env.RUTIS_PREFIX_OUTPUT === '1'
+const tracking = rowTracking(process.env.RUTIS_DEV === '1', { output: prefixing })
 const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading), within: tracking.within })
+if (prefixing) {
+  prefixOutput(() => {
+    const key = tracking.running()
+    return key === undefined ? runtimeName() : bus.rowId(key)
+  })
+}
+// A row's method holding this thread for 5 s is said (#678).
+const blocking = watchBlocking({ runtime: () => runtimeName() })
 function whose(context) {
   const owner = rowOf(context?.fiber) ?? (creating ? [creating.key, creating] : undefined)
   if (!owner) {
@@ -119,7 +131,7 @@ function goneRowOf(fiber) {
 install(ctx, Context, bus, whose)
 // A fiber's apply and effects run as its row's: also those Cordis starts
 // later, from another row's code (a gated row whose inject came, say).
-if (tracking.enabled && typeof Fiber?.prototype?._execute === 'function') {
+if (tracking.traced && typeof Fiber?.prototype?._execute === 'function') {
   const execute = Fiber.prototype._execute
   Fiber.prototype._execute = function (runner) {
     const row = rowOf(this)?.[0] ?? (creating ? creating.key : undefined)
@@ -372,7 +384,7 @@ function provideWaitingLater() {
       if (holder(scope, name)) continue
       waitingHosts.delete(id)
       try { hosts.set(id, scope.provide(name, proxy)) } catch (error) {
-        process.stderr.write(`runtime node: cannot register host service ${serviceName(id)}: ${error?.message ?? error}\n`)
+        say(`runtime node: cannot register host service ${serviceName(id)}: ${error?.message ?? error}\n`)
       }
     }
   })
@@ -423,7 +435,7 @@ function located(entry) {
 // A leaf plugin providing a service it does not declare, under a host that
 // mounted without `announce` (one older than 0.12): it is told, once per
 // name, that the host does not take it.
-const tellOldHost = oncePerName(text => process.stderr.write(text))
+const tellOldHost = oncePerName(text => say(text))
 const undeclared = name => {
   if (fibers && !announce) tellOldHost(name)
 }
@@ -875,7 +887,7 @@ function mount(args) {
 // A call runs as the row whose service it calls; a control call as no
 // row's, even arriving while a row's synchronous call waits (#688).
 function dispatch(target, method, args) {
-  if (!tracking.enabled) return dispatchCall(target, method, args)
+  if (!tracking.traced) return dispatchCall(target, method, args)
   return tracking.within(target === '' ? undefined : serviceRow(target), () => dispatchCall(target, method, args))
 }
 
@@ -963,7 +975,8 @@ function dispatchCall(target, method, args) {
   if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
   let result
   try {
-    result = Reflect.apply(entry.object[method], entry.object, args)
+    const row = serviceRow(target)
+    result = blocking.held(row === undefined ? runtimeName() : bus.rowId(row), `${serviceName(entry.name)}.${method}`, () => Reflect.apply(entry.object[method], entry.object, args))
   } finally {
     // Also after a throw: the method may have replaced the service first.
     if (!(result instanceof Promise)) refresh()
@@ -993,7 +1006,7 @@ function watch(ended, after) {
     process.kill(process.pid, 'SIGKILL')
   `, { eval: true, workerData: { ended, after } })
   watchdog.unref()
-  watchdog.on('error', error => process.stderr.write(`runtime node: the watchdog failed: ${error?.message ?? error}\n`))
+  watchdog.on('error', error => say(`runtime node: the watchdog failed: ${error?.message ?? error}\n`))
 }
 
 // Errors nobody handled (#688, ./unhandled.mjs): the row they are traced
@@ -1004,7 +1017,7 @@ function charge(kind, error, traced) {
   const key = chargedRow(traced, error)
   const row = key === undefined ? undefined : rows.get(key)
   if (!row || closing || !peer) {
-    process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${reportText(error)}\n`)
+    say(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${reportText(error)}\n`)
     return
   }
   const why = failureText(kind, error)
@@ -1012,7 +1025,7 @@ function charge(kind, error, traced) {
   // Once: the row is on its way out; what else it leaves unhandled until
   // it has gone is written here.
   if (row.failing) {
-    process.stderr.write(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
+    say(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
     return
   }
   row.failing = true
@@ -1022,7 +1035,7 @@ function charge(kind, error, traced) {
   try { encoded = encodeError(error) } catch {}
   peer.callAsync('', 'rows.failed', encoded ? [key, kindText(kind, error), encoded] : [key, kindText(kind, error)]).catch(() => {
     // A host older than 0.18 fails no row so: the row goes on.
-    process.stderr.write(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
+    say(`runtime ${runtimeName()}: row ${bus.rowId(key)}: ${why}\n`)
   })
 }
 // The row an error traced to row `key` is charged to: that row, unless the
@@ -1064,13 +1077,13 @@ try {
     report: bus.report,
     // A function or object a row hands over runs as that row's when
     // called (#688).
-    owner: tracking.current,
+    owner: tracking.running,
     within: tracking.within,
   })
 } catch (error) {
   // A host older than 0.13 (protocol §2.2).
   if (error?.message === NO_EVENTS_V2) {
-    process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
+    say(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
     process.exit(1)
   }
   // The supervisor ended the session before it greeted, and said why.
@@ -1114,7 +1127,7 @@ bus.ended()
 // failure, said on stderr and in the exit status: ending normally made the
 // host report "exited normally" and nothing else (#225).
 if (peer.fault) {
-  console.error(`runtime node: disconnected from the host: ${peer.fault.message}`)
+  say(`runtime node: disconnected from the host: ${peer.fault.message}\n`)
   process.exitCode = 1
 }
 // The rows go now, unless the host disposed them first: it went away (it
@@ -1122,11 +1135,11 @@ if (peer.fault) {
 // finish within the deadline are given up (exit status 1). Then the process
 // exits, also when a plugin left a timer or a socket that would keep it.
 const late = setTimeout(() => {
-  console.error(`runtime node: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting`)
+  say(`runtime node: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting\n`)
   process.exit(1)
 }, deadline)
 await dispose().catch(error => {
-  console.error(`rutis runtime: unloading failed: ${error?.stack ?? error}`)
+  say(`rutis runtime: unloading failed: ${error?.stack ?? error}\n`)
   process.exitCode = 1
 })
 // What is still being written goes out first.

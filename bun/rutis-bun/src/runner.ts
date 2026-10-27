@@ -27,11 +27,13 @@
 // export slots are registered by id (`scopes`): the name outside any scope,
 // the name, a NUL and the label inside one.
 import { realpathSync } from 'node:fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
+import { prefixOutput, watchBlocking } from './output.mjs'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
 // emits them (internal/* stays in each runtime). The wording matches the
@@ -137,9 +139,20 @@ type Listener = (...args: any[]) => unknown
 export class Runtime {
   client?: Client
   closing = false
+  // With RUTIS_PREFIX_OUTPUT=1 (#678, ./output.mjs), which row's code runs:
+  // its apply and cleanups, its service methods, its listeners and the
+  // functions it hands over run in its async context, and each line they
+  // write starts with its name.
+  #store = process.env.RUTIS_PREFIX_OUTPUT === '1' ? new AsyncLocalStorage<string | undefined>() : undefined
+  /** Run `run` as row `key`'s code (undefined: no row's). */
+  within = <T>(key: string | undefined, run: () => T): T => this.#store ? this.#store.run(key, run) : run()
+  /** The row whose code runs now. */
+  running = (): string | undefined => this.#store?.getStore()
   // A row's listener the host refuses while the row loads fails the load
   // (protocol §11).
-  #bus = new Bus({ loading: (key: string) => Array.isArray(this.#rows.get(key)?.pending) })
+  #bus = new Bus({ loading: (key: string) => Array.isArray(this.#rows.get(key)?.pending), within: this.within })
+  // A row's method holding this thread for 5 s is said (#678).
+  #blocking = watchBlocking({ runtime: () => this.name })
   #deadline = shutdownDeadline()
   #project: string
   #modules = new Modules()
@@ -156,7 +169,15 @@ export class Runtime {
   // The undeclared names a plugin was told such a host does not take.
   #told = new Set<string>()
 
-  constructor(project: string) { this.#project = project }
+  constructor(project: string) {
+    this.#project = project
+    if (this.#store) {
+      prefixOutput(() => {
+        const key = this.running()
+        return key === undefined ? this.name : this.#bus.rowId(key) ?? key
+      })
+    }
+  }
 
   // Connected: the bus registers and dispatches through the host.
   attach(client: Client) {
@@ -335,7 +356,7 @@ export class Runtime {
       },
     }
     try {
-      const cleanup = await plugin.apply(ctx, config)
+      const cleanup = await this.within(key, () => plugin.apply(ctx, config))
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')
         row.cleanups.push(cleanup as () => unknown)
@@ -379,7 +400,7 @@ export class Runtime {
     this.#bus.forgetRow(key)
     const errors: unknown[] = []
     for (const cleanup of row.cleanups.splice(0).reverse()) {
-      try { await cleanup() } catch (error) { errors.push(error) }
+      try { await this.within(key, cleanup) } catch (error) { errors.push(error) }
     }
     if (errors.length) throw errors[0]
     return null
@@ -429,7 +450,9 @@ export class Runtime {
     if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
     const operation = entry.object[method]
     if (typeof operation !== 'function') throw noMethod(serviceName(entry.name), method, slot ? slot.methods : methodsOf(entry.object))
-    return Reflect.apply(operation, entry.object, args)
+    const row = slot?.row ?? this.#services.get(entry.name)?.row
+    const shown = row === undefined ? this.name : this.#bus.rowId(row) ?? row
+    return this.within(row, () => this.#blocking.held(shown, `${serviceName(entry.name)}.${method}`, () => Reflect.apply(operation, entry.object, args)))
   }
 
   #control(method: string, args: any): unknown {
