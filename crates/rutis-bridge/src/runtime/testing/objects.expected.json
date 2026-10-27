@@ -101,7 +101,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "JavaScript sends no cancel of its own (it has no way to give a call up); its cell is the far end's cancel reaching the method's AbortSignal. Python and Rust also give up calls through a proxy."
     },
     {
       "id": "no-method",
@@ -123,7 +124,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "Node and Python also release on collection; Bun's conservative collector is tested through an explicit release only."
     },
     {
       "id": "holder-killed-releases",
@@ -134,7 +136,8 @@
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "forward"
+      "rust": "forward",
+      "note": "The host releasing the object when the holder's process goes is the Rust cell; a language's cell is its owner letting the object go on that release."
     },
     {
       "id": "sync-wait-cycle",

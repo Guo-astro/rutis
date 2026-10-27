@@ -278,3 +278,38 @@ test('an object passed by reference is cancelled through and released by the hos
   expect(fault()).toBeUndefined()
   peer.close()
 })
+
+// A received object stays a reference wherever it is put: inside a plain
+// object, as in an array.
+test('a received object nested in data is still a reference', async () => {
+  const got: any[] = []
+  const { peer, sent, fault } = harness((_, _method, args) => { got.push(...args); return 'ok' })
+  const object = { type: 'reference', value: { id: 7, kind: 'object', home: false, origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object] } })
+  await tick()
+  peer.invokeAsync('t', 'give', [{ cache: got[0], n: 1 }]).catch(() => {})
+  expect(sent.at(-1).args.value[0]).toEqual({ type: 'record', value: { cache: { type: 'reference', value: { id: 7, kind: 'object', home: true, origin: [] } }, n: data(1) } })
+  expect(fault()).toBeUndefined()
+  peer.close()
+})
+
+// A method taken off a received object keeps the object, as a function
+// reference would. (Bun's collector scans conservatively: when the object
+// is collected is not tested here; Node's test does.)
+test('a method taken off a received object keeps it', async () => {
+  const collect = async () => { for (let i = 0; i < 5; i++) { Bun.gc(true); await new Promise(resolve => setTimeout(resolve, 10)) } }
+  let got: any
+  const { peer, sent, fault } = harness((_, _method, args) => { got = args[0]; return 'ok' })
+  const take = (id: number) => peer.receive({ op: 'invoke', id: `rust:${id}`, path: [], target: 'test', method: 'take', args: { type: 'list', value: [{ type: 'reference', value: { id, kind: 'object', home: false, origin: [] } }] } })
+  take(1); await tick()
+  const inc: any = got.inc; got = undefined
+  await collect()
+  expect(sent.some(frame => frame.op === 'release')).toBe(false)
+  const result = inc()
+  const call = sent.at(-1)
+  expect([call.op, call.method]).toEqual(['call', 'inc'])
+  peer.receive({ op: 'return', id: call.id, value: data(1) })
+  expect(await result).toBe(1)
+  expect(fault()).toBeUndefined()
+  peer.close()
+})

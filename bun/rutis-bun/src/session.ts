@@ -20,8 +20,12 @@ const isPluginDefinition = (value: any) => value !== null && typeof value === 'o
 // What a call is told that hands this side a plugin definition made in
 // another process: only this side's own come back to it (§4.5).
 export const PLUGIN_FROM_ELSEWHERE = 'received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead'
+// The proxies of objects received from another process (#687): references,
+// whatever their shape.
+const REMOTE_OBJECTS = new WeakSet()
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
+  if (REMOTE_OBJECTS.has(value)) return true
   if (builtins.some(type => value instanceof type) || constructedTag(value) || value[RECORD] === true) return false
   const prototype = Object.getPrototypeOf(value)
   if (prototype !== Object.prototype && prototype !== null) return true
@@ -154,11 +158,14 @@ const classOf = value => {
 }
 const className = value => { const name = classOf(value); return name ? ` (${name})` : '' }
 // The methods an object passed by reference has: its own and inherited
-// function-valued properties, not `constructor` nor Object's own, sorted.
+// function-valued properties, not `constructor` nor Object's own, a field
+// hiding an inherited method of its name; sorted.
 export function methodsOf(value) {
-  const names = new Set()
+  const names = new Set(), seen = new Set()
   for (let at = value; at && at !== Object.prototype; at = Object.getPrototypeOf(at)) {
     for (const name of Object.getOwnPropertyNames(at)) {
+      if (seen.has(name)) continue
+      seen.add(name)
       if (name === 'constructor') continue
       const descriptor = Object.getOwnPropertyDescriptor(at, name)
       if (typeof descriptor?.value === 'function') names.add(name)
@@ -169,10 +176,11 @@ export function methodsOf(value) {
 // A call of `method` on `value` (an object passed by reference) that it has
 // no method of: what the caller is told (#687 §八), code `no-method`, data
 // `{ object, method, methods }` (`object`: its class, null for a plain one).
-export function noMethod(value, method) {
+// `found`: what `value[method]` is, read once by the caller.
+export function noMethod(value, method, found) {
   const object = classOf(value) ?? null, methods = methodsOf(value)
   const listed = methods.length ? `methods: ${methods.join(', ')}` : 'no methods'
-  const field = method in Object(value) && typeof value[method] !== 'function'
+  const field = found !== undefined && typeof found !== 'function'
     ? ` (${method} is a field; objects passed by reference expose only their methods)` : ` (${listed})`
   const error = new TypeError(`${object ?? 'the object'} has no method ${method}${field}`)
   return Object.assign(error, { code: 'no-method', data: { object, method, methods } })
@@ -490,10 +498,13 @@ export class Session {
   // an asynchronous call of the original object's; it has no fields.
   #remoteObject(id, check) {
     const methods = new Map()
+    // Each method keeps the proxy alive: a method taken off it (`const {
+    // get } = cache`) keeps the object, as a function reference would.
+    let proxy
     const method = name => {
       let call = methods.get(name)
       if (!call) {
-        call = (...args) => { try { check() } catch (error) { return Promise.reject(error) } return this.#requestAsync('call', { reference: id, method: name }, args) }
+        call = (...args) => { try { if (!proxy) throw new Error('reference released'); check() } catch (error) { return Promise.reject(error) } return this.#requestAsync('call', { reference: id, method: name }, args) }
         methods.set(name, call)
       }
       return call
@@ -502,17 +513,19 @@ export class Session {
     // `util.inspect` (and so `console.log`) reads a proxy's target itself.
     const target = Object.create(null)
     Object.defineProperty(target, INSPECT, { value: show })
-    return new Proxy(target, {
+    proxy = new Proxy(target, {
       get: (_target, name) => {
         if (name === INSPECT || name === 'toString' || name === Symbol.toPrimitive) return show
         if (typeof name === 'symbol' || NOT_METHODS.has(name)) return undefined
         return method(name)
       },
-      has: (_target, name) => typeof name === 'string' && !NOT_METHODS.has(name),
+      has: (_target, name) => name === INSPECT || (typeof name === 'string' && !NOT_METHODS.has(name)),
       set: () => false,
       defineProperty: () => false,
       deleteProperty: () => false,
     })
+    REMOTE_OBJECTS.add(proxy)
+    return proxy
   }
   #export(id, kind) {
     const entry = this.#exports.get(id)
@@ -699,7 +712,8 @@ export class Session {
             value = frame.op === 'get' ? entry.value[frame.property]
               : frame.op === 'call' && frame.method !== undefined ? (() => {
                 const method = entry.value[frame.method]
-                if (typeof method !== 'function') throw noMethod(entry.value, frame.method)
+                // Object's own (`hasOwnProperty`, ...) are not the object's methods.
+                if (typeof method !== 'function' || method === Object.prototype[frame.method]) throw noMethod(entry.value, frame.method, method)
                 return Reflect.apply(method, entry.value, args)
               })()
                 : frame.op === 'call' ? Reflect.apply(entry.value, undefined, args)

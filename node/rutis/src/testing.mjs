@@ -285,7 +285,7 @@ function remoteObject(object) {
       if (typeof name === 'symbol' || NOT_METHODS.has(name)) return undefined
       return method(name)
     },
-    has: (_target, name) => typeof name === 'string' && !NOT_METHODS.has(name),
+    has: (_target, name) => name === INSPECT || (typeof name === 'string' && !NOT_METHODS.has(name)),
     set: () => false,
     defineProperty: () => false,
     deleteProperty: () => false,

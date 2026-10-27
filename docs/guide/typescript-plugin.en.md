@@ -72,7 +72,7 @@ await cache.set('a', 1)          // every method is an asynchronous call of the 
 const value = await cache.get('a')
 ```
 
-- Every name read on a proxy is a method (but `then`, so awaiting a proxy gives the proxy itself); it has no data fields: to get data, have a method return it. `console.log` shows `[remote object]`.
+- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it); it has no data fields: to get data, have a method return it. `console.log` shows `[remote object]`.
 - One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there.
 - An object does not follow its row: after the row that passed it unloads, it can still be called. Once its runtime has exited, calls on it fail with `peer-gone`.
 - Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set)`.

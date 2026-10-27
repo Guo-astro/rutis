@@ -649,3 +649,44 @@ test('an object passed by reference is cancelled through and released by the hos
   assert.equal(fault(), undefined)
   peer.close()
 })
+
+// A received object stays a reference wherever it is put: inside a plain
+// object, as in an array.
+test('a received object nested in data is still a reference', async () => {
+  const got = []
+  const { peer, sent, fault } = harness((_, _method, args) => { got.push(...args); return 'ok' })
+  const object = { type: 'reference', value: { id: 7, kind: 'object', home: false, origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object] } })
+  await Promise.resolve()
+  peer.invokeAsync('t', 'give', [{ cache: got[0], n: 1 }]).catch(() => {})
+  assert.deepEqual(sent.at(-1).args.value[0], { type: 'record', value: { cache: { type: 'reference', value: { id: 7, kind: 'object', home: true, origin: [] } }, n: data(1) } })
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// objects-case(node): receiver-releases
+// A method taken off a received object keeps the object, as a function
+// reference would; the object let go of entirely is released (collected).
+test('a method taken off a received object keeps it; collected, it is released', async () => {
+  const v8 = await import('node:v8'), vm = await import('node:vm')
+  v8.setFlagsFromString('--expose-gc')
+  const gc = vm.runInNewContext('gc')
+  const collect = async () => { for (let i = 0; i < 5; i++) { gc(); await new Promise(resolve => setTimeout(resolve, 10)) } }
+  let got
+  const { peer, sent, fault } = harness((_, _method, args) => { got = args[0]; return 'ok' })
+  const take = id => peer.receive({ op: 'invoke', id: `rust:${id}`, path: [], target: 'test', method: 'take', args: { type: 'list', value: [{ type: 'reference', value: { id, kind: 'object', home: false, origin: [] } }] } })
+  take(1); await new Promise(resolve => setImmediate(resolve))
+  let inc = got.inc; got = undefined
+  await collect()
+  assert.equal(sent.some(frame => frame.op === 'release'), false, 'not released while a method is held')
+  const result = inc()
+  const call = sent.at(-1)
+  assert.deepEqual([call.op, call.method], ['call', 'inc'])
+  peer.receive({ op: 'return', id: call.id, value: data(1) })
+  assert.equal(await result, 1)
+  inc = undefined
+  await collect()
+  assert.deepEqual(sent.find(frame => frame.op === 'release'), { op: 'release', reference: 1, count: 1 })
+  assert.equal(fault(), undefined)
+  peer.close()
+})

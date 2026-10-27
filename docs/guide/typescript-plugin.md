@@ -72,7 +72,7 @@ await cache.set('a', 1)          // 方法都是异步调用，调用的是对�
 const value = await cache.get('a')
 ```
 
-- 代理上读到的每个名字都是方法（`then` 除外，所以 `await` 一个代理得到它自己），没有数据字段：要数据，让方法返回它。`console.log` 显示 `[remote object]`。
+- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用），没有数据字段：要数据，让方法返回它。`console.log` 显示 `[remote object]`。
 - 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象。
 - 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
 - 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。

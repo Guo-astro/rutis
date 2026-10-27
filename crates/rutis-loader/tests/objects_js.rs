@@ -13,7 +13,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, Probe};
+use common::runtimes::{layer, repo, Probe, COLD};
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
@@ -167,8 +167,15 @@ async fn fixture() -> Fixture {
 }
 
 /// Call `service.method` from the host, as Rust code does: its result.
+/// The service is waited for: a row's service is there once the row runs,
+/// which may be just after `reconcile` returns.
 async fn call(root: &Ctx, service: &str, method: &str) -> Value {
-    let dispatch = root.get_at::<dyn HostDispatch>(&host_key(service)).unwrap();
+    let dispatch = COLD
+        .eventually(
+            || root.get_at::<dyn HostDispatch>(&host_key(service)),
+            &format!("the service {service}"),
+        )
+        .await;
     let reply = dispatch.invoke(method, RpcValue::List(vec![])).unwrap();
     let value = settle(reply).await.unwrap();
     rutis_bridge::session::decode_value(value).unwrap()
@@ -225,9 +232,8 @@ async fn objects_cross(owner: &str) {
         "node" => fixture.node.kill(),
         _ => fixture.bun.kill(),
     }
-    let said = format!(
-        "peer-gone: a call on an object from {owner} failed: runtime {owner} exited"
-    );
+    let said =
+        format!("peer-gone: a call on an object from {owner} failed: runtime {owner} exited");
     let mut answer = Value::Null;
     for _ in 0..200 {
         answer = call(&fixture.root, "holder", "after").await;
