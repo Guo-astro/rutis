@@ -496,13 +496,18 @@ async fn check(args: &[String]) -> Result<(), String> {
             _ => outln!("{id} ({name}): not checked"),
         }
     }
-    // Warnings only, in 0.17.2: a configuration that passed still passes
-    // (errors from 0.18, #676).
+    // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
+    // starts, and of rows providing one name all but the first to start
+    // fail.
+    let mut in_cycles = std::collections::BTreeSet::new();
     for cycle in &report.cycles {
-        errln!("rutis-host: warning: {}", cycle_line(cycle));
+        errln!("rutis-host: error: {}", cycle_line(cycle));
+        in_cycles.extend(cycle.iter().map(|link| link.row.as_str()));
     }
+    failed += in_cycles.len();
     for clash in &report.clashes {
-        errln!("rutis-host: warning: {}", clash_line(clash));
+        errln!("rutis-host: error: {}", clash_line(clash));
+        failed += clash.rows.len().saturating_sub(1);
     }
     for binaries in &host.binaries {
         outln!("{} binaries:", binaries.key);
@@ -595,7 +600,7 @@ fn did_you_mean(like: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-/// `check`'s warning for rows waiting for each other's services.
+/// `check`'s error for rows waiting for each other's services.
 fn cycle_line(cycle: &[CycleLink]) -> String {
     let rows: Vec<&str> = cycle.iter().map(|link| link.row.as_str()).collect();
     let links: Vec<String> = cycle
@@ -614,7 +619,7 @@ fn cycle_line(cycle: &[CycleLink]) -> String {
     )
 }
 
-/// `check`'s warning for several rows declaring one service in one scope.
+/// `check`'s error for several rows declaring one service in one scope.
 fn clash_line(clash: &Clash) -> String {
     format!(
         "rows {} all provide {}: only the first to start provides it, the others fail; \

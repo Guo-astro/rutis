@@ -193,11 +193,11 @@ When a missing name is a character or two from a declared one, the warnings abov
 
 `check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>` (`only disabled rows declare <service>` for one only disabled rows declare), and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
 
-In two more cases every row says `ok` but some rows will not start, and `check` warns on stderr (in 0.17 only a warning, the exit status unchanged, with `--strict` too; an error from 0.18):
+In two more cases every row says `ok` but some rows will not start, and `check` reports an error on stderr and exits with 1 (only a warning in 0.17.2):
 
 ```
-rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
-rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+rutis-host: error: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
 ```
 
 - Rows whose `inject` wait for each other's services (a cycle): none of them starts. Only services one row alone provides count: with another provider a row may start from that one, which is no cycle.
