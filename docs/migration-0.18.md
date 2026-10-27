@@ -183,3 +183,10 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
+
+## `rutis-host` 的输出：状态行写到标准错误，`dev` 里插件的行带行名（#678）
+
+- **`run` 和 `dev` 的状态行写到标准错误**（以前写到标准输出）：`weather: running`、`runtime py: down (…)`、`rutis-host: listening on …`、`rutis-host: reloaded …`、`dev` 的 `reloaded`、`building` 等。插件的输出照旧按它写的流。从 `rutis-host` 的标准输出里读状态行的脚本改为读标准错误（或 `2>&1`）。
+- **`dev` 里插件写的每一行前面带上行名**：`[weather] fetching forecast for Berlin`；Go、Swift 的是运行时名（`[go-weather] `）。按整行匹配插件输出的脚本或测试，在 `dev` 下加 `--no-prefix-output`，或者去掉前缀再比。`run` 默认不变，`--prefix-output` 打开。
+
+详见 [rutis-host 指南的输出](guide/rutis-host.md#输出)。

@@ -240,12 +240,40 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。
 
+一个服务方法同步地占住运行时 5 秒（固定，0.18 起，#678）时，运行时在 stderr 写一次是哪一行的哪个方法、这期间其他行都在等、怎么改，例如：
+
+```text
+runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it is a synchronous method (def); make it async def, awaiting what it waits for, and it will not hold the runtime
+```
+
+Python 里这是 `def` 方法（改成 `async def`，等待的东西用 `await`）；Node、Bun 里是同步运行的代码（`readFileSync`、`execSync`、忙等），改用异步调用并 `await`，或者把计算放进 worker 线程。只写一次、只写不打断：方法照常运行完。`rutis-host dev --debug` 下不写（停在断点上的运行时可以停多久都行）。Go、Swift、Kotlin 的同步方法不占住整个运行时，没有这个提示。
+
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
 - **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
 - **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`，哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
 - **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
 - Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
+
+## 输出
+
+插件写到标准输出、标准错误的内容（`console.log`、`print`、`fmt.Println`）进宿主的终端，各写各的流。`rutis-host dev` 下每一行前面加上写它的行的名字（0.18 起，#678）：
+
+```text
+[weather] fetching forecast for Berlin
+```
+
+- Node、Bun、Python 的几行共用一个进程，运行时按当前在跑的行加前缀：行的 `apply` 与清理、服务方法、监听器、交出去的函数，以及它们启动的异步工作（Node、Bun 的异步上下文，Python 的 contextvars）。追不到是哪一行的输出加运行时的名字（`[py] `）：Python 插件自己开的线程，以及不在任何一行里运行的代码。直接写文件描述符的输出（子进程、`os.write`、原生模块）运行时看不到，原样传过去。
+- Go、Swift 一个进程只有一个插件：宿主读它的输出时加运行时的名字（`[go-weather] `），SDK 不变。
+- `rutis-host run` 默认不加（生产环境里插件的输出原样不动）；`--prefix-output` / `--no-prefix-output` 打开或关掉，见 [rutis-host](rutis-host.md#输出)。
+
+Python 的 `logging` 不改：默认只显示 WARNING 及以上，这是 Python 自己的规则。要看 INFO，在插件里配置日志：
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+```
 
 ## 值怎样传递
 
@@ -370,6 +398,21 @@ export default definePlugin({
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 
 `async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。各个支持的 Python 版本都是这样（3.12 起是 asyncio 自带的 eager start，3.10、3.11 由 rutis 实现）。
+
+## 调用等多久
+
+rutis 不给调用设时限，也不替双方取消调用：一个调用该等多久是调用方的业务。要限时，用调用方自己语言的写法，取消会传到对面（见[取消](#取消)）：
+
+| 语言 | 写法 |
+| --- | --- |
+| Python | `await asyncio.wait_for(weather.tomorrow(), timeout=5)` |
+| Go | `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`，把 `ctx` 传给调用 |
+| Swift | 在一个 `Task` 里调用，到时取消这个 `Task` |
+| Kotlin | `withTimeout(5_000) { weather.tomorrow() }` |
+| Rust | `tokio::time::timeout(Duration::from_secs(5), weather.tomorrow())`（丢弃 future 即取消） |
+| TypeScript | `Promise.race` 加一个定时器；对面不会被取消，与原生 JS 一样（promise 本身不能取消） |
+
+看一个调用已经等了多久，用 `rutis-host status`（它列出进行中的调用）。
 
 ## 取消
 

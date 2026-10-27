@@ -183,3 +183,10 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+
+## `rutis-host`'s output: status lines on standard error, plugins' lines named under `dev` (#678)
+
+- **The status lines of `run` and `dev` go to standard error** (standard output before): `weather: running`, `runtime py: down (…)`, `rutis-host: listening on …`, `rutis-host: reloaded …`, `dev`'s `reloaded`, `building` and the like. Plugins' output goes to the stream they write it to, as before. A script reading status lines from `rutis-host`'s standard output reads standard error instead (or `2>&1`).
+- **Under `dev` each line a plugin writes starts with its row's name**: `[weather] fetching forecast for Berlin`; Go's and Swift's with the runtime's name (`[go-weather] `). A script or test matching plugins' output by whole lines passes `--no-prefix-output` to `dev`, or drops the prefix before comparing. `run` is unchanged by default; `--prefix-output` turns it on.
+
+See [Output in the rutis-host guide](guide/rutis-host.en.md#output).
