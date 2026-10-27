@@ -147,13 +147,23 @@ def report_text(error: BaseException) -> str:
     the plugin's (it is then all there is to find its source by)."""
     from .runner import _plugin_frame  # runner imports this module
 
-    every = traceback.extract_tb(error.__traceback__)
-    own = [frame for frame in every if _plugin_frame(frame)]
-    if not own:
-        return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()
-    frames = "".join(traceback.StackSummary.from_list(own).format())
-    text = "".join(traceback.format_exception_only(type(error), error))
-    return f"Traceback (most recent call last):\n{frames}{text}".rstrip()
+    report = traceback.TracebackException.from_exception(error)
+    if not any(_plugin_frame(frame) for frame in report.stack):
+        return "".join(report.format()).rstrip()
+    # Each exception of the chain (its cause, its context) keeps only the
+    # plugin's frames, or all of its own when none is the plugin's.
+    seen: set[int] = set()
+    pending = [report]
+    while pending:
+        part = pending.pop()
+        if id(part) in seen:
+            continue
+        seen.add(id(part))
+        own = [frame for frame in part.stack if _plugin_frame(frame)]
+        if own:
+            part.stack = traceback.StackSummary.from_list(own)
+        pending.extend(link for link in (part.__cause__, part.__context__) if link is not None)
+    return "".join(report.format()).rstrip()
 
 
 def install_exit(name_row: Callable[[str | None, list[str]], str | None], runtime: Callable[[], str]) -> None:

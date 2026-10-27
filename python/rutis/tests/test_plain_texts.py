@@ -337,10 +337,6 @@ class LoadFailures(background.TestCase):
         self.assertEqual(str(missing.exception), "No module named 'lf_nowhere'")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class UnhandledTexts(unittest.TestCase):
     """guarantee: loader/unhandled-errors, sdk/error-texts"""
 
@@ -379,6 +375,18 @@ class UnhandledTexts(unittest.TestCase):
         self.assertTrue(text.startswith("Traceback (most recent call last):"), text)
         self.assertIn("test_plain_texts.py", text)
         self.assertTrue(text.endswith("ValueError: boom"), text)
+        # The chain stays, each part with the plugin's frames only.
+        try:
+            try:
+                raise KeyError("region")
+            except KeyError as cause:
+                raise ValueError("no forecast") from cause
+        except ValueError as caught:
+            chained = caught
+        text = report_text(chained)
+        self.assertIn("KeyError: 'region'", text)
+        self.assertIn("direct cause", text)
+        self.assertTrue(text.endswith("ValueError: no forecast"), text)
         # None of its frames is the plugin's: the whole traceback.
         import json as library
 
@@ -389,3 +397,6 @@ class UnhandledTexts(unittest.TestCase):
         error.__traceback__ = error.__traceback__.tb_next
         self.assertIn("decoder.py", report_text(error))
 
+
+if __name__ == "__main__":
+    unittest.main()
