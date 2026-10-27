@@ -317,12 +317,15 @@ impl Resolver for RuntimeResolver {
             // like any dependency), and says why it has no schema; it is not
             // cached, and `RuntimeRowsPlugin` resolves it again once the
             // runtime is up, before the row may start.
+            // Marked to be resolved again first: a runtime turning ready
+            // between reading its state and marking the name would leave
+            // the name unmarked.
+            self.offline.lock().unwrap().insert(name.to_owned());
             let running = match self.runtime.state() {
                 RuntimeState::Ready(process) => Some(process),
                 _ => None,
             };
             let Some(process) = running else {
-                self.offline.lock().unwrap().insert(name.to_owned());
                 let module = JsModule {
                     name: name.to_owned(),
                     runtime: self.runtime.name().to_owned(),
@@ -353,23 +356,23 @@ impl Resolver for RuntimeResolver {
                     ))),
                 }));
             };
-            let described = process
-                .describe_row(&entry)
-                .await
-                .map_err(|error| match error {
-                    // The runtime looked and found no such plugin.
-                    rutis_bridge::session::Error::Remote { name: kind, .. }
-                        if kind == "NotFound" =>
-                    {
-                        LoaderError::NotFound {
-                            name: name.to_owned(),
-                        }
-                    }
-                    error => LoaderError::Resolve {
+            let described = process.describe_row(&entry).await;
+            if described.is_err() {
+                // Resolved with the runtime, if to an error: not again.
+                self.offline.lock().unwrap().remove(name);
+            }
+            let described = described.map_err(|error| match error {
+                // The runtime looked and found no such plugin.
+                rutis_bridge::session::Error::Remote { name: kind, .. } if kind == "NotFound" => {
+                    LoaderError::NotFound {
                         name: name.to_owned(),
-                        message: error.to_string(),
-                    },
-                })?;
+                    }
+                }
+                error => LoaderError::Resolve {
+                    name: name.to_owned(),
+                    message: error.to_string(),
+                },
+            })?;
             // A leaf runtime has no dependency resolution of its own: every
             // service its plugins inject waits in rutis. In Cordis, only the
             // shared names do; the others resolve natively.

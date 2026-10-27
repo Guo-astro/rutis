@@ -398,6 +398,7 @@ let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&cata
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
 let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
 let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+let runtimes = [node.handle(), python.handle()];
 root.plugin(node);
 root.plugin(python);
 
@@ -416,6 +417,10 @@ let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
     { "id": "web", "name": "weather-plugin", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "py:llm_gateway" }
 ] }]))?;
+// 等运行时起来再 reconcile：报告里才有运行时里的行装载的结果（不等时，这些行先在等运行时）。
+for runtime in &runtimes {
+    runtime.ready().await;
+}
 // 每一行都装载过一遍才返回：见下面。
 let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
 for failure in &report.failures {
@@ -436,7 +441,7 @@ for failure in &report.failures {
 # }
 ```
 
-- `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waiting_for(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
+- `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waiting_for(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动，报告里没有它的行装载的结果（还没装载）；要完整的报告，像上面那样先等 `RuntimeHandle::ready()`。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
 - 路径：每个运行时的进程在它自己的目录里启动（Python、Go：它的项目目录；Node：运行时的包目录），收到的路径照原样使用。相对路径会从那个目录算起，而不是应用的目录：照上面那样写绝对路径。
 - 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 运行时结束不算到行头上：结束时还在加载的行和其他行一样等它，不会失败。运行时的 `Down` 原因写明进程怎样结束，正在进行的、对它的行的调用失败时也这样写明。

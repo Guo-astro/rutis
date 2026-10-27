@@ -183,3 +183,21 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
+
+## Rust 嵌入：`reconcile` 不等还在启动的运行时（#678）
+
+0.17 里，运行时还在启动时，loader 解析它的行要等它起来，`reconcile` 也就跟着等；一个运行时卡住（比如在等调试器），所有行都不加载。0.18 起不等：它的行先在等这个运行时，等它起来、重新解析之后再启动；其他行照常启动，`reconcile` 照常返回。
+
+看得到的不同：在运行时起来之前调用 `reconcile`，报告里没有这些行装载的结果（`failures` 里也不会有它们的错误），这些行先停在等运行时。`Loader::check`、`Loader::schema_of` 这时也拿不到它们的 Schema 和声明。要和以前一样拿到完整的报告，先等运行时：
+
+```rust
+let runtimes = [node.handle(), python.handle()];
+root.plugin(node);
+root.plugin(python);
+for runtime in &runtimes {
+    runtime.ready().await;
+}
+let report = handle.reconcile(layers, None).await?;
+```
+
+`rutis-host` 不受影响：它仍然在所有运行时起来、每一行都装载过之后才算启动。

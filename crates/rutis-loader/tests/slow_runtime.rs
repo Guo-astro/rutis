@@ -37,7 +37,8 @@ async fn a_runtime_still_starting_holds_up_only_its_own_rows() {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
     let python = LocalRuntime::python(dir.path()).python_path(sdk);
     let python_rows = Arc::new(RuntimeResolver::modules(python.handle()));
-    // Never greets: it stays starting until its handshake times out.
+    // Never greets: it stays starting (a local runtime has no handshake
+    // time limit).
     let stuck = LocalRuntime::launcher(
         "stuck",
         Launcher::new("sh").arg("-c").arg("sleep 600").arg("sh"),
