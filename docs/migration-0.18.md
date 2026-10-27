@@ -185,4 +185,10 @@
 rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
 ```
 
-改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
+不在同一个监听器上的两个监听节点行也一样（#726）：它们共用宿主的一个身份，0.17 里只有其中一行连得上，另一行的对端一直重试；被禁用的行也算，重新启用时就会撞上。0.18 起同样启动即报错：
+
+```
+rutis-host: listeners public and private: link row mac and link row pi both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own
+```
+
+改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时、对端节点那一边也出示这个新 token）。这样的配置在 0.17 里本来就有一边连不上，改好之后才能用。

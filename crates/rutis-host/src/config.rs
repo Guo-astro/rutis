@@ -592,9 +592,12 @@ impl HostConfig {
     /// connection presenting it could not be told apart (two runtimes, or
     /// a runtime and a link row: refused as ambiguous, 403, the runtime
     /// retrying as if its credential were wrong; two link rows: it reaches
-    /// the last). The tokens are read from the environment; `links`: the
-    /// link rows take theirs from it too (not when the program embedding
-    /// the host brings an identity of its own).
+    /// the last). Nor do two listening link rows on any listeners (#726):
+    /// they share the host's one identity, which answers a token with the
+    /// last of them, so the other never connects. A disabled row counts:
+    /// enabling it would clash. The tokens are read from the environment;
+    /// `links`: the link rows take theirs from it too (not when the program
+    /// embedding the host brings an identity of its own).
     pub fn check_listener_tokens(&self, links: bool) -> Result<(), String> {
         let entries: Vec<Accepting> = self
             .accepting()
@@ -605,8 +608,9 @@ impl HostConfig {
     }
 
     /// What accepts connections on the listeners with the host's tokens:
-    /// the listening link rows (top-level, not disabled, on the WebSocket
-    /// transport with the host's identity) and the runtimes that dial in.
+    /// the listening link rows (top-level, on the WebSocket transport with
+    /// the host's identity; disabled ones too, named so) and the runtimes
+    /// that dial in.
     pub fn accepting(&self) -> Vec<Accepting> {
         let mut entries = Vec::new();
         for row in &self.rows {
@@ -620,7 +624,6 @@ impl HostConfig {
             let other =
                 |field: &str, own: &str| config.get(field).is_some_and(|value| value != own);
             if row["name"] != "rutis-bridge/peer"
-                || row["disabled"] == true
                 || config.get("dial").is_some()
                 || other("transport", "websocket")
                 || other("identity", "host")
@@ -628,9 +631,13 @@ impl HostConfig {
                 continue;
             }
             let id = row["id"].as_str().unwrap_or(peer);
+            let disabled = match row["disabled"] == true {
+                true => " (disabled)",
+                false => "",
+            };
             entries.push(Accepting {
                 listener: listener.to_owned(),
-                entry: format!("link row {id}"),
+                entry: format!("link row {id}{disabled}"),
                 name: peer.to_owned(),
                 link: true,
             });
@@ -811,9 +818,10 @@ pub struct Accepting {
     pub link: bool,
 }
 
-/// An error for the first two `entries` on one listener that accept the
-/// same token (the variables `env` gives), naming both and the variable to
-/// set; entries without a token are not compared, nor two with one name
+/// An error for the first two `entries` that accept the same token (the
+/// variables `env` gives), naming both and the variable to set: two on one
+/// listener, or two link rows on any (they share the host's identity,
+/// #726). Entries without a token are not compared, nor two with one name
 /// (a link and a runtime of one name cannot both register on a listener).
 /// No token is ever printed (#702).
 pub fn shared_tokens(
@@ -822,7 +830,8 @@ pub fn shared_tokens(
 ) -> Result<(), String> {
     for (index, first) in entries.iter().enumerate() {
         for second in &entries[index + 1..] {
-            if first.listener != second.listener || first.name == second.name {
+            let one_listener = first.listener == second.listener;
+            if first.name == second.name || !(one_listener || first.link && second.link) {
                 continue;
             }
             let (Some((first_variable, first_token)), Some((second_variable, second_token))) =
@@ -856,10 +865,13 @@ pub fn shared_tokens(
                 [one, two] => format!("set {one} or {two} to a token of its own"),
                 _ => unreachable!(),
             };
+            let listeners = match one_listener {
+                true => format!("listener {}", first.listener),
+                false => format!("listeners {} and {}", first.listener, second.listener),
+            };
             return Err(format!(
-                "listener {}: {accept}, so a connection presenting it cannot be told \
-                 apart: {fix}",
-                first.listener
+                "{listeners}: {accept}, so a connection presenting it cannot be told \
+                 apart: {fix}"
             ));
         }
     }
@@ -925,6 +937,34 @@ mod tests {
         assert!(!both.contains("secret"));
     }
 
+    /// Two link rows on different listeners accepting one token: they share
+    /// the host's identity, so the error names both listeners (#726).
+    #[test]
+    fn link_rows_accepting_one_token_on_different_listeners_are_refused() {
+        let entries = [
+            accepting("public", "link row mac", "mac"),
+            accepting("private", "link row pi", "pi"),
+        ];
+        let refused = |set: &[(&str, &str)]| shared_tokens(&entries, &variables(set)).unwrap_err();
+        assert_eq!(
+            refused(&[("RUTIS_TOKEN", "secret")]),
+            "listeners public and private: link row mac and link row pi both accept \
+             RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
+             RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own"
+        );
+        let both = refused(&[("RUTIS_TOKEN_MAC", "secret"), ("RUTIS_TOKEN_PI", "secret")]);
+        assert!(
+            both.ends_with("give RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI another value"),
+            "{both}"
+        );
+        // Tokens of their own: no error.
+        assert!(shared_tokens(
+            &entries,
+            &variables(&[("RUTIS_TOKEN_MAC", "a"), ("RUTIS_TOKEN_PI", "b")])
+        )
+        .is_ok());
+    }
+
     /// Tokens of their own, other listeners, an entry without a token, or
     /// one name twice (refused elsewhere): no error.
     #[test]
@@ -958,8 +998,8 @@ mod tests {
         assert!(passes(&named_twice, &[("RUTIS_TOKEN", "a")]));
     }
 
-    /// The entries of a configuration: listening link rows that are not
-    /// disabled, and the runtimes that dial in; a dialing link row accepts
+    /// The entries of a configuration: listening link rows (disabled ones
+    /// too), and the runtimes that dial in; a dialing link row accepts
     /// nothing, and one with another identity or transport does not take
     /// the host's tokens on its listeners.
     #[test]
@@ -998,9 +1038,20 @@ mod tests {
                 phone.clone()
             ]
         );
+        // A disabled row counts: enabling it would clash (#726).
         let mut disabled = listening.clone();
         disabled["disabled"] = json!(true);
-        assert_eq!(entries(disabled), std::slice::from_ref(&phone));
+        assert_eq!(
+            entries(disabled),
+            [
+                (
+                    "public".to_owned(),
+                    "link row home (disabled)".to_owned(),
+                    "main".to_owned()
+                ),
+                phone.clone()
+            ]
+        );
         let mut own_identity = listening.clone();
         own_identity["config"]["identity"] = json!("edge");
         assert_eq!(entries(own_identity), std::slice::from_ref(&phone));
