@@ -268,7 +268,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 - 重新加载只重新导入这一行自己的模块，不重新导入它导入的其他模块；改了那些模块，要重启 `dev`。
 - 新代码导入不了（语法错误、导入时出错）的重新加载不改变任何东西：这一行继续运行原来的版本，之后因为别的原因重启（它用到的服务重新加载）时也是原来的版本，直到改成能导入的代码。新代码能导入、但 `apply` 失败时，这一行从此运行的就是新代码：它以那个错误失败，改好之前不运行。
 
-`dev --debug` 让项目的语言运行时在调试器下运行，并打印怎样连上（`rutis-host dev: debugging: …`）：Python 运行时读这个终端，`breakpoint()` 停在 pdb；Node 运行时的检查器在 `127.0.0.1:9229`，Bun 的在 `ws://127.0.0.1:6499/rutis`；Go 项目不优化地构建，运行时在 Delve 下运行，监听 `127.0.0.1:2345`（要先装 `dlv`）。`rutis.dev.json` 加的其他语言的行也一样。Swift 项目不支持 `--debug`。各语言的用法见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南。
+`dev --debug` 让项目的语言运行时在调试器下运行，并打印怎样连上（`rutis-host dev: debugging: …`）：Python 运行时读这个终端，`breakpoint()` 停在 pdb；Node 运行时的检查器在 `127.0.0.1:9229`，Bun 的在 `ws://127.0.0.1:6499/rutis`；Go 项目不优化地构建，运行时在 Delve 下运行，监听 `127.0.0.1:2345`（要先装 `dlv`）。`rutis.dev.json` 加的 Node、Bun、Python、Go 运行时也一样（加进来的 Go 二进制按它原来的构建运行；Delve 的地址固定，只能有一个 Go 运行时）；要用的调试器没装时 `dev` 不启动。Swift 项目不支持 `--debug`。各语言的用法见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南。
 
 除了 [`run`](#run-打印什么) 的那些行，`dev` 还打印：
 

@@ -193,6 +193,7 @@ The output has `Debugger listening on ws://127.0.0.1:9229/…`. Open `chrome://i
 - The npm launcher that starts `rutis-host` does not take the port. Do not use `NODE_OPTIONS=--inspect`: it opens an inspector in the launcher too, which starts first and takes the port, so you would attach to the launcher; `--inspect-brk` stops the launcher.
 - After a reload the module's URL ends in `?rutis-reload=<n>`, a new script: set the breakpoint again in it, or use `debugger;`.
 - While it is stopped at a breakpoint, the whole Node runtime waits: calls to its other rows wait too.
+- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs without an inspector: end the process holding the port first.
 - What `console.log` prints shows in `dev`'s output.
 
 ## 5. Publish

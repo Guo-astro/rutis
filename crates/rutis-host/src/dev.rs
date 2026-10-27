@@ -99,7 +99,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     config.runtimes.debug = debug;
     warn(&config);
     if debug {
-        for line in debugging(&config) {
+        for line in debugging(&config)? {
             outln!("{line}");
         }
     }
@@ -209,15 +209,14 @@ fn debug_flag(args: &[String]) -> (bool, Vec<String>) {
 }
 
 /// What `dev --debug` says of each local runtime `config` starts: where its
-/// debugger is.
-fn debugging(config: &HostConfig) -> Vec<String> {
+/// debugger is. A debugger that is not installed is an error, also for a
+/// runtime the dev file adds; a language without one runs as usual.
+fn debugging(config: &HostConfig) -> Result<Vec<String>, String> {
     languages::LANGUAGES
         .iter()
         .filter(|language| language.configured(&config.runtimes))
-        .filter_map(|language| match language.debugging()? {
-            Ok(how) => Some(format!("rutis-host dev: debugging: {how}")),
-            Err(error) => Some(format!("rutis-host dev: debugging: {error}")),
-        })
+        .filter_map(|language| language.debugging())
+        .map(|how| how.map(|how| format!("rutis-host dev: debugging: {how}")))
         .collect()
 }
 

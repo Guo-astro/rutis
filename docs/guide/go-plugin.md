@@ -344,6 +344,8 @@ dlv connect 127.0.0.1:2345
 - 断开而让运行时继续：`exit -c`。直接 `exit` 会问是否结束 Delve，选 `n`。
 - VS Code：`launch.json` 里写 `{ "type": "go", "request": "attach", "mode": "remote", "host": "127.0.0.1", "port": 2345 }`。
 - 每次重新构建，运行时连同 Delve 重新启动：重新连接，重新下断点。
+- Delve 的地址固定，`--debug` 下只能运行一个 Go 二进制。
+- `rutis.dev.json` 加的 Python 运行时这时也读这个终端（见 [Python 指南](python-plugin.md#调试)），Ctrl-C 也送到它。
 - 停在断点时整个运行时停着：这个二进制里其他插件的调用也等它继续。
 - macOS 上第一次调试时，系统会请求允许开发者工具。
 - `fmt.Println`、`log` 的内容出现在 `dev` 的输出里。

@@ -344,6 +344,8 @@ Once stopped, `stack` shows the call stack, `locals` and `print <variable>` the 
 - To disconnect and leave the runtime running: `exit -c`. A plain `exit` asks whether to end Delve: answer `n`.
 - VS Code: in `launch.json`, `{ "type": "go", "request": "attach", "mode": "remote", "host": "127.0.0.1", "port": 2345 }`.
 - Each rebuild starts the runtime and Delve again: connect again and set the breakpoints again.
+- Delve's address is fixed: under `--debug`, one Go binary runs.
+- A Python runtime that `rutis.dev.json` adds reads this terminal then too (see the [Python guide](python-plugin.en.md#debugging)), and Ctrl-C reaches it as well.
 - While it is stopped at a breakpoint, the whole runtime waits: calls to the other plugins in this binary wait too.
 - On macOS, the first debugging session asks to allow developer tools.
 - What `fmt.Println` and `log` print shows in `dev`'s output.

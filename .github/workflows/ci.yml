@@ -444,12 +444,13 @@ jobs:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
       # Delve, which `rutis-host dev --debug` runs a Go project under
-      # (rutis-host/tests/debug.rs): the newest, which supports the Go
-      # releases in use. Retried, as downloads are.
+      # (rutis-host/tests/debug.rs). A version that supports oldstable Go;
+      # move it on when a Go release needs a newer one. Retried, as
+      # downloads are.
       - name: Delve
         run: |
           for attempt in 1 2 3; do
-            go install github.com/go-delve/delve/cmd/dlv@latest && break
+            go install github.com/go-delve/delve/cmd/dlv@v1.27.2 && break
             [ "$attempt" = 3 ] && exit 1
             sleep 20
           done

@@ -193,6 +193,7 @@ npx rutis-host dev --debug
 - 启动 `rutis-host` 的 npm 启动器不占这个端口。不要用 `NODE_OPTIONS=--inspect`：它也给启动器开检查器，先启动的启动器占掉端口，连上的是启动器；`--inspect-brk` 会让启动器停住。
 - 重新加载后模块的地址带 `?rutis-reload=<n>`，是一个新的脚本：在新脚本里重新下断点，或者用 `debugger;`。
 - 停在断点时整个 Node 运行时停着：这个运行时里其他行的调用也等它继续。
+- 端口 9229 已被占用时，Node 打印 `Starting inspector on 127.0.0.1:9229 failed` 并照常运行，没有检查器：先结束占用端口的进程。
 - `console.log` 的内容出现在 `dev` 的输出里。
 
 ## 5. 发布
