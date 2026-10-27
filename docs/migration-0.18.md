@@ -87,6 +87,7 @@
 
 - 宿主服务的方法在堆栈里显示为 `weather.today`，不再是 `HostProxy.__getattr__.<locals>.call`；返回"没有值"的调用得到 `None`，不会再见到 `UNDEFINED`。
 - 宿主断开时调用抛出 `ConnectionError`，带码 `peer-gone`。
+- `str(SyncWaitCycle)` 只是消息，前面不再有 `SyncWaitCycle: `（与其他错误相同）。
 - 导入插件模块（或它导入的模块）时出错，抛出 `LoadError`（`from rutis import LoadError`，是 `Exception` 的子类），写明出错的文件和行号；入口模块本身不存在时仍是原来的 `ModuleNotFoundError`。
 
 ### Go

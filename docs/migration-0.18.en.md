@@ -87,6 +87,7 @@
 
 - A host service's methods show as `weather.today` in tracebacks, no longer `HostProxy.__getattr__.<locals>.call`; a call that returns no value gives `None`, and `UNDEFINED` no longer shows.
 - When the host disconnects, calls raise `ConnectionError` with code `peer-gone`.
+- `str(SyncWaitCycle)` is the message alone, with no `SyncWaitCycle: ` before it (as for the other errors).
 - An error while importing a plugin's module (or a module it imports) raises `LoadError` (`from rutis import LoadError`, a subclass of `Exception`), naming the file and line that raised; a missing entry module itself is still the original `ModuleNotFoundError`.
 
 ### Go

@@ -1067,7 +1067,7 @@ def _awaitable(sent):
 
 
 # This package's own files: their frames are not the plugin's.
-_RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
+_RUNTIME_DIR = os.path.dirname(os.path.realpath(__file__)) + os.sep
 # Where Python and installed packages live: the import machinery, the
 # standard library, site-packages. Their frames are not the plugin's own
 # code either, unless the plugin itself is there.
