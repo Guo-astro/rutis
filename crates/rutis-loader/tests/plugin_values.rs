@@ -625,12 +625,20 @@ async fn each_instance_mounts_its_own_copy(lang: Lang) {
     // The same value handed over is one definition.
     assert_eq!(fixture.parts.all().len(), 1);
     // A data parameter refuses a definition, as it refuses any reference.
-    let refused = fixture
-        .probe
-        .lines()
-        .into_iter()
-        .find(|line| line.starts_with("data refused:"))
-        .expect("refused");
+    // The origin records it after handing the part over: its copies may
+    // apply first.
+    let refused = COLD
+        .eventually(
+            || {
+                fixture
+                    .probe
+                    .lines()
+                    .into_iter()
+                    .find(|line| line.starts_with("data refused:"))
+            },
+            "the data parameter's refusal",
+        )
+        .await;
     assert!(refused.contains("reference"), "{refused}");
     fixture.root.shutdown().await.unwrap();
 }
