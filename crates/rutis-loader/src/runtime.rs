@@ -320,7 +320,7 @@ impl Resolver for RuntimeResolver {
             // Marked to be resolved again first: a runtime turning ready
             // between reading its state and marking the name would leave
             // the name unmarked.
-            self.offline.lock().unwrap().insert(name.to_owned());
+            let marked_before = !self.offline.lock().unwrap().insert(name.to_owned());
             let running = match self.runtime.state() {
                 RuntimeState::Ready(process) => Some(process),
                 _ => None,
@@ -357,8 +357,9 @@ impl Resolver for RuntimeResolver {
                 }));
             };
             let described = process.describe_row(&entry).await;
-            if described.is_err() {
-                // Resolved with the runtime, if to an error: not again.
+            if described.is_err() && !marked_before {
+                // Resolved with the runtime, if to an error: not again,
+                // unless it was waiting to be (a restart may help).
                 self.offline.lock().unwrap().remove(name);
             }
             let described = described.map_err(|error| match error {
