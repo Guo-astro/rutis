@@ -527,6 +527,41 @@ def apply(ctx, config):
     }
 }
 
+/// A reload adding a listening peer row on the listener a runtime dials in
+/// to, both falling back to RUTIS_TOKEN, is refused, naming both and the
+/// variable to set; nothing changes (#702).
+/// guarantee: host/reload-config, host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_making_two_entries_accept_one_token_is_refused() {
+    let _environment = environment();
+    std::env::set_var("RUTIS_TOKEN", "shared");
+    let phone: HostConfig = serde_json::from_value(json!({
+        "id": "office",
+        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
+        "runtimes": {
+            "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
+        },
+        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [] }]
+    }))
+    .unwrap();
+    let mut host = Host::start(&phone).await.unwrap();
+    host.load(phone.rows()).await.unwrap();
+    let mut both = phone.clone();
+    both.rows.push(
+        json!({ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } }),
+    );
+    let error = host.reload(both).await.unwrap_err();
+    assert_eq!(
+        error,
+        "listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a \
+         connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or \
+         RUTIS_TOKEN_PHONE to a token of its own"
+    );
+    assert!(host.loader.entries().iter().all(|entry| entry.id != "main"));
+    host.shut_down(HANG_GUARD).await.ok();
+    std::env::remove_var("RUTIS_TOKEN");
+}
+
 /// A peer row a reload adds dials with the token the environment has for
 /// its peer, and the far end accepts it; neither host had a peer row at
 /// first.

@@ -349,7 +349,11 @@ async fn check(args: &[String]) -> Result<(), String> {
     for issue in &report.issues {
         errln!("rutis-host: warning: {issue}");
     }
-    let mut failed = report.failing().count();
+    // The rows that cannot run, each once however many reasons it has;
+    // `failed` counts the binaries.
+    let mut cannot: std::collections::BTreeSet<&str> =
+        report.failing().map(|row| row.id.as_str()).collect();
+    let mut failed = 0;
     // The Cordis rows (the Node runtime's, not leaf plugins): between them a
     // dependency resolves in Cordis.
     let cordis: HashSet<&str> = report
@@ -422,7 +426,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                 match (missing.is_empty(), strict && !undeclared.is_empty()) {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
-                        failed += 1;
+                        cannot.insert(id.as_str());
                         // What no row declares, and what only disabled
                         // rows do.
                         let names = |only_disabled: bool| -> Vec<&str> {
@@ -496,14 +500,18 @@ async fn check(args: &[String]) -> Result<(), String> {
             _ => outln!("{id} ({name}): not checked"),
         }
     }
-    // Warnings only, in 0.17.2: a configuration that passed still passes
-    // (errors from 0.18, #676).
+    // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
+    // starts, and of rows providing one name all but the first to start
+    // fail.
     for cycle in &report.cycles {
-        errln!("rutis-host: warning: {}", cycle_line(cycle));
+        errln!("rutis-host: error: {}", cycle_line(cycle));
+        cannot.extend(cycle.iter().map(|link| link.row.as_str()));
     }
     for clash in &report.clashes {
-        errln!("rutis-host: warning: {}", clash_line(clash));
+        errln!("rutis-host: error: {}", clash_line(clash));
+        cannot.extend(clash.rows.iter().skip(1).map(String::as_str));
     }
+    failed += cannot.len();
     for binaries in &host.binaries {
         outln!("{} binaries:", binaries.key);
         for binary in binaries.binaries() {
@@ -595,7 +603,7 @@ fn did_you_mean(like: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-/// `check`'s warning for rows waiting for each other's services.
+/// `check`'s error for rows waiting for each other's services.
 fn cycle_line(cycle: &[CycleLink]) -> String {
     let rows: Vec<&str> = cycle.iter().map(|link| link.row.as_str()).collect();
     let links: Vec<String> = cycle
@@ -614,7 +622,7 @@ fn cycle_line(cycle: &[CycleLink]) -> String {
     )
 }
 
-/// `check`'s warning for several rows declaring one service in one scope.
+/// `check`'s error for several rows declaring one service in one scope.
 fn clash_line(clash: &Clash) -> String {
     format!(
         "rows {} all provide {}: only the first to start provides it, the others fail; \
