@@ -24,6 +24,7 @@ import sys
 import threading
 import traceback
 
+from ._output import say
 from .channel import SocketChannel
 from .peer import EVENTS_REFUSAL, HOST_FAILED, Incompatible, Peer, host_gone
 from .runner import Runtime, shutdown_deadline
@@ -95,6 +96,9 @@ class Session:
         self.runtime.peer = self.peer
         # A function or object a row hands over runs as that row's (#688).
         self.runtime.traced(self.peer)
+        # Each line a row's code writes starts with its name (#678).
+        if os.environ.get("RUTIS_PREFIX_OUTPUT") == "1":
+            self.runtime.prefix_output()
 
     def start(self) -> None:
         self.peer.start()
@@ -134,7 +138,7 @@ async def run(channel: str, endpoint: dict | None, project: str) -> int:
     await session.peer.closed
     if isinstance(session.peer.closed_error, Incompatible):
         # A host this runtime cannot work with: nothing was loaded.
-        print(f"rutis: refused: incompatible ({session.peer.closed_error}); stopping", file=sys.stderr, flush=True)
+        say(f"rutis: refused: incompatible ({session.peer.closed_error}); stopping")
         return 1
     # The rows go now, unless the host disposed them first: it went away
     # (it was killed, say) and nothing else ends this process. Cleanups that
@@ -187,11 +191,9 @@ def give_up_after(seconds: float) -> None:
 
     def give_up() -> None:
         try:
-            print(
+            say(
                 f"rutis: cleanups did not finish within {seconds:g} s after the session ended "
-                "(or a plugin keeps the runtime busy); exiting",
-                file=sys.stderr,
-                flush=True,
+                "(or a plugin keeps the runtime busy); exiting"
             )
         finally:
             # Also when the line cannot be written: stderr is a pipe to a
@@ -290,7 +292,7 @@ async def dial_out(spec: str, endpoint: dict) -> int:
         tls = websocket.client_tls(ca) if spec.startswith("wss:") else None
     except (OSError, ValueError) as error:
         # ssl.SSLError is an OSError: a file that holds no certificate.
-        print(f"rutis: RUTIS_CA {ca}: {error}", file=sys.stderr, flush=True)
+        say(f"rutis: RUTIS_CA {ca}: {error}")
         return 1
     protocol = f"rutis.{ENDPOINT_PROTOCOL}"
     stopping = asyncio.Event()

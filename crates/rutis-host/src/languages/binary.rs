@@ -175,10 +175,14 @@ pub(super) fn start<L: BinaryLanguage>(
     mount.resolve(resolver.clone());
     let (project, start, idle) = (settings.project.clone(), settings.start, settings.idle);
     let restart = settings.restart;
+    // One plugin in each process: the host starts its lines with the
+    // runtime's name (#678).
+    let prefix_output = mount.prefix_output;
     mount.later.push(Box::new(move |root: Ctx| {
         Box::pin(async move {
             let mut plugin = BinaryRuntimes::<L>::new(resolver.clone(), &project)
-                .output(Stdio::Lines, Stdio::Lines);
+                .output(Stdio::Lines, Stdio::Lines)
+                .prefix_output(prefix_output);
             plugin = match start {
                 BinaryStart::Eager => plugin.eager(),
                 BinaryStart::OnDemand => plugin.idle(Some(Duration::from_secs(idle.unwrap_or(60)))),
@@ -277,10 +281,10 @@ pub(super) fn building<T>(
     name: &str,
     build: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    crate::outln!("{name}: building");
+    crate::errln!("{name}: building");
     let started = std::time::Instant::now();
     let built = build()?;
-    crate::outln!("{name}: built in {}", seconds(started.elapsed()));
+    crate::errln!("{name}: built in {}", seconds(started.elapsed()));
     Ok(built)
 }
 

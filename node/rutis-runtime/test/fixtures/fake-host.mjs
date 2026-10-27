@@ -25,9 +25,12 @@ export async function fakeHost(command, { hello, env } = {}) {
   const server = createServer()
   await new Promise(resolve => server.listen(path, resolve))
   const [program, script, ...rest] = command
-  const child = spawn(program, [script, path, '--format', 'endpoint', '--id', 'rt', '--peer', 'host', ...rest], { stdio: ['ignore', 'inherit', 'pipe'], env: { ...process.env, ...env } })
+  const child = spawn(program, [script, path, '--format', 'endpoint', '--id', 'rt', '--peer', 'host', ...rest], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
   let stderr = ''
   child.stderr.on('data', chunk => { stderr += chunk })
+  // What the runtime writes to stdout, kept for the output tests (#678).
+  let stdout = ''
+  child.stdout.on('data', chunk => { stdout += chunk })
   const exited = new Promise(resolve => child.once('exit', code => resolve(code)))
   const socket = await Promise.race([
     new Promise(resolve => server.once('connection', resolve)),
@@ -43,6 +46,7 @@ export async function fakeHost(command, { hello, env } = {}) {
     log: [],
     services: new Map(), // id -> handle
     get stderr() { return stderr },
+    get stdout() { return stdout },
     exited,
     child,
   }

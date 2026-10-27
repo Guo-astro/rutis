@@ -26,9 +26,15 @@ import { reportedStack } from './errors.mjs'
 // `owner(promise)` the row a promise was created in.
 // An error traced to a row whose stack shows only another row's plugin
 // file is charged to no row (the runner's `chargedRow`).
-export function rowTracking(enabled) {
-  if (!enabled) return { enabled: false, within: (_row, run) => run(), current: () => undefined, owner: () => undefined }
+// With `output` (its lines prefixed with the row's name, #678) the row
+// running is traced as well, `running()`, but not each promise's, and no
+// error is charged to a row unless `enabled`.
+export function rowTracking(enabled, { output = false } = {}) {
+  if (!enabled && !output) return { enabled: false, traced: false, within: (_row, run) => run(), current: () => undefined, running: () => undefined, owner: () => undefined }
   const store = new AsyncLocalStorage()
+  const within = (row, run) => store.run(row ?? undefined, run)
+  const running = () => store.getStore()
+  if (!enabled) return { enabled: false, traced: true, within, current: () => undefined, running, owner: () => undefined }
   const owners = new WeakMap()
   createHook({
     init(_id, type, _trigger, resource) {
@@ -39,8 +45,10 @@ export function rowTracking(enabled) {
   }).enable()
   return {
     enabled: true,
-    within: (row, run) => store.run(row ?? undefined, run),
-    current: () => store.getStore(),
+    traced: true,
+    within,
+    current: running,
+    running,
     // A promise created outside every row is no row's, whichever row's
     // code rejected it.
     owner: promise => (promise ? owners.get(promise) : undefined),

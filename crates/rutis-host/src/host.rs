@@ -25,8 +25,8 @@ use rutis_loader::{
 };
 
 use crate::config::{token, HostConfig, Restart};
+use crate::errln;
 use crate::languages::{self, BinaryHost, Mount, LANGUAGES};
-use crate::{errln, outln};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -235,6 +235,8 @@ impl Host {
             fibers: Vec::new(),
             processes: Vec::new(),
             later: Vec::new(),
+            prefix_output: config.runtimes.prefix_output,
+            debug: config.runtimes.debug,
         };
         // In reverse: Node's resolver, which takes bare npm names, last.
         for language in LANGUAGES.iter().rev() {
@@ -396,7 +398,7 @@ impl Host {
                     }
                     end => {
                         if let Some(line) = end.line() {
-                            outln!("{line}");
+                            errln!("{line}");
                         }
                     }
                 }),
