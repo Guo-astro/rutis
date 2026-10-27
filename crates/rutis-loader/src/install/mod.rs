@@ -114,9 +114,18 @@ pub enum Error {
     /// A package manager ran and failed (its own output was shown).
     #[error("{0}")]
     Failed(String),
+    /// [`Places`] has no place for the language (`node`, `bun`, `py`, `go`
+    /// or `swift`) of what was to be installed.
+    #[error("no place to install {} plugins into", title_of(.0))]
+    NoPlace(String),
     /// Anything else.
     #[error("{0}")]
     Other(String),
+}
+
+/// A language's title by its key (`Go` for `go`).
+fn title_of(key: &str) -> String {
+    Lang::of_key(key).map_or_else(|| key.to_owned(), |lang| lang.title().to_owned())
 }
 
 /// Installs plugins into [`Places`].
@@ -214,6 +223,10 @@ impl Installer {
     /// and describe each plugin in it: one record per plugin.
     pub async fn add(&self, reference: &str) -> Result<Vec<Installed>, Error> {
         let reference = Reference::parse(reference, &self.core.base())?;
+        // An npm package's plugin is the package: refused before npm runs.
+        if let Source::Npm { package, .. } = &reference.source {
+            self.free(package, &reference.from, None)?;
+        }
         let (lang, known) = {
             let (core, reference) = (self.core.clone(), reference.clone());
             blocking(move || core.language(&reference)).await?
@@ -256,8 +269,14 @@ impl Installer {
             let (core, reference, places) = (self.core.clone(), reference.clone(), places.clone());
             blocking(move || core.install(&reference, lang, &places, false)).await?
         };
-        let schemas = self.core.describe(lang, &package, &places).await?;
+        let mut schemas = self.core.describe(lang, &package, &places).await?;
         drop(scratch);
+        // The package's version where the runtime does not say one.
+        for (schema, plugin) in schemas.iter_mut().zip(&package.plugins) {
+            if schema.version.is_none() {
+                schema.version = plugin.version.clone();
+            }
+        }
         Ok(package.plugins.into_iter().zip(schemas).collect())
     }
 
@@ -475,13 +494,9 @@ impl Core {
         upgrade: bool,
     ) -> Result<Package, Error> {
         let place = |place: &Option<PathBuf>| {
-            place.clone().ok_or_else(|| {
-                Error::Other(format!(
-                    "{}: no place to install {} plugins into",
-                    reference.from,
-                    lang.title()
-                ))
-            })
+            place
+                .clone()
+                .ok_or_else(|| Error::NoPlace(lang.key().to_owned()))
         };
         match lang {
             Lang::Node => self.install_js(reference, lang, &place(&places.node)?, upgrade),
@@ -546,6 +561,20 @@ impl Core {
                             .args(["add", "-d", runtime.as_str()])
                             .cwd(project),
                     )?;
+                }
+                // Bun keeps a local package it has, changed or not: upgraded,
+                // it is removed first.
+                if let (true, Source::Local(_)) = (upgrade, &reference.source) {
+                    if let Some(name) = self
+                        .local_language(&reference.from, &local_path(reference))?
+                        .1
+                    {
+                        if project.join("node_modules").join(&name).exists() {
+                            self.tools.run(
+                                &Run::new("bun").args(["remove", name.as_str()]).cwd(project),
+                            )?;
+                        }
+                    }
                 }
                 self.tools
                     .run(&Run::new("bun").args(["add", spec.as_str()]).cwd(project))?;
@@ -886,13 +915,9 @@ impl Core {
 
     fn remove(&self, lang: Lang, plugin: &Installed) -> Result<Option<String>, Error> {
         let place = |place: &Option<PathBuf>| {
-            place.clone().ok_or_else(|| {
-                Error::Other(format!(
-                    "{}: no place of {} plugins",
-                    plugin.name,
-                    lang.title()
-                ))
-            })
+            place
+                .clone()
+                .ok_or_else(|| Error::NoPlace(lang.key().to_owned()))
         };
         match lang {
             Lang::Node | Lang::Bun => {
@@ -1118,6 +1143,14 @@ fn python_distribution(path: &Path) -> Option<String> {
 }
 
 // ── Node and Bun ────────────────────────────────────────────────
+
+/// The path a local reference names.
+fn local_path(reference: &Reference) -> PathBuf {
+    match &reference.source {
+        Source::Local(path) => path.clone(),
+        _ => PathBuf::new(),
+    }
+}
 
 /// `<package>[@<version>]`.
 fn npm_spec(package: &str, version: Option<&str>) -> String {

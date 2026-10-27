@@ -37,7 +37,8 @@ mod volatile;
     feature = "node",
     feature = "python",
     feature = "go",
-    feature = "peer"
+    feature = "peer",
+    feature = "install"
 ))]
 #[doc = include_str!("../../../docs/guide/rust-host.md")]
 pub struct RustHostGuide;
@@ -48,7 +49,8 @@ pub struct RustHostGuide;
     feature = "node",
     feature = "python",
     feature = "go",
-    feature = "peer"
+    feature = "peer",
+    feature = "install"
 ))]
 #[doc = include_str!("../../../docs/guide/rust-host.en.md")]
 pub struct RustHostGuideEn;

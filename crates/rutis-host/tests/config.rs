@@ -337,7 +337,7 @@ fn unknown_fields_are_refused() {
     let cases = [
         (
             "{\n  \"id\": \"a\",\n  \"runtime\": {}\n}",
-            "<dir>/rutis.json: unknown field `runtime`, expected one of `format`, `id`, `runtimes`, `listen`, `rows` at line 3 column 11",
+            "<dir>/rutis.json: unknown field `runtime`, expected one of `format`, `id`, `runtimes`, `listen`, `installed`, `rows` at line 3 column 11",
         ),
         (
             r#"{ "runtimes": { "deno": {} } }"#,

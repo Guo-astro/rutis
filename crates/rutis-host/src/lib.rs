@@ -7,6 +7,7 @@
 pub mod config;
 pub mod control;
 pub mod host;
+pub mod install;
 pub mod languages;
 pub mod new;
 pub mod project;

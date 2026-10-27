@@ -58,6 +58,7 @@ fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, Stri
         id: "dev".into(),
         runtimes,
         listen: Vec::new(),
+        installed: Default::default(),
         rows,
         warnings: Vec::new(),
     };

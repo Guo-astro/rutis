@@ -35,6 +35,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::languages::LANGUAGES;
+pub use rutis_loader::install::Installed;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +52,11 @@ pub struct HostConfig {
     /// `rutis-bridge/peer` row).
     #[serde(default)]
     pub listen: Vec<Listener>,
+    /// The plugins `rutis-host add` installed, by name: a row named by one
+    /// of these names runs in the runtime its record says
+    /// ([`HostConfig::row_name`]).
+    #[serde(default)]
+    pub installed: std::collections::BTreeMap<String, Installed>,
     #[serde(default)]
     pub rows: Vec<Value>,
     /// What reading the file found wrong but went on without: the host
@@ -393,6 +399,9 @@ impl HostConfig {
         check_newer_format(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", path.display()))?;
+        config
+            .name_installed()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();
         check_rows(&config.rows, "rows", &mut ignored)
             .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -418,6 +427,47 @@ impl HostConfig {
         Ok(config)
     }
 
+    /// Each record of `installed` given its name (its key); a language that
+    /// is not a local runtime's is refused.
+    fn name_installed(&mut self) -> Result<(), String> {
+        for (name, record) in &mut self.installed {
+            record.name = name.clone();
+            if !LANGUAGES
+                .iter()
+                .any(|language| language.key() == record.language)
+            {
+                let keys: Vec<String> = LANGUAGES
+                    .iter()
+                    .map(|language| language.key().to_owned())
+                    .collect();
+                return Err(format!(
+                    "installed.{name}: language {:?} is not {}",
+                    record.language,
+                    crate::languages::either(&keys)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The name the loader resolves for a row named `name`: the record's
+    /// (`py:llm` for `llm` installed as a Python plugin) when `installed`
+    /// has `name`, else `name`.
+    pub fn row_name(&self, name: &str) -> String {
+        match self.installed.get(name) {
+            Some(record) => record.row_name(),
+            None => name.to_owned(),
+        }
+    }
+
+    /// Each installed name and the name the loader resolves for it.
+    pub fn row_names(&self) -> std::collections::HashMap<String, String> {
+        self.installed
+            .iter()
+            .map(|(name, record)| (name.clone(), record.row_name()))
+            .collect()
+    }
+
     /// Enable, with its defaults, each local runtime that enabled rows use
     /// but `runtimes` does not declare (a `py:` row without `runtimes.py`),
     /// as if it declared `"py": {}` (#666); one line each, saying so.
@@ -432,6 +482,8 @@ impl HostConfig {
     pub fn enable_used_runtimes_beside(&mut self, provided: &Runtimes) -> Vec<String> {
         let mut names = Vec::new();
         rows_named(&self.rows, &mut names);
+        // An installed plugin's row runs where its record says.
+        let names: Vec<String> = names.iter().map(|name| self.row_name(name)).collect();
         let mut said = Vec::new();
         for language in LANGUAGES {
             let key = language.key();
@@ -532,6 +584,9 @@ impl HostConfig {
         self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
         self.rows.extend(other.rows);
+        for (name, record) in other.installed {
+            self.installed.entry(name).or_insert(record);
+        }
         self.warnings.extend(other.warnings);
     }
 

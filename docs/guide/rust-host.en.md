@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | Crate / feature | Contents |
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
-| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
+| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows; `install`: installing plugins from npm, PyPI, Go modules and local paths (see [Installing plugins](#installing-plugins)). |
 | `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) writes the TypeScript declarations of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`; `testing` enables compatibility tests. |
 
 Enable only the language features you use so the application compiles and starts only the required components.
@@ -545,6 +545,39 @@ root.plugin(go_runtimes).await?;
 - Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); `GoResolver` is `BinaryResolver<Go>`.
 
 - To run one fixed binary, it also works as Python does: `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (rows `<runtime name>:<plugin>`).
+
+## Installing plugins
+
+The `install` feature of `rutis-loader` (off by default) is the installing code `rutis-host add` / `remove` / `upgrade` use: an embedding host does its own "install a plugin" with it, without knowing the plugin's language. The languages it installs are the language features enabled with it (`node`, `bun`, `python`, `go`, `swift`).
+
+```rust,no_run
+use rutis_loader::install::{Installer, Places};
+
+# async fn example(home: std::path::PathBuf) -> Result<(), rutis_loader::install::Error> {
+let installer = Installer::new(Places {
+    node: Some(home.join("plugins/node")),    // a Node project (npm init -y without a package.json)
+    python: Some(home.join("plugins/.venv")), // a Python environment (created when missing, with rutis of the same version)
+    go: Some(home.join("plugins/go")),        // a directory of Go binaries
+    ..Places::default()
+});
+let about = installer.describe("npm:@ana/wordcount").await?;  // before installing: each plugin's record and RowSchema
+let added = installer.add("pypi:bo-llm").await?;              // installed: an Installed per plugin
+for plugin in &added {
+    println!("{}: row name {}", plugin.name, plugin.row_name()); // llm: row name py:llm
+}
+installer.upgrade(&added[0], None).await?;                    // the newest version, or the one given
+installer.remove(&added[0]).await?;                           // uninstalls the whole package
+# let _ = about;
+# Ok(())
+# }
+```
+
+- References are strings, written as for `rutis-host add` (`npm:`, `pypi:`, a Go module path, a local path, with `@version` or not); `add` / `describe` return the error of one that does not read.
+- An `Installed` is a record (`from`, `language`; serializable: `rutis-host`'s `installed` is made of them) and the plugin's `name`; `row_name()` is the row name a loader with these runtimes knows (Node as it is; `bun:`, `py:`, `go:`, `swift:` and the plugin's name).
+- The records are the caller's: the API reads and writes no configuration file, and touches no loader or runtime. For `add` to refuse a plugin name another package has, hand it the records with `Installer::with_installed(records)`.
+- `Places.base` is where relative local paths start (by default the current directory); `Places.python` is an environment directory or an interpreter.
+- Errors are `install::Error`: `Failed` (a package manager failed; its output was shown), `NoPlace` (`Places` has no place for the language), `Other`. What a package manager installed before a failure stays; the error gives the command that uninstalls it.
+- The package managers (npm, bun, uv or pip, go) run as commands only when called, their output shown as it is; `add`, `upgrade` and `describe` may run the package's install scripts and import the plugin's code to describe it: install only plugins you trust.
 
 ## Debugging
 

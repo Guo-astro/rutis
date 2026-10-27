@@ -6,6 +6,9 @@
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
 //! rutis-host status [rutis.json]   what a running host is doing now
 //! rutis-host new <name> --lang node|bun|python|go|swift
+//! rutis-host add [--dry-run] <plugin> [rutis.json]
+//! rutis-host remove <plugin> [rutis.json]
+//! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host go add <module>@<version> [rutis.json]
 //! rutis-host types [crate dir] [-o file]
 //! ```
@@ -66,6 +69,18 @@ usage:
                                               calls not returned yet (not on Windows)
   rutis-host new <name> --lang node|bun|python|go|swift
                                               create a plugin project
+  rutis-host add <plugin> [rutis.json]        install a plugin and add its row: <plugin> is
+                                              npm:<package>, pypi:<package>, a Go module path or
+                                              a local path (directory, .tgz, .whl, binary), with
+                                              @<version> or not (the latest); its language's
+                                              package manager runs (npm, bun, uv or pip, go)
+    add: --dry-run                            install it into a directory of its own, say what
+                                              it declares, and remove it again
+  rutis-host remove <plugin> [rutis.json]     uninstall what add installed, and remove its rows
+  rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
+                                              install the newest version (or the one named) of
+                                              what add installed; a running host keeps the old
+                                              one until it restarts
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
@@ -99,6 +114,9 @@ fn main() {
             Ok(Stopped::Done)
         }
         Some("status") => status_command(&args[1..]).map(|()| Stopped::Done),
+        Some(command @ ("add" | "remove" | "upgrade")) => {
+            install_command(command, &args[1..]).map(|()| Stopped::Done)
+        }
         Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
@@ -230,6 +248,21 @@ fn new_project(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `rutis-host add`, `remove` and `upgrade`.
+fn install_command(command: &str, args: &[String]) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async {
+        match command {
+            "add" => rutis_host::install::add(args).await,
+            "remove" => rutis_host::install::remove(args).await,
+            _ => rutis_host::install::upgrade(args).await,
+        }
+    })
+}
+
 fn serve(command: &str, args: &[String]) -> Result<Stopped, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -334,7 +367,7 @@ fn go_command(args: &[String]) -> Result<(), String> {
     // The install code `add` uses; its words as before.
     rutis_loader::internal::install_go_module(module, &dir).map_err(|error| match error {
         rutis_loader::install::Error::Failed(_) => format!("go install {module} failed"),
-        rutis_loader::install::Error::Other(message) => message,
+        other => other.to_string(),
     })?;
     outln!("installed {module} into {}", dir.display());
     Ok(())

@@ -6,25 +6,45 @@
 
 给别人发布的两个插件做一个宿主：一个 TypeScript 插件，npm 上的 `@your-name/weather`，它用 `llm` 服务；一个 Python 插件，PyPI 上的 `your-name-llm`，它的入口点 `llm` 提供这个服务。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
 
-1. 在宿主自己的目录里装 `rutis-host` 和两个插件：
+1. 在宿主自己的目录里装 `rutis-host`，再用它装两个插件：
 
 ```bash
 mkdir app && cd app
-npm init -y                                                # TypeScript 插件装进的 Node 项目
-npm install @arcships/rutis-host @your-name/weather        # rutis-host 带着 Node 运行时
-uv venv                                                    # .venv：Python 插件运行的环境
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-llm   # Python 运行时与 rutis-host 同版本，和插件
+npm init -y && npm install -D @arcships/rutis-host   # rutis-host 带着 Node 运行时
+npx rutis-host add npm:@your-name/weather            # npm 上的插件：装进这里的 Node 项目
+npx rutis-host add pypi:your-name-llm                # PyPI 上的插件：没有 .venv 时先建好，装上同版本的 rutis
 ```
 
-2. 写 `rutis.json`：要启动的运行时，每个插件一行（`name` 是 npm 包名，或 `py:` 加入口点名；`config` 是插件的配置）：
+`add` 只要知道插件从哪里来（`npm:`、`pypi:`、Go 模块路径、本地路径），语言、包管理器、环境和行名都由它决定。每装一个，它打印插件的介绍（版本、`inject`、`provides`、配置 Schema）和 `check` 对这一行的结论：
+
+```text
+installed @your-name/weather 1.2.0 (node) into /home/me/app
+weather (@your-name/weather): cannot run: nothing provides llm
+  version: "1.2.0"
+  inject: ["llm"]
+  provides: none declared (it may provide more once it runs)
+  config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
+rutis.json: added row weather, runtimes.node
+installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
+llm (llm): ok
+  version: "0.3.0"
+  provides: {"llm":{"complete":"async"}}
+rutis.json: added row llm, runtimes.py
+```
+
+2. `add` 写好了 `rutis.json`：要启动的运行时、装了什么（`installed`）、每个插件一行（`name` 是插件名；`config` 是插件的配置，按需加上）：
 
 ```json
 {
   "format": 1,
   "runtimes": { "node": {}, "py": {} },
+  "installed": {
+    "@your-name/weather": { "from": "npm:@your-name/weather", "language": "node" },
+    "llm": { "from": "pypi:your-name-llm", "language": "py" }
+  },
   "rows": [
-    { "id": "llm", "name": "py:llm" },
-    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
+    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } },
+    { "id": "llm", "name": "llm" }
   ]
 }
 ```
@@ -53,7 +73,7 @@ Unix 上不加 `--watch-config`，发 SIGUSR1 也一样，见 [运行中改配�
 
 5. Ctrl-C 停止：每个插件的清理都运行，运行时退出，`rutis-host` 以 0 退出。
 
-还没发布的插件也这样从文件装：`npm install ../weather/your-name-weather-0.1.0.tgz`（插件项目里 `npm pack` 打出的包），`uv pip install --python .venv/bin/python ../llm`（插件的项目目录）。其他语言见 [宿主怎样装插件](#宿主怎样装插件)。
+还没发布的插件也这样从文件装：`npx rutis-host add ../weather/your-name-weather-0.1.0.tgz`（插件项目里 `npm pack` 打出的包），`npx rutis-host add ../llm`（插件的项目目录）。其他语言见 [宿主怎样装插件](#宿主怎样装插件)。
 
 ## 安装
 
@@ -68,7 +88,83 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 ## 宿主怎样装插件
 
-每种语言的插件装到它的运行时找得到的地方，再由一行写出插件名：
+用 `rutis-host add <插件> [rutis.json]`：写插件从哪里来，不写语言。
+
+| 写法 | 来源 | 语言 |
+| --- | --- | --- |
+| `npm:@ana/wordcount`、`npm:@ana/wordcount@1.2.0` | npm | 包依赖 `@arcships/rutis-bun`（`dependencies` 或 `devDependencies`）时是 Bun，否则 Node |
+| `pypi:bo-llm`、`pypi:bo-llm@0.3.0` | PyPI | Python |
+| `github.com/bo/netkit/cmd/netkit`、`…@v0.4.1` | Go 模块 | Go |
+| `./plugins/notes` | 本地目录 | 按项目文件：`package.json`（同上分 Bun / Node）、`pyproject.toml`、`go.mod` |
+| `./wordcount-1.2.0.tgz`、`./bo_llm-0.3.0-py3-none-any.whl` | 本地包 | `.tgz` 按包里的 `package.json`；`.whl` 是 Python |
+| `./netkit` | 本地二进制 | 用 Go SDK 构建的是 Go，用 Swift SDK 构建的是 Swift |
+
+- 版本写在最后一个 `@` 之后（不在开头的那个），是一个确切的版本或标签；不写是最新版。本地路径以 `./`、`../`、`/` 开头，相对 `rutis.json` 所在目录。
+- 不带来源的名字报错：同一个名字在 npm 和 PyPI 上可能都有，猜错就会装上别人的包。
+
+  ```text
+  rutis-host: wordcount: say where it comes from: npm:wordcount, pypi:wordcount, a Go module path or a local path
+  ```
+
+`add` 做的事：
+
+1. 装到这门语言的运行时现在就用的位置：Node、Bun 装进 `runtimes.node.project`、`runtimes.bun.project`（默认 `rutis.json` 所在目录）；Python 装进宿主会用的解释器（`runtimes.py.python`，否则 `$VIRTUAL_ENV`，否则 `<runtimes.py.project>/.venv`）；Go、Swift 装进 `runtimes.go.dir`、`runtimes.swift.dir`（没写 `runtimes.go` 时 `plugins/go`）。
+2. 运行时缺了就准备好：没有 `package.json` 时 `npm init -y`；缺 `@arcships/rutis-runtime` 时与插件一起装（版本同 `rutis-host`）；Bun 缺 `@arcships/rutis-bun` 时 `bun add -d`；Python 没有环境时 `uv venv`（没有 uv 时 `python3 -m venv`），缺 `rutis` 时装上同版本的；Go、Swift 建目录。Node、Bun、Python、Go 本身不装。
+3. 运行包管理器：`npm install`、`bun add`、`uv pip install --python <解释器>`（没有 uv 时 `<解释器> -m pip install`）、`GOBIN=<目录> go install <模块>@<版本>`（本地 Go 项目在它里面 `go install ./...`；本地二进制复制进目录）。它的输出原样显示。
+4. 找出包里的插件并描述它们：Node、Bun 的插件是包本身；Python 是这个发行包在 `rutis.plugins` 组里的入口点（一个包可以有几个）；Go、Swift 是二进制清单里的插件。
+5. 写 `rutis.json`：`installed` 里每个插件一条记录，`rows` 末尾每个插件一行 `{ "id": …, "name": <插件名> }`（id 已被占用时加 `-2`、`-3`；同名的行已经有了时不再加），`runtimes` 没写这门语言时写上（`"node": {}`、`"py": {}`、`"go": { "dir": "plugins/go" }`）。按文件原有键的顺序写回，先写临时文件再改名。
+6. 用 `check` 的同一段检查看新加的行，打印结论：缺它要用的服务、配置缺必填项时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
+
+写哪个文件：第二个参数；没有时当前目录的 `rutis.json`；没有 `rutis.json`、有 `rutis.dev.json`（插件项目）时写它；都没有时新建 `rutis.json`。
+
+`add --dry-run <插件>` 把包装进一个临时目录，打印包里每个插件的介绍后删掉它，不改 `rutis.json`，也不碰宿主的项目和环境：
+
+```text
+$ rutis-host add --dry-run github.com/bo/netkit/cmd/netkit
+(go 的输出)
+github.com/bo/netkit/cmd/netkit 0.4.1 (go): plugin dns
+dns
+  version: "0.4.1"
+  provides: {"dns":{"lookup":"async"}}
+nothing was installed (--dry-run)
+```
+
+`remove` 与 `upgrade`：
+
+```text
+$ rutis-host remove llm
+uninstalled bo-llm from /app/.venv
+rutis.json: removed row llm
+
+$ rutis-host upgrade
+@ana/wordcount: 1.2.0 → 1.3.0
+bo-llm: 0.3.0 is the latest
+a running host keeps the old versions until it restarts
+```
+
+- `remove <插件名或引用>` 卸掉插件所在的包（`npm uninstall`、`bun remove`、`uv pip uninstall`、删掉清单里有它的二进制），删掉这个包的全部记录和用这些插件名的行（包括分组里的），逐个打印删掉的行；一个包有几个插件时删整个包，并说明。`runtimes` 不动。
+- `upgrade [<插件名或引用>[@版本]]` 不写名字时升级全部记录，按记录的来源装最新版（或给出的版本），行不改。新版本多出的插件写进记录，并打印怎样加它的行；少了的插件删掉记录，用它的行打印 `<行 id>: the new version has no plugin <插件>`。
+- 正在运行的宿主继续运行旧代码，重启后才用新版本（重新加载一行只重新导入它自己的入口模块，升级换掉的是整个包）。`add` 新加的行，`run --watch-config` 和 `dev` 照 [运行中改配置](#运行中改配置) 的规则接上；新行要的运行时还没在运行时，写进的 `runtimes.<语言>` 被拒绝并提示重启。
+
+出错时（标准错误，以 1 退出，`rutis.json` 不变）：
+
+| 情况 | 输出 |
+| --- | --- |
+| 包管理器不在 | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`；Python 没有 uv 也没有 `python3`：`rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| 包管理器失败 | 它自己的输出，然后 `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
+| 不是插件 | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
+| 本地目录认不出 | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
+| 名字已被别的包占用 | `rutis-host: llm is already installed from pypi:other-llm: remove it first`（装后才知道时，后面加卸掉的命令） |
+| Go 目录不明 | `rutis-host: runtimes.go has no dir to install into: add one, or remove runtimes.go to use plugins/go` |
+| `remove` 的名字不在记录里 | `rutis-host: llm was not installed by add: uninstall it with the package manager that installed it, and remove its row` |
+
+失败时包管理器已经装上的包留在原处，和直接运行 npm、uv 一样；出错文字写明卸掉它的命令。
+
+**只装信任的插件。** `add`、`upgrade`、`--dry-run` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
+
+### 不用 add 时
+
+手动安装照常可用，行名写法不变：每种语言的插件装到它的运行时找得到的地方，再由一行写出插件名：
 
 | 插件 | 用什么装 | 装到哪里 | 行的 `name` |
 | --- | --- | --- | --- |
@@ -92,6 +188,9 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
+| `rutis-host add [--dry-run] <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行；`--dry-run` 只打印介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
+| `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
+| `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 | `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
 
@@ -384,8 +483,12 @@ Node、Bun、Python 运行时里，一个服务方法一口气占住运行时 5 
   "listen": [
     { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" }
   ],
+  "installed": {
+    "summarize": { "from": "pypi:bo-summarize", "language": "py" }
+  },
   "rows": [
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" } },
+    { "id": "summarize", "name": "summarize" },
     { "id": "llm", "name": "py:llm_gateway" },
     { "id": "dns", "name": "go:dns" },
     { "id": "calendar", "name": "swift:calendar" },
@@ -473,6 +576,19 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 
 别的节点连进来用的 WebSocket 监听器。`cert` / `key` 是 TLS 证书和私钥（PEM），也可以由 `RUTIS_CERT` / `RUTIS_KEY` 给出（文件里写的优先）。两者要成对：只有其中一个时启动失败，而不是退回不带 TLS。不带 TLS 时只能监听回环地址。
 
+### installed
+
+`rutis-host add` 装的插件，以插件名为键，每条只有两个字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `from` | 不带版本的插件引用（`npm:@ana/wordcount`、`pypi:bo-llm`、Go 模块路径、本地路径）：`remove`、`upgrade` 用它找到包。同一个包的几个插件 `from` 相同 |
+| `language` | 运行时的键：`node`、`bun`、`py`、`go`、`swift` |
+
+行的 `name` 是这里的键时，按记录交给那门语言：Node 原样，Bun 是 `bun:<包>`，Python 是 `py:<入口点>`，Go 是 `go:<插件>`，Swift 是 `swift:<插件>`。输出里仍写行里写的名字。不是这里的键的名字照旧解析，旧写法的行（`py:llm`）与记录无关。
+
+不记版本：装上的版本由包管理器自己的文件记着（`package.json` 与锁文件、Python 环境），要看版本用 `check`。0.19 以前的 `rutis-host` 读到带 `installed` 的文件时报不认识的字段。
+
 ### rows
 
 要运行的插件，每一行：
@@ -480,7 +596,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | 字段 | 含义 |
 | --- | --- |
 | `id` | 行的名字，在本文件内唯一 |
-| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；两个二进制都有时写 `go-<二进制名>:<插件>`）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`<远程运行时>:<模块或插件>`、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
+| `name` | 插件：`installed` 里的插件名、npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；两个二进制都有时写 `go-<二进制名>:<插件>`）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`<远程运行时>:<模块或插件>`、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
 | `config` | 插件的配置 |
 | `inject` | 额外要等的服务名 |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |
