@@ -193,11 +193,11 @@ When a missing name is a character or two from a declared one, the warnings abov
 
 `check --strict` makes these warnings errors: stderr says `rutis-host: error: …`, the row says `cannot run with --strict: nothing declares <service>` (`only disabled rows declare <service>` for one only disabled rows declare), and the exit status is 1. Use it to make sure before deploying (in CI, say) that every dependency has a declared provider.
 
-In two more cases every row says `ok` but some rows will not start, and `check` warns on stderr (in 0.17 only a warning, the exit status unchanged, with `--strict` too; an error from 0.18):
+In two more cases every row says `ok` but some rows will not start, and `check` reports an error on stderr and exits with 1 (only a warning in 0.17.2):
 
 ```
-rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
-rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+rutis-host: error: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
 ```
 
 - Rows whose `inject` wait for each other's services (a cycle): none of them starts. Only services one row alone provides count: with another provider a row may start from that one, which is no cycle.
@@ -449,6 +449,12 @@ Do not put credentials in the file; they are read from the environment when a li
 | `RUTIS_TOKEN_<NODE>` | Token for a specific node (uppercase, with `-` written as `_`); takes precedence over `RUTIS_TOKEN`. For a runtime that connects in (`listen` / `instances`), by the runtime's name: every connection presents this one token. |
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
+
+On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own: when two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
+
+```
+rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+```
 
 The environment cannot be changed from outside the process, so these tokens cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host`, which drops every connection. Cutting off one identity at runtime takes the identity layer's revocation hook; see [Connect Nodes](nodes.en.md#security).
 

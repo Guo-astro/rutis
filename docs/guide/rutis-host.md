@@ -193,11 +193,11 @@ rutis-host: warning: <行>: <服务> is declared only by row <被禁用的行>, 
 
 `check --strict` 把这些告警当作错误：stderr 写 `rutis-host: error: …`，这一行写 `cannot run with --strict: nothing declares <服务>`（只有被禁用的行声明的写 `only disabled rows declare <服务>`），以 1 退出。想在部署前确认每个依赖都有声明的提供者时用它（CI 里，比如）。
 
-下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 写告警（0.17 里只是告警，退出码不变，`--strict` 也一样；0.18 起改为错误）：
+下面两种情况每个行都说 `ok`，但运行起来有行起不来，`check` 在 stderr 报错，以 1 退出（0.17.2 里只是告警）：
 
 ```
-rutis-host: warning: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
-rutis-host: warning: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
+rutis-host: error: rows a, b wait for each other (a waits for bsvc from b, b waits for asvc from a): none of them starts; break the cycle in their inject
+rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
 ```
 
 - 几行的 `inject` 互相等对方提供的服务（一个环）：谁也起不来。只看只有一行提供的服务：还有别的行提供时，可以先从那一行起来，不算环。
@@ -449,6 +449,12 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | `RUTIS_TOKEN_<节点>` | 只对某个节点（大写，`-` 写作 `_`），优先于 `RUTIS_TOKEN`；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token |
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
+
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token：两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+
+```
+rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+```
 
 环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。
 
