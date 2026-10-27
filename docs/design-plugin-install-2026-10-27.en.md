@@ -2,7 +2,7 @@
 
 [中文](design-plugin-install-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: `main` `103c0d22` (after 0.17.2). Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-27. Base: `main` `103c0d22` (after 0.17.2). Scheduled: 0.19.
 Issue: [#691](https://github.com/arcships/rutis/issues/691) (part of [#663](https://github.com/arcships/rutis/issues/663), H2 and O4).
 Relation to the 0.18 designs: the plugin description `add` prints is the description `check` already prints (version, `inject`, `provides`, config schema), not a second one; rows `add` writes carry no `config`, defaults are filled by the SDK as in [0.18 config schema](design-config-schema-2026-10-27.en.md) C1, and when a required field is missing `add` says so with the same check `check` runs; error text follows [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.5.
 Compatibility: fully compatible, not part of "Migrating to 0.19". The old row names (`py:`, `bun:`, `go:`, `swift:` prefixes, npm package names), manual installation and `rutis-host go add` keep working, unconverted.

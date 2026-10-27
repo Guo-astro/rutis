@@ -2,7 +2,7 @@
 
 [English](design-plugin-install-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#691](https://github.com/arcships/rutis/issues/691)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 H2、O4）。
 与 0.18 设计的关系：`add` 打印的插件介绍就是 `check` 已有的描述（版本、`inject`、`provides`、配置 Schema），不另起一份；新写的行不带 `config`，默认值按 [0.18 配置 Schema](design-config-schema-2026-10-27.md) C1 由 SDK 补，缺必填项时 `add` 用 `check` 的同一段检查说出来；出错文字遵守 [0.18 诊断](design-diagnostics-2026-10-26.md) §4.5。
 兼容：全部兼容，不进《迁移到 0.19》。旧的行名写法（`py:`、`bun:`、`go:`、`swift:` 前缀，npm 包名）、手动安装和 `rutis-host go add` 照常可用，不转换。
