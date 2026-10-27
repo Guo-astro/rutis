@@ -58,7 +58,7 @@ Cordis 4 has no install command; Koishi's plugin market installs with npm into t
 | I6 | The install record is the top-level `installed` of `rutis.json`, keyed by plugin name; rows name only the plugin | 6 |
 | I7 | A recorded language enables its runtime with its defaults, without a warning; Go and Swift use the recorded binaries | 6 |
 | I8 | The plugin description is what plugins already declare (the runtime's description, which `check` prints); no new manifest format; `provides` stays optional | 8 |
-| I9 | The embedding API is the `install` feature of `rutis-loader` (off by default): `Installer`; the host keeps the record itself; the `rutis` kernel is unchanged | 9 |
+| I9 | The embedding API is the `install` feature of `rutis-loader` (off by default): `Installer`; each record it returns is the same serializable type as one entry of `installed` in `rutis.json`, which rutis-host writes as it is, without converting; the caller keeps the records; the `rutis` kernel is unchanged | 9 |
 | I10 | All or nothing: when any step fails, `rutis.json` is unchanged and the package just installed is uninstalled | 5 |
 | I11 | A running host picks up new rows by the existing reload rules (`run --watch-config`, `dev`); `upgrade` does not swap code in a running host | 7 |
 
@@ -125,7 +125,7 @@ When any of steps 2 to 6 fails: the file is unchanged, the package step 3 just i
 - The key is the plugin name, which is the row's `name`. `from` is the reference without a version, `version` the exact version installed, `language` the runtime key; Go and Swift also have `binary` (relative to the file's directory). Several plugins of one package share `from`.
 - Why in `rutis.json` and not in a file beside it: one file and one concept fewer; the host owner sees what is installed and what runs in one place; a deployment carries `rutis.json` anyway. `add` writes it; people can read and edit it.
 - When a row's name is a recorded key, rutis-host hands it to that language's resolution by the record: Node as it is, Bun `bun:<package>`, Python `py:<entry point>`, Go `go-<binary>:<plugin>`, Swift `swift-<binary>:<plugin>`. Output still shows the name the row wrote. A name that is not a recorded key resolves as it does today.
-- **Runtimes follow** (I7): a recorded language without an entry in `runtimes` is enabled with its defaults, as in #666, but without the warning (the record says so); one `runtimes` declares is used as declared. For Go and Swift without an entry, the runtimes are the recorded binaries (`binaries`): the whole directory is not trusted.
+- **Runtimes follow** (I7): for rows named by a recorded key (no prefix), a language without an entry in `runtimes` is enabled with its defaults, as in #666, but without the warning (the record says so); one `runtimes` declares is used as declared. For Go and Swift without an entry, the runtimes are the recorded binaries (`binaries`): the whole directory is not trusted. A row written `<runtime name>:<plugin>` that runs in a named runtime (#683's `runtimes.local`, as agent plugins do in [the #185 design](https://github.com/arcships/rutis/pull/732)) resolves by that runtime, and its record enables no language runtime; the record then serves `remove` / `upgrade` only.
 - **Name clashes**: when the plugin name is already another package's record, `add` refuses and names the package. Rows in the old form (`py:llm`) have nothing to do with the record and do not clash.
 - An older rutis-host reading a file with `installed` reports an unknown field and lists the fields it takes, as it does today. `format` stays 1: `installed` changes the meaning of no other field.
 
@@ -161,16 +161,19 @@ let installer = Installer::new(Places {
 });
 let reference: Reference = "npm:@ana/wordcount".parse()?;
 let about = installer.describe(&reference).await?;   // before installing: install in a temporary directory, describe, delete
-let installed = installer.add(&reference).await?;    // Installed: source, version, language, plugins
-for plugin in &installed.plugins {
+let installed = installer.add(&reference).await?;    // Vec<InstalledPlugin>: one per plugin
+for plugin in &installed {
     rows.push(json!({ "id": plugin.id, "name": plugin.row_name }));   // the loader's row name (py:llm and so on)
+    records.insert(plugin.name.clone(), plugin.record.clone());      // Record: one entry of installed
 }
-installer.upgrade(&installed, None).await?;
-installer.remove(&installed).await?;
+installer.upgrade(&records["llm"], None).await?;     // upgrade by record, returns the new record
+installer.remove(&records["llm"]).await?;            // uninstall the whole package by record
 ```
 
 - **In rutis-loader**: embedding hosts depend on it and its language features already; the runtimes that describe a plugin are there too. The `rutis` kernel is unchanged and knows no package manager; `rutis-loader` too only runs npm, uv and go as external commands when called, and does not depend on them at build time. rutis-host's library is not a public API (`lib.rs` says it has no semver promise), so not there; and no new crate for it.
-- **The host keeps the record**: `Installed` serializes, and the host stores it where it likes (rutis-host in `installed`, deskmate in its own plugin list). The API reads and writes no configuration file.
+- **One shape for the record**: `Record` (`from`, `version`, `language`, and `binary` for Go and Swift) implements serde serialization and deserialization, and is exactly the object after a key (the plugin name) in §6's `installed`. rutis-host writes `plugin.name → plugin.record` into `installed` as it is and hands it back to `remove` / `upgrade` as read, converting nothing; rutis-host reads `rutis.json` with the same type.
+- **The caller keeps the records**: where it likes (rutis-host in `installed`, deskmate in its own plugin list, #185's `Admin` through its save callback). The API reads and writes no configuration file, and touches neither the loader nor runtimes.
+- **Division of work**: `Installer::add` does steps 1–4 of §5 and the rollback (for a local directory the same flow as the command line: language by project file, environment prepared, linked or installed with `-e`), and returns plugin names, row names and records; describing (step 5) is the separate `describe`; writing rows, adding runtimes, checking and telling the loader are the caller's. So callers other than the command line (#185's `rutis_loader::admin::Admin`) use it directly, without going through `rutis-host add`.
 - **Row names**: the API returns the row names the loader takes (`py:llm`, `bun:@ana/x`, `go-netkit:dns`). An embedding host writes rows in code and needs no unprefixed names; those are a convenience of `rutis.json` for people.
 - `describe` returns the existing `RowSchema`, not a new type.
 - rutis-host's `add` / `remove` / `upgrade` and `go add` all call it: the install logic exists once.
@@ -179,6 +182,7 @@ installer.remove(&installed).await?;
 
 - **Local paths and #185**: a plugin the host or its agent writes is a local directory, installed with the same `add ./plugins/notes`, its language decided by its project file. npm links it, Python installs it with `-e`, Go rebuilds it on every `upgrade`, so the agent's edits need no new `add`; they take effect when the row next reloads or restarts. How the agent triggers a reload and how services become tools belongs to the #185 design.
 - **`dev` (#670)**: in a plugin project `add` writes `rutis.dev.json`, which `dev` reads again by the existing rules: the new row is `added` and starts, the other rows are untouched, shared runtimes do not restart. When the runtime the new row needs is not running (a TypeScript project's first Python plugin), the reload is refused with a restart hint, as adding a runtime is today, with the reason now naming the runtime: `reload rejected: rows now use the py runtime, which is not running: restart the host; nothing changed`. The same for `run --watch-config`.
+- **Installed by a program while running (#185's `Admin`)**: the host's management service `plugins.add(path)` calls `Installer::add` while the host runs, then itself adds a named runtime (a `runtimes.local` entry) with #683's `RuntimeSet`, writes the row, checks, tells the loader, and writes the row, the runtime entry and the record into `rutis.json`; the next reread (`--watch-config`, SIGUSR1) gets the same entries and sees no change. The refusal above ("the language runtime a new row needs is not running") is only about language runtimes such as `runtimes.node` / `py` / `bun` added through a config reread; #683's named runtimes in `runtimes.local` can be added and removed while running, so `Admin`'s flow is not affected by it.
 - **#683 (governing plugins)**: which process a plugin runs in and which services it may use are #683's row options, unrelated to how it was installed.
 - **#698 (remote runtimes)**: installs go to local runtimes only; plugins of a remote runtime are installed on that side.
 - **Security**: `add`, `upgrade` and `--dry-run` run the package manager, which may run install scripts in the package, and import the plugin's code to describe it; the same as the host owner running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
