@@ -2,10 +2,10 @@
 
 [English](design-config-schema-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
-Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同。
+状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
+Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同，不出现它 §4.5 的禁用词。
 
-范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），rutis 不再校验一遍。
+范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），不再校验一遍；Standard Schema 作为 `definePlugin` 的配置。
 
 ## 一、现在怎样
 
@@ -24,22 +24,22 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 
 | # | 决策 | 章节 |
 | --- | --- | --- |
-| C1 | 每种语言的 SDK 在装载一行、调用 `apply` 之前做（运行时和测试工具走同一段代码）；`check` 用 rutis 的 Rust 实现做同样的事；loader 不对别的运行时的行再做一遍 | 2.1 |
-| C2 | 一个 JSON Schema 子集，14 个关键字；其他关键字忽略，`check` 告警 | 3.1 |
-| C3 | 多出来的键：告警并原样交给 `apply`；Schema 写了 `additionalProperties: false` 时是错误；`check --strict` 把告警当错误 | 3.2 |
-| C4 | 类型化配置（Go、Swift、Kotlin、Rust）的 Schema 由类型生成，只写语言自己的解码器本来就有的规则 | 3.3 |
-| C5 | 默认值按"对象在才补它的属性"逐层补；没给配置时根是 `{}` | 四 |
-| C6 | 所有问题一次列出，每个一行：`<行>: config: <路径> should be …, got …`；错误码 `bad-config` | 五 |
+| C1 | 每种语言的 SDK 在装载一行、调用 `apply` 之前补默认值并校验（运行时和测试工具走同一段代码）；`check` 用 Rust 实现做同样的事；loader 不对别的运行时的行再校验一遍 | 2.1 |
+| C2 | 一个 JSON Schema 子集，14 个关键字；其他关键字不检查，也不告警 | 3.1 |
+| C3 | 多出来的键：告警并原样交给 `apply`，告警由 loader 按 `rows.schema` 算出并打印；Schema 写了 `additionalProperties: false` 时是错误；`check --strict` 把告警当错误 | 3.2 |
+| C4 | 类型化配置（Go、Swift、Kotlin、Rust）的 Schema 由类型生成，只写语言自己的解码器本来就有的规则；解码器的错误改写成同样的句子 | 3.3 |
+| C5 | 默认值按"对象在才补它的属性"逐层补，跟着 `$ref`、`allOf`，不进 `anyOf` / `oneOf`；没给配置时对象根是 `{}` | 四 |
+| C6 | 所有问题按路径排序一次列出，每个一行：`<行>: config: <路径> should be …, got …`；错误码 `bad-config` | 五 |
 | C7 | 配置错时这一行失败，等它的行显示为等这一行；`dev`、`run`、测试工具、`check` 输出相同 | 五 |
-| C8 | 一份共同的用例表 `specs/config-schema/cases.json`，每种语言和 `check` 都逐条跑 | 七 |
+| C8 | 一份共同的用例表 `specs/config-schema/cases.json`，每种语言和 `check` 都逐条跑，逐字比较；§六 的每条规则都有用例 | 六、八 |
 
 ### 2.1 为什么由各语言的 SDK 做
 
 - **测试工具和真实运行时必须一样。** 测试工具里没有 loader，只有 SDK；SDK 装载一行的那段代码，运行时和测试工具共用。放在 SDK 里，测试过的配置规则就是运行时的规则。放在 loader 里，每种语言的测试工具还得各写一份，反而和运行时分成两套。
 - **远程运行时自然一样。** 配置由运行它的那一端检查，不论运行时在本机、别的机器还是应用里。
 - **类型化语言本来就要在这里解码。** Go、Swift、Kotlin、Rust 在交给 `apply` 之前把配置解码进类型；先按 Schema 补默认值、校验，再解码，出错文字就和其他语言一样。
-- **一份规则，靠用例表保持一致**（§七），而不是靠一份代码：反正每种语言都要有一份（测试工具），用例表让 7 份和 `check` 逐字相同。
-- 0.18 以前的 SDK 构建的运行时不检查；`check` 照样检查它们的行。
+- **一份规则，靠用例表保持一致**（§六、§八），而不是靠一份代码：反正每种语言都要有一份（测试工具），用例表让 7 份和 `check` 逐字相同。
+- 0.18 以前的 SDK 构建的运行时，运行时不检查；`check` 照样检查它们的行。
 
 ### 2.2 每一行经过的步骤
 
@@ -47,7 +47,7 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 行的 config（没有或 null 视为没给）
   → 补默认值（§四）
   → 按 Schema 校验（§3.1）；有错 → 这一行失败（§五），不调用 apply
-  → 类型化语言：解码进类型；解码器还报错时，同样作为 bad-config，能给路径就给
+  → 类型化语言：解码进类型；解码器还报错时，同样作为 bad-config，改写成 §5.1 的句子（§3.3）
   → apply(ctx, config)        // 补过默认值的副本，多出来的键原样保留
 ```
 
@@ -55,9 +55,9 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 
 ### 2.3 Cordis 行
 
-Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis 在装载时用 `Config` 校验，rutis 不再按转换出来的 JSON Schema 校验一遍（转换会丢掉 `transform` 等信息，两边会不一致）。rutis 只把 Cordis 的 `ValidationError` 按 §五 的格式打印（路径取自 issue 的 `path`）。`check` 不检查 Cordis 行的配置值，只打印 Schema（与现在相同）。
+Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis 在装载时用 `Config` 校验，不再按转换出来的 JSON Schema 校验一遍（转换会丢掉 `transform` 等信息，两边会不一致）。Node 运行时把 Cordis 的 `ValidationError` 换成错误码 `bad-config` 的错误，按 §五 的格式写（路径取自 issue 的 `path`，文字取自 issue 的 `message`）。`check` 不检查 Cordis 行的配置值，只打印 Schema（与现在相同）；多出来的键也不告警。
 
-`definePlugin({ config })` 只接受 JSON Schema。传入 schemastery 等 Standard Schema 对象时，定义时就报错：`config of definePlugin is a JSON Schema; a schemastery Schema belongs in a Cordis plugin's exported Config`。
+`definePlugin({ config })` 只接受 JSON Schema。传入 schemastery 等 Standard Schema 对象（带 `~standard`）时，定义时就报错：`config of definePlugin should be a JSON Schema object, got a schemastery Schema`（不是 schemastery 时写 `got a Standard Schema`）。这样的代码以前也不对：Schema 只被打印，从没生效。
 
 ## 三、规则
 
@@ -73,20 +73,21 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 | `enum`、`const` | 按 JSON 相等比较 |
 | `minimum`、`maximum` | 数字的上下限（含等号） |
 | `default` | 补默认值（§四） |
-| `anyOf`、`oneOf` | 符合其中一个即可（`oneOf` 按 `anyOf` 检查）；分支里的 `default` 不补 |
+| `anyOf`、`oneOf` | 符合其中一个即可。`oneOf` 按 `anyOf` 检查，不要求只符合一个：这与 JSON Schema 不同，为的是 schemars 生成的 `oneOf` 在值同时符合几个分支时不误报 |
 | `allOf` | 每一个都要符合 |
 | `$ref` | 只认本文档内的 `#/$defs/…` 与 `#/definitions/…`（schemars、手写都够用） |
 
-- 只作说明的关键字不检查，也不告警：`$schema`、`$id`、`title`、`description`、`examples`、`deprecated`、`readOnly`、`writeOnly`、`x-` 开头的（如 `x-volatile`）。
-- 其他关键字（`pattern`、`minLength`、`format`、`prefixItems`、`if` 等）不检查。`check` 对每个 Schema 告警一次：`weather: config schema: pattern is not checked by rutis; check it in the plugin`；运行时不告警。
+- 其他关键字（`format`、`pattern`、`minLength`、`uniqueItems`、`prefixItems`、`if` 等）不检查，也不告警：schemars、Kotlin 的生成器会自动写上其中一些，插件作者去不掉。各语言指南列出检查哪些关键字。
 - 不做类型转换：`"5"` 不符合 `number`。
 
 ### 3.2 多出来的键
 
-- 对象写了 `properties`、没写 `additionalProperties`：多出来的键告警，值原样交给 `apply`（JSON Schema 的本义，旧配置不会因此起不来）。拼写接近已有的键时给出建议。
-- 告警由检查它的那一方写到标准错误（运行时、测试工具、`check` 各写一次）：`weather: config: cty is not a config key (did you mean city?); it is ignored`。
-- `additionalProperties: false`：同样的文字作为错误，这一行失败。
+- 对象写了 `properties`、没写 `additionalProperties`：多出来的键告警，值原样交给 `apply`（JSON Schema 的本义，旧配置不会因此起不来）。拼写接近已有的键时给出建议（§6.1）。
+- **告警由 loader 给**，不由运行时进程写：loader 在发出 `rows.load` 之前，用它已有的 Schema（`rows.schema` / `plugins.read` / 清单）和同一份 Rust 实现算出多出来的键，写进宿主的输出（`rutis-host` 写到标准错误，Rust 嵌入写进诊断设计 §七 的默认输出），不带插件输出的 `[weather]` 前缀。远程运行时和应用里的运行时的行也由本机的 loader 告警，0.18 以前的 SDK 的行也一样。SDK 只报错误。
+- 测试工具没有 loader，自己写同样的告警到标准错误。
+- `additionalProperties: false`：由 SDK 作为错误报出（§五），这一行失败。
 - `check --strict`：告警算错误，以 1 退出（与 `--strict` 对其他告警的处理相同）。
+- 由 `ctx.plugin(def.at(...))` 装载的副本不经过 loader 的配置，不告警，只报错误。
 
 ### 3.3 类型化配置怎样对上
 
@@ -100,22 +101,33 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 | Rust（`serde` + `schemars`） | schemars 已有的规则：`Option<T>`、`#[serde(default)]` 不必填 | schemars 写进 Schema 的 `default`；先补进 JSON，`serde(default)` 照常有效，两者是同一个值 | 告警；`#[serde(deny_unknown_fields)]` 生成 `additionalProperties: false`，是错误 |
 | Rust（Rust 里做的定义，没有 Schema） | `serde` 解码 | `serde(default)` | `serde` 的规则 |
 
-Rust 里做的定义（`Definition`，配置类型只要求 `DeserializeOwned`）没有 Schema，只走解码；解码错误也按 §五 的格式写，路径由解码时记下（`serde_path_to_error`）。
+**解码器的错误按种类改写**，不出现解码器的原文：
+
+| 种类 | 句子 |
+| --- | --- |
+| 类型不对（serde `invalid type`；Go `UnmarshalTypeError`；Swift `typeMismatch`；Kotlin 的类型错） | `<路径> should be <期望>, got <值>` |
+| 缺字段（serde `missing field`；Swift `keyNotFound`；Kotlin `MissingFieldException`） | `<路径> is required` |
+| 不认识的枚举值（serde `unknown variant`；Kotlin 的未知枚举） | `<路径> should be "a" or "b", got "c"`（§5.1 的 `enum` 句子） |
+| 不认识的键（serde `unknown field`；Kotlin 的未知键） | `<路径> is not a config key (did you mean …?)` |
+| 其他 | `<路径> is not a value the plugin accepts` |
+
+Rust 解码时用自己的错误类型（实现 `serde::de::Error` 的 `invalid_type`、`missing_field`、`unknown_variant`、`unknown_field`），直接得到种类和路径，不解析 serde 的文字；Rust 里做的定义（`Definition`，配置类型只要求 `DeserializeOwned`，没有 Schema）也走它。其他语言按解码器的错误类型取种类。
 
 ## 四、默认值
 
-- **没给配置**（没写 `config` 或写了 `null`）：根 Schema 有 `default` 时用它；根是对象时从 `{}` 开始；都不是时按"没有值"检查（根不允许时报错）。没有 Schema 的插件照旧，收到什么就是什么。
+- **没给配置**（没写 `config` 或写了 `null`）：根 Schema 有 `default` 时用它；根是对象（`type` 是 `"object"` 或包含 `"object"`）时从 `{}` 开始；都不是时按"没有值"检查（根不允许时报 `config is required`）。只写了 `properties`、没写 `type` 的根不算对象：别的规则会改变 JSON Schema 的意思。没有 Schema 的插件照旧，收到什么就是什么。
 - **逐层补**：一个对象在（包括刚开始的 `{}`），它缺的属性有 `default` 时补上，再进入补上的或原有的子对象继续补。
+- **跟着 `$ref`、`allOf`，不进 `anyOf` / `oneOf`**（与 ajv 相同）。
 - **不凭空造对象**：缺的子对象自己没有 `default` 时不补，`apply` 里它就是没有；想让嵌套的默认值总在，给子对象写 `default: {}`。这是 ajv `useDefaults` 的规则，JavaScript 开发者最熟悉的那一种。
 - 补进去的是副本，`default` 写的对象不会被插件改动影响到下一次。
-- 补完再校验：`default` 本身不符合 Schema 是插件的错误，这一行失败，`check` 也报错：`weather: config schema: the default of units ("kelvin") should be "metric" or "imperial"`。
+- 补完再校验：`default` 本身不符合 Schema 时，运行时报的就是那条路径的普通错误（`units should be "metric" or "imperial", got "kelvin"`），这一行失败；`check` 另外指出是插件的 `default` 错了（§七）。
 - 判断"配置里有没有这个键"的代码会看到默认值已经补上：这是本稿要的行为，写进迁移说明。
 
 ## 五、错误
 
 ### 5.1 文字
 
-一个问题一行，所有问题一次列出（最多 20 个，多的写成 `and N more`）：
+一个问题一行，所有问题一次列出（排序见 §6.4；最多 20 个，多的写成 `and N more`）：
 
 ```text
 <行>: config: <路径> <原因>
@@ -130,39 +142,73 @@ Rust 里做的定义（`Definition`，配置类型只要求 `DeserializeOwned`�
 | `const` | `mode should be "fast", got "slow"` |
 | 上下限 | `days should be at least 1, got 0`；`days should be at most 14, got 30` |
 | 不是整数 | `days should be an integer, got 1.5` |
-| `anyOf` / `oneOf` | `proxy should be a string or an object, got 3` |
+| `anyOf` / `oneOf` | `proxy should be a string or an object, got 3`（分支怎样写见 §6.5） |
 | 不允许的键 | `cty is not a config key (did you mean city?)` |
-| 解码器的错误（§2.2） | `home.lat: <解码器的原话，去掉内部类型名>` |
 
-- 路径：`home.lat`、`cities[2]`；不是标识符的键加引号：`headers["x-api"]`。
-- `got` 写 JSON，超过 40 个字符时写类型（`an object`、`an array of 12`）。
-- 不出现诊断设计 §4.5 的禁用词（serde、`ValidationError`、内部类型名）。
+- 路径：`home.lat`、`cities[2]`；不是标识符（`[A-Za-z_][A-Za-z0-9_]*`）的键写成 JSON 字符串加方括号：`headers["x-api"]`。根写 `config`。
+- `got` 的写法见 §6.2、§6.3。
+- 不出现诊断设计 §4.5 的禁用词（serde、`ValidationError`、内部类型名、平台名字）。
 
 ### 5.2 结构
 
-- 错误是 `BindingError`，错误码 `bad-config`（诊断设计 §4.3 的表加一行），`data`：`{ issues: [{ path: ["home", "lat"], message: "home.lat should be a number, got \"north\"" }] }`。`site` 是这一行、`doing: "apply"`（诊断设计 §4.1）；rutis 打印时见到 `bad-config` 写 `config:`，不写 `failed in apply:`。
-- Rust：loader 的行的配置错误仍是 `ErrorKind::Validation { issues }`，`issues` 是上面的每一行文字，显示为 `config: …`（去掉 `config validation failed: [...]`）；`ReconcileReport` 的 `Failure` 跟着变文字，类型不变。
+- 错误是 `BindingError`，错误码 `bad-config`。诊断设计 §4.3 写明"表在实施时可以加行，不改已有的行"，本稿在那张表加一行：`bad-config`，什么时候：配置不符合 Schema，`data`：`{ issues: [{ path: ["home", "lat"], message: "home.lat should be a number, got \"north\"" }] }`（`path` 的数组项是键或下标）。
+- SDK 只发 `code` 与 `data`；`site`（这一行、`doing: "apply"`，诊断设计 §4.1）由 loader 在边界上补；测试工具里没有 `site`。rutis 打印时见到 `bad-config` 写 `config:`，不写 `failed in apply:`。
+- Cordis 行的 `ValidationError` 也是 `bad-config`（§2.3）。
+- Rust：loader 的行的配置错误仍是 `ErrorKind::Validation { issues }`，`issues` 是上面每一行的文字，显示为 `config: …`（去掉 `config validation failed: [...]`）；`ReconcileReport` 的 `Failure` 跟着变文字，类型不变。
+- **宿主怎样认出配置错误**：每一行都一样，用 `rutis_loader::config_issues(&rutis::Error) -> Option<Vec<String>>`：一行装载失败的错误是 `ErrorKind::Validation`（Rust 的行），或包着错误码 `bad-config` 的跨语言错误（其他语言的行、Cordis 行，经 `rutis_bridge::thrown`）时，给出每个问题的文字。不按文字匹配。
 
 ### 5.3 记在哪一行，之后怎样
 
 - 记在配置写错的那一行（诊断设计 §4.7）：这一行失败，不调用 `apply`；依赖它的行显示 `chat: waiting for weather (row weather failed: config: units should be …)`，不显示成调用方的错误。
 - 改好配置后照常重新装载（`dev` 监视配置文件时自动，`run` 下按现有的重新装载方式）。
-- `dev` 与 `run` 规则相同，区别只在诊断设计 §七 的输出前缀。
+- `dev` 与 `run` 规则相同，区别只在诊断设计 §七 的输出前缀；配置的错误和告警由 rutis 打印，不带插件输出的前缀。
 
-## 六、`rutis-host check`
+## 六、逐字一致的规则
+
+7 份实现与 `check` 要逐字相同的地方，每条在用例表里都有用例：
+
+### 6.1 拼写建议
+
+与 rutis-host 给服务名的建议相同（`rutis-loader` `loader/waits.rs` 的 `closest`，`status.rs`、`check` 的 `did you mean` 都用它）：
+
+- 编辑距离按 Unicode 标量值计，一次编辑是插入、删除、替换、交换相邻两个（OSA 距离）。
+- 键长 0–2 个标量：不建议；3–6 个：距离不超过 1；7 个以上：不超过 2。
+- 候选是同一个对象的 `properties` 里的键（不含它自己）；取距离最小的，距离相同时取按 Unicode 码点排序最小的。
+
+### 6.2 `got` 的值
+
+- 字符串、数字、布尔、`null` 写成 JSON；对象写 `an object`，数组写 `an array of N`（`N` 是项数）。不写出对象和数组的内容，不涉及键的顺序。
+- 数字：值是整数且绝对值不超过 2^53 时不带小数点（`1.0` 写成 `1`）；其他写最短的往返形式（与 JavaScript 的 `String(number)` 相同：`1.5`、`1e+21`）。超出 2^53 的整数各语言精度不同，用例表不含。
+- 字符串：按 JSON 转义 `"`、`\` 与控制字符（`\n`、`\t` 等有短写的用短写，其余写 `\u00XX`，小写十六进制）；非 ASCII 字符原样写出，不转义。
+
+### 6.3 长度上限
+
+字符串的内容超过 40 个 Unicode 标量值时，只写前 40 个，后接 `…`（U+2026），再加引号：`"<前 40 个>…"`。计数在转义之前。
+
+### 6.4 问题的顺序
+
+按路径排序：路径逐段比较，键按 Unicode 码点比较，下标按数值，一条路径是另一条的前缀时前者在先（父在子之前）。同一路径上先报类型，再报 `enum` / `const`，再报上下限。缺必填的键按它自己的路径（`home.lat`）参与排序。这样不依赖配置里键的顺序（Go 的 map 没有顺序），也不依赖 Schema 里 `properties` 的顺序（Go 生成的 Schema 是 map）。
+
+### 6.5 `anyOf` / `oneOf` 失败时写出的分支
+
+- 每个分支先跟着 `$ref`、`allOf` 找到它的 `type` / `const` / `enum`，写成：`type` → `a string`、`a number`、`an integer`、`a boolean`、`an object`、`an array`、`null`；`const` 与 `enum` → 它们的值（§6.2 的写法）；三者都没有的分支写 `another accepted value`。
+- 按分支的顺序写，去掉重复，两个用 `or` 连接，三个以上写 `one of a, b, c`（与 `enum` 相同）。
+
+## 七、`rutis-host check`
 
 - 对每一行用它已经打印的 Schema、按同样的规则补默认值并校验（Rust 实现，与 loader 的行共用），不运行插件。
-- 有错误：按现有版式写 `<行> (<插件>): cannot run: config: …`，每个问题一行，以 1 退出。告警（多出来的键、不检查的关键字）写到标准错误，以 0 退出；`--strict` 时以 1 退出。
+- 有错误：按现有版式写 `<行> (<插件>): cannot run: config: …`，每个问题一行，以 1 退出。多出来的键是告警，写到标准错误，以 0 退出；`--strict` 时以 1 退出。
+- 插件的 `default` 本身不符合 Schema 时，`check` 写明是 `default` 错了：`weather (weather): cannot run: config schema: the default of units should be "metric" or "imperial", got "kelvin"`。运行时不写这一句（§四）。
 - 检查时不知道 Schema 的行（没连上的远程运行时、`peer:` 行）写 `config not checked: its schema is known only when it runs`，不算告警。Cordis 行见 §2.3。
 - `check` 的输出与运行时的错误逐字相同（同一份用例表锁住）。
 
-## 七、用例表
+## 八、用例表
 
-`specs/config-schema/cases.json`：每条是 `{ name, schema, config, then: { config } | { errors: [...] }, warnings: [...] }`，`errors` 与 `warnings` 是 §5.1 的完整文字。每种语言的 SDK 测试（Node、Bun、Python、Go、Swift、Kotlin）、rutis-loader 与 `check` 都逐条跑，逐字比较。用例至少有：
+`specs/config-schema/cases.json`：每条是 `{ name, schema, config, then: { config } | { errors: [...] }, warnings: [...] }`，`errors` 与 `warnings` 是 §5.1 的完整文字。每种语言的 SDK 测试（Node、Bun、Python、Go、Swift、Kotlin）、rutis-loader 与 `check` 都逐条跑，逐字比较（`warnings` 由测试工具与 loader 的告警比较）。用例至少有：
 
 | # | 用例 |
 | --- | --- |
-| 1 | 没给配置，根是对象：得到 `{}` 加默认值 |
+| 1 | 没给配置，根是对象：得到 `{}` 加默认值；根是 `["object", "null"]` 同样；只有 `properties` 没有 `type` 的根：不造 `{}` |
 | 2 | `null` 与没给相同 |
 | 3 | 裸字符串当配置：`config should be an object, got "Oslo"` |
 | 4 | 缺 `required` |
@@ -170,21 +216,23 @@ Rust 里做的定义（`Definition`，配置类型只要求 `DeserializeOwned`�
 | 6 | `enum` 两个值、三个值；`const` |
 | 7 | `minimum`、`maximum` 边界（等于上下限通过） |
 | 8 | 嵌套对象在：补它的默认值；不在：不造对象；子对象 `default: {}`：造出来并补 |
-| 9 | 数组项出错：路径 `cities[2]` |
-| 10 | 字典（`additionalProperties` 是 Schema） |
-| 11 | 多出来的键：告警、原样保留、给出建议 |
-| 12 | `additionalProperties: false`：错误 |
-| 13 | `anyOf` / `oneOf`；`["string", "null"]` |
-| 14 | `$ref` 到 `$defs` 与 `definitions` |
-| 15 | 不检查的关键字（`pattern`）：值照常通过 |
-| 16 | 多个问题一次列出；超过 20 个截断 |
-| 17 | `default` 本身不符合 Schema |
-| 18 | 非标识符的键的路径；很长的 `got` |
-| 19 | 默认值是副本：插件改了它，下一次装载不受影响 |
+| 9 | 默认值跟着 `$ref` 与 `allOf`，不进 `anyOf` / `oneOf` |
+| 10 | 数组项出错：路径 `cities[2]` |
+| 11 | 字典（`additionalProperties` 是 Schema） |
+| 12 | 多出来的键：告警、原样保留；建议的三种长度界限、距离相同时的取舍、交换相邻两个算一次 |
+| 13 | `additionalProperties: false`：错误 |
+| 14 | `anyOf` / `oneOf`；`["string", "null"]`；分支是 `$ref`、`const`、什么都没有时的写法；`oneOf` 同时符合两个分支时通过 |
+| 15 | `$ref` 到 `$defs` 与 `definitions` |
+| 16 | 不检查的关键字（`pattern`、`format`、`uniqueItems`）：值照常通过，没有告警 |
+| 17 | 多个问题一次列出的顺序（键的码点顺序、父在子前、同一路径上的先后）；超过 20 个截断 |
+| 18 | `default` 本身不符合 Schema：运行时是普通的路径错误 |
+| 19 | 非标识符的键的路径 |
+| 20 | `got` 的写法：`1.0` 写成 `1`、`1.5`、`1e+21`、转义（`"`、`\`、`\n`、`\u0001`）、非 ASCII 原样、超过 40 个标量值截断（含多字节字符）、对象与数组 |
+| 21 | 默认值是副本：插件改了它，下一次装载不受影响 |
 
-类型化语言另有自己的用例（Go 的零值与指针、Swift 的字面量初始值、Kotlin 的默认参数、Rust 的 `serde(default)` 与 `deny_unknown_fields`），各在自己的测试里。
+类型化语言另有自己的用例（Go 的零值与指针、Swift 的字面量初始值、Kotlin 的默认参数、Rust 的 `serde(default)` 与 `deny_unknown_fields`、§3.3 的解码器错误种类），各在自己的测试里。
 
-## 八、开发者看到什么
+## 九、开发者看到什么
 
 `rutis.json` 里 `weather` 的配置写错时（`dev`，TypeScript 插件；其他语言输出相同）：
 
@@ -195,19 +243,19 @@ weather: config: units should be "metric" or "imperial", got "kelvin"
 # 裸字符串
 weather: config: config should be an object, got "Oslo"
 
-# 缺必填、类型不对，一次列出
+# 缺必填、类型不对，一次列出（按路径排序）
 weather: config: city is required
 weather: config: days should be an integer, got 1.5
 weather: config: home.lat should be a number, got "north"
 
 # 拼错键（告警，这一行照常起来，city 用默认值）
-[weather] weather: config: cty is not a config key (did you mean city?); it is ignored
+weather: config: cty is not a config key (did you mean city?); it is ignored
 
 # 依赖它的行
 chat: waiting for weather (row weather failed: config: units should be "metric" or "imperial", got "kelvin")
 
-# 插件写的 default 本身不对
-weather: config schema: the default of units ("kelvin") should be "metric" or "imperial"
+# Rust 插件，解码器的错误（改写后）
+weather: config: city should be a string, got 42
 ```
 
 `rutis-host check`：
@@ -215,7 +263,6 @@ weather: config schema: the default of units ("kelvin") should be "metric" or "i
 ```text
 weather (weather): cannot run: config: units should be "metric" or "imperial", got "kelvin"
 rutis-host: warning: weather: config: cty is not a config key (did you mean city?); it is ignored
-rutis-host: warning: weather: config schema: pattern is not checked by rutis; check it in the plugin
 rutis-host: 1 row(s) or binaries cannot run
 $ echo $?
 1
@@ -225,28 +272,31 @@ $ echo $?
 
 测试工具（以 Node 为例）：`load(plugin, { units: 'kelvin' })` 失败，抛出的 `BindingError` 的 `code` 是 `bad-config`，消息是 `config: units should be "metric" or "imperial", got "kelvin"`；Go 的 `rutistest.Load` 返回同样的错误（`errors.As` 得到 `*rutis.BindingError`）。
 
-## 九、兼容与迁移
+## 十、兼容与迁移
 
 写进《迁移到 0.18》（两份）：
 
-- **以前写错也能运行的配置现在让这一行失败**：类型不对、缺 `required` 的字段、裸字符串当配置、`additionalProperties: false` 下多出来的键。**升级前先用 0.18 的 `rutis-host check` 跑一遍**，它列出每一行不合格的配置。
+- **以前写错也能运行的配置现在让这一行失败**：类型不对、缺 `required` 的字段（Python 以前完全不看 `required`）、裸字符串当配置、`additionalProperties: false` 下多出来的键。**升级前先用 0.18 的 `rutis-host check` 跑一遍**，它列出每一行不合格的配置。
+- **测试也会失败**：给测试工具传了不完整或写错的配置的测试，现在和运行时一样失败；按 Schema 补全配置，或让 Schema 如实写出哪些字段可以不写。
 - **默认值现在会补上**：判断"配置里有没有这个键"的插件代码会看到默认值；为默认值写的兜底可以去掉，也可以留着。
 - **Go**：生成的 Schema 不再有 `required`（与 Go 的零值一致）；手写的 `Schema` 里的 `default` 现在会补上（Go 插件指南"不会替你填默认值"一句改写）。
 - **Swift**：带字面量初始值的 `var` 字段不再必填，没写时用初始值。
-- **Rust**：配置错误的文字从 `config validation failed: [...]` 变为 `config: <路径> …`；`ErrorKind::Validation`、`ReconcileReport` 类型不变。
-- **Node、Bun**：`definePlugin` 的 `config` 传 Standard Schema 对象时报错。
+- **Rust**：配置错误的文字从 `config validation failed: [...]` 变为 `config: <路径> …`；`ErrorKind::Validation`、`ReconcileReport` 类型不变；认出配置错误用 `rutis_loader::config_issues`。
+- **Node、Bun**：`definePlugin` 的 `config` 传 Standard Schema 对象时报错。只影响本来就不对的代码：这样的 Schema 以前只被打印，从没生效。
+- **0.18 以前的 SDK 构建的运行时**：运行时不检查它们的行的配置；`check` 照样检查。升级 SDK 后才在运行时生效。
 - **多出来的键**：只告警；`check --strict` 下是错误。
 - 发布说明写明：这是兑现文档早就写着的行为（插件 API 指南的"宿主据此校验"）。
 
-## 十、实施
+## 十一、实施
 
 | 步 | PR 内容 |
 | --- | --- |
-| 1 | 用例表 `specs/config-schema/`；Rust 实现（rutis-loader 的 `config` 模块）：`Builtins::register` / `register_with` / `register_raw` 的行、`Definition` 的解码路径；`ErrorKind::Validation` 的文字；`check` 的检查、告警与退出码 |
-| 2 | Node 与 Bun：`definePlugin` 的行与测试工具；Cordis `ValidationError` 按 §5.1 打印；拒绝 Standard Schema 对象 |
+| 1a | 用例表 `specs/config-schema/`；Rust 实现（rutis-loader 的 `config` 模块：补默认值、校验、§六 的规则）；`check` 的检查、告警与退出码 |
+| 1b | Rust 的行：`Builtins::register` / `register_with` / `register_raw`、`Definition` 的解码路径与 §3.3 的错误改写；`ErrorKind::Validation` 的文字；loader 对多出来的键的告警；`site` 的补法；`config_issues` |
+| 2 | Node 与 Bun：`definePlugin` 的行与测试工具；Cordis `ValidationError` 换成 `bad-config`；拒绝 Standard Schema 对象 |
 | 3 | Python：模块行、`define_plugin` 的行与测试工具 |
 | 4 | Go：校验后再解码；生成的 Schema 去掉 `required`；`rutistest` |
 | 5 | Swift 与 Kotlin：`@RutisConfig` 的字面量默认值；两者的运行时、应用里的运行与测试工具 |
-| 6 | 文档：插件 API 指南、rutis-host 指南"检查配置"、各语言指南（撤回 #714 写的"目前不检查"）、《迁移到 0.18》、`docs/guarantees.md` 新条目"配置在 `apply` 之前补默认值并校验"（写明验证它的用例表） |
+| 6 | 文档：插件 API 指南（列出检查的关键字）、rutis-host 指南"检查配置"、各语言指南（撤回 #714 写的"目前不检查"）、诊断设计（两份）§4.3 的表加 `bad-config` 一行、《迁移到 0.18》、`docs/guarantees.md` 新条目"配置在 `apply` 之前补默认值并校验"（写明验证它的用例表） |
 
 每一步合并时，它那一列的用例全部通过；#669 在第 6 步合并、7 列都通过后关闭。
