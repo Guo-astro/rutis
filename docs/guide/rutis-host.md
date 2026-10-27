@@ -141,10 +141,10 @@ rutis-host: listening on <监听器名> <地址:端口>
 | 输出 | 含义 |
 | --- | --- |
 | `<行 id>: link connected` | 会话就绪，对端可用 |
-| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、会话结束），按退避在给出的时间后重试 |
+| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、连接结束），按退避在给出的时间后重试 |
 | `<行 id>: link refused: auth-rejected (<原因>); retrying in 30s` | 被拒绝：token 不对、证书不受信任（名字不符、过期、CA 不认）、身份对不上；30 秒后再试 |
 | `<行 id>: link stopped: incompatible (<原因>)` | 不兼容：协议、地址写法、对端缺少要求的能力（如 `runtime`）；不再重试，改配置后重新加载 |
-| `<行 id>: link down (the session ended)` | 监听方：会话结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
+| `<行 id>: link down (the connection ended)` | 监听方：连接结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
 
 - 类别（`auth-rejected`、`incompatible`）来自 link 对失败的分类，不靠错误文字；括号里的原因是给人看的细节，例如证书被拒时写明证书的问题，不保证措辞。
 - 输出里不会出现 token 或其他凭据。
