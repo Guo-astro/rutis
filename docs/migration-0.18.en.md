@@ -36,17 +36,17 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
 
-## Node, Bun and Python runtimes: an unhandled error no longer ends the process (#688)
+## Node, Bun and Python runtimes: errors nobody handled are handled differently (#688)
 
-In 0.17 a promise rejection a plugin left unhandled (or an exception nobody retrieved from a Python task) ended its runtime's process, and every row of that runtime stopped and waited. From 0.18 the process goes on:
+In 0.17 a promise rejection a Node or Bun plugin left unhandled (or an exception thrown in a timer) ended its runtime's process, and every row of that runtime stopped and waited; an exception nobody retrieved from a Python task was only logged by asyncio, and the row ran on. From 0.18:
 
-- Node under `rutis-host dev`, and Python always, trace the row that produced it: that row fails, saying what and where; the other rows of the runtime run on.
+- The process goes on. Where the row that produced the error is traced (Node under `rutis-host dev`; in Python, tasks and callbacks that run in a row), that row fails, saying what and where; the other rows of the runtime run on.
 
   ```
   weather: failed: unhandled rejection: Error: no region (at file:///…/weather.mjs:12:9)
   ```
 
-- Node under `rutis-host run`, and Bun, cannot tell which row it came from: they write a line saying the source is unknown, and no row fails.
+- Where it is not (Node under `rutis-host run`, Bun, Python code that runs in no row), the runtime writes a line saying the source is unknown, and no row fails:
 
   ```
   runtime node: an unhandled error from an unknown row: Error: no region
@@ -55,4 +55,9 @@ In 0.17 a promise rejection a plugin left unhandled (or an exception nobody retr
 
 - A plugin calling `process.exit` / `os._exit` still ends the process, and the runtime first writes `runtime node: row weather called process.exit(1)`.
 
-What to change: a project that recovered by letting the runtime exit on an error and having the host restart it (`restart`) now sees the row fail (or the runtime go on) instead; the runtime does not exit. To restart after an error, handle the error in the plugin; to end the process, call `process.exit` explicitly. See [Plugins in one runtime share its process](guide/plugin-api.en.md#plugins-in-one-runtime-share-its-process) in the plugin API guide.
+What to change:
+
+- **Python**: a row that ran on after one of its tasks failed now fails (the host restarts it, and the restart fails). Handle or retrieve the exceptions of the tasks you start (`await` them, or read `exception()` in an `add_done_callback`).
+- **Node, Bun**: a project that recovered by letting the runtime exit on an error and having the host restart it no longer sees the runtime exit: `restart: "on-failure"` does not restart the runtime for it, and a host with `restart: "exit"` no longer stops with status 3 for it. To recover after an error, handle the error in the plugin; to end the process, call `process.exit` explicitly.
+
+See [Plugins in one runtime share its process](guide/plugin-api.en.md#plugins-in-one-runtime-share-its-process) in the plugin API guide.
