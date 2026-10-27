@@ -1,6 +1,8 @@
 package rutis
 
 import (
+	"encoding"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"runtime/debug"
@@ -13,7 +15,16 @@ type Schemer interface {
 	JSONSchema() map[string]any
 }
 
-var schemerType = reflect.TypeFor[Schemer]()
+var (
+	schemerType         = reflect.TypeFor[Schemer]()
+	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
+
+// decodesItself: the type (or its pointer) implements `iface`.
+func decodesItself(t reflect.Type, iface reflect.Type) bool {
+	return t.Implements(iface) || reflect.PointerTo(t).Implements(iface)
+}
 
 // schemaOf derives the JSON Schema of a configuration type.
 func schemaOf(t reflect.Type) (map[string]any, error) {
@@ -27,6 +38,17 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 	if reflect.PointerTo(t).Implements(schemerType) {
 		return reflect.New(t).Interface().(Schemer).JSONSchema(), nil
 	}
+	// A type that decodes itself has its own rules, which a schema of its
+	// Go shape would contradict: only what encoding/json itself requires
+	// (config schema design §3.3).
+	if t.Kind() != reflect.Pointer {
+		if decodesItself(t, jsonUnmarshalerType) {
+			return map[string]any{}, nil
+		}
+		if decodesItself(t, textUnmarshalerType) {
+			return map[string]any{"type": "string"}, nil
+		}
+	}
 	switch t.Kind() {
 	case reflect.String:
 		return map[string]any{"type": "string"}, nil
@@ -38,7 +60,21 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 	case reflect.Float32, reflect.Float64:
 		return map[string]any{"type": "number"}, nil
 	case reflect.Pointer:
-		return schemaFor(t.Elem(), seen)
+		// A pointer tells "not written" (nil) apart: null is a value of
+		// it, as encoding/json decodes it.
+		schema, err := schemaFor(t.Elem(), seen)
+		if err != nil {
+			return nil, err
+		}
+		if ty, ok := schema["type"].(string); ok {
+			nullable := map[string]any{}
+			for key, value := range schema {
+				nullable[key] = value
+			}
+			nullable["type"] = []any{ty, "null"}
+			return nullable, nil
+		}
+		return schema, nil
 	case reflect.Interface:
 		return map[string]any{}, nil
 	case reflect.Slice, reflect.Array:
@@ -62,13 +98,15 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 		}
 		seen[t] = true
 		defer delete(seen, t)
+		// No `required`: a field not written is its zero value, as
+		// encoding/json and the Go plugin guide have it (config schema
+		// design §3.3); a pointer tells "not written" apart.
 		properties := map[string]any{}
-		required := []string{}
 		for _, field := range reflect.VisibleFields(t) {
 			if !field.IsExported() || field.Anonymous {
 				continue
 			}
-			name, omitempty := field.Name, false
+			name := field.Name
 			if tag, ok := field.Tag.Lookup("json"); ok {
 				tagName, rest, _ := strings.Cut(tag, ",")
 				if tagName == "-" && rest == "" {
@@ -77,7 +115,6 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 				if tagName != "" {
 					name = tagName
 				}
-				omitempty = strings.Contains(","+rest+",", ",omitempty,") || strings.Contains(","+rest+",", ",omitzero,")
 			}
 			property, err := schemaFor(field.Type, seen)
 			if err != nil {
@@ -92,15 +129,8 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 				property = copied
 			}
 			properties[name] = property
-			if !omitempty {
-				required = append(required, name)
-			}
 		}
-		schema := map[string]any{"type": "object", "properties": properties}
-		if len(required) > 0 {
-			schema["required"] = required
-		}
-		return schema, nil
+		return map[string]any{"type": "object", "properties": properties}, nil
 	}
 	return nil, fmt.Errorf("%s cannot be configuration", t)
 }

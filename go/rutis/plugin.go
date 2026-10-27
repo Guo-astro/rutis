@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/arcships/rutis/go/rutis/internal/config"
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
@@ -159,6 +160,16 @@ func Define[C any](p Plugin[C]) *Definition {
 			pkg = packageOf(fn.Name())
 		}
 	}
+	// The schema as the config check reads it (numbers kept apart as
+	// integers and fractions).
+	var checked any
+	if schema != nil {
+		normalized, err := config.Normalize(schema)
+		if err != nil {
+			panic(fmt.Sprintf("rutis: %s: config schema: %v", called(p.Name), err))
+		}
+		checked = normalized
+	}
 	apply := p.Apply
 	return &Definition{
 		name:     p.Name,
@@ -168,10 +179,15 @@ func Define[C any](p Plugin[C]) *Definition {
 		api:      PluginAPI,
 		pkg:      pkg,
 		config:   configType,
-		apply: func(ctx *Ctx, config any) error {
-			value, err := convert.FromPeer(config, configType)
+		apply: func(ctx *Ctx, given any) error {
+			// Defaults filled and the config validated against the
+			// schema before Apply (config schema design §2.2).
+			value, err := configured(checked, given, configType)
 			if err != nil {
-				return fmt.Errorf("config: %w", err)
+				if checked == nil {
+					return fmt.Errorf("config: %w", err)
+				}
+				return err
 			}
 			return apply(ctx, value.Interface().(C))
 		},
