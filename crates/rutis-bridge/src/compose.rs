@@ -235,6 +235,10 @@ impl PeerHandle {
 }
 
 impl DynPlugin for PeerPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

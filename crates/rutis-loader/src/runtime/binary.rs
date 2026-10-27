@@ -2186,6 +2186,10 @@ impl<L: BinaryLanguage> Inner<L> {
 }
 
 impl<L: BinaryLanguage> DynPlugin for BinaryRuntimes<L> {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -2283,6 +2287,10 @@ impl<L: BinaryLanguage> BinaryRuntime<L> {
 }
 
 impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

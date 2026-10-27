@@ -85,10 +85,26 @@ pub(crate) enum Cleanup {
 /// 严格 LIFO 串行;单错原样、多错聚合不压平;一个清理失败不阻止其余清理。
 /// 宿主 fiber(`owner`):清理进 Done 后从宿主 effects 列表自摘——长寿
 /// parent 下反复注册/清理的瞬态记录不残留(0.2.1 瞬态子插件释放)。
+/// Where a cleanup came from, for a shutdown that runs out of time to
+/// say what it still waits for (#678).
+pub(crate) enum Origin {
+    /// `ctx.effect`, called here.
+    Effect(&'static std::panic::Location<'static>),
+    /// The withdrawal of a service the plugin provided.
+    Provide(crate::TypeKey),
+    /// The cleanup the plugin's `apply` returned.
+    Apply,
+    /// A child plugin's unload: the child says what it waits for.
+    Mount,
+    /// Anything else, by its label.
+    Other,
+}
+
 pub(crate) struct EffectRecord {
     /// `crate::sync`: a shuttle mutex in the shuttle models (#179).
     st: crate::sync::Mutex<EffectState>,
     metadata: EffectMeta,
+    origin: Origin,
     notify: Notify,
     owner: Option<Weak<FiberInner>>,
 }
@@ -100,15 +116,27 @@ enum EffectState {
 }
 
 impl EffectRecord {
-    pub(crate) fn new(effect: Effect, label: String, owner: Weak<FiberInner>) -> Arc<Self> {
+    pub(crate) fn from(
+        effect: Effect,
+        label: String,
+        origin: Origin,
+        owner: Weak<FiberInner>,
+    ) -> Arc<Self> {
         let mut cleanups = Vec::new();
         let metadata = effect.into_cleanups(label, &mut cleanups);
         Arc::new(Self {
             st: crate::sync::Mutex::new(EffectState::Live(cleanups)),
             metadata,
+            origin,
             notify: Notify::new(),
             owner: Some(owner),
         })
+    }
+
+    /// Where it came from and its label, while its cleanups run.
+    pub(crate) fn draining(&self) -> Option<(&Origin, &str)> {
+        matches!(&*self.st.lock().unwrap(), EffectState::Draining)
+            .then_some((&self.origin, self.metadata.label.as_str()))
     }
 
     pub(crate) fn snapshot(&self) -> Option<EffectMeta> {

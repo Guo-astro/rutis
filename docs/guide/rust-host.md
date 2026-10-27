@@ -89,14 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 按配置装 | `root.plugin_from(build, config)`：`build` 是 `Fn(&C) -> Result<P>`，依赖取自 `P::Deps`；返回的 `FiberView` 可以 `update(config)`，诊断里的名字是插件的类型名。依赖要到运行时才知道的，实现 `host::PluginFactory<C>`，用 `plugin_with(factory, config)` |
 | rutis-loader 的行 | `Builtins::register(name, build)`：配置按 `C` 解码，Schema 从 `C` 生成（`C` 是 `serde_json::Value` 时没有）；`register_with(name, \|build, config\| …)`：每个实例各构造一份；`register_raw(name, factory, schema)`：`PluginFactory<serde_json::Value>` |
 | 读服务 | `get::<T>()`；按键 `get_at(&key)`、提供 `provide_at(key, arc)`，键是 `host::Key<T>`（见[按名字依赖](#按名字依赖)）；`require` / `require_at` 是严格读取，在 `DynPlugin` 的 `apply` 里读声明过的依赖 |
-| 停下 | `root.shutdown().await` 卸载全部并等清理，`shutdown_with_timeout(limit)` 限制等待；单个插件 `view.dispose()`、`view.restart()` |
+| 停下 | `root.shutdown().await` 卸载全部并等清理，不限时（等多久由宿主决定）；`shutdown_with_timeout(limit)` 限制等待，到时的错误写明还没结束的插件和清理（[默认输出](#默认输出)）；单个插件 `view.dispose()`、`view.restart()`、`view.dispose_with_timeout(limit)` |
 | 观察 | `view.state()`、`view.watch()`、`root.diagnostics()`、`root.subscriptions()` |
 
 等一个装上的插件，等的是什么：
 
 - `view.await`（以及 `update`、`restart`）在 fiber 处理完排给它的事（装载、这次更新、这次重启）后返回。`Deps` 没有到齐的插件不装载，停在 `Pending`，`view.await` 照样返回 `Ok(())`，插件并没有运行。
 - 要等到插件运行，看它的状态：`view.watch()` 收到每一次状态变化，等到 `Active`（在运行）或 `Failed`（装载失败，错误在快照的 `error` 里）。依赖缺着时会一直等，用 `tokio::time::timeout` 限制；超时后 `view.state()` 和 `root.diagnostics()` 说明插件在等什么。
-- 等了 10 秒还在等的插件向错误汇集报告一次：`ErrorKind::StillWaiting` 写明插件和它缺的服务（默认的 sink 打印 `[rutis] plugin printer is still waiting after 10s for app::Greeting: …`），插件照常继续等。`root.report_waiting_after(Some(时长))` 改这个时间，对整棵树生效，`None` 不报（[依赖诊断](../core-features.md#依赖诊断)）。
+- 等了 10 秒还在等的插件向错误汇集报告一次：`ErrorKind::StillWaiting` 写明插件和它缺的服务（默认的 sink 打印 `printer: still waiting after 10s for app::Greeting: …`），插件照常继续等。rutis 自己的插件（传输、链路、运行时、加载器）不报，它们在等什么看它们自己的状态。`root.report_waiting_after(Some(时长))` 改这个时间，对整棵树生效，`None` 不报（[依赖诊断](../core-features.md#依赖诊断)）。
 - 装的顺序不影响结果：先装的使用者会等后装的提供者。上面的例子先装提供者，所以 `view.await` 返回时使用者已经在运行。
 
 ### 按名字依赖
@@ -163,6 +163,48 @@ let sink: ErrorSink = Arc::new(|error: Arc<ErrorKind>| eprintln!("[app] {error}"
 let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 ```
 
+### 默认输出
+
+`Ctx::root()`、`Ctx::root_with(handle)` 装的错误汇集（`host::default_sink()`）把收到的每个错误写到标准错误，不带 `[rutis]` 之类的前缀；一个错误通常一行，几个错误聚在一起（`multiple errors:`）时每个一行。没人读返回值时也看得到出了什么事：
+
+| 事 | 一行，以名字开头 | 错误 |
+| --- | --- | --- |
+| 插件或 rutis-loader 的行启动失败（`apply` 出错、行的插件找不到、配置不对） | `weather: failed: no API key` | `ErrorKind::StartFailed { plugin, error }`；等它的 `view.await` 照样收到错误 |
+| 语言运行时的进程结束或起不来 | `runtime py: down (runtime process exited with exit status: 1)` | `ErrorKind::RuntimeDown { runtime, reason }`；它的行等它 |
+| 插件等了 10 秒还在等 | `printer: still waiting after 10s for app::Greeting: …` | `ErrorKind::StillWaiting` |
+| 标了 `#[rutis::service]` 的类型被提供，但没链接 rutis-bridge | `service calendar is provided by type but not registered by name: …` | `ErrorKind::NotServedByName`，每个服务一次 |
+| 监听器出错 | `listener of … failed: …` | `ErrorKind::ListenerFailed` |
+
+名字是行名（行装载后），否则是插件名；实例里的行被拒时写 `weather in session 7`（组名和实例的编号）。rutis 自己的插件（传输、链路、运行时、加载器）启动失败不在这里报：它们的失败已经写在运行时那一行或链路状态里。因为被停下（`dispose`、关闭）而失败的 `apply`、整棵树关闭时结束的运行时都不报。正在运行的行改配置被拒、仍按原来的配置运行时，不算启动失败，这里不报，`reconcile` 的结果里有它。
+
+同一件事可能打印几行：插件启动失败时先报回滚中清理的错误，再报 `StartFailed`（它的错误里也有那些清理错误）；父插件因子插件失败而失败时两者各报一次。
+
+汇集是在 rutis 内部被调用的：不要在汇集里等 rutis 的操作。rutis-loader 报被拒的行时还拿着它的操作锁，汇集里再调用这个加载器的 `reconcile` 等修改会一直等下去；要做这类事，把错误送到别的任务里处理。
+
+要关掉或改写，换掉汇集：`Ctx::root_with_sink(handle, sink)`。想保留其余输出、只去掉某一种，在自己的汇集里按变体过滤，其余交给 `default_sink()`：
+
+```rust,no_run
+use std::sync::Arc;
+use rutis::host::*;
+use rutis::Ctx;
+
+let fallback = default_sink();
+let sink: ErrorSink = Arc::new(move |error: Arc<ErrorKind>| {
+    if !matches!(*error, ErrorKind::StartFailed { .. }) {
+        fallback(error);
+    }
+});
+let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+```
+
+关闭不限时：`root.shutdown()` 一直等到所有清理结束，等多久由宿主决定（rutis-host 默认 10 秒）。要限时用 `root.shutdown_with_timeout(时长)`；到时关闭在后台继续，错误（`DisposeWaitError::TimedOut`）的 `stuck` 列出还没结束的插件和它在做什么，显示为一行：
+
+```text
+not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9
+```
+
+用 `ctx.effect` 登记的清理写出登记处的文件、行号和列；其他清理写插件或行名和它在做什么：`still withdrawing calendar`（撤下它提供的服务）、`still running the cleanup its apply returned`（`apply` 返回的清理，rutis-loader 的行就是这种）、`its apply has not returned`、`still waiting for its event calls, or the copies of its plugin definitions, to end`。根不是插件：只有宿主在根上用 `ctx.effect` 登记的清理会列出，写作 `the host`。rutis 自己的插件（链路、运行时等）只在没有开发者的插件卡住时列出，那时它们是仅有的线索。
+
 ## 给插件提供 Rust 服务
 
 ### 在类型上标注 `#[rutis::service]`
@@ -200,6 +242,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **重名**：同一作用域里两个类型对外名字相同，后一个 `provide` 失败，错误写明双方；它什么都没提供，原生服务也不提供。
 - **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
 - **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。重新构建不用换版本号：同一插件的两次构建类型的 `TypeId` 相同，每个值按提供它的那次构建的代码对外，两次构建可以同时加载。去掉标注的构建，它的值不再按名字对外；名字以最新的构建为准。宿主要链接 `rutis-bridge`。
+- **没链接 rutis-bridge**：按名字对外和重名检查都由它做。程序没链接它时，标注的类型只按类型提供，第一次提供时错误汇集收到一次 `ErrorKind::NotServedByName`（默认写 `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`）。
 - **TypeScript 声明**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature）。调用本身不需要声明。
 
 完整示例：[`examples/marked-services`](../../examples/marked-services)。
@@ -503,9 +546,9 @@ root.plugin(go_runtimes).await?;
 
 看宿主里发生了什么，有三样：
 
-- **默认输出**：加载失败、长时间等不到依赖、语言运行时退出，默认写到标准错误，写明插件或行的名字（可以关掉）。
+- **默认输出**：加载失败、长时间等不到依赖、语言运行时退出，默认写到标准错误，每行以插件、行或运行时的名字开头，不带 `[rutis]` 前缀（可以关掉，见[默认输出](#默认输出)）。`shutdown_with_timeout` 到时写明还没结束的插件和清理。
 - **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印（格式见 [rutis-host 指南「查看当前状态」](rutis-host.md#查看当前状态)）。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。运行时来自 loader 的解析器：`RuntimeResolver`、Go 与 Swift 的 `BinaryResolver` 列出它们的运行时；自己写的 `Resolver` 实现 `runtimes()` 就会列出自己的。调用记录在运行时一侧，看不到同一个运行时里的调用。`rutis_bridge::runtime::RuntimeState` 实现 `Debug`。
-- **内核诊断**：`root.diagnostics()` 的 `Display` 用插件和行的名字列出插件、它们提供和等待的服务，默认不列内部插件。
+- **内核诊断**：`root.diagnostics()` 的 `Display` 一项一行，用插件和行的名字列出插件（状态、在等什么）和服务（由谁提供），默认不列 rutis 自己的插件和根；`{:#}` 也列出它们。字段（`PluginDiagnostics::platform`、`row` 等）给程序读。
 
 语言运行时（Node、Bun、Python、Go）是单独的进程，各用各的调试器：在插件项目里用 `rutis-host dev --debug` 运行（见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南），或者用状态里的 pid 把调试器接到运行着的进程上。
 
