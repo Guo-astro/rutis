@@ -445,8 +445,10 @@
         ]
       },
       "go": {
-        "pending": "#752",
-        "missing": true
+        "tests": [
+          ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"],
+          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"]
+        ]
       },
       "rust": {
         "tests": [
