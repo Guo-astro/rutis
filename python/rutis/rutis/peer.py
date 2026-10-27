@@ -97,7 +97,9 @@ class _Undefined:
         return cls._instance
 
     def __repr__(self) -> str:
-        return "UNDEFINED"
+        # What a plugin sees of it, should it ever reach one: it stands for
+        # an omitted value, which Python writes None.
+        return "None"
 
     def __bool__(self) -> bool:
         return False
@@ -198,6 +200,19 @@ def _graph_data(value: Any, nodes: list, depth: int = 0) -> dict:
         node["values"] = [[key, _graph_data(item, nodes, depth + 1)] for key, item in value.items()]
         return reference
     raise ValueError("error data that cannot cross")
+
+
+class LoadError(Exception):
+    """A plugin module that cannot be loaded: importing it, or a module it
+    imports, raised. The message says which file raised, what and where
+    (`cannot load weather/util.py: KeyError: 'region' (weather/util.py:3)`);
+    `stack` is the traceback of the plugin's own frames, without the
+    runtime's (the diagnostics design §8.1, row 5)."""
+
+    def __init__(self, message: str, stack: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.stack = stack or f"LoadError: {message}"
 
 
 class SyncWaitCycle(RemoteError):
@@ -331,7 +346,7 @@ def encode_error(thrown: BaseException) -> dict:
             "type": "error",
             "name": error.name if isinstance(error, RemoteError) else type(error).__name__,
             "message": error.message if isinstance(error, RemoteError) else _message(error),
-            "stack": "".join(traceback.format_exception(error)),
+            "stack": error.stack if isinstance(error, LoadError) else "".join(traceback.format_exception(error)),
         }
         nodes.append(node)
         # A str `code` and its `data` cross, as from JavaScript and Rust
@@ -512,7 +527,7 @@ MAX_DEPTH = 64
 
 def _too_deep() -> ValueError:
     return ValueError(
-        f"value nested deeper than {MAX_DEPTH} levels, the most a value crossing a session may nest"
+        f"value nested deeper than {MAX_DEPTH} levels, the most a value crossing processes may nest"
     )
 
 
@@ -524,13 +539,14 @@ def _too_deep() -> ValueError:
 # only an int inside data that is not looked into (deeper than MAX_DEPTH)
 # reaches this limit.
 MAX_SAFE_INTEGER = _values.MAX_SAFE_INTEGER
+_INF = float("inf")
 
 
 def _too_large() -> ValueError:
     # Without the integer: a very long one cannot even be written (Python
     # limits int-to-str conversion).
     return ValueError(
-        "integer beyond ±(2^53-1), the largest an integer crossing a session as data may be"
+        "integer beyond ±(2^53-1), the largest an integer crossing processes as data may be"
     )
 
 
@@ -564,14 +580,60 @@ def _described(op: str, fields: dict) -> str:
     return "an awaited result"
 
 
-def _prefixed(error: BaseException, prefix: str) -> BaseException:
-    """`error` with `prefix` before its message, of its own class where it
-    can be made from a message alone."""
+BAD_VALUE = "bad-value"
+PEER_GONE = "peer-gone"
+
+
+def _coded(error: BaseException, code: str, data: Any) -> BaseException:
+    """`error` carrying `code` and `data`, as rutis's own errors do (the
+    diagnostics design §4.3): they cross with it, and a program decides
+    by the code, never by the text."""
+    error.code = code
+    error.data = data
+    return error
+
+
+def _cannot_send(
+    error: BaseException,
+    call: str | None,
+    part: str,
+    index: int | None = None,
+    limit: int | None = None,
+    what: str | None = None,
+) -> BaseException:
+    """Why `call`'s argument `index` (0-based; `part` "argument") or its
+    result (`part` "result") cannot be sent, `error` saying why: `svc.m:
+    argument 1 cannot be sent: <why>`, as rutis-bridge says it, of
+    `error`'s own class where it can be made from a message alone, with the
+    code `bad-value` and `{part, argument?, limit?}`. `what` names the part
+    otherwise (`the arguments`, `the error KeyError`)."""
+    if what is None:
+        what = f"argument {index + 1}" if index is not None else f"the {part}"
+    message = f"{what} cannot be sent: {error}"
+    if call:
+        message = f"{call}: {message}"
     try:
-        prefixed = type(error)(prefix + str(error))
+        made = type(error)(message)
     except Exception:  # noqa: BLE001 - a class that takes something else
-        prefixed = ValueError(prefix + str(error))
-    return prefixed
+        made = ValueError(message)
+    data: dict = {"part": part}
+    if index is not None:
+        data["argument"] = index + 1
+    if limit is not None:
+        data["limit"] = limit
+    return _coded(made, BAD_VALUE, data)
+
+
+def host_gone(message: str = "the host disconnected", reason: str = "disconnected") -> ConnectionError:
+    """The process lost the host: the session's end, which every call
+    still waiting fails with (code `peer-gone`)."""
+    return _coded(ConnectionError(message), PEER_GONE, {"reason": reason})
+
+
+def _not_finite(value: float) -> ValueError:
+    """Why a float that is not a finite number cannot be sent."""
+    shown = "NaN" if value != value else "Infinity" if value > 0 else "-Infinity"
+    return ValueError(f"{shown} cannot cross processes")
 
 
 def _over_limit(size: int, limit: int) -> str:
@@ -598,6 +660,8 @@ def _data(value: Any, depth: int = 0) -> Any:
     if isinstance(value, _DATA):
         if isinstance(value, int) and not -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
             raise _too_large()
+        if isinstance(value, float) and not -_INF < value < _INF:
+            raise _not_finite(value)
         return value
     if isinstance(value, (list, tuple, dict)) and depth >= MAX_DEPTH:
         raise _too_deep()
@@ -629,11 +693,14 @@ class RemoteFunction:
 
     def __call__(self, *args: Any) -> Any:
         self._record.check()
-        return self._peer._call_sync("call", {"reference": self._record.id}, list(args))
+        return _plain(self._peer._call_sync("call", {"reference": self._record.id}, list(args)))
 
     async def call_async(self, *args: Any) -> Any:
         self._record.check()
-        return await self._peer._request_async("call", {"reference": self._record.id}, list(args))
+        return _plain(await self._peer._request_async("call", {"reference": self._record.id}, list(args)))
+
+    def __repr__(self) -> str:
+        return "<function from the host>"
 
 
 class RemoteFuture:
@@ -652,7 +719,19 @@ class RemoteFuture:
                     "await", {"reference": self._record.id}, None, self._record.origin
                 )
             )
-        return self._task.__await__()
+        return _awaited_plain(self._task).__await__()
+
+    def __repr__(self) -> str:
+        return "<awaitable result from the host>"
+
+
+async def _awaited_plain(task: asyncio.Future) -> Any:
+    return _plain(await task)
+
+
+def _plain(value: Any) -> Any:
+    """A result as a plugin sees it: the wire's undefined is None."""
+    return None if value is UNDEFINED else value
 
 
 @dataclasses.dataclass
@@ -666,7 +745,7 @@ class _Import:
 
     def check(self) -> None:
         if self.released:
-            raise RuntimeError("reference released")
+            raise RuntimeError("this function or result from the host was released")
 
 
 @dataclasses.dataclass
@@ -691,6 +770,8 @@ class _Job:
 
 
 _CLOSED = object()
+# How the end of a session that failed (rather than ended) begins.
+HOST_FAILED = "the connection to the host failed: "
 
 
 class Peer:
@@ -849,9 +930,9 @@ class Peer:
                 self._channel.close(str(error))
             except OSError:
                 pass
-            self._deliver((_CLOSED, f"session failed: {error}"))
+            self._deliver((_CLOSED, f"{HOST_FAILED}{error}"))
             return
-        self._deliver((_CLOSED, "Rust process disconnected"))
+        self._deliver((_CLOSED, "the host disconnected"))
 
     def _deliver(self, item: Any) -> None:
         with self._cv:
@@ -874,7 +955,8 @@ class Peer:
                     return
                 item = self._inbox.popleft()
             if isinstance(item, tuple) and item and item[0] is _CLOSED:
-                self.close(ConnectionError(item[1]))
+                failed = item[1].startswith(HOST_FAILED)
+                self.close(host_gone(item[1], "failed" if failed else "disconnected"))
             else:
                 self.receive(item)
 
@@ -888,7 +970,7 @@ class Peer:
     def close(self, error: BaseException | None = None) -> None:
         if self.closed_error is not None:
             return
-        self.closed_error = error or ConnectionError("session closed")
+        self.closed_error = error or host_gone()
         if not self.ready.done():
             self.ready.set_exception(self.closed_error)
             self.ready.exception()  # retrieved: nothing may wait for it
@@ -1194,7 +1276,10 @@ class Peer:
             )
         # Plugin definitions travel back home only: this side's own.
         if kind == "plugin":
-            raise ValueError("plugin definitions exported by Rust are not supported")
+            raise ValueError(
+                "received a plugin definition made in another process; only one made in this process "
+                "can come back to it"
+            )
         record = self._imports.get(ref)
         proxy = record.proxy() if record is not None else None
         if proxy is not None:
@@ -1270,10 +1355,8 @@ class Peer:
             if len(data) > limit:
                 reason = _over_limit(len(data), limit)
                 index = _largest(frame.get("args"))
-                raise ValueError(
-                    f"argument {index + 1} of {described}: {reason}"
-                    if index is not None
-                    else f"the arguments of {described}: {reason}"
+                raise _cannot_send(
+                    ValueError(reason), described, "argument", index, limit, None if index is not None else "the arguments"
                 )
             self._pending[call] = finish
             if self.closed_error is not None:
@@ -1311,7 +1394,7 @@ class Peer:
             try:
                 encoded.append(self._encode(item, grants, True, 0) if listed else _data(item, 0))
             except (ValueError, TypeError, RuntimeError) as error:
-                raise _prefixed(error, f"argument {index + 1} of {call}: ") from error
+                raise _cannot_send(error, call, "argument", index) from error
         return {"type": "list" if listed else "data", "value": encoded}
 
     def _call_sync(self, op: str, fields: dict, args: Any) -> Any:
@@ -1588,9 +1671,11 @@ class Peer:
                 if entry.result is not None:
                     self._respond(call, entry.result, business, entry.described)
                 elif self._waiting and self._related(job):
+                    # Said with what the plugin wrote, not the call ids.
+                    awaited = entry.described or "awaiting a result"
                     cycle = SyncWaitCycle(
-                        "await requires the Python loop occupied by its parent synchronous call; "
-                        f"path: {' -> '.join(path)}"
+                        f"{awaited} would wait on itself: its result is awaited while the synchronous "
+                        "call waiting for it holds this Python process (synchronous calls)"
                     )
                     self._respond(call, (False, cycle), business)
                 else:
@@ -1667,7 +1752,6 @@ class Peer:
                 return
             ok, value = result
             self._answering = (call, value, described)
-            of = f" of {described}" if described is not None else ""
             try:
                 frame = (
                     {"op": "return", "id": call, "value": self._encode(value, grants, business)}
@@ -1679,7 +1763,7 @@ class Peer:
                 self._rollback(grants)
                 grants = []
                 if ok and isinstance(error, (ValueError, TypeError, RuntimeError)):
-                    error = _prefixed(error, f"the result{of}: ")
+                    error = _cannot_send(error, described, "result")
                 data = dumps({"op": "throw", "id": call, "error": encode_error(error)})
             finally:
                 self._answering = None
@@ -1689,8 +1773,13 @@ class Peer:
                 # why instead (#675).
                 self._rollback(grants)
                 name = value.name if isinstance(value, RemoteError) else type(value).__name__
-                what = "the result" if ok else f"the error {name}"
-                reason = ValueError(f"{what}{of}: {_over_limit(len(data), limit)}")
+                reason = _cannot_send(
+                    ValueError(_over_limit(len(data), limit)),
+                    described,
+                    "result" if ok else "error",
+                    limit=limit,
+                    what=None if ok else f"the error {name}",
+                )
                 data = dumps({"op": "throw", "id": call, "error": encode_error(reason)})
             with self._write_lock:
                 self._channel.send(data)

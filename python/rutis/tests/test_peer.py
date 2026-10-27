@@ -54,6 +54,12 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         reply = self.read()
         self.assertEqual(reply["op"], "throw")
         self.assertEqual(reply["error"]["name"], "SyncWaitCycle")
+        # Without the call ids (#680): the result is not of a known call here.
+        self.assertEqual(
+            reply["error"]["message"],
+            "awaiting a result would wait on itself: its result is awaited while the synchronous call waiting for it "
+            "holds this Python process (synchronous calls)",
+        )
         future.cancel()
 
 
@@ -319,7 +325,7 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(reply["op"], "throw", reply)
         self.assertEqual(
             reply["error"]["message"],
-            "the result of svc.get: an object with methods (Weather) cannot cross to main; "
+            "svc.get: the result cannot be sent: an object with methods (Weather) cannot cross to main; "
             "pass plain data or a function instead",
         )
 
@@ -708,7 +714,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError) as refused:
             peer.call("host:svc\0scope", "take", [lambda: 1, "x" * 2048])
         message = str(refused.exception)
-        self.assertRegex(message, r"^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        self.assertRegex(message, r"^svc\.take: argument 2 cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$")
         self.assertEqual(peer._exports, {}, "the callback is left granted")
         # Nothing was sent: the next frame is the call after it.
         peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": "fine"}})
@@ -735,11 +741,11 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         peer._receive(self.invoke(1, "big"))
         reply = await read()
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertRegex(reply["error"]["message"], r"^the result of svc\.big: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        self.assertRegex(reply["error"]["message"], r"^svc\.big: the result cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$")
         peer._receive(self.invoke(2, "fail"))
         reply = await read()
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertRegex(reply["error"]["message"], r"^the error LookupError of svc\.fail: the message would be \d+ bytes")
+        self.assertRegex(reply["error"]["message"], r"^svc\.fail: the error LookupError cannot be sent: the message would be \d+ bytes")
         peer._receive(self.invoke(3, "small"))
         reply = await read()
         self.assertEqual((reply["op"], reply["value"]), ("return", {"type": "data", "value": "small"}))
@@ -777,7 +783,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
             peer.call("host:svc", "take", [Weather()])
         self.assertEqual(
             str(refused.exception),
-            "argument 1 of svc.take: an object with methods (Weather) cannot cross to main; "
+            "svc.take: argument 1 cannot be sent: an object with methods (Weather) cannot cross to main; "
             "pass plain data or a function instead",
         )
         self.assertEqual(peer._exports, {})

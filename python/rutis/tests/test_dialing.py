@@ -61,7 +61,7 @@ class SessionFailureTest(unittest.TestCase):
 
     def test_anything_else_is_retryable_being_replaced_too(self):
         self.assertEqual(session_failure(ConnectionError("replaced by a new connection"), 4002), RETRYABLE)
-        self.assertEqual(session_failure(ConnectionError("Rust process disconnected"), 1001), RETRYABLE)
+        self.assertEqual(session_failure(ConnectionError("the host disconnected"), 1001), RETRYABLE)
         self.assertEqual(session_failure(ConnectionError("connection lost"), None), RETRYABLE)
         # Only the session's own handshake errors are its words to trust.
         self.assertEqual(session_failure(ConnectionError("incompatible session"), None), RETRYABLE)

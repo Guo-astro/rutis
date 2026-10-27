@@ -50,7 +50,7 @@ from typing import Any, AsyncIterator, Callable, NamedTuple
 from . import events
 from . import plugin as sdk
 from .events import Emitter, failed_line, reserved
-from .runner import shutdown_deadline
+from .runner import check_arguments, no_method, not_declared, shutdown_deadline
 from . import _values
 from .peer import (
     MAX_DEPTH,
@@ -58,8 +58,12 @@ from .peer import (
     AggregateError,
     BindingError,
     RemoteError,
+    BAD_VALUE,
     _beyond_data,
+    _coded,
     _is_live,
+    _not_finite,
+    _too_deep as peer_too_deep,
     decode_error,
     encode_error,
 )
@@ -67,7 +71,20 @@ from .peer import (
 
 class PluginTestError(AssertionError):
     """The plugin does something a host would refuse or that would break
-    across processes."""
+    across processes. `why`: for a value that cannot cross, why, as the
+    runtime says it."""
+
+    why: str | None = None
+
+
+def _refused(where: str, why: str) -> PluginTestError:
+    error = PluginTestError(f"{where}: {why}")
+    error.why = why
+    return error
+
+
+def _too_deep() -> str:
+    return str(peer_too_deep())
 
 
 def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
@@ -86,12 +103,10 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise PluginTestError(f"{where}: {value} cannot cross between processes (only finite numbers do)")
+            raise _refused(where, str(_not_finite(value)))
         return value
     if isinstance(value, (list, tuple, dict, BaseException)) and depth >= MAX_DEPTH:
-        raise PluginTestError(
-            f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
-        )
+        raise _refused(where, _too_deep())
     if isinstance(value, (list, tuple)):
         data = data or not _beyond_data(value)
         return [_cross(item, f"{where}[{i}]", data, depth + 1) for i, item in enumerate(value)]
@@ -107,9 +122,7 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
         try:
             fields = dataclasses.asdict(value)
         except RecursionError:
-            raise PluginTestError(
-                f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
-            ) from None
+            raise _refused(where, _too_deep()) from None
         return _cross(fields, where, True, depth)
     # An exception passed as a value crosses as data: its name and message.
     if isinstance(value, BaseException) and not data:
@@ -120,7 +133,7 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
         return _function(value, where)
     if _is_live(value):
         return _Reference(value, where)
-    raise PluginTestError(f"{where}: {type(value).__name__} cannot cross between processes")
+    raise _refused(where, f"{type(value).__name__} cannot cross the boundary")
 
 
 def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
@@ -133,9 +146,7 @@ def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
         if tag not in ("map", "set"):
             return _values.read(tag, _values.write(tag, value))
         if depth >= MAX_DEPTH:
-            raise PluginTestError(
-                f"{where}: a value nested deeper than {MAX_DEPTH} levels cannot cross between processes"
-            )
+            raise _refused(where, _too_deep())
         if tag == "set":
             elements = list(value)
             _values.check_keys(elements, "set element")
@@ -149,7 +160,7 @@ def _cross_tagged(tag: str, value: Any, where: str, depth: int) -> Any:
             [_cross(item, f"{where}[{key!r}]", False, depth + 1) for key, item in entries],
         )
     except (ValueError, _values.Refused) as error:
-        raise PluginTestError(f"{where}: {error}") from None
+        raise _refused(where, str(error)) from None
 
 
 def _crossed_error(error: Exception) -> Exception:
@@ -173,7 +184,7 @@ async def _awaited(value: Any, where: str) -> Any:
 
 def _function(function: Callable, where: str) -> Callable:
     def call(*args: Any) -> Any:
-        crossed = [_cross(arg, f"{where} argument {i}") for i, arg in enumerate(args)]
+        crossed = [_cross(arg, f"{where} argument {i + 1}") for i, arg in enumerate(args)]
         try:
             result = function(*crossed)
         except Exception as error:
@@ -194,20 +205,61 @@ class _Reference:
         return _cross(getattr(self._target, name), f"{self._where}.{name}")
 
 
+def _cannot_send(call: str, part: str, index: int | None, refused: PluginTestError) -> PluginTestError:
+    """A value of the call `call` that cannot cross, said as the runtime
+    says it: `svc.m: argument 1 cannot be sent: NaN cannot cross
+    processes`, with the code `bad-value`."""
+    if refused.why is None:
+        return refused
+    what = f"argument {index + 1}" if index is not None else "the result"
+    data: dict = {"part": part}
+    if index is not None:
+        data["argument"] = index + 1
+    error = _coded(PluginTestError(f"{call}: {what} cannot be sent: {refused.why}"), BAD_VALUE, data)
+    error.why = refused.why
+    return error
+
+
 def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
     """A service seen through its declared shape: only declared methods, sync
-    ones returning values, async ones awaitables."""
+    ones returning values, async ones awaitables. Another method is an
+    AttributeError, as on the runtime (`<service> has no method <method>
+    (methods: …)`); with `strict`, arguments it cannot take are refused
+    as the runtime refuses them."""
 
     class Service:
-        pass
+        def __getattr__(self, method: str) -> Any:
+            if method.startswith("__"):
+                raise AttributeError(method)
+            raise no_method(AttributeError, name, method, shape)
+
+        def __repr__(self) -> str:
+            return f"<service {name}>"
 
     seen = Service()
     for method, kind in shape.items():
         def call(*args: Any, _method: str = method, _kind: str = kind) -> Any:
             where = f"{name}.{_method}"
-            crossed = [_cross(arg, f"{where} argument {i}") for i, arg in enumerate(args)] if strict else list(args)
+            function = getattr(service, _method)
             try:
-                result = getattr(service, _method)(*crossed)
+                crossed = []
+                for i, arg in enumerate(args):
+                    try:
+                        crossed.append(_cross(arg, f"{where} argument {i + 1}") if strict else arg)
+                    except PluginTestError as refused:
+                        raise _cannot_send(where, "argument", i, refused) from None
+                if strict:
+                    check_arguments(name, _method, function, crossed)
+            except Exception as error:
+                if _kind == "sync":
+                    raise
+
+                async def refuse(error: Exception = error) -> Any:
+                    raise error
+
+                return refuse()
+            try:
+                result = function(*crossed)
             except Exception as error:
                 if not strict:
                     raise
@@ -217,7 +269,7 @@ def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
                     if inspect.iscoroutine(result):
                         result.close()
                     raise PluginTestError(f"{where} is declared sync but returned an awaitable: declare it 'async'")
-                return _cross(result, where) if strict else result
+                return _result(result, where) if strict else result
 
             async def settle() -> Any:
                 try:
@@ -226,12 +278,21 @@ def _shaped(name: str, service: Any, shape: dict, strict: bool) -> Any:
                     if not strict:
                         raise
                     raise _crossed_error(error) from error
-                return _cross(value, where) if strict else value
+                return _result(value, where) if strict else value
 
             return settle()
 
+        call.__name__ = method
+        call.__qualname__ = f"{name}.{method}"
         setattr(seen, method, call)
     return seen
+
+
+def _result(value: Any, where: str) -> Any:
+    try:
+        return _cross(value, where)
+    except PluginTestError as refused:
+        raise _cannot_send(where, "result", None, refused) from None
 
 
 class Reported(NamedTuple):
@@ -306,7 +367,7 @@ def _send(bus: events.Bus, row: str, strict: bool) -> Callable:
 
     def send(mode: str, name: str, args: list, terminal, keep) -> Any:
         if strict:
-            args = [_cross(arg, f"event {name} argument {i}") for i, arg in enumerate(args)]
+            args = [_cross(arg, f"event {name} argument {i + 1}") for i, arg in enumerate(args)]
         if mode == "emit":
             bus.dispatch(mode, name, args, keep, terminal, row)
             return None
@@ -473,10 +534,7 @@ class _Context(sdk.Context):
     def use(self, name: str) -> Any:
         plugin = self._loaded._plugin
         if name not in plugin.inject:
-            raise PluginTestError(
-                f"service {name} is not available to this plugin, which does not declare it "
-                f"in inject: add '{name}' to its inject"
-            )
+            raise not_declared(PluginTestError, name)
         service = self._services[name]
         return _cross(service, f"service {name}") if self._loaded._strict else service
 

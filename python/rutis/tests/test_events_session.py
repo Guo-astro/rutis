@@ -279,7 +279,7 @@ class Registration(Session):
         self.assertEqual(await self.host.outcome(call), ("return", None))
         call = self.host.invoke("events.call", data([{"listener": "1", "dispatch": "d1", "own": False, "name": "t/x", "mode": "serial", "args": []}]))
         outcome, error = await self.host.outcome(call)
-        self.assertEqual((outcome, error["name"], error["message"]), ("throw", "BindingError", "listener 1 of t/x is withdrawn"))
+        self.assertEqual((outcome, error["name"], error["message"]), ("throw", "BindingError", "the listener of t/x is withdrawn"))
 
 
 class ThroughTheHost(Session):
@@ -452,7 +452,7 @@ class CalledByTheHost(Session):
         self.assertEqual(await self.host.outcome(self.call("1", "serial", [1])), ("return", False))
         self.assertEqual(await self.host.outcome(self.call("1", "parallel", [0])), ("return", 0))
         outcome, error = await self.host.outcome(self.call("9", "serial"))
-        self.assertEqual((error["name"], error["message"]), ("BindingError", "listener 9 of t/x is withdrawn"))
+        self.assertEqual((error["name"], error["message"]), ("BindingError", "the listener of t/x is withdrawn"))
 
     async def test_an_emit_listener_answers_undefined_and_reports_its_failure(self):
         await self.mount()
