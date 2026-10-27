@@ -2,7 +2,7 @@
 
 [中文](design-sdk-entry-convergence-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: main `103c0d22`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-27. Base: main `103c0d22`. Scheduled: 0.19.
 Issue: [#692](https://github.com/arcships/rutis/issues/692) (part of [#663](https://github.com/arcships/rutis/issues/663), experience requirement 2, direction 3). Precedent: [Rust API convergence](design-rust-api-convergence-2026-10-24.en.md) (0.17).
 Relation to the 0.18 designs: only where names live changes, no behaviour. Error type names and fields stay as [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §11 keeps them; the deprecation texts follow its §4.5 list of words not to use; Go's `rutis.Ref` keeps the spelling of [object references](design-object-refs-2026-10-27.en.md) O1 and stays at the root.
 

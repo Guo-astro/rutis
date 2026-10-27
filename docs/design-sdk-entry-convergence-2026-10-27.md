@@ -2,7 +2,7 @@
 
 [English](design-sdk-entry-convergence-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：main `103c0d22`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27。基准：main `103c0d22`。排期：0.19。
 Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](https://github.com/arcships/rutis/issues/663) 体验要求 2、方向 3）。先例：[Rust API 收敛](design-rust-api-convergence-2026-10-24.md)（0.17）。
 与 0.18 设计的关系：只换名字的位置，不改任何行为。错误类型名与字段沿用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §十一 的"不变"；弃用提示的文字遵守它 §4.5 的禁用词；Go 的 `rutis.Ref` 沿用 [对象引用](design-object-refs-2026-10-27.md) O1 的写法，留在根上。
 
