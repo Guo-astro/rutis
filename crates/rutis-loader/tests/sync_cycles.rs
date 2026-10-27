@@ -34,12 +34,14 @@ const NODE_WORK: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
   inject: [INJECT],
-  provides: { SELF: { work: 'sync', echo: 'sync', relay: 'sync' } },
+  provides: { SELF: { work: 'sync', echo: 'sync', relay: 'sync', object: 'sync' } },
   apply(ctx) {
     ctx.provide('SELF', {
       work: () => 'SELF works',
       echo: () => 'SELF echoes',
       relay: () => `SELF relays ${ctx.use('a_work').echo()}`,
+      // An object whose method works, passed by reference (#687).
+      object: () => ({ work: () => 'SELF works' }),
     })
   },
 })
@@ -669,6 +671,91 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
                 "b_svc: SyncWaitCycle"
             ]
             || answers == ["a_svc got g_relay: SyncWaitCycle", "b_svc got a_work works"],
+        "exactly one call is refused, and the other completes: {answers:?}"
+    );
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// As `two_node_runtimes_waiting_on_each_other_through_go`, with Go calling
+/// `b_work`'s object (a struct of blocking function fields, #687) instead of
+/// the service: `a` calls Go, which calls the object in the other runtime,
+/// while `b` calls `a_work` back. Go
+/// runs every call on a goroutine of its own and puts none aside, but its
+/// synchronous calls say they wait (`sync-wait`, #385): the host sees the
+/// cycle and refuses the call that closes it, wherever that is, and the
+/// rest completes.
+/// risk: P10, C6
+/// guarantee: bridge/sync-wait-cycle-refused
+/// objects-case(go): sync-wait-cycle
+/// guarantee: bridge/object-refs
+#[cfg(feature = "go")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn two_node_runtimes_waiting_on_each_other_through_a_go_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = |me: &str| NODE_WORK.replace("SELF", me).replace("INJECT", "");
+    let go = |me: &str, other: &str| NODE_GO_PEER.replace("SELF", me).replace("OTHER", other);
+    let files = [
+        ("aw", "node", write(dir.path(), "aw.mjs", &work("a_work"))),
+        ("bw", "nb", write(dir.path(), "bw.mjs", &work("b_work"))),
+        (
+            "a",
+            "node",
+            write(dir.path(), "a.mjs", &go("a_svc", "g_obj_relay")),
+        ),
+        (
+            "b",
+            "nb",
+            write(dir.path(), "b.mjs", &go("b_svc", "a_work")),
+        ),
+    ];
+    let (gate, _arrivals) = Gate::new(2);
+    let services = ["a_work", "b_work", "a_svc", "b_svc", "g_obj_relay"];
+    let fixture = fixture(
+        vec![(node("node"), true), (node("nb"), false)],
+        true,
+        false,
+        &services,
+        gate,
+    )
+    .await;
+    let mut rows_of: Vec<Value> = files
+        .iter()
+        .map(|(id, runtime, file)| match *runtime {
+            "node" => json!({ "id": id, "name": file.to_string_lossy() }),
+            runtime => json!({ "id": id, "name": format!("{runtime}:{}", file.display()) }),
+        })
+        .collect();
+    rows_of.push(json!({ "id": "g", "name": "go:go_obj_relay" }));
+    fixture.loader.reconcile(rows(rows_of), None).await.unwrap();
+    let (loader, root) = (fixture.loader.clone(), fixture.root.clone());
+    COLD.until(
+        || {
+            ["aw", "bw", "a", "b", "g"]
+                .iter()
+                .all(|id| active(&loader, id))
+                && services.iter().all(|name| service(&root, name).is_some())
+        },
+        "the rows and their services",
+    )
+    .await;
+
+    // Both wait at the gate until both arrived: then a calls b through Go,
+    // and b calls a.
+    let a_go = call(&fixture.root, "a_svc", "go");
+    let b_go = call(&fixture.root, "b_svc", "go");
+    let answers = [answer(&a_go, "a.go"), answer(&b_go, "b.go")]
+        .map(|answer| answer.as_str().unwrap().to_owned());
+    assert!(
+        answers
+            == [
+                "a_svc got g_obj_relay relays b_work works",
+                "b_svc: SyncWaitCycle"
+            ]
+            || answers
+                == [
+                    "a_svc got g_obj_relay: SyncWaitCycle",
+                    "b_svc got a_work works"
+                ],
         "exactly one call is refused, and the other completes: {answers:?}"
     );
     fixture.root.shutdown().await.unwrap();

@@ -89,14 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Mount from configuration | `root.plugin_from(build, config)`: `build` is a `Fn(&C) -> Result<P>`, the dependencies come from `P::Deps`; the returned `FiberView` can `update(config)`, and its name in diagnostics is the plugin's type name. When the dependencies are known only at run time, implement `host::PluginFactory<C>` and use `plugin_with(factory, config)` |
 | rutis-loader rows | `Builtins::register(name, build)`: the config is decoded as `C`, its schema generated from `C` (none for `serde_json::Value`); `register_with(name, \|build, config\| …)`: one copy built per instance; `register_raw(name, factory, schema)`: a `PluginFactory<serde_json::Value>` |
 | Read services | `get::<T>()`; by key `get_at(&key)`, provide with `provide_at(key, arc)`, the key a `host::Key<T>` (see [depend on services by name](#depend-on-services-by-name)); `require` / `require_at` are strict reads, of declared dependencies in a `DynPlugin`'s `apply` |
-| Stop | `root.shutdown().await` unloads everything and waits for the cleanups, `shutdown_with_timeout(limit)` bounds the wait; one plugin: `view.dispose()`, `view.restart()` |
+| Stop | `root.shutdown().await` unloads everything and waits for the cleanups, with no time limit (how long is the host's choice); `shutdown_with_timeout(limit)` bounds the wait, its error naming the plugins and cleanups not finished ([default output](#default-output)); one plugin: `view.dispose()`, `view.restart()`, `view.dispose_with_timeout(limit)` |
 | Observe | `view.state()`, `view.watch()`, `root.diagnostics()`, `root.subscriptions()` |
 
 What waiting on a mounted plugin waits for:
 
 - `view.await` (and `update`, `restart`) returns once the fiber has handled what was queued for it: its load, the update, the restart. A plugin whose `Deps` are not all there does not load: it stays `Pending`, and `view.await` returns `Ok(())` all the same, with the plugin not running.
 - To wait until the plugin runs, watch its state: `view.watch()` receives every change of state; wait for `Active` (running) or `Failed` (the load failed, its error in the snapshot's `error`). With a dependency missing this waits on; bound it with `tokio::time::timeout`, and on a timeout `view.state()` and `root.diagnostics()` say what the plugin waits for.
-- A plugin still waiting after 10 seconds is reported once to the error sink: `ErrorKind::StillWaiting` names it and the services it misses (the default sink prints `[rutis] plugin printer is still waiting after 10s for app::Greeting: …`), and it goes on waiting. `root.report_waiting_after(Some(duration))` changes the delay for the whole tree, `None` turns it off ([dependency diagnostics](../core-features.en.md#dependency-diagnostics)).
+- A plugin still waiting after 10 seconds is reported once to the error sink: `ErrorKind::StillWaiting` names it and the services it misses (the default sink prints `printer: still waiting after 10s for app::Greeting: …`), and it goes on waiting. rutis's own plugins (transports, links, runtimes, the loader) are not reported: their own state says what they wait for. `root.report_waiting_after(Some(duration))` changes the delay for the whole tree, `None` turns it off ([dependency diagnostics](../core-features.en.md#dependency-diagnostics)).
 - Mounting order does not change the outcome: a consumer mounted before its provider waits for it. The example above mounts the provider first, so the consumer runs by the time `view.await` returns.
 
 ### Depend on services by name
@@ -163,6 +163,48 @@ let sink: ErrorSink = Arc::new(|error: Arc<ErrorKind>| eprintln!("[app] {error}"
 let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
 ```
 
+### Default output
+
+The error sink `Ctx::root()` and `Ctx::root_with(handle)` install (`host::default_sink()`) writes each error it gets to standard error, with no prefix such as `[rutis]`; an error is usually one line, and errors gathered together (`multiple errors:`) take a line each. What went wrong is visible even when nobody reads a result:
+
+| What | One line, beginning with the name | Error |
+| --- | --- | --- |
+| A plugin or rutis-loader row fails to start (`apply` failed, the row's plugin is unknown, its config is wrong) | `weather: failed: no API key` | `ErrorKind::StartFailed { plugin, error }`; a `view.await` on it still gets the error |
+| A language runtime's process ends or cannot start | `runtime py: down (runtime process exited with exit status: 1)` | `ErrorKind::RuntimeDown { runtime, reason }`; its rows wait for it |
+| A plugin still waits after 10 seconds | `printer: still waiting after 10s for app::Greeting: …` | `ErrorKind::StillWaiting` |
+| A type marked `#[rutis::service]` is provided, but rutis-bridge is not linked | `service calendar is provided by type but not registered by name: …` | `ErrorKind::NotServedByName`, once per service |
+| A listener fails | `listener of … failed: …` | `ErrorKind::ListenerFailed` |
+
+The name is the row's (once the row has loaded), else the plugin's; a copy of a row refused in an instance is written `weather in session 7` (the group and the instance's number). rutis's own plugins (transports, links, runtimes, the loader) do not report failed starts here: the runtime's line or the link's state says so already. An `apply` failing because it was stopped (`dispose`, a shutdown) and a runtime ending while the whole tree shuts down are not reported. A config change refused for a running row, which goes on with its previous config, is no failed start and is not reported here; `reconcile`'s result has it.
+
+One cause can print several lines: a plugin that fails to start reports the errors of the cleanups its rollback ran, then `StartFailed` (whose error holds them too); a parent failing because a child failed reports once for each.
+
+The sink is called from inside rutis: do not wait on rutis operations in it. rutis-loader reports refused rows while holding its operation lock, so a sink calling that loader's `reconcile` or another change waits forever; to do such things, send the error to another task.
+
+To turn it off or change it, replace the sink: `Ctx::root_with_sink(handle, sink)`. To keep the rest and drop one kind, filter by variant in your own sink and hand the rest to `default_sink()`:
+
+```rust,no_run
+use std::sync::Arc;
+use rutis::host::*;
+use rutis::Ctx;
+
+let fallback = default_sink();
+let sink: ErrorSink = Arc::new(move |error: Arc<ErrorKind>| {
+    if !matches!(*error, ErrorKind::StartFailed { .. }) {
+        fallback(error);
+    }
+});
+let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+```
+
+Shutting down has no time limit: `root.shutdown()` waits until every cleanup has finished, and how long to wait is the host's choice (rutis-host: 10 s by default). To bound it, `root.shutdown_with_timeout(duration)`; when the time runs out the shutdown goes on in the background, and the error (`DisposeWaitError::TimedOut`) lists in `stuck` the plugins not finished and what each is doing, shown as one line:
+
+```text
+not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9
+```
+
+A cleanup registered with `ctx.effect` is named by the file, line and column it was registered at; any other by the plugin or row and what it is doing: `still withdrawing calendar` (a service it provided), `still running the cleanup its apply returned` (the cleanup `apply` returned, as a rutis-loader row's is), `its apply has not returned`, `still waiting for its event calls, or the copies of its plugin definitions, to end`. The root is no plugin: only a cleanup the host registered on it with `ctx.effect` is listed, as `the host`. rutis's own plugins (links, runtimes and the like) are listed only when no plugin of the developer's is stuck, being the only lead then.
+
 ## Provide Rust services to plugins
 
 ### Mark the type `#[rutis::service]`
@@ -200,6 +242,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **Name conflicts**: when two types in one scope have the same name, the later `provide` fails, and the error names both; nothing of it is provided, the native service included.
 - **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waiting_for(&entry)` lists what the row waits for and says to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
 - **dylib plugins**: a marked type in a dylib (whose crate depends on `rutis-sdk` only and writes `#[rutis_sdk::rutis::service]`, or `use rutis_sdk::rutis::service`) is served once the plugin loads; the host need not know it. On a version swap the old generation's entry point goes with its services and the new one's appears when it provides them. A rebuild needs no new version: two builds of one plugin keep their types' `TypeId`s, and each value is served with the code of the build that provided it, so both can be loaded at once. A build that drops the marker serves its values by name no more, and names are those of the newest build. The host links `rutis-bridge`.
+- **Without rutis-bridge**: serving by name and checking clashes are its work. In a program that does not link it, a marked type is provided by type only, and the first time it is provided the error sink gets one `ErrorKind::NotServedByName` (by default `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`).
 - **TypeScript declarations**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their declarations (`Services['calendar']`, the data types, `<Name>Thrown`). To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency). Calls need no declarations.
 
 A complete example: [`examples/marked-services`](../../examples/marked-services).
@@ -398,6 +441,7 @@ let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&cata
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
 let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
 let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+let runtimes = [node.handle(), python.handle()];
 root.plugin(node);
 root.plugin(python);
 
@@ -416,6 +460,11 @@ let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
     { "id": "web", "name": "weather-plugin", "config": { "city": "Oslo" } },
     { "id": "llm", "name": "py:llm_gateway" }
 ] }]))?;
+// Wait for the runtimes before reconciling: only then does the report have
+// how their rows loaded (otherwise those rows wait for their runtime first).
+for runtime in &runtimes {
+    runtime.ready().await;
+}
 // Returns once every row has been loaded: see below.
 let report = handle.reconcile(vec![Layer::new("app", rows)], None).await?;
 for failure in &report.failures {
@@ -436,7 +485,7 @@ for failure in &report.failures {
 # }
 ```
 
-- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waiting_for(&entry)` says what for. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
+- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waiting_for(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
 - Paths: each runtime's process starts in a directory of its own (Python and Go: their project; Node: the runtime's package), and is given the paths as written. Relative paths would then be read from that directory, not the application's: give absolute ones, as above.
 - A runtime is a plugin. Its process starts with the plugin and exits when the plugin is unloaded. If the process exits unexpectedly, the runtime stops and its rows wait; `RuntimeHandle::state()` reports `Down(reason)`, including why the process ended. The application decides whether to restart it by calling `restart` on the runtime fiber.
 - No row is blamed for its runtime ending: a row that was still loading in it waits for it as the others do, it does not fail. The runtime's `Down` reason says how its process ended, and calls in progress to its rows fail saying so.
@@ -503,9 +552,9 @@ The host is an ordinary Rust program, and the Rust plugins compiled into it and 
 
 Three things show what happens in the host:
 
-- **Default output**: a load that fails, a dependency that does not come for a long time, and a language runtime that exits are written to standard error by default, naming the plugin or row (it can be turned off).
+- **Default output**: a load that fails, a dependency that does not come for a long time, and a language runtime that exits are written to standard error by default, each line beginning with the plugin, row or runtime name, with no `[rutis]` prefix (it can be turned off, see [default output](#default-output)). `shutdown_with_timeout` running out names the plugins and cleanups not finished.
 - **Current state**: `Loader::status()` returns a snapshot: each row's state and why, which plugin provides each service, each runtime (its state, why, and a local runtime's pid), and the calls in progress. It implements `Display`, one item a line, ready to print (the format: [rutis-host guide, "Seeing the current state"](rutis-host.en.md#seeing-the-current-state)). Under `rutis-host`, `rutis-host status` prints the same. The runtimes come from the loader's resolvers: `RuntimeResolver` and the Go and Swift `BinaryResolver` list theirs; a `Resolver` of your own lists its runtimes by implementing `runtimes()`. Calls are recorded on the runtime's side: calls within one runtime are not seen. `rutis_bridge::runtime::RuntimeState` implements `Debug`.
-- **Kernel diagnostics**: `root.diagnostics()`'s `Display` lists the plugins, the services they provide and wait for, by the plugins' and rows' names, without the internal plugins by default.
+- **Kernel diagnostics**: `root.diagnostics()`'s `Display` is one item a line: the plugins (their state, what they wait for) and the services (who provides them), by the plugins' and rows' names, without rutis's own plugins and the root by default; `{:#}` lists those too. Its fields (`PluginDiagnostics::platform`, `row` and the rest) are for programs.
 
 The language runtimes (Node, Bun, Python, Go) are processes of their own, each debugged with its own debugger: run the plugin project with `rutis-host dev --debug` (see the [TypeScript](typescript-plugin.en.md#debugging), [Bun](bun-plugin.en.md#debugging), [Python](python-plugin.en.md#debugging) and [Go](go-plugin.en.md#debugging) guides), or attach the debugger to the running process by the pid in the state.
 

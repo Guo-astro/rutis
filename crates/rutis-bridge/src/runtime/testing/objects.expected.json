@@ -12,7 +12,9 @@
   "enforced": [
     "rust",
     "node",
-    "bun"
+    "bun",
+    "python",
+    "go"
   ],
   "cases": [
     {
@@ -125,7 +127,7 @@
       "swift": "yes",
       "kotlin": "yes",
       "rust": "forward",
-      "note": "Node and Python also release on collection; Bun's conservative collector is tested through an explicit release only."
+      "note": "Node's test also releases on collection; Bun's, Python's and Go's tests release explicitly (their proxies release on collection too, untested)."
     },
     {
       "id": "holder-killed-releases",

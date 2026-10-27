@@ -878,3 +878,87 @@ async fn check_passes_entries_with_tokens_of_their_own_on_a_listener() {
     assert_eq!(checked.stderr, "");
     assert_eq!(checked.status, 0);
 }
+
+/// Two listening link rows on different listeners (`mac` on `public`, `pi`
+/// on `private`); `pi` disabled when `disabled`.
+fn link_rows_on_two_listeners(dir: &Path, disabled: bool) {
+    let config = serde_json::json!({
+        "listen": [
+            { "name": "public", "address": "127.0.0.1:0" },
+            { "name": "private", "address": "127.0.0.1:0" }
+        ],
+        "rows": [
+            { "id": "mac", "name": "rutis-bridge/peer", "config": { "peer": "mac", "listen": "public" } },
+            { "id": "pi", "name": "rutis-bridge/peer", "disabled": disabled, "config": { "peer": "pi", "listen": "private" } }
+        ]
+    });
+    write(dir, &[("rutis.json", &config.to_string())]);
+}
+
+/// Listening link rows share the host's one identity, which answers a
+/// token with one of them: on different listeners, both falling back to
+/// RUTIS_TOKEN, one would never connect. check fails at once, naming both
+/// rows, both listeners and the variable to set (#726).
+/// risk: A6
+/// guarantee: host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn check_refuses_link_rows_accepting_one_token_on_different_listeners() {
+    let dir = tempfile::tempdir().unwrap();
+    link_rows_on_two_listeners(dir.path(), false);
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_TOKEN", Path::new("shared"))],
+    )
+    .await;
+    assert_eq!(checked.stdout, "");
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: listeners public and private: link row mac and link row pi both \
+         accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
+         RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// A disabled row counts: enabling it would clash (#726).
+/// risk: A6
+/// guarantee: host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn check_refuses_a_disabled_link_row_accepting_the_same_token() {
+    let dir = tempfile::tempdir().unwrap();
+    link_rows_on_two_listeners(dir.path(), true);
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[("RUTIS_TOKEN", Path::new("shared"))],
+    )
+    .await;
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: listeners public and private: link row mac and link row pi (disabled) \
+         both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
+         RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
+/// Each link row with a token of its own: check passes (#726).
+/// risk: A6
+/// guarantee: host/credentials-from-env
+#[tokio::test(flavor = "multi_thread")]
+async fn check_passes_link_rows_with_tokens_of_their_own_on_different_listeners() {
+    let dir = tempfile::tempdir().unwrap();
+    link_rows_on_two_listeners(dir.path(), false);
+    let checked = check(
+        dir.path(),
+        &["rutis.json"],
+        &[
+            ("RUTIS_TOKEN_MAC", Path::new("mac-token")),
+            ("RUTIS_TOKEN_PI", Path::new("pi-token")),
+        ],
+    )
+    .await;
+    assert_eq!(checked.stderr, "");
+    assert_eq!(checked.status, 0);
+}

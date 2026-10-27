@@ -17,6 +17,7 @@ across a call into rutis.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import collections
 import contextvars
 import dataclasses
@@ -40,16 +41,16 @@ PROTOCOL = 2
 # The endpoint format: endpoint ids in the handshake and the call ids,
 # capabilities, either side calling the other.
 ENDPOINT_PROTOCOL = 3
-# What this implementation supports in the endpoint format. It sends objects
-# but cannot receive them, so it does not declare `objects`. `sync-wait`: its
+# What this implementation supports in the endpoint format. `objects`: it
+# takes objects with methods, as a proxy whose methods call them (#687). `sync-wait`: its
 # synchronous calls say so (`sync: true`), for the host's wait-cycle check;
 # `sync-stack`: calls run while it waits are stacked on its one thread;
 # `value-<tag>`: it takes every tagged value (#308, `rutis._values`);
 # `events-v2`: it speaks the event protocol of rutis 0.13 (#464), which the
 # runtime requires of its host too (`require`).
-CAPABILITIES = ["signals", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
+CAPABILITIES = ["objects", "signals", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
 # What it declares in the compat format.
-COMPAT_CAPABILITIES = ["reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
+COMPAT_CAPABILITIES = ["objects", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
 # Why a runtime ends a session with a host that does not declare
 # `events-v2` (docs/design-events-protocol-2026-10-18.md §2.2).
 EVENTS_REFUSAL = (
@@ -494,7 +495,7 @@ def _is_live(value: Any) -> bool:
 def _holds_reference(value: Any, seen: set | None = None, depth: int = 0) -> bool:
     """Whether `value` holds a reference. Not looked for past MAX_DEPTH
     levels: a value that deep fails as data, too deep (#279)."""
-    if isinstance(value, (RemoteFunction, RemoteFuture, Plugin)):
+    if isinstance(value, (RemoteFunction, RemoteFuture, RemoteObject, Plugin)):
         return True
     if callable(value) or _is_future(value) or _is_live(value):
         return True
@@ -514,7 +515,7 @@ def _beyond_data(value: Any, seen: set | None = None, depth: int = 0) -> bool:
     past MAX_DEPTH levels, as `_holds_reference`."""
     if _values.tag_of(value) is not None:
         return True
-    if isinstance(value, (RemoteFunction, RemoteFuture)):
+    if isinstance(value, (RemoteFunction, RemoteFuture, RemoteObject)):
         return True
     if callable(value) or _is_future(value) or _is_live(value):
         return True
@@ -740,6 +741,74 @@ class RemoteFuture:
 
 async def _awaited_plain(task: asyncio.Future) -> Any:
     return _plain(await task)
+
+
+class RemoteObject:
+    """An object with methods of another process (#687 §四): every public
+    name is a method, an asynchronous call of the original object
+    (`await cache.get("a")`); it has no fields. One proxy per object; passed
+    back to its process, it is the original there."""
+
+    def __init__(self, peer: "Peer", record: "_Import"):
+        self._peer = peer
+        self._record = record
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        # The method keeps the proxy alive: one taken off it keeps the
+        # object, as a function reference would.
+        peer, record, proxy = self._peer, self._record, self
+
+        async def method(*args: Any) -> Any:
+            assert proxy is not None
+            record.check()
+            return _plain(await peer._request_async("call", {"reference": record.id, "method": name}, list(args)))
+
+        method.__name__ = name
+        return method
+
+    def __repr__(self) -> str:
+        return "<remote object>"
+
+
+def _method(value: Any, name: str) -> Any:
+    """The method `name` of `value`, or None: looked up without running
+    properties (a property is no method, whatever it returns)."""
+    if name.startswith("_"):
+        return None
+    try:
+        found = inspect.getattr_static(value, name)
+    except AttributeError:
+        return None
+    if isinstance(found, property) or not callable(found) and not isinstance(found, (staticmethod, classmethod)):
+        return None
+    return getattr(value, name)
+
+
+def _methods_of(value: Any) -> list:
+    """The methods an object passed by reference has: its public callable
+    attributes, sorted (properties are not run)."""
+    return sorted(name for name in dir(value) if _method(value, name) is not None)
+
+
+def no_object_method(value: Any, method: str) -> BaseException:
+    """A call of `method` on `value`, an object passed by reference, that
+    it has no method of (#687 §八): code `no-method`, data `{object,
+    method, methods}`."""
+    owner, methods = type(value).__name__, _methods_of(value)
+    try:
+        present = not method.startswith("_") and (inspect.getattr_static(value, method) is not None or True)
+    except AttributeError:
+        present = False
+    if present:
+        why = f"{method} is a field; objects passed by reference expose only their methods"
+    else:
+        why = f"methods: {', '.join(methods)}" if methods else "no methods"
+    error = AttributeError(f"{owner} has no method {method} ({why})")
+    error.code = "no-method"
+    error.data = {"object": owner, "method": method, "methods": methods}
+    return error
 
 
 def _plain(value: Any) -> Any:
@@ -1039,7 +1108,7 @@ class Peer:
         argument list starts at -1: it is not a level)."""
         if value is UNDEFINED:
             return {"type": "undefined"}
-        if isinstance(value, (RemoteFunction, RemoteFuture)):
+        if isinstance(value, (RemoteFunction, RemoteFuture, RemoteObject)):
             record = value._record
             record.check()
             return {
@@ -1081,9 +1150,10 @@ class Peer:
                 if kind == "object" and self._endpoint is not None and not self.supports("objects"):
                     # Only a far end that declared `objects` can call its
                     # methods (#675).
+                    far = self.greeting["endpoint"]
                     raise ValueError(
                         f"an object with methods ({type(value).__name__}) cannot cross to "
-                        f"{self.greeting['endpoint']}; pass plain data or a function instead"
+                        f"{far}; pass plain data or a function instead, or upgrade {far} to rutis 0.18"
                     )
                 entry = _Export(value, kind, list(self._path()), business, owner=self.owner())
                 # The result of a call: awaiting it is awaiting that call.
@@ -1205,13 +1275,15 @@ class Peer:
             return UNDEFINED
         if kind == "data":
             return wire["value"]
+        # Undefined inside a value is None at any depth, also from an older
+        # far end that sends it there (#687 §七).
         if kind == "list":
-            return self._decode_each(wire["value"])
+            return [_plain(item) for item in self._decode_each(wire["value"])]
         if kind == "record":
             if not isinstance(wire["value"], dict):
                 raise ValueError("invalid record")
             fields = wire["value"]
-            return dict(zip(fields, self._decode_each(fields.values())))
+            return dict(zip(fields, [_plain(item) for item in self._decode_each(fields.values())]))
         if kind == "signal":
             if self._decoding_for is None:
                 raise ValueError("a signal is only valid as a call argument")
@@ -1257,13 +1329,16 @@ class Peer:
             raise ValueError(f"invalid {tag}: expected a string")
         return _values.read(tag, value)
 
-    def _decode_checked(self, wire: Any) -> tuple:
+    def _decode_checked(self, wire: Any, arguments: bool = False) -> tuple:
         """(True, the value), or (False, ValueError) when it holds a value
         this side refuses: only the call it came in fails, and the
         references it carried are released at once."""
         imported: list = []
         outer, self._new_imports = self._new_imports, imported
         try:
+            # Each argument alone: a whole argument keeps undefined.
+            if arguments and isinstance(wire, dict) and wire.get("type") == "list" and isinstance(wire.get("value"), list):
+                return True, self._decode_each(wire["value"])
             return True, self._decode(wire)
         except _values.Refused as refused:
             for record in imported:
@@ -1285,15 +1360,6 @@ class Peer:
             raise ValueError("invalid reference")
         if home:
             return self._export(ref, kind).value
-        if kind == "object":
-            # Python cannot call the methods of an object of the far end:
-            # only this call fails, and the grant goes back (#675).
-            if self._new_imports is not None:
-                self._new_imports.append(_Import(ref, kind, origin))
-            raise _values.Refused(
-                "received an object with methods, which Python cannot take; "
-                "pass plain data or a function instead"
-            )
         # Plugin definitions travel back home only: this side's own.
         if kind == "plugin":
             raise ValueError(
@@ -1310,7 +1376,13 @@ class Peer:
         record = _Import(ref, kind, origin)
         if self._new_imports is not None:
             self._new_imports.append(record)
-        proxy = RemoteFunction(self, record) if kind == "function" else RemoteFuture(self, record)
+        proxy = (
+            RemoteFunction(self, record)
+            if kind == "function"
+            else RemoteObject(self, record)
+            if kind == "object"
+            else RemoteFuture(self, record)
+        )
         record.proxy = weakref.ref(proxy)
         self._imports[ref] = record
         weakref.finalize(proxy, self._release_soon, record)
@@ -1635,7 +1707,7 @@ class Peer:
         if op in ("invoke", "call"):
             self._decoding_for = call
             try:
-                ok, args = self._decode_checked(frame.get("args"))
+                ok, args = self._decode_checked(frame.get("args"), arguments=True)
             finally:
                 self._decoding_for = None
             if not ok:
@@ -1716,7 +1788,10 @@ class Peer:
                     if frame["op"] == "get":
                         value = getattr(entry.value, frame["property"])
                     elif frame["op"] == "call" and frame.get("method") is not None:
-                        method = getattr(entry.value, frame["method"])
+                        name = frame["method"]
+                        method = _method(entry.value, name)
+                        if method is None:
+                            raise no_object_method(entry.value, name)
                         value = self.within(entry.owner, lambda: _apply(method, job.args))
                     elif frame["op"] == "call":
                         value = self.within(entry.owner, lambda: _apply(entry.value, job.args))

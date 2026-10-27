@@ -81,6 +81,10 @@ impl RuntimeRowsPlugin {
 }
 
 impl DynPlugin for RuntimeRowsPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -111,11 +115,9 @@ impl DynPlugin for RuntimeRowsPlugin {
             // which a reconcile that (re)started this plugin may hold.
             let refresh = tokio::spawn(async move {
                 for id in rows {
-                    // A row that fails to resolve reports it in its status;
-                    // the others still start.
-                    if let Err(error) = loader.refresh(&id).await {
-                        eprintln!("{id}: cannot load: {error}");
-                    }
+                    // A row that fails to resolve says so in its status (as
+                    // `unresolved: …`); the others still start.
+                    let _ = loader.refresh(&id).await;
                 }
                 if let Err(error) = owner.provide_key(key, Arc::new(RuntimeRows { runtime })) {
                     // Disposed meanwhile: nothing to provide to.

@@ -108,10 +108,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     for line in status::listening(&host.listening) {
         outln!("{line}");
     }
-    let started = async {
-        host.runtimes_ready().await?;
-        host.load(config.rows()).await
-    };
+    let started = host.start_rows(config.rows());
     match start(&host, started, deadline, &mut signals).await {
         Started::Running => {}
         Started::Signal(signal) => {

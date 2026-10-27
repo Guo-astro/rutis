@@ -96,11 +96,12 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 		}
 		return reflect.Value{}, fmt.Errorf("an asynchronous result cannot be decoded as %s: use *rutis.Future", t)
 	case peer.Object:
+		// This process's own object, come home: itself (also into any).
+		if o, ok := x.(object); ok && o.rv.Type().AssignableTo(t) {
+			return valueOf(o.rv.Interface(), t), nil
+		}
 		if reflect.TypeOf(x).AssignableTo(t) {
 			return reflect.ValueOf(x), nil
-		}
-		if o, ok := x.(object); ok && o.rv.Type().AssignableTo(t) {
-			return o.rv, nil
 		}
 		return reflect.Value{}, fmt.Errorf("an object cannot be decoded as %s", t)
 	case peer.Plugin:
@@ -113,6 +114,8 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 			return valueOf(x.Value, t), nil
 		}
 		return reflect.Value{}, fmt.Errorf("a plugin definition cannot be decoded as %s: use *rutis.Definition", t)
+	case *peer.RemoteObject:
+		return objectFromPeer(x, t)
 	case *peer.RemotePlugin:
 		if PluginFromPeer != nil && (t == PluginType || t == anyType) {
 			return valueOf(PluginFromPeer(x), t), nil
@@ -405,6 +408,11 @@ func Plain(v any) (any, error) {
 		return &Function{x}, nil
 	case *peer.RemoteFuture:
 		return &Future{x}, nil
+	case *peer.RemoteObject:
+		if ObjectFromPeer != nil {
+			return ObjectFromPeer(x), nil
+		}
+		return x, nil
 	case object:
 		return x.rv.Interface(), nil
 	}
@@ -439,4 +447,48 @@ func fieldByJSONName(t reflect.Type, name string) (reflect.StructField, bool) {
 		return *fold, true
 	}
 	return reflect.StructField{}, false
+}
+
+// ErrNotForObjects is why an object of the far end cannot be decoded as a
+// type: it is received only as a struct of function fields, *rutis.Service
+// or any (#687 §四).
+var ErrNotForObjects = errors.New("an object is received only as a struct of function fields or any")
+
+// objectFromPeer decodes an object of the far end as `t`: a struct of
+// function fields (each field calls the method of its name, blocking, as a
+// synchronous call), *rutis.Service or any.
+func objectFromPeer(x *peer.RemoteObject, t reflect.Type) (reflect.Value, error) {
+	if (t == anyType || t == ServiceType) && ObjectFromPeer != nil {
+		return valueOf(ObjectFromPeer(x), t), nil
+	}
+	pointer := false
+	if t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {
+		pointer, t = true, t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return reflect.Value{}, fmt.Errorf("an object cannot be decoded as %s", t)
+	}
+	out := reflect.New(t)
+	for _, field := range reflect.VisibleFields(t) {
+		if !field.IsExported() || field.Anonymous {
+			continue
+		}
+		if field.Type.Kind() != reflect.Func {
+			return reflect.Value{}, ErrNotForObjects
+		}
+		if err := CheckSignature(field.Type, true); err != nil {
+			return reflect.Value{}, fmt.Errorf("field %s: %w", field.Name, err)
+		}
+		method := WireName(field.Name)
+		if tag, ok := field.Tag.Lookup("rutis"); ok && tag != "" {
+			method = tag
+		}
+		out.Elem().FieldByIndex(field.Index).Set(MakeFunc(field.Type, func(ctx context.Context, args []any) (any, error) {
+			return x.Call(ctx, method, args, true)
+		}))
+	}
+	if pointer {
+		return out, nil
+	}
+	return out.Elem(), nil
 }
