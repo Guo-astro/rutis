@@ -670,7 +670,7 @@ async fn check_refuses_two_entries_accepting_one_token_on_a_listener() {
     assert_eq!(
         checked.stderr,
         "rutis-host: listener public: link row main and remote runtime phone both accept \
-         RUTIS_TOKEN, so a connection presenting it is refused as ambiguous: set \
+         RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
          RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own\n"
     );
     assert_eq!(checked.status, 1);

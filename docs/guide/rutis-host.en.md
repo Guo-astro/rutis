@@ -448,10 +448,10 @@ Do not put credentials in the file; they are read from the environment when a li
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 
-On one listener, each entry that accepts connections (a listening peer row, a runtime that connects in) must accept a token of its own: when two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
+On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own: when two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
 
 ```
-rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it is refused as ambiguous: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
 ```
 
 The environment cannot be changed from outside the process, so these tokens cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host`, which drops every connection. Cutting off one identity at runtime takes the identity layer's revocation hook; see [Connect Nodes](nodes.en.md#security).

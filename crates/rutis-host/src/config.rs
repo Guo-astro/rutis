@@ -584,15 +584,24 @@ impl HostConfig {
     }
 
     /// No two entries on one listener accept the same token (#702): a
-    /// connection presenting it would be refused as ambiguous (403), and a
-    /// runtime dialing in would retry as if its credential were wrong. The
-    /// tokens are read from the environment.
-    pub fn check_listener_tokens(&self) -> Result<(), String> {
-        shared_tokens(&self.accepting(), &|name| std::env::var(name).ok())
+    /// connection presenting it could not be told apart (two runtimes, or
+    /// a runtime and a link row: refused as ambiguous, 403, the runtime
+    /// retrying as if its credential were wrong; two link rows: it reaches
+    /// the last). The tokens are read from the environment; `links`: the
+    /// link rows take theirs from it too (not when the program embedding
+    /// the host brings an identity of its own).
+    pub fn check_listener_tokens(&self, links: bool) -> Result<(), String> {
+        let entries: Vec<Accepting> = self
+            .accepting()
+            .into_iter()
+            .filter(|entry| links || !entry.link)
+            .collect();
+        shared_tokens(&entries, &|name| std::env::var(name).ok())
     }
 
-    /// What accepts connections on the listeners: the listening link rows
-    /// (top-level, not disabled) and the runtimes that dial in.
+    /// What accepts connections on the listeners with the host's tokens:
+    /// the listening link rows (top-level, not disabled, on the WebSocket
+    /// transport with the host's identity) and the runtimes that dial in.
     pub fn accepting(&self) -> Vec<Accepting> {
         let mut entries = Vec::new();
         for row in &self.rows {
@@ -601,9 +610,15 @@ impl HostConfig {
             else {
                 continue;
             };
+            // Another transport or identity: other registrations, or
+            // tokens not from the environment.
+            let other =
+                |field: &str, own: &str| config.get(field).is_some_and(|value| value != own);
             if row["name"] != "rutis-bridge/peer"
                 || row["disabled"] == true
                 || config.get("dial").is_some()
+                || other("transport", "websocket")
+                || other("identity", "host")
             {
                 continue;
             }
@@ -612,6 +627,7 @@ impl HostConfig {
                 listener: listener.to_owned(),
                 entry: format!("link row {id}"),
                 name: peer.to_owned(),
+                link: true,
             });
         }
         for remote in &self.runtimes.remote {
@@ -620,6 +636,7 @@ impl HostConfig {
                     listener: listener.to_owned(),
                     entry: format!("remote runtime {}", remote.name),
                     name: remote.name.clone(),
+                    link: false,
                 });
             }
         }
@@ -785,12 +802,15 @@ pub struct Accepting {
     pub entry: String,
     /// The name its token is for: `RUTIS_TOKEN_<NAME>`, else `RUTIS_TOKEN`.
     pub name: String,
+    /// A link row (its token from the host's identity), not a runtime.
+    pub link: bool,
 }
 
 /// An error for the first two `entries` on one listener that accept the
 /// same token (the variables `env` gives), naming both and the variable to
-/// set; entries without a token, and two with one name, are not compared
-/// (#702). No token is ever printed.
+/// set; entries without a token are not compared, nor two with one name
+/// (a link and a runtime of one name cannot both register on a listener).
+/// No token is ever printed (#702).
 pub fn shared_tokens(
     entries: &[Accepting],
     env: &dyn Fn(&str) -> Option<String>,
@@ -832,8 +852,8 @@ pub fn shared_tokens(
                 _ => unreachable!(),
             };
             return Err(format!(
-                "listener {}: {accept}, so a connection presenting it is refused as \
-                 ambiguous: {fix}",
+                "listener {}: {accept}, so a connection presenting it cannot be told \
+                 apart: {fix}",
                 first.listener
             ));
         }
@@ -850,6 +870,7 @@ mod tests {
             listener: listener.to_owned(),
             entry: entry.to_owned(),
             name: name.to_owned(),
+            link: entry.starts_with("link"),
         }
     }
 
@@ -879,14 +900,14 @@ mod tests {
         assert_eq!(
             refused(&[("RUTIS_TOKEN", "secret")]),
             "listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, \
-             so a connection presenting it is refused as ambiguous: set RUTIS_TOKEN_MAIN or \
+             so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or \
              RUTIS_TOKEN_PHONE to a token of its own"
         );
         assert_eq!(
             refused(&[("RUTIS_TOKEN", "secret"), ("RUTIS_TOKEN_PHONE", "secret")]),
             "listener public: link row main accepts RUTIS_TOKEN and remote runtime phone \
-             accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it is \
-             refused as ambiguous: set RUTIS_TOKEN_MAIN to a token of its own"
+             accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it \
+             cannot be told apart: set RUTIS_TOKEN_MAIN to a token of its own"
         );
         let both = refused(&[
             ("RUTIS_TOKEN_MAIN", "secret"),
@@ -934,7 +955,8 @@ mod tests {
 
     /// The entries of a configuration: listening link rows that are not
     /// disabled, and the runtimes that dial in; a dialing link row accepts
-    /// nothing.
+    /// nothing, and one with another identity or transport does not take
+    /// the host's tokens on its listeners.
     #[test]
     fn a_listeners_entries_are_its_listening_rows_and_dialing_runtimes() {
         let entries = |link: Value| -> Vec<(String, String, String)> {
@@ -974,6 +996,16 @@ mod tests {
         let mut disabled = listening.clone();
         disabled["disabled"] = json!(true);
         assert_eq!(entries(disabled), std::slice::from_ref(&phone));
+        let mut own_identity = listening.clone();
+        own_identity["config"]["identity"] = json!("edge");
+        assert_eq!(entries(own_identity), std::slice::from_ref(&phone));
+        let mut host_identity = listening.clone();
+        host_identity["config"]["identity"] = json!("host");
+        host_identity["config"]["transport"] = json!("websocket");
+        assert_eq!(entries(host_identity).len(), 2);
+        let mut memory = listening.clone();
+        memory["config"]["transport"] = json!("memory");
+        assert_eq!(entries(memory), std::slice::from_ref(&phone));
         let mut dialing = listening;
         dialing["config"] = json!({ "peer": "main", "dial": "ws://127.0.0.1:1/rutis" });
         assert_eq!(entries(dialing), [phone]);

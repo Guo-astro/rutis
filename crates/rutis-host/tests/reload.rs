@@ -554,7 +554,7 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     assert_eq!(
         error,
         "listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a \
-         connection presenting it is refused as ambiguous: set RUTIS_TOKEN_MAIN or \
+         connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or \
          RUTIS_TOKEN_PHONE to a token of its own"
     );
     assert!(host.loader.entries().iter().all(|entry| entry.id != "main"));
