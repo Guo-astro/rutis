@@ -459,6 +459,41 @@ async fn check_fails_on_cycles_and_clashes_and_suggests_misspelt_names() {
     assert_eq!(checked.status, 1);
 }
 
+/// Two rows providing the same two services, nothing else wrong: check
+/// fails on each name, and counts the row that cannot run once (#676).
+/// risk: A6
+/// guarantee: host/check
+#[tokio::test(flavor = "multi_thread")]
+async fn check_counts_a_row_clashing_on_two_names_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
+        "rows": [
+            { "id": "one", "name": "./llm.mjs" },
+            { "id": "two", "name": "./llm.mjs" },
+        ]
+    });
+    write(
+        dir.path(),
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "llm.mjs",
+                &injecting("[]", "{ llm: { ask: 'sync' }, embed: { of: 'sync' } }"),
+            ),
+            ("rutis.json", &config.to_string()),
+        ],
+    );
+    let checked = check(dir.path(), &["rutis.json"], &[]).await;
+    assert_eq!(
+        checked.stderr,
+        "rutis-host: error: rows one, two all provide embed: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row\n\
+         rutis-host: 1 row(s) or binaries cannot run\n"
+    );
+    assert_eq!(checked.status, 1);
+}
+
 /// Cordis rows that declare nothing (published packages): what one injects
 /// another may provide once they run, resolved in Cordis, so check warns,
 /// naming those rows, and passes; a declared provider is named as usual

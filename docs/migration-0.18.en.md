@@ -22,6 +22,6 @@ In 0.17.2 these two cases were warnings and left the exit status unchanged; from
   rutis-host: error: rows one, two all provide llm: only the first to start provides it, the others fail; keep one, or isolate the name in each row
   ```
 
-  Fix: keep one row; when you need both, `isolate` the name on each row, each in a scope of its own.
+  Fix: keep one row; when you need both, `isolate` the name: with `{ "llm": "<label>" }` the row providing it and the rows using it share a label, each group with its own copy (`{ "llm": true }` is a copy for that row alone, which other rows cannot use).
 
 Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for these two cases are the errors 0.18 reports.

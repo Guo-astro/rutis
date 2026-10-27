@@ -349,7 +349,11 @@ async fn check(args: &[String]) -> Result<(), String> {
     for issue in &report.issues {
         errln!("rutis-host: warning: {issue}");
     }
-    let mut failed = report.failing().count();
+    // The rows that cannot run, each once however many reasons it has;
+    // `failed` counts the binaries.
+    let mut cannot: std::collections::BTreeSet<&str> =
+        report.failing().map(|row| row.id.as_str()).collect();
+    let mut failed = 0;
     // The Cordis rows (the Node runtime's, not leaf plugins): between them a
     // dependency resolves in Cordis.
     let cordis: HashSet<&str> = report
@@ -422,7 +426,7 @@ async fn check(args: &[String]) -> Result<(), String> {
                 match (missing.is_empty(), strict && !undeclared.is_empty()) {
                     (true, false) => outln!("{id} ({name}): ok"),
                     (true, true) => {
-                        failed += 1;
+                        cannot.insert(id.as_str());
                         // What no row declares, and what only disabled
                         // rows do.
                         let names = |only_disabled: bool| -> Vec<&str> {
@@ -499,16 +503,15 @@ async fn check(args: &[String]) -> Result<(), String> {
     // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
     // starts, and of rows providing one name all but the first to start
     // fail.
-    let mut in_cycles = std::collections::BTreeSet::new();
     for cycle in &report.cycles {
         errln!("rutis-host: error: {}", cycle_line(cycle));
-        in_cycles.extend(cycle.iter().map(|link| link.row.as_str()));
+        cannot.extend(cycle.iter().map(|link| link.row.as_str()));
     }
-    failed += in_cycles.len();
     for clash in &report.clashes {
         errln!("rutis-host: error: {}", clash_line(clash));
-        failed += clash.rows.len().saturating_sub(1);
+        cannot.extend(clash.rows.iter().skip(1).map(String::as_str));
     }
+    failed += cannot.len();
     for binaries in &host.binaries {
         outln!("{} binaries:", binaries.key);
         for binary in binaries.binaries() {
