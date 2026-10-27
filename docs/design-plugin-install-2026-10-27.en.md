@@ -177,7 +177,7 @@ installer.remove(&added[0]).await?;
 
 - **#185**: #185's `loader` service installs no packages; installing from package registries belongs to this design.
 - **`dev` (#670)**: in a plugin project `add` writes `rutis.dev.json`, which `dev` reads again by the existing rules: the new row is `added` and starts, the other rows are untouched. When the runtime the new row needs is not running, the `runtimes.<language>` that `add` wrote is refused by the existing rule with a restart hint (`reload rejected: runtimes.py added: restart the host; nothing changed`). The same for `run --watch-config`.
-- **#683**: which process a plugin runs in and which services it may use are #683's row options, unrelated to how it was installed.
+- **#683**: which process a plugin runs in and which services it may use are #683's options on the runtime (process), unrelated to how it was installed.
 - **#698**: installs go to local runtimes only.
 - **Security**: `add`, `upgrade` and `--dry-run` run the package manager, which may run install scripts in the package, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
 

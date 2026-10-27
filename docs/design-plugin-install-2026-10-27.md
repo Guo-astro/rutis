@@ -177,7 +177,7 @@ installer.remove(&added[0]).await?;
 
 - **#185**：#185 的 `loader` 服务不安装包；从包仓库安装归本设计。
 - **与 `dev`（#670）**：`add` 在插件项目里写 `rutis.dev.json`，`dev` 照现有规则重新读它：新行 `added` 并启动，别的行不动。新行要的运行时还没在运行时，`add` 写进的 `runtimes.<语言>` 照现有规则被拒绝、提示重启（`reload rejected: runtimes.py added: restart the host; nothing changed`）。`run --watch-config` 相同。
-- **#683**：各插件在哪个进程运行、能用哪些服务，是 #683 的行选项，与怎样装无关。
+- **#683**：各插件在哪个进程运行、能用哪些服务，是 #683 设在运行时（进程）上的选项，与怎样装无关。
 - **#698**：只装到本机运行时。
 - **安全**：`add`、`upgrade`、`--dry-run` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
 
