@@ -37,6 +37,11 @@ pub(crate) use into_event::IntoEvent;
 mod into_event {
     use std::sync::Arc;
 
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is not an event: it does not implement `rutis::Event`",
+        label = "not an event",
+        note = "implement `rutis::Event` for the type (a `NAME` and a `Value`) and derive serde `Serialize` and `Deserialize`; then pass the event or an `Arc` of it"
+    )]
     pub trait IntoEvent<E: super::Event> {
         #[doc(hidden)]
         fn into_event(self) -> Arc<E>;
@@ -48,6 +53,7 @@ mod into_event {
         }
     }
 
+    #[diagnostic::do_not_recommend]
     impl<E: super::Event> IntoEvent<E> for Arc<E> {
         fn into_event(self) -> Arc<E> {
             self
@@ -88,6 +94,11 @@ pub(crate) use wire::{Codec, JsonTranscoder, Payload, PayloadRef, Transcoder, Va
 /// carries its name; listen to it with `ctx.listen::<E>().name(..)`.
 /// Dispatching or listening under an empty name fails with
 /// `EventNeedsName`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an event: it does not implement `rutis::Event`",
+    label = "not an event",
+    note = "implement `rutis::Event` for `{Self}` (a `NAME` and a `Value`) and derive serde `Serialize` and `Deserialize`"
+)]
 pub trait Event: Serialize + DeserializeOwned + Send + Sync + 'static {
     const NAME: &'static str;
     /// The result type: what `serial`, `bail` and a waterfall return.

@@ -412,6 +412,21 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         .iter()
         .map(|(js, cfgs)| quote!(#(#cfgs)* methods.push(#js);));
     let guarded = guarded.iter().map(|error| quote!(#(#block_cfgs)* #error));
+    // Spanned at the type, so the error points at `impl Shop`.
+    let served = served(ty);
+    let erase = respan(
+        quote!(
+            service
+                as ::std::sync::Arc<
+                    dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync,
+                >
+        ),
+        ty.span(),
+    );
+    let ty_spanned = respan(
+        quote!(<#ty as #rutis::internal::service::Served>::Itself),
+        ty.span(),
+    );
     Ok(quote! {
         #block
 
@@ -420,6 +435,10 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
         #(#block_cfgs)*
         #[doc(hidden)]
         const _: () = {
+            // The served type, through a bound that says in the author's
+            // terms why a type that is not `Send + Sync` cannot be served;
+            // every use below goes through it, so that is the one error.
+            type #served = #ty_spanned;
             fn __rutis_type_id() -> ::std::any::TypeId {
                 ::std::any::TypeId::of::<#ty>()
             }
@@ -442,8 +461,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 provision: &#rutis::internal::service::Provision,
                 actor: ::std::option::Option<&#rutis::Ctx>,
             ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
-                #rutis::internal::CtxInternal::require_provided_as::<#ty>(ctx, key.clone(), provision, actor)
-                    .map(|service| service as ::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>)
+                #rutis::internal::CtxInternal::require_provided_as::<#served>(ctx, key.clone(), provision, actor)
+                    .map(|service| #erase)
                     .map_err(|error| ::std::string::ToString::to_string(&error))
             }
             #[allow(unused_variables, unused_mut, clippy::all)]
@@ -659,7 +678,8 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
     }
     let caller =
         takes_ctx.then(|| quote!(let caller = #rutis::internal::service::caller(wire, #js)?;));
-    let invoke = quote!(<#ty>::#rust(&*service #(, #call)*));
+    let served = served(ty);
+    let invoke = quote!(<#served>::#rust(&*service #(, #call)*));
     let output_span = match &sig.output {
         ReturnType::Type(_, output) => output.span(),
         ReturnType::Default => rust.span(),
@@ -717,7 +737,7 @@ fn arm(rutis: &Tokens, ty: &Type, method: &ImplItemFn, js: &str) -> syn::Result<
             #caller
             let mut args = wire.arguments(args, #count)?.into_iter();
             #(#decode)*
-            let service = #rutis::internal::service::downcast::<#ty>(service);
+            let service = #rutis::internal::service::downcast::<#served>(service);
             #body
         }
     })
@@ -995,6 +1015,30 @@ fn fn_bound(bounds: &[TypeParamBound]) -> Option<&syn::TraitBound> {
         }
         _ => None,
     })
+}
+
+/// The name the generated code gives the served type, spanned at the type
+/// as written.
+fn served(ty: &Type) -> proc_macro2::Ident {
+    proc_macro2::Ident::new("__RutisServed", ty.span())
+}
+
+/// `tokens` with every span set to `span`.
+fn respan(tokens: Tokens, span: Span) -> Tokens {
+    tokens
+        .into_iter()
+        .map(|mut tree| {
+            if let proc_macro2::TokenTree::Group(group) = &tree {
+                let mut inner =
+                    proc_macro2::Group::new(group.delimiter(), respan(group.stream(), span));
+                inner.set_span(span);
+                tree = proc_macro2::TokenTree::Group(inner);
+            } else {
+                tree.set_span(span);
+            }
+            tree
+        })
+        .collect()
 }
 
 #[cfg(test)]
