@@ -2906,6 +2906,173 @@
         ]
       },
       "warnings": []
+    },
+    {
+      "name": "branches referring to each other are each tried once",
+      "schema": {
+        "$ref": "#/$defs/D0",
+        "$defs": {
+          "D0": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          },
+          "D1": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          },
+          "D2": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          },
+          "D3": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          },
+          "D4": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          },
+          "D5": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/D0"
+              },
+              {
+                "$ref": "#/$defs/D1"
+              },
+              {
+                "$ref": "#/$defs/D2"
+              },
+              {
+                "$ref": "#/$defs/D3"
+              },
+              {
+                "$ref": "#/$defs/D4"
+              },
+              {
+                "$ref": "#/$defs/D5"
+              }
+            ]
+          }
+        }
+      },
+      "config": 1,
+      "then": {
+        "errors": [
+          "config: config should be another accepted value, got 1"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "distance in scalar values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "abcd": {}
+        }
+      },
+      "config": {
+        "abc😀": 1
+      },
+      "then": {
+        "config": {
+          "abc😀": 1
+        }
+      },
+      "warnings": [
+        "config: config[\"abc😀\"] is not a config key (did you mean abcd?)"
+      ]
     }
   ]
 }
