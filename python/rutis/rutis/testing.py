@@ -43,6 +43,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import math
+import sys
 from contextlib import asynccontextmanager
 from types import ModuleType
 from typing import Any, AsyncIterator, Callable, NamedTuple
@@ -52,6 +53,7 @@ from . import plugin as sdk
 from .events import Emitter, failed_line, reserved
 from .runner import check_arguments, no_method, not_declared, shutdown_deadline
 from . import _values
+from .config import configured
 from .peer import (
     MAX_DEPTH,
     UNDEFINED,
@@ -477,8 +479,15 @@ class Loaded:
         return list(self._provided)
 
     async def _apply(self, config: Any) -> None:
-        # Run the plugin's apply with `config` on this row.
-        config = config if config is not None else {}
+        # Run the plugin's apply with `config` on this row. As a runtime
+        # loads a row: with a schema, defaults filled and the config
+        # validated (config schema design §2.2), extra keys warned about on
+        # standard error, as the host's loader would; without one, what it
+        # is given, `{}` when nothing (as before).
+        if self._plugin.config is not None:
+            config = configured(self._plugin.config, config, warn=self._warn)
+        elif config is None:
+            config = {}
         returned = self._plugin.apply(self._ctx, _cross(config, "config") if self._strict else config)
         if inspect.isawaitable(returned):
             returned = await returned
@@ -486,6 +495,9 @@ class Loaded:
             if not callable(returned):
                 raise PluginTestError("apply must return a cleanup function or None")
             self._cleanups.append(returned)
+
+    def _warn(self, warning: Any) -> None:
+        print(f"{self.row}: config: {warning.message}", file=sys.stderr, flush=True)
 
     async def update(self, config: Any) -> None:
         """Change the row's config, as a host's `rows.update`: the row
