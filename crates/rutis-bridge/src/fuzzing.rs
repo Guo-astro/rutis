@@ -17,7 +17,9 @@ use crate::transport::local::lines;
 
 /// An error graph from the far end, as a host reads and prints it
 /// (`crate::thrown`, `Error::site`, `Error::stack`, `Error::code`,
-/// [`crate::report`]): reading never panics, and what is printed starts
+/// [`crate::report`]), and as a Rust method throws it on
+/// ([`crate::exports::rethrown`], [`crate::exports::located`]): reading
+/// never panics, and what is printed starts
 /// with the error's own text, made printable (the diagnostics design §4.6).
 pub fn error_graph(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -32,6 +34,10 @@ pub fn error_graph(data: &[u8]) {
         graph: Some(graph),
     };
     let _ = (error.code(), error.data(), error.stack(), error.site());
+    // A Rust method throwing it on, or locating it, never panics either.
+    let error = crate::exports::rethrown(error, "m", "f.rs", 1);
+    let error = crate::exports::located(error, "m", "f.rs", 1);
+    let _ = error.rethrown();
     let site = crate::session::Site::new("row", "call");
     let error = error.with_site(&site);
     let kind = rutis::host::ErrorKind::PluginFailed(Box::new(error));
@@ -40,7 +46,7 @@ pub fn error_graph(data: &[u8]) {
     let first = printed.lines().next().unwrap_or_default();
     assert!(first.ends_with("E: m"), "{printed}");
     assert!(
-        crate::report::whereabouts(&kind).len() <= crate::report::MAX_FRAMES + 2,
+        crate::report::whereabouts(&kind).len() <= crate::report::MAX_LINES,
         "bounded"
     );
 }

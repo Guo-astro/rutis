@@ -53,8 +53,11 @@ pub fn located(error: Error, method: &str, file: &str, line: u32) -> Error {
         return error;
     };
     let index = graph["root"]["value"].as_u64().unwrap_or(0) as usize;
-    if let Some(node) = graph["nodes"]
-        .get_mut(index)
+    // `get_mut`, not indexing: a graph from a broken far end may be any
+    // JSON, and indexing a non-object panics (§4.6).
+    if let Some(node) = graph
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.get_mut(index))
         .and_then(Json::as_object_mut)
         .filter(|node| !node.contains_key("stack"))
     {
@@ -88,8 +91,11 @@ pub fn rethrown(error: Error, method: &str, file: &str, line: u32) -> Error {
         return error;
     };
     let index = graph["root"]["value"].as_u64().unwrap_or(0) as usize;
-    if let Some(node) = graph["nodes"]
-        .get_mut(index)
+    // `get_mut`, not indexing: a graph from a broken far end may be any
+    // JSON, and indexing a non-object panics (§4.6).
+    if let Some(node) = graph
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.get_mut(index))
         .and_then(Json::as_object_mut)
         .filter(|node| node.get("type").and_then(Json::as_str) == Some("error"))
     {
@@ -145,6 +151,29 @@ fn graph_value(data: Json, nodes: &mut Vec<Json>) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A received error with a broken graph (any JSON) is thrown on and
+    /// located without a panic, and comes back as it was (§4.6).
+    #[test]
+    fn a_broken_graph_is_thrown_on_without_a_panic() {
+        for graph in [
+            json!(5),
+            json!([]),
+            json!("x"),
+            json!({ "nodes": 3 }),
+            json!({ "root": { "type": "reference", "value": 9 }, "nodes": [] }),
+            json!({ "root": 1, "nodes": [{ "type": "error", "rethrown": 2 }] }),
+        ] {
+            let error = Error::Remote {
+                name: "E".into(),
+                message: "m".into(),
+                graph: Some(graph.clone()),
+            };
+            let error = rethrown(error, "m", "f.rs", 1);
+            let error = located(error, "m", "f.rs", 1);
+            assert_eq!(error.to_string(), "E: m", "{graph}");
+        }
+    }
 
     #[test]
     fn errors_carry_their_code_message_and_data() {

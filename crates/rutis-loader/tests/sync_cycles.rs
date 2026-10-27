@@ -585,7 +585,7 @@ async fn one_node_and_two_python_runtimes() {
     let kicked = answer(&kick, "p1.kick");
     let kicked = kicked.as_str().unwrap();
     assert_eq!(
-        kicked, "p1 kicked s2: SyncWaitCycle: SyncWaitCycle: n_back.back would wait on itself: p2b → nb → n → p2 → p1 → p2b (synchronous calls)",
+        kicked, "p1 kicked s2: SyncWaitCycle: n_back.back would wait on itself: p2b → nb → n → p2 → p1 → p2b (synchronous calls)",
         "s2's call back is refused, the rows named (§8.1 row 9)"
     );
     opener.open("slow");

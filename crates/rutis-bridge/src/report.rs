@@ -13,6 +13,10 @@ use rutis::host::ErrorKind;
 pub const MAX_TEXT: usize = 4096;
 /// At most this many frames of a stack.
 pub const MAX_FRAMES: usize = 64;
+/// At most this many lines [`whereabouts`] gives: `in <row>:`, the frames,
+/// a `called from:` per caller recorded (at most
+/// [`crate::exports::MAX_RETHROWN`]), and the count of frames left out.
+pub const MAX_LINES: usize = MAX_FRAMES + crate::exports::MAX_RETHROWN + 2;
 
 /// `text` made safe to print: control characters other than a newline or a
 /// tab written as escapes (a NUL in a log makes `grep` take it for binary),
@@ -60,18 +64,18 @@ pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
     let callers = thrown.rethrown();
     let mut budget = MAX_FRAMES;
     let mut more = 0;
-    let mut frames = |lines: &mut Vec<String>, frames: Vec<String>| {
+    let mut push = |lines: &mut Vec<String>, budget: &mut usize, frames: Vec<String>| {
         for frame in frames {
-            if budget == 0 {
+            if *budget == 0 {
                 more += 1;
                 continue;
             }
-            budget -= 1;
+            *budget -= 1;
             lines.push(printable(frame.trim()));
         }
     };
     if let Some(own) = own {
-        frames(&mut lines, own);
+        push(&mut lines, &mut budget, own);
     }
     for caller in callers {
         let caller: Vec<String> = caller
@@ -82,8 +86,12 @@ pub fn whereabouts(error: &ErrorKind) -> Vec<String> {
         if caller.is_empty() {
             continue;
         }
-        lines.push("called from:".to_owned());
-        frames(&mut lines, caller);
+        // Past the budget a caller's frames are only counted: no
+        // `called from:` line for frames not printed.
+        if budget > 0 {
+            lines.push("called from:".to_owned());
+        }
+        push(&mut lines, &mut budget, caller);
     }
     if more > 0 {
         lines.push(format!("… ({more} more frames)"));
@@ -250,6 +258,50 @@ mod tests {
         let long = printable(&"é".repeat(MAX_TEXT));
         assert!(long.ends_with(" … (truncated)"));
         assert!(long.len() <= MAX_TEXT + " … (truncated)".len() + 4);
+    }
+
+    /// A full stack and many callers stay within [`MAX_LINES`]: callers
+    /// past the frame budget are counted, not headed (§4.6).
+    #[test]
+    fn callers_past_the_budget_add_no_lines() {
+        let stack = format!(
+            "E: x\n{}",
+            (0..MAX_FRAMES)
+                .map(|i| format!("  at f{i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let rethrown: Vec<String> = (0..20)
+            .map(|i| format!("    at caller{i} (c.ts:{i})"))
+            .collect();
+        let error = remote(json!({
+            "root": { "type": "reference", "value": 0 },
+            "nodes": [{
+                "type": "error", "name": "E", "message": "x", "stack": stack,
+                "site": { "row": "weather", "doing": "apply" },
+                "rethrown": rethrown,
+            }]
+        }));
+        let lines = whereabouts(&error);
+        assert!(lines.len() <= MAX_LINES, "{}", lines.len());
+        assert_eq!(lines.len(), 1 + MAX_FRAMES + 1, "{lines:#?}");
+        assert!(
+            !lines.iter().any(|line| line == "called from:"),
+            "{lines:#?}"
+        );
+        // Only the 8 a sender records are read.
+        assert_eq!(lines.last().unwrap(), "… (8 more frames)");
+        // With room, each caller is headed.
+        let error = remote(json!({
+            "root": { "type": "reference", "value": 0 },
+            "nodes": [{ "type": "error", "name": "E", "message": "x", "rethrown": rethrown }]
+        }));
+        let lines = whereabouts(&error);
+        assert_eq!(
+            lines.iter().filter(|line| *line == "called from:").count(),
+            8
+        );
+        assert!(lines.len() <= MAX_LINES);
     }
 
     /// The callers that threw the error on are printed under its own frames

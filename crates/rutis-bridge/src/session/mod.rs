@@ -49,9 +49,11 @@ pub enum Error {
     },
     #[error("{0}")]
     SyncWaitCycle(String),
-    /// A value that cannot cross, or a call this side refused: only that
-    /// call fails. The text says which call, which argument (or the
-    /// result) and why (#675).
+    /// A value that cannot cross: only that call fails. The text says
+    /// which call, which argument (or the result) and why (#675); its code
+    /// is `bad-value`, its [`data`](Error::data) `{part, argument?,
+    /// limit?}`. A call this side refused for another reason is
+    /// [`Error::Binding`].
     #[error("{0}")]
     Value(String),
     /// The session could not be established: see [`Handshake`].
@@ -224,9 +226,12 @@ impl Error {
             .and_then(|root| root.get("rethrown"))
             .and_then(|items| items.as_array())
             .map(|items| {
+                // At most as many as a sender records (§4.4), whatever a
+                // far end sent.
                 items
                     .iter()
                     .filter_map(|item| item.as_str().map(str::to_owned))
+                    .take(crate::exports::MAX_RETHROWN)
                     .collect()
             })
             .unwrap_or_default()

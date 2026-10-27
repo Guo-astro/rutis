@@ -263,10 +263,16 @@ thread_local! {
 /// Run `f`, a call from row `from` into row `to`'s service: the hops it
 /// records carry both, so a cycle can be written with row names.
 pub(crate) fn with_rows<R>(rows: Option<(String, String)>, f: impl FnOnce() -> R) -> R {
-    let previous = ROWS.with(|current| current.replace(rows));
-    let result = f();
-    ROWS.with(|current| current.replace(previous));
-    result
+    /// Puts the previous rows back, also when `f` panics.
+    struct Restore(Option<(String, String)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            ROWS.with(|current| current.replace(previous));
+        }
+    }
+    let _restore = Restore(ROWS.with(|current| current.replace(rows)));
+    f()
 }
 
 /// The rows of the cycle `calls` (`new` first): for each call, the row

@@ -34,6 +34,13 @@ const FORBIDDEN: &[&str] = &[
     "runtime-rows",
     "<root>",
     "<leaf>",
+    "ThrownValue",
+    "HostProxy",
+    "RemoteFuture",
+    "UNDEFINED",
+    "rollback failed",
+    // No plugin in these cases is written in Rust.
+    "Rust",
 ];
 
 /// A Rust service with typed arguments, as a host provides one.
