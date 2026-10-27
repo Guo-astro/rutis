@@ -6,6 +6,9 @@ use std::fmt;
 
 use serde_json::Value;
 
+mod decode;
+pub use decode::decode;
+
 /// At most this many problems are written; the rest as one last line.
 const SHOWN: usize = 20;
 
@@ -61,6 +64,23 @@ impl ConfigError {
             current = error.source();
         }
         None
+    }
+}
+
+impl ConfigError {
+    /// The config error `error` is, if it is one: a row's config step
+    /// failing, passed as a plugin's error.
+    pub fn of(error: &crate::ErrorKind) -> Option<&ConfigError> {
+        match error {
+            crate::ErrorKind::PluginFailed(source) => ConfigError::find(source.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// This error as a plugin's error.
+    #[doc(hidden)]
+    pub fn into_error(self) -> crate::Error {
+        crate::Error::from(self)
     }
 }
 
@@ -230,6 +250,52 @@ fn quoted(s: &str, limit: usize) -> String {
     }
     out.push('"');
     out
+}
+
+/// The name of `known` closest to `name`, when it is close enough to be a
+/// misspelling of it: at most one edit for a name of 3–6 scalar values, two
+/// for a longer one, none for a shorter. The smallest distance wins, then
+/// the first in `known` (callers sort it by code point).
+pub fn closest(name: &str, known: &[String]) -> Option<String> {
+    let limit = match name.chars().count() {
+        0..=2 => return None,
+        3..=6 => 1,
+        _ => 2,
+    };
+    known
+        .iter()
+        .filter(|candidate| candidate.as_str() != name)
+        .map(|candidate| (distance(name, candidate), candidate))
+        .filter(|(distance, _)| *distance <= limit)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate.clone())
+}
+
+/// Edits (insert, delete, replace, swap two neighbours) between `a` and
+/// `b`, in scalar values (OSA distance).
+pub fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1)
+                .min(rows[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[a.len()][b.len()]
 }
 
 #[cfg(test)]

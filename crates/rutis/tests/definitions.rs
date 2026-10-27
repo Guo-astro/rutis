@@ -300,12 +300,13 @@ async fn a_config_that_does_not_fit_fails_at() {
     let log: Log = Arc::default();
     let (_origin, definition) = origin(&root, &log).await;
     let error = definition.at(&root, "deep").err().expect("not a number");
-    assert!(
-        error
-            .to_string()
-            .contains("the config of plugin definition Part"),
-        "{error}"
+    // Written as a config problem, not serde's text (config schema design
+    // §3.3).
+    assert_eq!(
+        error.to_string(),
+        "config: config should be an integer, got \"deep\""
     );
+    assert!(rutis::ConfigError::of(&error).is_some());
     root.shutdown().await.unwrap();
 }
 
