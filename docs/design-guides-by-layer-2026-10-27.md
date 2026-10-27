@@ -2,7 +2,7 @@
 
 [English](design-guides-by-layer-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：main `103c0d22`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27。基准：main `103c0d22`。排期：0.19。
 Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#685](https://github.com/arcships/rutis/issues/685)）。属于 [#663](https://github.com/arcships/rutis/issues/663)（体验要求 2、3；A4、H2、O1、O5）。
 与 0.18 的关系：指南写的是 0.18 之后的行为——配置按 Schema 补默认值（[配置 Schema](design-config-schema-2026-10-27.md)）、出错文字与 `Loader::status()` / `rutis-host status`（[诊断](design-diagnostics-2026-10-26.md) §4.5、§5）、各指南已有的「调试」一节（#679）。本稿不改这些行为。
 

@@ -2,7 +2,7 @@
 
 [中文](design-guides-by-layer-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: main `103c0d22`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-27. Base: main `103c0d22`. Scheduled: 0.19.
 Issue: [#671](https://github.com/arcships/rutis/issues/671) (with [#685](https://github.com/arcships/rutis/issues/685) merged into it). Part of [#663](https://github.com/arcships/rutis/issues/663) (experience requirements 2 and 3; A4, H2, O1, O5).
 Relation to 0.18: the guides describe the behaviour after 0.18 — config gets its Schema defaults ([config Schema](design-config-schema-2026-10-27.en.md)), error text and `Loader::status()` / `rutis-host status` ([diagnostics](design-diagnostics-2026-10-26.en.md) §4.5, §5), and the "Debugging" section each guide already has (#679). This design changes none of that.
 
