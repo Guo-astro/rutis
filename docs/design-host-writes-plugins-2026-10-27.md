@@ -124,7 +124,7 @@ agent 写插件文件用它自己语言的文件操作；插件进程本来就�
 
 | 步 | 谁做、用什么 | 失败时 |
 | --- | --- | --- |
-| 1 安装 | `Installer::add`（#691）：按项目文件认语言、准备环境；本地目录用链接或 `-e` 装，之后改代码不用再装。得到语言与行名（`py:weather`） | 返回 #691 的错误（`./agent-plugins/weather has no package.json, pyproject.toml or go.mod`）；什么都没改 |
+| 1 安装 | `Installer::add`（#691）：按项目文件认语言、准备环境；本地目录用链接或 `-e` 装，之后改代码不用再装。得到语言与语言运行时下的行名（`py:weather`）；`Admin` 把前缀换成这个插件自己的命名运行时，写成 `agent-weather:weather`（不换会按 #691 的规则启用语言运行时 `runtimes.py`） | 返回 #691 的错误（`./agent-plugins/weather has no package.json, pyproject.toml or go.mod`）；什么都没改 |
 | 2 运行时 | 按 #683 的顺序加 `agent-weather`：`root.plugin(LocalRuntime + RuntimeRowsPlugin)`、`RuntimeSet::add` | 撤掉第 1 步；返回原因 |
 | 3 静态检查 | `Loader::check`（与 `rutis-host check` 同一个）：把新行 `agent-weather:weather` 加进当前配置检查——在新运行时里导入并描述它（语法、导入错误）、试运行（配置 Schema）、依赖都有人提供、没有依赖环、没有同名提供、必需的服务没有被 `services` 挡住 | 撤掉第 2、1 步；返回检查报告里这一行的问题（与 `check` 打印的相同） |
 | 4 装上 | `Loader::create` 在 `agent-plugins` 组下写这一行，等它启动或失败（`apply` 出错、启动超时） | 删行、撤掉第 2、1 步；返回 0.18 的错误 |
