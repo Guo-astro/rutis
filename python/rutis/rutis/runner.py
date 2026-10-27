@@ -530,9 +530,10 @@ class Runtime:
     def charged_row(self, key: str | None, error: BaseException) -> str | None:
         """The row an error traced to row `key` is charged to: that row,
         unless the innermost plugin file in its traceback is another row's
-        (code of a row this one called directly, in this process), which is
-        then charged; one of several rows sharing that file, none of them
-        `key`: none."""
+        only. Then it came from code of a row this one called directly, in
+        this process, and which of the two left it unhandled cannot be told
+        (the traceback says where it was raised, not who dropped it): no row
+        is charged."""
         if key is None:
             return None
         files = {row_key: _module_file(row.module) for row_key, row in list(self.rows.items())}
@@ -540,9 +541,7 @@ class Runtime:
             owners = [row_key for row_key, file in files.items() if file is not None and file == frame.filename]
             if not owners:
                 continue
-            if key in owners:
-                return key
-            return owners[0] if len(owners) == 1 else None
+            return key if key in owners else None
         return key
 
     def _runtime_name(self) -> str:

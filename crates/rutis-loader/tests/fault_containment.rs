@@ -836,11 +836,15 @@ async fn python_an_unhandled_error_fails_only_its_row() {
     an_unhandled_error_fails_only_its_row(Language::Python).await;
 }
 
-/// Provides `lend`, whose `lend` leaves an error unhandled in its own code.
+/// Provides `lend`: `lend` leaves an error unhandled in its own code;
+/// `refuse` fails as it should, for its caller to handle.
 const LENDER_JS: &str = r#"{
-  provides: { lend: { lend: 'async' } },
+  provides: { lend: { lend: 'async', refuse: 'async' } },
   apply(ctx) {
-    ctx.provide('lend', { lend() { setTimeout(() => { Promise.reject(new Error('boom in lender')) }, 10); return 'lent' } })
+    ctx.provide('lend', {
+      lend() { setTimeout(() => { Promise.reject(new Error('boom in lender')) }, 10); return 'lent' },
+      async refuse() { throw new Error('refused by lender') },
+    })
   },
 }"#;
 
@@ -856,6 +860,9 @@ class Lend:
         asyncio.get_running_loop().create_task(boom())
         return "lent"
 
+    async def refuse(self):
+        raise ValueError("refused by lender")
+
 
 provides = {"lend": Lend}
 
@@ -864,13 +871,14 @@ def apply(ctx, config):
     ctx.provide("lend", Lend())
 "#;
 
-/// Calls the lender's `lend` directly (same runtime: the object itself),
-/// once it runs.
+/// Calls the lender's methods directly (same runtime: the object itself)
+/// once it runs, and drops what `refuse` gives back.
 const BORROWER_JS: &str = r#"{
   inject: ['lend', 'probe'],
   apply(ctx) {
     ctx.use('probe').record('borrower: started')
     setTimeout(() => { ctx.use('lend').lend() }, 300)
+    setTimeout(() => { ctx.use('lend').refuse() }, 400)
   },
 }"#;
 
@@ -882,16 +890,50 @@ inject = ["lend", "probe"]
 
 def apply(ctx, config):
     ctx.use("probe").record("borrower: started")
-    asyncio.get_running_loop().call_later(0.3, lambda: ctx.use("lend").lend())
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.3, lambda: ctx.use("lend").lend())
+    loop.call_later(0.4, lambda: loop.create_task(ctx.use("lend").refuse()))
 "#;
 
-/// An error left unhandled in one row's code that another row of the same
-/// runtime called directly is charged to the row whose code it is, not to
-/// the caller (#688).
+/// Records every report of an error from an unknown row, on one line (the
+/// Python runtime writes to `sys.stderr`).
+const TAP_PY: &str = r#"
+import sys
+
+inject = ["probe"]
+
+
+class Tap:
+    def __init__(self, inner, probe):
+        self.inner, self.probe = inner, probe
+
+    def write(self, text):
+        if "an unhandled error from an unknown row" in text:
+            self.probe.record("reported: " + text.replace("\n", " | "))
+        return self.inner.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def apply(ctx, config):
+    probe = ctx.use("probe")
+    tap = Tap(sys.stderr, probe)
+    sys.stderr = tap
+    ctx.effect(lambda: setattr(sys, "stderr", tap.inner))
+    probe.record("witness: started")
+"#;
+
+/// An error that comes out of another row's code a row called directly,
+/// in the same runtime, is charged to neither: the stack says where it was
+/// thrown, not which row left it unhandled. Both a failure the lender left
+/// unhandled itself and one it raised for the borrower, which dropped it,
+/// are reported as from an unknown row; no row fails (#688).
 /// guarantee: loader/unhandled-errors
-async fn an_error_in_a_called_rows_code_is_charged_to_that_row(language: Language) {
+async fn an_error_in_a_called_rows_code_is_charged_to_no_row(language: Language) {
     let dir = tempfile::tempdir().unwrap();
     for (stem, js, py) in [
+        ("witness", WITNESS_JS, TAP_PY),
         ("lender", LENDER_JS, LENDER_PY),
         ("borrower", BORROWER_JS, BORROWER_PY),
     ] {
@@ -900,34 +942,52 @@ async fn an_error_in_a_called_rows_code_is_charged_to_that_row(language: Languag
     let fixture = fixture(language, dir.path()).await;
     let (loader, probe) = (&fixture.loader, &fixture.probe);
     let row = |id: &str| json!({ "id": id, "name": language.row_name(dir.path(), id) });
-    let reconcile = tokio::spawn({
-        let loader = loader.clone();
-        let rows = vec![row("lender"), row("borrower")];
-        async move { loader.reconcile(layer(rows), None).await }
-    });
+    loader
+        .reconcile(
+            layer(vec![row("witness"), row("lender"), row("borrower")]),
+            None,
+        )
+        .await
+        .unwrap();
     probe.wait_for("borrower: started").await;
-    let lender = failure(loader, "lender").await;
-    reconcile.await.unwrap().unwrap();
-    assert!(lender.contains("boom in lender"), "{language:?}: {lender}");
-    // The borrower waits for the service it uses; it did not fail.
-    COLD.until(
-        || row_state(loader, "borrower") == Some(FiberState::Pending),
-        "the borrower to wait for lend",
-    )
-    .await;
+    let reported = COLD
+        .eventually(
+            || {
+                let lines: Vec<String> = probe
+                    .lines()
+                    .into_iter()
+                    .filter(|line| line.starts_with("reported: "))
+                    .collect();
+                (lines.len() >= 2).then_some(lines)
+            },
+            "both errors to be reported",
+        )
+        .await;
+    let all = reported.join("\n");
+    assert!(
+        all.contains("boom in lender") && all.contains("refused by lender"),
+        "{language:?}: {all}"
+    );
+    for id in ["witness", "lender", "borrower"] {
+        assert_eq!(
+            row_state(loader, id),
+            Some(FiberState::Active),
+            "{language:?}: {id}"
+        );
+    }
     fixture.root.shutdown().await.unwrap();
 }
 
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
-async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_that_row() {
-    an_error_in_a_called_rows_code_is_charged_to_that_row(Language::NodeDev).await;
+async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_no_row() {
+    an_error_in_a_called_rows_code_is_charged_to_no_row(Language::NodeDev).await;
 }
 
 #[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
-async fn python_an_error_in_a_called_rows_code_is_charged_to_that_row() {
-    an_error_in_a_called_rows_code_is_charged_to_that_row(Language::Python).await;
+async fn python_an_error_in_a_called_rows_code_is_charged_to_no_row() {
+    an_error_in_a_called_rows_code_is_charged_to_no_row(Language::Python).await;
 }
 
 /// Where the runtime does not trace rows (Node outside `dev`, Bun): an

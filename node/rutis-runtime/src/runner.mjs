@@ -969,16 +969,16 @@ function charge(kind, error, traced) {
   })
 }
 // The row an error traced to row `key` is charged to: that row, unless the
-// innermost plugin file on the error's stack is another row's (code of a
-// row this one called directly, in this process), which is then charged;
-// one of several rows sharing that file, none of them `key`: none.
+// innermost plugin file on the error's stack is another row's only. Then
+// it came from code of a row this one called directly, in this process,
+// and which of the two left it unhandled cannot be told (the stack says
+// where it was thrown, not who dropped it): no row is charged.
 function chargedRow(key, error) {
   if (key === undefined) return undefined
   for (const file of stackFiles(error?.stack)) {
     const owners = [...rows].filter(([, row]) => row.file === file)
     if (!owners.length) continue
-    if (owners.some(([owner]) => owner === key)) return key
-    return owners.length === 1 ? owners[0][0] : undefined
+    return owners.some(([owner]) => owner === key) ? key : undefined
   }
   return key
 }

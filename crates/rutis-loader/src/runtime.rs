@@ -923,7 +923,10 @@ impl JsRow {
         // So does an error its code leaves unhandled, which the runtime
         // traced to it (#688): the runtime and its other rows go on.
         // Registered before the load, as an error may come right after it
-        // (the load itself fails for one while it loads).
+        // (the load itself fails for one while it loads). One that comes
+        // while this apply still finishes restarts the fiber all the same:
+        // the kernel's restart cancels the apply running, whose cleanup
+        // unloads the runtime's row, before the next apply fails.
         let tasks = tokio::runtime::Handle::current();
         let (refused, restarting) = (self.refused.clone(), ctx.clone());
         process.on_row_failed(&key, move |why| {
