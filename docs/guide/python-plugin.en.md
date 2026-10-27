@@ -318,7 +318,7 @@ Install the plugin in the Python environment used to run Python plugins (the int
 
 ```bash
 uv venv                                                         # creates .venv
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-weather   # the runtime (the host's version) and the plugin
+uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # the runtime (the host's version) and the plugin
 ```
 
 ```json
