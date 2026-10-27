@@ -193,7 +193,8 @@ impl RuntimePlugin {
     /// state from now on, for as long as the runtime exists (events
     /// protocol §8): `running` once mounted, `down` with why when its
     /// session ended or its mount failed (or `stopped` when it was
-    /// stopped).
+    /// stopped). Going down is also reported to the error sink
+    /// ([`ErrorKind::RuntimeDown`](rutis::host::ErrorKind::RuntimeDown)).
     pub(crate) fn announce(&self, ctx: &Ctx) {
         use std::sync::atomic::Ordering;
         if self.announcing.swap(true, Ordering::SeqCst) {
@@ -208,8 +209,14 @@ impl RuntimePlugin {
         tasks.spawn(async move {
             use crate::events::RuntimeEventState::{Down, Running};
             let mut running = false;
+            // Each time it goes down, the error sink hears it once (on
+            // stderr, by default: an embedding sees it, #678).
+            let mut down = false;
             loop {
                 let state = states.borrow_and_update().clone();
+                if !matches!(state, RuntimeState::Down(_)) {
+                    down = false;
+                }
                 match state {
                     RuntimeState::Ready(_) if !running => {
                         running = true;
@@ -217,6 +224,16 @@ impl RuntimePlugin {
                     }
                     RuntimeState::Down(reason) => {
                         running = false;
+                        // Not while the whole tree shuts down: ending
+                        // then is expected.
+                        if !down && !rutis::host::CtxHost::is_shutting_down(&ctx) {
+                            down = true;
+                            let report = rutis::host::ErrorKind::RuntimeDown {
+                                runtime: name.clone(),
+                                reason: reason.clone(),
+                            };
+                            rutis::host::CtxHost::error_sink(&ctx)(Arc::new(report));
+                        }
                         crate::events::emit_runtime(&ctx, &name, Down, Some(reason));
                     }
                     RuntimeState::Idle if running => {
@@ -320,6 +337,10 @@ impl RuntimePlugin {
 }
 
 impl DynPlugin for RuntimePlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

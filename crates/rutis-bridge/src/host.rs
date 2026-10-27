@@ -315,6 +315,10 @@ impl crate::Handler for Hosting {
 }
 
 impl DynPlugin for HostPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

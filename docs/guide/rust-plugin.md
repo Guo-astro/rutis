@@ -453,7 +453,7 @@ impl Plugin for Syncer {
 
 - `ctx.effect(|| { …; async move { … } })` 立即执行闭包，把它返回的 future 登记为清理。插件停下时，清理和其他登记一起按相反顺序执行。不需要清理时不调用 `effect`；多个清理就调用多次。
 - 插件已经在停下或已停下时，`effect`（以及 `provide`、`on` 等所有登记）返回 `InactiveEffect` 错误，闭包不执行。所以资源在闭包里拿到，被拒时什么都还没拿，不会泄漏。
-- 后台任务用 tokio 自己的 `tokio::spawn`（成组管理时用 `JoinSet`）：在 `effect` 的闭包里起，在它返回的清理里等它退出；任务里看 `ctx.cancelled()`，插件开始停下时它就完成。停下的过程等清理完成，最多到关闭截止时间。
+- 后台任务用 tokio 自己的 `tokio::spawn`（成组管理时用 `JoinSet`）：在 `effect` 的闭包里起，在它返回的清理里等它退出；任务里看 `ctx.cancelled()`，插件开始停下时它就完成。停下的过程等清理完成；等多久由宿主决定：rutis-host 最多等 10 秒（`--shutdown-timeout`、`RUTIS_SHUTDOWN_TIMEOUT`），Rust 嵌入的 `shutdown()` 一直等，用 `shutdown_with_timeout(时长)` 限时，到时的错误写明哪个插件的哪个清理还没结束（`effect` 登记的写出登记处的文件和行号）。
 - 执行时间长的监听器同样看 `call.ctx().cancelled()`。`ctx.plugin(child)` 装一个随这个插件一起停下的子插件。
 - 清理返回的错误报给宿主。`effect` 返回的 `Disposer` 调用 `dispose()` 时提前执行清理。
 

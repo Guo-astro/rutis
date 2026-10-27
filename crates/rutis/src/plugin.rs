@@ -98,6 +98,15 @@ pub trait DynPlugin: Send + Sync + 'static {
     /// 装配体:提供 0..n 服务、注册 0..n 监听、交回清理。
     /// 创建 Future 或 poll 时的 panic 均转换为 `PluginFailed` 并回滚。
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>>;
+
+    /// Whether this plugin is part of rutis itself (a transport, a link, a
+    /// runtime, the loader): it never reports a long wait or a failed
+    /// start of its own (it has its own reports), and readable diagnostics
+    /// leave it out. For rutis's own crates; no stability promise.
+    #[doc(hidden)]
+    fn platform(&self) -> bool {
+        false
+    }
 }
 
 impl<P: Plugin> DynPlugin for P {
@@ -139,6 +148,10 @@ impl DynPlugin for Box<dyn DynPlugin> {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         (**self).apply(ctx)
+    }
+
+    fn platform(&self) -> bool {
+        (**self).platform()
     }
 }
 

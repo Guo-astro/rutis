@@ -586,6 +586,9 @@ impl DynPlugin for InGeneration {
     fn validate(&self) -> Result<(), Error> {
         self.plugin.validate()
     }
+    fn platform(&self) -> bool {
+        self.plugin.platform()
+    }
     fn apply<'a>(
         &'a self,
         ctx: &'a Ctx,

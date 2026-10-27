@@ -453,7 +453,7 @@ impl Plugin for Syncer {
 
 - `ctx.effect(|| { …; async move { … } })` runs the closure now and registers the future it returns as a cleanup. When the plugin stops, cleanups run with the other registrations, in reverse order. Without a cleanup, do not call `effect`; for several, call it several times.
 - When the plugin is already stopping or stopped, `effect` (and every registration: `provide`, `on`, …) returns an `InactiveEffect` error and the closure does not run. So a resource taken inside the closure is never taken when the registration is refused, and never leaks.
-- Background tasks are tokio's own `tokio::spawn` (a `JoinSet` for a group): start them in the `effect` closure and wait for them in the cleanup it returns; inside, watch `ctx.cancelled()`, which completes when the plugin starts stopping. Stopping waits for cleanups, at most until the shutdown deadline.
+- Background tasks are tokio's own `tokio::spawn` (a `JoinSet` for a group): start them in the `effect` closure and wait for them in the cleanup it returns; inside, watch `ctx.cancelled()`, which completes when the plugin starts stopping. Stopping waits for cleanups; how long is the host's choice: rutis-host waits at most 10 s (`--shutdown-timeout`, `RUTIS_SHUTDOWN_TIMEOUT`), a Rust embedding's `shutdown()` waits as long as it takes, and `shutdown_with_timeout(duration)` limits it, its error naming which plugin's cleanup has not finished (one registered with `effect` by the file and line it was registered at).
 - A long-running listener watches `call.ctx().cancelled()` the same way. `ctx.plugin(child)` mounts a child plugin that stops with this one.
 - A cleanup's error is reported to the host. `dispose()` on the `Disposer` that `effect` returns runs the cleanup early.
 

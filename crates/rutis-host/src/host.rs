@@ -162,15 +162,22 @@ impl Host {
         }
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
-        // the kernel prints them.
+        // the kernel prints them. A row that failed to start and a runtime
+        // that went down are on the host's status lines already.
         let fallback = rutis::host::default_sink();
-        let sink: rutis::host::ErrorSink =
-            std::sync::Arc::new(
-                move |error| match rutis_bridge::events::report_line(&error) {
-                    Some(line) => eprintln!("{line}"),
-                    None => fallback(error),
-                },
-            );
+        let sink: rutis::host::ErrorSink = std::sync::Arc::new(move |error| {
+            if matches!(
+                &*error,
+                rutis::host::ErrorKind::StartFailed { .. }
+                    | rutis::host::ErrorKind::RuntimeDown { .. }
+            ) {
+                return;
+            }
+            match rutis_bridge::events::report_line(&error) {
+                Some(line) => eprintln!("{line}"),
+                None => fallback(error),
+            }
+        });
         let root = Ctx::root_with_sink(
             tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?,
             sink,
@@ -554,6 +561,21 @@ impl Host {
             let _ = waiter.dispose().await;
         }
         result
+    }
+
+    /// Load `rows` while the runtimes start, not after: a runtime that
+    /// takes long to start (one waiting for its debugger) holds up only its
+    /// own rows, which wait for it; the others start as soon as they can.
+    /// Done, as before, once every runtime runs ([`Host::runtimes_ready`])
+    /// and every row has been through its load: the rows are loaded again
+    /// then, which changes nothing but waits for the rows the runtimes
+    /// released. An error says which runtime could not start, or why the
+    /// rows could not load.
+    pub async fn start_rows(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
+        let (ready, loaded) = tokio::join!(self.runtimes_ready(), self.load(rows.clone()));
+        ready?;
+        loaded?;
+        self.load(rows).await
     }
 
     /// Load `rows` (replacing what was loaded before).
@@ -1223,6 +1245,10 @@ impl Drop for Unmount {
 }
 
 impl DynPlugin for Released {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "runtime-rows-released"
     }
