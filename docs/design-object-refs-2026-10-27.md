@@ -68,8 +68,8 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 - **对象的调用不查方法表**：线上的引用只有 `{id, home, kind, origin}`，对象没有方法表。现在 Go 的 `Service.Call`、`bind` 和 Swift 的 `Client.call` 在方法表里找不到方法时报 "has no method"，并从表里取 `sync`；对对象，它们跳过这一步（`*rutis.Service` 的 `Methods()` 为 `nil`，`Rutis.Client` 的方法表为空）。调用以 `call` 帧（不是服务的 `invoke`）发给对象；`sync` 只给 Go 结构体的阻塞函数字段用，和 `RemoteFunction` 的 `Call(ctx, args, true)` 一样。没有的方法由对象所在的一端以 `no-method` 回答。
 - **同一个对象**：同一个对象交出几次，接收方拿到同一个代理（JS `===`、Python `is`）；代理交回原来的进程，那边拿到的就是原对象。交给第三个进程时，宿主照常转发。各语言怎样把代理再交出：
   - JS、Python：代理本身就是引用，原样发出。
-  - Go：只有 `*rutis.Service` 保持身份，交回时是原对象。这要在包 `rutis` 里给 `convert` 的 `toPeer` 直通（`encode.go` 约第 90 行）加一个钩子，和 `PluginFromPeer` 一样（`internal/convert` 不能导入 `rutis`）。函数字段的结构体是结构体，发出时按数据传（每个函数字段变成一个新的函数引用），函数字段也不能比较；要把对象本身交出去，参数写 `any`。
-  - Swift、Kotlin：编码器发出包着对象的客户端代理时，发的是那个对象的引用。这要让 `RutisProxy` 公开它的 `rutisClient`，KSP 生成的 `_RutisClient` 也一样（在 `Native.fromNative` 里认出它）。
+  - Go：只有 `*rutis.Service` 保持身份，交回时是原对象。这要在包 `rutis` 里给 `convert` 的 `toPeer` 直通（`encode.go` 约第 90 行）加一个钩子，和 `PluginToPeer` / `PluginFromPeer` 一样（`internal/convert` 不能导入 `rutis`）。函数字段的结构体是结构体，发出时按数据传（每个函数字段变成一个新的函数引用），函数字段也不能比较；要把对象本身交出去，参数写 `any`。
+  - Swift、Kotlin：编码器发出包着对象的客户端代理时，发的是那个对象的引用。这要让 `RutisProxy` 公开它的 `rutisClient`；Kotlin 里，KSP 生成的 `_RutisClient.create` 返回的代理实现一个内部的标记接口，公开它的 handle 和对象引用，`Native.fromNative` 在 `objectOf` 之前认出它。
 - **同一个进程里**拿到的是对象本身（Cordis 的语义），方法照常同步、字段照常可读。跨进程时只有方法、方法都是异步的：这条写进边界规则（原则 7）。测试工具的严格模式（默认）按跨进程的样子给代理，提前暴露差别。
 - **调用的语义**和函数引用相同：参数、返回值按「值怎样传递」跨边界；对方抛出的错误照常传回；取消照常传到对面（[诊断](design-diagnostics-2026-10-26.md) §6.1）。Go 对象的方法可能被并发调用（已有的规则）。
 
@@ -224,7 +224,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | O-1 | 规范与宿主：协议设计里的 `objects`、`undefined` 规则；`COMPAT_DECLARED` 加 `objects`；转发拒绝、`peer-gone`（含空闲停止）、`#[rutis::service]` 参数收到对象的文字与码（码表随 #677）；Rust 编解码里 `undefined` 在容器中写读为 `null`；共用的一致性期望文件与 Rust 列；保证条目 |
 | O-2 | Node、Bun：声明 `objects`；收对象的代理；`no-method` 的文字与 `data`；endpoint 会话上拒绝时的升级提示；测试工具严格模式；`undefined`；指南 |
 | O-3 | Python、Go：声明 `objects`；Python 的代理；Go 的函数字段结构体参数与 `any` 收到 `*rutis.Service`，调用对象时不查方法表，`*rutis.Service` 经 `toPeer` 的钩子原样交出；测试工具；`undefined`；指南 |
-| O-4 | Swift、Kotlin：声明 `objects`；`@RutisClient` 类型的参数与返回值收对象（Swift 用 `rutisObjectProxy` 重载）、Swift `Any` 收到 `Rutis.Client`、Kotlin `RemoteObject`；客户端代理再交出时发原来的引用（`rutisClient`、`Native.fromNative`）；调用对象时不查方法表；测试工具；指南；《迁移到 0.18》与插件 API 指南的最终改写 |
+| O-4 | Swift、Kotlin：声明 `objects`；`@RutisClient` 类型的参数与返回值收对象（Swift 用 `rutisObjectProxy` 重载，`Rutis/API/Macros.swift:10` 的宏声明改为 `@attached(peer, names: suffixed(Proxy), named(rutisObjectProxy))`）、Swift `Any` 收到 `Rutis.Client`、Kotlin `RemoteObject`；客户端代理再交出时发原来的引用（`rutisClient`、`Native.fromNative`）；调用对象时不查方法表；测试工具；指南；《迁移到 0.18》与插件 API 指南的最终改写 |
 
 每个阶段一个 PR，按顺序合并；后面的阶段复用 O-1 的期望文件。
 
