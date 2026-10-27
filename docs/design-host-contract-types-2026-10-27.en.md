@@ -2,202 +2,107 @@
 
 [中文](design-host-contract-types-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: `main` `103c0d22` (after 0.17.2). Scheduled: 0.19.
+Status: draft, not implemented. Date: 2026-10-27. Base: `main` `5abffe99` (0.18 #677 merged). Scheduled: 0.19.
 Issue: [#684](https://github.com/arcships/rutis/issues/684) (part of [#663](https://github.com/arcships/rutis/issues/663), O2 and O5).
-Relation to 0.18: built on [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) — the errors a contract check raises use its §4.3 codes (`bad-argument`, `no-method`) and its §8.1 texts, and none of its §4.5 forbidden words; the error type names 0.18 keeps (G11) do not change. [0.18 config schema](design-config-schema-2026-10-27.en.md) left "generating config forms or types" to this issue; this design does not do it (see §3 H8).
+Relation to 0.18: the errors a contract check raises are the `bad-argument` and `no-method` the real host raises today ([0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.3, `BadArgument` in `crates/rutis-bridge/src/marked.rs`); error names at run time do not change (G11).
 
-Out of scope:
-- Service contracts between plugins, a general type layer ([design philosophy](design-philosophy.en.md) §7 principle 6; #223 was rejected); see §4 for why.
-- Types and contract checks for Go, Swift and Kotlin (the host owner evaluation used only TypeScript and Python; how to add them later is in §5.4). Bun plugins use the same `@arcships/rutis` test tool, so they get it without extra work.
-- Types or forms for plugin config (no user; see H8).
-- The host's business rules (for example "at least one tool is registered"): not types; the host writes them in its own fakes.
-- What a fake does (where `notes` keeps its data, how `tools.run` calls a handler): the host's business, still written by the host and given to the test tool through the existing `services` option.
-- The shape of an error's `data` (`{AlreadyRegistered: {…}}`): it is the serde form of the host's Rust type; the host changes it with serde attributes (`tag`, `rename_all`) and the generator follows.
-- The error names thrown at run time (`CordisError`, `RustError` as the value of `error.name`): 0.18 G11 keeps them; this design changes only the names in declarations.
-- How plugin authors fake their own dependencies, listening to events in the test tool, `rutis-host call` (#670).
-- Contract checks in `rutis-host dev`: `dev` runs the real host, which already applies the real conversion rules.
-- Removed in self-review: a Python `Services` table (`ctx.use` takes no type parameter, so nothing could use it); checking with both mypy and pyright (pyright only); generating fake services as code (what a fake does is the host's business; a data description is enough for the checks).
+Out of scope (one line each):
+- Service contracts between plugins, a general type layer ([design philosophy](design-philosophy.en.md) §7 principle 6; #223). The contract description comes only from the host's own Rust code, is read only by the test tools, and does not enter the protocol, the kernel or the runtimes.
+- Go, Swift, Kotlin (the evaluation used only TypeScript and Python). Bun uses the same `@arcships/rutis` test tool and gets it for free.
+- Types or forms for plugin config (handed over by 0.18 config schema; no user).
+- What a fake does and the host's business rules ("at least one tool is registered"): the host still writes them in the fakes in `services`.
+- Checking what the fakes themselves return: the real host returns Rust types, which cannot be wrong, so this is not "the same as the real host".
+- The shape of an error's `data` (the host changes it with serde attributes), error names at run time (`CordisError`, G11), what #670 covers, `rutis-host dev` (it runs the real host).
 
-## 1. What the developer wants to do
+## 1. The problem
 
-A host owner builds deskmate: a host written in Rust that provides, with `#[rutis::service]`, `notes` (`put(key: String, value: String)`, `get(key) -> Option<String>`) and `tools` (`register(name, description, handler)`, where `handler` is `Fn(String) -> BoxFuture<Result<String, ToolError>>`). They hand declarations, templates and tests to third-party plugin authors, who write plugins in TypeScript or Python.
+A host owner builds deskmate ([evaluation report](https://github.com/arcships/rutis/issues/663#issuecomment-6411076725)): a Rust host that provides, with `#[rutis::service]`, `notes` (`put(key, value: String)`, `get(key) -> Option<String>`) and `tools` (`register(name, description, handler)`, where `handler` is `Fn(String) -> BoxFuture<Result<String, ToolError>>`), for third parties to write plugins in TypeScript or Python. Stuck in three places:
 
-They are stuck in three places ([evaluation report](https://github.com/arcships/rutis/issues/663#issuecomment-6411076725)):
+1. **No Python types**; the host hand-wrote a Protocol.
+2. **Tests pass, the host fails**: passing a number to `notes.put`, a handler returning `undefined`, a `handler` that is not a function, a plugin also providing `notes`. The host hand-wrote about 160 lines of strict fakes (one in TS, one in Python).
+3. **The declarations show rutis**: the header `Generated by rutis-bridge (build::Exports) …`, the error interface `RustError`.
 
-1. **No Python types.** `rutis-host types` writes only TypeScript; the host hand-wrote a Python Protocol, which goes stale whenever the Rust changes.
-2. **Tests pass, the host fails.** The test tool does not know the host's Rust types: passing a number to `notes.put`, a handler returning `undefined`, a `handler` that is not a function, a plugin also providing `notes` — the tests pass and the host fails. The host hand-wrote about 160 lines of strict fakes (one in TypeScript, one in Python) to make tests fail there.
-3. **The declarations show rutis.** The file header says `Generated by rutis-bridge (build::Exports) from the Rust sources`, and the error interface is `RustError`.
+## 2. What the real host reports and the test tool does not
 
-## 2. What exists
+This design does one thing: the test tool fails where the real host fails. Against the current code:
 
-| Exists | Where | How this design uses it |
-| --- | --- | --- |
-| The generator: reads the host crate's sources, finds the `#[rutis::service]` types, derives how each value crosses from the serde attributes (the internal `Ty` and the struct and enum declarations), and writes TypeScript | `crates/rutis-bridge/src/build/exports.rs` (`build::Exports`) | The same derivation writes two more outputs: Python types and a contract description |
-| `Exports::declared(path, ts)`: the host writes the TS of a Rust type the generator cannot derive | same | Gains a Python counterpart |
-| `rutis-host types [dir] [-o file]` | `crates/rutis-host/src/main.rs` | Gains a few options |
-| The real host's value conversion: the dispatch the macro generates decodes the received values into the Rust parameters with serde, and encodes the result | `crates/rutis-bridge/src/marked.rs`, `#[rutis::service]` | The single source of the rules; the contract check must agree with it (§7) |
-| Test tools: `load` / `host`, fakes through `services`, `strict` copying values as across processes, checks of `inject` and `provides` | `node/rutis/src/testing.mjs`, `python/rutis/rutis/testing.py` | Gain a `contract` option |
+| Case | Real host (today) | Test tool (today) | This design |
+| --- | --- | --- | --- |
+| Wrong argument type or count | `bad-argument` (serde decoding, `BadArgument`) | the fake accepts anything | checked against the contract description |
+| An argument that should be a function is not | `bad-argument` | not reported | same ("function" is one of the description's types) |
+| A handler's result has the wrong type | serde decoding fails when the host calls it | not reported | same |
+| Calling a method not in the contract (for example `tools.run`, which the fake has for tests) | `no-method` | callable if the fake has it | only the contract's methods pass |
+| The plugin `ctx.provide`s a name the host provides | refused (as Cordis's `service "notes" has been registered`) | not reported | **needs no contract**: the test tool refuses `provide` of a name already in `services`, by default |
 
-What is missing is only two more generator outputs and one more step in the test tools. Nothing is added to the protocol, the kernel or the runtimes.
+The first four need the host's Rust types, which the test tool does not have, so a description generated from Rust is needed. The fifth is the test tool itself disagreeing with the real host (and with Cordis); it is fixed directly.
 
 ## 3. Decisions
 
 | # | Decision | Section |
 | --- | --- | --- |
-| H1 | The generator writes three things from one derivation: TypeScript declarations (existing, unchanged), a Python types module (new), a contract description (new, one JSON file). `Exports` gains `.python(file)` and `.contract(file)`; `rutis-host types` gains `--python <file>` and `--contract <file>` | 5 |
-| H2 | The Python types are an importable `.py` module: services are `Protocol`s, structs `TypedDict`s, name-only enums `Literal`s; Python 3.10 as the SDK | 5.2 |
-| H3 | The contract check goes into the existing test tools, through a `contract` option of `load` / `host` whose value is the loaded contract description; what the fakes do still comes through `services` | 6 |
-| H4 | With `contract`, five things are checked: argument types, result types (including handler results), arguments that must be functions are functions, only the contract's methods exist, the plugin cannot provide a contract service name; the errors are the real host's | 6.2 |
-| H5 | The rules have one source: the real host's serde decoding. The contract description says only what the types are, not the rules; one case table `specs/host-contract/cases.json` runs against the real host and both test tools, with the same results and texts word for word. Types the description cannot express pass anything, so the check is never stricter than the real host | 7 |
-| H6 | The names in the generated files are the host's: `.header(text)` / `--header` replace the file header, `.error_name(name)` / `--error-name` rename the error interface; **unset, the output is exactly as today** (header, `RustError`), and Python uses the same defaults | 5.3 |
-| H7 | 0.19 does TypeScript (Node, Bun) and Python only; other languages are added later from the same contract description and case table | 5.4 |
-| H8 | No types or forms for plugin config: config is the plugin author's own schema, not the host's Rust services, and nobody in the evaluation needed it | — |
+| H1 | The generator writes two more things from the same inference: a Python type module and a contract description (one JSON file). `Exports` gains `.python(file)`, `.contract(file)`; `rutis-host types` gains `--python <file>`, `--contract <file>`. Without the new options the output is byte-for-byte what it is today | 4 |
+| H2 | Python types: services are `Protocol`s, structs `TypedDict`s, name-only enums `Literal`s; Python 3.10 is supported; `.declared_python(path, py)` matches the existing `.declared` | 4.2 |
+| H3 | The test tool's `load` / `host` gain a `contract` option; with it, the first four rows of §2 are checked, with the real host's error codes and `data`. Without it nothing changes | 5 |
+| H4 | The test tool refuses a plugin's `provide` of a name already in `services`, as the real host and Cordis do; no `contract` needed | 5 |
+| H5 | The contract description is the test tools' internal format, not a public spec: types only, with a format version; types it cannot describe pass, so the check is never stricter than the real host | 6 |
+| H6 | The header and the error interface name are the host's: `.header(text)` / `--header`, `.error_name(name)` / `--error-name`; unset, they are what they are today (settled in the issue comment), and Python uses the same defaults | 4.3 |
 
-## 4. Not a general type layer, and not a contract between plugins
+## 4. What is generated
 
-Principle 6 says contracts cover only service names and method shapes, with no general type layer; #223 rejected service contracts between plugins (compatibility and replacement are the authors' job). This design does not conflict with either:
-
-- **The source is the host's own Rust code.** What is generated are the declarations and checks of the services the host itself provides, written in Rust — as `rutis-host types` already does for TypeScript. Nobody writes a new type language: the host writes Rust, plugin authors write their own language.
-- **It describes a rule that already exists.** The host already decodes received values with serde and fails on a wrong type; the contract description only moves that into tests. How values cross languages stays rutis's to define (the second half of principle 6).
-- **It is not at run time.** Only the test tools read the contract description; the kernel, the loader, the runtimes and the protocol do not, and plugins do not exchange it. Services plugins provide have no contract description; their compatibility stays their authors' job.
-
-## 5. What is generated
-
-### 5.1 How
+### 4.1 How
 
 ```sh
-rutis-host types . -o types/deskmate.d.ts \
-  --python types/deskmate.py \
+rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py \
   --contract types/deskmate.contract.json \
-  --header "Generated by deskmate from its services; do not edit." \
-  --error-name DeskmateError
+  --header "Generated by deskmate; do not edit." --error-name DeskmateError
 ```
 
-The same in `build.rs`:
+In `build.rs` likewise: `Exports::new().typescript(…).python(…).contract(…).header(…).error_name(…)`. `.generate()` needs at least one output.
 
-```rust
-rutis_bridge::build::Exports::new()
-    .typescript("types/deskmate.d.ts")
-    .python("types/deskmate.py")
-    .contract("types/deskmate.contract.json")
-    .header("Generated by deskmate from its services; do not edit.")
-    .error_name("DeskmateError")
-    .declared("notes::Text", "string")
-    .declared_python("notes::Text", "str")
-    .generate()?;
-```
+### 4.2 Python types
 
-- With only `-o` (or only `.typescript` in `build.rs`) the output is identical to today's. `rutis-host types` with no file still prints the TypeScript to standard output.
-- `.generate()` needs at least one of the three files.
-- `.declared_python(path, python)`: the same purpose as `.declared` (a type the generator cannot derive, such as a transparent wrapper with a hand-written `Serialize`). With `.declared` and no Python counterpart, Python gets `Any` and a warning. A `.declared` type is "any value" in the contract description (the host checks it in its method; see H5). This is how the evaluated host used `Exports::declared`.
+One to one with the existing TypeScript: `Option<T>` → `T | None`; `Vec<T>`, `HashMap<String, T>`, tuples → `list`, `dict[str, T]`, `tuple`; integers / floats → `int` / `float`; `serde_json::Value` → `Any`; optional fields go into a `total=False` base class (3.10 has no `NotRequired`); enums with data are a `Union` of `TypedDict`s; callback parameters are `Callable[[A], R | Awaitable[R]]`; `rutis::Definition` is `rutis.Plugin`; error codes are `Literal[…]`, and the error interface is an alias of `rutis.RemoteError`.
 
-### 5.2 Python types
+Plugin authors write `notes: Notes = ctx.use("notes")`, checked by the editor or pyright; without the annotation it runs the same (`ctx.use` takes no type parameter, so there is no `Services` table). A `.declared` type without a Python version is written as `Any` with a warning; the evaluation's host used `.declared` for a transparent wrapper type, so `.declared_python` is needed. The test of `examples/marked-services` checks that the generated `.py` is current and passes `pyright --strict`, as it does today for the `.d.ts` with `tsc --strict`.
 
-Next to what TypeScript has today:
+### 4.3 The host's names
 
-| Rust (serde form) | TypeScript (existing) | Python |
+| Where | Default (as today) | When set |
 | --- | --- | --- |
-| A `#[rutis::service]` type | `interface Notes { put(…): Promise<void> }` | `class Notes(Protocol): async def put(self, key: str, value: str) -> None: ...` |
-| Struct | `interface Entry { … }` | `class Entry(TypedDict)`; optional fields in a `total=False` base (3.10 has no `NotRequired`) |
-| Name-only enum | `"a" \| "b"` | `Literal["a", "b"]` |
-| Enum with data | a union of objects | a `Union` of `TypedDict`s |
-| `Option<T>` | `T \| null` | `T \| None` |
-| Integer / float / `u64` and up | `number` / `number \| bigint` | `int` / `float` / `int` |
-| `Vec<T>`, `HashMap<String, T>`, tuples | `T[]`, `Record<string, T>`, `[A, B]` | `list[T]`, `dict[str, T]`, `tuple[A, B]` |
-| `serde_json::Value` | `unknown` | `Any` |
-| Callback parameter `impl Fn(A) -> BoxFuture<Result<R, E>>` | `(arg0: A) => R \| Promise<R>` | `Callable[[A], R \| Awaitable[R]]` |
-| `rutis::Definition` | the plugin type | `rutis.Plugin` |
-| Error `Err(E)` | `ProblemThrown = RustError<"Problem", codes, data>` | `ProblemCode = Literal[…]`; the method's docstring says `Raises RustError with name "Problem"` |
-| Error interface | `interface RustError` | `RustError = rutis.RemoteError` (an alias: `except RustError as e` with `e.code`, `e.data` as usual) |
+| TS / Python header | `Generated by rutis-bridge (build::Exports) from the Rust sources; do not edit.` | `<header>` |
+| Error interface / alias | `RustError` | `<error_name>` |
 
-A plugin author writes `notes: Notes = ctx.use("notes")` and the editor or pyright checks it; without it the code runs the same. Python's `ctx.use` takes no type parameter, so there is no `Services` table as in TypeScript. The generated module passes `pyright --strict` (both examples are checked during implementation, as `tsc --strict` is for TypeScript).
+Generation fails, naming the clash, when `error_name` is not a valid identifier or clashes with another generated name or the existing `RESERVED` table. A method returning `rutis::Result` throws `CordisError` at run time (G11 keeps it), so its alias stays `CordisErrorThrown`; a host that does not want it returns its own error type — this goes into the Rust host guide.
 
-### 5.3 The host's names
-
-| Where | Default (as today) | Set by the host |
-| --- | --- | --- |
-| TypeScript header | `// Generated by rutis-bridge (build::Exports) from the Rust sources; do not edit.` | `// <header>` |
-| Python header | `# Generated by rutis-bridge (build::Exports) from the Rust sources; do not edit.` | `# <header>` |
-| Error interface / alias | `RustError` | `<error_name>`; each `<Name>Thrown` written as `<error_name><"Name", …>` |
-| Contract description | no header, no platform names | — |
-
-- `error_name` must be a valid identifier that no other generated name or reserved name uses (the existing `RESERVED` list); otherwise generation fails and says what it clashes with.
-- The `<Name>Thrown` aliases are still named after the error type (they match the value of `error.name` at run time). A method returning `rutis::Result` throws `CordisError` at run time, which 0.18 G11 keeps, so its alias stays `CordisErrorThrown`; a host that does not want it returns its own error type. The Rust host guide says so.
-- The unchanged default was settled in the issue's comment (so existing TypeScript code needs no change); Python is new and takes the same defaults, so one setting covers both languages and there is one rule.
-
-### 5.4 Adding other languages later
-
-Adding a language = one more generator output (from the same derivation) + that language's test tool reading the same contract description + running the same case table. The contract description and the case table do not change. It is done when a host needs to hand material to Go, Swift or Kotlin plugin authors.
-
-## 6. The contract check in the test tools
-
-### 6.1 Entry
-
-TypeScript (Node and Bun both use `@arcships/rutis/testing`):
+## 5. The test tools
 
 ```ts
-import { load } from '@arcships/rutis/testing'
 import contract from '../types/deskmate.contract.json' with { type: 'json' }
-import { fakeNotes, fakeTools } from './fakes.ts'   // the fakes' behaviour, from the host's template
-
-const tools = fakeTools()
 const t = await load(plugin, { contract, services: { notes: fakeNotes(), tools } })
-assert.equal(await tools.run('wordcount', 'a b c'), '3 words')
 ```
-
-Python:
 
 ```python
 contract = json.loads((ROOT / "types/deskmate.contract.json").read_text())
-async with load(plugin, contract=contract, services={"notes": FakeNotes(), "tools": tools}) as t:
-    assert await tools.run("wordcount", "a b c") == "3 words"
+async with load(plugin, contract=contract, services={"notes": FakeNotes(), "tools": tools}) as t: ...
 ```
 
-- `contract` is an option of `load` and `host` (TypeScript) and of `load` (Python), next to `services` and `strict`. All rows of one `host()` share it.
-- Without `contract`, behaviour is exactly as today.
-- Fakes are still plain objects in `services`, written in the author's language; whether they come from the host's template or the author wrote them the #670 way, they are checked the same.
-- A contract service the test does not give, when the plugin injects it, still fails with `the plugin injects notes: give the test a service notes`.
-- What a plugin author writes that is rutis-specific: one more `contract` option, already in the host's template. The cost is reading one JSON file in the test; the description is data and runs no code.
+- With `contract`, each service in the contract is wrapped before the plugin gets it: the method the plugin calls must be in the contract (else `no-method`); arguments are first copied as `strict` does, then checked against the description (else `bad-argument`, with the same `service`, `method` and `argument` in `data` as the real host); when a function argument is called, its result is checked, and on failure the caller (the host's fake) gets `bad-argument`. Missing arguments are checked as missing (an `Option` may be left out) and extra ones are `bad-argument`, as in `marked.rs`.
+- Texts follow the real host's `BadArgument` wording (`notes.put: argument 2 should be a string, got 42`). For deeply nested values the real host's text carries serde's own words; the test tool guarantees only the same code and `data`.
+- `provide` of a name already in `services` is refused: `PluginTestError: wordcount: notes is already provided by the host` (H4, by default).
+- Fakes are still ordinary objects in `services`; whether the host's template gives them or the plugin author writes them as in #670, they are checked the same.
+- What plugin authors write that is rutis-specific: one `contract` option, already in the host's template. The cost is one JSON file read by the test; the description is data and runs no code.
 
-### 6.2 What is checked
+## 6. The contract description and staying consistent
 
-With `contract`, every contract service is wrapped before it reaches the plugin:
+- **Internal format**: written by the generator from the same inference the TypeScript uses, read only by test tools of the same major version, with no spec and no stability promise; it carries a `version`, and a test tool that does not know it says so and tells the author to upgrade `@arcships/rutis` / `rutis`.
+- **Only types that can be pinned down**: string, boolean, `null`, float, integer (with the Rust type's range), `Option`, list, tuple, string-keyed map, struct (field names after serde renaming, optional fields, `deny_unknown_fields`), name-only enum, function (arguments and result), plugin definition. Everything else — enums with data, `flatten`, `.declared` types, hand-written `Deserialize`, `deserialize_with`, `serde_json::Value` — is "any value" and passes. The check can only be looser than the real host, never wrongly fail a plugin that runs in the host.
+- **How consistency is verified**: with the existing `examples/marked-services` (it already runs TS and Python rows against the real host and checks the `.d.ts` is current). `Calendar` gains parameters covering each type of the previous point; the same set of wrong calls is made once by rows against the real host and once in the Node and Python test tools with its generated contract description, comparing error code, `data` and the top-level text. The generated contract description is committed and checked current, like the `.d.ts`. No separate fixture crate or case table.
 
-| When | Check | As the real host |
-| --- | --- | --- |
-| The plugin calls a method | The method is in the contract | Otherwise `no-method`, as the real host |
-| The plugin calls a method | Each argument against the contract's type (copied by `strict` first, then checked: the value the host receives) | Otherwise `bad-argument` and the call fails; the plugin gets the real host's error |
-| An argument must be a function | It is a function; when it is called, its result is checked against the contract | Not a function: `bad-argument`; a wrong result: whoever calls it (the host's fake or the test) gets `bad-argument` |
-| A fake returns | The result against the contract | A mistake in the host's own fake is caught too |
-| The plugin calls `ctx.provide` | The name is not in the contract | Otherwise the row fails to load and `load` rejects; the real host fails the row too |
-
-Argument count: a missing argument is checked as `undefined` / `None` (an `Option` parameter may be left out, as serde allows); an extra one is `bad-argument`, as the real host.
-
-### 6.3 Boundary with #670
-
-#670 covers how plugin authors fake their own dependencies (other plugins' services) in tests and `dev` in their own language, plus `t.on` and `rutis-host call`. This design covers the services the host provides: the host generates a contract description, hands it to plugin authors, and the test tool checks against it. The two meet at one point in the test tools: an object in `services`, however it was written, is checked when its name is in `contract`. This design does not change `services` and adds no other entry.
-
-## 7. Agreeing with the real host
-
-The rules live in one place: the real host's serde decoding. How agreement is kept:
-
-1. **The contract description has types, not rules.** Its vocabulary is fixed: `string`, `boolean`, `null`, `any`, `number` (float), `{int: [min, max]}` (the Rust integer type's range), `{option}`, `{list}`, `{tuple}`, `{map}`, `{ref: name}`, `{function: {args, result}}`, `plugin`; named types are `{struct: {fields, deny_unknown}}` or `{enum: {tagging, variants}}` (`tagging` is one of serde's four: external, `tag`, `tag` + `content`, `untagged`). The generator writes it from the same derivation TypeScript uses, so the declarations and the description cannot disagree.
-2. **One checker per language, driven by the description**, in each test tool (one in Node, one in Python).
-3. **One case table locks all three**: `specs/host-contract/cases.json`, each case `{ service, method, args | result, then: "ok" | { code, message } }`, against a fixture crate (`crates/rutis-bridge/tests/fixtures/contract`, covering each word of the vocabulary, serde's `rename_all`, `default`, `deny_unknown_fields`, the four enum forms, `u8` out of range, `1.5` for an integer, Python's `True` for an integer, callback results).
-   - The real host: a rutis-bridge test passes each case through session values to the fixture's real dispatch and compares result and text;
-   - The Node and Python test tools: read the fixture's generated contract description, run the same cases, compare word for word.
-   The real host decides the text: whatever `bad-argument` text 0.18 #677 writes is what the table records, and the checkers follow the table.
-4. **What cannot be described passes**: `.declared` types, a hand-written `Deserialize`, `deserialize_with` and `serde_json::Value` are `any` in the description. The check can only be looser than the real host, never stricter, so a test never fails a plugin that runs in the host. The table includes these too, to verify that they pass.
-5. **When the generator changes, the table runs again**: CI regenerates the fixture's contract description and compares it with the committed one, as is done for TypeScript today.
-
-## 8. What developers see
+## 7. What developers see
 
 **Host owner**
 
 ```text
-$ rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py --contract types/deskmate.contract.json --error-name DeskmateError
-(three files written, no output)
-
 $ rutis-host types . --python types/deskmate.py
 warning: notes::Text has no Python type: declare it with .declared_python (written as Any)
 
@@ -205,41 +110,32 @@ $ rutis-host types . --error-name Services
 error: --error-name Services is a name the declarations already use
 ```
 
-**Plugin author** (TypeScript, `node --test`; Python's `pytest` shows the same texts, with error types `BindingError` / `PluginTestError`)
+**Plugin author** (`node --test` and `pytest` say the same; without `contract`, only the last row is new)
 
-| In a third-party test | The failing test says |
+| In the test | The failure |
 | --- | --- |
 | `notes.put('k', 42)` | `BindingError: notes.put: argument 2 should be a string, got 42` |
 | `tools.register('wc', 'count', 'not a function')` | `BindingError: tools.register: argument 3 should be a function, got "not a function"` |
-| The handler returns `undefined`, the test calls `tools.run('wc', 'a b')` | `BindingError: tools.register: argument 3 returned undefined, should be a string` |
-| `notes.putt('k', 'v')` | `BindingError: notes has no method putt (methods: get, put)` |
-| The plugin calls `ctx.provide('notes', …)` | `PluginTestError: wordcount: notes is already provided by the host` (`load` rejects) |
-| The host's fake `notes.get` returns a number | `BindingError: notes.get returned 42, should be a string or null` |
+| A handler returns `undefined`, the test calls `tools.run('wc', 'a b')` | `BindingError: tools.register: argument 3 returned undefined, should be a string` |
+| The plugin calls `tools.run(…)` | `BindingError: tools has no method run (methods: register)` |
+| The plugin calls `ctx.provide('notes', …)` | `PluginTestError: wordcount: notes is already provided by the host` |
 
-- These are what the plugin sees in deskmate (the real host's output also has the row prefix, 0.18 §7). The code is in `error.code` (`bad-argument`, `no-method`), not in the text.
-- No rutis, Rust, serde wording or internal ids.
-- Tests without `contract` print what they print today.
+Error codes are in `error.code`; the texts show no rutis, Rust or serde wording. In Python, `await notes.put("k", 42)` is flagged by pyright.
 
-**Plugin author's editor**: in Python, `await notes.put("k", 42)` is flagged by pyright as `Argument of type "Literal[42]" cannot be assigned to parameter "value" of type "str"`; TypeScript is flagged by `tsc` as today.
+## 8. Compatibility
 
-## 9. Compatibility and migration
+- Without the new options, the output of `rutis-host types` and `Exports` is byte-for-byte unchanged; without `contract`, the test tools behave as today.
+- The one behaviour change is H4: a test that gives `notes` while the plugin also provides `notes` used to pass and now fails — in the real host it already fails. It goes into the changelog, not "Migrating to 0.19".
+- Protocol, kernel, loader and runtimes do not change. If #692 renames the test tools' entry points, `contract` moves with them.
 
-Fully compatible, not part of Migrating to 0.19:
+## 9. Implementation
 
-- Without the new options, `rutis-host types` and `Exports` write exactly what they write today.
-- Without `contract`, the test tools behave as today.
-- The protocol, kernel, loader and runtimes do not change.
-- If #692 renames the test tools' entries, the `contract` option moves with them under the same name.
-
-## 10. Implementation
-
-| Step | Content | Done when (the issue's checklist) |
+| Step | Content | Done when (issue "Done" items) |
 | --- | --- | --- |
-| 1 | Generator: `Ty` gains integer ranges and the like (TypeScript output unchanged); write the contract description; `.contract()`, `--contract`; the fixture crate; `specs/host-contract/cases.json`; rutis-bridge runs the table on the real dispatch | The table passes on the real host; existing TypeScript snapshot tests unchanged |
-| 2 | Python types: `.python()`, `--python`, `.declared_python()`; both examples generate a `.py` that passes `pyright --strict` in CI | "Generate Python types" |
-| 3 | `contract` in the Node test tool (§6); runs the table; tests: a test fails when the contract is broken (each row of §8) | "Generate strict fakes … usable from each test tool; tested" (TypeScript) |
-| 4 | `contract` in the Python test tool; as above | as above (Python) |
-| 5 | `.header()`, `.error_name()`, `--header`, `--error-name`; snapshot test that the default output is unchanged; test that with them set no rutis or Rust appears | "No rutis names in the generated output (configurable)" |
-| 6 | Docs: the Rust host guide's declarations section (three files, names, the `CordisErrorThrown` note), the TypeScript and Python plugin guides' testing sections gain `contract`, #671's "build a host that opens plugins" links here; `examples/marked-services` ships a contract description and Python types | Both languages' docs changed |
+| 1 | The generator writes the contract description (`.contract()`, `--contract`); `examples/marked-services` gains parameters and commits its description | the description is current; the existing TS snapshots do not change |
+| 2 | Python types (`.python()`, `--python`, `.declared_python()`); the example generates its `.py`, which passes `pyright --strict` | "Generate Python types" |
+| 3 | `contract` and H4 in the Node and Python test tools; in the example, the same wrong calls give the same result in the real host and both test tools; every row of §7 has a test | "Generate strict fakes … with a test: a test fails when the contract is broken" |
+| 4 | `.header()`, `.error_name()`, `--header`, `--error-name`; snapshots that defaults do not change, and that once set no rutis or Rust appears | "No rutis names in the generated content (configurable)" |
+| 5 | Docs: the Rust host guide's "Generating declarations", the TS and Python plugin guides' "Test" gain `contract`; #671 refers to it | both languages |
 
-One PR per step; #684 closes after step 6 merges.
+One PR per step; #684 closes when step 5 merges.
