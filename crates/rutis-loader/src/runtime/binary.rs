@@ -1392,6 +1392,8 @@ struct Settings {
     eager: bool,
     /// Each runtime process's standard output and error.
     output: (RuntimeStdio, RuntimeStdio),
+    /// Whether each line of that output starts with `[<runtime>] `.
+    prefix_output: bool,
 }
 
 #[derive(Default)]
@@ -1491,6 +1493,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                     idle: Some(Duration::from_secs(60)),
                     eager: false,
                     output: (RuntimeStdio::Inherit, RuntimeStdio::Inherit),
+                    prefix_output: false,
                 }),
                 ctx: Mutex::new(None),
                 slots: Mutex::default(),
@@ -1526,6 +1529,15 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
     /// [`LocalRuntime::stdout`] and [`LocalRuntime::stderr`].
     pub fn output(self, stdout: RuntimeStdio, stderr: RuntimeStdio) -> Self {
         self.inner.settings.lock().unwrap().output = (stdout, stderr);
+        self
+    }
+
+    /// Start each line a runtime process writes with `[<runtime>] `
+    /// (`[go-weather] `), when its output is passed on a line at a time
+    /// ([`RuntimeStdio::Lines`]): one plugin runs in each process, so the
+    /// runtime's name says which wrote it. Off by default.
+    pub fn prefix_output(self, prefix: bool) -> Self {
+        self.inner.settings.lock().unwrap().prefix_output = prefix;
         self
     }
 
@@ -1861,13 +1873,16 @@ impl<L: BinaryLanguage> Inner<L> {
             .clone()
             .ok_or_else(|| (None, format!("the {} runtimes are not running", L::TITLE)))?;
         let (binary, launched) = self.resolver.read(runtime)?;
+        // Read once: a guard taken in the literal below lives to its end.
+        let settings = *self.settings.lock().unwrap();
         let mut runtime_plugin = BinaryRuntime::<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
             binary: binary.clone(),
             stamp: Some(launched.stamp.clone()),
             project: self.project.clone(),
-            output: self.settings.lock().unwrap().output,
+            output: settings.output,
+            prefix_output: settings.prefix_output,
             resolver: self.resolver.clone(),
             first: Mutex::new(None),
         };
@@ -2250,6 +2265,8 @@ struct BinaryRuntime<L: BinaryLanguage> {
     project: PathBuf,
     /// Its process's standard output and error.
     output: (RuntimeStdio, RuntimeStdio),
+    /// Whether each line of that output starts with its name.
+    prefix_output: bool,
     resolver: Arc<BinaryResolver<L>>,
     /// The runtime whose handle the slot watches, for the first start.
     first: Mutex<Option<LocalRuntime>>,
@@ -2257,10 +2274,14 @@ struct BinaryRuntime<L: BinaryLanguage> {
 
 impl<L: BinaryLanguage> BinaryRuntime<L> {
     fn local(&self) -> LocalRuntime {
-        L::launch(&self.binary, &self.project)
+        let local = L::launch(&self.binary, &self.project)
             .named(self.runtime.clone())
             .stdout(self.output.0)
-            .stderr(self.output.1)
+            .stderr(self.output.1);
+        match self.prefix_output {
+            true => local.output_prefix(&self.runtime),
+            false => local,
+        }
     }
 }
 

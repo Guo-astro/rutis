@@ -863,10 +863,20 @@ pub struct Call {
 }
 
 fn parse(line: &str) -> Value {
+    let line = unprefixed(line);
     match line.starts_with("{\"probe\"") {
         true => serde_json::from_str(line).unwrap_or(Value::Null),
         false => Value::Null,
     }
+}
+
+/// `line` without the name of the row that wrote it, which starts a
+/// plugin's lines under `rutis-host dev` (`[probe] {"probe": …}`, #678).
+pub(crate) fn unprefixed(line: &str) -> &str {
+    line.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .filter(|(name, rest)| !name.contains(' ') && rest.starts_with("{\"probe\""))
+        .map_or(line, |(_, rest)| rest)
 }
 
 /// Lines of `output` that contain any of `secrets`, for scenarios that

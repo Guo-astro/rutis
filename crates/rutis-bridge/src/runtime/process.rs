@@ -218,6 +218,9 @@ pub struct Launcher {
     /// Standard error: this process's ([`Stdio::Inherit`]) unless set with
     /// [`Launcher::stderr`].
     pub stderr: Stdio,
+    /// What each line of its output starts with when passed on as
+    /// [`Stdio::Lines`]: none unless set with [`Launcher::output_prefix`].
+    pub output_prefix: Option<String>,
 }
 
 impl Default for Launcher {
@@ -231,6 +234,7 @@ impl Default for Launcher {
             stdin: Stdio::Null,
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
+            output_prefix: None,
         }
     }
 }
@@ -306,6 +310,15 @@ impl Launcher {
     /// as [`Launcher::stdin`].
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.stderr = stdio;
+        self
+    }
+
+    /// Start each line of its output passed on as [`Stdio::Lines`] with
+    /// `[<name>] `: a host showing which process wrote it, for a process
+    /// that runs one plugin (`rutis-host dev`'s Go and Swift runtimes). A
+    /// process sharing a stream ([`Stdio::Inherit`]) is not prefixed.
+    pub fn output_prefix(mut self, name: &str) -> Self {
+        self.output_prefix = Some(format!("[{name}] "));
         self
     }
 

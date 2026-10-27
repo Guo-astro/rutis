@@ -133,9 +133,11 @@ fn a_service_provided_after_loading_twice_fails_the_later_row() {
     }
     let mut failed = Vec::new();
     while failed.len() < 2 {
+        // The rows' state lines, not the runtimes' own (`cannot provide
+        // service …`), which the harness reads from stderr too.
         let line = host.wait_line(|line| {
-            line.contains(" is already provided by ")
-                .then(|| line.to_owned())
+            let row = line.starts_with("py-late: ") || line.starts_with("node-late: ");
+            (row && line.contains(" is already provided by ")).then(|| line.to_owned())
         });
         failed.push(line);
     }

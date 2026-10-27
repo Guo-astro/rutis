@@ -132,6 +132,11 @@ pub struct Runtimes {
     /// file.
     #[serde(skip)]
     pub debug: bool,
+    /// Each line a plugin writes starts with the name of the row that
+    /// wrote it (`[weather] `), or of its runtime when that cannot be told
+    /// (`--prefix-output`; on in `dev`, off in `run`). Not in the file.
+    #[serde(skip)]
+    pub prefix_output: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

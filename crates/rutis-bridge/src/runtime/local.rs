@@ -156,6 +156,7 @@ impl LocalRuntime {
         spawn.stdin = self.launcher.stdin;
         spawn.stdout = self.launcher.stdout;
         spawn.stderr = self.launcher.stderr;
+        spawn.output_prefix = self.launcher.output_prefix.clone();
         spawn.handover = match self.launcher.inherit_fd {
             true => Handover::Inherit,
             false => Handover::DialBack,
@@ -203,6 +204,20 @@ impl LocalRuntime {
     /// line at a time ([`Launcher::stderr`]).
     pub fn stderr(mut self, stdio: Stdio) -> Self {
         self.launcher.stderr = stdio;
+        self
+    }
+
+    /// Start each line of the runtime process's output passed on as
+    /// [`Stdio::Lines`] with `[<name>] ` ([`Launcher::output_prefix`]).
+    pub fn output_prefix(mut self, name: &str) -> Self {
+        self.launcher = self.launcher.output_prefix(name);
+        self
+    }
+
+    /// Set the environment variable `name` of the runtime process
+    /// ([`Launcher::env`]).
+    pub fn env(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.launcher = self.launcher.env(name, value);
         self
     }
 

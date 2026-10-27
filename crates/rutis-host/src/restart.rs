@@ -12,7 +12,7 @@ use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use tokio::time::Instant;
 
 use crate::config::Restart;
-use crate::outln;
+use crate::errln;
 
 /// The backoff and its numbers: rutis-loader's, which the Go runtimes'
 /// restarts use too.
@@ -54,14 +54,14 @@ pub async fn supervise(
             Restart::OnFailure => {}
         }
         let Some(wait) = backoff.next(Instant::now(), started.elapsed()) else {
-            outln!(
+            errln!(
                 "runtime {name}: gave up after {LIMIT} restarts within {} minutes",
                 WINDOW.as_secs() / 60
             );
             return Supervised::GaveUp;
         };
         tokio::time::sleep(wait).await;
-        outln!("runtime {name}: restarting");
+        errln!("runtime {name}: restarting");
         started = Instant::now();
         // It runs again, or its start failed and it is down once more,
         // which counts as one more end.

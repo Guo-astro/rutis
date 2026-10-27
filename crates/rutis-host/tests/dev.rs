@@ -20,7 +20,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use common::process::{file_url, signal, Host};
+use common::process::{file_url, signal, unprefixed, Host};
 use common::repo;
 use serde_json::json;
 
@@ -256,12 +256,13 @@ fn project(dir: &Path, lang: &Lang) -> PathBuf {
 
 /// Read lines until each of `wants` was read, in any order (the state
 /// lines are printed every 200 ms, apart from the rest): a line equal to
-/// it, or starting with it when it ends in `*`. The lines read for them,
-/// in the order of `wants`.
+/// it, or starting with it when it ends in `*`, a plugin's line without
+/// the row's name `dev` starts it with. The lines read for them, in the
+/// order of `wants`.
 fn expect(host: &mut Host, wants: &[&str]) -> Vec<String> {
     let matches = |want: &str, line: &str| match want.strip_suffix('*') {
-        Some(prefix) => line.starts_with(prefix),
-        None => line == want,
+        Some(prefix) => unprefixed(line).starts_with(prefix),
+        None => unprefixed(line) == want,
     };
     let mut found: Vec<Option<String>> = vec![None; wants.len()];
     while found.contains(&None) {
@@ -384,7 +385,12 @@ fn the_dev_loop(lang: &Lang) {
     let (status, stderr, output) = host.exit();
     let context = format!("status {status:?}; output: {output:#?}; stderr: {stderr}");
     assert_eq!(status.code(), Some(0), "{context}");
-    let count = |text: &str| output.iter().filter(|line| line.starts_with(text)).count();
+    let count = |text: &str| {
+        output
+            .iter()
+            .filter(|line| unprefixed(line).starts_with(text))
+            .count()
+    };
     // llm reloaded once, for its own file; weather's reloads did not.
     assert_eq!(count("plugin llm v1 applied"), 1, "{context}");
     assert_eq!(count("llm: reloaded"), 1, "{context}");

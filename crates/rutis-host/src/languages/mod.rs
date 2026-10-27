@@ -305,7 +305,21 @@ pub struct Mount<'a> {
     /// which start as rows use them), and the [`BinaryHost`] it gives the
     /// host.
     pub later: Vec<Later>,
+    /// Whether the plugins' output lines start with their row's name
+    /// ([`Runtimes::prefix_output`](crate::config::Runtimes::prefix_output)).
+    pub prefix_output: bool,
+    /// `dev --debug`: the runtimes run under their debuggers.
+    pub debug: bool,
 }
+
+/// What tells a Node, Bun or Python runtime to start each line its plugins
+/// write with the row's name (#678).
+pub const PREFIX_OUTPUT: &str = "RUTIS_PREFIX_OUTPUT";
+
+/// What tells a Node, Bun or Python runtime that it runs under a debugger,
+/// which stops it for as long as the person likes: it says nothing of a
+/// method holding it (#678).
+pub const DEBUGGING: &str = "RUTIS_DEBUG";
 
 /// A language's part of the start that waits for the loader.
 pub type Later =
@@ -321,21 +335,26 @@ impl Mount<'_> {
     /// the resolver `rows` makes, its output passed on a whole line at a
     /// time: a line a plugin writes in pieces (a Python `print` writes its
     /// newline separately) never has one of this host's lines, or another
-    /// runtime's, inside it (#332).
+    /// runtime's, inside it (#332). With [`Mount::prefix_output`], the
+    /// runtime starts each line with the row that wrote it.
     pub fn local(
         &mut self,
         name: &str,
         runtime: LocalRuntime,
         rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
     ) {
-        let runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
+        let mut runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
+        if self.prefix_output {
+            runtime = runtime.env(PREFIX_OUTPUT, "1");
+        }
         self.local_as_is(name, runtime, rows);
     }
 
     /// [`Mount::local`] for a runtime that reads this terminal (a debugger
     /// prompting there, `dev --debug`): its standard input is this
     /// process's, and its output is not held back until a line ends, or a
-    /// prompt would not show.
+    /// prompt would not show. Nor is it prefixed: the prompt would not be
+    /// the debugger's.
     pub fn local_terminal(
         &mut self,
         name: &str,
@@ -352,9 +371,12 @@ impl Mount<'_> {
     fn local_as_is(
         &mut self,
         name: &str,
-        runtime: LocalRuntime,
+        mut runtime: LocalRuntime,
         rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
     ) {
+        if self.debug {
+            runtime = runtime.env(DEBUGGING, "1");
+        }
         let handle = runtime.handle();
         let rows = Arc::new(rows(handle.clone()).with_catalog(self.catalog));
         self.processes.push((name.to_owned(), runtime.processes()));
