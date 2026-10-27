@@ -331,21 +331,11 @@ fn go_command(args: &[String]) -> Result<(), String> {
         .go
         .and_then(|go| go.dir)
         .ok_or("the configuration has no runtimes.go.dir to install into")?;
-    std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    let status = std::process::Command::new("go")
-        .args(["install", module.as_str()])
-        .env("GOBIN", &dir)
-        .status()
-        .map_err(|error| {
-            format!(
-                "cannot run go ({error}): install the Go toolchain, or download the plugin's binary \
-                 for this platform into {} yourself",
-                dir.display()
-            )
-        })?;
-    if !status.success() {
-        return Err(format!("go install {module} failed"));
-    }
+    // The install code `add` uses; its words as before.
+    rutis_loader::internal::install_go_module(module, &dir).map_err(|error| match error {
+        rutis_loader::install::Error::Failed(_) => format!("go install {module} failed"),
+        rutis_loader::install::Error::Other(message) => message,
+    })?;
     outln!("installed {module} into {}", dir.display());
     Ok(())
 }

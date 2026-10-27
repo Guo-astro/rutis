@@ -19,6 +19,8 @@ pub mod config;
 pub mod edit;
 mod error;
 mod framework;
+#[cfg(feature = "install")]
+pub mod install;
 mod loader;
 mod patch;
 #[cfg(feature = "peer")]
@@ -79,6 +81,8 @@ pub mod resolve {
 /// What rutis-host and the tests use. No stability promise.
 #[doc(hidden)]
 pub mod internal {
+    #[cfg(feature = "install")]
+    pub use crate::install::install_go_module;
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};

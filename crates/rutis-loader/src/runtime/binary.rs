@@ -601,7 +601,7 @@ fn candidate(path: &Path, marker: &[u8]) -> bool {
     contains_marker(path, marker)
 }
 
-fn contains_marker(path: &Path, marker: &[u8]) -> bool {
+pub(crate) fn contains_marker(path: &Path, marker: &[u8]) -> bool {
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
