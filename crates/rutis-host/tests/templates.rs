@@ -3,9 +3,11 @@
 //! use the template's service passes `rutis-host check --strict` before
 //! anything runs; the template's own row is configured as its
 //! `rutis.dev.json` configures it, and that config passes the plugin's
-//! schema with no error and no extra key (config schema design §11, 1c). Needs Node (with node/rutis-runtime's dependencies
-//! installed) and Python, as the host's own tests do; the Go test (its
-//! name has `go`, so the Go CI job runs it too) needs Go.
+//! schema with no error and no extra key (config schema design §11, 1c).
+//! Needs Node (with node/rutis-runtime's dependencies installed) and
+//! Python, as the host's own tests do; the Go test (its name has `go`, so
+//! the Go CI job runs it too) needs Go, the Bun test (its name has `bun`,
+//! so the Bun CI job runs it too) needs Bun.
 //!
 //! Unix only: the generated projects are the same everywhere, and the Go
 //! binary is named without Windows' `.exe`.
@@ -200,8 +202,9 @@ fn the_go_template_declares_what_it_provides() {
 }
 
 /// The Bun template: its plugin in the Bun runtime, configured as its
-/// `rutis.dev.json` says; `check --strict` passes. Its name has `bun`, so
-/// the Bun CI job runs it too.
+/// `rutis.dev.json` says; `check --strict` passes. Only its own row: the
+/// row using its service would need Node as well, which the other tests
+/// cover.
 /// guarantee: host/new
 #[test]
 fn the_bun_template_declares_what_it_provides() {
