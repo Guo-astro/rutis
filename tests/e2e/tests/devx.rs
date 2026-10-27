@@ -356,19 +356,20 @@ fn npm_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
     }
 }
 
-/// The same for what Bun installed: `bun.lock` names a path, not a
-/// registry URL.
+/// The same for what Bun installed: `bun.lock` names the tarball among
+/// the artifacts (a registry's package is `<name>@<version>`, its URL
+/// left out for the default registry).
 fn bun_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
     let lock = std::fs::read_to_string(s.path(project).join("bun.lock")).unwrap();
     for package in packages {
-        let entry = format!("\"@arcships/{package}\": [\"@arcships/{package}@");
-        let line = lock
-            .lines()
-            .find(|line| line.trim_start().starts_with(&entry))
-            .unwrap_or_else(|| panic!("bun.lock has no @arcships/{package}"));
+        let entry = format!(
+            "\"@arcships/{package}\": [\"@arcships/{package}@{}",
+            npm_tarball(package)
+        );
         assert!(
-            !line.contains("://"),
-            "@arcships/{package} came from a registry: {line}"
+            lock.lines()
+                .any(|line| line.trim_start().starts_with(&entry)),
+            "@arcships/{package} is not this build's in bun.lock:\n{lock}"
         );
     }
 }
