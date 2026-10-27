@@ -41,6 +41,10 @@ test('undeclared services, missing services and missing methods are errors', asy
   await assert.rejects(load(weather, { config: {} }), /injects llm/)
   const sneaky = definePlugin({ apply(ctx) { ctx.use('llm') } })
   await assert.rejects(load(sneaky, { services: { llm: {} } }), /is not available to this plugin, which does not declare it in inject/)
+  // guarantee: sdk/testing-matches-runtime — the runtimes' texts, codes and data (#677).
+  await assert.rejects(load(sneaky, { services: { llm: {} } }), { message: "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", code: 'not-declared', data: { service: 'llm' } })
+  const caller = definePlugin({ inject: ['llm'], apply(ctx) { ctx.use('llm').other() } })
+  await assert.rejects(load(caller, { services: { llm: { ask: async () => '', tell() {} } } }), { name: 'PluginTestError', message: 'llm has no method other (methods: ask, tell)', code: 'no-method', data: { service: 'llm', method: 'other', methods: ['ask', 'tell'] } })
   const incomplete = definePlugin({ provides: { a: { run: 'sync' } }, apply(ctx) { ctx.provide('a', {}) } })
   await assert.rejects(load(incomplete), /no such method/)
   const t = await load(weather, { config: { city: 'x' }, services: { llm: { ask: async () => '' } } })
@@ -64,7 +68,10 @@ test('strict mode crosses values as between processes', async () => {
   t.service('store').put(item)
   item.n = 2
   assert.equal(t.service('store').take().n, 1, 'data is copied, not shared')
-  assert.throws(() => t.service('store').put(Symbol('s')), /symbol cannot cross/)
+  // guarantee: sdk/testing-matches-runtime — the runtimes' words, code and
+  // data for a value that cannot be sent, nested ones too (#677).
+  assert.throws(() => t.service('store').put(Symbol('s')), { message: 'store.put: argument 1 cannot be sent: a symbol cannot cross between processes', code: 'bad-value', data: { part: 'argument', argument: 1 } })
+  assert.throws(() => t.service('store').put({ opts: { n: [Symbol('s')] } }), { message: 'store.put: argument 1 cannot be sent: a symbol cannot cross between processes', code: 'bad-value', data: { part: 'argument', argument: 1 } })
   // Nesting: 64 levels cross, 65 do not (#279).
   const nest = depth => Array.from({ length: depth }).reduce(inner => [inner], 'bottom')
   t.service('store').put(nest(64))
@@ -171,4 +178,40 @@ test('internal/* events are refused, as on the real runtimes', async () => {
   await assert.rejects(load(plugin, { emits: ['tick'] }), {
     message: 'the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)',
   })
+})
+
+// guarantee: sdk/testing-matches-runtime
+// Calls through a service the test gives, and through objects and
+// functions it returns, are named as the runtimes name them; what such a
+// service throws arrives with its code and data and this side's stack.
+test('the testing tool names calls and refusals as the runtimes do (#677)', async () => {
+  const seen = {}
+  const remote = Object.assign(new Error('no entry'), { code: 'NotFound', data: { id: 7 } })
+  remote.stack = 'Error: no entry\n    at far (remote.go:12)'
+  const services = {
+    llm: {
+      open() { return { run() {}, bad() { return { n: Symbol('s') } } } },
+      later() { return x => x },
+      fail() { throw remote },
+    },
+  }
+  const caller = definePlugin({
+    inject: ['llm'],
+    apply(ctx) {
+      const llm = ctx.use('llm')
+      const attempt = (key, run) => { try { run() } catch (error) { seen[key] = { message: error.message, code: error.code, data: error.data, stack: error.stack } } }
+      attempt('method', () => llm.open().run(Symbol('s')))
+      attempt('result', () => llm.open().bad())
+      attempt('function', () => llm.later()(Symbol('s')))
+      attempt('nested', () => llm.open().run({ a: [1, { b: Symbol('s') }] }))
+      attempt('thrown', () => llm.fail())
+    },
+  })
+  await load(caller, { services })
+  assert.deepEqual(seen.method, { message: 'the method run: argument 1 cannot be sent: a symbol cannot cross between processes', code: 'bad-value', data: { part: 'argument', argument: 1 }, stack: seen.method.stack })
+  assert.deepEqual([seen.result.message, seen.result.data], ['the method bad: the result cannot be sent: a symbol cannot cross between processes', { part: 'result' }])
+  assert.equal(seen.function.message, 'a function: argument 1 cannot be sent: a symbol cannot cross between processes')
+  assert.equal(seen.nested.message, 'the method run: argument 1 cannot be sent: a symbol cannot cross between processes')
+  assert.deepEqual([seen.thrown.message, seen.thrown.code, seen.thrown.data], ['no entry', 'NotFound', { id: 7 }])
+  assert.doesNotMatch(seen.thrown.stack, /remote\.go/)
 })

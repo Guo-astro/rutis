@@ -283,7 +283,7 @@ async fn a_clashing_provide_fails_only_its_row(language: Language) {
     probe.wait_for("user: host").await;
     let error = failure(loader, "claimer").await;
     assert!(
-        error.contains("notes is already provided by the application"),
+        error.contains("notes is already provided by the host"),
         "{language:?}: {error}"
     );
     reconcile.await.unwrap().unwrap();
@@ -574,9 +574,38 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
         .within("the call in progress to fail", call)
         .await
         .unwrap()
-        .expect_err("the call cannot succeed")
-        .to_string();
-    // How the process ended, in the runtime's reason and in the call's error.
+        .expect_err("the call cannot succeed");
+    // The call says the runtime went away during it (`peer-gone`); how the
+    // process ended is in the runtime's reason and in the call's data.
+    let runtime = match language {
+        #[cfg(feature = "node")]
+        Language::Node => "node",
+        #[cfg(feature = "python")]
+        Language::Python => "py",
+        #[cfg(all(unix, feature = "bun"))]
+        Language::Bun => "bun",
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("runtime {runtime} exited during the call"),
+        "{language:?}"
+    );
+    assert_eq!(error.code(), Some("peer-gone"), "{language:?}");
+    // Printed, it names the call (§8.1 row 10).
+    let printed = rutis_bridge::report::report(&rutis::host::ErrorKind::PluginFailed(Box::new(
+        error.clone(),
+    )));
+    assert_eq!(
+        printed,
+        format!(
+            "call to work.run failed: runtime {runtime} exited during the call\n    in worker:"
+        ),
+        "{language:?}"
+    );
+    let error = error
+        .data()
+        .map(|data| data.to_string())
+        .unwrap_or_default();
     let status = match language {
         #[cfg(feature = "python")]
         Language::Python => exited(3),

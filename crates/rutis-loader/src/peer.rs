@@ -320,8 +320,14 @@ struct PeerRow {
     injects: [TypeKey; 1],
 }
 
-fn failed(error: impl std::fmt::Display) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+/// The hosted plugin failed with `error`, kept as it is (#677).
+fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.into()))
+}
+
+/// The row failed for a reason rutis states.
+fn refused(reason: impl Into<String>) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(reason.into().into()))
 }
 
 impl DynPlugin for PeerRow {
@@ -459,15 +465,15 @@ pub const REMOVED_EVENTS: &str = "the peer config field events was removed in ru
 impl NodeConfig {
     fn parse(config: &Value) -> Result<Self, Error> {
         if config.get("events").is_some() {
-            return Err(failed(REMOVED_EVENTS));
+            return Err(refused(REMOVED_EVENTS));
         }
         let config: Self = serde_json::from_value(config.clone())
-            .map_err(|error| failed(format!("invalid peer config: {error}")))?;
+            .map_err(|error| refused(format!("invalid peer config: {error}")))?;
         let peer = PeerId::new(&config.peer).map_err(failed)?;
         match (&config.dial, &config.listen) {
             (Some(_), None) | (None, Some(_)) => {}
             _ => {
-                return Err(failed(format!(
+                return Err(refused(format!(
                     "the link to {peer} needs one of dial and listen"
                 )))
             }
@@ -480,7 +486,7 @@ impl NodeConfig {
             .chain(&config.import)
             .find(|item| item.is_empty() || item[..item.len() - 1].contains('*'))
         {
-            return Err(failed(format!(
+            return Err(refused(format!(
                 "invalid export or import item {item:?}: a name, or a prefix of event names \
                  ending in *"
             )));
@@ -542,12 +548,12 @@ impl NodeConfig {
     fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), Error> {
         if build.instances().next().is_some() {
             if self.rows {
-                return Err(failed(
+                return Err(refused(
                     "a link inside instances cannot carry rows: put the `rows` link outside instanced groups",
                 ));
             }
             if self.runtime.is_some() {
-                return Err(failed(
+                return Err(refused(
                     "a link inside instances cannot be a runtime: put the `runtime` link outside instanced groups",
                 ));
             }

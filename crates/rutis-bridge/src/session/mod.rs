@@ -39,44 +39,291 @@ pub use values::{BigInt, Date, DateTime, Decimal, Instant, TimeOfDay, Uuid};
 pub enum Error {
     #[error("{0}")]
     Transport(String),
-    #[error("{name}: {message}")]
+    /// Printed `<name>: <message>`; the names of [`MESSAGE_ALONE`] as the
+    /// message alone: `"need 5 words"`, `cannot load src/util.ts: …`.
+    #[error("{}", remote_text(name, message))]
     Remote {
         name: String,
         message: String,
         graph: Option<serde_json::Value>,
     },
-    #[error("synchronous wait cycle: {0}")]
+    #[error("{0}")]
     SyncWaitCycle(String),
-    /// A value that cannot cross, or a call this side refused: only that
-    /// call fails. The text says which call, which argument (or the
-    /// result) and why (#675).
+    /// A value that cannot cross: only that call fails. The text says
+    /// which call, which argument (or the result) and why (#675); its code
+    /// is `bad-value`, its [`data`](Error::data) `{part, argument?,
+    /// limit?}`. A call this side refused for another reason is
+    /// [`Error::Binding`].
     #[error("{0}")]
     Value(String),
     /// The session could not be established: see [`Handshake`].
     #[error("{0}")]
     Handshake(Handshake),
+    /// A call this side refused, other than for a value: with a stable
+    /// [`code`] when it is one a developer meets (a method that does not
+    /// exist, wrong arguments, a service that is not there; the
+    /// diagnostics design §4.3), without one for a far end that broke the
+    /// protocol. The far end gets a `BindingError` carrying the code and
+    /// `data`.
+    #[error("{message}")]
+    Binding {
+        code: Option<&'static str>,
+        message: String,
+        data: Option<serde_json::Value>,
+    },
+}
+
+/// The error names whose message says all there is, printed alone: a
+/// thrown value that is not an error (`ThrownValue`: `"need 5 words"`), a
+/// row that cannot load (`LoadError`: `cannot load src/util.ts: …`), a row
+/// providing a name another has (`ProvideError`: `forecast is already
+/// provided by a`), and a call refused (`BindingError`: `weather has no
+/// method tomorow (methods: …)`).
+pub(crate) const MESSAGE_ALONE: [&str; 4] =
+    ["ThrownValue", "LoadError", "ProvideError", "BindingError"];
+
+/// How a far end's error reads: `<name>: <message>`, or the message alone
+/// for the names of [`MESSAGE_ALONE`].
+fn remote_text(name: &str, message: &str) -> String {
+    if MESSAGE_ALONE.contains(&name) {
+        message.to_owned()
+    } else {
+        format!("{name}: {message}")
+    }
+}
+
+/// The codes of the `BindingError`s rutis raises (the diagnostics design
+/// §4.3). A program decides by these, never by the text.
+pub mod code {
+    /// A service used without being declared in `inject`.
+    pub const NOT_DECLARED: &str = "not-declared";
+    /// A service with no provider now.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// A method the service does not have.
+    pub const NO_METHOD: &str = "no-method";
+    /// Arguments of the wrong number or type.
+    pub const BAD_ARGUMENT: &str = "bad-argument";
+    /// A value that cannot cross, or a message over the limit.
+    pub const BAD_VALUE: &str = "bad-value";
+    /// The far end's runtime ended or went away during the call.
+    pub const PEER_GONE: &str = "peer-gone";
 }
 
 impl Error {
-    /// The `code` an error carries: one a Rust service method returned as
-    /// `Err(e)` ([`crate::exports`]), or any error whose graph names one
-    /// (a JavaScript error with a string `code`). `None` for others.
-    pub fn code(&self) -> Option<&str> {
-        let Self::Remote { graph, .. } = self else {
-            return None;
+    /// A call refused with `code` (one of [`code`]), saying `message`, with
+    /// the details in `data`.
+    pub fn binding(code: &'static str, message: String, data: Option<serde_json::Value>) -> Self {
+        Self::Binding {
+            code: Some(code),
+            message,
+            data,
+        }
+    }
+
+    /// `service` has no method `method`: `weather has no method tomorow
+    /// (methods: today, tomorrow)`, the methods sorted, `(no methods)`
+    /// when it has none (code `no-method`).
+    pub fn no_method(service: &str, method: &str, mut methods: Vec<&str>) -> Self {
+        methods.sort_unstable();
+        methods.dedup();
+        let listed = match methods.is_empty() {
+            true => "no methods".to_owned(),
+            false => format!("methods: {}", methods.join(", ")),
         };
-        graph_root(graph.as_ref()?)?.get("code")?.as_str()
+        Self::binding(
+            code::NO_METHOD,
+            format!("{service} has no method {method} ({listed})"),
+            Some(serde_json::json!({ "service": service, "method": method, "methods": methods })),
+        )
+    }
+
+    /// This error as a far end reads it: a `BindingError` (or a value
+    /// error) as a `BindingError` with its code and data in an error graph,
+    /// which [`Error::with_site`] can then record a site on.
+    pub(crate) fn graphed(self) -> Self {
+        match self {
+            Self::Remote { .. } | Self::SyncWaitCycle(_) | Self::Handshake(_) => self,
+            error => {
+                let failure = protocol::Failure::from(error);
+                let graph = failure.graph.or_else(|| {
+                    Some(serde_json::json!({
+                        "root": { "type": "reference", "value": 0 },
+                        "nodes": [{ "type": "error", "name": failure.name, "message": failure.message }],
+                    }))
+                });
+                Self::Remote {
+                    name: failure.name,
+                    message: failure.message,
+                    graph,
+                }
+            }
+        }
+    }
+
+    /// A call refused because the far end broke the protocol: no code.
+    pub fn refused(message: String) -> Self {
+        Self::Binding {
+            code: None,
+            message,
+            data: None,
+        }
+    }
+
+    /// The `code` an error carries: one a Rust service method returned as
+    /// `Err(e)` ([`crate::exports`]), any error whose graph names one (a
+    /// JavaScript error with a string `code`), and rutis's own
+    /// ([`code`]: a value error is `bad-value`, a session that ended
+    /// during the call `peer-gone`). `None` for others.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Remote { graph, .. } => graph_root(graph.as_ref()?)?.get("code")?.as_str(),
+            Self::Binding { code, .. } => *code,
+            Self::Value(_) => Some(code::BAD_VALUE),
+            Self::Transport(_) => Some(code::PEER_GONE),
+            Self::SyncWaitCycle(_) | Self::Handshake(_) => None,
+        }
     }
 
     /// The `data` an error carries, as [`Error::code`]: the serde value of
     /// the `E` a Rust service method returned.
     pub fn data(&self) -> Option<serde_json::Value> {
+        if let Self::Binding { data, .. } = self {
+            return data.clone();
+        }
+        if let Self::Value(message) = self {
+            return Some(rpc::crossing::value_data(message));
+        }
         let Self::Remote { graph, .. } = self else {
             return None;
         };
         let graph = graph.as_ref()?;
         let data = graph_root(graph)?.get("data")?;
         graph_value(graph, data, 0)
+    }
+}
+
+impl Error {
+    /// Where the error was thrown, as the language that threw it wrote it
+    /// (`file:line` frames). `None` when it carries none.
+    pub fn stack(&self) -> Option<&str> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        graph_root(graph.as_ref()?)?.get("stack")?.as_str()
+    }
+
+    /// Where callers threw this error on again, after receiving it: the
+    /// frames of each rethrow, the first caller first (the diagnostics
+    /// design §4.4). Empty when none recorded it.
+    pub fn rethrown(&self) -> Vec<String> {
+        let Self::Remote {
+            graph: Some(graph), ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        graph_root(graph)
+            .and_then(|root| root.get("rethrown"))
+            .and_then(|items| items.as_array())
+            .map(|items| {
+                // At most as many as a sender records (§4.4), whatever a
+                // far end sent.
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .take(crate::exports::MAX_RETHROWN)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// This error with `site` on its root node, unless it has one already
+    /// (the first hop that recorded it wins). Errors without an error graph
+    /// are returned as they are.
+    pub fn with_site(self, site: &Site) -> Self {
+        let Self::Remote {
+            name,
+            message,
+            graph: Some(mut graph),
+        } = self
+        else {
+            return self;
+        };
+        let root = graph
+            .get("root")
+            .filter(|root| root.get("type").and_then(|t| t.as_str()) == Some("reference"))
+            .and_then(|root| root.get("value"))
+            .and_then(|index| index.as_u64());
+        if let Some(node) = root
+            .and_then(|index| graph.get_mut("nodes")?.get_mut(index as usize))
+            .and_then(|node| node.as_object_mut())
+            .filter(|node| node.get("type").and_then(|t| t.as_str()) == Some("error"))
+        {
+            if !node.contains_key("site") {
+                if let Ok(site) = serde_json::to_value(site) {
+                    node.insert("site".into(), site);
+                }
+            }
+        }
+        Self::Remote {
+            name,
+            message,
+            graph: Some(graph),
+        }
+    }
+
+    /// Which row the error came from and what it was doing, as rutis
+    /// recorded it where the error crossed (`docs/design-diagnostics-2026-10-26.md`
+    /// §4.1). For whoever reads the output and for the host; the SDKs do not
+    /// hand it to the calling plugin's code.
+    pub fn site(&self) -> Option<Site> {
+        let Self::Remote { graph, .. } = self else {
+            return None;
+        };
+        let site = graph_root(graph.as_ref()?)?.get("site")?;
+        serde_json::from_value(site.clone()).ok()
+    }
+}
+
+/// Which row an error came from and what it was doing (§4.1 of the
+/// diagnostics design): one optional field of an error node.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Site {
+    /// The row's name (`weather`, or `weather in phone-1` inside an instance).
+    pub row: String,
+    /// `call`, `apply`, `cleanup` or `listener`.
+    pub doing: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+}
+
+impl Site {
+    /// The row `row` doing `doing` (`apply`, `cleanup`).
+    pub fn new(row: impl Into<String>, doing: impl Into<String>) -> Self {
+        Self {
+            row: row.into(),
+            doing: doing.into(),
+            service: None,
+            method: None,
+            event: None,
+        }
+    }
+
+    /// The row `row` serving a call to `service.method`.
+    pub fn call(
+        row: impl Into<String>,
+        service: impl Into<String>,
+        method: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: Some(service.into()),
+            method: Some(method.into()),
+            ..Self::new(row, "call")
+        }
     }
 }
 

@@ -102,7 +102,7 @@ test('a leaf plugin using a service it does not inject is told to declare it', a
   const spec = definePlugin({
     apply(ctx) {
       for (const name of ['tsvc', 'extra']) {
-        try { ctx.use(name) } catch (caught) { errors[name] = caught.message }
+        try { ctx.use(name) } catch (caught) { errors[name] = caught.message; errors[`${name} code`] = [caught.name, caught.code, caught.data] }
       }
     },
   })
@@ -110,5 +110,8 @@ test('a leaf plugin using a service it does not inject is told to declare it', a
   await plugin.await()
   assert.equal(errors.tsvc, "service tsvc is not available to this plugin, which does not declare it in inject: add 'tsvc' to its inject")
   assert.equal(errors.extra, 'service extra is not available')
+  // With a code and data for programs (§4.3).
+  assert.deepEqual(errors['tsvc code'], ['BindingError', 'not-declared', { service: 'tsvc' }])
+  assert.deepEqual(errors['extra code'], ['BindingError', 'unavailable', { service: 'extra' }])
   await plugin.dispose()
 })

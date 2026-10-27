@@ -16,7 +16,7 @@ use rutis::host::{
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_bridge::session::{settle, Reply, Value as RpcValue};
+use rutis_bridge::session::{settle, Reply, Site, Value as RpcValue};
 use rutis_loader::report::{EntryStatus, LoaderChanged, RowStatus, Supply};
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 use rutis_loader::{
@@ -1008,12 +1008,7 @@ async fn a_service_provided_twice_fails_the_later_row() {
         panic!("s has no fiber");
     };
     let error = snapshot.error.expect("why it failed").to_string();
-    assert!(
-        error.contains(
-            "service store is already provided by the application: row s cannot provide it too"
-        ),
-        "{error}"
-    );
+    assert_eq!(error, "store is already provided by the host");
 
     root.shutdown().await.unwrap();
 }
@@ -1207,6 +1202,106 @@ async fn a_gated_row_fails_with_its_plugins_error() {
     let (ungated, gated) = (error_of("u").unwrap(), error_of("g").unwrap());
     assert!(ungated.contains("broken on purpose"), "{ungated}");
     assert_eq!(gated, ungated);
+    root.shutdown().await.unwrap();
+}
+
+/// A row whose plugin fails keeps the plugin's error as it was thrown: the
+/// host reads its name, message and the plugin's own stack, and no prefix
+/// of rutis's comes before the message (#677).
+/// guarantee: loader/row-failure-keeps-the-error
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_row_keeps_the_plugins_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.mjs");
+    std::fs::write(&broken, BROKEN).unwrap();
+    let probe = Probe::default();
+    let (root, loader, _runtime) = interop_loader(&probe).await;
+    loader
+        .reconcile(layer(vec![row("b", &broken, json!({}), json!(null))]), None)
+        .await
+        .unwrap();
+    let error = || match loader.get("b").map(|entry| entry.status) {
+        Some(EntryStatus::Running(snapshot)) if snapshot.state == FiberState::Failed => {
+            snapshot.error
+        }
+        _ => None,
+    };
+    until(|| error().is_some(), "the row to fail").await;
+    let error = error().unwrap();
+    assert_eq!(error.to_string(), "Error: broken on purpose");
+    let thrown = rutis_bridge::thrown(&error).expect("the plugin's own error");
+    let rutis_bridge::session::Error::Remote { name, message, .. } = thrown else {
+        unreachable!("thrown gives remote errors only")
+    };
+    assert_eq!(
+        (name.as_str(), message.as_str()),
+        ("Error", "broken on purpose")
+    );
+    let stack = thrown.stack().expect("a stack");
+    assert!(stack.contains("broken.mjs"), "{stack}");
+    assert_eq!(thrown.site(), Some(Site::new("b", "apply")));
+    root.shutdown().await.unwrap();
+}
+
+const THROWER: &str = r#"
+export const name = 'thrower'
+export function apply(ctx) {
+  ctx.provide('weather', {
+    async tomorrow() { throw new Error('no forecast') },
+    today() { throw new Error('no sky') },
+  })
+}
+"#;
+
+/// An error a row's service method throws records which row it came from
+/// and which `service.method` it was serving, for the output and the host;
+/// the plugin's own error stays as it was (#677).
+/// guarantee: loader/error-site
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_from_a_service_method_says_where_it_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let thrower = dir.path().join("thrower.mjs");
+    std::fs::write(&thrower, THROWER).unwrap();
+    let probe = Probe::default();
+    let (root, loader, _runtime) = interop_loader(&probe).await;
+    loader
+        .reconcile(
+            layer(vec![row("w", &thrower, json!({}), json!(null))]),
+            None,
+        )
+        .await
+        .unwrap();
+    let key = host_key("weather");
+    until(|| root.get_at(&key).is_some(), "the weather service").await;
+    let weather = root.get_at(&key).unwrap();
+    for (method, message) in [("tomorrow", "no forecast"), ("today", "no sky")] {
+        let reply = match weather.invoke(method, json!([]).into()) {
+            Ok(value) => settle(value).await,
+            Err(error) => Err(error),
+        };
+        let error = reply.expect_err("the method throws");
+        assert_eq!(error.to_string(), format!("Error: {message}"));
+        assert_eq!(
+            error.site(),
+            Some(Site::call("w", "weather", method)),
+            "{method}"
+        );
+    }
+    // A method the service does not have: `no-method`, with the methods
+    // it has.
+    let missing = weather
+        .invoke("tomorow", json!([]).into())
+        .expect_err("no such method");
+    assert_eq!(missing.code(), Some("no-method"));
+    assert_eq!(
+        missing.to_string(),
+        "weather has no method tomorow (methods: today, tomorrow)"
+    );
+    assert_eq!(
+        missing.data().unwrap()["methods"],
+        json!(["today", "tomorrow"])
+    );
+    drop(weather);
     root.shutdown().await.unwrap();
 }
 

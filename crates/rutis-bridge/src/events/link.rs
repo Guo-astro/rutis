@@ -503,7 +503,7 @@ impl Link {
             Some(Value::Reference(next)) if next.is_function() => Some(next),
             _ => None,
         };
-        let withdrawn_message = format!("listener {listener} of {name} is withdrawn");
+        let withdrawn_message = format!("the listener of {name} is withdrawn");
         let withdrawn = move || binding(withdrawn_message.clone());
         let id = *self
             .state

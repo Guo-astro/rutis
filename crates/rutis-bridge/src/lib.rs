@@ -35,6 +35,7 @@ pub mod channel;
 pub mod cordis;
 pub mod events;
 pub mod exports;
+pub mod report;
 pub mod runtime;
 pub mod session;
 #[cfg(feature = "testing")]
@@ -74,6 +75,39 @@ pub use registration::{
     Deliver, Refusal, Registered, Registration, RegistrationError, Registrations, Ticket,
 };
 pub use services::{ExportPlugin, ImportPlugin};
+
+/// The error another language threw, inside a rutis error: a row that
+/// failed, a call to a plugin's service that failed. Gives its name, code,
+/// data, stack and site (`docs/design-diagnostics-2026-10-26.md` §4.2), so
+/// a host can say it in its own words by code instead of matching text.
+/// `None` for errors rutis or Rust code raised. Takes a `rutis::Error`
+/// (`&error`) or the `ErrorKind` a row's state keeps.
+pub fn thrown(error: &rutis::host::ErrorKind) -> Option<&session::Error> {
+    fn within<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a session::Error> {
+        if let Some(remote) = error.downcast_ref::<session::Error>() {
+            return matches!(remote, session::Error::Remote { .. }).then_some(remote);
+        }
+        if let Some(call) = error.downcast_ref::<rutis::host::CallError>() {
+            if let Some(remote) = call
+                .raw()
+                .and_then(|raw| raw.downcast_ref::<session::Error>())
+            {
+                return matches!(remote, session::Error::Remote { .. }).then_some(remote);
+            }
+        }
+        if let Some(kind) = error.downcast_ref::<rutis::host::ErrorKind>() {
+            return of_kind(kind);
+        }
+        error.source().and_then(within)
+    }
+    fn of_kind(kind: &rutis::host::ErrorKind) -> Option<&session::Error> {
+        match kind {
+            rutis::host::ErrorKind::PluginFailed(source) => within(source.as_ref()),
+            _ => None,
+        }
+    }
+    of_kind(error)
+}
 
 /// One kind of carrier, as its plugin provides it.
 pub trait Transport: Send + Sync + 'static {

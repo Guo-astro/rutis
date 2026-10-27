@@ -319,9 +319,9 @@ func dialWebSocket(spec, protocol, token string, config *tls.Config, timeout tim
 		ws := startWSConn(&wsConn{conn: conn, reader: reader, client: true, done: make(chan struct{})})
 		ws.closeWith(1002, "no session protocol")
 		if chosen == "" {
-			return failed(incompatible, errors.New("session protocol: the access point chose none"))
+			return failed(incompatible, errors.New("the access point chose no protocol: it speaks none this process speaks"))
 		}
-		return failed(incompatible, fmt.Errorf("session protocol: the access point chose %q", chosen))
+		return failed(incompatible, fmt.Errorf("the access point chose the protocol %q, which this process does not speak", chosen))
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return startWSConn(&wsConn{conn: conn, reader: reader, client: true, done: make(chan struct{})}), nil

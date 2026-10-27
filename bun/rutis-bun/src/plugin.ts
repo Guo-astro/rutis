@@ -10,6 +10,7 @@ import { realpathSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { cannotLoad, entryGone, notDefinePlugin } from './errors.ts'
 
 // The plugin API this runtime runs: a plugin written against a newer one is
 // refused, naming both.
@@ -73,7 +74,7 @@ export function versionOf(entry: string, file: string): string | null {
 }
 
 function check(plugin: any, entry: string): Plugin {
-  if (typeof plugin?.apply !== 'function') throw new TypeError(`${entry} is not a rutis plugin: it has no apply(ctx, config)`)
+  if (typeof plugin?.apply !== 'function') throw new TypeError(`${entry} is not a plugin: it has no apply(ctx, config)`)
   const inject = plugin.inject ?? []
   if (!Array.isArray(inject) || inject.some((name: unknown) => typeof name !== 'string')) throw new TypeError(`${entry}: inject must be a list of service names`)
   const provides = plugin.provides ?? {}
@@ -101,10 +102,13 @@ export function definition(value: any): Plugin {
 }
 
 // The plugin a module declares.
-export function declared(module: any, entry: string): Plugin {
+// `file`: the module's file, which the developer is told of.
+export function declared(module: any, entry: string, file?: string): Plugin {
   if (module?.default?.[PLUGIN] === true) return check(module.default, entry)
   if (typeof module?.apply === 'function') return check(module, entry)
-  return check(module?.default, entry)
+  // Neither: its default export is not a plugin (§8.2).
+  if (typeof module?.default?.apply !== 'function') throw notDefinePlugin(file ?? entry)
+  return check(module.default, entry)
 }
 
 // Plugin modules, imported again when their file changed since (a reload
@@ -126,7 +130,7 @@ export class Modules {
   // the module is recorded for `described` once it declares a plugin.
   async plugin(file: string, entry: string): Promise<Plugin> {
     const module = await this.import(file)
-    const plugin = declared(module, entry)
+    const plugin = declared(module, entry, file)
     this.#imported.set(file, module)
     return plugin
   }
@@ -138,7 +142,7 @@ export class Modules {
   // a reload describes it (#665). Outside `dev`, and before any
   // description, the file as it is now.
   async described(file: string, entry: string): Promise<Plugin> {
-    if (this.#development && this.#imported.has(file)) return declared(this.#imported.get(file), entry)
+    if (this.#development && this.#imported.has(file)) return declared(this.#imported.get(file), entry, file)
     return this.plugin(file, entry)
   }
 
@@ -153,22 +157,14 @@ export class Modules {
       delete this.#require.cache[file]
     }
     if (stamp !== undefined) this.#stamps.set(file, stamp)
+    // An entry that was there and is no more is said so, not loaded from
+    // what is left of it in the registry.
+    if (seen !== undefined && stamp === undefined) throw entryGone(file)
     try {
       return await import(file)
     } catch (error) {
-      throw located(error)
+      // Said of the file that threw (a submodule, say), not of the entry (§8.1).
+      throw cannotLoad(error, file)
     }
   }
-}
-
-// Bun reports a syntax or resolution error as a BuildMessage or
-// ResolveMessage whose message has no location; its `position` has it. The
-// error that crosses to the host says where (`file:line:column`), as tsx's
-// and Python's do.
-function located(error: any): unknown {
-  const at = error?.position
-  if (!at || typeof at.file !== 'string' || typeof at.line !== 'number') return error
-  const where = `${at.file}:${at.line}:${at.column ?? 0}`
-  const text = typeof at.lineText === 'string' && at.lineText.trim() ? `\n  ${at.lineText.trim()}` : ''
-  return Object.assign(new Error(`${error.message} (${where})${text}`), { name: error.name, cause: error })
 }

@@ -30,6 +30,7 @@ class UndeclaredUse(background.TestCase):
                 ctx.use(config["name"])
             except LookupError as error:
                 seen[config["as"]] = str(error)
+                seen[config["as"] + " code"] = (error.code, error.data)
 
         runtime = Runtime()
         sneaky = module("undeclared_sneaky", read)
@@ -52,6 +53,10 @@ class UndeclaredUse(background.TestCase):
         self.assertEqual(seen["sneaky"], undeclared_use("tsvc"))
         self.assertEqual(seen["declared"], "service gone is not available")
         self.assertEqual(seen["row"], "service extra is not available")
+        # The codes a program decides by (#677).
+        self.assertEqual(seen["sneaky code"], ("not-declared", {"service": "tsvc"}))
+        self.assertEqual(seen["declared code"], ("unavailable", {"service": "gone"}))
+        self.assertEqual(seen["row code"], ("unavailable", {"service": "extra"}))
 
 
 if __name__ == "__main__":

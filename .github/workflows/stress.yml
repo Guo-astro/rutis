@@ -615,7 +615,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [session_frame, local_lines, websocket_upgrade]
+        target: [session_frame, local_lines, websocket_upgrade, error_graph]
     steps:
       - uses: actions/checkout@v4
       - name: self-hosted runner, start (tools/ci-self-hosted.sh)

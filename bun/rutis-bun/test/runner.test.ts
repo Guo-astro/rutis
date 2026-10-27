@@ -81,22 +81,23 @@ test('a plugin using a service it does not inject is told to declare it', async 
   const dir = project({
     'sneaky.ts': `
 export function apply(ctx) {
-  try { ctx.use('tsvc') } catch (error) { globalThis.undeclared = error.message }
+  try { ctx.use('tsvc') } catch (error) { globalThis.undeclared = error.message; globalThis.undeclaredCode = [error.code, error.data] }
 }
 `,
     'declared.ts': `
 export const inject = ['gone']
 export function apply(ctx) {
-  try { ctx.use('gone') } catch (error) { globalThis.missing = error.message }
+  try { ctx.use('gone') } catch (error) { globalThis.missing = { message: error.message, code: error.code, data: error.data } }
 }
 `,
   })
   const runtime = new Runtime(dir)
   await runtime.dispatch('', 'rows.load', ['s', './sneaky.ts', {}, [], [], null])
   expect((globalThis as any).undeclared).toBe(undeclaredUse('tsvc'))
+  expect((globalThis as any).undeclaredCode).toEqual(['not-declared', { service: 'tsvc' }])
   expect(undeclaredUse('tsvc')).toBe("service tsvc is not available to this plugin, which does not declare it in inject: add 'tsvc' to its inject")
   await runtime.dispatch('', 'rows.load', ['d', './declared.ts', {}, [], [], null])
-  expect((globalThis as any).missing).toBe('service gone is not available')
+  expect((globalThis as any).missing).toEqual({ message: 'service gone is not available', code: 'unavailable', data: { service: 'gone' } })
 })
 
 test('host services expose their declared methods only', () => {
@@ -104,7 +105,9 @@ test('host services expose their declared methods only', () => {
   runtime.dispatch('', 'hosts.provide', ['llm', { ask: 'sync' }])
   const llm: any = runtime.lookup('llm')
   expect(typeof llm.ask).toBe('function')
-  expect(() => llm.other()).toThrow('llm.other is not provided by the rutis host')
+  let refused: any
+  try { llm.other() } catch (error) { refused = error }
+  expect([refused.name, refused.message, refused.code, refused.data]).toEqual(['BindingError', 'llm has no method other (methods: ask)', 'no-method', { service: 'llm', method: 'other', methods: ['ask'] }])
   expect(() => runtime.dispatch('', 'hosts.provide', ['llm', {}])).toThrow('already provided')
   runtime.dispatch('', 'hosts.withdraw', ['llm'])
   expect(() => runtime.lookup('llm')).toThrow('not available')
@@ -363,4 +366,43 @@ export function apply(ctx) {
   expect(await told({})).toEqual([`${oldHost('weather')}\n`])
   expect(oldHost('weather')).toBe('rutis: service weather is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host')
   expect(await told({ announce: true })).toEqual([])
+})
+
+// guarantee: sdk/error-texts
+// What a row is told when it cannot load, or provides what another row
+// does, in the developer's words: its files, services and rows (#677).
+test('a row that cannot load or provides a taken service is told so plainly (#677)', async () => {
+  const dir = project({
+    'plain.ts': "export default { inject: ['llm'] }\n",
+    'entry.ts': "import { x } from './util.ts'\nexport function apply() { return x }\n",
+    'util.ts': "export const x = 1\nthrow new RangeError('bad util')\n",
+    'forecast.ts': "export function apply(ctx) { ctx.provide('forecast', { today: () => 1 }) }\n",
+    'caller.ts': "export const inject = ['llm']\nexport function apply(ctx) { ctx.use('llm').other() }\n",
+  })
+  const runtime = new Runtime(dir)
+  runtime.dispatch('', 'mount', {})
+  runtime.dispatch('', 'hosts.provide', ['llm', { ask: 'sync' }])
+  const load = (key: string, entry: string) => Promise.resolve().then(() => runtime.dispatch('', 'rows.load', [key, entry, {}, [], [], null])).then(() => null, error => error)
+  const pick = (error: any) => [error?.name, error?.message, error?.code, error?.data]
+  const real = (name: string) => require('node:fs').realpathSync(join(dir, name))
+  // Outside where the host runs: shown in full.
+  const shown = real
+  expect(pick(await load('plain', './plain.ts'))).toEqual(['LoadError', `the default export of ${shown('plain.ts')} is not a plugin made with definePlugin`, undefined, undefined])
+  expect((await load('entry', './entry.ts'))?.message).toMatch(new RegExp(`^cannot load ${shown('util.ts').replace(/[.\\]/g, '\\$&')}: RangeError: bad util \\(.*util\\.ts:2:\\d+\\)$`))
+  expect(await load('a', './forecast.ts')).toBeNull()
+  expect(pick(await load('b', './forecast.ts'))).toEqual(['Error', 'forecast is already provided by a', undefined, undefined])
+  expect(pick(await load('c', './caller.ts'))).toEqual(['BindingError', 'llm has no method other (methods: ask)', 'no-method', { service: 'llm', method: 'other', methods: ['ask'] }])
+})
+
+// guarantee: sdk/error-texts
+// An apply failure crosses with the plugin's frames, none of the runtime's.
+test('an apply failure crosses with the plugin\'s frames only (#677)', async () => {
+  const { encodeError } = await import('../src/errors.ts')
+  const dir = project({ 'weather.ts': "export function apply() {\n  throw new Error('no region')\n}\n" })
+  const runtime = new Runtime(dir)
+  runtime.dispatch('', 'mount', {})
+  const failed: any = await Promise.resolve().then(() => runtime.dispatch('', 'rows.load', ['w', './weather.ts', {}, [], [], null])).catch(error => error)
+  const stack = encodeError(failed).graph.nodes[0].stack
+  expect(stack).toMatch(/^Error: no region\n\s+at .*weather\.ts:2/)
+  expect(stack).not.toMatch(/rutis-bun[\\/]src|runner\.ts/)
 })

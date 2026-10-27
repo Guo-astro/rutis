@@ -173,7 +173,7 @@ async fn check_fails_what_cannot_run() {
          inject: []\n  \
          provides: {}\n\
          future (file://<dir>/future.mjs): cannot load \"file://<dir>/future.mjs\": Error: plugin <dir>/future.mjs needs plugin API 4; this runtime supports 3: upgrade @arcships/rutis-runtime where the host runs\n\
-         broken (file://<dir>/broken.mjs): cannot load \"file://<dir>/broken.mjs\": Error: broken on import\n\
+         broken (file://<dir>/broken.mjs): cannot load <dir>/broken.mjs: Error: broken on import (<dir>/broken.mjs:1:7)\n\
          missing (weather-plugin): no plugin named \"weather-plugin\"\n  \
          install it where its runtime finds it (a runtime under runtimes), or correct the row's name\n\
          nowhere (py:nowhere): cannot load \"py:nowhere\": ModuleNotFoundError: No module named 'nowhere'\n\

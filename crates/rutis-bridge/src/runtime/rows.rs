@@ -23,6 +23,8 @@ pub struct RowService {
     methods: Value,
     provider: Option<String>,
     owner: Option<CallerRow>,
+    /// The service's name, for the site of the errors its methods throw.
+    service: Option<String>,
 }
 
 impl RowService {
@@ -33,7 +35,23 @@ impl RowService {
             methods,
             provider: None,
             owner: None,
+            service: None,
         }
+    }
+
+    /// The name it is provided under: an error a method throws records
+    /// the row and `service.method` it came from (`Site`, #677).
+    pub fn named(mut self, service: impl Into<String>) -> Self {
+        self.service = Some(service.into());
+        self
+    }
+
+    /// Where an error of `method` comes from, when the row and the service
+    /// are known.
+    fn site(&self, method: &str) -> Option<crate::session::Site> {
+        let row = self.owner.as_ref()?.id();
+        let service = self.service.as_deref()?;
+        Some(crate::session::Site::call(row, service, method))
     }
 
     /// Who provides it, for messages ("row storage"; see
@@ -70,28 +88,57 @@ impl HostDispatch for RowService {
         match self.methods.get(method).and_then(Value::as_str) {
             Some("async") => {
                 let connection = target.clone();
+                let site = self.site(method);
+                let process = self.process.clone();
                 let (handle, method) = (self.handle.clone(), method.to_owned());
                 let call = async move {
-                    crate::runtime::rpc::settle(
-                        connection.invoke_async(&handle, &method, args).await?,
-                    )
-                    .await
+                    let settled = async {
+                        crate::runtime::rpc::settle(
+                            connection.invoke_async(&handle, &method, args).await?,
+                        )
+                        .await
+                    };
+                    settled
+                        .await
+                        .map_err(|error| gone(&process, error))
+                        .map_err(|error| match &site {
+                            Some(site) => error.with_site(site),
+                            None => error,
+                        })
                 };
                 Ok(match source {
                     Some(source) => RpcValue::future(target.forward_async(&source, call)),
                     None => RpcValue::future(call),
                 })
             }
-            Some(_) => match source {
-                Some(source) => {
-                    target.forward(&source, || target.invoke(&self.handle, method, args))
-                }
-                None => target.invoke(&self.handle, method, args),
-            },
-            None => Err(crate::runtime::Error::Value(format!(
-                "unknown service method {}.{method}",
-                self.handle
-            ))),
+            Some(_) => {
+                // From which row to which: a wait cycle it closes is
+                // written with their names.
+                let rows = crate::session::caller_row()
+                    .zip(self.owner.as_ref())
+                    .map(|(from, to)| (from.id().to_owned(), to.id().to_owned()));
+                let reply = crate::session::rpc::waits::with_rows(rows, || match source {
+                    Some(source) => {
+                        target.forward(&source, || target.invoke(&self.handle, method, args))
+                    }
+                    None => target.invoke(&self.handle, method, args),
+                });
+                reply
+                    .map_err(|error| gone(&self.process, error))
+                    .map_err(|error| match self.site(method) {
+                        Some(site) => error.with_site(&site),
+                        None => error,
+                    })
+            }
+            None => {
+                let methods: Vec<&str> = self
+                    .methods
+                    .as_object()
+                    .map(|methods| methods.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
+                let service = self.service.as_deref().unwrap_or(&self.handle);
+                Err(crate::runtime::Error::no_method(service, method, methods))
+            }
         }
     }
 
@@ -110,6 +157,31 @@ impl HostDispatch for RowService {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
+}
+
+/// A call in progress when the runtime went away: `runtime py exited
+/// during the call` (code `peer-gone`, data `{runtime, reason}`); another
+/// error as it is.
+fn gone(process: &Process, error: crate::runtime::Error) -> crate::runtime::Error {
+    let crate::runtime::Error::Transport(reason) = &error else {
+        return error;
+    };
+    let Some(runtime) = process.runtime_name() else {
+        return error;
+    };
+    let how = if process.exit_status().is_some() || reason.starts_with("the process ") {
+        "exited"
+    } else {
+        "disconnected"
+    };
+    // With a graph, so the call's site is recorded on it: printed, it
+    // reads `call to weather.tomorrow failed: runtime py exited …`.
+    crate::runtime::Error::binding(
+        crate::session::code::PEER_GONE,
+        format!("runtime {runtime} {how} during the call"),
+        Some(serde_json::json!({ "runtime": runtime, "reason": reason })),
+    )
+    .graphed()
 }
 
 impl Drop for RowService {
@@ -189,6 +261,7 @@ fn row_slot(
     methods: Arc<Mutex<Value>>,
 ) {
     let named = provider.to_owned();
+    let service = name.to_owned();
     let holder = key.clone();
     let owner = projection.weak();
     projection.service_keyed_occupied::<dyn HostDispatch>(
@@ -200,16 +273,20 @@ fn row_slot(
             Arc::new(
                 RowService::new(process, handle, methods)
                     .provided_by(named.clone())
-                    .owned_by(row),
+                    .owned_by(row)
+                    .named(service.clone()),
             )
         },
         provider.to_owned(),
         move |ctx| {
             let holder = ctx.get_key::<dyn HostDispatch>(holder.clone())?;
+            // A row or a peer by its name; anything else (a Rust service,
+            // whose type path a plugin author never wrote) is the host's.
             Some(
                 holder
                     .provider()
-                    .unwrap_or_else(|| "the application".to_owned()),
+                    .filter(|by| by.starts_with("row ") || by.starts_with("peer "))
+                    .unwrap_or_else(|| "the host".to_owned()),
             )
         },
     );

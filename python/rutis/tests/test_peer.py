@@ -1,6 +1,7 @@
 """The session layer against a scripted peer on a socketpair."""
 
 import asyncio
+import copy
 import json
 import socket
 import threading
@@ -53,6 +54,12 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         reply = self.read()
         self.assertEqual(reply["op"], "throw")
         self.assertEqual(reply["error"]["name"], "SyncWaitCycle")
+        # Without the call ids (#680): the result is not of a known call here.
+        self.assertEqual(
+            reply["error"]["message"],
+            "awaiting a result would wait on itself: its result is awaited while the synchronous call waiting for it "
+            "holds this Python process (synchronous calls)",
+        )
         future.cancel()
 
 
@@ -318,7 +325,7 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(reply["op"], "throw", reply)
         self.assertEqual(
             reply["error"]["message"],
-            "the result of svc.get: an object with methods (Weather) cannot cross to main; "
+            "svc.get: the result cannot be sent: an object with methods (Weather) cannot cross to main; "
             "pass plain data or a function instead",
         )
 
@@ -707,7 +714,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError) as refused:
             peer.call("host:svc\0scope", "take", [lambda: 1, "x" * 2048])
         message = str(refused.exception)
-        self.assertRegex(message, r"^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        self.assertRegex(message, r"^svc\.take: argument 2 cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$")
         self.assertEqual(peer._exports, {}, "the callback is left granted")
         # Nothing was sent: the next frame is the call after it.
         peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": "fine"}})
@@ -734,11 +741,11 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         peer._receive(self.invoke(1, "big"))
         reply = await read()
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertRegex(reply["error"]["message"], r"^the result of svc\.big: the message would be \d+ bytes, over the limit of 1024 bytes$")
+        self.assertRegex(reply["error"]["message"], r"^svc\.big: the result cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$")
         peer._receive(self.invoke(2, "fail"))
         reply = await read()
         self.assertEqual(reply["op"], "throw", reply)
-        self.assertRegex(reply["error"]["message"], r"^the error LookupError of svc\.fail: the message would be \d+ bytes")
+        self.assertRegex(reply["error"]["message"], r"^svc\.fail: the error LookupError cannot be sent: the message would be \d+ bytes")
         peer._receive(self.invoke(3, "small"))
         reply = await read()
         self.assertEqual((reply["op"], reply["value"]), ("return", {"type": "data", "value": "small"}))
@@ -776,7 +783,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
             peer.call("host:svc", "take", [Weather()])
         self.assertEqual(
             str(refused.exception),
-            "argument 1 of svc.take: an object with methods (Weather) cannot cross to main; "
+            "svc.take: argument 1 cannot be sent: an object with methods (Weather) cannot cross to main; "
             "pass plain data or a function instead",
         )
         self.assertEqual(peer._exports, {})
@@ -897,3 +904,54 @@ class ErrorGraphTests(unittest.TestCase):
         self.assertEqual([node["name"] for node in nodes], ["AggregateError", "ValueError", "TypeError", "Error"])
         self.assertEqual(nodes[0]["errors"], [{"type": "reference", "value": 1}, {"type": "reference", "value": 2}])
         self.assertEqual(nodes[2]["cause"], {"type": "reference", "value": 3})
+
+    @staticmethod
+    def _rethrow(error):
+        try:
+            raise error
+        except RemoteError as caught:
+            return encode_error(caught)
+
+    def test_a_received_error_thrown_on_appends_its_frames_to_rethrown(self):
+        # Design 2026-10-26 §4.4: one `rethrown` item per rethrow, on the
+        # root node only, the first caller first.
+        once = self._rethrow(decode_error(self.FAR))
+        root = once["graph"]["nodes"][0]
+        self.assertEqual(len(root["rethrown"]), 1)
+        self.assertIn("test_peer.py", root["rethrown"][0])
+        self.assertIn("in _rethrow", root["rethrown"][0])
+        self.assertTrue(root["rethrown"][0].startswith("  File "))
+        self.assertFalse(root["rethrown"][0].endswith("\n"))
+        self.assertNotIn("rethrown", once["graph"]["nodes"][1])
+
+        def second_caller(error):
+            raise error
+
+        try:
+            second_caller(decode_error(once))
+        except RemoteError as caught:
+            twice = encode_error(caught)["graph"]["nodes"][0]["rethrown"]
+        self.assertEqual(len(twice), 2)
+        self.assertEqual(twice[0], root["rethrown"][0])
+        self.assertIn("in second_caller", twice[1])
+        # Not raised here: nothing to append.
+        self.assertNotIn("rethrown", encode_error(decode_error(self.FAR))["graph"]["nodes"][0])
+        # A local exception is encoded as before.
+        try:
+            raise ValueError("near")
+        except ValueError as caught:
+            self.assertNotIn("rethrown", encode_error(caught)["graph"]["nodes"][0])
+
+    def test_rethrown_stops_at_eight_and_the_received_graph_is_kept(self):
+        full = copy.deepcopy(self.FAR)
+        full["graph"]["nodes"][0]["rethrown"] = [f"  File \"x\", line {n}, in f" for n in range(8)]
+        received = decode_error(full)
+        kept = copy.deepcopy(received.graph)
+        wire = self._rethrow(received)
+        self.assertEqual(wire["graph"]["nodes"][0]["rethrown"], full["graph"]["nodes"][0]["rethrown"])
+        self.assertEqual(received.graph, kept)
+        fresh = decode_error(copy.deepcopy(self.FAR))
+        kept = copy.deepcopy(fresh.graph)
+        self.assertEqual(len(self._rethrow(fresh)["graph"]["nodes"][0]["rethrown"]), 1)
+        self.assertEqual(fresh.graph, kept)
+        self.assertNotIn("rethrown", fresh.graph["nodes"][0])

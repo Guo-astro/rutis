@@ -150,16 +150,16 @@ export async function serve(spec: string, remote: Remote): Promise<never> {
   async function start(ws: websocket.WebSocketChannel, link: ReturnType<typeof relay>): Promise<Live | undefined> {
     const session: Live = { ws }
     const { child, socket } = await spawnSession(remote, [], () => {
-      if (current === session) { current = undefined; ws.close('runtime session ended') }
+      if (current === session) { current = undefined; ws.close('the runtime ended') }
     })
     session.child = child
     if (!socket) {
-      ws.close('runtime session ended: its process exited before connecting')
+      ws.close('the runtime exited before connecting')
       return undefined
     }
     session.childChannel = framed(socket, {
       message: text => ws.send(text),
-      closed: () => { if (current === session) ws.close('runtime session ended') },
+      closed: () => { if (current === session) ws.close('the runtime ended') },
     })
     link.attach(session.childChannel)
     return session
@@ -249,14 +249,14 @@ export async function dialOut(spec: string, remote: Remote): Promise<number> {
   function start(link: Connection) {
     const { ws } = link
     // What the connection's close says once the child's session ended.
-    let ending = 'runtime session ended'
+    let ending = 'the runtime ended'
     let child: ChildProcess | undefined
     let exit!: () => void
     const exited = new Promise<void>(resolve => { exit = resolve })
     const ready = spawnSession(remote, ['--supervisor', 'dial'], () => { exit(); ws.close(ending) })
       .then(started => {
         child = started.child
-        if (!started.socket) { ws.close('runtime session ended: its process exited before connecting'); return }
+        if (!started.socket) { ws.close('the runtime exited before connecting'); return }
         link.attach(framed(started.socket, {
           message: text => ws.send(text),
           closed: () => ws.close(ending),

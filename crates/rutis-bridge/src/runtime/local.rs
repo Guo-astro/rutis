@@ -135,7 +135,7 @@ impl LocalRuntime {
 
     fn with(name: &str, launcher: Launcher, anchor: PathBuf) -> Self {
         Self {
-            label: format!("{name}-runtime (local)"),
+            label: format!("runtime {name}"),
             runtime_name: name.to_owned(),
             launcher,
             runtime: RuntimePlugin::session(name, anchor.clone()),
@@ -175,7 +175,7 @@ impl LocalRuntime {
     pub fn named(mut self, name: impl Into<String>) -> Self {
         let name: String = name.into();
         self.runtime = self.runtime.named(name.clone());
-        self.label = format!("{name}-runtime (local)");
+        self.label = format!("runtime {name}");
         self.runtime_name = name;
         self
     }

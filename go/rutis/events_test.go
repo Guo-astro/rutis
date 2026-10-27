@@ -683,7 +683,7 @@ func TestAnUnansweredEmitIsReportedWhenTheSessionEnds(t *testing.T) {
 	}
 	end()
 	// The session's end as this process's session gives it.
-	want := "rutis: emit of t/e from row r0 failed: Error: Rust process disconnected"
+	want := "rutis: emit of t/e from row r0 failed: BindingError: the host disconnected"
 	testwait.Eventually(t, "the report", func() bool {
 		got := reports.list()
 		return len(got) == 1 && got[0] == want

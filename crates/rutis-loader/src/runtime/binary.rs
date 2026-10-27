@@ -1560,10 +1560,7 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
         tokio::spawn(async move {
             let result = inner.restart_now(&runtime, busy).await;
             if let Err(error) = &result {
-                eprintln!(
-                    "rutis-loader: cannot restart the {} runtime {runtime}: {error}",
-                    L::TITLE
-                );
+                eprintln!("runtime {runtime}: cannot restart: {error}");
             }
             result
         })
@@ -1718,7 +1715,7 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
 /// get the shutdown deadline and a margin; a runtime still stopping by
 /// then is killed, and the rest of its stop, which no longer waits for the
 /// process, is waited for, so it withdraws nothing of the next one's.
-async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
+async fn stop(runtime: &str, slot: Slot) {
     let limit = shutdown_deadline() + STOP_MARGIN;
     let disposed = slot.view.dispose_with_timeout(limit).await;
     let timed_out = matches!(
@@ -1726,10 +1723,7 @@ async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
         Err(rutis::host::DisposeWaitError::TimedOut { .. })
     );
     if let Err(error) = &disposed {
-        eprintln!(
-            "rutis-loader: stopping the {} runtime {runtime}: {error}",
-            L::TITLE
-        );
+        eprintln!("runtime {runtime}: stopping: {error}");
     }
     // Disposed, the process ends once its channel closes, or the transport
     // kills it; here it is killed at the latest.
@@ -1745,23 +1739,16 @@ async fn stop<L: BinaryLanguage>(runtime: &str, slot: Slot) {
         .await
         .is_err()
     {
-        eprintln!(
-            "rutis-loader: the process of the {} runtime {runtime} still runs after it was killed",
-            L::TITLE
-        );
+        eprintln!("runtime {runtime}: its process still runs after it was killed");
     }
     eprintln!(
-        "rutis-loader: the {} runtime {runtime} did not stop within {:.1}s; killed it",
-        L::TITLE,
+        "runtime {runtime}: did not stop within {:.1}s; killed it",
         limit.as_secs_f64()
     );
     if timed_out {
         // Its process gone, its calls into it fail, and its stop ends.
         if let Err(error) = slot.view.dispose_with_timeout(STOP_EXIT).await {
-            eprintln!(
-                "rutis-loader: stopping the {} runtime {runtime} after killing it: {error}",
-                L::TITLE
-            );
+            eprintln!("runtime {runtime}: stopping after killing it: {error}");
         }
     }
 }
@@ -1838,10 +1825,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = Busy::held(self, runtime);
                 if let Err((binary, why)) = self.start(runtime) {
                     self.note_failed(runtime, binary, why.clone());
-                    eprintln!(
-                        "rutis-loader: cannot start the {} runtime {runtime}: {why}",
-                        L::TITLE
-                    );
+                    eprintln!("runtime {runtime}: cannot start: {why}");
                 }
             }
             Some(Transition::Restart) => {
@@ -1850,10 +1834,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let runtime = runtime.to_owned();
                 tokio::spawn(async move {
                     if let Err(error) = inner.restart_now(&runtime, busy).await {
-                        eprintln!(
-                            "rutis-loader: cannot restart the {} runtime {runtime}: {error}",
-                            L::TITLE
-                        );
+                        eprintln!("runtime {runtime}: cannot restart: {error}");
                     }
                 });
             }
@@ -1943,7 +1924,7 @@ impl<L: BinaryLanguage> Inner<L> {
         })?;
         let previous = self.slots.lock().unwrap().running.remove(runtime);
         if let Some(previous) = previous {
-            stop::<L>(runtime, previous).await;
+            stop(runtime, previous).await;
         }
         self.resolver.stopped(runtime);
         self.install(runtime, ctx, plugin, binary, launched);
@@ -2057,10 +2038,7 @@ impl<L: BinaryLanguage> Inner<L> {
         let inner = self.clone();
         let restart = tokio::spawn(async move {
             if let Err(error) = inner.restart_now(&runtime, busy).await {
-                eprintln!(
-                    "rutis-loader: cannot restart the {} runtime {runtime}: {error}",
-                    L::TITLE
-                );
+                eprintln!("runtime {runtime}: cannot restart: {error}");
             }
         });
         let _ = restart.await;
@@ -2181,7 +2159,7 @@ impl<L: BinaryLanguage> Inner<L> {
                 let _busy = busy;
                 let previous = inner.slots.lock().unwrap().running.remove(&name);
                 if let Some(previous) = previous {
-                    stop::<L>(&name, previous).await;
+                    stop(&name, previous).await;
                 }
                 inner.resolver.stopped(&name);
             });

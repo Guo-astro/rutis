@@ -200,10 +200,7 @@ async fn announce(peer: Arc<Peer>, name: String, service: Value, shape: Json, ve
                 )
                 .await;
             if let Err(error) = announced {
-                eprintln!(
-                    "rutis-bridge: cannot announce {name} to {}: {error}",
-                    peer.id()
-                );
+                eprintln!("{}: cannot offer {name}: {error}", peer.id());
             }
         }
         announced_to = offered;
@@ -255,6 +252,8 @@ struct Remote {
     target: Target,
     asynchronous: HashSet<String>,
     shape: Json,
+    /// Its name, for messages.
+    name: String,
     /// The peer that offers it.
     peer: PeerId,
 }
@@ -271,7 +270,14 @@ enum Call {
 
 impl HostDispatch for Remote {
     fn invoke(&self, method: &str, args: Value) -> Reply {
-        let unknown = || Error::Value(format!("unknown method {method}"));
+        let unknown = || {
+            let methods = self
+                .shape
+                .as_object()
+                .map(|methods| methods.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            Error::no_method(&self.name, method, methods)
+        };
         let call = match &self.target {
             Target::Functions(methods) => {
                 Call::Function(methods.get(method).ok_or_else(unknown)?.clone())
@@ -341,12 +347,12 @@ impl Importer {
     fn announce(&self, args: Value) -> Reply {
         let mut fields = match args.list()?.into_iter().next() {
             Some(Value::Record(fields)) => fields,
-            _ => return Err(Error::Value("services.announce needs a record".into())),
+            _ => return Err(Error::refused("services.announce needs a record".into())),
         };
         let take = |fields: &mut BTreeMap<String, Value>, key: &str| {
             fields
                 .remove(key)
-                .ok_or_else(|| Error::Value(format!("services.announce lacks {key}")))
+                .ok_or_else(|| Error::refused(format!("services.announce lacks {key}")))
         };
         let name: String = crate::session::decode(take(&mut fields, "name")?.json()?)?;
         let version: u64 = crate::session::decode(take(&mut fields, "version")?.json()?)?;
@@ -370,7 +376,7 @@ impl Importer {
             ),
             Value::Reference(object) if object.is_object() => Target::Object(object),
             _ => {
-                return Err(Error::Value(
+                return Err(Error::refused(
                     "a service crosses as a record of functions or an object".into(),
                 ))
             }
@@ -387,7 +393,7 @@ impl Importer {
             .as_ref()
             .is_some_and(|previous| previous.provided.is_some());
         if !replacing && self.ctx.get_key::<dyn HostDispatch>(key.clone()).is_some() {
-            return Err(Error::Value(format!(
+            return Err(Error::refused(format!(
                 "{name} is already provided here: the import from {} is refused",
                 self.peer
             )));
@@ -401,10 +407,11 @@ impl Importer {
                     target,
                     asynchronous,
                     shape,
+                    name: name.clone(),
                     peer: self.peer.clone(),
                 }),
             )
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::refused(error.to_string()))?;
         services.insert(
             name,
             Imported {
@@ -428,7 +435,7 @@ impl Importer {
             .list()?
             .into_iter()
             .next()
-            .ok_or_else(|| Error::Value("services.withdraw needs its name".into()))?
+            .ok_or_else(|| Error::refused("services.withdraw needs its name".into()))?
             .json()?;
         let name: String = crate::session::decode(fields["name"].clone())?;
         let version: u64 = crate::session::decode(fields["version"].clone())?;
@@ -456,7 +463,7 @@ impl Importer {
                     provided
                         .dispose()
                         .await
-                        .map_err(|error| Error::Value(error.to_string()))?;
+                        .map_err(|error| Error::refused(error.to_string()))?;
                     Ok(Value::Undefined)
                 }));
             }
@@ -470,7 +477,7 @@ impl crate::Handler for Importer {
         match method {
             "services.announce" => self.announce(args),
             "services.withdraw" => self.withdraw(args),
-            _ => Err(Error::Value(format!("{method} is not offered here"))),
+            _ => Err(Error::refused(format!("{method} is not offered here"))),
         }
     }
 }

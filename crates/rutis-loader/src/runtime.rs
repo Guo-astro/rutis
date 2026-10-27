@@ -72,6 +72,7 @@ use rutis_bridge::runtime::{
     row_projection_of, ForeignPlugin, HostLease, PluginMounter, Process, Projection, Runtime,
     RuntimeHandle, RuntimeState,
 };
+use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
@@ -736,8 +737,24 @@ struct JsRow {
     refused: Refused,
 }
 
-fn failed(error: impl std::fmt::Display) -> Error {
-    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+/// The row failed with `error`, kept as it is: a plugin's error from the
+/// runtime keeps its name, code, data and stack for whoever reads it
+/// (`rutis_bridge::thrown`, #677).
+fn failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(error.into()))
+}
+
+/// The row failed for a reason rutis states.
+/// A row refused a service name another provider has: printed as the
+/// row's state on its own (`b: forecast is already provided by a`).
+fn refused(reason: String) -> Error {
+    rutis::Error::from(ErrorKind::PluginFailed(Box::new(
+        rutis_bridge::session::Error::Remote {
+            name: "ProvideError".into(),
+            message: reason,
+            graph: None,
+        },
+    )))
 }
 
 impl DynPlugin for JsRow {
@@ -753,8 +770,8 @@ impl DynPlugin for JsRow {
         Box::pin(async move {
             // Restarted because it provided a service another provider has:
             // it fails as it would have had it provided it while loading.
-            if let Some(refused) = self.refused.take(ctx.instance()) {
-                return Err(failed(refused));
+            if let Some(refused_reason) = self.refused.take(ctx.instance()) {
+                return Err(refused(refused_reason));
             }
             let (process, runtime) = match &self.runtime {
                 RowRuntime::Named(name) => {
@@ -789,6 +806,7 @@ impl DynPlugin for JsRow {
                     return Err(error);
                 }
             };
+            let row = self.row_name(ctx);
             Ok(Effect::AsyncDisposer(Box::new(move || {
                 Box::pin(async move {
                     // The row's services go first, and their users stop,
@@ -801,7 +819,7 @@ impl DynPlugin for JsRow {
                     match unloaded {
                         // The process is gone, and the row with it.
                         Ok(()) | Err(rutis_bridge::session::Error::Transport(_)) => Ok(()),
-                        Err(e) => Err(failed(e)),
+                        Err(e) => Err(failed(e.with_site(&Site::new(row, "cleanup")))),
                     }
                 })
             })))
@@ -810,6 +828,18 @@ impl DynPlugin for JsRow {
 }
 
 impl JsRow {
+    /// The row's name in messages: the loader's id for it, the row that
+    /// handed over a copied definition, or the plugin's name.
+    fn row_name(&self, ctx: &Ctx) -> String {
+        if let Some(id) = &self.id {
+            return id.clone();
+        }
+        ctx.get::<Loader>()
+            .and_then(|loader| loader.row(ctx.instance()))
+            .map(|row| row.id)
+            .unwrap_or_else(|| self.name.clone())
+    }
+
     /// Lease the shared services the plugin injects into `leases`, then
     /// load it into the runtime. Returns its key there and the projection
     /// of its services; on failure nothing of the load remains, and the
@@ -954,14 +984,16 @@ impl JsRow {
         };
         if let Err(error) = loaded {
             projection.close();
-            return Err(failed(error));
+            return Err(failed(
+                error.with_site(&Site::new(self.row_name(ctx), "apply")),
+            ));
         }
         // A service another provider had first: this row, the later one,
         // fails.
-        if let Some(refused) = projection.take_refused() {
+        if let Some(refused_reason) = projection.take_refused() {
             projection.withdraw().await;
             let _ = process.unload_row(&key).await;
-            return Err(failed(refused));
+            return Err(refused(refused_reason));
         }
         // Volatile-only changes go to Cordis, which commits them in place.
         let forward = Arc::new(Forward {

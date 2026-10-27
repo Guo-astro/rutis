@@ -28,6 +28,12 @@ mod sealed {
 /// after the gate opened but before `apply` reads it returns the plugin to
 /// Pending. A plugin that depends on services by name implements
 /// [`DynPlugin`](crate::host::DynPlugin) instead.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be a plugin's dependency: `type Deps` lists services as `Arc<T>`",
+    label = "not `()`, `Arc<T>`, `Option<Arc<T>>` or a tuple of them",
+    note = "to depend on the service `{Self}`, write `Arc<{Self}>` (or `Option<Arc<{Self}>>` if the plugin can run without it)",
+    note = "`type Deps` is `()`, `Arc<T>`, `Option<Arc<T>>`, or a tuple of up to eight of those"
+)]
 pub trait Deps: sealed::Sealed + Sized + Send + 'static {
     /// Appends the keys that gate the plugin.
     #[doc(hidden)]

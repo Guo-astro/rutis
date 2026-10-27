@@ -15,6 +15,42 @@ use crate::session::values::{base64_encode, check_keys};
 use crate::session::Value;
 use crate::transport::local::lines;
 
+/// An error graph from the far end, as a host reads and prints it
+/// (`crate::thrown`, `Error::site`, `Error::stack`, `Error::code`,
+/// [`crate::report`]), and as a Rust method throws it on
+/// ([`crate::exports::rethrown`], [`crate::exports::located`]): reading
+/// never panics, and what is printed starts
+/// with the error's own text, made printable (the diagnostics design §4.6).
+pub fn error_graph(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(graph) = serde_json::from_str::<Json>(text) else {
+        return;
+    };
+    let error = crate::session::Error::Remote {
+        name: "E".into(),
+        message: "m".into(),
+        graph: Some(graph),
+    };
+    let _ = (error.code(), error.data(), error.stack(), error.site());
+    // A Rust method throwing it on, or locating it, never panics either.
+    let error = crate::exports::rethrown(error, "m", "f.rs", 1);
+    let error = crate::exports::located(error, "m", "f.rs", 1);
+    let _ = error.rethrown();
+    let site = crate::session::Site::new("row", "call");
+    let error = error.with_site(&site);
+    let kind = rutis::host::ErrorKind::PluginFailed(Box::new(error));
+    let printed = crate::report::report(&kind);
+    // The first line is the error's text, or a headline ending with it.
+    let first = printed.lines().next().unwrap_or_default();
+    assert!(first.ends_with("E: m"), "{printed}");
+    assert!(
+        crate::report::whereabouts(&kind).len() <= crate::report::MAX_LINES,
+        "bounded"
+    );
+}
+
 /// A frame as the session's reader takes it: the depth check, then the
 /// parse, then each value in it decoded as `Peer::decode` decodes it
 /// (references aside: they need a session). The decoder must never panic;

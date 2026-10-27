@@ -54,7 +54,7 @@ final class ValueEncoderImpl: Encoder {
     func encode(_ value: Any, into node: EncodedNode, key: CodingKey) throws {
         if depth + 1 > maxDepth + 1 {
             throw EncodingError.invalidValue(value, .init(codingPath: codingPath + [key], debugDescription:
-                "value nested deeper than \(maxDepth) levels, the most a value crossing a session may nest (a cyclic reference?)"))
+                "value nested deeper than \(maxDepth) levels, the most a value crossing processes may nest (a cyclic reference?)"))
         }
         node.content = .value(try ValueCodec.encodeAny(value, depth: depth + 1))
     }

@@ -926,13 +926,14 @@ fn bad_values(far: &Connection, name: &str) {
         |method: &str, args: Vec<Value>| far.invoke("conformance", method, Value::List(args));
     match call("echo", vec![Value::Data(json!("x".repeat(LIMIT)))]) {
         Err(Error::Value(message))
-            if message.starts_with("argument 1 of conformance.echo: ")
+            if message.starts_with("conformance.echo: argument 1 cannot be sent: ")
                 && over_the_limit(&message) => {}
         other => panic!("{name}: this side's argument over the limit: {other:?}"),
     }
     match call("big", vec![Value::Data(json!(LIMIT + 10))]) {
         Err(Error::Remote { message, .. })
-            if message.contains("the result of conformance.big: ") && over_the_limit(&message) => {}
+            if message.contains("conformance.big: the result cannot be sent: ")
+                && over_the_limit(&message) => {}
         other => panic!("{name}: the far end's result over the limit: {other:?}"),
     }
     let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -945,7 +946,8 @@ fn bad_values(far: &Connection, name: &str) {
     };
     match call("applyBig", vec![callback, Value::Data(json!(LIMIT + 10))]) {
         Err(Error::Remote { message, .. })
-            if message.contains("argument 1 of a function: ") && over_the_limit(&message) => {}
+            if message.contains("a function: argument 1 cannot be sent: ")
+                && over_the_limit(&message) => {}
         other => panic!("{name}: the far end's argument over the limit: {other:?}"),
     }
     assert_eq!(
@@ -985,9 +987,15 @@ fn relayed_throw(far: &Connection, name: &str) {
             message,
             graph: Some(graph),
         }) => {
+            // Node and Bun throw the string itself on, and a thrown value's
+            // message is the value as written (#677): `"a string"`.
+            let expected = match name {
+                "node" | "bun" => "\"a string\"",
+                _ => "a string",
+            };
             assert_eq!(
                 (thrown.as_str(), message.as_str()),
-                ("ThrownValue", "a string"),
+                ("ThrownValue", expected),
                 "{name}"
             );
             assert!(graph["nodes"].is_array(), "{name}: {graph}");
@@ -1006,9 +1014,10 @@ fn relayed_throw(far: &Connection, name: &str) {
 fn objects_refused(far: &Connection, name: &str) {
     match far.invoke("conformance", "object", Value::List(vec![])) {
         Err(Error::Remote { message, .. })
-            if message.contains("the result of conformance.object: an object with methods")
-                && message
-                    .contains("cannot cross to main; pass plain data or a function instead") => {}
+            if message.contains(
+                "conformance.object: the result cannot be sent: an object with methods",
+            ) && message
+                .contains("cannot cross to main; pass plain data or a function instead") => {}
         other => panic!("{name}: an object to a far end that takes none: {other:?}"),
     }
     let back = far

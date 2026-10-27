@@ -95,7 +95,7 @@ extension Runtime {
         lock.lock()
         guard rows[row.key] === row else {
             lock.unlock()
-            fail(row, RutisError(name: "Error", message: "row \(row.key) is not active"))
+            fail(row, RutisError(name: "Error", message: "row \(row.name) is not active"))
             return {}
         }
         listenerSequence += 1
@@ -214,7 +214,7 @@ extension Runtime {
         lock.lock()
         guard rows[row.key] === row else {
             lock.unlock()
-            throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.key) is not loaded in this runtime")
+            throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.name) is not loaded in this runtime")
         }
         if held[name] == nil {
             if viaHost(name, .emit) {
@@ -290,7 +290,7 @@ extension Runtime {
         lock.lock()
         guard rows[row.key] === row else {
             lock.unlock()
-            throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.key) is not loaded in this runtime")
+            throw RutisError(name: RutisError.Name.bindingError, message: "row \(row.name) is not loaded in this runtime")
         }
         if viaHost(name, mode) {
             return try await dispatchViaHost(row, name, mode, args, keep: keep, terminal: terminal)
@@ -380,7 +380,7 @@ extension Runtime {
     {
         guard let session else {
             lock.unlock()
-            throw RutisError.binding("the runtime has no session")
+            throw RutisError.hostGone()
         }
         let record = record(row, name, mode, args, keep: keep, terminal: terminal)
         let sent = SentBox<OutgoingCall>()

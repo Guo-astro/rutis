@@ -275,7 +275,7 @@ class Dialing(
             RuntimeSession.start(connection, endpoint, plugins, shutdownMillis)
         } catch (e: Exception) {
             connection.close("the session did not start")
-            return Failed(Failure.Retryable, "the session did not start: ${e.message}", "cannot connect")
+            return Failed(Failure.Retryable, "the connection did not start: ${e.message}", "cannot connect")
         }
         val peer = session.peer
         if (!await(peer.readyFuture, retry.handshakeMillis)) {
@@ -292,6 +292,6 @@ class Dialing(
         val failure = sessionFailure(ended, connection.farClose)
         session.end()
         connection.close("the session ended")
-        return Failed(failure, ended?.message ?: "the session ended", "connection lost")
+        return Failed(failure, ended?.message ?: "the host disconnected", "connection lost")
     }
 }

@@ -1,0 +1,1 @@
+{"root":{"type":"reference","value":0},"nodes":[{"type":"error","name":"KeyError","message":"x","stack":"KeyError: x\n  at f (a.py:1)","code":"c","data":{"type":"data","value":[1]},"site":{"row":"w","doing":"call","service":"s","method":"m"}}]}

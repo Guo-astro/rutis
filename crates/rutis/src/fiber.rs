@@ -77,6 +77,7 @@ pub struct FiberStatusChanged {
     pub to: FiberState,
 }
 
+#[diagnostic::do_not_recommend]
 impl Event for FiberStatusChanged {
     const NAME: &'static str = "rutis::FiberStatusChanged";
     type Value = ();

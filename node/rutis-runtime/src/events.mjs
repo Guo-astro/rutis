@@ -276,7 +276,7 @@ export class Bus {
     for (const prefix of removePrefixes) this.#prefixes.delete(prefix)
   }
 
-  // The session ended: nothing is elsewhere any more.
+  // The host disconnected: nothing is elsewhere any more.
   ended() {
     this.peer = null
     this.#names.clear()
@@ -530,7 +530,7 @@ export class Bus {
           called = true
           // A linked node's `next`, to a bus with no host above it (§9).
           if (!this.peer && typeof next === 'function') return next()
-          return this.peer ? this.peer.callFunctionAsync(next, []) : Promise.reject(named('BindingError', 'the session ended'))
+          return this.peer ? this.peer.callFunctionAsync(next, []) : Promise.reject(Object.assign(named('BindingError', 'the host disconnected'), { code: 'peer-gone', data: {} }))
         }
         return this.#invoke(entry, [...values, onward], null)
       }

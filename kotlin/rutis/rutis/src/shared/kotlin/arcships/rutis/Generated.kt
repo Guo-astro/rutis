@@ -108,10 +108,8 @@ object Tables {
 
 /** A service object exported by reference: the far end calls its method table. */
 internal class ServiceObject(override val original: Any, private val table: ServiceTable<Any>) : ExportedObject {
-    override suspend fun call(method: String, args: List<Any?>): Any? {
-        if (method !in table.methods) throw RutisException("Error", "no method $method")
-        return table.invoke(original, method, args)
-    }
+    override suspend fun call(method: String, args: List<Any?>): Any? =
+        table.serve(original, method, args, original.javaClass.simpleName.ifEmpty { "the object" }, isObject = true)
 
     override suspend fun get(property: String): Any? = throw RutisException("Error", "no property $property: a service's methods cross, not its fields")
 }
@@ -126,7 +124,10 @@ object Generated {
         } catch (e: RutisException) {
             throw e
         } catch (e: Exception) {
-            throw ValueException("$method: argument ${i + 1}: ${e.message}")
+            val expected = Refusals.expected(deserializer.descriptor)
+            if (value === Undefined) throw ArgumentRefusal(method, i, expected, null)
+            val reason = Refusals.reason(value, e)
+            throw ArgumentRefusal(method, i, expected, Refusals.shown(value) + (reason?.let { " ($it)" } ?: ""))
         }
     }
 
@@ -158,7 +159,8 @@ object Generated {
     /** Argument `i`, a function of the far end. */
     fun remote(args: List<Any?>, i: Int, method: String): RemoteFunction {
         val value = if (i < args.size) args[i] else Undefined
-        return value as? RemoteFunction ?: throw ValueException("$method: argument ${i + 1}: expected a function, got ${describe(value)}")
+        return value as? RemoteFunction
+            ?: throw ArgumentRefusal(method, i, "a function", if (value === Undefined) null else Refusals.shown(value))
     }
 
     /** A function result of the far end. */
@@ -179,8 +181,21 @@ object Generated {
      * of this process's, back home, or the definition itself handed to a
      * test double; null for none when [nullable].
      */
-    fun pluginArg(args: List<Any?>, i: Int, method: String, nullable: Boolean): Plugin? =
-        plugin(if (i < args.size) args[i] else Undefined, nullable) { "$method: argument ${i + 1}: $it" }
+    fun pluginArg(args: List<Any?>, i: Int, method: String, nullable: Boolean): Plugin? {
+        val value = if (i < args.size) args[i] else Undefined
+        return when (value) {
+            is Plugin, is RemotePlugin -> plugin(value, nullable) { "$method: argument ${i + 1}: $it" }
+            null, Undefined, kotlinx.serialization.json.JsonNull ->
+                if (nullable) null else throw ArgumentRefusal(method, i, "a plugin definition", if (value === Undefined) null else "null")
+            else -> throw ArgumentRefusal(method, i, "a plugin definition", Refusals.shown(value))
+        }
+    }
+
+    /** Argument `i` of type `Any` (not null): missing or null is refused. */
+    fun nativeArg(args: List<Any?>, i: Int, method: String): Any {
+        val value = if (i < args.size) args[i] else Undefined
+        return Native.toNative(value) ?: throw ArgumentRefusal(method, i, "a value", if (value === Undefined) null else "null")
+    }
 
     /** A result, a plugin definition. */
     fun pluginResult(value: Any?, nullable: Boolean): Plugin? = plugin(value, nullable) { it }

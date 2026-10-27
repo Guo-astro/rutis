@@ -38,3 +38,10 @@ path = "fuzz_targets/websocket_upgrade.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "error_graph"
+path = "fuzz_targets/error_graph.rs"
+test = false
+doc = false
+bench = false

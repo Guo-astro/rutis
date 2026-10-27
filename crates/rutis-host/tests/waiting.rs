@@ -62,8 +62,7 @@ fn a_waiting_row_says_what_it_waits_for_and_why() {
     while !(weather && chat) {
         let line = host.wait_line(|line| Some(line.to_owned()));
         weather |= line == "weather: waiting for lmm (no row provides it; did you mean llm?)";
-        chat |= line
-            == "chat: waiting for llm (row model failed: plugin failed: Error: the model is gone)";
+        chat |= line == "chat: waiting for llm (row model failed: Error: the model is gone)";
     }
     signal(&host, libc::SIGTERM, false);
     let (status, stderr, output) = host.exit();

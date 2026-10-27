@@ -29,6 +29,30 @@ use crate::BoxFuture;
 ///
 /// It returns `Ok(None)` for "no result" (`serial` goes on), `Ok(Some(v))`
 /// for a result.
+///
+/// An `async |event, call| …` closure is accepted too, but the compiler
+/// cannot infer its argument types through this trait and stops with
+/// "type annotations needed" (E0282) at the first use of `event`. Write
+/// them, or use the `|event, call| async move { … }` form:
+///
+/// ```
+/// use std::sync::Arc;
+/// use rutis::events::Call;
+/// # #[derive(rutis::serde::Serialize, rutis::serde::Deserialize)]
+/// # #[serde(crate = "rutis::serde")]
+/// # struct Ping(u32);
+/// # impl rutis::Event for Ping { const NAME: &'static str = "doc::Ping"; type Value = u32; }
+/// # fn listen(ctx: &rutis::Ctx) -> rutis::Result {
+/// ctx.on::<Ping>(async |event: Arc<Ping>, _: Call<Ping>| Ok(Some(event.0)))?;
+/// ctx.on::<Ping>(|event, _| async move { Ok(Some(event.0)) })?;
+/// # Ok(())
+/// # }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "this is not a listener of `{E}`: a listener is a closure `|event, call| async move {{ ... }}`",
+    label = "not `|event, call| async move {{ ... }}`",
+    note = "it takes the event (`Arc<{E}>`) and the call (`Call<{E}>`), and its future returns `Ok(None)` or `Ok(Some(value))`; for a synchronous closure use `on_sync`"
+)]
 pub trait Listener<E: Event>:
     Fn(Arc<E>, Call<E>) -> <Self as Listener<E>>::Fut + Send + Sync + 'static
 {
@@ -585,6 +609,8 @@ where
 impl Ctx {
     /// Listen to `E` with an async closure: `ctx.on::<E>(|event, call| async move { … })`.
     /// Withdrawn when the plugin stops (or by the returned [`Disposer`]).
+    /// An `async |event, call|` closure needs its argument types written
+    /// ([`Listener`]).
     pub fn on<E: Event>(&self, listener: impl Listener<E>) -> Result<Disposer, Error> {
         self.listen::<E>().on(listener)
     }

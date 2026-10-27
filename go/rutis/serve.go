@@ -249,7 +249,7 @@ func (s *session) end(reason error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	if s.runtime.dispose(ctx) != nil {
-		return fmt.Errorf("cleanups did not finish within %v after the session ended", budget)
+		return fmt.Errorf("cleanups did not finish within %v after the host disconnected", budget)
 	}
 	return nil
 }

@@ -353,7 +353,7 @@ fn the_dev_loop(lang: &Lang) {
     edit(&own, &(lang.throws)());
     let failed = expect(
         &mut host,
-        &["weather: cannot reload: *", "weather: failed: *"],
+        &["weather: cannot reload: *", "weather: failed in apply: *"],
     );
     assert!(failed[0].contains("boom in apply"), "{failed:?}");
     assert!(
@@ -527,10 +527,7 @@ fn dev_rebuilds_a_go_project_only_for_its_sources() {
     edit(&plugin, &panics);
     expect(
         &mut host,
-        &[
-            "go-net-probe: rebuilt and restarted",
-            "net-probe: failed: *",
-        ],
+        &["go-net-probe: rebuilt and restarted", "net-probe: failed*"],
     );
     edit(&plugin, &source);
     expect(

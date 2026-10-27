@@ -74,6 +74,8 @@ public struct ServiceMacro: MemberMacro, ExtensionMacro {
 
     static func methods(of declaration: some DeclGroupSyntax, in context: some MacroExpansionContext) -> [Method]? {
         let isActor = declaration.is(ActorDeclSyntax.self)
+        let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? declaration.as(StructDeclSyntax.self)?.name.text
+            ?? declaration.as(ActorDeclSyntax.self)?.name.text ?? declaration.as(EnumDeclSyntax.self)?.name.text
         var methods: [Method] = []
         var seen: [String: FunctionDeclSyntax] = [:]
         var failed = false
@@ -125,9 +127,15 @@ public struct ServiceMacro: MemberMacro, ExtensionMacro {
                 arguments.append("\(label)a\(index)")
             }
             let effects = function.signature.effectSpecifiers
-            let tryWord = effects?.throwsClause != nil ? "try " : ""
+            let throwing = effects?.throwsClause != nil
+            let tryWord = throwing ? "try " : ""
             let awaitWord = (effects?.asyncSpecifier != nil || isActor) ? "await " : ""
-            let call = "\(tryWord)\(awaitWord)self.\(name)(\(arguments.joined(separator: ", ")))"
+            var call = "\(tryWord)\(awaitWord)self.\(name)(\(arguments.joined(separator: ", ")))"
+            // A method that throws: where it is declared crosses with what it
+            // throws (Swift errors carry no stack, #677 §4.4).
+            if throwing, let typeName, let site = context.location(of: function.funcKeyword, at: .afterLeadingTrivia, filePathMode: .fileID) {
+                call = "try await Rutis.located(\"\(typeName).\(name)\", \(site.file), \(site.line)) { \(call) }"
+            }
             if let output = function.signature.returnClause, trimmed(output.type) != "Void", trimmed(output.type) != "()" {
                 lines.append("return try Rutis.encode(\(call))")
             } else {

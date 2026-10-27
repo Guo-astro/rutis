@@ -5,9 +5,11 @@ import SwiftSyntaxMacroExpansion
 import SwiftSyntaxMacros
 
 /// `source` with the macros expanded, and the diagnostics they gave.
-func expand(_ source: String) -> (String, [String]) {
+func expand(_ source: String, file path: String? = nil) -> (String, [String]) {
     let file = Parser.parse(source: source)
-    let context = BasicMacroExpansionContext()
+    // With a path, the macros know where declarations are.
+    let context = path.map { BasicMacroExpansionContext(sourceFiles: [file: .init(moduleName: "Bank", fullFilePath: $0)]) }
+        ?? BasicMacroExpansionContext()
     let expanded = file.expand(macroSpecs: [
         "RutisService": MacroSpec(type: ServiceMacro.self, conformances: ["RutisExportable"]),
         "RutisClient": MacroSpec(type: ClientMacro.self),
@@ -55,6 +57,25 @@ struct ServiceMacroTests {
         expect(diagnostics.isEmpty, "\(diagnostics)")
         expect(squeezed(out).contains(squeezed("nonisolated func rutisMethods()")), "\(out)")
         expect(squeezed(out).contains(squeezed("return try Rutis.encode(await self.add(a0))")), "\(out)")
+    }
+
+    func aThrowingMethodIsLocated() {
+        let (out, diagnostics) = expand("""
+        @RutisService
+        final class Account {
+            func balance() -> Int { 3 }
+
+            /// Takes money out.
+            @discardableResult
+            func withdraw(_ amount: Int) async throws -> Int { amount }
+            func close() throws {}
+        }
+        """, file: "/src/Bank/Account.swift")
+        expect(diagnostics.isEmpty, "\(diagnostics)")
+        let code = squeezed(out)
+        expect(code.contains(squeezed("return try Rutis.encode(self.balance())")), "\(out)")
+        expect(code.contains(squeezed("return try Rutis.encode(try await Rutis.located(\"Account.withdraw\", \"Bank/Account.swift\", 7) { try await self.withdraw(a0) })")), "\(out)")
+        expect(code.contains(squeezed("try await Rutis.located(\"Account.close\", \"Bank/Account.swift\", 8) { try self.close() }")), "\(out)")
     }
 
     func overloadsAreAnError() {

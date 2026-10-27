@@ -104,7 +104,7 @@ At start, each [`listen`](#listen) listener prints once the address it is actual
 rutis-host: listening on <listener name> <address:port>
 ```
 
-Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for …`, `starting`, `failed: …`, `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
+Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for …`, `starting`, `failed: …` (when the failed step can be said, `failed in apply: …`, `call to <service>.<method> failed: …` and so on, with the row and the location the plugin's language gave indented under it), `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
 
 A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for its own runtime, it names only the runtime; otherwise each missing service is `<service> (<why>)`, several joined by `; `:
 
@@ -141,10 +141,10 @@ A node row's (`rutis-bridge/peer`) state only says that the row runs; whether it
 | Output | Meaning |
 | --- | --- |
 | `<row id>: link connected` | The session is ready; the far end can be used. |
-| `<row id>: link down (<reason>); retrying in 2.1s` | Cannot connect, or the connection broke (the far end is not up, the network is cut, the session ended); retried with backoff after the time given. |
+| `<row id>: link down (<reason>); retrying in 2.1s` | Cannot connect, or the connection broke (the far end is not up, the network is cut, the connection ended); retried with backoff after the time given. |
 | `<row id>: link refused: auth-rejected (<reason>); retrying in 30s` | Refused: a wrong token, an untrusted certificate (another name, expired, unknown CA), an identity that does not match; retried after 30 seconds. |
 | `<row id>: link stopped: incompatible (<reason>)` | Incompatible: the protocol, the address's form, a capability the far end lacks (such as `runtime`); not retried until the configuration changes and the row reloads. |
-| `<row id>: link down (the session ended)` | Listening side: the session ended; it waits for the far end to connect again (a listening side does not retry, so no `retrying in`). |
+| `<row id>: link down (the connection ended)` | Listening side: the connection ended; it waits for the far end to connect again (a listening side does not retry, so no `retrying in`). |
 
 - The category (`auth-rejected`, `incompatible`) comes from the link's classification of the failure, never from the error's text; the reason in parentheses is detail for people, such as what is wrong with a refused certificate, and its wording is not guaranteed.
 - No token or other credential appears in the output.

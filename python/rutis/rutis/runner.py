@@ -44,16 +44,18 @@ import asyncio
 import concurrent.futures
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import os
 import sys
 import threading
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import plugin as sdk
 from .events import Bus, Emitter, check_scope, discard, plain, reserved, start
-from .peer import UNDEFINED, AsyncListener, BindingError, Peer, RemoteFuture
+from .peer import UNDEFINED, AsyncListener, BindingError, LoadError, Peer, RemoteFuture
 
 # rows.announce: services rows provide without declaring them are announced
 # with their methods, to a host whose mount says `announce`. Events are not
@@ -103,6 +105,24 @@ def undeclared_use(name: str) -> str:
     )
 
 
+def not_declared(cls: type, name: str) -> BaseException:
+    """The error of a plugin using `name` without declaring it (#676), of
+    class `cls`, with the code `not-declared` and `{service}`."""
+    error = cls(undeclared_use(name))
+    error.code = "not-declared"
+    error.data = {"service": name}
+    return error
+
+
+def unavailable(name: str, reason: str | None = None) -> LookupError:
+    """No provider of the service `name` is there now: the code
+    `unavailable` and `{service, reason?}`."""
+    error = LookupError(f"service {name} is not available" + (f" ({reason})" if reason else ""))
+    error.code = "unavailable"
+    error.data = {"service": name, **({"reason": reason} if reason else {})}
+    return error
+
+
 def old_host(name: str) -> str:
     """What a plugin providing the undeclared service `name` is told when
     the host, older than 0.12, mounted without `announce`: such a host
@@ -146,26 +166,48 @@ class HostProxy:
     def __getattr__(self, method: str) -> Callable:
         if method.startswith("__"):
             raise AttributeError(method)
+        service = self._name.split("\0", 1)[0]
         kind = self._methods.get(method)
         if kind is None:
-            raise AttributeError(f"{self._name}.{method} is not provided by the rutis host")
+            raise no_method(AttributeError, service, method, self._methods)
         target = f"host:{self._name}"
+        peer = self._peer
         if kind == "async":
 
             async def call(*args: Any) -> Any:
-                return await self._peer.call_async(target, method, list(args))
+                return plain(await peer.call_async(target, method, list(args)))
 
         else:
 
             def call(*args: Any) -> Any:
-                result = self._peer.call(target, method, list(args))
-                return result
+                return plain(peer.call(target, method, list(args)))
 
+        # A traceback through it, and its repr, show the service and the
+        # method called, not this SDK's code.
+        qualname = f"{service}.{method}"
+        code = call.__code__.replace(co_name=qualname)
+        if hasattr(code, "co_qualname"):
+            code = code.replace(co_qualname=qualname)
+        call.__code__ = code
         call.__name__ = method
+        call.__qualname__ = qualname
         return call
 
     def __repr__(self) -> str:
-        return f"<rutis service {self._name}>"
+        return f"<service {self._name.split(chr(0), 1)[0]}>"
+
+
+def no_method(cls: type, service: str, method: str, methods) -> BaseException:
+    """`service` has no method `method`: the error a call of it raises, of
+    class `cls`, with the code `no-method` and `{service, method,
+    methods}` (the diagnostics design §4.3), the same text in every
+    language."""
+    names = sorted(methods)
+    listed = f"methods: {', '.join(names)}" if names else "no methods"
+    error = cls(f"{service} has no method {method} ({listed})")
+    error.code = "no-method"
+    error.data = {"service": service, "method": method, "methods": names}
+    return error
 
 
 @dataclass
@@ -196,6 +238,8 @@ class Row:
     scope: list = field(default_factory=list)
     # The plugin's declared name (`define_plugin(name=)`); None: the row's id.
     plugin: str | None = None
+    # What messages call the row: its id, or the key when it was not named.
+    named: str = ""
     cleanups: list = field(default_factory=list)
     # Ids of the services it provided.
     provided: list = field(default_factory=list)
@@ -238,8 +282,8 @@ class Context(sdk.Context):
         except LookupError:
             # Not given to it, though it may run: say so (#676).
             if name not in self._row.inject:
-                raise LookupError(undeclared_use(name)) from None
-            raise
+                raise not_declared(LookupError, name) from None
+            raise unavailable(name) from None
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         return self._runtime.provide(self._row, name, value)
@@ -249,7 +293,7 @@ class Context(sdk.Context):
 
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
         if self._runtime.rows.get(self._row.key) is not self._row:
-            raise RuntimeError(f"row {self._row.key} is not active")
+            raise RuntimeError(f"row {self._row.named or self._row.key} is not active")
         return self._runtime.listen(self._row, name, listener, prepend, global_)
 
     def emit(self, name: str, *args: Any) -> None:
@@ -311,12 +355,12 @@ class Runtime:
             return self.services[id][1]
         if id in self.hosts:
             return self.hosts[id]
-        raise LookupError(f"service {id} is not available")
+        raise unavailable(id.split("\0", 1)[0])
 
     def provide(self, row: Row, name: str, value: Any) -> Callable[[], None]:
         id = row.id(name)
         if id in self.services:
-            raise ValueError(f"service {id} is already provided by row {self.services[id][0]}")
+            raise ValueError(f"{name} is already provided by {self.bus.row_id(self.services[id][0])}")
         self.services[id] = (row.key, value)
         row.provided.append(id)
         # Not declared: announced, with the methods it has; a host older
@@ -417,15 +461,14 @@ class Runtime:
         self.bus.row_ids[key] = id if isinstance(id, str) else key
         exports = exports or {}
         row = Row(key, module, config, exports, dict(isolate or {}), check_scope(scope))
+        row.named = self.bus.row_ids[key]
         for name, label in row.isolate.items():
             scoped_id(name, label)
         for name in exports:
             if "#" in name:
                 raise ValueError(f"service name {name} cannot be projected")
             if row.id(name) in self.slots:
-                raise ValueError(
-                    f"service {row.id(name)} is already exported by row {self.slots[row.id(name)].row}"
-                )
+                raise ValueError(f"{name} is already provided by {self.bus.row_id(self.slots[row.id(name)].row)}")
         plugin = self._plugin(module)
         row.plugin = plugin.name
         row.row_inject = [name for name in inject or [] if isinstance(name, str)]
@@ -530,14 +573,25 @@ class Runtime:
         name = _entry_point(name)[0]
         module = sys.modules.get(name)
         if module is None:
-            module = importlib.import_module(name)
+            try:
+                module = importlib.import_module(name)
+            except ModuleNotFoundError as error:
+                # No such module at all: said as it is (the plugin has no file).
+                if error.name == name:
+                    raise
+                raise cannot_load(error, name) from error
+            except Exception as error:
+                raise cannot_load(error, name) from error
         elif not fresh and name in self.stamps:
             return module
         elif name in self.stamps and _stamp(module) != self.stamps[name]:
             saved = dict(module.__dict__)
             try:
                 importlib.invalidate_caches()
-                module = importlib.reload(module)
+                try:
+                    module = importlib.reload(module)
+                except Exception as error:
+                    raise cannot_load(error, name) from error
                 if check is not None:
                     check(module)
             except BaseException:
@@ -685,7 +739,7 @@ class Runtime:
         back. Same results either way. A row that unloaded emits nothing
         (BindingError, refused at once like a reserved name)."""
         if self.rows.get(row.key) is not row:
-            raise BindingError(f"row {row.key} is not loaded in this runtime")
+            raise BindingError(f"row {row.named or row.key} is not loaded in this runtime")
         if not self._here():
             return self._send_from_thread(row, mode, name, args, terminal, keep)
         if not self._via_host(name, mode):
@@ -803,7 +857,7 @@ class Runtime:
         id, name, mode = request.get("listener"), request.get("name"), request.get("mode")
         entry = self.bus.listener(id) if isinstance(id, str) else None
         if entry is None:
-            raise BindingError(f"listener {id} of {name} is withdrawn")
+            raise BindingError(f"the listener of {name} is withdrawn")
         name = entry.name
         args = request.get("args")
         args = [plain(arg) for arg in args] if isinstance(args, list) else []
@@ -859,13 +913,18 @@ class Runtime:
             return self._control(method, args if args is not None else [])
         entry = self.handles.get(target)
         if entry is None:
-            raise LookupError(f"unknown or released service object {target}")
+            # A handle is the service's id, maybe with `#<generation>`.
+            raise _binding(unavailable(target.split("\0", 1)[0].split("#", 1)[0], "withdrawn"))
+        service = entry["name"].split("\0", 1)[0]
         slot = self.slots.get(entry["name"])
-        if slot is not None and method not in slot.methods:
-            raise AttributeError(f"unknown service method {entry['name']}.{method}")
+        methods = slot.methods if slot is not None else sdk.methods_of(entry["object"])
+        if method not in methods:
+            raise no_method(BindingError, service, method, methods)
+        function = getattr(entry["object"], method)
         if not isinstance(args, list):
             raise TypeError("method arguments must be an array")
-        return getattr(entry["object"], method)(*args)
+        check_arguments(service, method, function, args)
+        return function(*args)
 
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":
@@ -946,6 +1005,52 @@ class Runtime:
         await self.peer.drain()
 
 
+def _binding(error: BaseException) -> BindingError:
+    """`error` as a BindingError, its code and data kept."""
+    binding = BindingError(str(error))
+    binding.code, binding.data = error.code, error.data
+    return binding
+
+
+def _count(n: int) -> str:
+    return f"{n} argument" if n == 1 else f"{n} arguments"
+
+
+def check_arguments(service: str, method: str, function: Callable, args: list) -> None:
+    """Refuse a call of `service.method` with arguments `function` cannot
+    take (a BindingError with the code `bad-argument`), before calling it:
+    `weather.today takes 1 argument, got 2`, `weather.today: argument 1
+    is missing`. A function whose signature cannot be read is called as
+    it is."""
+    try:
+        parameters = list(inspect.signature(function).parameters.values())
+    except (TypeError, ValueError):
+        return
+    positional = [
+        p for p in parameters if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        expected = None
+    else:
+        expected = len(positional)
+    given = len(args)
+    if expected is not None and given > expected:
+        error = BindingError(f"{service}.{method} takes {_count(expected)}, got {given}")
+        error.code = "bad-argument"
+        error.data = {"service": service, "method": method, "expected": expected, "received": given}
+        raise error
+    for index, parameter in enumerate(positional):
+        if index >= given and parameter.default is inspect.Parameter.empty:
+            annotation = parameter.annotation
+            shown = None
+            if annotation is not inspect.Parameter.empty:
+                shown = annotation if isinstance(annotation, str) else getattr(annotation, "__name__", str(annotation))
+            error = BindingError(f"{service}.{method}: argument {index + 1} is missing")
+            error.code = "bad-argument"
+            error.data = {"service": service, "method": method, "argument": index + 1, "expected": shown}
+            raise error
+
+
 def _ignore(sent) -> None:
     """An announcement nobody awaits: its failure (the session ended) is
     not an error of anything here."""
@@ -959,6 +1064,79 @@ def _awaitable(sent):
     if isinstance(sent, concurrent.futures.Future):
         return asyncio.wrap_future(sent)
     return sent
+
+
+# This package's own files: their frames are not the plugin's.
+_RUNTIME_DIR = os.path.dirname(os.path.realpath(__file__)) + os.sep
+# Where Python and installed packages live: the import machinery, the
+# standard library, site-packages. Their frames are not the plugin's own
+# code either, unless the plugin itself is there.
+_NOT_THE_PLUGINS = tuple(
+    dict.fromkeys(
+        os.path.join(os.path.realpath(prefix), "") for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix)
+    )
+)
+
+
+def _plugin_frame(frame: traceback.FrameSummary, own: str | None = None) -> bool:
+    """Whether a frame is of the plugin's own code: not of this runtime, of
+    Python's import machinery or standard library, or of an installed
+    package (`site-packages`, `dist-packages`), unless it is the plugin's
+    own (`own`: its package's directory, or its module's file)."""
+    filename = frame.filename or ""
+    if filename.startswith("<"):
+        return False
+    path = os.path.realpath(filename)
+    if path.startswith(_RUNTIME_DIR):
+        return False
+    if own is not None and path.startswith(own):
+        return True
+    parts = path.split(os.sep)
+    if "site-packages" in parts or "dist-packages" in parts:
+        return False
+    return not path.startswith(_NOT_THE_PLUGINS)
+
+
+def _shown_path(path: str) -> str:
+    """`path` relative to the working directory when it is under it."""
+    try:
+        near = os.path.relpath(path)
+    except ValueError:
+        return path
+    return path if near.startswith("..") or os.path.isabs(near) else near
+
+
+def cannot_load(error: BaseException, module: str) -> LoadError:
+    """What importing the plugin module `module` raised, said of the file
+    that raised it (a module it imports, say), not of the entry:
+    `cannot load weather/util.py: KeyError: 'region' (weather/util.py:3)`.
+    Its stack is the plugin's frames only."""
+    every = traceback.extract_tb(error.__traceback__)
+    # A plugin installed as a package lives in site-packages itself: the
+    # frames of its own package are its code.
+    try:
+        spec = importlib.util.find_spec(module.split(".", 1)[0]) if module else None
+    except Exception:  # noqa: BLE001 - only a hint
+        spec = None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    own = None
+    if isinstance(origin, str) and os.path.isabs(origin):
+        own = os.path.realpath(origin)
+        if getattr(spec, "submodule_search_locations", None):
+            own = os.path.join(os.path.dirname(own), "")
+    frames = [frame for frame in every if _plugin_frame(frame, own)]
+    if isinstance(error, SyntaxError):
+        text = str(error.msg)
+        file, line = error.filename, error.lineno
+    else:
+        text = str(error)
+        file, line = (frames[-1].filename, frames[-1].lineno) if frames else (None, None)
+    text = text.split("\n", 1)[0]
+    shown = _shown_path(file) if file and not file.startswith("<") else module
+    where = f" ({shown}:{line})" if line is not None and shown != module else ""
+    message = f"cannot load {shown}: {type(error).__name__}: {text}{where}"
+    stack = "".join(traceback.StackSummary.from_list(frames).format())
+    return LoadError(message, f"LoadError: {message}\n{stack}".rstrip("\n"))
 
 
 def _entry_point(name: str) -> tuple[str, str | None]:

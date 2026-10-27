@@ -160,7 +160,7 @@ class Parallel(Rows):
         with self.assertRaises(AggregateError) as raised:
             await ctx.parallel("t/par-one")
         self.assertEqual(len(raised.exception.errors), 1)
-        self.assertEqual(raised.exception.message, "1 listeners of t/par-one failed")
+        self.assertEqual(raised.exception.message, "1 listener of t/par-one failed")
 
 
 class Serial(Rows):
@@ -557,7 +557,7 @@ class Unload(Rows):
         b.on("t/unloaded", lambda: "B")
         await self.runtime.unload("b")
         self.assertIsNone(await emitter.serial("t/unloaded"))
-        with self.assertRaisesRegex(RuntimeError, "not active"):
+        with self.assertRaisesRegex(RuntimeError, "^row b is not active$"):
             b.on("t/unloaded", lambda: None)
         off = a.on("t/off", lambda: "A")
         self.assertEqual(await emitter.serial("t/off"), "A")

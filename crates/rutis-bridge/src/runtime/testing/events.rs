@@ -1848,18 +1848,27 @@ fn report_places(world: &dyn World, label: &str, filter: bool) -> Vec<String> {
 
 /// The error name of a §5.6 report `line` about `event` at one of
 /// `places`, or `None` when the line is about something else:
-/// `rutis: listener of <event> in <place> failed: <Name>: <message>`, or
-/// `rutis: filter of <event> from <place> failed: ...`.
+/// `listener of <event> in <place> failed: <Name>: <message>`, or
+/// `filter of <event> from <place> failed: ...`, either after `rutis: `
+/// (as runtimes print it); a row's listener also as `<row>: listener of
+/// <event> failed: ...` (as a host prints it).
 fn reports<'a>(line: &'a str, event: &str, filter: bool, places: &[String]) -> Option<&'a str> {
     let (kind, at) = match filter {
         true => ("filter", "from"),
         false => ("listener", "in"),
     };
-    let rest = line.strip_prefix(&format!("rutis: {kind} of {event} {at} "))?;
-    let rest = places
-        .iter()
-        .find_map(|place| rest.strip_prefix(place.as_str()))?;
-    let rest = rest.strip_prefix(" failed: ")?;
+    let rows = places.iter().filter_map(|place| place.strip_prefix("row "));
+    let rest = rows
+        .clone()
+        .find_map(|row| line.strip_prefix(&format!("{row}: {kind} of {event} failed: ")))
+        .or_else(|| {
+            let line = line.strip_prefix("rutis: ").unwrap_or(line);
+            let rest = line.strip_prefix(&format!("{kind} of {event} {at} "))?;
+            let rest = places
+                .iter()
+                .find_map(|place| rest.strip_prefix(place.as_str()))?;
+            rest.strip_prefix(" failed: ")
+        })?;
     let (name, _message) = rest.split_once(": ")?;
     Some(name)
 }

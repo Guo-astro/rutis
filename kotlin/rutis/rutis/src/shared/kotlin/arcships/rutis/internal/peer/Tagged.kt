@@ -58,7 +58,13 @@ data class Decimal(val text: String) {
 }
 
 /** A value this side cannot send or take: only the call carrying it fails. */
-class ValueException(message: String) : RuntimeException(message)
+open class ValueException(
+    message: String,
+    /** bad-value when it is of a part of a call (#677); null otherwise. */
+    val code: String? = null,
+    /** `{argument?, part, limit?}` with [code]. */
+    val data: Map<String, Any?>? = null,
+) : RuntimeException(message)
 
 private fun quoted(text: String): String {
     val shown = if (text.codePointCount(0, text.length) <= 40) text else text.substring(0, text.offsetByCodePoints(0, 40)) + "…"

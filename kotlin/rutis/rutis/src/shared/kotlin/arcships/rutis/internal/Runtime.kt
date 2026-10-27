@@ -6,6 +6,8 @@ import arcships.rutis.Rutis
 import arcships.rutis.RutisException
 import arcships.rutis.RutisFormat
 import arcships.rutis.Scope
+import arcships.rutis.noMethod
+import arcships.rutis.serve
 import arcships.rutis.ServiceObject
 import arcships.rutis.ServiceShape
 import arcships.rutis.ServiceTable
@@ -91,7 +93,7 @@ internal class Slot(val row: String, val name: String, var methods: Set<String>?
     var generation = 0
 }
 
-internal class HandleEntry(val id: String, val obj: Any, val table: ServiceTable<Any>, val methods: Set<String>?) {
+internal class HandleEntry(val id: String, val name: String, val obj: Any, val table: ServiceTable<Any>, val methods: Set<String>?) {
     var current = true
     var released = false
 }
@@ -211,7 +213,7 @@ class RuntimeState(plugins: List<Plugin>) {
             val handle = handleOf(id, slot.generation)
             slot.handle = handle
             if (slot.announced) slot.methods = provided.table.methods.toSet()
-            handles[handle] = HandleEntry(id, provided.value, provided.table, slot.methods)
+            handles[handle] = HandleEntry(id, slot.name, provided.value, provided.table, slot.methods)
         }
         version++
         val session = session ?: return
@@ -253,7 +255,7 @@ class RuntimeState(plugins: List<Plugin>) {
                 // taken.
                 inactive = true
             } else {
-                services[id]?.let { throw IllegalStateException("rutis: service ${printable(id)} is already provided by row ${it.row}") }
+                services[id]?.let { throw IllegalStateException("$name is already provided by ${rows[it.row]?.name ?: it.row}") }
                 services[id] = Provided(row.key, value, shape, table)
                 row.provided.add(id)
                 // Not declared: announced, with its methods; a host older than
@@ -270,7 +272,7 @@ class RuntimeState(plugins: List<Plugin>) {
             }
         }
         if (inactive) {
-            Report.line("rutis: row ${row.key} is not active: service $name is not provided")
+            Report.line("rutis: row ${row.name} is not active: service $name is not provided")
             return {}
         }
         return {
@@ -308,7 +310,7 @@ class RuntimeState(plugins: List<Plugin>) {
             for ((service, label) in isolate) scopedId(service, label, true)
             for (service in exports.keys) {
                 if ('#' in service) throw IllegalArgumentException("service name $service cannot be projected")
-                slots[row.id(service)]?.let { throw IllegalStateException("service ${printable(row.id(service))} is already exported by row ${it.row}") }
+                slots[row.id(service)]?.let { throw IllegalStateException("$service is already provided by ${rows[it.row]?.name ?: it.row}") }
             }
             loaded++
             row.order = loaded
@@ -490,7 +492,7 @@ class RuntimeState(plugins: List<Plugin>) {
         for (row in ordered.asReversed()) {
             val left = deadline?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
             if (deadline != null && left == 0L) {
-                System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
+                System.err.println("rutis: gave up the cleanups of row ${row.name} and those after it")
                 return false
             }
             val outcome = if (deadline == null) {
@@ -499,13 +501,13 @@ class RuntimeState(plugins: List<Plugin>) {
                 withTimeoutOrNull(left!!) { unloadRow(row.key, deadline) } ?: Unloaded(false, null)
             }
             outcome.failure?.let {
-                System.err.println("rutis: a cleanup of row ${row.key} failed: ${Report.failure(it)}")
+                System.err.println("rutis: a cleanup of row ${row.name} failed: ${Report.failure(it)}")
             }
             if (!outcome.done) {
                 all = false
                 // Without a deadline every row has its own budget: go on.
                 if (deadline != null) {
-                    System.err.println("rutis: gave up the cleanups of row ${row.key} and those after it")
+                    System.err.println("rutis: gave up the cleanups of row ${row.name} and those after it")
                     return false
                 }
             }
@@ -522,9 +524,9 @@ class RuntimeState(plugins: List<Plugin>) {
         val entry = synchronized(lock) { handles[target] } ?: throw IllegalArgumentException("unknown or released service object ${printable(target)}")
         val methods = entry.methods
         if ((methods != null && method !in methods) || method !in entry.table.methods) {
-            throw IllegalArgumentException("unknown service method ${printable(entry.id)}.$method")
+            throw noMethod(entry.name, method, methods ?: entry.table.methods)
         }
-        return entry.table.invoke(entry.obj, method, args)
+        return entry.table.serve(entry.obj, method, args, entry.name)
     }
 
     internal fun mounted(announce: Boolean, runtime: String?) = synchronized(lock) {

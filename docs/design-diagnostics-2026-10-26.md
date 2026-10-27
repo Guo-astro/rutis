@@ -55,7 +55,7 @@ Issue：[#689](https://github.com/arcships/rutis/issues/689)。按本稿实施�
 | G8 | Node、Bun、Python 运行时被同步代码占住 5 秒，打印是哪一行的哪个方法，不打断 | 六 |
 | G9 | 插件输出带名字前缀：`dev` 默认开，`run` 默认关 | 七 |
 | G10 | Rust 嵌入默认把加载失败、运行时退出写到标准错误，输出里不出现平台名字 | 七 |
-| G11 | 错误类型名与字段不变，`Failure` 等 loader 类型不变；变的是出错文字、`plugin failed: ` 前缀与 Node 的 `error.stack` | 十一 |
+| G11 | 各语言的错误类型名与字段不变，`Failure` 等 loader 类型不变；变的是出错文字、`plugin failed: ` 前缀、Node 的 `error.stack`，以及 Rust 的 `session::Error` 新增一个带码的分支（§4.3） | 十一 |
 
 ## 四、错误
 
@@ -104,6 +104,8 @@ site: {
 
 `SyncWaitCycle`、`AggregateError` 已有自己的类型名，不另设码。码给程序判断，不出现在给人看的那一行文字里。表在实施时可以加行，不改已有的行。
 
+Rust 一侧（实施时定，2026-10-26）：`rutis_bridge::session::Error` 新增分支 `Binding { code: Option<&'static str>, message, data }`，rutis 拒绝一次调用时用它：方法不存在、参数不对、服务不在带码，协议层面的拒绝（一端没按约定办事）不带码。`Error::Value` 只表示值传不过去。发到线上时 `Binding` 与 `Value` 都是带码的 `BindingError`（`Value` 为 `bad-value`），会话中途结束的 `Transport` 为 `peer-gone`；`Error::code()` 在本端给出同样的码。对 `session::Error` 逐个分支匹配的 Rust 宿主要加上这一支（不兼容，写进迁移指南）。
+
 ### 4.4 位置与跨语言
 
 发出的位置：
@@ -123,6 +125,7 @@ site: {
 - 对面的错误图在 SDK 内部保留（Python、Go、Kotlin 现在已经这样），调用方再把它抛出时原样带上。
 - Node、Bun 不再用对面的堆栈覆盖 `error.stack`：`error.stack` 是调用方自己的堆栈。
 - rutis 打印时把两边都显示：对面出错的那一行与位置，下面接着调用方的位置。
+- 调用方的位置怎样带到：错误节点再加一个可选字段 `rethrown`（字符串数组，实施时补，2026-10-26）。一端把**收到的**错误再抛出、越过边界发出去时（原样接上收到的错误图，§4.4），在根节点的 `rethrown` 末尾追加一项：这一次再抛出处的帧（不带"名字: 消息"那一行）。各语言给的帧与发出 `stack` 时相同：TypeScript、Python、Kotlin 是本进程里接到这个错误之后的真实帧，Go、Swift、Rust 是再抛出它的方法的声明处。最先的调用方在前；最多 8 项，再多的不追加。旧的一端不认识它，照常解码，再抛出时原样带上（只是不追加）。它和 `site` 一样只给打印与宿主读取，不交给调用方的代码。rutis 打印时在对面的帧下面逐项写 `called from:` 与那些帧；整个错误最多 64 帧（§4.6）。
 
 另外修 #677 点名的一处：Go 的 `Parallel` 在真实宿主里返回 `*rutis.AggregateError`（`errors.As` 成立，`Data` 不为空），现在只在测试工具里对。
 
@@ -299,13 +302,13 @@ TypeScript 为例；其他语言同样的内容，位置写法各自的。这些
 
 写进《迁移到 0.18》（两份）：
 
-- **Rust 宿主**：`ErrorKind::PluginFailed` 显示时没有 `plugin failed: ` 前缀；插件的错误不再是字符串，用 `rutis_bridge::thrown()` 读结构。按文字匹配的代码要改为按错误码。loader 的类型（`Failure`、`ReconcileReport`）不变。
+- **Rust 宿主**：`ErrorKind::PluginFailed` 显示时没有 `plugin failed: ` 前缀；插件的错误不再是字符串，用 `rutis_bridge::thrown()` 读结构。按文字匹配的代码要改为按错误码。loader 的类型（`Failure`、`ReconcileReport`）不变。`session::Error` 新增 `Binding` 分支（§4.3）。
 - **Rust 嵌入（行为变化）**：加载失败、运行时退出默认写到标准错误（可以关掉）；默认输出不再以 `[rutis]` 开头。`shutdown()` 不变。
 - **Node、Bun**：收到的跨语言错误，`error.stack` 改为调用方自己的堆栈（以前是对面的）。
 - **所有语言**：错误类型名与字段不变。出错文字会变。
 - **Node、Bun、Python 运行时**：没处理的错误不再让进程退出（边界规则 8 改写）。
 - **`check`**：环和同名提供以 1 退出。
-- **协议**：错误节点多一个可选字段 `site`，旧的一端忽略；不升协议版本，跨版本相遇照常。
+- **协议**：错误节点多两个可选字段 `site`、`rethrown`，旧的一端忽略；不升协议版本，跨版本相遇照常。
 
 ## 十二、实施
 

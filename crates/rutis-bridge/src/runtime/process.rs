@@ -61,12 +61,12 @@ fn row_label(label: Option<&str>, key: &str) -> String {
 /// Refuse a name or label [`scoped_id`] cannot keep apart.
 fn check_scoped(name: &str, label: Option<&str>) -> Result<(), Error> {
     if name.contains('\0') || label.is_some_and(|label| label.contains('\0')) {
-        return Err(Error::Value(format!(
+        return Err(Error::refused(format!(
             "service {name:?} or its scope label contains NUL"
         )));
     }
     if label == Some("") {
-        return Err(Error::Value(format!(
+        return Err(Error::refused(format!(
             "service {name:?} has an empty scope label"
         )));
     }
@@ -493,7 +493,14 @@ impl Dispatch for Imports {
                 let (host, row) = hosts
                     .get(name)
                     .map(|entry| (entry.dispatch.clone(), entry.row.clone()))
-                    .ok_or_else(|| Error::Value(format!("no host service {name}")))?;
+                    .ok_or_else(|| {
+                        let service = name_of(name);
+                        Error::binding(
+                            crate::session::code::UNAVAILABLE,
+                            format!("service {service} is not available"),
+                            Some(serde_json::json!({ "service": service })),
+                        )
+                    })?;
                 // Through the registration rows share, of a service rows
                 // lease for themselves (#676): the calling plugin does not
                 // declare it, so a method that needs the calling row says
@@ -518,7 +525,7 @@ impl Dispatch for Imports {
         if target.is_empty() && method.starts_with("events.") {
             return match self.bus.get() {
                 Some(events) => events.invoke(connection, method, args),
-                None => Err(Error::Value(format!(
+                None => Err(Error::refused(format!(
                     "{method}: the session's events are not set up yet"
                 ))),
             };
@@ -536,7 +543,7 @@ impl Dispatch for Imports {
             return Ok(RpcValue::Undefined);
         }
         if !(target.is_empty() && method == "service") {
-            return Err(Error::Value(
+            return Err(Error::refused(
                 "application has no exported service target".into(),
             ));
         }
@@ -683,6 +690,8 @@ pub struct Process {
     /// Those that belong to the process itself (handed over outside any
     /// row's call): they end when its session does.
     owned: Arc<Mutex<Vec<rutis::Definition>>>,
+    /// The runtime's name, as the mount gave it, for messages.
+    name: Option<String>,
 }
 
 /// What a plugin module declares, for rutis-loader (see
@@ -834,7 +843,7 @@ impl Process {
             (Some((plugin, _)), _) => *plugin,
             (None, Some(anchor)) => anchor,
             (None, None) => {
-                return Err(Error::Value(
+                return Err(Error::refused(
                     "a mount needs at least one plugin or an anchor".into(),
                 ))
             }
@@ -973,6 +982,7 @@ impl Process {
             scope: scope.clone(),
             definitions: Mutex::default(),
             owned: Arc::default(),
+            name: runtime.clone(),
         });
         let _ = process.imports.process.set(Arc::downgrade(&process));
         // The plugin definitions the process owns end with its session.
@@ -1192,7 +1202,7 @@ impl Process {
     fn require_plugin_values(&self) -> Result<(), Error> {
         match self.supports("plugin-values") {
             true => Ok(()),
-            false => Err(Error::Value(
+            false => Err(Error::refused(
                 "the runtime's SDK is too old to hand over plugin definitions \
                  (it lacks the feature plugin-values)"
                     .into(),
@@ -1260,7 +1270,7 @@ impl Process {
             // while it starts.
             let mut exported = self.imports.exported.lock().unwrap();
             if let Some((id, _)) = scoped.iter().find(|(id, _)| exported.contains_key(id)) {
-                return Err(Error::Value(format!("service {id} is already exported")));
+                return Err(Error::refused(format!("service {id} is already exported")));
             }
             for (id, name) in &scoped {
                 exported.insert(id.clone(), (name.clone(), observer.clone()));
@@ -1381,7 +1391,7 @@ impl Process {
     fn require(&self, feature: &str) -> Result<(), Error> {
         match self.supports(feature) {
             true => Ok(()),
-            false => Err(Error::Value(format!(
+            false => Err(Error::refused(format!(
                 "the Node runtime lacks `{feature}`: @arcships/rutis-runtime 0.3.0 or later is required"
             ))),
         }
@@ -1480,7 +1490,7 @@ impl Process {
                     entry.leases = entry
                         .leases
                         .checked_add(1)
-                        .ok_or_else(|| Error::Value(format!("host lease overflow for {id}")))?;
+                        .ok_or_else(|| Error::refused(format!("host lease overflow for {id}")))?;
                     entry.dispatch = dispatch.clone();
                     entry.row = row;
                     false
@@ -1630,9 +1640,14 @@ impl Process {
         let status = child.exited().await;
         result?;
         if status != "exited normally" {
-            return Err(Error::Transport(format!("Cordis process {status}")));
+            return Err(Error::Transport(format!("the runtime process {status}")));
         }
         Ok(())
+    }
+
+    /// The runtime's name, as the mount gave it.
+    pub(crate) fn runtime_name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// How the Node process ended (for example `exited with signal: 9

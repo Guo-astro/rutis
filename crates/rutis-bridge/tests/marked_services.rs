@@ -251,6 +251,14 @@ async fn a_provided_marked_type_is_served_by_name() {
     assert_eq!(error.code(), Some("Missing"));
     assert_eq!(error.data(), Some(json!({ "Missing": { "day": 9 } })));
     assert_eq!(error.to_string(), "CalendarError: no entry on day 9");
+    // Its stack names the method and where it is declared (#677).
+    let stack = error.stack().expect("a stack");
+    let declared = format!("at Calendar.on_day ({}:56)", file!());
+    assert!(
+        stack.starts_with("CalendarError: no entry on day 9\n"),
+        "{stack}"
+    );
+    assert!(stack.contains(&declared), "{stack}");
     let error = call(&calendar, "late", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("too_late"));
     let error = call(&calendar, "text", json!([])).await.unwrap_err();

@@ -8,6 +8,7 @@ import { toJsonSchema } from './schema.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
 import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
+import { cannotLoad, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -331,6 +332,13 @@ function holder(scope, name) {
   return key ? ctx.reflect.store[key] : undefined
 }
 
+// Who provides `name` in `scope`: a row (its name), or the host.
+function providerOf(scope, name) {
+  const impl = holder(scope, name)
+  const row = impl && rowOf(impl.fiber)
+  return row ? bus.rowId(row[0]) : 'the host'
+}
+
 // Whether a row's plugin (or a fiber it started) holds `name` in `scope`.
 function takenByRow(scope, name) {
   const impl = holder(scope, name)
@@ -351,7 +359,7 @@ function provideWaitingLater() {
       if (holder(scope, name)) continue
       waitingHosts.delete(id)
       try { hosts.set(id, scope.provide(name, proxy)) } catch (error) {
-        process.stderr.write(`rutis runtime: cannot register host service ${id}: ${error?.message ?? error}\n`)
+        process.stderr.write(`runtime node: cannot register host service ${serviceName(id)}: ${error?.message ?? error}\n`)
       }
     }
   })
@@ -412,7 +420,7 @@ const undeclared = name => {
 async function pluginOf(entry, rowInject = []) {
   entry = located(entry)
   const declared = await declaredOf(entry, described)
-  return isLeaf(declared) ? toCordis(declared, undeclared, rowInject) : declared
+  return isLeaf(declared) ? toCordis(declared, undeclared, rowInject, providerOf) : declared
 }
 
 // A plugin definition this runtime handed over, back as a row's entry (a
@@ -429,7 +437,7 @@ function definedPlugin(value, rowInject = []) {
     const key = rowInject.join('\0')
     let wrapped = wrappings.get(key)
     if (!wrapped) {
-      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared, rowInject)
+      wrapped = toCordis(supported(value, value.name ?? 'plugin definition'), undeclared, rowInject, providerOf)
       wrappings.set(key, wrapped)
     }
     return wrapped
@@ -466,14 +474,59 @@ function describeDefinition(value) {
 async function declaredOf(entry, version = fresh) {
   const own = cordisOf(entry)
   if (cordisPath && own && own !== cordisPath) {
-    throw new Error(`${entry} resolves a different Cordis (${own}) than ${pluginPath} (${cordisPath})`)
+    throw new Error(`${fileShown(entry)} uses its own copy of @deepseek-ai/cordis (${fileShown(own)}), not the one ${fileShown(pluginPath)} uses (${fileShown(cordisPath)}): install a single copy`)
   }
+  // An entry that was there and is no more is said so, not loaded from
+  // the module cache (§8.1).
+  if (stamps.has(entry) && !existing(entry)) throw entryGone(entry)
   const href = version(entry)
-  const module = await import(href)
-  const plugin = supported(typeof module.apply === 'function' ? module : (module.default ?? module), entry)
+  let module
+  try {
+    module = await import(href)
+  } catch (error) {
+    // Said of the file that threw (a submodule, say), not of the entry.
+    throw cannotLoad(error, entry)
+  }
+  const plugin = supported(pluginIn(module, entry), entry)
   imported.set(entry, href)
   return plugin
 }
+
+const existing = file => { try { statSync(file); return true } catch { return false } }
+
+// The plugin a module declares: its own `apply` (a Cordis plugin written
+// as a module), or its default export. A default export that is neither a
+// definePlugin result nor a Cordis plugin is said to be so, at once; a
+// plain object with `apply` is a Cordis plugin to Cordis, so the plugin
+// written as a leaf one without definePlugin is told when its apply uses
+// what Cordis's context does not have (`ctx.use`, say) (#680).
+function pluginIn(module, entry) {
+  if (typeof module.apply === 'function') return module
+  const plugin = module.default
+  if (isLeaf(plugin) || typeof plugin === 'function') return plugin
+  if (plugin === null || typeof plugin !== 'object' || typeof plugin.apply !== 'function') throw notDefinePlugin(entry)
+  const prototype = Object.getPrototypeOf(plugin)
+  if (prototype !== Object.prototype && prototype !== null) return plugin
+  let wrapped = guardedDefaults.get(plugin)
+  if (wrapped) return wrapped
+  const apply = plugin.apply
+  const translate = error => {
+    if (error instanceof Error && /^cannot get property "[^"]*" without inject$/.test(error.message)) throw Object.assign(notDefinePlugin(entry), { cause: error })
+    throw error
+  }
+  wrapped = Object.create(prototype, Object.getOwnPropertyDescriptors(plugin))
+  Object.defineProperty(wrapped, 'apply', {
+    value(...args) {
+      let result
+      try { result = Reflect.apply(apply, this, args) } catch (error) { translate(error) }
+      return result && typeof result.then === 'function' ? result.then(value => value, translate) : result
+    },
+    configurable: true, writable: true, enumerable: true,
+  })
+  guardedDefaults.set(plugin, wrapped)
+  return wrapped
+}
+const guardedDefaults = new WeakMap()
 
 // The module URL to describe: the plain one the first time, and one that
 // bypasses the module cache once the file changed since (rutis-loader's
@@ -715,13 +768,13 @@ function commitVolatile(fiber, raw) {
   return true
 }
 
-// A rutis service seen from Cordis: bound methods call the Rust host
-// (synchronously or returning a Promise, as declared); any other method is
-// reported as not provided rather than silently missing. It is not an
+// A host's service seen from Cordis: bound methods call the host
+// (synchronously or returning a Promise, as declared); any other method
+// fails as one the service does not have, rather than silently missing. It is not an
 // instance of the class the plugin declares (boundary rule 7). `id` is the
 // service's id (scopedId), which its calls target.
 function hostProxy(id, methods) {
-  const name = id
+  const name = serviceName(id)
   const target = {}
   for (const [method, kind] of Object.entries(methods)) {
     target[method] = kind === 'async'
@@ -732,7 +785,7 @@ function hostProxy(id, methods) {
   return new Proxy(target, {
     get(target, property, receiver) {
       if (typeof property !== 'string' || property in target || passthrough.has(property)) return Reflect.get(target, property, receiver)
-      return () => { throw new Error(`${name}.${property} is not provided by the rutis host`) }
+      return () => { throw noMethod(name, property, Object.keys(methods)) }
     },
   })
 }
@@ -761,7 +814,7 @@ function mount(args) {
     for (const { entry } of plugins) {
       const own = cordisOf(entry)
       if (cordisPath && own && own !== cordisPath) {
-        throw new Error(`${entry} resolves a different Cordis (${own}) than ${pluginPath} (${cordisPath})`)
+        throw new Error(`${fileShown(entry)} uses its own copy of @deepseek-ai/cordis (${fileShown(own)}), not the one ${fileShown(pluginPath)} uses (${fileShown(cordisPath)}): install a single copy`)
       }
     }
     for (const { entry, config } of plugins) {
@@ -853,7 +906,7 @@ function dispatch(target, method, args) {
   }
   const entry = handles.get(target)
   if (!entry) throw new Error(`unknown or released service object ${target}`)
-  if (!slots.get(entry.name).methods.has(method)) throw new Error(`unknown service method ${entry.name}.${method}`)
+  if (!slots.get(entry.name).methods.has(method)) throw noMethod(serviceName(entry.name), method, slots.get(entry.name).methods)
   if (!Array.isArray(args)) throw new TypeError('method arguments must be an array')
   let result
   try {
@@ -882,12 +935,12 @@ function watch(ended, after) {
     Atomics.wait(ended, 0, 0)
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, after)
     try {
-      writeSync(2, 'rutis runtime: the session ended ' + after / 1000 + ' s ago and this process has not exited (a plugin keeps it busy); ending it\\n')
+      writeSync(2, 'runtime node: the host disconnected ' + after / 1000 + ' s ago and this process has not exited (a plugin keeps it busy); ending it\\n')
     } catch {}
     process.kill(process.pid, 'SIGKILL')
   `, { eval: true, workerData: { ended, after } })
   watchdog.unref()
-  watchdog.on('error', error => process.stderr.write(`rutis runtime: the watchdog failed: ${error?.message ?? error}\n`))
+  watchdog.on('error', error => process.stderr.write(`runtime node: the watchdog failed: ${error?.message ?? error}\n`))
 }
 
 // Calls on exported objects and functions may replace services too.
@@ -942,7 +995,7 @@ bus.ended()
 // failure, said on stderr and in the exit status: ending normally made the
 // host report "exited normally" and nothing else (#225).
 if (peer.fault) {
-  console.error(`rutis runtime: the session ended: ${peer.fault.message}`)
+  console.error(`runtime node: disconnected from the host: ${peer.fault.message}`)
   process.exitCode = 1
 }
 // The rows go now, unless the host disposed them first: it went away (it
@@ -950,7 +1003,7 @@ if (peer.fault) {
 // finish within the deadline are given up (exit status 1). Then the process
 // exits, also when a plugin left a timer or a socket that would keep it.
 const late = setTimeout(() => {
-  console.error(`rutis runtime: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting`)
+  console.error(`runtime node: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting`)
   process.exit(1)
 }, deadline)
 await dispose()

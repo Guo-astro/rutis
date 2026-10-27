@@ -137,7 +137,7 @@ package enum ValueCodec {
     }
 
     private static var tooDeep: ValueError {
-        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing a session may nest (a cyclic reference?)")
+        ValueError("value nested deeper than \(maxDepth) levels, the most a value crossing processes may nest (a cyclic reference?)")
     }
 
     /// The values the encoder takes as they are, before Codable.

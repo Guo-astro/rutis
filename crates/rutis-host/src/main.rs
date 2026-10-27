@@ -331,11 +331,12 @@ async fn check(args: &[String]) -> Result<(), String> {
     warn(&config);
     let host = host::Host::start(&config).await?;
     host.runtimes_ready().await?;
-    // Only with binaries to check (#668).
-    if config.runtimes.go.is_some() || config.runtimes.swift.is_some() {
-        outln!(
-            "plugin API for Go and Swift binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
-        );
+    // Only with binaries to check (#668), naming the languages there are.
+    if let Some(line) = plugin_api_line(
+        config.runtimes.go.is_some(),
+        config.runtimes.swift.is_some(),
+    ) {
+        outln!("{line}");
     }
     // Each local runtime: what implements it and what it runs on.
     for (name, runtime) in &host.runtimes {
@@ -705,10 +706,35 @@ fn runtime_line(name: &str, about: &serde_json::Value) -> Option<String> {
     (!described.is_empty()).then(|| format!("runtime {name}: {}", described.join(", ")))
 }
 
+/// What `check` says of the plugin API the binaries are checked against:
+/// only for the languages the configuration has (#668, #680).
+fn plugin_api_line(go: bool, swift: bool) -> Option<String> {
+    let languages = match (go, swift) {
+        (true, true) => "Go and Swift",
+        (true, false) => "Go",
+        (false, true) => "Swift",
+        (false, false) => return None,
+    };
+    Some(format!(
+        "plugin API for {languages} binaries: {PLUGIN_API} (checked by this host; the Node, Bun and Python runtimes check their own plugins)"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::runtime_line;
+    use super::{plugin_api_line, runtime_line};
     use serde_json::json;
+
+    /// `check` names the plugin API only for the binaries' languages the
+    /// configuration has (#680).
+    #[test]
+    fn the_plugin_api_line_names_only_the_languages_there_are() {
+        assert_eq!(plugin_api_line(false, false), None);
+        let line = |go, swift| plugin_api_line(go, swift).unwrap();
+        assert!(line(true, false).starts_with("plugin API for Go binaries: "));
+        assert!(line(false, true).starts_with("plugin API for Swift binaries: "));
+        assert!(line(true, true).starts_with("plugin API for Go and Swift binaries: "));
+    }
 
     /// guarantee: host/check
     #[test]

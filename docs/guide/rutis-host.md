@@ -104,7 +104,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 rutis-host: listening on <监听器名> <地址:端口>
 ```
 
-之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`（说得出失败在哪一步时写成 `failed in apply: …`、`call to <服务>.<方法> failed: …` 等，下面缩进写出错的行和插件语言给出的位置）、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
 
 等待的行写明在等什么、为什么（0.17.2 起，#676）。在等自己的运行时时只写运行时；否则每个缺的服务写成 `<服务> (<原因>)`，多个用 `; ` 隔开：
 
@@ -141,10 +141,10 @@ rutis-host: listening on <监听器名> <地址:端口>
 | 输出 | 含义 |
 | --- | --- |
 | `<行 id>: link connected` | 会话就绪，对端可用 |
-| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、会话结束），按退避在给出的时间后重试 |
+| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、连接结束），按退避在给出的时间后重试 |
 | `<行 id>: link refused: auth-rejected (<原因>); retrying in 30s` | 被拒绝：token 不对、证书不受信任（名字不符、过期、CA 不认）、身份对不上；30 秒后再试 |
 | `<行 id>: link stopped: incompatible (<原因>)` | 不兼容：协议、地址写法、对端缺少要求的能力（如 `runtime`）；不再重试，改配置后重新加载 |
-| `<行 id>: link down (the session ended)` | 监听方：会话结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
+| `<行 id>: link down (the connection ended)` | 监听方：连接结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
 
 - 类别（`auth-rejected`、`incompatible`）来自 link 对失败的分类，不靠错误文字；括号里的原因是给人看的细节，例如证书被拒时写明证书的问题，不保证措辞。
 - 输出里不会出现 token 或其他凭据。

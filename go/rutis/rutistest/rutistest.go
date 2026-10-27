@@ -815,11 +815,17 @@ func (h *harness) dispatch(ctx context.Context, target, method string, args []an
 		return nil, fmt.Errorf("the test gives no service %s", name)
 	}
 	value := reflect.ValueOf(service)
-	index, ok := convert.Methods(value.Type())[method]
+	table := convert.Methods(value.Type())
+	callee := convert.Callee{Service: name, Method: method}
+	index, ok := table[method]
 	if !ok {
-		return nil, fmt.Errorf("the test's %s has no method %s", name, method)
+		names := make([]string, 0, len(table))
+		for wire := range table {
+			names = append(names, wire)
+		}
+		return nil, convert.NoMethod(callee, names)
 	}
-	return convert.Call(ctx, value.Method(index), args)
+	return convert.CallMethod(ctx, value, index, args, callee)
 }
 
 // remotes are the plugin definitions in `value`, a call's arguments.
@@ -1493,7 +1499,11 @@ func (s *Service) Methods() map[string]string { return s.kinds }
 func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error {
 	kind, ok := s.kinds[method]
 	if !ok {
-		return fmt.Errorf("%s has no declared method %s", s.name, method)
+		names := make([]string, 0, len(s.kinds))
+		for wire := range s.kinds {
+			names = append(names, wire)
+		}
+		return convert.NoMethod(convert.Callee{Service: s.name, Method: method}, names)
 	}
 	converted, err := convert.ToPeerArgs(args)
 	if err != nil {

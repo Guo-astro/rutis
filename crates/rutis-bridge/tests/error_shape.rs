@@ -20,7 +20,7 @@ async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
           new AggregateError([new RangeError('inner')], 'nested'),
         ], 'outer', { cause });
         const shape = e => ({
-          name: e.name, message: e.message, stack: e.stack,
+          name: e.name, message: e.message,
           cause: e.cause?.message,
           errors: e.errors?.map(shape),
         });
@@ -34,7 +34,13 @@ async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
         ctx.provide('errors', {
           native() { return inspect(error); },
           fail() { throw error; },
-          relay(callback) { try { callback(); } catch (e) { return inspect(e); } },
+          // The error caught here carries this process's stack, where it
+          // was thrown to the plugin, not the far end's (#677).
+          relay(callback) {
+            try { callback(); } catch (e) {
+              return { inspected: inspect(e), local: e.stack.includes('relay') };
+            }
+          },
         });
       }
     "#,
@@ -62,9 +68,13 @@ async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(returned, native);
+    assert_eq!(returned["inspected"], native);
+    assert_eq!(
+        returned["local"], true,
+        "the caught error has the caller's stack"
+    );
     for field in ["aggregate", "type", "nested", "shared", "cycle"] {
-        assert_eq!(returned[field], true);
+        assert_eq!(returned["inspected"][field], true);
     }
     peer.dispose().await.unwrap();
 }

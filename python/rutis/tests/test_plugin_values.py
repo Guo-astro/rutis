@@ -83,7 +83,7 @@ class SessionTests(background.IsolatedAsyncioTestCase):
 
     async def test_a_plugin_reference_from_the_far_end_is_refused(self):
         peer, _read = self.session(["plugins"])
-        with self.assertRaisesRegex(ValueError, "plugin definitions exported by Rust are not supported"):
+        with self.assertRaisesRegex(ValueError, "^received a plugin definition made in another process; only one made in this process can come back to it$"):
             peer._decode_reference({"id": 1, "home": False, "kind": "plugin", "origin": []})
 
 
