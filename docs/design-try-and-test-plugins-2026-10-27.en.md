@@ -297,7 +297,7 @@ All additions; nothing goes into "Migrating to 0.19":
 0.18's socket answers one more request; a `run` without `--allow-call` behaves exactly as in 0.18.
 
 
-## 11. Implementation
+## 10. Implementation
 
 | Step | Content | Done when (the issue's "Done" list) |
 | --- | --- | --- |

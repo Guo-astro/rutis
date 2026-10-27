@@ -297,7 +297,7 @@ rutis-host dev: services: forecast (weather), llm (llm)
 0.18 的 socket 多答一种请求；`run` 不加 `--allow-call` 时与 0.18 完全相同。
 
 
-## 十一、实施
+## 十、实施
 
 | 步骤 | 内容 | 完成条件（对应 issue 的「完成」） |
 | --- | --- | --- |
