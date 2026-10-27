@@ -268,6 +268,8 @@ Credentials are read from the environment when a link dials, or when a far end d
 - A reload imports again only the row's own module, not the modules it imports: after changing one of those, restart `dev`.
 - A reload whose new code does not import (a syntax error, an error while importing it) changes nothing: the row runs the version it ran, also when it restarts later for another reason (a service it uses reloading), until a change that imports. New code that imports but whose `apply` fails is the code the row runs from then on: the row fails with that error and does not run until a change fixes it.
 
+`dev --debug` runs the project's language runtime under its debugger and prints how to connect (`rutis-host dev: debugging: …`): the Python runtime reads this terminal, and `breakpoint()` stops in pdb; the Node runtime's inspector is on `127.0.0.1:9229`, Bun's on `ws://127.0.0.1:6499/rutis`; a Go project is built without optimisation and its runtime runs under Delve, listening on `127.0.0.1:2345` (install `dlv` first). The same holds for rows of other languages that `rutis.dev.json` adds. A Swift project does not take `--debug`. How to use each: the [TypeScript](typescript-plugin.en.md#debugging), [Bun](bun-plugin.en.md#debugging), [Python](python-plugin.en.md#debugging) and [Go](go-plugin.en.md#debugging) guides.
+
 Besides the lines of [`run`](#what-run-prints), `dev` prints:
 
 | Output | Meaning |

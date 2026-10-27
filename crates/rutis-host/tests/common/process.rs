@@ -160,6 +160,19 @@ impl Host {
         Self::start_with(&[], args, dir, None, env)
     }
 
+    /// [`Host::start_in_env`] with an input to write to, as a terminal
+    /// gives one, and its standard error read line by line with its
+    /// output (a debugger's address is printed there).
+    pub fn start_talking(
+        args: &[&str],
+        dir: &Path,
+        env: &[(&str, &str)],
+    ) -> (Self, std::process::ChildStdin) {
+        let mut host = Self::start_full(&[], args, dir, None, env, true);
+        let input = host.child.stdin.take().unwrap();
+        (host, input)
+    }
+
     /// The binary as `program` runs it: `program` (its first item, given
     /// the rest first) instead of the binary, as npm's launcher does.
     pub fn start_through(program: &[&str], args: &[&str], dir: &Path) -> Self {
@@ -172,6 +185,19 @@ impl Host {
         dir: &Path,
         ignored: Option<i32>,
         env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_full(program, args, dir, ignored, env, false)
+    }
+
+    /// With `talking`, its input is a pipe and its standard error lines
+    /// come with its output's too ([`Host::start_talking`]).
+    fn start_full(
+        program: &[&str],
+        args: &[&str],
+        dir: &Path,
+        ignored: Option<i32>,
+        env: &[(&str, &str)],
+        talking: bool,
     ) -> Self {
         use std::os::unix::process::CommandExt;
         let mut command = match program {
@@ -188,7 +214,10 @@ impl Host {
             .current_dir(dir)
             // The repository's rutis package, for an interpreter without it.
             .env("RUTIS_PYTHON_PATH", repo().join("python/rutis"))
-            .stdin(Stdio::null())
+            .stdin(match talking {
+                true => Stdio::piped(),
+                false => Stdio::null(),
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
@@ -211,6 +240,7 @@ impl Host {
         }
         let mut child = command.spawn().expect("the rutis-host binary");
         let (send, lines) = mpsc::channel();
+        let lines_too = talking.then(|| send.clone());
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -219,12 +249,23 @@ impl Host {
                 }
             }
         });
-        let (send, stderr) = mpsc::channel();
+        let (send_text, stderr) = mpsc::channel();
         let mut error = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             let mut text = String::new();
-            let _ = error.read_to_string(&mut text);
-            let _ = send.send(text);
+            match lines_too {
+                None => {
+                    let _ = error.read_to_string(&mut text);
+                }
+                Some(lines) => {
+                    for line in BufReader::new(error).lines().map_while(Result::ok) {
+                        text.push_str(&line);
+                        text.push('\n');
+                        let _ = lines.send(line);
+                    }
+                }
+            }
+            let _ = send_text.send(text);
         });
         Self {
             child,

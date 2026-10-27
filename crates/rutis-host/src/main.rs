@@ -40,6 +40,11 @@ usage:
   rutis-host dev [dir]                        run the plugin project in dir (default .),
                                               reloading the rows whose files change (Go, Swift:
                                               rebuilding), and rutis.dev.json when it changes
+    dev: --debug                              run the runtimes under their debuggers: Python
+                                              stops at breakpoint() in this terminal, Node
+                                              and Bun open their inspectors (127.0.0.1:9229,
+                                              127.0.0.1:6499), Go runs under Delve
+                                              (127.0.0.1:2345)
     run and dev: --shutdown-timeout <seconds> how long cleanups may take after
                                               Ctrl-C or SIGTERM (default 10, or
                                               RUTIS_SHUTDOWN_TIMEOUT)

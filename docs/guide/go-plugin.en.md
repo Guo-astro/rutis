@@ -316,6 +316,39 @@ The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project`
 
 When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
 
+### Debugging
+
+`--debug` builds without optimisation (`-gcflags=all=-N -l`) and starts the runtime under [Delve](https://github.com/go-delve/delve): Delve listens on `127.0.0.1:2345`, the program runs as usual, and you set breakpoints once connected. Install Delve first:
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+```bash
+rutis-host dev --debug
+```
+
+In another terminal, connect, set a breakpoint on `Today` and continue; the runtime stops when `Today` is called:
+
+```bash
+dlv connect 127.0.0.1:2345
+```
+
+```
+(dlv) break (*Weather).Today
+(dlv) continue
+```
+
+Once stopped, `stack` shows the call stack, `locals` and `print <variable>` the variables.
+
+- To disconnect and leave the runtime running: `exit -c`. A plain `exit` asks whether to end Delve: answer `n`.
+- VS Code: in `launch.json`, `{ "type": "go", "request": "attach", "mode": "remote", "host": "127.0.0.1", "port": 2345 }`.
+- Each rebuild starts the runtime and Delve again: connect again and set the breakpoints again.
+- While it is stopped at a breakpoint, the whole runtime waits: calls to the other plugins in this binary wait too.
+- On macOS, the first debugging session asks to allow developer tools.
+- What `fmt.Println` and `log` print shows in `dev`'s output.
+- Tests (§3) need no host: `dlv test .`.
+
 ## 5. Publish
 
 Push a tag such as `v0.1.0`: the template's workflow runs the tests and `rutis-host check`, builds binaries for Linux and macOS (x64 / arm64) and Windows x64, and publishes them with `SHA256SUMS` on a GitHub release.

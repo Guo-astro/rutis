@@ -39,6 +39,7 @@ const POLL: Duration = Duration::from_millis(400);
 
 pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
+    let (debug, args) = debug_flag(&args);
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
     let given = PathBuf::from(args.first().map(String::as_str).unwrap_or("."));
@@ -54,9 +55,23 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let language = languages::of_project(&dir);
     if let Some(language) = language {
         language.available()?;
+        // Before building: a debugger that is missing is said at once.
+        if debug {
+            match language.debugging() {
+                Some(Err(error)) => return Err(error),
+                Some(Ok(_)) => {}
+                None => {
+                    return Err(format!(
+                        "rutis-host dev --debug: a {} project has no debugger here; \
+                         --debug runs Python, Node, Bun and Go projects",
+                        language.key()
+                    ))
+                }
+            }
+        }
     }
     let compiled = language.and_then(|language| {
-        let build = language.dev_build(&dir)?;
+        let build = language.dev_build(&dir, debug)?;
         Some((language.key(), build))
     });
     let (config, id) = match &compiled {
@@ -80,7 +95,14 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         }
         None => project::dev_config(&dir)?,
     };
+    let mut config = config;
+    config.runtimes.debug = debug;
     warn(&config);
+    if debug {
+        for line in debugging(&config) {
+            outln!("{line}");
+        }
+    }
     let mut host = Host::start(&config).await?;
     for line in status::listening(&host.listening) {
         outln!("{line}");
@@ -106,6 +128,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         own: id,
         compiled,
         build: 1,
+        debug,
         stale: Vec::new(),
         // Printed at the start (`warn`).
         warned: config.warnings.iter().cloned().collect(),
@@ -175,6 +198,29 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     Ok(stopped)
 }
 
+/// `--debug` taken out of `args`: whether it was there, and the rest.
+fn debug_flag(args: &[String]) -> (bool, Vec<String>) {
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|arg| *arg != "--debug")
+        .cloned()
+        .collect();
+    (rest.len() < args.len(), rest)
+}
+
+/// What `dev --debug` says of each local runtime `config` starts: where its
+/// debugger is.
+fn debugging(config: &HostConfig) -> Vec<String> {
+    languages::LANGUAGES
+        .iter()
+        .filter(|language| language.configured(&config.runtimes))
+        .filter_map(|language| match language.debugging()? {
+            Ok(how) => Some(format!("rutis-host dev: debugging: {how}")),
+            Err(error) => Some(format!("rutis-host dev: debugging: {error}")),
+        })
+        .collect()
+}
+
 /// The plugin project `dev` runs.
 struct Project {
     /// Its directory, absolute.
@@ -187,6 +233,8 @@ struct Project {
     compiled: Option<(&'static str, Box<dyn DevBuild>)>,
     /// The build its runtime runs.
     build: u32,
+    /// Its runtimes run under their debuggers (`--debug`).
+    debug: bool,
     /// Builds no runtime runs any more, still to delete: Windows refuses
     /// while it still holds the image of a process that just ended.
     stale: Vec<PathBuf>,
@@ -452,6 +500,13 @@ impl Project {
     /// compiled project's rows are those of the build it runs, which the
     /// configuration `running` names.
     fn config(&self, running: &HostConfig) -> Result<HostConfig, String> {
+        let mut config = self.config_as_read(running)?;
+        config.runtimes.debug = self.debug;
+        Ok(config)
+    }
+
+    /// [`Project::config`] as the files say it.
+    fn config_as_read(&self, running: &HostConfig) -> Result<HostConfig, String> {
         let Some((key, project)) = &self.compiled else {
             return project::dev_config(&self.dir).map(|(config, _)| config);
         };

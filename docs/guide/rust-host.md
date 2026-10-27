@@ -497,6 +497,20 @@ root.plugin(go_runtimes).await?;
 
 - 只运行一个固定的二进制时，也可以像 Python 一样：`LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（行名 `<运行时名>:<插件>`）。
 
+## 调试
+
+宿主是一个普通的 Rust 程序，编进去的 Rust 插件和 dylib 插件都在它的进程里：用 IDE、`rust-lldb` 或 `rust-gdb` 运行宿主，断点、调用栈照常。
+
+看宿主里发生了什么，有三样：
+
+- **默认输出**：加载失败、长时间等不到依赖、语言运行时退出，默认写到标准错误，写明插件或行的名字（可以关掉）。
+- **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。
+- **内核诊断**：`root.diagnostics()` 的 `Display` 用插件和行的名字列出插件、它们提供和等待的服务，默认不列内部插件。
+
+语言运行时（Node、Bun、Python、Go）是单独的进程，各用各的调试器：在插件项目里用 `rutis-host dev --debug` 运行（见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南），或者用状态里的 pid 把调试器接到运行着的进程上。
+
+rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境变量 `RUTIS_TRACE=1` 在标准错误上打印经过运行时通道的每条消息（只有方向和长度）。
+
 ## 节点
 
 ```rust,no_run

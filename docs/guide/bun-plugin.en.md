@@ -102,6 +102,20 @@ A host's `rutis.json`:
 - Fields of `runtimes.bun`: `project` (default `.`), `runtime` (where `@arcships/rutis-bun` is; by default the project's), `program` (the Bun executable; by default `bun` on `PATH`).
 - It can be configured together with `runtimes.node` and `runtimes.py`; services are shared across runtimes by name.
 
+### Debugging
+
+`--debug` opens the Bun runtime process's own inspector, always at `ws://127.0.0.1:6499/rutis`:
+
+```bash
+bunx --bun rutis-host dev --debug
+```
+
+Open the `https://debug.bun.sh/#127.0.0.1:6499/rutis` from the output in a browser, or attach VS Code's Bun extension to `ws://127.0.0.1:6499/rutis`. Set a breakpoint in a source file, or write `debugger;` in the code.
+
+- The address is the same on every start: after the runtime restarts, connect again.
+- While it is stopped at a breakpoint, the whole Bun runtime waits: calls to its other rows wait too.
+- What `console.log` prints shows in `dev`'s output.
+
 ## 4. What the runtime promises
 
 - **Only what the project installed**: the runtime always starts with `--no-install`; a missing package makes loading fail and is never downloaded. Install plugins and their dependencies with `bun add`. By default `bun install` runs install scripts only for dependencies on Bun's built-in trusted list; a project's `trustedDependencies` **replaces** that list, so list only the packages whose install scripts are needed.

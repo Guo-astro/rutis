@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, rebase_program, Language};
@@ -63,7 +63,16 @@ impl Language for Bun {
     }
 
     fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
-        runtimes.bun.as_ref().map(runtime)
+        runtimes
+            .bun
+            .as_ref()
+            .map(|bun| runtime(bun, runtimes.debug))
+    }
+
+    fn debugging(&self) -> Option<Result<&'static str, String>> {
+        Some(Ok(
+            "the Bun runtime's inspector listens on ws://127.0.0.1:6499/rutis (open https://debug.bun.sh/#127.0.0.1:6499/rutis)",
+        ))
     }
 
     fn new_names(&self) -> &'static [&'static str] {
@@ -130,9 +139,15 @@ pub(super) fn runs_in_bun(dir: &Path) -> bool {
     configured || managed || depends
 }
 
+/// Where the Bun runtime's inspector listens under `dev --debug`: Bun's
+/// own default port, with a fixed path, so its address is the same on
+/// every start.
+pub const INSPECT: &str = "127.0.0.1:6499/rutis";
+
 /// The Bun runtime of `bun.project`, with the `@arcships/rutis-bun` package
-/// installed there (or given), run by a Bun that answers.
-fn runtime(bun: &BunRuntime) -> Result<LocalRuntime, Error> {
+/// installed there (or given), run by a Bun that answers; with `debug`, its
+/// inspector on [`INSPECT`].
+fn runtime(bun: &BunRuntime, debug: bool) -> Result<LocalRuntime, Error> {
     let candidates = [
         bun.runtime.clone(),
         Some(bun.project.join("node_modules/@arcships/rutis-bun")),
@@ -158,7 +173,13 @@ fn runtime(bun: &BunRuntime) -> Result<LocalRuntime, Error> {
             program.display()
         ));
     }
-    Ok(LocalRuntime::bun(package, &bun.project).interpreter(program))
+    let mut launcher = Launcher::bun(Some(program.as_os_str()), &package, &bun.project);
+    if debug {
+        launcher
+            .args
+            .insert(0, format!("--inspect={INSPECT}").into());
+    }
+    Ok(LocalRuntime::launcher("bun", launcher, &bun.project))
 }
 
 const TEMPLATE: &[(&str, &str)] = &[

@@ -443,6 +443,17 @@ jobs:
         with:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
+      # Delve, which `rutis-host dev --debug` runs a Go project under
+      # (rutis-host/tests/debug.rs): the newest, which supports the Go
+      # releases in use. Retried, as downloads are.
+      - name: Delve
+        run: |
+          for attempt in 1 2 3; do
+            go install github.com/go-delve/delve/cmd/dlv@latest && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The Kotlin SDK's jvm target (JDK 17): the bridge's tests with the
       # feature `kotlin` start its conformance jar, built once here
       # (RUTIS_KOTLIN_JAR); runtimes-kotlin has the rest.
@@ -465,6 +476,9 @@ jobs:
       # rutis-bridge and rutis-loader run once each, below, with all their
       # features (Q12.7); the end-to-end scenarios run in `e2e`.
       - name: cargo test (workspace but rutis-bridge, rutis-loader and rutis-e2e)
+        env:
+          # The Go debugging test fails instead of skipping without dlv.
+          RUTIS_TEST_DELVE: required
         run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
       # The `anyhow` feature's conversions (the error table of #617).
       - name: cargo test (rutis, anyhow feature)

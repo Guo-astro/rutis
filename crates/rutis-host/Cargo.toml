@@ -45,5 +45,7 @@ libc = "0.2"
 # Path only: cargo publish drops it.
 rutis-test-support = { path = "../rutis-test-support" }
 tempfile = "3"
+# A WebSocket client for the inspectors `dev --debug` opens (tests/debug.rs).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # The paused clock, for the configuration watch's timing.
 tokio = { workspace = true, features = ["test-util"] }

@@ -127,6 +127,11 @@ pub struct Runtimes {
     /// one that cannot start is a warning, its rows fail, the host runs.
     #[serde(skip)]
     pub implicit: Vec<String>,
+    /// `rutis-host dev --debug`: each local runtime starts under its
+    /// debugger ([`crate::languages::Language::debugging`]). Not in the
+    /// file.
+    #[serde(skip)]
+    pub debug: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
