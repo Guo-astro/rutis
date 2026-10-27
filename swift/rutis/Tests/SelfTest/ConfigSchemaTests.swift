@@ -24,6 +24,8 @@ struct LiteralWeather: Decodable {
     var days: Int = 3
     var path = #"C:\x"#
     var weights: [String: Int] = ["a": 1]
+    var labels: Set<String> = ["x"]
+    var amount: Decimal = 1.5
 }
 
 /// A schema that does not say what the type needs: `days` is an Int.
@@ -109,6 +111,8 @@ struct ConfigSchemaTests {
         XCTAssertEqual(seen.all.map(\.days), [3])
         XCTAssertEqual(seen.all.map(\.path), [#"C:\x"#])
         XCTAssertEqual(seen.all.map(\.weights), [["a": 1]])
+        XCTAssertEqual(seen.all.map(\.labels), [["x"]])
+        XCTAssertEqual(seen.all.map(\.amount), [1.5])
         do {
             let failed = try await RutisTest.load(plugin, config: ["units": 1])
             await failed.close()

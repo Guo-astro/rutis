@@ -141,7 +141,10 @@ extension Rutis {
                     schema = .object(inner)
                 }
                 fields.append((property.name, schema))
-                if property.required { required.append(.string(property.name)) }
+                // A literal default with no JSON form is no default: required.
+                if property.required || (property.hasDefault && property.defaultJSON == nil) {
+                    required.append(.string(property.name))
+                }
             }
             var out: [(String, JSON)] = [("type", .string("object")), ("properties", .object(fields))]
             if !required.isEmpty { out.append(("required", .array(required))) }
@@ -157,13 +160,22 @@ extension Rutis {
             /// Its `default`, as JSON text (`@RutisConfig`'s literal initial
             /// value).
             public var defaultJSON: String?
+            /// It was given a default (which may have no JSON form).
+            var hasDefault = false
 
-            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil, default defaultJSON: String? = nil) {
+            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil) {
                 self.name = name
                 self.schema = schema
                 self.required = required
                 self.description = description
+            }
+
+            /// A property with a literal default (`@RutisConfig`'s `var units
+            /// = "metric"`): not required when the default has a JSON form.
+            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil, default defaultJSON: String?) {
+                self.init(name, schema, required: required, description: description)
                 self.defaultJSON = defaultJSON
+                hasDefault = true
             }
         }
 
@@ -174,11 +186,36 @@ extension Rutis {
 
         /// The JSON text of a literal default (what `@RutisConfig` writes
         /// for `var units = "metric"`).
-        public static func literal<T>(_ value: T) -> String {
-            guard case let .data(json)? = try? ValueCodec.encodeAny(value) else {
-                preconditionFailure("rutis: a default that is not JSON data: \(value)")
-            }
+        /// `nil` for a value with no JSON form (a `Character`, say): the
+        /// property then has no default and stays required.
+        public static func literal<T>(_ value: T) -> String? {
+            guard let encoded = try? ValueCodec.encodeAny(value), let json = jsonOf(encoded) else { return nil }
             return String(decoding: JSONWriter.write(json), as: UTF8.self)
+        }
+
+        /// A literal's value as JSON: sets as arrays, decimals and big
+        /// integers as their numbers; `nil` for what JSON has no form of.
+        static func jsonOf(_ value: Value) -> JSON? {
+            switch value {
+            case let .data(json): return json
+            case let .list(items), let .set(items):
+                var out: [JSON] = []
+                for item in items {
+                    guard let json = jsonOf(item) else { return nil }
+                    out.append(json)
+                }
+                return .array(out)
+            case let .record(fields):
+                var out: [(String, JSON)] = []
+                for (key, item) in fields {
+                    guard let json = jsonOf(item) else { return nil }
+                    out.append((key, json))
+                }
+                return .object(out)
+            case let .decimal(text): return .number(text)
+            case let .bigint(big): return .number(big.description)
+            default: return nil
+            }
         }
 
         /// Whether a property of type `T` may be left out.
@@ -298,7 +335,11 @@ extension Rutis {
             (schema, validates) = (.null, false)
         } else if let configurable = C.self as? RutisConfigurable.Type {
             (schema, validates) = (configurable.rutisSchema.json, true)
-        } else if case let .object(fields) = Schema.of(C.self).json, !fields.isEmpty {
+        } else if case var .object(fields) = Schema.of(C.self).json, !fields.isEmpty {
+            // An optional config type takes no config too.
+            if C.self is OptionalProtocol.Type, let index = fields.firstIndex(where: { $0.0 == "type" }), case let .string(type) = fields[index].1 {
+                fields[index].1 = .array([.string(type), .string("null")])
+            }
             (schema, validates) = (.object(fields), true)
         } else {
             (schema, validates) = (Schema.anyObject.json, false)

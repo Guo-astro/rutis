@@ -235,7 +235,13 @@ object ConfigSchema {
 
     /** Numbers as Rust and Swift compare them: integers exactly, others as doubles. */
     private fun compare(a: Num, b: Num): Int =
-        if (a.isIntegerLiteral && b.isIntegerLiteral) a.text.toBigInteger().compareTo(b.text.toBigInteger()) else a.double.compareTo(b.double)
+        if (a.isIntegerLiteral && b.isIntegerLiteral) {
+            a.text.toBigInteger().compareTo(b.text.toBigInteger())
+        } else {
+            // IEEE order (`-0.0` equals `0`), not Kotlin's total order.
+            val (x, y) = a.double to b.double
+            if (x < y) -1 else if (x > y) 1 else 0
+        }
 
     /** A key in a JSON Pointer: `~` and `/` escaped. */
     private fun escaped(key: String): String = key.replace("~", "~0").replace("/", "~1")
