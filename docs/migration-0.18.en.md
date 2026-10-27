@@ -2,7 +2,7 @@
 
 [中文](migration-0.18.md)
 
-0.18 makes failures understandable ([diagnostics design](design-diagnostics-2026-10-26.en.md)). This page grows with the changes of 0.18; below is what is done so far.
+0.18 makes failures understandable ([diagnostics design](design-diagnostics-2026-10-26.en.md)).
 
 ## `rutis-host check`: cycles and services provided twice are errors (#676)
 
@@ -147,6 +147,7 @@ Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for
 ### Protocol
 
 - Error nodes have two more optional fields: `site` (the row it came from, doing what) and `rethrown` (the frames of callers that threw it on). An older end ignores them; the protocol version is unchanged and 0.17 ends meet as before.
+- The capability `objects` (it exists; in 0.17 only Rust declared it) is now declared by Node, Bun, Python, Go, Swift and Kotlin in both the endpoint and the compat handshake, and the 0.18 host recognises it in the compat handshake too (#687). An end that declares it is sent object references (a `reference` whose `kind` is `object`) and must take them; an end that does not is never sent objects, and a call that would forward one to it fails with `bad-value` while the session goes on. The wire format does not change and the protocol version is unchanged. How this meets older versions is in [Objects with methods go to every language](#objects-with-methods-go-to-every-language-687) below.
 
 ## Node, Bun and Python runtimes: errors nobody handled are handled differently (#688)
 
