@@ -718,6 +718,8 @@ impl Started {
 /// Owns one native Cordis process and its generated service bindings.
 pub struct Process {
     peer: Connection,
+    /// The calls into its rows not returned yet ([`Process::calls`]).
+    calls: Arc<crate::runtime::calls::Calls>,
     imports: Arc<Imports>,
     runtime: tokio::runtime::Handle,
     /// The process this side started; `None` for an attached runtime.
@@ -1027,6 +1029,7 @@ impl Process {
         let scope = ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
         let process = Arc::new(Self {
             peer,
+            calls: Arc::default(),
             imports,
             runtime: tokio::runtime::Handle::current(),
             child,
@@ -1444,6 +1447,24 @@ impl Process {
     pub async fn describe_row(&self, entry: &Path) -> Result<RowSchema, Error> {
         self.require("rows.v2")?;
         crate::runtime::decode(self.call_async("", "rows.schema", json!([entry])).await?)
+    }
+
+    /// The calls into its rows' services that have not returned yet, oldest
+    /// first: who calls which service and method, and for how long. Calls
+    /// within the runtime itself are not seen.
+    pub fn calls(&self) -> Vec<crate::runtime::InFlight> {
+        self.calls.snapshot()
+    }
+
+    /// Record a call into one of its rows until the guard is dropped.
+    pub(crate) fn begin_call(
+        &self,
+        from: Option<String>,
+        to: Option<String>,
+        service: &str,
+        method: &str,
+    ) -> crate::runtime::calls::Ongoing {
+        self.calls.begin(from, to, service, method)
     }
 
     /// What the runtime reported of itself when mounted, for diagnostics:

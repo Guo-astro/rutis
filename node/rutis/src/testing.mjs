@@ -35,6 +35,7 @@
 // text); what works only in one process fails here too.
 
 import { PLUGIN_API, isPlugin } from './index.mjs'
+import { checkConfig, configError, schemaOf } from './config.mjs'
 import { Bus, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
@@ -106,7 +107,11 @@ function cross(value, where, seen = new Set(), data = false, depth = 0, name = u
   // to the runtime that defined it, which loads it as it is
   // (docs/design-plugin-values-2026-10-25.md R10), so `load` takes it.
   if (isPlugin(value)) return value
-  if (hasBehaviour(value)) return reference(value, typeof name === 'function' ? name : undefined)
+  // A proxy passed back is its object again, as in the runtimes.
+  if (ORIGINALS.has(value)) return ORIGINALS.get(value)
+  // A service the test gives keeps its shape (`name`: how its calls are
+  // named); any other object with methods crosses as a proxy (#687).
+  if (hasBehaviour(value)) return typeof name === 'function' ? reference(value, name) : remoteObject(value)
   if (seen.has(value)) throw refused(where, `cyclic data cannot cross between processes`)
   if (depth >= MAX_DEPTH) throw refused(where, `a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
   // An Error passed as a value crosses as data: its name, message and stack.
@@ -119,10 +124,12 @@ function cross(value, where, seen = new Set(), data = false, depth = 0, name = u
   }
   seen.add(value)
   try {
-    // An empty slot is undefined, as the runtimes send it (#675).
-    if (Array.isArray(value)) return Array.from(value, (item, i) => cross(item, where, seen, data, depth + 1))
+    // Undefined inside a value is null, also an empty slot, as the runtimes
+    // send it (#687 §七).
+    const inside = (item, inData) => item === undefined ? null : cross(item, where, seen, inData, depth + 1)
+    if (Array.isArray(value)) return Array.from(value, item => inside(item, data))
     const inData = data || !holdsSpecial(value)
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, where, seen, inData, depth + 1)]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inside(item, inData)]))
   } finally {
     seen.delete(value)
   }
@@ -239,6 +246,67 @@ function reference(target, method = property => `the method ${property}`) {
         : cross(value, sending(`the property ${String(property)}`, 'the result'))
     },
   })
+}
+
+// A received object with methods, as the runtimes give it (#687 §四):
+// every name read is a method, an asynchronous call of the object's; it has
+// no fields, shows as `[remote object]`, and a method it lacks fails with
+// `no-method` when called. One proxy per object.
+const PROXIES = new WeakMap()
+const ORIGINALS = new WeakMap()
+const NOT_METHODS = new Set(['then', 'toJSON', 'toString', 'valueOf'])
+const INSPECT = Symbol.for('nodejs.util.inspect.custom')
+function remoteObject(object) {
+  let proxy = PROXIES.get(object)
+  if (proxy) return proxy
+  const show = () => '[remote object]'
+  const methods = new Map()
+  const method = name => {
+    let call = methods.get(name)
+    if (call) return call
+    const where = `the method ${name}`
+    call = (...args) => {
+      try {
+        const own = object[name]
+        if (typeof own !== 'function') throw noMethod(object, name)
+        const crossed = args.map((arg, i) => cross(arg, sending(where, `argument ${i + 1}`)))
+        return Promise.resolve(own.apply(object, crossed)).then(value => cross(value, sending(where, 'the result')), thrown => { throw crossThrown(thrown, where) })
+      } catch (thrown) {
+        return Promise.reject(crossThrown(thrown, where))
+      }
+    }
+    methods.set(name, call)
+    return call
+  }
+  const target = Object.create(null)
+  Object.defineProperty(target, INSPECT, { value: show })
+  proxy = new Proxy(target, {
+    get: (_target, name) => {
+      if (name === INSPECT || name === 'toString' || name === Symbol.toPrimitive) return show
+      if (typeof name === 'symbol' || NOT_METHODS.has(name)) return undefined
+      return method(name)
+    },
+    has: (_target, name) => name === INSPECT || (typeof name === 'string' && !NOT_METHODS.has(name)),
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  })
+  PROXIES.set(object, proxy)
+  ORIGINALS.set(proxy, object)
+  return proxy
+}
+
+// A method `object` lacks, as the runtimes say it (#687 §八): code
+// `no-method`, data `{ object, method, methods }`.
+function noMethod(object, name) {
+  const prototype = Object.getPrototypeOf(object)
+  const className = prototype && prototype !== Object.prototype ? prototype.constructor?.name : undefined
+  const owner = typeof className === 'string' && className && className !== 'Object' ? className : null
+  const methods = Object.keys(inferred(object)).sort()
+  const why = name in Object(object) && typeof object[name] !== 'function'
+    ? `${name} is a field; objects passed by reference expose only their methods`
+    : methods.length ? `methods: ${methods.join(', ')}` : 'no methods'
+  return coded(`${owner ?? 'the object'} has no method ${name} (${why})`, 'no-method', { object: owner, method: name, methods })
 }
 
 // The methods of a service no declaration describes, as the runtimes infer
@@ -410,7 +478,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
     /** The failures `emit` reported (§5.6): `{ line, event, row, error }`. */
     get reported() { return [...reported] },
     /** Load `plugin` as a row (key `row`, scope path `scope`), with `config` and its own `services`. */
-    async load(plugin, { config = {}, services: own = {}, scope, row: key, ...more } = {}) {
+    async load(plugin, { config, services: own = {}, scope, row: key, ...more } = {}) {
       refuse(more)
       if (closed) throw new PluginTestError('the host is unloaded')
       plugin = isPlugin(plugin) ? plugin : plugin?.default
@@ -482,7 +550,29 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
   async function applyRow(row, ctx, config) {
     const { plugin } = row
     try {
-      const returned = await plugin.apply(ctx, strict ? cross(config, 'config') : config)
+      // As a runtime loads a row: defaults filled, the config validated
+      // against the plugin's schema (config schema design §2.2); extra keys
+      // warned about on standard error, as the host's loader would.
+      // The config crosses first, as it reaches a runtime.
+      if (strict && config !== undefined) config = cross(config, 'config')
+      const schema = schemaOf(plugin.config)
+      if (schema !== undefined) {
+        const checked = checkConfig(schema, config)
+        // Once per row and config value, as the host's loader warns.
+        let seen
+        try { seen = JSON.stringify(config, (_, value) => (typeof value === 'bigint' ? `${value}n` : value)) ?? '' } catch {}
+        row.warned ??= new Set()
+        if (checked.warnings.length && (seen === undefined || !row.warned.has(seen))) {
+          if (seen !== undefined) row.warned.add(seen)
+          for (const warning of checked.warnings) process.stderr.write(`${row.key}: config: ${warning.message}\n`)
+        }
+        if (checked.errors.length) throw configError(checked.errors)
+        config = checked.config
+      } else if (config === undefined) {
+        // No schema: what it is given, `{}` when nothing (as before).
+        config = strict ? cross({}, 'config') : {}
+      }
+      const returned = await plugin.apply(ctx, config)
       if (returned !== undefined && returned !== null) {
         if (typeof returned !== 'function') throw new PluginTestError('apply must return a cleanup function or nothing')
         row.cleanups.push(returned)

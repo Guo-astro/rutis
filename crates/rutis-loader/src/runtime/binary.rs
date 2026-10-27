@@ -1188,6 +1188,19 @@ impl<L: BinaryLanguage> Resolver for BinaryResolver<L> {
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move { self.resolve_now(name).map(Arc::new) })
     }
+
+    /// The runtimes started and not stopped since.
+    fn runtimes(&self) -> Vec<RuntimeHandle> {
+        let Some(inner) = self.runtimes.lock().unwrap().upgrade() else {
+            return Vec::new();
+        };
+        let slots = inner.slots.lock().unwrap();
+        slots
+            .running
+            .values()
+            .map(|slot| slot.handle.clone())
+            .collect()
+    }
 }
 
 /// The rows of one runtime, for its [`RuntimeRowsPlugin`].
@@ -2188,6 +2201,10 @@ impl<L: BinaryLanguage> Inner<L> {
 }
 
 impl<L: BinaryLanguage> DynPlugin for BinaryRuntimes<L> {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -2291,6 +2308,10 @@ impl<L: BinaryLanguage> BinaryRuntime<L> {
 }
 
 impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

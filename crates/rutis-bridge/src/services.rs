@@ -66,6 +66,10 @@ impl ExportPlugin {
 }
 
 impl DynPlugin for ExportPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
@@ -113,6 +117,10 @@ struct ExportOne {
 }
 
 impl DynPlugin for ExportOne {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
@@ -483,6 +491,10 @@ impl crate::Handler for Importer {
 }
 
 impl DynPlugin for ImportPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

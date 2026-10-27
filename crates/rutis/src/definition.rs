@@ -352,6 +352,10 @@ impl DynPlugin for Copy {
         self.inner.validate()
     }
 
+    fn platform(&self) -> bool {
+        self.inner.platform()
+    }
+
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             let fiber = ctx.weak_fiber();
@@ -386,12 +390,10 @@ where
     B: Fn(&Ctx, C) -> Result<P, Error> + Send + Sync + 'static,
 {
     fn build(&self, at: &Ctx, config: serde_json::Value) -> Result<Box<dyn DynPlugin>, Error> {
-        let config: C = serde_json::from_value(config).map_err(|error| {
-            failed(format!(
-                "the config of plugin definition {}: {error}",
-                short_name::<P>()
-            ))
-        })?;
+        // No schema: decoder errors are written as config problems
+        // (config schema design §3.3).
+        let config: C =
+            crate::config::decode(&config, false).map_err(crate::ConfigError::into_error)?;
         Ok(Box::new((self.build)(at, config)?))
     }
 

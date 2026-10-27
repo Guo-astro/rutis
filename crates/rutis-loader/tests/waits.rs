@@ -286,8 +286,41 @@ async fn a_long_wait_is_reported_by_service_name() {
         .await;
     assert_eq!(
         said,
-        "plugin provider is still waiting after 0.1s for lmm: it starts once that is provided"
+        "provider: still waiting after 0.1s for lmm: it starts once that is provided"
     );
+    root.shutdown().await.unwrap();
+}
+
+/// A row that cannot start reaches the error sink by its row name (stderr
+/// in an embedding, by default): one whose plugin failed, from the kernel,
+/// and one refused before it ran (its plugin unknown), from the loader;
+/// each once, not again when nothing changed.
+/// guarantee: core/features.default-output
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_that_cannot_start_reaches_the_error_sink_by_its_name() {
+    let sunk: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink: ErrorSink = {
+        let sunk = sunk.clone();
+        Arc::new(move |error: Arc<ErrorKind>| {
+            if matches!(*error, ErrorKind::StartFailed { .. }) {
+                sunk.lock().unwrap().push(error.to_string());
+            }
+        })
+    };
+    let root = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
+    let (root, loader) = loader_in(root).await;
+    let rows = json!([
+        { "id": "broken", "name": "provider", "config": { "fail": true } },
+        { "id": "missing", "name": "nope" },
+    ]);
+    loader.reconcile(layer(rows.clone()), None).await.unwrap();
+    loader.reconcile(layer(rows), None).await.unwrap();
+    let mut said = sunk.lock().unwrap().clone();
+    said.sort();
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(said[0].starts_with("broken: failed: "), "{said:?}");
+    assert!(said[1].starts_with("missing: failed: "), "{said:?}");
+    assert!(said[1].contains("nope"), "{said:?}");
     root.shutdown().await.unwrap();
 }
 

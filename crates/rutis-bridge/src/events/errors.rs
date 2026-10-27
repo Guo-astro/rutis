@@ -34,6 +34,13 @@ pub fn to_session(error: &ErrorKind) -> Error {
             return error.clone();
         }
     }
+    // A Rust row's config that does not match (a Rust definition's copy
+    // loaded from another language, say): the far end gets the same error
+    // as from its own SDK, code `bad-config` with the issues (config schema
+    // design §5.2).
+    if let Some(config) = rutis::ConfigError::of(error) {
+        return config_failure(config);
+    }
     if let ErrorKind::ListenersFailed { name, errors } = error {
         return aggregate(name, errors);
     }
@@ -69,6 +76,32 @@ pub fn to_session(error: &ErrorKind) -> Error {
             graph: None,
         },
     }
+}
+
+/// A config error as a far end reads it: a `BindingError` with code
+/// `bad-config` and `data: { issues: [{ path, message }] }`.
+pub(crate) fn config_failure(config: &rutis::ConfigError) -> Error {
+    let issues: Vec<serde_json::Value> = config
+        .issues()
+        .iter()
+        .map(|issue| {
+            let path: Vec<serde_json::Value> = issue
+                .path
+                .iter()
+                .map(|segment| match segment {
+                    rutis::PathSegment::Key(key) => serde_json::json!(key),
+                    rutis::PathSegment::Index(index) => serde_json::json!(index),
+                })
+                .collect();
+            serde_json::json!({ "path": path, "message": issue.message })
+        })
+        .collect();
+    crate::exports::failure(
+        "BindingError",
+        crate::session::code::BAD_CONFIG,
+        config.to_string(),
+        Some(serde_json::json!({ "issues": issues })),
+    )
 }
 
 /// `<ErrorName>: <message>` of an error, as a far end would read it.
@@ -200,6 +233,28 @@ fn moved(value: &Json, base: u64) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Rust config error crosses as `bad-config` with its issues.
+    #[test]
+    fn a_config_error_crosses_with_its_code() {
+        let config = rutis::internal::config::decode::<std::collections::BTreeMap<String, u8>>(
+            &json!({ "a": "x" }),
+            false,
+        )
+        .unwrap_err();
+        let error = to_session(&ErrorKind::PluginFailed(Box::new(config)));
+        assert_eq!(error.code(), Some("bad-config"));
+        assert_eq!(
+            error.to_string(),
+            "config: a should be an integer, got \"x\""
+        );
+        assert_eq!(
+            error.data(),
+            Some(
+                json!({ "issues": [{ "path": ["a"], "message": "a should be an integer, got \"x\"" }] })
+            )
+        );
+    }
 
     /// An aggregate keeps its children in order, each with its own graph.
     #[test]

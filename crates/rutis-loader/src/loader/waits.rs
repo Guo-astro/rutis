@@ -379,7 +379,7 @@ fn provider(
 }
 
 /// The row whose fiber is `plugin` or an ancestor of it.
-fn row_of(
+pub(super) fn row_of(
     plugin: PluginId,
     records: &HashMap<PluginId, String>,
     fibers: &HashMap<PluginId, &PluginDiagnostics>,
@@ -412,7 +412,7 @@ pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option
 }
 
 /// Whether `key` is a row's own runtime ([`RuntimeRows`](crate::runtime::RuntimeRows)).
-fn own_runtime(key: &TypeKey) -> bool {
+pub(super) fn own_runtime(key: &TypeKey) -> bool {
     #[cfg(feature = "runtimes")]
     return key.type_id() == std::any::TypeId::of::<crate::runtime::RuntimeRows>();
     #[cfg(not(feature = "runtimes"))]
@@ -434,48 +434,11 @@ fn unexported(root: &rutis::Ctx, name: &str) -> Option<String> {
     }
 }
 
-/// The name of `known` closest to `name`, when it is close enough to be a
-/// misspelling of it: at most one edit for a short name, two for a longer.
-pub(crate) fn closest(name: &str, known: &[String]) -> Option<String> {
-    let limit = match name.chars().count() {
-        0..=2 => return None,
-        3..=6 => 1,
-        _ => 2,
-    };
-    known
-        .iter()
-        .filter(|candidate| candidate.as_str() != name)
-        .map(|candidate| (distance(name, candidate), candidate))
-        .filter(|(distance, _)| *distance <= limit)
-        .min_by_key(|(distance, _)| *distance)
-        .map(|(_, candidate)| candidate.clone())
-}
-
-/// Edits (insert, delete, replace, swap two neighbours) between `a` and `b`.
-fn distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1)
-                .min(rows[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(rows[i - 2][j - 2] + 1);
-            }
-            rows[i][j] = best;
-        }
-    }
-    rows[a.len()][b.len()]
-}
+/// The name of `known` closest to `name` (the rule shared with config
+/// keys, config schema design §6.1).
+pub(crate) use rutis::internal::config::closest;
+#[cfg(test)]
+use rutis::internal::config::distance;
 
 #[cfg(test)]
 mod tests {

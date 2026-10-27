@@ -41,6 +41,10 @@ impl RuntimeAccessPlugin {
 }
 
 impl DynPlugin for RuntimeAccessPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

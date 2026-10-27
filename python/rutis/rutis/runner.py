@@ -55,6 +55,7 @@ from typing import Any, Callable
 
 from . import plugin as sdk
 from ._output import BlockingWatch, install_prefix, say
+from .config import configured
 from ._unhandled import (
     as_row,
     current_row,
@@ -540,6 +541,11 @@ class Runtime:
     async def _apply(self, row: Row, plugin: sdk.Plugin, config: Any, exports: dict) -> None:
         """Apply the row's plugin; done once rutis heard what it provided
         and registered."""
+        # Defaults filled and the config validated against the plugin's
+        # schema before `apply` (config schema design §2.2): a config that
+        # does not match fails the row with a `bad-config` BindingError.
+        # Extra keys are the host's loader's to warn about.
+        config = configured(plugin.config, config)
         cleanup = await _settle(plugin.apply(Context(self, row), config))
         if cleanup is not None:
             if not callable(cleanup):

@@ -193,6 +193,10 @@ impl PeerRowsPlugin {
 }
 
 impl DynPlugin for PeerRowsPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

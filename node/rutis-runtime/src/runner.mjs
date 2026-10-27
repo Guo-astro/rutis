@@ -5,6 +5,7 @@ import { statSync, writeSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import { Process } from './client.mjs'
 import { toJsonSchema } from './schema.mjs'
+import { cordisConfig } from './cordis-config.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
 import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
@@ -607,12 +608,13 @@ async function loadRow([key, entry, config, isolate, inject, exports, place]) {
   }
   // A module's path, or a plugin definition this runtime handed over.
   const plugin = typeof entry === 'string' ? await pluginOf(entry, inject ?? []) : definedPlugin(entry, inject ?? [])
+  cordisConfig(plugin, config)
   let scope = ctx
   for (const [name, label] of isolate ?? []) {
     scopedId(name, label)
     scope = scope.isolate(name, isolated(name, label))
   }
-  const row = { key, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
+  const row = { key, plugin, fiber: undefined, inner: undefined, config, exports: ids, loading: true, scope, labelOf, chain: chainOf(place?.scope), abort: new AbortController() }
   // Its plugin's file, by which a call of process.exit names it (#688).
   row.file = typeof entry === 'string' ? realFile(located(entry)) : undefined
   // An error the row leaves unhandled while it loads fails the load (#688):
@@ -762,6 +764,7 @@ async function providesOf(entry) {
 async function updateRow([key, config]) {
   const row = rows.get(key)
   if (!row) throw new Error(`row ${key} is not loaded`)
+  cordisConfig(row.plugin, config)
   row.config = config
   const fiber = row.inner
   // A gate between two plugin fibers (its inject went and came back)
@@ -868,7 +871,9 @@ function mount(args) {
       }
     }
     for (const { entry, config } of plugins) {
-      fibers.push(ctx.plugin(await pluginOf(entry), config))
+      const plugin = await pluginOf(entry)
+      cordisConfig(plugin, config)
+      fibers.push(ctx.plugin(plugin, config))
     }
     for (const [name, slot] of slots) slot.exporter = exporter(name, slot)
     await Promise.all([...fibers, ...[...slots.values()].map(slot => slot.exporter)].map(fiber => fiber.await()))

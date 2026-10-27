@@ -150,7 +150,11 @@ pub async fn reload(host: &mut Host, path: &Path, triggers: &mut Triggers) {
                 errln!("rutis-host: warning: {warning}");
             }
         }
-        Err(error) => errln!("rutis-host: reload rejected: {error}; nothing changed"),
+        Err(error) => {
+            for line in crate::host::rejected_lines(&error) {
+                errln!("{line}");
+            }
+        }
     }
 }
 
