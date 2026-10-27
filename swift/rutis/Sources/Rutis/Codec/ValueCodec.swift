@@ -134,6 +134,9 @@ package enum ValueCodec {
         default:
             // A class instance is passed by reference once marked, copied once
             // Codable (#687 §八).
+            if value is Rutis.Client {
+                throw ValueError("a client of a service used by name cannot be passed on: pass the object it came from, or a function")
+            }
             if type(of: value) is AnyClass {
                 throw ValueError("a \(type(of: value)) cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it")
             }
