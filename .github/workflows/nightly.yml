@@ -153,13 +153,17 @@ jobs:
   # This commit's packages, built and installed on every platform; GitHub's
   # clean machines but darwin-arm64 (docs/ci.md §10). Only when this range
   # touched what they package, or on the weekly run.
+  # Every platform when the packages changed (or on Monday); otherwise
+  # linux-x64 alone, for the developer-experience scenarios (#690), which
+  # run every night: a plugin author's and an assembler's path with this
+  # commit's packages.
   install:
     needs: plan
-    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.install == 'true'
+    if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/install.yml
     with:
       source: local
-      platforms: '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]'
+      platforms: ${{ needs.plan.outputs.install == 'true' && '["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64"]' || '["linux-x64"]' }}
       self-hosted: true
 
   dylib-windows:
