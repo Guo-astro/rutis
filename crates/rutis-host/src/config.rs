@@ -257,9 +257,11 @@ pub struct BinaryRuntime {
     /// the default; `on-failure`; `exit`), each runtime on its own.
     #[serde(default)]
     pub restart: Restart,
-    /// A development build and its runtime's name (`rutis-host dev`).
+    /// The development builds and their runtimes' names (`rutis-host
+    /// dev`): the project's, then each fake a directory row of
+    /// `rutis.dev.json` names (Go).
     #[serde(skip)]
-    pub dev: Option<(PathBuf, String)>,
+    pub dev: Vec<(PathBuf, String)>,
 }
 
 /// `runtimes.go`: Go binaries.
@@ -320,7 +322,7 @@ pub type GoStart = BinaryStart;
 impl BinaryRuntime {
     /// Refuse settings that cannot work together, as `runtimes.<key>`.
     pub fn validate(&self, key: &str) -> Result<(), String> {
-        if self.dir.is_none() && self.binaries.is_empty() && self.dev.is_none() {
+        if self.dir.is_none() && self.binaries.is_empty() && self.dev.is_empty() {
             return Err(format!("runtimes.{key} needs a dir or binaries"));
         }
         if self.start == BinaryStart::Eager && self.idle.is_some() {

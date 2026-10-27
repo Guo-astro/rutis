@@ -22,7 +22,7 @@ use rutis::host::{FiberState, PluginId};
 use rutis_bridge::runtime::RuntimeState;
 use rutis_host::config::{read_text, HostConfig};
 use rutis_host::host::{Host, RowChange};
-use rutis_host::languages::{self, DevBuild};
+use rutis_host::languages::{self, BinaryHost, DevBuild, GoDev};
 use rutis_host::{errln, project, status};
 use rutis_loader::report::EntryStatus;
 use rutis_loader::LoaderError;
@@ -77,6 +77,8 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         let build = language.dev_build(&dir, debug)?;
         Some((language.key(), build))
     });
+    // The Go fakes the dev file names, built with the project.
+    let mut fakes: Vec<Fake> = Vec::new();
     let (config, id) = match &compiled {
         Some((_, project)) => {
             errln!("{}: building", project.name());
@@ -94,7 +96,15 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
                 project.name(),
                 started.elapsed().as_secs_f64()
             );
-            project::dev_config_built(&dir, &binary)?
+            project::dev_config_built(&dir, &binary, &mut |fake| {
+                let fake = GoDev {
+                    debug,
+                    ..fake.clone()
+                };
+                let binary = fake.build_saying(1)?;
+                fakes.push(Fake { build: fake, n: 1 });
+                Ok(binary)
+            })?
         }
         None => project::dev_config(&dir)?,
     };
@@ -130,6 +140,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         own: id,
         compiled,
         build: 1,
+        fakes,
         debug,
         prefix_output,
         stale: Vec::new(),
@@ -235,6 +246,9 @@ struct Project {
     compiled: Option<(&'static str, Box<dyn DevBuild>)>,
     /// The build its runtime runs.
     build: u32,
+    /// The fakes in Go the dev file names (a Go project), each with the
+    /// build its runtime runs.
+    fakes: Vec<Fake>,
     /// Its runtimes run under their debuggers (`--debug`).
     debug: bool,
     /// Its plugins' lines start with their row's name.
@@ -248,8 +262,11 @@ struct Project {
 }
 
 impl Project {
-    /// Build the compiled project again and restart its runtime on the new
-    /// build; the rows of other runtimes that restart with it say so.
+    /// Build the compiled project again, and each Go fake, and restart the
+    /// runtime of each whose build changed on its new build (a Go build of
+    /// the same sources is the same file: its runtime keeps running); the
+    /// rows of other runtimes that restart with one say so. A build that
+    /// fails keeps its last build running.
     async fn rebuild(&mut self, host: &Host) {
         let Some((key, project)) = &self.compiled else {
             return;
@@ -257,60 +274,26 @@ impl Project {
         let Some(running) = host.binaries_of(key) else {
             return;
         };
-        errln!("{}: building", project.name());
-        let started = std::time::Instant::now();
-        let binary = match project.rebuild(self.build + 1).await {
-            Ok(binary) => binary,
-            Err(errors) => {
-                errln!(
-                    "{}: the build failed; the last build keeps running\n{errors}",
-                    project.name()
-                );
-                return;
-            }
-        };
-        errln!(
-            "{}: built in {:.1}s",
-            project.name(),
-            started.elapsed().as_secs_f64()
-        );
-        let before = Rows::of(host);
-        running.replace(project.runtime(), &binary);
-        match running.restart_runtime(project.runtime()).await {
-            Ok(()) => {
-                self.build += 1;
-                errln!("{}: rebuilt and restarted", project.runtime());
-                // Not the build the next start uses: once nothing runs it,
-                // it can go.
-                self.stale.push(project.binary(self.build - 1));
-                remove_builds(&mut self.stale);
-                host.loader.settled().await;
-                let own = |id: &str| {
-                    row_name(host, id).is_some_and(|name| owns(project.runtime(), &name))
-                };
-                // Its rows restarted with it: a row using one says so.
-                let said = format!("{} restarted", project.runtime());
-                let causes: Vec<(String, String)> = host
-                    .loader
-                    .entries()
-                    .into_iter()
-                    .filter(|entry| own(&entry.id))
-                    .map(|entry| (entry.id, said.clone()))
-                    .collect();
-                for line in Rows::of(host).restarted(&before, &causes, &|id| own(id)) {
-                    errln!("{line}");
-                }
-            }
-            Err(error) => {
-                // The new binary did not run: keep it and the previous
-                // build, and point the runtime back at the previous one, so
-                // a later change can retry.
-                running.replace(project.runtime(), &project.binary(self.build));
-                errln!(
-                    "{}: cannot restart: {error}; the previous build is kept",
-                    project.runtime()
-                );
-            }
+        let same_kept = *key == "go";
+        rebuild_one(
+            host,
+            running,
+            project.as_ref(),
+            &mut self.build,
+            same_kept,
+            &mut self.stale,
+        )
+        .await;
+        for fake in &mut self.fakes {
+            rebuild_one(
+                host,
+                running,
+                &fake.build,
+                &mut fake.n,
+                true,
+                &mut self.stale,
+            )
+            .await;
         }
     }
 
@@ -519,17 +502,150 @@ impl Project {
         let Some((key, project)) = &self.compiled else {
             return project::dev_config(&self.dir).map(|(config, _)| config);
         };
-        let (mut config, _) = project::dev_config_built(&self.dir, &project.binary(self.build))?;
+        // A fake it runs is its build now; one the dev file adds is built.
+        let (mut config, _) = project::dev_config_built(
+            &self.dir,
+            &project.binary(self.build),
+            &mut |fake| match self
+                .fakes
+                .iter()
+                .find(|known| known.build.package == fake.package)
+            {
+                Some(known) => Ok(known.build.binary(known.n)),
+                None => GoDev {
+                    debug: self.debug,
+                    ..fake.clone()
+                }
+                .build_saying(1),
+            },
+        )?;
         // The build a runtime runs is the dev loop's to change, not the
-        // dev file's: it stays the one the host started with.
+        // dev file's: it stays the one the host started with. A runtime
+        // the dev file adds (a new fake) is a change the running host
+        // refuses: `dev` starts again for it.
         let mut started = running.runtimes.clone();
         if let (Some(dev), Some(started)) = (
             binary_settings(key, &mut config.runtimes),
             binary_settings(key, &mut started),
         ) {
+            let added: Vec<(PathBuf, String)> = dev
+                .dev
+                .iter()
+                .filter(|(_, runtime)| !started.dev.iter().any(|(_, known)| known == runtime))
+                .cloned()
+                .collect();
             dev.dev = started.dev.clone();
+            dev.dev.extend(added);
         }
         Ok(config)
+    }
+}
+
+/// A fake in Go the dev file names, and the build its runtime runs.
+struct Fake {
+    build: GoDev,
+    n: u32,
+}
+
+/// Build `build` again, after its build #`n`, and restart its runtime on
+/// the new build, which is then #`n`; with `same_kept`, a new build the same
+/// as the one running is removed and nothing restarts. A failed build
+/// keeps the last one running.
+async fn rebuild_one(
+    host: &Host,
+    running: &BinaryHost,
+    build: &dyn DevBuild,
+    n: &mut u32,
+    same_kept: bool,
+    stale: &mut Vec<PathBuf>,
+) {
+    errln!("{}: building", build.name());
+    let started = std::time::Instant::now();
+    let binary = match build.rebuild(*n + 1).await {
+        Ok(binary) => binary,
+        Err(errors) => {
+            errln!(
+                "{}: the build failed; the last build keeps running\n{errors}",
+                build.name()
+            );
+            return;
+        }
+    };
+    errln!(
+        "{}: built in {:.1}s",
+        build.name(),
+        started.elapsed().as_secs_f64()
+    );
+    if same_kept && same_file(&binary, &build.binary(*n)) {
+        let _ = std::fs::remove_file(&binary);
+        return;
+    }
+    let before = Rows::of(host);
+    running.replace(build.runtime(), &binary);
+    match running.restart_runtime(build.runtime()).await {
+        Ok(()) => {
+            *n += 1;
+            errln!("{}: rebuilt and restarted", build.runtime());
+            // Not the build the next start uses: once nothing runs it,
+            // it can go.
+            stale.push(build.binary(*n - 1));
+            remove_builds(stale);
+            back_again(host, &before).await;
+            let own =
+                |id: &str| row_name(host, id).is_some_and(|name| owns(build.runtime(), &name));
+            // Its rows restarted with it: a row using one says so.
+            let said = format!("{} restarted", build.runtime());
+            let causes: Vec<(String, String)> = host
+                .loader
+                .entries()
+                .into_iter()
+                .filter(|entry| own(&entry.id))
+                .map(|entry| (entry.id, said.clone()))
+                .collect();
+            for line in Rows::of(host).restarted(&before, &causes, &|id| own(id)) {
+                errln!("{line}");
+            }
+        }
+        Err(error) => {
+            // The new binary did not run: keep it and the previous
+            // build, and point the runtime back at the previous one, so
+            // a later change can retry.
+            running.replace(build.runtime(), &build.binary(*n));
+            errln!(
+                "{}: cannot restart: {error}; the previous build is kept",
+                build.runtime()
+            );
+        }
+    }
+}
+
+/// Wait, up to 10 seconds, until the rows that ran `before` a runtime
+/// restarted run again or failed: its rows come back once its new process
+/// runs, and the rows using them after them; a line said earlier would call
+/// one that is on its way back stopped.
+async fn back_again(host: &Host, before: &Rows) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        host.loader.settled().await;
+        let now = Rows::of(host);
+        let back = before.states.iter().all(|(id, (_, _, state))| {
+            *state != FiberState::Active
+                || now.states.get(id).is_some_and(|(_, _, state)| {
+                    !matches!(state, FiberState::Pending | FiberState::Loading)
+                })
+        });
+        if back || std::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Whether the files `a` and `b` have the same content.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 

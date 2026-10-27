@@ -19,19 +19,28 @@ use crate::languages::{self, LANGUAGES};
 pub use crate::languages::GoDev;
 
 /// The configuration that runs the plugin project in `dir`, and the id of
-/// its row.
+/// its row. A Go project's binaries are built here: its own, and each fake
+/// a directory row of `rutis.dev.json` names ([`crate::languages::go_fakes`]).
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, None)
+    dev_config_with(dir, None, &mut |fake| fake.build_saying(1))
 }
 
 /// [`dev_config`] for a compiled project whose first build `binary` is
 /// already made: its rows are read from that binary, not from one built
-/// here.
-pub fn dev_config_built(dir: &Path, binary: &Path) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, Some(binary))
+/// here. `fakes` gives the build of each Go fake the dev file names.
+pub fn dev_config_built(
+    dir: &Path,
+    binary: &Path,
+    fakes: &mut dyn FnMut(&GoDev) -> Result<PathBuf, String>,
+) -> Result<(HostConfig, String), String> {
+    dev_config_with(dir, Some(binary), fakes)
 }
 
-fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, String), String> {
+fn dev_config_with(
+    dir: &Path,
+    built: Option<&Path>,
+    fakes: &mut dyn FnMut(&GoDev) -> Result<PathBuf, String>,
+) -> Result<(HostConfig, String), String> {
     // Absolute, not canonical: on Windows a canonical path is a `\\?\` one,
     // which the runtimes are then given as their project.
     let dir = std::path::absolute(dir)
@@ -67,11 +76,20 @@ fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, Stri
         // up: not a runtime the dev file leaves undeclared.
         let extra = HostConfig::read_beside(&extra, &config.runtimes)?;
         // The dev file may configure the plugin's own rows.
-        let (own, others): (Vec<Value>, Vec<Value>) = extra
+        let (own, mut others): (Vec<Value>, Vec<Value>) = extra
             .rows
             .iter()
             .cloned()
             .partition(|row| own_ids.contains(&row["id"]));
+        // In a Go project, a row naming a directory is a fake in Go: its
+        // own binary and runtime.
+        let fakes = match GoDev::of(&dir).filter(|_| language.key() == "go") {
+            Some(own) => languages::go_fakes(&own, &mut others, fakes)?,
+            None => Vec::new(),
+        };
+        if let Some(go) = config.runtimes.go.as_mut() {
+            go.dev.extend(fakes);
+        }
         for own in own {
             let target = config.rows.iter_mut().find(|row| row["id"] == own["id"]);
             if let Some(object) = target.and_then(Value::as_object_mut) {
@@ -348,7 +366,7 @@ mod tests {
             "rutis.dev.json configures it"
         );
         let go = config.runtimes.go.unwrap();
-        let (binary, runtime) = go.dev.unwrap();
+        let (binary, runtime) = go.dev[0].clone();
         assert_eq!(runtime, "go-net-probe");
         assert!(binary.starts_with(project.join(".rutis/go")));
         // A failed build says why.
@@ -423,10 +441,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
+        let (config, id) = dev_config_built(dir.path(), &binary, &mut |_| unreachable!()).unwrap();
         assert_eq!(id, "probe");
         assert_eq!(config.rows[0]["name"], "go-net-probe:probe");
         let go = config.runtimes.go.unwrap();
-        assert_eq!(go.dev, Some((binary, "go-net-probe".to_owned())));
+        assert_eq!(go.dev, vec![(binary, "go-net-probe".to_owned())]);
     }
 }
