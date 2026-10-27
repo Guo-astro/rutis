@@ -1,7 +1,7 @@
 // Errors in the Bun session: what a Rust service's `Err(e)` carries (#440).
 import { test } from 'bun:test'
 import assert from 'node:assert/strict'
-import { decodeError, encodeError, hostGone, noMethod, notDeclared, unavailable } from '../src/errors.ts'
+import { decodeError, encodeError, hostGone, noMethod, notDeclared, reportedStack, unavailable } from '../src/errors.ts'
 import { fileURLToPath } from 'node:url'
 
 const roundtrip = (value: unknown) => decodeError(JSON.parse(JSON.stringify(encodeError(value))))
@@ -183,4 +183,13 @@ test('a thrown value at import is shown alone (#677)', async () => {
   const error = cannotLoad('need 5 words', '/work/m/str.mjs', '/work')
   assert.deepEqual([error.name, error.message], ['LoadError', 'cannot load m/str.mjs: "need 5 words"'])
   assert.equal(cannotLoad({ code: 3 }, '/work/m/obj.mjs', '/work').message, 'cannot load m/obj.mjs: {code: 3}')
+})
+
+// guarantee: loader/unhandled-errors, sdk/error-texts
+test("an error from no row lists only the plugin's frames, or all of them when none is the plugin's (#677)", () => {
+  const runtime = fileURLToPath(new URL('../src/runner.ts', import.meta.url))
+  const plugin = '/work/weather/src/index.ts'
+  assert.equal(reportedStack(`Error: boom\n    at boom (${plugin}:3:7)\n    at processTicksAndRejections (native:7:39)\n    at loadRow (${runtime}:1:1)`), `Error: boom\n    at boom (${plugin}:3:7)`)
+  const none = `Error: boom\n    at processTicksAndRejections (native:7:39)\n    at loadRow (${runtime}:1:1)`
+  assert.equal(reportedStack(none), none)
 })
