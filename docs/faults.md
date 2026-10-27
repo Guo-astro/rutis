@@ -32,11 +32,11 @@
 | 5 | 语法 / 导入 / 编译错误 | 2 个测试 | 3 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
 | 6 | 跨语言传对面接不住的值 | 3 个测试 | 3 个测试 | 3 个测试 | 3 个测试 | 2 个测试 | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
 | 7 | 事件监听器出错 | 1 个测试 | 1 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 8 | 调用一直不返回 | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 2 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
+| 8 | 调用一直不返回 | 4 个测试 | 3 个测试 | 6 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 | 9 | 互相调用、互相依赖 | 2 个测试 | 1 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
 | 10 | 运行时进程中途退出 | 2 个测试 | 2 个测试 | 4 个测试 | 2 个测试 | 不适用 | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
-| 11 | 下断点、看日志 | 2 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试，待接 [#746](https://github.com/arcships/rutis/issues/746) | 1 个测试 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
-| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 2 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
+| 11 | 下断点、看日志 | 4 个测试 | 2 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
+| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 5 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
 | 13 | 两个插件提供同名服务 | 3 个测试 | 2 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
 | 14 | 查看现在的运行状态 | 1 个测试 | 无测试 | 1 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 
@@ -98,9 +98,9 @@
 
 ### 8. 调用一直不返回
 
-- TypeScript（Node）：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Bun：无测试，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Python：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`，待接 [#746](https://github.com/arcships/rutis/issues/746)
+- TypeScript（Node）：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`node/rutis-runtime/test/output.test.mjs` “a method holding the runtime is said once; a short one is not”，`node/rutis-runtime/test/output.test.mjs` “a method awaiting for long does not hold the runtime, and is not said”，`node/rutis-runtime/test/output.test.mjs` “under a debugger nothing is said of a method holding the runtime”
+- Bun：`bun/rutis-bun/test/output.test.ts` “a method holding the runtime is said once; a short one is not”，`bun/rutis-bun/test/output.test.ts` “a method awaiting for long does not hold the runtime, and is not said”，`bun/rutis-bun/test/output.test.ts` “under a debugger nothing is said of a method holding the runtime”
+- Python：`crates/rutis-host/tests/status.rs` `status_says_what_a_running_host_does`，`crates/rutis-loader/tests/status.rs` `the_status_names_rows_services_runtimes_and_calls`，`python/rutis/tests/test_output.py` `test_a_method_holding_the_runtime_is_said_once`，`python/rutis/tests/test_output.py` `test_a_blocking_call_in_an_async_method_is_said`，`python/rutis/tests/test_output.py` `test_an_async_method_awaiting_long_is_not_said`，`python/rutis/tests/test_output.py` `test_under_a_debugger_nothing_is_said`
 - Go：无测试
 - Rust（插件与嵌入）：`crates/rutis/tests/embedding_output.rs` `an_apply_that_does_not_return_is_named`，`crates/rutis/tests/embedding_output.rs` `a_shutdown_that_runs_out_of_time_names_the_stuck_cleanup`
 
@@ -122,10 +122,10 @@
 
 ### 11. 下断点、看日志
 
-- TypeScript（Node）：`crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_node_inspector`，`crates/rutis-host/tests/output.rs` `plugin_lines_written_in_pieces_come_out_whole`，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Bun：`crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_bun_inspector`，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Python：`crates/rutis-host/tests/debug.rs` `dev_debug_stops_python_at_breakpoint`，待接 [#746](https://github.com/arcships/rutis/issues/746)
-- Go：`crates/rutis-host/tests/debug.rs` `dev_debug_runs_the_binary_under_delve`，待接 [#746](https://github.com/arcships/rutis/issues/746)
+- TypeScript（Node）：`crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_node_inspector`，`crates/rutis-host/tests/output.rs` `plugin_lines_written_in_pieces_come_out_whole`，`node/rutis-runtime/test/output.test.mjs` “each line a row's code writes starts with the row's name”，`crates/rutis-host/tests/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
+- Bun：`crates/rutis-host/tests/debug.rs` `dev_debug_opens_the_bun_inspector`，`bun/rutis-bun/test/output.test.ts` “each line a row's code writes starts with the row's name”
+- Python：`crates/rutis-host/tests/debug.rs` `dev_debug_stops_python_at_breakpoint`，`python/rutis/tests/test_output.py` `test_each_line_a_row_writes_starts_with_its_name`，`crates/rutis-host/tests/output.rs` `prefix_output_starts_each_plugin_line_with_its_row`
+- Go：`crates/rutis-host/tests/debug.rs` `dev_debug_runs_the_binary_under_delve`
 - Rust（插件与嵌入）：`crates/rutis/src/error.rs` `default_sink_lines_start_with_the_name_they_are_about`
 
 ### 12. 配置写错
@@ -133,7 +133,7 @@
 - TypeScript（Node）：`crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`，`crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`，`node/rutis-runtime/test/config.test.mjs` “a leaf plugin gets its config filled, and fails its row on a wrong one”
 - Bun：`bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”，`bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
 - Python：`python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`，`python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
-- Go：`go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`，`go/rutis/rutistest/config_test.go` `TestEveryConfigCase`
+- Go：`go/rutis/config_internal_test.go` `TestEveryConfigCaseBeforeApply`，`go/rutis/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`，`go/rutis/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`，`go/rutis/rutistest/config_test.go` `TestEveryConfigCase`，`go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
 - Rust（插件与嵌入）：`crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`，`crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`，`crates/rutis-loader/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. 两个插件提供同名服务

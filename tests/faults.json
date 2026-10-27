@@ -291,20 +291,28 @@
         "#678"
       ],
       "ts": {
-        "pending": "#746",
         "tests": [
-          ["crates/rutis-host/tests/status.rs", "status_says_what_a_running_host_does"]
+          ["crates/rutis-host/tests/status.rs", "status_says_what_a_running_host_does"],
+          ["node/rutis-runtime/test/output.test.mjs", "a method holding the runtime is said once; a short one is not"],
+          ["node/rutis-runtime/test/output.test.mjs", "a method awaiting for long does not hold the runtime, and is not said"],
+          ["node/rutis-runtime/test/output.test.mjs", "under a debugger nothing is said of a method holding the runtime"]
         ]
       },
       "bun": {
-        "pending": "#746",
-        "missing": true
+        "tests": [
+          ["bun/rutis-bun/test/output.test.ts", "a method holding the runtime is said once; a short one is not"],
+          ["bun/rutis-bun/test/output.test.ts", "a method awaiting for long does not hold the runtime, and is not said"],
+          ["bun/rutis-bun/test/output.test.ts", "under a debugger nothing is said of a method holding the runtime"]
+        ]
       },
       "py": {
-        "pending": "#746",
         "tests": [
           ["crates/rutis-host/tests/status.rs", "status_says_what_a_running_host_does"],
-          ["crates/rutis-loader/tests/status.rs", "the_status_names_rows_services_runtimes_and_calls"]
+          ["crates/rutis-loader/tests/status.rs", "the_status_names_rows_services_runtimes_and_calls"],
+          ["python/rutis/tests/test_output.py", "test_a_method_holding_the_runtime_is_said_once"],
+          ["python/rutis/tests/test_output.py", "test_a_blocking_call_in_an_async_method_is_said"],
+          ["python/rutis/tests/test_output.py", "test_an_async_method_awaiting_long_is_not_said"],
+          ["python/rutis/tests/test_output.py", "test_under_a_debugger_nothing_is_said"]
         ]
       },
       "go": {
@@ -389,26 +397,27 @@
       "en": "Breakpoints and logs",
       "issues": ["#679", "#678"],
       "ts": {
-        "pending": "#746",
         "tests": [
           ["crates/rutis-host/tests/debug.rs", "dev_debug_opens_the_node_inspector"],
-          ["crates/rutis-host/tests/output.rs", "plugin_lines_written_in_pieces_come_out_whole"]
+          ["crates/rutis-host/tests/output.rs", "plugin_lines_written_in_pieces_come_out_whole"],
+          ["node/rutis-runtime/test/output.test.mjs", "each line a row's code writes starts with the row's name"],
+          ["crates/rutis-host/tests/output.rs", "prefix_output_starts_each_plugin_line_with_its_row"]
         ]
       },
       "bun": {
-        "pending": "#746",
         "tests": [
-          ["crates/rutis-host/tests/debug.rs", "dev_debug_opens_the_bun_inspector"]
+          ["crates/rutis-host/tests/debug.rs", "dev_debug_opens_the_bun_inspector"],
+          ["bun/rutis-bun/test/output.test.ts", "each line a row's code writes starts with the row's name"]
         ]
       },
       "py": {
-        "pending": "#746",
         "tests": [
-          ["crates/rutis-host/tests/debug.rs", "dev_debug_stops_python_at_breakpoint"]
+          ["crates/rutis-host/tests/debug.rs", "dev_debug_stops_python_at_breakpoint"],
+          ["python/rutis/tests/test_output.py", "test_each_line_a_row_writes_starts_with_its_name"],
+          ["crates/rutis-host/tests/output.rs", "prefix_output_starts_each_plugin_line_with_its_row"]
         ]
       },
       "go": {
-        "pending": "#746",
         "tests": [
           ["crates/rutis-host/tests/debug.rs", "dev_debug_runs_the_binary_under_delve"]
         ]
@@ -446,8 +455,11 @@
       },
       "go": {
         "tests": [
-          ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"],
-          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"]
+          ["go/rutis/config_internal_test.go", "TestEveryConfigCaseBeforeApply"],
+          ["go/rutis/config_internal_test.go", "TestATypedConfigIsCheckedThenDecoded"],
+          ["go/rutis/config_internal_test.go", "TestAConfigTheTypeDoesNotTakeIsSaidPlainly"],
+          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"],
+          ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"]
         ]
       },
       "rust": {
