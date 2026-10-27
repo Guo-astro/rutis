@@ -21,6 +21,8 @@ from rutis import define_plugin
 from rutis.channel import SocketChannel
 from rutis.peer import UNDEFINED, BindingError, LoadError, Peer, RemoteFunction, RemoteFuture, _Import, encode_error
 from rutis.runner import HostProxy, Runtime
+from rutis._unhandled import report_text, unhandled_error
+from rutis.peer import AggregateError
 from rutis.testing import PluginTestError, load
 
 
@@ -333,6 +335,67 @@ class LoadFailures(background.TestCase):
         with self.assertRaises(ModuleNotFoundError) as missing:
             Runtime().describe("lf_nowhere")
         self.assertEqual(str(missing.exception), "No module named 'lf_nowhere'")
+
+
+class UnhandledTexts(unittest.TestCase):
+    """guarantee: loader/unhandled-errors, sdk/error-texts"""
+
+    @staticmethod
+    def raised(error):
+        try:
+            raise error
+        except BaseException as caught:  # noqa: BLE001 - the test's own
+            return caught
+
+    def test_an_error_left_unhandled_while_loading_crosses_with_its_cause_and_its_errors(self):
+        inner = self.raised(KeyError("region"))
+        try:
+            try:
+                raise inner
+            except KeyError as cause:
+                raise AggregateError([ValueError("one"), TypeError("two")], "two failed") from cause
+        except AggregateError as caught:
+            aggregate = caught
+        failure = unhandled_error("unhandled exception", aggregate)
+        self.assertEqual(str(failure), "unhandled exception: AggregateError: two failed")
+        graph = encode_error(failure)["graph"]
+        nodes = graph["nodes"]
+        root = nodes[graph["root"]["value"]]
+        cause = nodes[root["cause"]["value"]]
+        self.assertEqual(cause["name"], "AggregateError")
+        self.assertEqual([nodes[ref["value"]]["message"] for ref in cause["errors"]], ["one", "two"])
+        self.assertEqual(nodes[cause["cause"]["value"]]["name"], "KeyError")
+        # The failure's stack holds the error's frames once, not its chain again.
+        self.assertNotIn("direct cause", root["stack"])
+        self.assertEqual(root["stack"].count("raise AggregateError"), 1)
+
+    def test_an_error_from_no_row_lists_only_the_plugins_frames(self):
+        error = self.raised(ValueError("boom"))
+        text = report_text(error)
+        self.assertTrue(text.startswith("Traceback (most recent call last):"), text)
+        self.assertIn("test_plain_texts.py", text)
+        self.assertTrue(text.endswith("ValueError: boom"), text)
+        # The chain stays, each part with the plugin's frames only.
+        try:
+            try:
+                raise KeyError("region")
+            except KeyError as cause:
+                raise ValueError("no forecast") from cause
+        except ValueError as caught:
+            chained = caught
+        text = report_text(chained)
+        self.assertIn("KeyError: 'region'", text)
+        self.assertIn("direct cause", text)
+        self.assertTrue(text.endswith("ValueError: no forecast"), text)
+        # None of its frames is the plugin's: the whole traceback.
+        import json as library
+
+        try:
+            library.loads("{bad")
+        except ValueError as caught:
+            error = caught
+        error.__traceback__ = error.__traceback__.tb_next
+        self.assertIn("decoder.py", report_text(error))
 
 
 if __name__ == "__main__":

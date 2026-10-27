@@ -110,6 +110,7 @@ Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for
 - A host service's methods show as `weather.today` in tracebacks, no longer `HostProxy.__getattr__.<locals>.call`; a call that returns no value gives `None`, and `UNDEFINED` no longer shows.
 - When the host disconnects, calls raise `ConnectionError` with code `peer-gone`.
 - `str(SyncWaitCycle)` is the message alone, with no `SyncWaitCycle: ` before it (as for the other errors).
+- The `cause` of `raise … from cause` crosses as the error graph's `cause` (as a JavaScript error's `cause` does); an error left unhandled while loading (`UnhandledError`) has the original error as its `cause`, so that error's own `cause` and an `AggregateError`'s `errors` cross too.
 - An error while importing a plugin's module (or a module it imports) raises `LoadError` (`from rutis import LoadError`, a subclass of `Exception`), naming the file and line that raised; a missing entry module itself is still the original `ModuleNotFoundError`.
 
 ### Go
@@ -165,6 +166,8 @@ In 0.17 a promise rejection a Node or Bun plugin left unhandled (or an exception
       at …
   ```
 
+  Only the plugin's own frames are listed under it; when none of the frames is the plugin's, the whole stack is, as it is then the only clue to the source.
+
 - A plugin calling `process.exit` / `os._exit` still ends the process, and the runtime first writes `runtime node: row weather called process.exit(1)`.
 
 What to change:
@@ -183,6 +186,23 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+
+## Rust embedding (behaviour changes) (#678)
+
+In 0.17 a Rust program embedding rutis printed next to nothing by default: a plugin failing to start that nobody awaited, a loader row failing to load, a language runtime's process ending were only in return values nobody read. From 0.18 the default error sink (`default_sink()`, installed by `Ctx::root()` and `Ctx::root_with(handle)`) writes them to standard error, each line beginning with the plugin, row or runtime name ([default output](guide/rust-host.en.md#default-output)):
+
+```
+weather: failed: no API key
+runtime py: down (runtime process exited with exit status: 1)
+```
+
+- **The default output no longer begins with `[rutis]`.** The wait report begins with the plugin's name: `printer: still waiting after 10s for app::Greeting: it starts once that is provided` (0.17.2: `[rutis] plugin printer is still waiting …`). rutis's own plugins (links, runtimes and the like) no longer report waits, and their internal names do not appear in the reports. Scripts matching these texts on standard error need changing.
+- **New error sink variants**: `ErrorKind::StartFailed { plugin, error }`, `ErrorKind::RuntimeDown { runtime, reason }`, `ErrorKind::NotServedByName { service }` (a type marked `#[rutis::service]` provided in a program that does not link rutis-bridge, once per service). A program with its own sink (`Ctx::root_with_sink`) gets them too; filter out by variant what it does not want. A `view.await` on the plugin still gets the error, so a program that both awaits and keeps the default sink sees one failure twice: either do not print the error from `view.await`, or filter `StartFailed` in the sink.
+- **To turn it off**: replace the sink, as in the example under [default output](guide/rust-host.en.md#default-output).
+- **rutis-host**: its state lines do not change, and it does not print `StartFailed` or `RuntimeDown` (its state lines say them). What changes: the other errors it hands to the default sink (a cleanup that failed, say) no longer begin with `[rutis]`, and the timeout in `runtime <name>: stopping after killing it: …`, after a Go runtime is killed, names the stuck plugins.
+- **One cause can print several lines**: a plugin that fails to start reports the errors of the cleanups its rollback ran, then `StartFailed` (whose error holds them too); a parent failing because a child failed reports once for each; errors gathered together print over several lines.
+- **`shutdown()` does not change**: it still has no time limit, how long to wait is the host's choice. The error of `shutdown_with_timeout` / `dispose_with_timeout` running out names the plugins and cleanups not finished (`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`) instead of `fiber PluginId(1) generation 0 still Unloading after …`; `DisposeWaitError::TimedOut` gained a field `stuck: Vec<Stuck>`, so code destructuring it with every field adds `..`.
+- `root.diagnostics()` implements `Display` (one item a line, by names, without rutis's own plugins by default); `PluginDiagnostics` gained the fields `row` and `platform`.
 
 ## Rust embedding: `reconcile` does not wait for a runtime still starting (#678)
 

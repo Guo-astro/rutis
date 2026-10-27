@@ -249,9 +249,10 @@ async fn expect(fixture: &Fixture, start: &str, parts: &[&str]) {
 }
 
 const OVER: &str = "over the limit of 16777216 bytes (16 MiB)";
-const PASS_DATA: &str = "pass plain data or a function instead";
+/// What the host says of a far end that takes no objects (#687 §八).
+const OLDER: &str = "does not take objects (older than rutis 0.18); upgrade it";
 
-/// guarantee: bridge/bad-values
+/// guarantee: bridge/bad-values, bridge/object-refs
 ///
 /// Each bad value of #675 fails only its own call, between rows in Node,
 /// Python and Go, with an error naming the call, the argument or the
@@ -273,49 +274,37 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
 
     // TS → Python, TS → Go `any`, Python → TS: refused on the way, by the
     // host, which knows the far end takes no objects.
-    let object_to = |service: &str, far: &str| {
+    let object_to = |service: &str, from: &str, far: &str| {
         [
-            format!("{service}.take: argument 1 cannot be sent: an object with methods cannot cross to {far}"),
-            PASS_DATA.to_owned(),
+            format!("{service}.take: argument 1 cannot be sent: an object from {from} cannot cross to {far}"),
+            format!("{far} does not take objects (older than rutis 0.18); upgrade it"),
         ]
     };
-    let parts = object_to("py_taker", "py");
+    let parts = object_to("py_taker", "node", "py");
     expect(
         &fixture,
         "js object to py failed: ",
         &[&parts[0], &parts[1]],
     )
     .await;
-    let parts = object_to("go_taker", "go-multilang");
+    let parts = object_to("go_taker", "node", "go-multilang");
     expect(
         &fixture,
         "js object to go failed: ",
         &[&parts[0], &parts[1]],
     )
     .await;
-    let parts = object_to("js_taker", "node");
-    expect(
-        &fixture,
-        "py object to js failed: ",
-        &[&parts[0], &parts[1]],
-    )
-    .await;
-    // As results, either way.
-    expect(
-        &fixture,
-        "js object from py failed: ",
-        &[
-            "py_taker.obj: the result cannot be sent: an object with methods cannot cross to node",
-            PASS_DATA,
-        ],
-    )
-    .await;
+    // Python → TS: Node takes objects (#687): the call goes through.
+    expect(&fixture, "py object to js: object", &[]).await;
+    // As results: Python's object reaches Node; Node's does not reach
+    // Python, which takes none yet.
+    expect(&fixture, "js object from py: [remote object]", &[]).await;
     expect(
         &fixture,
         "py object from js failed: ",
         &[
-            "js_taker.obj: the result cannot be sent: an object with methods cannot cross to py",
-            PASS_DATA,
+            "js_taker.obj: the result cannot be sent: an object from node cannot cross to py",
+            OLDER,
         ],
     )
     .await;

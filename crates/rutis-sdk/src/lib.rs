@@ -109,11 +109,14 @@ pub const fn boot_meta(sdk_id: &str, artifact: &str, id: &str, version: &str) ->
 /// from the config, decoded from JSON as rutis-loader's `Builtins::register`
 /// decodes it (a `null` config as `null` first, then as `{}`); the
 /// dependencies come from `P::Deps`. The factory is named by the exported
-/// `id`, as a `factory:` export names its own.
+/// `id`, as a `factory:` export names its own. `schema`: the export has a
+/// schema, which the loader validates the config against first (a decoder
+/// error is then one sentence, config schema design §3.3).
 #[doc(hidden)]
 pub fn build_factory<C, P, B>(
     id: &'static str,
     build: B,
+    schema: bool,
 ) -> impl rutis::host::PluginFactory<ConfigValue>
 where
     C: ::rutis::serde::de::DeserializeOwned + Send + Sync + 'static,
@@ -123,7 +126,7 @@ where
     Exported {
         id,
         factory: ::rutis::internal::build_fn(move |config: &ConfigValue| {
-            build(&decode::<C>(config)?)
+            build(&decode::<C>(config, schema)?)
         }),
     }
 }
@@ -153,19 +156,11 @@ impl<F: rutis::host::PluginFactory<ConfigValue>> rutis::host::PluginFactory<Conf
     }
 }
 
-fn decode<C: ::rutis::serde::de::DeserializeOwned>(value: &ConfigValue) -> rutis::Result<C> {
-    let invalid = |error: serde_json::Error| {
-        rutis::Error::from(rutis::host::ErrorKind::Validation {
-            issues: vec![error.to_string()],
-        })
-    };
-    match (serde_json::from_value::<C>(value.clone()), value) {
-        (Ok(config), _) => Ok(config),
-        (Err(_), ConfigValue::Null) => {
-            serde_json::from_value::<C>(ConfigValue::Object(Default::default())).map_err(invalid)
-        }
-        (Err(error), _) => Err(invalid(error)),
-    }
+fn decode<C: ::rutis::serde::de::DeserializeOwned>(
+    value: &ConfigValue,
+    schema: bool,
+) -> rutis::Result<C> {
+    rutis::internal::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
 }
 
 /// Export a plugin and a static, pre-dlopen identity blob from a plugin
@@ -187,10 +182,10 @@ fn decode<C: ::rutis::serde::de::DeserializeOwned>(value: &ConfigValue) -> rutis
 #[macro_export]
 macro_rules! export_plugin {
     (id: $id:literal, build: $build:expr $(,)?) => {
-        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build), ::core::option::Option::None);
+        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build, false), ::core::option::Option::None);
     };
     (id: $id:literal, build: $build:expr, schema: $schema:expr $(,)?) => {
-        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build), ::core::option::Option::Some($schema));
+        $crate::export_plugin!(@export $id, $crate::build_factory($id, $build, true), ::core::option::Option::Some($schema));
     };
     (id: $id:literal, factory: $factory:expr $(,)?) => {
         $crate::export_plugin!(@export $id, $factory, ::core::option::Option::None);

@@ -876,7 +876,8 @@ impl Sender for EndedSender {
 /// How the process ended, once it has. Readable from the reader thread,
 /// which must not depend on the async runtime: a current-thread runtime may
 /// be blocked in a synchronous call. The fourth field: the process has been
-/// waited for, and is gone. The last: notified to kill it now.
+/// waited for, and is gone. The fifth: notified to kill it now. The last:
+/// its process id, when the system gave one.
 #[derive(Default)]
 struct Exit(
     Mutex<Option<String>>,
@@ -884,6 +885,7 @@ struct Exit(
     AtomicBool,
     watch::Sender<bool>,
     tokio::sync::Notify,
+    std::sync::OnceLock<u32>,
 );
 
 impl Exit {
@@ -956,6 +958,15 @@ impl Processes {
         let mut started = self.0.lock().unwrap();
         started.retain(|exit| !exit.ended());
         started.push(exit);
+    }
+
+    /// The process id of the last one started, while it has not ended.
+    pub fn pid(&self) -> Option<u32> {
+        let started = self.0.lock().unwrap();
+        started
+            .last()
+            .filter(|exit| !exit.ended())
+            .and_then(|exit| exit.5.get().copied())
     }
 
     /// Whether one of them has not ended yet.
@@ -1070,6 +1081,7 @@ impl Child {
         let ended = Arc::new(Exit::default());
         let pid = child.id();
         if let Some(pid) = pid {
+            let _ = ended.5.set(pid);
             RUNNING.send_modify(|running| {
                 running.insert(pid);
             });

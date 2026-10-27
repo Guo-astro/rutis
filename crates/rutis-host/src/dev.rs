@@ -104,6 +104,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         }
     }
     let mut host = Host::start(&config).await?;
+    let _status = crate::answer_status(&dir, &host);
     for line in status::listening(&host.listening) {
         outln!("{line}");
     }
@@ -488,7 +489,11 @@ impl Project {
                     start_again(host, &runtime, &format!("{DEV_FILE} changed")).await;
                 }
             }
-            Err(error) => outln!("rutis-host: reload rejected: {error}; nothing changed"),
+            Err(error) => {
+                for line in rutis_host::host::rejected_lines(&error) {
+                    outln!("{line}");
+                }
+            }
         }
     }
 
@@ -791,9 +796,21 @@ fn cannot_reload(id: &str, error: &LoaderError, running: bool) -> String {
         }
         error => error.to_string(),
     };
-    match running {
-        true => format!("{id}: cannot reload: {why}; the previous version keeps running"),
+    // A config error is a line per problem: each gets the row's prefix.
+    // (from the row's error, or a runtime's `bad-config` text).
+    let problems: Vec<&str> = why.lines().collect();
+    let config = problems.len() > 1 && problems.iter().all(|line| line.starts_with("config: "));
+    let lines = match config {
+        true => problems
+            .iter()
+            .map(|line| format!("{id}: cannot reload: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
         false => format!("{id}: cannot reload: {why}"),
+    };
+    match running {
+        true => format!("{lines}; the previous version keeps running"),
+        false => lines,
     }
 }
 

@@ -33,3 +33,34 @@ test('the SDK testing tool runs events under Bun', async () => {
   expect(() => t.emit('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
   await h.unload()
 })
+
+// objects-case(bun): strict-testing-tool
+// objects-case(bun): data-stays-data
+// objects-case(bun): plain-object-by-reference
+// Strict mode under Bun gives an object with methods as another process
+// would (#687 §四): asynchronous methods of the original, no fields, one
+// proxy per object, the original again when passed back; data is copied.
+test('the SDK testing tool passes objects with methods by reference under Bun', async () => {
+  class Cache { #m = new Map(); get(k: string) { return this.#m.get(k) } set(k: string, v: unknown) { this.#m.set(k, v) } }
+  const t = await load(definePlugin({
+    provides: { warmer: { warm: 'async', back: 'async', plain: 'async', data: 'async' } },
+    apply(ctx: any) {
+      ctx.provide('warmer', {
+        async warm(cache: any) { await cache.set('a', 1); return [String(cache), await cache.get('a')] },
+        back(cache: unknown) { return cache },
+        plain(object: any) { return object.ping() },
+        data(value: any) { value.n = 2; return value.n },
+      })
+    },
+  }))
+  const cache = new Cache()
+  const warmer = t.service('warmer')
+  expect(await warmer.warm(cache)).toEqual(['[remote object]', 1])
+  expect(cache.get('a')).toBe(1)
+  expect(await warmer.back(cache)).toBe(cache)
+  expect(await warmer.plain({ ping: () => 'pong' })).toBe('pong')
+  const value = { n: 1 }
+  expect(await warmer.data(value)).toBe(2)
+  expect(value.n).toBe(1)
+  await t.unload()
+})

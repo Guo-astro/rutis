@@ -80,6 +80,10 @@ impl IdentityPlugin {
 }
 
 impl rutis::host::DynPlugin for IdentityPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
@@ -235,6 +239,10 @@ impl AdmissionPlugin {
 }
 
 impl rutis::host::DynPlugin for AdmissionPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }

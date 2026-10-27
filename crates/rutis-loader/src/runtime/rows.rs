@@ -81,6 +81,10 @@ impl RuntimeRowsPlugin {
 }
 
 impl DynPlugin for RuntimeRowsPlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.name
     }

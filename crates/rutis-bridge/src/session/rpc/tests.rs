@@ -654,6 +654,11 @@ fn endpoint_pair() -> (Connection, Far) {
     (connection, far)
 }
 
+/// guarantee: bridge/object-refs
+/// objects-case(rust): plain-object-by-reference
+/// objects-case(rust): third-language
+/// objects-case(rust): return-array-event
+/// objects-case(rust): receiver-releases
 #[tokio::test(flavor = "current_thread")]
 async fn references_forwarded_to_another_session_reach_their_owner() {
     let (a, ra) = pair();
@@ -2597,6 +2602,8 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
 /// an error, each naming the call, the argument or the result and the far
 /// end. No relay is left behind, the object is released on its owner once
 /// dropped, and the session goes on.
+/// objects-case(rust): no-objects-declared
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread")]
 async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     struct Holding(Mutex<Option<Value>>);
@@ -2666,8 +2673,8 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     match b.invoke_async("host:svc\0scope", "take", call).await {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "svc.take: argument 2 cannot be sent: an object with methods cannot cross to py; \
-             pass plain data or a function instead"
+            "svc.take: argument 2 cannot be sent: an object from the far end cannot cross to py: \
+             py does not take objects (older than rutis 0.18); upgrade it"
         ),
         other => panic!("a value error expected, got {other:?}"),
     }
@@ -2686,8 +2693,8 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
         match function.call_async(Value::List(vec![argument])).await {
             Err(Error::Value(message)) => assert_eq!(
                 message,
-                "a function: argument 1 cannot be sent: an object with methods cannot cross to py; \
-                 pass plain data or a function instead"
+                "a function: argument 1 cannot be sent: an object from the far end cannot cross to py: \
+                 py does not take objects (older than rutis 0.18); upgrade it"
             ),
             other => panic!("a value error expected, got {other:?}"),
         }
@@ -2696,8 +2703,8 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     let (message, _runtime) = runtime.await.unwrap();
     assert_eq!(
         message,
-        "svc.get: the result cannot be sent: an object with methods cannot cross to py; \
-         pass plain data or a function instead"
+        "svc.get: the result cannot be sent: an object from the far end cannot cross to py: \
+         py does not take objects (older than rutis 0.18); upgrade it"
     );
     assert!(b.close_reason().is_none() && a.close_reason().is_none());
     assert!(
@@ -2837,3 +2844,5 @@ fn the_limit_and_the_call_are_named() {
         "events.dispatch"
     );
 }
+
+mod objects;

@@ -293,6 +293,10 @@ impl RuntimeResolver {
 }
 
 impl Resolver for RuntimeResolver {
+    fn runtimes(&self) -> Vec<RuntimeHandle> {
+        vec![self.runtime.clone()]
+    }
+
     fn resolve<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<Resolved>, LoaderError>> {
         Box::pin(async move {
             let Some(entry) = self.naming.entry(&self.runtime, name) else {

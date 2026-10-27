@@ -180,7 +180,12 @@ fn shuttle_concurrent_dispose_cleans_up_exactly_once() {
                 Err(Error::from(ErrorKind::PluginFailed("cleanup".into())))
             }))
         };
-        let record = EffectRecord::new(effect, "model".into(), Weak::new());
+        let record = EffectRecord::from(
+            effect,
+            "model".into(),
+            crate::effect::Origin::Other,
+            Weak::new(),
+        );
         let callers: Vec<_> = (0..3)
             .map(|_| {
                 let (record, handle) = (record.clone(), handle.clone());

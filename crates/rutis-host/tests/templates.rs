@@ -1,9 +1,13 @@
 //! The projects `rutis-host new` makes, as a host uses them: each template
 //! declares what its plugin provides (#666), so a configuration whose rows
 //! use the template's service passes `rutis-host check --strict` before
-//! anything runs. Needs Node (with node/rutis-runtime's dependencies
-//! installed) and Python, as the host's own tests do; the Go test (its
-//! name has `go`, so the Go CI job runs it too) needs Go.
+//! anything runs; the template's own row is configured as its
+//! `rutis.dev.json` configures it, and that config passes the plugin's
+//! schema with no error and no extra key (config schema design §11, 1c).
+//! Needs Node (with node/rutis-runtime's dependencies installed) and
+//! Python, as the host's own tests do; the Go test (its name has `go`, so
+//! the Go CI job runs it too) needs Go, the Bun test (its name has `bun`,
+//! so the Bun CI job runs it too) needs Bun.
 //!
 //! Unix only: the generated projects are the same everywhere, and the Go
 //! binary is named without Windows' `.exe`.
@@ -60,6 +64,16 @@ fn user(dir: &Path) {
     std::fs::write(dir.join("user.mjs"), source).unwrap();
 }
 
+/// The config `rutis.dev.json` in `project` gives the template's own row
+/// (its first row).
+fn dev_config(project: &Path) -> serde_json::Value {
+    let text = std::fs::read_to_string(project.join("rutis.dev.json")).unwrap();
+    let dev: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let config = dev["rows"][0]["config"].clone();
+    assert!(config.is_object(), "{text}");
+    config
+}
+
 /// What `check` says of a healthy configuration with a template's plugin
 /// (row `greeter`) and a row using its service: no warning, every row ok,
 /// the template's service declared.
@@ -108,7 +122,7 @@ fn the_templates_declare_what_they_provide() {
     let config = json!({
         "runtimes": { "node": { "runtime": repo().join("node/rutis-runtime") } },
         "rows": [
-            { "id": "greeter", "name": "./greeter/src/index.ts" },
+            { "id": "greeter", "name": "./greeter/src/index.ts", "config": dev_config(&node.join("greeter")) },
             { "id": "user", "name": "./user.mjs" }
         ]
     });
@@ -132,7 +146,7 @@ fn the_templates_declare_what_they_provide() {
             "py": { "project": "hello/src" }
         },
         "rows": [
-            { "id": "greeter", "name": "py:hello" },
+            { "id": "greeter", "name": "py:hello", "config": dev_config(&python.join("hello")) },
             { "id": "user", "name": "./user.mjs" }
         ]
     });
@@ -179,10 +193,53 @@ fn the_go_template_declares_what_it_provides() {
             "go": { "dir": "plugins" }
         },
         "rows": [
-            { "id": "greeter", "name": "go:greeter" },
+            { "id": "greeter", "name": "go:greeter", "config": dev_config(&project) },
             { "id": "user", "name": "./user.mjs" }
         ]
     });
     std::fs::write(dir.path().join("rutis.json"), config.to_string()).unwrap();
     passes(dir.path(), r#"{"greeter":{"hello":"async"}}"#);
+}
+
+/// The Bun template: its plugin in the Bun runtime, configured as its
+/// `rutis.dev.json` says; `check --strict` passes. Only its own row: the
+/// row using its service would need Node as well, which the other tests
+/// cover.
+/// guarantee: host/new
+#[test]
+fn the_bun_template_declares_what_it_provides() {
+    let dir = tempfile::tempdir().unwrap();
+    rutis_host::new::create(dir.path(), "greeter", "bun").unwrap();
+    let project = dir.path().join("greeter");
+    let index = project.join("src/index.ts");
+    let source = std::fs::read_to_string(&index).unwrap();
+    assert!(source.contains("from '@arcships/rutis'"), "{source}");
+    let source = source.replace("from '@arcships/rutis'", &format!("from '{}'", sdk()));
+    std::fs::write(&index, source).unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{ "name": "app", "type": "module" }"#,
+    )
+    .unwrap();
+    let config = json!({
+        "runtimes": { "bun": { "runtime": repo().join("bun/rutis-bun") } },
+        "rows": [
+            { "id": "greeter", "name": "bun:./greeter/src/index.ts", "config": dev_config(&project) }
+        ]
+    });
+    std::fs::write(dir.path().join("rutis.json"), config.to_string()).unwrap();
+    let (status, stdout, stderr) = check_strict(dir.path());
+    let context = format!("status {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(status, 0, "{context}");
+    assert_eq!(stderr, "", "{context}");
+    assert!(
+        stdout.contains("  provides: {\"greeter\":{\"hello\":\"async\"}}\n"),
+        "{context}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("greeter (") && line.ends_with("): ok")),
+        "{context}"
+    );
 }

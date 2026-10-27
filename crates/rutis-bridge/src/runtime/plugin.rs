@@ -63,6 +63,17 @@ pub enum RuntimeState {
     Down(String),
 }
 
+impl std::fmt::Debug for RuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeState::Idle => f.write_str("Idle"),
+            RuntimeState::Starting => f.write_str("Starting"),
+            RuntimeState::Ready(_) => f.write_str("Ready"),
+            RuntimeState::Down(why) => f.debug_tuple("Down").field(why).finish(),
+        }
+    }
+}
+
 /// Observes a runtime from code that is not a plugin (a loader resolver).
 #[derive(Clone)]
 pub struct RuntimeHandle {
@@ -71,9 +82,22 @@ pub struct RuntimeHandle {
     remote: bool,
     state: watch::Receiver<RuntimeState>,
     starts: Arc<std::sync::atomic::AtomicU64>,
+    processes: Option<crate::transport::local::Processes>,
 }
 
 impl RuntimeHandle {
+    /// The process id of a local runtime's process, while it runs; `None`
+    /// for a runtime elsewhere, or one not running.
+    pub fn pid(&self) -> Option<u32> {
+        match self.state() {
+            RuntimeState::Ready(_) | RuntimeState::Starting => self
+                .processes
+                .as_ref()
+                .and_then(|processes| processes.pid()),
+            _ => None,
+        }
+    }
+
     /// The runtime's name ([`RuntimePlugin::named`]).
     pub fn name(&self) -> &str {
         &self.name
@@ -160,6 +184,8 @@ pub struct RuntimePlugin {
     starts: Arc<std::sync::atomic::AtomicU64>,
     /// `rutis/runtime` follows the state (once started, [`RuntimePlugin::announce`]).
     announcing: Arc<std::sync::atomic::AtomicBool>,
+    /// The processes a local runtime started, for its process id.
+    processes: Option<crate::transport::local::Processes>,
 }
 
 impl RuntimePlugin {
@@ -167,7 +193,8 @@ impl RuntimePlugin {
     /// state from now on, for as long as the runtime exists (events
     /// protocol §8): `running` once mounted, `down` with why when its
     /// session ended or its mount failed (or `stopped` when it was
-    /// stopped).
+    /// stopped). Going down is also reported to the error sink
+    /// ([`ErrorKind::RuntimeDown`](rutis::host::ErrorKind::RuntimeDown)).
     pub(crate) fn announce(&self, ctx: &Ctx) {
         use std::sync::atomic::Ordering;
         if self.announcing.swap(true, Ordering::SeqCst) {
@@ -182,8 +209,14 @@ impl RuntimePlugin {
         tasks.spawn(async move {
             use crate::events::RuntimeEventState::{Down, Running};
             let mut running = false;
+            // Each time it goes down, the error sink hears it once (on
+            // stderr, by default: an embedding sees it, #678).
+            let mut down = false;
             loop {
                 let state = states.borrow_and_update().clone();
+                if !matches!(state, RuntimeState::Down(_)) {
+                    down = false;
+                }
                 match state {
                     RuntimeState::Ready(_) if !running => {
                         running = true;
@@ -191,6 +224,16 @@ impl RuntimePlugin {
                     }
                     RuntimeState::Down(reason) => {
                         running = false;
+                        // Not while the whole tree shuts down: ending
+                        // then is expected.
+                        if !down && !rutis::host::CtxHost::is_shutting_down(&ctx) {
+                            down = true;
+                            let report = rutis::host::ErrorKind::RuntimeDown {
+                                runtime: name.clone(),
+                                reason: reason.clone(),
+                            };
+                            rutis::host::CtxHost::error_sink(&ctx)(Arc::new(report));
+                        }
                         crate::events::emit_runtime(&ctx, &name, Down, Some(reason));
                     }
                     RuntimeState::Idle if running => {
@@ -217,7 +260,15 @@ impl RuntimePlugin {
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
             starts: Arc::default(),
             announcing: Arc::default(),
+            processes: None,
         }
+    }
+
+    /// The processes that run it, for [`RuntimeHandle::pid`] (a local
+    /// runtime's).
+    pub(crate) fn processes(mut self, processes: crate::transport::local::Processes) -> Self {
+        self.processes = Some(processes);
+        self
     }
 
     /// A runtime that runs elsewhere: its session is `RuntimeSession#<name>`,
@@ -280,11 +331,16 @@ impl RuntimePlugin {
             remote: self.remote,
             state: self.state.subscribe(),
             starts: self.starts.clone(),
+            processes: self.processes.clone(),
         }
     }
 }
 
 impl DynPlugin for RuntimePlugin {
+    fn platform(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         &self.label
     }
