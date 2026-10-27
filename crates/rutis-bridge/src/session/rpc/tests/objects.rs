@@ -621,11 +621,12 @@ impl Dispatch for Poke {
 /// `b`, so an id of `b`'s never looks like one of `a`'s own (a runtime
 /// refuses a call whose chain holds its own id).
 ///
-/// The ids are chosen to meet, as they did in CI (`objects_cross.rs`'s
-/// Node → Go case, before the fix): `b`'s caller was waiting on `rust:2`
-/// of `b`, and the call `a` gets is `rust:2` of `a` (its second, after
-/// `give`). Untagged, `a`'s Node runtime would see its own id in the chain
-/// and end the session ("invalid invocation").
+/// The ids are chosen to meet, as some `rust:N` did in CI
+/// (`objects_cross.rs`'s Node → Go case, before the fix; which N depends
+/// on the calls each session had before): `b`'s call came in under the
+/// host's call `rust:2` to `b`, and the call `a` gets is `rust:2` of `a`
+/// (its second, after `give`). Untagged, `a`'s Node runtime would see its
+/// own id in the chain and end the session ("invalid invocation").
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
