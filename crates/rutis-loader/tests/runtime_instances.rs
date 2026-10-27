@@ -47,6 +47,8 @@ struct Runtime {
     plugins: Vec<&'static str>,
     lists: bool,
     undeclared: bool,
+    /// Its connection drops while it loads a row: `rows.load` never answers.
+    drops: bool,
     tokio: tokio::runtime::Handle,
     version: AtomicU64,
     /// The services each loaded row exports, by row key.
@@ -112,6 +114,10 @@ impl Dispatch for Runtime {
                     }),
                 }
             }
+            ("", "rows.load") if self.drops => {
+                peer.close(Error::Transport("the runtime's process ended".into()));
+                Err(Error::Transport("the runtime's process ended".into()))
+            }
             ("", "rows.load") => {
                 let key = args[0].as_str().unwrap().to_owned();
                 let names: Vec<String> = match self.undeclared {
@@ -158,6 +164,19 @@ async fn dial_with(
     lists: bool,
     undeclared: bool,
 ) -> Connection {
+    dial_runtime(main, name, plugins, lists, undeclared, false).await
+}
+
+/// [`dial_with`], its connection dropping while it loads a row when
+/// `drops`.
+async fn dial_runtime(
+    main: &Main,
+    name: &str,
+    plugins: &[&'static str],
+    lists: bool,
+    undeclared: bool,
+    drops: bool,
+) -> Connection {
     let identity: Arc<dyn Identity> = Arc::new(
         StaticIdentity::new(id(name)).present(id("main"), Credential::Bearer("shared".into())),
     );
@@ -178,6 +197,7 @@ async fn dial_with(
         plugins: plugins.to_vec(),
         lists,
         undeclared,
+        drops,
         tokio: tokio::runtime::Handle::current(),
         version: AtomicU64::new(0),
         exports: Mutex::default(),
@@ -519,6 +539,28 @@ async fn a_disconnection_closes_only_its_instance() {
     assert!(!main.has("reader in tablet stops"));
     assert_eq!(main.states("contacts"), (1, Vec::new()));
     assert_eq!(main.states("reader"), (1, Vec::new()));
+}
+
+/// A connection that drops while its instance's rows load: nothing waits
+/// for it to come back (a connection does not): the instance goes at once
+/// with the connection, which the access point reports as ended; the next
+/// connection gets an instance as before.
+/// guarantee: loader/runtime-connection-instances
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_dropping_while_its_rows_load_ends_its_instance_at_once() {
+    let mut main = main().await;
+    let _pixel = dial_runtime(&main, "pixel", &["contacts"], true, false, true).await;
+    main.connected("pixel").await;
+    match main.next().await {
+        AccessEvent::Disconnected { id: gone, .. } => assert_eq!(gone, id("pixel")),
+        other => panic!("{other:?}"),
+    }
+    assert!(main.copies("contacts").is_empty());
+    assert!(main.copies("reader").is_empty());
+
+    let _tablet = dial(&main, "tablet", &["contacts"], true).await;
+    main.connected("tablet").await;
+    main.heard("reader in tablet hears tablet").await;
 }
 
 /// A connection without the plugin fails that row in its instance only;
