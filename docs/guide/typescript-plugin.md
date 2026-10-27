@@ -196,6 +196,17 @@ export default definePlugin({
 
 和插件 id 相同的那一行给插件本身加配置；其他行是一起运行的插件。`npx rutis-host check` 列出每一行的依赖、提供的服务和配置 Schema，有问题时以非零状态退出，适合放进 CI。
 
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ npx rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+
 ### 调试
 
 `--debug` 打开 Node 运行时进程自己的检查器，监听 `127.0.0.1:9229`：

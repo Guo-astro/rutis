@@ -340,6 +340,17 @@ The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project`
 
 When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` builds without optimisation (`-gcflags=all=-N -l`) and starts the runtime under [Delve](https://github.com/go-delve/delve): Delve listens on `127.0.0.1:2345`, the program runs as usual, and you set breakpoints once connected. Install Delve first:

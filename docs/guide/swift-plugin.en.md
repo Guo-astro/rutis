@@ -241,6 +241,17 @@ rutis-host dev
 
 `dev` builds the package's executable product with `swift build` and runs each of its plugins as the runtime `swift-weather`; a change to the sources, `Package.swift` or `Package.resolved` rebuilds it and restarts only that runtime, and a failed build keeps the old one running (the compiler's errors are printed). Each build says `weather: building`, then `weather: built in 12.3s`: the first one compiles the dependencies, the SDK's macros among them, and can take minutes. Each build is copied to `.rutis/swift/<product>-<n>`, a new file each time. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). When their files change, only those rows reload, without a rebuild, and the Swift runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Swift binary with its platform, SDK, plugin API and plugins; a binary built with an SDK older than rutis 0.13 cannot run, and `check` says to rebuild it.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ## 5. System access
 
 macOS asks the user before a program reads calendars, contacts and the like, and remembers the answer for that program. For a Swift plugin, that program is **the plugin binary**: the runtime makes itself responsible for its own requests when it starts (whoever started it: `rutis-host`, a terminal, a process manager), so the prompt names the binary, and what the user grants applies to it alone, not to the host or the terminal. Plugins in one binary share its access; plugins that need different access go in different binaries.

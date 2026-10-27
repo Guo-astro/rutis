@@ -91,6 +91,7 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
+| `rutis-host call [--config <rutis.json \| directory>] <service>.<method> [arguments…]` | Calls a service in the `rutis-host` running that configuration (or that `dev` project), as the host, and prints the result as JSON; `dev` accepts it, `run` with `--allow-call` (see [Calling a service](#calling-a-service)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
 | `rutis-host types [directory] [-o file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; see [Embed in a Rust application](rust-host.en.md#mark-the-type-rutisservice). |
@@ -334,9 +335,45 @@ calls:
 - `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
-`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers one request, `status`, and changes nothing. It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
+`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (`dev` accepts it, `run` with `--allow-call`; see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
 
 When stopping does not finish by the deadline (see [Stopping and exit status](#stopping-and-exit-status)), the calls not returned are listed too, after the plugins still stopping: `call not returned: caller → slow.wait  12s`.
+
+## Calling a service
+
+While `run` or `dev` runs, in another terminal, `rutis-host call` calls a method of a service, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call forecast.today '"Oslo"'
+"sunny in Oslo"
+$ rutis-host call forecast.week '{"days": 3}'
+{
+  "days": 3,
+  ...
+}
+```
+
+- `<service>.<method>` splits at the last `.` (a service's name may have dots). Each argument is a JSON value: `3`, `true`, `null`, `'"Oslo"'`, `'{"days": 3}'`, `'[1, 2]'`; a string needs its quotes, and an argument that is not JSON is an error, never taken for a string. Values JSON cannot write (dates, binary data, maps) cannot be passed from the command line: try such a method in a test.
+- It finds the host as `rutis-host status` does: the `rutis.json` here (in a plugin project, the project `dev` runs), or the one `--config <rutis.json | directory>` names. It only reaches a running host, and starts none.
+- It calls the service the root scope sees by that name, whichever language, runtime or node provides it, as [calling a service by name from Rust](rust-host.en.md#call-a-service-by-name-from-rust) does. The call comes from no row: `rutis-host status` shows it as `host → forecast.today (row weather)  3s`.
+- The result is printed as JSON indented by two spaces; no result is `null`. A value JSON does not have is written as its text: points in time, dates, big integers, decimals and UUIDs as strings (`"2026-10-27"`), binary data, maps, sets and references as what they are (`"<a map>"`); for people to read, not to pass back.
+- No time limit: it waits for the result; Ctrl-C ends `call` (exit status 130), and the host drops the call.
+- On an error it writes it on stderr and exits with 1:
+
+| Case | Output |
+| --- | --- |
+| An argument that is not JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
+| No method named | `rutis-host: name a method, as forecast.<method>` |
+| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| The row providing it is not running | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
+| No such method | `rutis-host: forecast has no method tomorow (methods: today, week)` |
+| An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then the row it failed in (`in weather:`) and its stack |
+| The method takes the calling row's `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
+| No host running | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+| `run` without `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call` |
+
+`call` runs any method of any service, so `dev` accepts it and `run` does not by default: to use it in production, add `--allow-call` to the command that starts it (on the command line only, never in `rutis.json`). Who can connect is as for `status`: only the user can use the socket. Not on Windows (`rutis-host call is not available on Windows`).
 
 ## Output
 

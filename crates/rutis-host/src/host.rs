@@ -874,6 +874,12 @@ impl Host {
         (stopping, waiting)
     }
 
+    /// The host's root, as Rust embedding has it: what `rutis-host call`
+    /// calls from.
+    pub fn root(&self) -> Ctx {
+        self.root.clone()
+    }
+
     /// The service `name` as rutis sees it (what a row provides).
     #[allow(dead_code)]
     pub fn service(&self, name: &str) -> Option<Arc<dyn rutis_bridge::session::HostDispatch>> {
