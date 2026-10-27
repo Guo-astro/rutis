@@ -204,6 +204,30 @@ Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就
 
 和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, rutis.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。
 
+### 带方法的对象
+
+结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*rutis.Service`：
+
+```go
+type Cache struct {
+	Get func(ctx context.Context, key string) (any, error)
+	Set func(ctx context.Context, key string, value any) error
+}
+
+func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
+	if err := cache.Set(ctx, "a", 1); err != nil {
+		return nil, err
+	}
+	return cache.Get(ctx, "a")
+}
+```
+
+- 函数字段的调用会阻塞，第一个参数是 `context.Context`。结构体里有不是函数的字段，或者参数是别的类型时，这次调用以 `bad-argument` 失败：`warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`。
+- `any` 收到的是 `*rutis.Service`，和 `ctx.Use` 得到的同一个类型：`Call(ctx, method, result, args...)`；对象没有方法表，`Methods()` 返回 `nil`，没有的方法由对象所在的一端回答 `no-method`。
+- 只有 `*rutis.Service` 保持身份：同一个对象收到几次是同一个 `*rutis.Service`，把它交回原来的进程，那边拿到的是原对象。函数字段的结构体是数据，交出去时每个字段变成一个新的函数引用；要交出对象本身，参数写 `any`。
+- 对象不跟行走：交出它的行卸载后照常可以调用。但按需启动的运行时在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行；之后的调用以 `peer-gone` 失败：`a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`。要一直可用，让交出它的行保持加载，或者把运行时设成 `eager`。
+- 对象的方法可能被并发调用。
+
 ## 3. 测试
 
 `rutistest` 不需要宿主，但插件在它真正的运行时里跑、值经过真正的会话传递：

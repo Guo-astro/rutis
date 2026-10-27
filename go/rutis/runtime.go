@@ -989,15 +989,20 @@ func contains(list []string, item string) bool {
 
 // ── Services ─────────────────────────────────────────────────────
 
-// Service is a service used by name.
+// Service is a service used by name, or an object with methods of another
+// process received as `any` (#687 §四): its methods call the original
+// object; it has no method table.
 type Service struct {
 	name    string
 	methods map[string]string
 	local   *providedService
 	call    func(ctx context.Context, method string, args []any) (any, error)
+	// object: the far end's object this is, if it is one.
+	object *peer.RemoteObject
 }
 
-// Methods maps the service's methods to "sync" or "async".
+// Methods maps the service's methods to "sync" or "async"; nil for an
+// object of another process, whose methods are known only to it.
 func (s *Service) Methods() map[string]string { return s.methods }
 
 // Local reports whether a plugin in this process provides the service:
@@ -1010,7 +1015,8 @@ func (s *Service) Call(ctx context.Context, method string, result any, args ...a
 	if ctx == nil {
 		panic("rutis: a nil context: pass the context.Context your caller gave you")
 	}
-	if _, ok := s.methods[method]; !ok {
+	// An object has no method table: one it lacks is its process's to say.
+	if _, ok := s.methods[method]; !ok && s.object == nil {
 		return convert.NoMethod(convert.Callee{Service: s.name, Method: method}, sortedKeys(s.methods))
 	}
 	converted, err := convert.ToPeerArgs(args)
@@ -1073,6 +1079,30 @@ func (rt *runtimeState) hostService(name, id string, methods map[string]string) 
 }
 
 var serviceType = reflect.TypeFor[Service]()
+
+// objectService is an object of another process as a *Service: its calls
+// are asynchronous calls of the object's methods.
+func objectService(object *peer.RemoteObject) *Service {
+	return &Service{
+		object: object,
+		call: func(ctx context.Context, method string, args []any) (any, error) {
+			return object.Call(ctx, method, args, false)
+		},
+	}
+}
+
+// An object of another process received as `any` or *Service is a
+// *Service; handed on, it is that object again (#687 §四).
+func init() {
+	convert.ServiceType = reflect.TypeFor[*Service]()
+	convert.ObjectFromPeer = func(object *peer.RemoteObject) any {
+		return object.As(func() any { return objectService(object) })
+	}
+	convert.ServiceToPeer = func(value any) (*peer.RemoteObject, bool) {
+		service := value.(*Service)
+		return service.object, service.object != nil
+	}
+}
 
 // bind fills `target`: a *Service, or a pointer to a struct of function
 // fields.

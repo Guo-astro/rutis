@@ -185,7 +185,13 @@ When a listening peer row and a runtime that connects in (`listen` + `instances`
 rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
 ```
 
-Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+The same holds for two listening peer rows on different listeners (#726): they share the host's one identity, so in 0.17 only one of them connected and the other's peer kept retrying. A peer row with an identity or transport of its own counts too, when the other uses the host's identity. A disabled row counts as well: enabling it would clash, so a configuration that worked in 0.17 (with the disabled row listed first) may now fail at start too. From 0.18 this also fails at start:
+
+```
+rutis-host: listeners public and private: link row mac and link row pi both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own
+```
+
+Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime or the peer node that connects in present the new token). With both rows enabled, such a configuration had one side that could not connect in 0.17 either; once fixed, it does.
 
 ## Rust embedding (behaviour changes) (#678)
 

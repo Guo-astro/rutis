@@ -155,7 +155,7 @@ func describe(value any) string {
 		return "an array"
 	case map[string]any, error:
 		return "an object"
-	case Func, Object, *RemoteFunction, *RemoteFuture:
+	case Func, Object, *RemoteFunction, *RemoteFuture, *RemoteObject:
 		return "a reference"
 	case *Signal:
 		return "a signal"
@@ -332,6 +332,10 @@ type decoding struct {
 	call    string
 	fresh   []*imported
 	refused error
+	// arguments: the value is a call's argument list, whose items are
+	// whole arguments and keep undefined (#687 §七); only the outermost
+	// list.
+	arguments bool
 }
 
 func (d *decoding) refuse(err error) {

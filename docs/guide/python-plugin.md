@@ -71,6 +71,23 @@ async def apply(ctx, config):
 
 这一行卸载、重载时，从它交出的定义挂出的每一份先结束。测试工具里，替身收到的定义可以直接交给 `load` 装上。见 [插件 API](plugin-api.md#插件定义)。
 
+### 带方法的对象
+
+数据（`dict`、`list`、`tuple`、dataclass）复制；其他类的实例按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
+
+```python
+cache = await ctx.use("store").cache()
+await cache.set("a", 1)          # 方法都是 async，调用的是对方的原对象
+value = await cache.get("a")
+```
+
+- 代理上任何公开名字都是方法（和 `ctx.use` 一样），没有数据字段：要数据，让方法返回它。`repr` 是 `<remote object>`。
+- 同一个对象交出几次，对方拿到同一个代理（`is`）；代理交回原来的进程，那边拿到的是原对象。
+- 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
+- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。
+- 列表、字典里的 `undefined`（JavaScript 发来的）到这里是 `None`，不论在哪一层。
+- 同一个运行时里的行拿到的是对象本身。测试工具的严格模式按跨进程的样子给代理。
+
 ## 3. 测试
 
 `rutis.testing` 不需要宿主：

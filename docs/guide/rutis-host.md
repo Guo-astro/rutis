@@ -422,7 +422,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `node` | `project`（默认 `.`）、`runtime`、`restart` | 启动 Node 运行时。插件包从 `project` 的 `package.json` 解析；`@arcships/rutis-runtime` 装在这里（或由 `runtime` 指定，或用 npm 版 rutis-host 自带的） |
 | `bun` | `project`（默认 `.`）、`runtime`、`program`、`restart` | 启动 Bun 运行时，行名 `bun:<模块>`。模块从 `project` 解析（`node_modules` 里的包、`./相对路径`）；`@arcships/rutis-bun` 装在这里（或由 `runtime` 指定）；`program` 是 Bun 可执行文件，默认 `PATH` 上的 `bun`。见 [写一个 Bun 插件](bun-plugin.md) |
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
-| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
+| `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
 | `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
 
@@ -499,7 +499,7 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token：两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
 
 ```
 rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
