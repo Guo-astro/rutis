@@ -17,6 +17,7 @@ across a call into rutis.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import collections
 import contextvars
 import dataclasses
@@ -771,19 +772,24 @@ class RemoteObject:
         return "<remote object>"
 
 
+def _method(value: Any, name: str) -> Any:
+    """The method `name` of `value`, or None: looked up without running
+    properties (a property is no method, whatever it returns)."""
+    if name.startswith("_"):
+        return None
+    try:
+        found = inspect.getattr_static(value, name)
+    except AttributeError:
+        return None
+    if isinstance(found, property) or not callable(found) and not isinstance(found, (staticmethod, classmethod)):
+        return None
+    return getattr(value, name)
+
+
 def _methods_of(value: Any) -> list:
     """The methods an object passed by reference has: its public callable
-    attributes, sorted."""
-    names = []
-    for name in dir(value):
-        if name.startswith("_"):
-            continue
-        try:
-            if callable(getattr(value, name)):
-                names.append(name)
-        except Exception:  # noqa: BLE001 - a property that raises is no method
-            continue
-    return sorted(names)
+    attributes, sorted (properties are not run)."""
+    return sorted(name for name in dir(value) if _method(value, name) is not None)
 
 
 def no_object_method(value: Any, method: str) -> BaseException:
@@ -791,7 +797,11 @@ def no_object_method(value: Any, method: str) -> BaseException:
     it has no method of (#687 §八): code `no-method`, data `{object,
     method, methods}`."""
     owner, methods = type(value).__name__, _methods_of(value)
-    if not method.startswith("_") and hasattr(value, method):
+    try:
+        present = not method.startswith("_") and (inspect.getattr_static(value, method) is not None or True)
+    except AttributeError:
+        present = False
+    if present:
         why = f"{method} is a field; objects passed by reference expose only their methods"
     else:
         why = f"methods: {', '.join(methods)}" if methods else "no methods"
@@ -1779,8 +1789,8 @@ class Peer:
                         value = getattr(entry.value, frame["property"])
                     elif frame["op"] == "call" and frame.get("method") is not None:
                         name = frame["method"]
-                        method = None if name.startswith("_") else getattr(entry.value, name, None)
-                        if not callable(method):
+                        method = _method(entry.value, name)
+                        if method is None:
                             raise no_object_method(entry.value, name)
                         value = self.within(entry.owner, lambda: _apply(method, job.args))
                     elif frame["op"] == "call":

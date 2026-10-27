@@ -755,7 +755,9 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		}
 		return p.exportValue(v, "object", key, grants, origin)
 	case []any:
-		if marked(v) {
+		// An argument list (depth -1) holding an undefined argument keeps
+		// it as one, references or not.
+		if marked(v) || (depth < 0 && hasUndefined(v)) {
 			items := make([]any, len(v))
 			for i, item := range v {
 				// Undefined inside a value is null (#687 §七); an argument
@@ -797,6 +799,16 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		return nil, ErrTooDeep
 	}
 	return map[string]any{"type": "data", "value": json.RawMessage(data)}, nil
+}
+
+// hasUndefined reports whether an item of `items` is undefined.
+func hasUndefined(items []any) bool {
+	for _, item := range items {
+		if _, undefined := item.(UndefinedType); undefined {
+			return true
+		}
+	}
+	return false
 }
 
 // plain replaces undefined inside data by null (design V10).

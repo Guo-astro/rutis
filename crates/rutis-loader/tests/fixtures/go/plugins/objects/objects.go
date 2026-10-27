@@ -167,11 +167,14 @@ func (h *Holder) After(ctx context.Context) string {
 	return fmt.Sprint(n)
 }
 
-// Wrong takes a struct with a data field, which cannot take an object.
-func (h *Holder) Wrong(ctx context.Context, counter struct {
+// Tally has a data field: it cannot take an object.
+type Tally struct {
 	Inc func(ctx context.Context) (int, error)
 	N   int
-}) string {
+}
+
+// Wrong takes a Tally.
+func (h *Holder) Wrong(ctx context.Context, counter Tally) string {
 	return "taken"
 }
 

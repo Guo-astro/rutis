@@ -152,9 +152,6 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
         self.assertIsNone(peer.closed_error)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestingToolObjectTests(unittest.IsolatedAsyncioTestCase):
     async def test_strict_mode_passes_objects_as_between_processes(self):
@@ -209,3 +206,7 @@ class TestingToolObjectTests(unittest.IsolatedAsyncioTestCase):
             value = {"n": 1}
             self.assertEqual(await warmer.data(value), 2)
             self.assertEqual(value["n"], 1, "data is copied")
+
+
+if __name__ == "__main__":
+    unittest.main()

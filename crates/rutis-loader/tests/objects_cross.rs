@@ -472,6 +472,7 @@ async fn a_python_object_crosses_to_node() {
 }
 
 /// objects-case(python): send-call-state
+/// objects-case(python): same-proxy-home
 /// objects-case(python): return-array-event
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread")]
@@ -493,6 +494,8 @@ async fn a_go_object_crosses_to_node() {
 }
 
 /// objects-case(go): send-call-state
+/// objects-case(go): same-proxy-home
+/// objects-case(go): third-language
 /// objects-case(go): return-array-event
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread")]
@@ -515,7 +518,7 @@ async fn a_go_parameter_that_takes_no_object_says_so() {
     assert_eq!(
         call(&fixture.root, "owner", "wrongs").await,
         json!(
-            "bad-argument: holder.wrong: argument 1 should be an object, got an object (an object is received only as a struct of function fields or any) | \
+            "bad-argument: holder.wrong: argument 1 should be a Tally, got an object (an object is received only as a struct of function fields or any) | \
              bad-argument: holder.text: argument 1 should be a string, got an object"
         )
     );

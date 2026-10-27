@@ -679,15 +679,15 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
 /// As `two_node_runtimes_waiting_on_each_other_through_go`, with Go calling
 /// `b_work`'s object (a struct of blocking function fields, #687) instead of
 /// the service: `a` calls Go, which calls the object in the other runtime,
-/// while `b` calls `a_work` back.
-/// objects-case(go): sync-wait-cycle
-/// guarantee: bridge/object-refs Go
+/// while `b` calls `a_work` back. Go
 /// runs every call on a goroutine of its own and puts none aside, but its
 /// synchronous calls say they wait (`sync-wait`, #385): the host sees the
 /// cycle and refuses the call that closes it, wherever that is, and the
 /// rest completes.
 /// risk: P10, C6
 /// guarantee: bridge/sync-wait-cycle-refused
+/// objects-case(go): sync-wait-cycle
+/// guarantee: bridge/object-refs
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn two_node_runtimes_waiting_on_each_other_through_a_go_object() {

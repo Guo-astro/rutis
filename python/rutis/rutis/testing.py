@@ -249,7 +249,7 @@ class _RemoteObject:
         return "<remote object>"
 
 
-# One proxy per object, kept for the test's run.
+# One proxy per object, kept until `load` ends.
 _PROXIES: dict = {}
 
 
@@ -739,6 +739,8 @@ async def load(
         await loaded._apply(config)
         yield loaded
     finally:
+        # The proxies of the run's objects go with it.
+        _PROXIES.clear()
         await loaded.unload()
 
 
