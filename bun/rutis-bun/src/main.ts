@@ -18,6 +18,7 @@
 import { resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { Client } from './client.ts'
+import { HOST_GONE } from './errors.ts'
 import { takeToken } from './channel.ts'
 import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
@@ -27,7 +28,7 @@ import { EVENTS_V2, NO_EVENTS_V2 } from './events.mjs'
 const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> [--id <endpoint>] [--peer <endpoint>] <project>'
 
 function fail(message: string): never {
-  process.stderr.write(`rutis-bun: ${message}\n`)
+  process.stderr.write(`runtime bun: ${message}\n`)
   process.exit(2)
 }
 
@@ -125,15 +126,15 @@ if (dialed) {
 }
 let ended = false
 process.on('exit', code => {
-  if (!ended) process.stderr.write(`rutis-bun: exiting (${code}) before the session ended\n`)
+  if (!ended) process.stderr.write(`runtime bun: exiting (${code}) before the host disconnected\n`)
 })
 await client.closed()
 ended = true
 runtime.ended()
 clearInterval(alive)
 // The host ending the session is the normal end; anything else is said.
-if (client.reason && client.reason !== 'the rutis host disconnected') {
-  process.stderr.write(`rutis-bun: the session ended: ${client.reason}\n`)
+if (client.reason && client.reason !== HOST_GONE) {
+  process.stderr.write(`runtime bun: disconnected from the host: ${client.reason}\n`)
 }
 runtime.closing = true
 // The rows go now, unless the host disposed them first: it went away (it
@@ -141,7 +142,7 @@ runtime.closing = true
 // finish within the deadline are given up (exit status 1).
 const deadline = shutdownDeadline()
 setTimeout(() => {
-  process.stderr.write(`rutis-bun: cleanups did not finish within ${deadline / 1000} s after the session ended; exiting\n`)
+  process.stderr.write(`runtime bun: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting\n`)
   process.exit(1)
 }, deadline)
 await runtime.dispose()

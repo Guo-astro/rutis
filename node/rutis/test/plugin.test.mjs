@@ -41,6 +41,10 @@ test('undeclared services, missing services and missing methods are errors', asy
   await assert.rejects(load(weather, { config: {} }), /injects llm/)
   const sneaky = definePlugin({ apply(ctx) { ctx.use('llm') } })
   await assert.rejects(load(sneaky, { services: { llm: {} } }), /is not available to this plugin, which does not declare it in inject/)
+  // guarantee: sdk/testing-matches-runtime — the runtimes' texts, codes and data (#677).
+  await assert.rejects(load(sneaky, { services: { llm: {} } }), { message: "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", code: 'not-declared', data: { service: 'llm' } })
+  const caller = definePlugin({ inject: ['llm'], apply(ctx) { ctx.use('llm').other() } })
+  await assert.rejects(load(caller, { services: { llm: { ask: async () => '', tell() {} } } }), { name: 'PluginTestError', message: 'llm has no method other (methods: ask, tell)', code: 'no-method', data: { service: 'llm', method: 'other', methods: ['ask', 'tell'] } })
   const incomplete = definePlugin({ provides: { a: { run: 'sync' } }, apply(ctx) { ctx.provide('a', {}) } })
   await assert.rejects(load(incomplete), /no such method/)
   const t = await load(weather, { config: { city: 'x' }, services: { llm: { ask: async () => '' } } })
@@ -64,7 +68,7 @@ test('strict mode crosses values as between processes', async () => {
   t.service('store').put(item)
   item.n = 2
   assert.equal(t.service('store').take().n, 1, 'data is copied, not shared')
-  assert.throws(() => t.service('store').put(Symbol('s')), /symbol cannot cross/)
+  assert.throws(() => t.service('store').put(Symbol('s')), { message: 'store.put: argument 1 cannot be sent: a symbol cannot cross between processes' })
   // Nesting: 64 levels cross, 65 do not (#279).
   const nest = depth => Array.from({ length: depth }).reduce(inner => [inner], 'bottom')
   t.service('store').put(nest(64))

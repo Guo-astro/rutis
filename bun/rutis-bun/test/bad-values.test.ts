@@ -35,24 +35,37 @@ test('a message over the limit fails only its call, either way', async () => {
     if (method === 'boom') throw new Error(big)
     return 'small'
   }, { maxMessage: 1024 })
-  expect(() => peer.invoke('host:svc\0row', 'take', [() => 1, big])).toThrow(/^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$/)
+  expect(() => peer.invoke('host:svc\0row', 'take', [() => 1, big])).toThrow(/^svc\.take: argument 2 cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$/)
   expect(sent.length).toBe(0)
   expect(peer.references()).toEqual({ exports: 0, imports: 0 })
   peer.receive(invoke(1, 'big'))
   await tick()
-  expect(sent.at(-1).error.message).toMatch(/^the result of test\.big: the message would be \d+ bytes, over the limit of 1024 bytes$/)
+  expect(sent.at(-1).error.message).toMatch(/^test\.big: the result cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$/)
   peer.receive(invoke(2, 'boom'))
   await tick()
-  expect(sent.at(-1).error.message).toMatch(/^the error Error of test\.boom: the message would be \d+ bytes/)
+  expect(sent.at(-1).error.message).toMatch(/^test\.boom: the error Error cannot be sent: the message would be \d+ bytes/)
   // A Promise's result, awaited later, names the call that returned it.
   peer.receive(invoke(3, 'later'))
   await tick()
   const future = sent.at(-1).value.value.id
   peer.receive({ op: 'await', id: 'rust:4', path: [], reference: future })
   await tick()
-  expect(sent.at(-1).error.message).toMatch(/^the result of test\.later: the message would be/)
+  expect(sent.at(-1).error.message).toMatch(/^test\.later: the result cannot be sent: the message would be/)
   incoming.push({ op: 'return', id: 'node:2', value: data('fine') })
   expect(peer.invoke('t', 'after', [])).toBe('fine')
+  expect(fault()).toBeUndefined()
+  peer.close()
+})
+
+// guarantee: sdk/error-texts
+test('a plugin definition from the far end fails only the call it came in (#677)', async () => {
+  const { peer, sent, fault } = harness(() => 'ok')
+  const plugin = { type: 'reference', value: { id: 6, kind: 'plugin', home: false, origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [plugin] } })
+  await tick()
+  const reply = sent.find(frame => frame.op === 'throw')
+  expect(reply.error.message).toBe('received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead')
+  expect(sent.find(frame => frame.op === 'release')).toEqual({ op: 'release', reference: 6, count: 1 })
   expect(fault()).toBeUndefined()
   peer.close()
 })
@@ -87,8 +100,8 @@ test('an object with methods goes only to a far end that declared objects', asyn
   await session.ready
   session.receive({ op: 'invoke', id: 'main:1', path: [], target: 'svc', method: 'get', args: data([]) })
   await tick()
-  expect(sent.at(-1).error.message).toBe('the result of svc.get: an object with methods (Counter) cannot cross to main; pass plain data or a function instead')
-  expect(() => session.invoke('host:svc', 'take', [new Counter()])).toThrow('argument 1 of svc.take: an object with methods (Counter) cannot cross to main; pass plain data or a function instead')
+  expect(sent.at(-1).error.message).toBe('svc.get: the result cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead')
+  expect(() => session.invoke('host:svc', 'take', [new Counter()])).toThrow('svc.take: argument 1 cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead')
   session.close()
 })
 
@@ -129,14 +142,14 @@ test('an error thrown while a value is encoded is wrapped, not changed', async (
   for (let i = 0; i < 2; i++) {
     let thrown: any
     try { peer.invoke('host:svc', 'take', [value]) } catch (error) { thrown = error }
-    expect(thrown.message).toBe('argument 1 of svc.take: no access')
+    expect(thrown.message).toBe('svc.take: argument 1 cannot be sent: no access')
     expect(thrown.cause).toBe(frozen)
   }
   expect(frozen.message).toBe('no access')
   expect(sent.length).toBe(0)
   peer.receive(invoke(1, 'get'))
   await tick()
-  expect(sent.at(-1).error.message).toBe('the result of test.get: no access')
+  expect(sent.at(-1).error.message).toBe('test.get: the result cannot be sent: no access')
   expect(frozen.message).toBe('no access')
   expect(fault()).toBeUndefined()
   peer.close()

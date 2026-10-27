@@ -85,7 +85,7 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
     throw new PluginTestError(`${where}: ${value} cannot cross between processes (only finite numbers do)`)
   }
   if (typeof value === 'function') {
-    return (...args) => crossResult(() => value(...args.map((arg, i) => cross(arg, `${where} argument ${i}`))), where)
+    return (...args) => crossResult(() => value(...args.map((arg, i) => cross(arg, sending(where, `argument ${i + 1}`)))), where)
   }
   if (value instanceof Promise) return value.then(result => cross(result, where), thrown => { throw crossThrown(thrown, where) })
   const tag = tagOf(value)
@@ -156,6 +156,10 @@ function crossTagged(value, tag, where, seen, depth) {
   }
 }
 
+// What cannot be sent says which part of which call, as the runtimes do:
+// `llm.ask: argument 1 cannot be sent: …`.
+const sending = (where, what) => `${where}: ${what} cannot be sent`
+
 // Call `make` from the other process: its result crosses back, and so does
 // what it throws.
 function crossResult(make, where) {
@@ -166,8 +170,8 @@ function crossResult(make, where) {
     throw crossThrown(thrown, where)
   }
   return result instanceof Promise
-    ? result.then(value => cross(value, where), thrown => { throw crossThrown(thrown, where) })
-    : cross(result, where)
+    ? result.then(value => cross(value, sending(where, 'the result')), thrown => { throw crossThrown(thrown, where) })
+    : cross(result, sending(where, 'the result'))
 }
 
 // A thrown value as the other process receives it: an Error is copied with
@@ -237,7 +241,7 @@ function shaped(name, object, shape, strict) {
   for (const [method, kind] of Object.entries(shape)) {
     service[method] = (...args) => {
       const where = `${name}.${method}`
-      const crossed = strict ? args.map((arg, i) => cross(arg, `${where} argument ${i}`)) : args
+      const crossed = strict ? args.map((arg, i) => cross(arg, sending(where, `argument ${i + 1}`))) : args
       let result
       try {
         result = object[method](...crossed)
@@ -246,13 +250,31 @@ function shaped(name, object, shape, strict) {
       }
       if (kind === 'sync') {
         if (result instanceof Promise) throw new PluginTestError(`${where} is declared sync but returned a promise: declare it 'async'`)
-        return strict ? cross(result, where) : result
+        return strict ? cross(result, sending(where, 'the result')) : result
       }
       if (!strict) return Promise.resolve(result)
-      return Promise.resolve(result).then(value => cross(value, where), thrown => { throw crossThrown(thrown, where) })
+      return Promise.resolve(result).then(value => cross(value, sending(where, 'the result')), thrown => { throw crossThrown(thrown, where) })
     }
   }
   return service
+}
+
+// A refusal as the runtimes make it (§4.3): their text, code and data, on
+// the testing tool's own error.
+const coded = (message, code, data) => Object.assign(new PluginTestError(message), { code, data })
+
+// A service the test gives, as the runtimes give a host's: a method it does
+// not have fails when called, naming those it has (the runtimes' words).
+function withoutMissing(name, object, used) {
+  if (used === null || typeof used !== 'object') return used
+  const passthrough = new Set(['then', 'toJSON', 'constructor'])
+  return new Proxy(used, {
+    get(target, property, receiver) {
+      if (typeof property !== 'string' || property in object || passthrough.has(property)) return Reflect.get(target, property, receiver)
+      const methods = Object.keys(inferred(object)).sort()
+      return () => { throw coded(`${name} has no method ${property} (${methods.length ? `methods: ${methods.join(', ')}` : 'no methods'})`, 'no-method', { service: name, method: property, methods }) }
+    },
+  })
 }
 
 // As on the real runtimes, internal/* events belong to the runtime. The SDK
@@ -291,7 +313,7 @@ function chainOf(path, groups) {
 // plugin matching errors by class fails here as it would there.
 function emitters(bus, row, crossing, keep, errors = crossing) {
   const where = name => `event ${name}`
-  const inbound = (name, values) => crossing ? values.map((value, i) => cross(value, `${where(name)} argument ${i}`)) : values
+  const inbound = (name, values) => crossing ? values.map((value, i) => cross(value, sending(where(name), `argument ${i + 1}`))) : values
   const outbound = (name, value) => {
     if (value instanceof Promise) {
       if (crossing) return value.then(result => cross(result, where(name)), thrown => { throw crossThrown(thrown, where(name)) })
@@ -381,12 +403,12 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       bus.nameRow(key, key)
       const ctx = {
         use(name) {
-          if (!plugin.inject.includes(name)) throw new PluginTestError(`service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`)
+          if (!plugin.inject.includes(name)) throw coded(`service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`, 'not-declared', { service: name })
           const found = lookup(name, own)
-          if (found === undefined) throw new PluginTestError(`service ${name} is not available`)
+          if (found === undefined) throw coded(`service ${name} is not available`, 'unavailable', { service: name })
           // A service another row here provides is the object itself.
           if (!found.test) return found.value
-          return strict ? cross(found.value, `service ${name}`) : found.value
+          return strict ? withoutMissing(name, found.value, cross(found.value, `service ${name}`)) : found.value
         },
         provide(name, value) {
           const shape = plugin.provides[name]

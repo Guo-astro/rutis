@@ -9,6 +9,7 @@
 // symbol the SDK marks them with.
 import { KEEP, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
+import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
 
 // The plugin APIs this runtime runs: a plugin written against a newer one
 // is refused, naming both.
@@ -59,8 +60,12 @@ function emittable(name) {
 // What a leaf plugin using a service that neither its `inject` nor its
 // row's declares is told when the service is not there for it: not that
 // it is missing, but what to declare (#676). The same in every runtime
-// and testing tool.
-export const UNDECLARED = name => `service ${name} is not available to this plugin, which does not declare it in inject: add '${name}' to its inject`
+// and testing tool (./errors.mjs).
+export { UNDECLARED }
+
+// What a leaf plugin providing a service someone else provides there is
+// told: `forecast is already provided by a` (§8.1 row 13).
+export const ALREADY_PROVIDED = (name, provider) => `${name} is already provided by ${provider}`
 
 // What a leaf plugin providing a service its `provides` does not declare
 // is told when the host, older than 0.12, mounted the runtime without
@@ -82,7 +87,9 @@ export function oncePerName(write) {
 // `context.on` owns listener cleanup through the plugin's fiber.
 // `undeclared(name)`: the plugin provides `name`, which its `provides` does
 // not declare. `rowInject`: the names its row's own `inject` adds.
-export function toCordis(spec, undeclared, rowInject = []) {
+// `providerOf(context, name)`: who already provides `name` there (a row's
+// name, or `the host`), to say so when the plugin provides it too.
+export function toCordis(spec, undeclared, rowInject = [], providerOf) {
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
@@ -93,15 +100,21 @@ export function toCordis(spec, undeclared, rowInject = []) {
           if (value === undefined) {
             // One neither the plugin nor its row declares: say what to
             // declare, not that it is missing (#676).
-            if (!(spec.inject ?? []).includes(name) && !rowInject.includes(name)) throw new Error(UNDECLARED(name))
-            throw new Error(`service ${name} is not available`)
+            if (!(spec.inject ?? []).includes(name) && !rowInject.includes(name)) throw notDeclared(name)
+            throw unavailable(name)
           }
           return value
         },
         provide: (name, value) => {
           // A keyed name (`#`) is never announced, by any host.
           if (undeclared && !name.includes('#') && !Object.hasOwn(spec.provides ?? {}, name)) undeclared(name)
-          return context.provide(name, value)
+          try {
+            return context.provide(name, value)
+          } catch (error) {
+            // Cordis's words name its internal fibers (`<root>`): say who.
+            if (providerOf && /^service ".*" has been registered at <.*>$/.test(error?.message)) throw new Error(ALREADY_PROVIDED(name, providerOf(context, name)))
+            throw error
+          }
         },
         effect: cleanup => { context.effect(() => cleanup) },
         // The listener leaves with the plugin, or when the returned function

@@ -1,5 +1,6 @@
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads'
 import { Session } from './session.mjs'
+import { hostGone } from './errors.mjs'
 
 export class Process {
   #port
@@ -36,14 +37,14 @@ export class Process {
     })
     this.#worker.on('error', error => this.#session.close(error))
     this.#exited = new Promise(resolve => this.#worker.once('exit', code => {
-      this.#session.close(new Error(`communication worker exited (${code})`))
+      this.#session.close(hostGone(`the communication worker exited (${code})`))
       this.#port.close()
       resolve(code)
     }))
   }
   #receive(message) {
     if (message?.ready) { this.pid = message.pid; this.#session.start(); return }
-    if (message?.closed) { this.#session.close(new Error(message.closed)); return }
+    if (message?.closed) { this.#session.close(hostGone(message.closed)); return }
     this.#session.receive(message)
   }
   static async launch(executable, config) {

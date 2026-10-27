@@ -200,7 +200,7 @@ test('close reports local emits still queued behind a held call', async () => {
   // Neither the held call nor the local emit runs; the loss is reported once.
   assert.deepEqual(log, [])
   assert.equal(reports.length, 1)
-  assert.equal(reports[0].line, 'rutis: session ended with 1 local emit still waiting behind an earlier one: t/a')
+  assert.equal(reports[0].line, 'rutis: the connection to the host ended with 1 local emit still waiting behind an earlier one: t/a')
   assert.deepEqual(reports[0].details, { count: 1, events: ['t/a'] })
   peer.close()
   assert.equal(reports.length, 1, 'close is idempotent')
@@ -254,7 +254,7 @@ test('unsupported nested references fail explicitly and roll back partial grants
   const callback = () => 42
   const { peer, sent, incoming, fault } = harness(() => {})
   // An object with methods crosses as an object reference; a symbol cannot cross.
-  assert.throws(() => peer.invoke('test', 'bad', [callback, { nested: Symbol('x') }]), { message: 'argument 2 of test.bad: a symbol cannot cross between processes' })
+  assert.throws(() => peer.invoke('test', 'bad', [callback, { nested: Symbol('x') }]), { message: 'test.bad: argument 2 cannot be sent: a symbol cannot cross between processes' })
   // Failed encoding consumes the invocation id, but publishes no reference.
   incoming.push({ op: 'return', id: 'node:2', value: data(7) })
   assert.equal(peer.invoke('test', 'good', []), 7)
@@ -338,7 +338,7 @@ test('an object reference goes only to a far end that declared objects', async (
     await Promise.resolve()
     const reply = sent.at(-1)
     assert.equal(reply.op, expected, JSON.stringify(reply))
-    if (expected === 'throw') assert.equal(reply.error.message, 'the result of svc.get: an object with methods cannot cross to main; pass plain data or a function instead')
+    if (expected === 'throw') assert.equal(reply.error.message, 'svc.get: the result cannot be sent: an object with methods cannot cross to main; pass plain data or a function instead')
     else assert.equal(reply.value.value.kind, 'object')
     session.close()
   }
@@ -398,23 +398,23 @@ test('a message over the limit fails only its call, either way', async () => {
     return 'small'
   }, { maxMessage: 1024 })
   assert.throws(() => peer.invoke('host:svc\0row', 'take', [() => 1, big]), {
-    name: 'RangeError', message: /^argument 2 of svc\.take: the message would be \d+ bytes, over the limit of 1024 bytes$/,
+    name: 'RangeError', message: /^svc\.take: argument 2 cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$/,
   })
   assert.equal(sent.length, 0, 'nothing was sent')
   assert.deepEqual(peer.references(), { exports: 0, imports: 0 }, 'the callback is not left granted')
   peer.receive(invoke(1, 'big'))
   await Promise.resolve()
-  assert.match(sent.at(-1).error.message, /^the result of test\.big: the message would be \d+ bytes, over the limit of 1024 bytes$/)
+  assert.match(sent.at(-1).error.message, /^test\.big: the result cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$/)
   peer.receive(invoke(2, 'boom'))
   await Promise.resolve()
-  assert.match(sent.at(-1).error.message, /^the error Error of test\.boom: the message would be \d+ bytes/)
+  assert.match(sent.at(-1).error.message, /^test\.boom: the error Error cannot be sent: the message would be \d+ bytes/)
   // A Promise's result, awaited later, names the call that returned it.
   peer.receive(invoke(3, 'later'))
   await Promise.resolve()
   const future = sent.at(-1).value.value.id
   peer.receive({ op: 'await', id: 'rust:4', path: [], reference: future })
   await new Promise(resolve => setImmediate(resolve))
-  assert.match(sent.at(-1).error.message, /^the result of test\.later: the message would be/)
+  assert.match(sent.at(-1).error.message, /^test\.later: the result cannot be sent: the message would be/)
   incoming.push({ op: 'return', id: 'node:2', value: data('fine') })
   assert.equal(peer.invoke('t', 'after', []), 'fine')
   assert.equal(fault(), undefined)
@@ -442,6 +442,21 @@ test('an object reference from the far end fails only the call it came in', asyn
   peer.receive(invoke(2, 'after'))
   await Promise.resolve()
   assert.equal(sent.at(-1).value.value, 'ok')
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// guarantee: sdk/error-texts
+// A plugin definition made in another process fails only the call it came
+// in, in words without the platform's names (#677).
+test('a plugin definition from the far end fails only the call it came in', async () => {
+  const { peer, sent, fault } = harness(() => 'ok')
+  const plugin = { type: 'reference', value: { id: 6, kind: 'plugin', home: false, origin: [] } }
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [plugin] } })
+  await Promise.resolve()
+  const reply = sent.find(frame => frame.op === 'throw')
+  assert.equal(reply.error.message, 'received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead')
+  assert.deepEqual(sent.find(frame => frame.op === 'release'), { op: 'release', reference: 6, count: 1 })
   assert.equal(fault(), undefined)
   peer.close()
 })
@@ -486,13 +501,13 @@ test('an error thrown while a value is encoded is wrapped, not changed', async (
   const { peer, sent, fault } = harness(() => value)
   for (let i = 0; i < 2; i++) {
     assert.throws(() => peer.invoke('host:svc', 'take', [value]), error =>
-      error.message === 'argument 1 of svc.take: no access' && error.cause === frozen)
+      error.message === 'svc.take: argument 1 cannot be sent: no access' && error.cause === frozen)
   }
   assert.equal(frozen.message, 'no access')
   assert.equal(sent.length, 0, 'nothing was sent')
   peer.receive(invoke(1, 'get'))
   await Promise.resolve()
-  assert.equal(sent.at(-1).error.message, 'the result of test.get: no access')
+  assert.equal(sent.at(-1).error.message, 'test.get: the result cannot be sent: no access')
   assert.equal(frozen.message, 'no access')
   assert.equal(fault(), undefined)
   peer.close()

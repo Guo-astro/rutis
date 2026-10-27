@@ -3,7 +3,7 @@ import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { open } from './channel/index.mjs'
 import { frame } from './channel/unix.mjs'
 import { decode } from './codec.mjs'
@@ -25,7 +25,10 @@ function channelEnded() {
 process.on('uncaughtExceptionMonitor', error => send({ closed: error.message }))
 
 let directory, server, child, channel, exited
-let failure = 'Rust process disconnected'
+// What ends the channel when nothing failed: the far end went (client.mjs
+// knows this text). A process this side started is named as the developer
+// named it.
+let failure = spec ? 'the host disconnected' : `${basename(executable)} disconnected`
 let disposing = false
 port.on('message', message => {
   if (message.abort) { child?.kill(); channel?.close(); return }
@@ -63,7 +66,7 @@ try {
       child.once('error', reject)
       child.once('close', (code, signal) => resolve({ code, signal }))
     })
-    const stream = await Promise.race([connected, exited.then(status => { throw new Error(`Rust process exited before connecting (${status.code ?? status.signal})`) })])
+    const stream = await Promise.race([connected, exited.then(status => { throw new Error(`${basename(executable)} exited before connecting (${status.code ?? status.signal})`) })])
     server.close()
     channel = frame(stream, handlers)
   }
@@ -73,7 +76,7 @@ try {
   await done
   if (child && !disposing && child.exitCode === null && child.signalCode === null) child.kill()
   const status = await exited
-  if (status && status.code !== 0) failure = `Rust process exited (${status.code ?? status.signal})`
+  if (status && status.code !== 0) failure = `${basename(executable)} exited (${status.code ?? status.signal})`
 } catch (error) {
   failure = error.message
 } finally {

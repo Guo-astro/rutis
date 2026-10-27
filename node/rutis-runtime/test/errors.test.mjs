@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { encodeError, decodeError } from '../src/errors.mjs'
+import { encodeError, decodeError, hostGone, noMethod, notDeclared, unavailable } from '../src/errors.mjs'
+import { fileURLToPath } from 'node:url'
 const roundtrip = value => decodeError(JSON.parse(JSON.stringify(encodeError(value))))
 
 test('thrown primitives, shared objects and cycles survive error transport', () => {
@@ -97,7 +98,7 @@ test('an error from the other side thrown on crosses with the graph it came in (
   const outer = new Error('outer', { cause: decodeError(remote()) })
   const wrapped = encodeError(outer)
   assert.equal(wrapped.graph.nodes.length, 4)
-  assert.equal(wrapped.graph.nodes[0].stack, outer.stack)
+  assert.equal(wrapped.graph.nodes[0].stack, withoutRuntime(outer.stack))
   assert.deepEqual(wrapped.graph.nodes[0].cause, { type: 'reference', value: 1 })
   const spliced = wrapped.graph.nodes[1]
   assert.equal(spliced.stack, failure.graph.nodes[0].stack)
@@ -112,6 +113,9 @@ test('an error from the other side thrown on crosses with the graph it came in (
   assert.equal(back.cause.cause.message, 'bad id')
 })
 
+// A stack as it crosses: Node's own frames (here the test runner's) and the
+// runtime's left out.
+const withoutRuntime = stack => stack.split('\n').filter(line => !line.includes('(node:') && !line.includes(new URL('../src/', import.meta.url).href)).join('\n')
 // The encoded error with `rethrown` left out of its nodes.
 const withoutRethrown = ({ graph, ...rest }) => ({ ...rest, graph: { ...graph, nodes: graph.nodes.map(({ rethrown, ...node }) => node) } })
 const frameLines = text => text.split('\n').every(line => /^\s*at /.test(line))
@@ -150,12 +154,83 @@ test('errors made in this process encode as before (#677)', () => {
   assert.deepEqual(encodeError(error).graph, {
     root: { type: 'reference', value: 0 },
     nodes: [
-      { type: 'error', name: 'TypeError', message: 'local', stack: error.stack, cause: { type: 'data', value: 1 }, code: 'E', data: { type: 'reference', value: 1 } },
+      { type: 'error', name: 'TypeError', message: 'local', stack: withoutRuntime(error.stack), cause: { type: 'data', value: 1 }, code: 'E', data: { type: 'reference', value: 1 } },
       { type: 'array', values: [{ type: 'data', value: 1 }] },
     ],
   })
   // A graph not in its shape decodes to name and message; thrown on, it is
   // encoded from the object.
   const odd = decodeError({ name: 'Odd', message: 'm', graph: { nodes: 'x' } })
-  assert.equal(encodeError(odd).graph.nodes[0].stack, odd.stack)
+  assert.equal(encodeError(odd).graph.nodes[0].stack, withoutRuntime(odd.stack))
+})
+
+// guarantee: sdk/error-texts
+// A thrown value that is not an error crosses as ThrownValue, its message
+// the value as written, which is what is printed (§8.2); the graph's root
+// is the value, so it decodes to the value itself (#677).
+test('a thrown value that is not an error has the value as its message (#677)', () => {
+  const cases = [['need 5 words', '"need 5 words"'], [{ code: 3 }, '{code: 3}'], [[1, 2], '[1, 2]'], [42, '42'], [null, 'null'], [undefined, 'undefined'], [12n, '12n'], [{ 'a-b': { c: { d: 1 } } }, '{"a-b": {c: {…}}}']]
+  for (const [value, message] of cases) {
+    const sent = encodeError(value)
+    assert.deepEqual([sent.name, sent.message], ['ThrownValue', message])
+    assert.deepEqual(roundtrip(value), value)
+  }
+  // An error-like object of another realm keeps its name and message.
+  assert.deepEqual([encodeError({ name: 'RangeError', message: 'far' }).name, encodeError({ name: 'RangeError', message: 'far' }).message], ['RangeError', 'far'])
+})
+
+// guarantee: sdk/error-texts
+// The stack that crosses has the plugin's frames (and its dependencies'),
+// not this runtime's, Cordis's or Node's own (§4.5).
+test('the stack that crosses leaves out the runtime\'s and Cordis\'s frames (#677)', () => {
+  const runtime = fileURLToPath(new URL('../src/leaf.mjs', import.meta.url))
+  const error = new Error('no region')
+  error.stack = [
+    'Error: no region',
+    '    at apply (file:///work/weather/src/index.ts:12:9)',
+    '    at helper (/work/weather/node_modules/left-pad/index.js:3:1)',
+    `    at Object.apply (${runtime}:120:20)`,
+    `    at loadRow (${new URL('../src/runner.mjs', import.meta.url).href}:400:5)`,
+    '    at Fiber.execute (/work/weather/node_modules/@deepseek-ai/cordis/lib/index.js:900:7)',
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)',
+  ].join('\n')
+  assert.equal(encodeError(error).graph.nodes[0].stack, [
+    'Error: no region',
+    '    at apply (file:///work/weather/src/index.ts:12:9)',
+    '    at helper (/work/weather/node_modules/left-pad/index.js:3:1)',
+  ].join('\n'))
+})
+
+// guarantee: sdk/error-codes
+// What this runtime refuses carries a code and data, and only names the
+// developer wrote (§4.3).
+test('the errors this runtime makes have their code, data and text (#677)', () => {
+  const pick = error => ({ name: error.name, message: error.message, code: error.code, data: error.data })
+  assert.deepEqual(pick(noMethod('weather', 'tomorow', ['tomorrow', 'today'])), { name: 'BindingError', message: 'weather has no method tomorow (methods: today, tomorrow)', code: 'no-method', data: { service: 'weather', method: 'tomorow', methods: ['today', 'tomorrow'] } })
+  assert.equal(noMethod('weather', 'x', []).message, 'weather has no method x (no methods)')
+  assert.deepEqual(pick(notDeclared('llm')), { name: 'BindingError', message: "service llm is not available to this plugin, which does not declare it in inject: add 'llm' to its inject", code: 'not-declared', data: { service: 'llm' } })
+  assert.deepEqual(pick(unavailable('llm')), { name: 'BindingError', message: 'service llm is not available', code: 'unavailable', data: { service: 'llm' } })
+  assert.deepEqual(pick(hostGone('the host disconnected')), { name: 'BindingError', message: 'the host disconnected', code: 'peer-gone', data: {} })
+  assert.deepEqual(pick(hostGone('connection reset')), { name: 'BindingError', message: 'the host disconnected', code: 'peer-gone', data: { reason: 'connection reset' } })
+  // They cross with their code and data.
+  const back = roundtrip(noMethod('weather', 'x', ['a']))
+  assert.deepEqual(pick(back), pick(noMethod('weather', 'x', ['a'])))
+})
+
+// guarantee: sdk/error-texts
+// A leaf plugin's apply failing under Cordis, as the runner loads it: what
+// crosses has the plugin's frame, none of leaf.mjs's or Cordis's.
+test('an apply failure crosses with the plugin\'s frames only (#677)', async () => {
+  const { Context } = await import('@deepseek-ai/cordis')
+  const { definePlugin } = await import('../../rutis/src/index.mjs')
+  const { supported, toCordis } = await import('../src/leaf.mjs')
+  const root = new Context()
+  const spec = definePlugin({ apply() { throw new Error('no region') } })
+  const fiber = root.plugin(toCordis(supported(spec, 'weather')))
+  const failure = await fiber.await().then(() => fiber.error ?? fiber._error, error => error)
+  const thrown = failure ?? fiber.error
+  assert.ok(thrown instanceof Error, 'apply failed')
+  const stack = encodeError(thrown).graph.nodes[0].stack
+  assert.match(stack, /^Error: no region\n\s+at .*errors\.test\.mjs/)
+  assert.doesNotMatch(stack, /leaf\.mjs|@deepseek-ai[\\/]cordis|node:internal/)
 })

@@ -99,7 +99,7 @@ export async function dialOut({ spec, id, peer, anchor }) {
   function start(link) {
     const { ws } = link
     // What the connection's close says once the child's session ended.
-    let ending = 'runtime session ended'
+    let ending = 'the runtime ended'
     let child
     let exit
     const exited = new Promise(resolve => { exit = resolve })
@@ -108,7 +108,7 @@ export async function dialOut({ spec, id, peer, anchor }) {
     const ready = spawnSession({ id, peer, anchor, args: ['--supervisor', 'dial'] }, () => { exit(); ws.close(ending) })
       .then(started => {
         child = started.child
-        if (!started.socket) { ws.close('runtime session ended: its process exited before connecting'); return }
+        if (!started.socket) { ws.close('the runtime exited before connecting'); return }
         link.attach(frame(started.socket, {
           message: text => ws.send(text),
           closed: () => ws.close(ending),

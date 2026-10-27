@@ -17,6 +17,9 @@ export const RECORD = Symbol.for('rutis.session.record')
 // declared `plugins` (docs/design-plugin-values-2026-10-25.md §5).
 const LEAF_PLUGIN = Symbol.for('rutis.leaf-plugin')
 const isPluginDefinition = (value: any) => value !== null && typeof value === 'object' && value[LEAF_PLUGIN] === true
+// What a call is told that hands this side a plugin definition made in
+// another process: only this side's own come back to it (§4.5).
+export const PLUGIN_FROM_ELSEWHERE = 'received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead'
 function isLive(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || ArrayBuffer.isView(value)) return false
   if (builtins.some(type => value instanceof type) || constructedTag(value) || value[RECORD] === true) return false
@@ -98,7 +101,7 @@ export function greetingOf(frame, endpoint) {
 // argument list is not a level. A deeper value fails its own call here,
 // before it is sent; the session goes on.
 export const MAX_DEPTH = 64
-const tooDeep = () => new RangeError(`value nested deeper than ${MAX_DEPTH} levels, the most a value crossing a session may nest`)
+const tooDeep = () => new RangeError(`a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
 
 // The largest message either way, as the channels take it: 16 MiB. A frame
 // over it fails its own call here, before it is sent; the channel would
@@ -125,8 +128,10 @@ export function describeCall(op, { target, method, property } = {}) {
 // new error saying which, the thrown one its cause. Never changed in place:
 // a getter run while encoding may throw one error many times, or a frozen
 // one.
-const ofArgument = (error, index, call) => prefixed(error, `argument ${index + 1} of ${call}`)
-const ofResult = (error, call) => prefixed(error, call ? `the result of ${call}` : 'the result')
+// `<svc>.<m>: argument 2 cannot be sent: <why>` (§4.3, as rutis-bridge says it).
+const cannotSend = (call, what) => call ? `${call}: ${what} cannot be sent` : `${what} cannot be sent`
+const ofArgument = (error, index, call) => prefixed(error, cannotSend(call, `argument ${index + 1}`))
+const ofResult = (error, call) => prefixed(error, cannotSend(call, 'the result'))
 // The classes a value error of this side is: it keeps its class, any other
 // thrown value is wrapped in an Error.
 const VALUE_ERRORS = [ValueError, RangeError, TypeError]
@@ -411,15 +416,13 @@ export class Session {
         const { id, home, kind, origin } = wire.value
         if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // This side cannot call an object's methods: only the call it came
+        // This side cannot call an object's methods, nor use a plugin
+        // definition made in another process: only the call it came
         // in fails (an older host may send one, #675), and it is released.
-        if (kind === 'object') {
+        if (kind === 'object' || kind === 'plugin') {
           this.#decoding?.imported.push({ id, kind, grants: 1, released: false })
-          return this.#refuse(new ValueError('received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
+          return this.#refuse(new ValueError(kind === 'plugin' ? PLUGIN_FROM_ELSEWHERE : 'received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
         }
-        // Rust does not export plugin definitions; only this side's travel
-        // back home.
-        if (kind === 'plugin') throw new Error('plugin definitions exported by Rust are not supported')
         let proxy = this.#imports.get(id)?.deref()
         if (proxy) {
           const record = this.#proxies.get(proxy)
@@ -476,8 +479,8 @@ export class Session {
         const items = frame.args?.type === 'list' ? frame.args.value : []
         const sizes = items.map(item => Buffer.byteLength(encode(item)))
         const largest = sizes.indexOf(Math.max(...sizes))
-        const what = largest < 0 ? `the arguments of ${call()}` : `argument ${largest + 1} of ${call()}`
-        throw new RangeError(`${what}: ${overLimit(size, this.#max)}`)
+        const what = largest < 0 ? 'the arguments' : `argument ${largest + 1}`
+        throw new RangeError(`${cannotSend(call(), what)}: ${overLimit(size, this.#max)}`)
       }
       this.#pending.set(id, finish); this.#send(encoded)
     } catch (error) { this.#pending.delete(id); this.#rollback(grants); throw error }
@@ -658,8 +661,8 @@ export class Session {
       const size = sizeOver(frame, this.#max)
       if (size > this.#max) {
         this.#rollback(grants); grants.length = 0
-        const what = result.ok ? 'the result' : `the error ${result.value?.name ?? 'ThrownValue'}`
-        frame = encode({ op: 'throw', id, error: encodeError(new RangeError(`${call ? `${what} of ${call}` : what}: ${overLimit(size, this.#max)}`)) })
+        const what = result.ok ? 'the result' : result.value instanceof Error ? `the error ${result.value.name}` : 'the error'
+        frame = encode({ op: 'throw', id, error: encodeError(new RangeError(`${cannotSend(call, what)}: ${overLimit(size, this.#max)}`)) })
       }
       this.#send(frame)
     } catch (error) { this.#fault(error) }
