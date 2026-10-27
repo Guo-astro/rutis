@@ -77,12 +77,15 @@ test('strict mode crosses values as between processes', async () => {
   t.service('store').put(nest(64))
   assert.throws(() => t.service('store').put(nest(65)), /nested deeper than 64 levels cannot cross/)
   assert.throws(() => t.service('store').wrong(), /declared sync but returned a promise/)
-  // An empty slot of an array arrives as undefined, as the runtimes send it (#675).
+  // An empty slot of an array arrives as null, as the runtimes send it
+  // (#687 §七); a whole argument keeps undefined.
   // eslint-disable-next-line no-sparse-arrays
   t.service('store').put([1, , 3])
   const crossed = kept.at(-1)
   assert.ok(1 in crossed, 'the empty slot is filled')
-  assert.deepEqual(crossed, [1, undefined, 3])
+  assert.deepEqual(crossed, [1, null, 3])
+  t.service('store').put(undefined)
+  assert.equal(kept.at(-1), undefined)
 })
 
 test('a plugin that needs a newer plugin API is refused', async () => {
@@ -197,14 +200,15 @@ test('the testing tool names calls and refusals as the runtimes do (#677)', asyn
   }
   const caller = definePlugin({
     inject: ['llm'],
-    apply(ctx) {
+    async apply(ctx) {
       const llm = ctx.use('llm')
-      const attempt = (key, run) => { try { run() } catch (error) { seen[key] = { message: error.message, code: error.code, data: error.data, stack: error.stack } } }
-      attempt('method', () => llm.open().run(Symbol('s')))
-      attempt('result', () => llm.open().bad())
-      attempt('function', () => llm.later()(Symbol('s')))
-      attempt('nested', () => llm.open().run({ a: [1, { b: Symbol('s') }] }))
-      attempt('thrown', () => llm.fail())
+      // An object passed by reference has asynchronous methods (#687).
+      const attempt = async (key, run) => { try { await run() } catch (error) { seen[key] = { message: error.message, code: error.code, data: error.data, stack: error.stack } } }
+      await attempt('method', () => llm.open().run(Symbol('s')))
+      await attempt('result', () => llm.open().bad())
+      await attempt('function', () => llm.later()(Symbol('s')))
+      await attempt('nested', () => llm.open().run({ a: [1, { b: Symbol('s') }] }))
+      await attempt('thrown', () => llm.fail())
     },
   })
   await load(caller, { services })
@@ -214,4 +218,57 @@ test('the testing tool names calls and refusals as the runtimes do (#677)', asyn
   assert.equal(seen.nested.message, 'the method run: argument 1 cannot be sent: a symbol cannot cross between processes')
   assert.deepEqual([seen.thrown.message, seen.thrown.code, seen.thrown.data], ['no entry', 'NotFound', { id: 7 }])
   assert.doesNotMatch(seen.thrown.stack, /remote\.go/)
+})
+
+// objects-case(node): strict-testing-tool
+// objects-case(node): data-stays-data
+// objects-case(node): plain-object-by-reference
+// Strict mode gives an object with methods as another process would (#687
+// §四): a proxy whose methods are asynchronous calls of the original, no
+// fields, one proxy per object, the original again when passed back.
+test('strict mode passes objects with methods by reference, as between processes', async () => {
+  class Cache {
+    #m = new Map(); size = 0
+    get(k) { return this.#m.get(k) }
+    set(k, v) { this.#m.set(k, v); this.size++ }
+  }
+  const seen = {}
+  const plugin = definePlugin({
+    provides: { warmer: { warm: 'async', same: 'async', back: 'async', plain: 'async', data: 'async' } },
+    apply(ctx) {
+      let first
+      ctx.provide('warmer', {
+        async warm(cache) {
+          seen.shown = String(cache)
+          seen.field = typeof cache.size
+          seen.then = cache.then
+          await cache.set('a', 1)
+          seen.missing = await cache.gett().catch(error => [error.message, error.code, error.data])
+          return cache.get('a')
+        },
+        same(cache) { first ??= cache; return first === cache },
+        back(cache) { return cache },
+        plain(object) { return object.ping() },
+        data(value) { value.n = 2; return value.n },
+      })
+    },
+  })
+  const t = await load(plugin)
+  const cache = new Cache()
+  const warmer = t.service('warmer')
+  assert.equal(await warmer.warm(cache), 1)
+  assert.equal(cache.size, 1, 'the original object changed')
+  assert.deepEqual(seen, {
+    shown: '[remote object]',
+    field: 'function',
+    then: undefined,
+    missing: ['Cache has no method gett (methods: get, set)', 'no-method', { object: 'Cache', method: 'gett', methods: ['get', 'set'] }],
+  })
+  assert.equal(await warmer.same(cache), true)
+  assert.equal(await warmer.same(cache), true, 'passed twice, one proxy')
+  assert.equal(await warmer.back(cache), cache, 'passed back, the original')
+  assert.equal(await warmer.plain({ ping: () => 'pong' }), 'pong', 'a plain object with a function goes by reference')
+  const value = { n: 1 }
+  assert.equal(await warmer.data(value), 2)
+  assert.equal(value.n, 1, 'data is copied')
 })

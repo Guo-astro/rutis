@@ -10,7 +10,9 @@
     "rust"
   ],
   "enforced": [
-    "rust"
+    "rust",
+    "node",
+    "bun"
   ],
   "cases": [
     {

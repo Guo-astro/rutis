@@ -58,17 +58,17 @@ export function versionMismatch(far, local, implementation) {
     ? `${mismatch}: upgrade the far end (${name} ${version})`
     : `${mismatch}: upgrade the far end`
 }
-// What this implementation supports in the endpoint format. It sends
-// objects but cannot receive them, so it does not declare `objects`.
+// What this implementation supports in the endpoint format. `objects`: it
+// takes objects with methods, as a proxy whose methods call them (#687).
 // `reentrant-sync`: while a synchronous call waits, every incoming call
 // runs, not only those of its own call chain (see `#run`). `sync-wait`:
 // its synchronous calls say so (`sync: true`), for the host's wait-cycle
 // check; `sync-stack`: calls run while it waits are stacked on its one
 // thread. `value-<tag>`: it takes all ten tagged values (#308,
 // ./values.ts).
-export const CAPABILITIES = ['signals', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
+export const CAPABILITIES = ['objects', 'signals', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
 // What it declares in the compat format, where older hosts ignore it.
-const COMPAT_CAPABILITIES = ['reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
+const COMPAT_CAPABILITIES = ['objects', 'reentrant-sync', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
 // `events-v2` (#464): the event protocol of rutis 0.13, declared in both
 // formats. A runtime requires it of its host (`requires`) and ends the
@@ -146,12 +146,43 @@ function prefixed(error, what, data) {
   const refused = new Class(`${what}: ${reason}`, { cause: error })
   return data ? badValue(refused, data) : refused
 }
-// A class instance's class, for messages: none for a plain object.
-const className = value => {
+// A class instance's class name, for messages: none for a plain object.
+const classOf = value => {
   const prototype = Object.getPrototypeOf(value)
   const name = prototype && prototype !== Object.prototype ? prototype.constructor?.name : undefined
-  return typeof name === 'string' && name && name !== 'Object' ? ` (${name})` : ''
+  return typeof name === 'string' && name && name !== 'Object' ? name : undefined
 }
+const className = value => { const name = classOf(value); return name ? ` (${name})` : '' }
+// The methods an object passed by reference has: its own and inherited
+// function-valued properties, not `constructor` nor Object's own, sorted.
+export function methodsOf(value) {
+  const names = new Set()
+  for (let at = value; at && at !== Object.prototype; at = Object.getPrototypeOf(at)) {
+    for (const name of Object.getOwnPropertyNames(at)) {
+      if (name === 'constructor') continue
+      const descriptor = Object.getOwnPropertyDescriptor(at, name)
+      if (typeof descriptor?.value === 'function') names.add(name)
+    }
+  }
+  return [...names].sort()
+}
+// A call of `method` on `value` (an object passed by reference) that it has
+// no method of: what the caller is told (#687 §八), code `no-method`, data
+// `{ object, method, methods }` (`object`: its class, null for a plain one).
+export function noMethod(value, method) {
+  const object = classOf(value) ?? null, methods = methodsOf(value)
+  const listed = methods.length ? `methods: ${methods.join(', ')}` : 'no methods'
+  const field = method in Object(value) && typeof value[method] !== 'function'
+    ? ` (${method} is a field; objects passed by reference expose only their methods)` : ` (${listed})`
+  const error = new TypeError(`${object ?? 'the object'} has no method ${method}${field}`)
+  return Object.assign(error, { code: 'no-method', data: { object, method, methods } })
+}
+// What a received object (a proxy) shows as, and the names that are not
+// its methods: `then` (so awaiting a proxy gives the proxy), the
+// conversions, and symbols.
+const REMOTE = '[remote object]'
+const NOT_METHODS = new Set(['then', 'toJSON', 'toString', 'valueOf'])
+const INSPECT = Symbol.for('nodejs.util.inspect.custom')
 
 function checkData(value, seen = new Set(), depth = 0) {
   if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError(`a ${typeof value} cannot cross between processes`)
@@ -290,7 +321,8 @@ export class Session {
         if (!Number.isSafeInteger(id)) throw new Error('reference identifiers exhausted')
         const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : isPluginDefinition(value) ? 'plugin' : 'object'
         // An object goes only to a far end that can call its methods.
-        if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead`)
+        // An older one (before rutis 0.18) takes none.
+        if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead, or upgrade ${this.greeting.endpoint} to rutis 0.18`)
         if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
         entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined }
         this.#identities.set(value, id); this.#exports.set(id, entry)
@@ -311,11 +343,13 @@ export class Session {
     if (ArrayBuffer.isView(value)) throw new ValueError(`cannot send ${describe(value)}: binary data crosses as a Uint8Array (or Buffer), an ArrayBuffer or a DataView`)
     if (value !== null && typeof value === 'object' && depth >= MAX_DEPTH) throw tooDeep()
     // An empty slot of an array is undefined, as when it is read (#675).
-    if (Array.isArray(value)) return { type: 'list', value: Array.from(value, value => this.#encode(value, grants, business, depth + 1)) }
+    // Undefined inside a value is null (#687 §七), also an empty slot of an
+    // array: only a whole argument or result keeps it.
+    if (Array.isArray(value)) return { type: 'list', value: Array.from(value, value => value === undefined ? { type: 'data', value: null } : this.#encode(value, grants, business, depth + 1)) }
     // An Error passed as a value (e.g. to a callback) crosses as data.
     if (value instanceof Error) return { type: 'data', value: { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) } }
     if (value !== null && typeof value === 'object' && needsRecord(value)) {
-      return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#encode(item, grants, business, depth + 1)])) }
+      return { type: 'record', value: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === undefined ? { type: 'data', value: null } : this.#encode(item, grants, business, depth + 1)])) }
     }
     checkData(value, new Set(), depth)
     return { type: 'data', value }
@@ -352,11 +386,13 @@ export class Session {
   // value, so every reference in it is imported, and then released again,
   // as for a value dropped. A frame not in the protocol's shape still ends
   // the session.
-  #decodeValue(wire) {
+  // `args`: `wire` is a call's arguments, each a whole argument, which keeps
+  // undefined.
+  #decodeValue(wire, args = false) {
     const decoding = { refused: undefined, imported: [] }, outer = this.#decoding
     this.#decoding = decoding
     let value
-    try { value = this.#decode(wire) } finally { this.#decoding = outer }
+    try { value = args && wire?.type === 'list' && Array.isArray(wire.value) ? wire.value.map(item => this.#decode(item)) : this.#decode(wire) } finally { this.#decoding = outer }
     if (!decoding.refused) return { value }
     const counts = new Map()
     for (const record of decoding.imported) counts.set(record, (counts.get(record) ?? 0) + 1)
@@ -405,7 +441,8 @@ export class Session {
         return this.#collection(wire, 'set element', elements => new Set(elements))
       case 'undefined': return undefined
       case 'data': return wire.value
-      case 'list': return wire.value.map(value => this.#decode(value))
+      // Undefined inside a value is null, also from an older far end (§七).
+      case 'list': return wire.value.map(value => this.#decode(value) ?? null)
       case 'signal': {
         // The caller may cancel this call: the method sees a real AbortSignal.
         if (!this.#decodingFor) throw new Error('a signal is only valid as a call argument')
@@ -415,18 +452,18 @@ export class Session {
       }
       case 'record': {
         if (wire.value === null || typeof wire.value !== 'object' || Array.isArray(wire.value)) throw new Error('invalid record')
-        return Object.fromEntries(Object.entries(wire.value).map(([key, value]) => [key, this.#decode(value)]))
+        return Object.fromEntries(Object.entries(wire.value).map(([key, value]) => { const item = this.#decode(value); return [key, item === undefined ? null : item] }))
       }
       case 'reference': {
         const { id, home, kind, origin } = wire.value
         if (!Number.isSafeInteger(id) || id <= 0 || !['function', 'future', 'object', 'plugin'].includes(kind) || typeof home !== 'boolean' || !Array.isArray(origin) || origin.some(id => !this.#callId(id))) throw new Error('invalid reference')
         if (home) return this.#export(id, kind).value
-        // This side cannot call an object's methods, nor use a plugin
-        // definition made in another process: only the call it came
-        // in fails (an older host may send one, #675), and it is released.
-        if (kind === 'object' || kind === 'plugin') {
+        // A plugin definition made in another process cannot be used here:
+        // only the call it came in fails (an older host may send one,
+        // #675), and it is released.
+        if (kind === 'plugin') {
           this.#decoding?.imported.push({ id, kind, grants: 1, released: false })
-          return this.#refuse(new ValueError(kind === 'plugin' ? PLUGIN_FROM_ELSEWHERE : 'received an object with methods, which JavaScript cannot take; pass plain data or a function instead'))
+          return this.#refuse(new ValueError(PLUGIN_FROM_ELSEWHERE))
         }
         let proxy = this.#imports.get(id)?.deref()
         if (proxy) {
@@ -438,7 +475,8 @@ export class Session {
         const check = () => { if (record.released) throw new Error('reference released') }
         proxy = kind === 'function'
           ? (...args) => { check(); return this.#requestSync('call', { reference: id }, args) }
-          : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
+          : kind === 'object' ? this.#remoteObject(id, check)
+            : new RemotePromise(() => { check(); return this.#requestAsync('await', { reference: id }, undefined, origin) })
         record.weak = new WeakRef(proxy)
         this.#imports.set(id, record.weak); this.#proxies.set(proxy, record)
         this.#decoding?.imported.push(record)
@@ -447,6 +485,34 @@ export class Session {
       }
       default: throw new Error('invalid wire value')
     }
+  }
+  // A received object with methods (#687 §四): every name read is a method,
+  // an asynchronous call of the original object's; it has no fields.
+  #remoteObject(id, check) {
+    const methods = new Map()
+    const method = name => {
+      let call = methods.get(name)
+      if (!call) {
+        call = (...args) => { try { check() } catch (error) { return Promise.reject(error) } return this.#requestAsync('call', { reference: id, method: name }, args) }
+        methods.set(name, call)
+      }
+      return call
+    }
+    const show = () => REMOTE
+    // `util.inspect` (and so `console.log`) reads a proxy's target itself.
+    const target = Object.create(null)
+    Object.defineProperty(target, INSPECT, { value: show })
+    return new Proxy(target, {
+      get: (_target, name) => {
+        if (name === INSPECT || name === 'toString' || name === Symbol.toPrimitive) return show
+        if (typeof name === 'symbol' || NOT_METHODS.has(name)) return undefined
+        return method(name)
+      },
+      has: (_target, name) => typeof name === 'string' && !NOT_METHODS.has(name),
+      set: () => false,
+      defineProperty: () => false,
+      deleteProperty: () => false,
+    })
   }
   #export(id, kind) {
     const entry = this.#exports.get(id)
@@ -579,7 +645,7 @@ export class Session {
       if (frame.op === 'get' && typeof frame.property !== 'string') throw new Error('invalid property')
       let decoded
       this.#decodingFor = frame.id
-      try { decoded = frame.op === 'await' || frame.op === 'get' ? { value: undefined } : this.#decodeValue(frame.args) } finally { this.#decodingFor = undefined }
+      try { decoded = frame.op === 'await' || frame.op === 'get' ? { value: undefined } : this.#decodeValue(frame.args, true) } finally { this.#decodingFor = undefined }
       const kind = frame.op === 'await' ? 'future' : frame.op === 'get' || frame.method !== undefined ? 'object' : 'function'
       const entry = frame.op === 'invoke' ? undefined : this.#export(frame.reference, kind)
       // Arguments this side does not take: only this call fails.
@@ -631,7 +697,11 @@ export class Session {
           let value
           try {
             value = frame.op === 'get' ? entry.value[frame.property]
-              : frame.op === 'call' && frame.method !== undefined ? Reflect.apply(entry.value[frame.method], entry.value, args)
+              : frame.op === 'call' && frame.method !== undefined ? (() => {
+                const method = entry.value[frame.method]
+                if (typeof method !== 'function') throw noMethod(entry.value, frame.method)
+                return Reflect.apply(method, entry.value, args)
+              })()
                 : frame.op === 'call' ? Reflect.apply(entry.value, undefined, args)
                   : this.#dispatch(frame.target, frame.method, args)
           } finally {

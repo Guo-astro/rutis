@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Session, ENDPOINT_PROTOCOL, MAX_MESSAGE, overLimit } from '../src/session.mjs'
 import { decode } from '../src/codec.mjs'
+import { decodeError } from '../src/errors.mjs'
 
 const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
@@ -322,6 +323,7 @@ test('objects with behaviour cross as live object references', async () => {
   peer.close()
 })
 
+// objects-case(node): no-objects-declared
 test('an object reference goes only to a far end that declared objects', async () => {
   for (const [capabilities, expected] of [[['signals'], 'throw'], [['objects'], 'return']]) {
     const sent = []
@@ -338,7 +340,7 @@ test('an object reference goes only to a far end that declared objects', async (
     await Promise.resolve()
     const reply = sent.at(-1)
     assert.equal(reply.op, expected, JSON.stringify(reply))
-    if (expected === 'throw') assert.equal(reply.error.message, 'svc.get: the result cannot be sent: an object with methods cannot cross to main; pass plain data or a function instead')
+    if (expected === 'throw') assert.equal(reply.error.message, 'svc.get: the result cannot be sent: an object with methods cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18')
     else assert.equal(reply.value.value.kind, 'object')
     session.close()
   }
@@ -425,23 +427,77 @@ test('a message over the limit fails only its call, either way', async () => {
 // An object reference the far end sends (an older host relaying one) is
 // refused as a value this side does not take: only the call it came in
 // fails, and it is released; the session goes on.
-test('an object reference from the far end fails only the call it came in', async () => {
-  const ran = []
-  const { peer, sent, incoming, fault } = harness((_, method) => { ran.push(method); return 'ok' })
+// objects-case(node): send-call-state
+// objects-case(node): same-proxy-home
+// objects-case(node): receiver-releases
+test('an object from the far end is a proxy whose methods call it (#687)', async () => {
+  const util = await import('node:util')
+  const got = []
+  const { peer, sent, fault } = harness((_, method, args) => { got.push(...args); return 'ok' })
   const object = { type: 'reference', value: { id: 5, kind: 'object', home: false, origin: [] } }
-  const message = 'received an object with methods, which JavaScript cannot take; pass plain data or a function instead'
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [data(1), object] } })
+  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object, object] } })
   await Promise.resolve()
-  assert.deepEqual(sent.find(frame => frame.op === 'release'), { op: 'release', reference: 5, count: 1 })
-  const reply = sent.find(frame => frame.op === 'throw')
-  assert.deepEqual([reply.id, reply.error.message], ['rust:1', message])
-  assert.deepEqual(ran, [], 'the method did not run')
-  // In a reply: the call waiting for it fails.
-  incoming.push({ op: 'return', id: 'node:1', value: object })
-  assert.throws(() => peer.invoke('t', 'get', []), { message })
-  peer.receive(invoke(2, 'after'))
-  await Promise.resolve()
-  assert.equal(sent.at(-1).value.value, 'ok')
+  const [cache, again] = got
+  // Passed twice, it is one proxy.
+  assert.equal(cache, again)
+  assert.equal(String(cache), '[remote object]')
+  assert.equal(util.inspect(cache), '[remote object]')
+  assert.equal(cache.then, undefined)
+  assert.equal(await cache, cache, 'awaiting a proxy gives the proxy')
+  // A method is an asynchronous call of the original object.
+  const result = cache.get('a')
+  const call = sent.at(-1)
+  assert.deepEqual([call.op, call.reference, call.method, call.args], ['call', 5, 'get', { type: 'list', value: [data('a')] }])
+  peer.receive({ op: 'return', id: call.id, value: data(1) })
+  assert.equal(await result, 1)
+  // A missing method is the owner's to answer: its error, as it sent it.
+  const missing = cache.gett()
+  const asked = sent.at(-1)
+  assert.equal(asked.method, 'gett')
+  peer.receive({ op: 'throw', id: asked.id, error: { name: 'TypeError', message: 'Cache has no method gett (methods: get, set)' } })
+  await assert.rejects(missing, { message: 'Cache has no method gett (methods: get, set)' })
+  // Passed back, it is the far end's own again.
+  peer.invokeAsync('t', 'give', [cache]).catch(() => {}) // only its frame is read
+  assert.deepEqual(sent.at(-1).args.value[0].value, { id: 5, kind: 'object', home: true, origin: [] })
+  // Let go of, it is released.
+  peer.release(cache)
+  assert.deepEqual(sent.at(-1), { op: 'release', reference: 5, count: 2 })
+  await assert.rejects(cache.get('a'), { message: 'reference released' })
+  assert.equal(fault(), undefined)
+  peer.close()
+})
+
+// objects-case(node): no-method
+test('a method an object passed by reference lacks is no-method, saying what it has', async () => {
+  class Cache { #m = new Map(); size = 0; get(k) { return this.#m.get(k) } set(k, v) { this.#m.set(k, v) } }
+  const objects = { cache: new Cache(), plain: { ping() { return 'pong' } } }
+  const { peer, sent, fault } = harness((_, method) => objects[method])
+  const ids = {}
+  for (const [n, name] of [[1, 'cache'], [2, 'plain']]) {
+    peer.receive(invoke(n, name)); await Promise.resolve()
+    ids[name] = sent.at(-1).value.value.id
+  }
+  const ask = async (n, reference, method) => {
+    peer.receive({ op: 'call', id: `rust:${n}`, path: [], reference, method, args: data([]) })
+    await new Promise(resolve => setImmediate(resolve))
+    return sent.find(frame => frame.id === `rust:${n}`)
+  }
+  const cases = [
+    [3, ids.cache, 'gett', 'Cache has no method gett (methods: get, set)', { object: 'Cache', method: 'gett', methods: ['get', 'set'] }],
+    [4, ids.cache, 'size', 'Cache has no method size (size is a field; objects passed by reference expose only their methods)', { object: 'Cache', method: 'size', methods: ['get', 'set'] }],
+    [5, ids.plain, 'pong', 'the object has no method pong (methods: ping)', { object: null, method: 'pong', methods: ['ping'] }],
+  ]
+  for (const [n, reference, method, message, details] of cases) {
+    const reply = await ask(n, reference, method)
+    assert.equal(reply.op, 'throw')
+    assert.equal(reply.error.message, message)
+    const decoded = decodeError(reply.error)
+    assert.equal(decoded.code, 'no-method')
+    assert.deepEqual(decoded.data, details)
+  }
+  // The session goes on: the next call is answered.
+  const ok = await ask(6, ids.plain, 'ping')
+  assert.deepEqual(ok.value, data('pong'))
   assert.equal(fault(), undefined)
   peer.close()
 })
@@ -461,19 +517,26 @@ test('a plugin definition from the far end fails only the call it came in', asyn
   peer.close()
 })
 
-// An empty slot of an array is undefined, as when it is read; it used to
-// cross as a null in place of a value, which ended the session (#675).
-test('an array with empty slots crosses with undefined in them', async () => {
+// objects-case(node): undefined-nested-null
+// Undefined inside a value is null at any depth, also an empty slot of an
+// array, both ways; a whole argument or result keeps it (#687 §七).
+test('undefined is null inside a value, and kept as a whole argument', async () => {
   // eslint-disable-next-line no-sparse-arrays
   const sparse = () => [1, , 3]
-  const { peer, sent, incoming, fault } = harness(sparse)
+  const got = []
+  const { peer, sent, incoming, fault } = harness((_, method, args) => { got.push(args); return method === 'sparse' ? sparse() : { a: undefined, b: [undefined] } })
   peer.receive(invoke(1, 'sparse'))
   await Promise.resolve()
-  const crossed = { type: 'list', value: [data(1), { type: 'undefined' }, data(3)] }
+  const crossed = { type: 'list', value: [data(1), data(null), data(3)] }
   assert.deepEqual(sent.at(-1).value, crossed)
   incoming.push({ op: 'return', id: 'node:1', value: data(null) })
-  peer.invoke('t', 'take', [sparse()])
-  assert.deepEqual(sent.at(-1).args.value[0], crossed)
+  peer.invoke('t', 'take', [sparse(), undefined])
+  assert.deepEqual(sent.at(-1).args.value, [crossed, { type: 'undefined' }])
+  // Received: the marker inside a value is null; a whole argument stays.
+  peer.receive({ op: 'invoke', id: 'rust:2', path: [], target: 't', method: 'record', args: { type: 'list', value: [{ type: 'undefined' }, { type: 'list', value: [data(1), { type: 'undefined' }] }, { type: 'record', value: { a: { type: 'undefined' } } }] } })
+  await Promise.resolve()
+  assert.deepEqual(got.at(-1), [undefined, [1, null], { a: null }])
+  assert.equal(got.at(-1).length, 3)
   assert.equal(fault(), undefined)
   peer.close()
 })
@@ -560,5 +623,29 @@ test('an error answering a call has the caller\'s stack, and a rethrow adds it',
   assert.match(sent.stack, /weather\.py/)
   assert.equal(sent.rethrown.length, 1)
   assert.match(sent.rethrown[0], /^\s+at askTheWeather /)
+  peer.close()
+})
+
+// objects-case(node): cancel
+// objects-case(node): holder-killed-releases
+// An object passed by reference: a call of its method the caller gives up
+// aborts the method's signal; once the host releases it (its holder let go
+// or went, the host's session to the holder ending), it is let go of here.
+test('an object passed by reference is cancelled through and released by the host', async () => {
+  let aborted
+  class Job { run(signal) { return new Promise(resolve => signal.addEventListener('abort', () => { aborted = signal.reason?.name; resolve('stopped') })) } }
+  const { peer, sent, fault } = harness(() => new Job())
+  peer.receive(invoke(1, 'job')); await Promise.resolve()
+  const id = sent.at(-1).value.value.id
+  assert.equal(peer.references().exports, 1)
+  peer.receive({ op: 'call', id: 'rust:2', path: [], reference: id, method: 'run', args: { type: 'list', value: [{ type: 'signal' }] } })
+  await new Promise(resolve => setImmediate(resolve))
+  peer.receive({ op: 'cancel', id: 'rust:2' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(aborted, 'AbortError')
+  const before = peer.references().exports
+  peer.receive({ op: 'release', reference: id, count: 1 })
+  assert.equal(peer.references().exports, before - 1, 'the object is let go of')
+  assert.equal(fault(), undefined)
   peer.close()
 })
