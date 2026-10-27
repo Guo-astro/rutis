@@ -262,19 +262,21 @@ impl DynPlugin for LocalRuntime {
             // Started once the runtime runs, as a runtime plugin starting its
             // own process is: while it starts this is Loading, and a restart
             // or dispose abandons the start (its process ends with the link).
-            let handle = self.runtime.handle();
+            // What is looked at is marked seen, so going Ready right after
+            // the look still wakes the wait: missed, the next change would
+            // be the process ending, taken for a failed start.
+            let mut states = self.runtime.handle().subscribe();
             let failure = loop {
-                if let RuntimeState::Ready(_) = handle.state() {
-                    return Ok(Effect::Done);
-                }
-                if let RuntimeState::Down(reason) = handle.state() {
-                    break reason;
+                match states.borrow_and_update().clone() {
+                    RuntimeState::Ready(_) => return Ok(Effect::Done),
+                    RuntimeState::Down(reason) => break reason,
+                    _ => {}
                 }
                 if let LinkState::Stopped { error, .. } = &*link_state.borrow() {
                     break error.clone();
                 }
                 tokio::select! {
-                    _ = handle.changed() => {}
+                    _ = states.changed() => {}
                     _ = link_state.changed() => {}
                     _ = ctx.cancelled() => {
                         self.runtime.stopped();
