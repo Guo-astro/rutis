@@ -5,6 +5,7 @@
 //! the binary, without a semver promise.
 
 pub mod config;
+pub mod control;
 pub mod host;
 pub mod languages;
 pub mod new;

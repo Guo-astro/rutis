@@ -54,7 +54,7 @@ pub struct RustHostGuideEn;
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;
-pub use loader::{Loader, LoaderOptions, LoaderPlugin};
+pub use loader::{status, Loader, LoaderOptions, LoaderPlugin};
 pub use patch::{Layer, Patch};
 pub use resolver::{Builtins, Chain, Resolver};
 

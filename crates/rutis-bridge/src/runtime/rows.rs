@@ -79,6 +79,18 @@ impl RowService {
     }
 }
 
+impl RowService {
+    /// Record a call of `method` on the process until the guard is dropped
+    /// ([`Process::calls`]): from the calling row (none outside rows), to
+    /// the row providing it.
+    fn begin(&self, method: &str) -> crate::runtime::calls::Ongoing {
+        let from = crate::session::caller_row().map(|row| row.id().to_owned());
+        let to = self.owner.as_ref().map(|row| row.id().to_owned());
+        let service = self.service.as_deref().unwrap_or(&self.handle);
+        self.process.begin_call(from, to, service, method)
+    }
+}
+
 impl HostDispatch for RowService {
     fn invoke(&self, method: &str, args: RpcValue) -> Reply {
         let target = self.process.connection();
@@ -87,11 +99,13 @@ impl HostDispatch for RowService {
         let source = crate::runtime::rpc::caller().filter(|source| source.tag() != target.tag());
         match self.methods.get(method).and_then(Value::as_str) {
             Some("async") => {
+                let ongoing = self.begin(method);
                 let connection = target.clone();
                 let site = self.site(method);
                 let process = self.process.clone();
                 let (handle, method) = (self.handle.clone(), method.to_owned());
                 let call = async move {
+                    let _ongoing = ongoing;
                     let settled = async {
                         crate::runtime::rpc::settle(
                             connection.invoke_async(&handle, &method, args).await?,
@@ -112,6 +126,7 @@ impl HostDispatch for RowService {
                 })
             }
             Some(_) => {
+                let _ongoing = self.begin(method);
                 // From which row to which: a wait cycle it closes is
                 // written with their names.
                 let rows = crate::session::caller_row()

@@ -379,7 +379,7 @@ fn provider(
 }
 
 /// The row whose fiber is `plugin` or an ancestor of it.
-fn row_of(
+pub(super) fn row_of(
     plugin: PluginId,
     records: &HashMap<PluginId, String>,
     fibers: &HashMap<PluginId, &PluginDiagnostics>,
@@ -412,7 +412,7 @@ pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option
 }
 
 /// Whether `key` is a row's own runtime ([`RuntimeRows`](crate::runtime::RuntimeRows)).
-fn own_runtime(key: &TypeKey) -> bool {
+pub(super) fn own_runtime(key: &TypeKey) -> bool {
     #[cfg(feature = "runtimes")]
     return key.type_id() == std::any::TypeId::of::<crate::runtime::RuntimeRows>();
     #[cfg(not(feature = "runtimes"))]

@@ -12,7 +12,7 @@ use crate::outln;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::{Failure, LinkState};
 use rutis_loader::peer::PeerResolver;
-use rutis_loader::report::{EntryInfo, EntryStatus, Wait, WaitReason};
+use rutis_loader::report::{EntryInfo, EntryStatus, Wait};
 use rutis_loader::Loader;
 
 use crate::languages::BinaryHost;
@@ -44,86 +44,30 @@ pub fn describe(status: &EntryStatus) -> String {
     }
 }
 
-/// What a waiting row's line says: `waiting for runtime <name> (…)` while
-/// its own runtime is not there ([`own_runtime_line`]); otherwise
-/// `waiting for <service> (<why>)`, one per service it waits for, joined
-/// by `; `; `waiting for its services` when rutis cannot say which.
-/// `runtime(name)`: the state of the local runtime `name`.
+/// What a waiting row's line says ([`rutis_loader::status::describe_waits`]),
+/// `runtime(name)` giving the state of the local runtime `name`.
 pub fn describe_waits(waits: &[Wait], runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> String {
-    if let Some(own) = waits
-        .iter()
-        .find(|wait| matches!(wait.reason, WaitReason::OwnRuntime))
-    {
-        return own_runtime_line(&own.service, runtime(&own.service).as_ref());
-    }
-    if waits.is_empty() {
-        return "waiting for its services".into();
-    }
-    let each: Vec<String> = waits
-        .iter()
-        .map(|wait| format!("{} ({})", wait.service, why(&wait.reason, runtime)))
-        .collect();
-    format!("waiting for {}", each.join("; "))
+    rutis_loader::status::describe_waits(waits, &|name| runtime(name).as_ref().map(phase))
 }
 
-/// A row waiting for its own runtime `name`, in the state `state` (`None`:
-/// one the host does not run, a remote one): starting, down and how its
-/// process ended, stopped, or running while its rows are resolved again.
+/// A row waiting for its own runtime `name`, in the state `state`
+/// ([`rutis_loader::status::own_runtime_line`]).
 pub fn own_runtime_line(name: &str, state: Option<&RuntimeState>) -> String {
+    rutis_loader::status::own_runtime_line(name, state.map(phase))
+}
+
+/// A runtime's state as the loader's status says it, and why it is down.
+fn phase(state: &RuntimeState) -> (rutis_loader::status::RuntimeState, Option<String>) {
+    use rutis_loader::status::RuntimeState as Phase;
     match state {
-        Some(RuntimeState::Starting) => format!("waiting for runtime {name} (starting)"),
-        Some(RuntimeState::Down(reason)) => {
-            format!(
-                "waiting for runtime {name} (down: {})",
-                how_it_ended(reason)
-            )
-        }
-        Some(RuntimeState::Idle) => format!("waiting for runtime {name} (stopped)"),
-        _ => format!("waiting for runtime {name}"),
+        RuntimeState::Ready(_) => (Phase::Running, None),
+        RuntimeState::Starting => (Phase::Starting, None),
+        RuntimeState::Down(why) => (Phase::Down, Some(why.clone())),
+        RuntimeState::Idle => (Phase::Stopped, None),
     }
 }
 
-/// Why a service a row waits for is not there, in a few words.
-fn why(reason: &WaitReason, runtime: &dyn Fn(&str) -> Option<RuntimeState>) -> String {
-    // An error's first line: the status line is one line.
-    let first = |error: &str| error.lines().next().unwrap_or_default().to_owned();
-    match reason {
-        WaitReason::NoProvider { like: Some(like) } => {
-            format!("no row provides it; did you mean {like}?")
-        }
-        WaitReason::NoProvider { like: None } => "no row provides it".into(),
-        WaitReason::NoEnabledProvider { like } => format!(
-            "no enabled row provides it{}; rutis-host check says whether a disabled row does",
-            like.as_ref()
-                .map(|like| format!(", did you mean {like}?"))
-                .unwrap_or_default()
-        ),
-        WaitReason::Explained(why) => first(why),
-        WaitReason::ProviderDisabled { row } => {
-            format!("row {row}, which provides it, is disabled")
-        }
-        WaitReason::ProviderFailed { row, error } => format!("row {row} failed: {}", first(error)),
-        WaitReason::ProviderInactive { row } => {
-            format!("row {row}, which provides it, is not running")
-        }
-        WaitReason::ProviderRuntime { row, runtime: name } => match runtime(name) {
-            Some(RuntimeState::Down(_)) => format!("row {row}'s runtime {name} is down"),
-            Some(_) => format!("row {row}'s runtime {name} is not running yet"),
-            // One the host does not run (a remote one): its state unknown.
-            None => format!("row {row} waits for its runtime {name}"),
-        },
-        WaitReason::Cycle { row, service } => {
-            format!("row {row} waits for {service} from this row: they inject each other")
-        }
-        WaitReason::ProviderWaiting { row, services } => {
-            format!("row {row} waits too, for {}", services.join(", "))
-        }
-        WaitReason::ProviderStarting { row } => format!("row {row} is starting"),
-        WaitReason::ProviderRunning { row } => format!("row {row} has not provided it"),
-        WaitReason::Other(said) => first(said),
-        _ => "not there yet".into(),
-    }
-}
+pub use rutis_loader::status::how_it_ended;
 
 /// The category of a link failure, as printed: from [`Failure`], never
 /// from the error's text.
@@ -219,17 +163,6 @@ pub fn describe_runtime(state: Runtime<'_>, was_down: bool) -> Option<String> {
     }
 }
 
-/// How a runtime ended, from why it is down: what its plugin and its
-/// channel saw says it in more words, and the process's exit is the part
-/// worth a line (`exited with signal: 9 (SIGKILL)`).
-pub fn how_it_ended(reason: &str) -> &str {
-    ["runtime process ", "runtime ended: the process "]
-        .iter()
-        .find_map(|said| reason.strip_prefix(said))
-        .or_else(|| reason.strip_prefix("runtime ended: "))
-        .unwrap_or(reason)
-}
-
 /// What [`follow`] watches: the rows, their links and the runtimes.
 #[derive(Clone)]
 pub struct Followed {
@@ -282,7 +215,11 @@ impl Shown {
                 .find(|(runtime, _, _)| runtime == name)
                 .map(|(_, state, _)| state.clone())
         };
-        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime));
+        // Only then is it worth asking which runtime each row runs in.
+        let any_away = states
+            .iter()
+            .any(|(_, state, _)| matches!(state, RuntimeState::Down(_) | RuntimeState::Starting));
+        out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime, any_away));
         out
     }
 
@@ -317,6 +254,7 @@ impl Shown {
         loader: &Loader,
         peers: &PeerResolver,
         runtime: &dyn Fn(&str) -> Option<RuntimeState>,
+        any_away: bool,
     ) -> Vec<String> {
         let mut lines = Vec::new();
         let mut rows = BTreeMap::new();
@@ -328,6 +266,11 @@ impl Shown {
         let mut waits = match waiting.is_empty() {
             true => Vec::new(),
             false => loader.waits_of(&waiting),
+        }
+        .into_iter();
+        let mut runtimes = match any_away {
+            true => loader.runtimes_of(&entries.iter().collect::<Vec<_>>()),
+            false => vec![None; entries.len()],
         }
         .into_iter();
         for entry in &entries {
@@ -356,6 +299,21 @@ impl Shown {
             let line = match pending(entry) {
                 true => describe_waits(&waits.next().unwrap_or_default(), runtime),
                 false => describe(&entry.status),
+            };
+            // A running row whose runtime went down waits for it from now
+            // on, before its plugin is told (#681).
+            let line = match (&entry.status, runtimes.next().flatten()) {
+                (EntryStatus::Running(snapshot), Some(name))
+                    if matches!(snapshot.state, FiberState::Active | FiberState::Loading) =>
+                {
+                    match runtime(&name) {
+                        Some(state @ (RuntimeState::Down(_) | RuntimeState::Starting)) => {
+                            own_runtime_line(&name, Some(&state))
+                        }
+                        _ => line,
+                    }
+                }
+                _ => line,
             };
             rows.insert(key, line);
         }
@@ -402,6 +360,7 @@ pub fn listening(listening: &[(String, std::net::SocketAddr)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rutis_loader::report::WaitReason;
 
     /// A failed row prints the plugin's own error, then which row and what
     /// it was doing, then the plugin's frames (#677).
