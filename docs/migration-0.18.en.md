@@ -186,3 +186,35 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+
+## Objects with methods go to every language (#687)
+
+In 0.17 objects with methods (class instances and the like) went only to Rust; handed to Node, Bun, Python, Go, Swift or Kotlin, the call failed (`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`). From 0.18 they go to every language by reference: the far end gets a proxy whose methods call the original object ([design](design-object-refs-2026-10-27.en.md); the rules are in the Plugin API's [Objects with methods](guide/plugin-api.en.md#objects-with-methods)). What goes by reference and what is copied has not changed: JS class instances and plain objects with function-valued properties, Python instances other than dataclasses, Go's `rutis.Ref(v)`, and Swift and Kotlin `@RutisService` instances. What Rust hosts and Cordis bindings receive does not change.
+
+What to change:
+
+- **Code that relied on the failure**: code that passed an object, and on failure passed data instead (turning it into a dict or plain object in a `catch` and calling again), no longer reaches the `catch`: the far end gets a proxy, whose methods are all asynchronous calls and which has no data fields. When the far end wants data, pass data.
+- **The receiver's parameter types**: in Go, Swift and Kotlin, a parameter of a data type that receives an object fails the call with `bad-argument` (before, the sender's `bad-value`), and the error says how to receive an object: in Go a struct of function fields or `any`, in Swift a `@RutisClient` protocol or `Any`, in Kotlin a `@RutisClient` interface or `Any?`. A Rust `#[rutis::service]` parameter takes no objects and fails with `bad-argument`; pass functions instead.
+- **Upgrade both ends**: runtimes older than 0.18 do not take objects. When a 0.18 host would forward an object to one, the call fails with `bad-value`, and the session goes on:
+
+  ```
+  chat: warmer.warm: argument 1 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it
+  ```
+
+  Connected directly to an old end, the SDK refuses by itself: `… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`. A 0.17.2 host does not know that 0.18 runtimes take objects, so objects between runtimes under it still fail with 0.17.2's text; upgrade the host.
+
+### `undefined`
+
+`undefined` is kept only as a whole argument or a whole result; inside arrays, objects, Maps and Sets it is `null` at any depth (`None` in Python), in every language. Before, `undefined` inside an array passed as an argument was kept as a special value (a placeholder in Python, `undefined` in JS), against the docs. JS code that checks whether an array element is `undefined` should check for `null` as well (`x == null`).
+
+### Swift
+
+- A parameter, or the result of a `@RutisClient` method, typed with a `@RutisClient` protocol (`any Cache`) receives an object as that protocol's proxy; typed `Any`, as a `Rutis.Client` (`call(_:_:as:)`, `call(_:values:as:)`). Objects inside arrays, dictionaries and event arguments arrive through `Any` as `Rutis.Client`; `[any Cache]` is not supported.
+- Only a `@RutisClient` protocol declared at file level receives objects; a protocol nested in another type still works with `ctx.use`, but as a parameter type it takes no object (`bad-argument`). To receive objects, move the protocol to file level.
+- `RutisProxy` gains `rutisClient`: a proxy passed on sends the original object. Code implementing `RutisProxy` itself (not through `@RutisClient`) must add it.
+
+### Kotlin
+
+- New type `arcships.rutis.RemoteObject`: a parameter of type `Any?` receives an object as one; `call(method, vararg args)` suspends, `callBlocking(method, vararg args)` blocks, and `release()` gives the reference back now. It is the only new public API for objects in 0.18.
+- A parameter, or the result of a `@RutisClient` method, typed with a `@RutisClient` interface receives an object as the KSP-generated proxy.
+- Code that treated an `Any?` parameter as receiving only data (`Map`, `List`, primitives) may now receive a `RemoteObject` too.

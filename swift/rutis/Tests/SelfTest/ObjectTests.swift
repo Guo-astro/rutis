@@ -1,0 +1,171 @@
+// Objects with methods across processes, Swift's side (#687): a received
+// object is the proxy of a @RutisClient protocol whose methods call the
+// original; one proxy per object, the original again back home; a method
+// the object lacks is no-method; a data parameter takes no object; data is
+// copied; a call given up is cancelled where it runs; an object is let go
+// of once its holder releases it or goes. The cross-process cases:
+// crates/rutis-loader/tests/objects_cross.rs.
+import Foundation
+@testable import Rutis
+import RutisTest
+
+/// An object with methods of the test's side.
+@RutisService
+final class Cache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Int] = [:]
+    func get(_ key: String) -> Int? { lock.withLock { values[key] } }
+    func set(_ key: String, _ value: Int) { lock.withLock { values[key] = value } }
+    func size() -> Int { lock.withLock { values.count } }
+}
+
+/// How the service uses an object of another process.
+@RutisClient
+protocol CacheClient {
+    func get(_ key: String) async throws -> Int?
+    func set(_ key: String, _ value: Int) async throws
+}
+
+struct Spot: Codable, Equatable {
+    var x: Int
+    var y: Int
+}
+
+/// Takes objects as a @RutisClient protocol, and data (which takes none).
+@RutisService
+final class Warmer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held: (any CacheClient)?
+    private var spot: Spot?
+    var kept: (any CacheClient)? { lock.withLock { held } }
+    var seen: Spot? { lock.withLock { spot } }
+
+    func warm(_ cache: any CacheClient) async throws -> Int? {
+        try await cache.set("a", 1)
+        lock.withLock { held = cache }
+        return try await cache.get("a")
+    }
+
+    /// Whether `cache` is the proxy it keeps.
+    func same(_ cache: any CacheClient) -> Bool {
+        (cache as? any RutisProxy)?.rutisClient === (kept as? any RutisProxy)?.rutisClient
+    }
+
+    func back() -> any CacheClient { kept! }
+
+    func place(_ spot: Spot) -> Int { spot.x }
+
+    func keep(_ spot: Spot) -> Int {
+        lock.withLock { self.spot = spot }
+        return spot.y
+    }
+
+    func missing() async -> String {
+        do {
+            _ = try await (kept as! any RutisProxy).rutisClient.call("gett", [], as: Int?.self)
+            return "answered"
+        } catch let error as RutisError {
+            return "\(error.code ?? ""): \(error.message)"
+        } catch {
+            return "\(error)"
+        }
+    }
+}
+
+/// An object whose method runs until its call is cancelled.
+@RutisService
+final class SlowObject: @unchecked Sendable {
+    let cancelled = Lines()
+    func run() async throws -> String {
+        do {
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+            cancelled.add("cancelled")
+            throw error
+        }
+        return "done"
+    }
+}
+
+struct ObjectTests {
+    // objects-case(swift): send-call-state
+    // objects-case(swift): same-proxy-home
+    // objects-case(swift): no-method
+    // objects-case(swift): declared-type-refuses
+    // objects-case(swift): data-stays-data
+    // objects-case(swift): strict-testing-tool
+    /// Through the testing tool, across its session as between processes:
+    /// the plugin's proxy calls the original, which changes; given twice it
+    /// is the same proxy; sent back it is the original; a method the object
+    /// lacks is its process's no-method; a data parameter refuses an
+    /// object; data is copied.
+    func anObjectIsTakenAsAClientProtocolAndGoesHome() async throws {
+        let warmer = Warmer()
+        let plugin = Rutis.define(Plugin(name: "warmer") { ctx in ctx.provide("warmer", warmer) })
+        let loaded = try await RutisTest.load(plugin)
+        defer { Task { await loaded.close() } }
+        let service = try await loaded.service("warmer")
+        let cache = Cache()
+        let warmed = try await service.call("warm", cache, as: Int?.self)
+        XCTAssertEqual(warmed, 1)
+        XCTAssertEqual(cache.size(), 1, "the original object changed")
+        let same = try await service.call("same", cache, as: Bool.self)
+        XCTAssertEqual(same, true, "one object, one proxy")
+        let back = try await service.call("back", as: Any?.self)
+        XCTAssertTrue((back as AnyObject?) === cache, "back home, the original")
+        let missing = try await service.call("missing", as: String.self)
+        XCTAssertEqual(missing, "no-method: Cache has no method gett (methods: get, set, size)")
+        do {
+            _ = try await service.call("place", cache, as: Int.self)
+            XCTFail("a data parameter takes no object")
+        } catch let error as RutisError {
+            XCTAssertEqual(error.code, "bad-argument")
+            XCTAssertTrue(error.message.hasSuffix(
+                "argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)"),
+                error.message)
+        }
+        let spot = Spot(x: 1, y: 2)
+        let y = try await service.call("keep", spot, as: Int.self)
+        XCTAssertEqual(y, 2)
+        XCTAssertEqual(warmer.seen, spot, "data arrives as an equal copy")
+    }
+
+    // objects-case(swift): cancel
+    // objects-case(swift): holder-killed-releases
+    /// A call of an object's method given up by its caller is cancelled
+    /// where it runs; once its holder's session ends, the object is let go
+    /// of.
+    func callsOnObjectsAreCancelledAndHoldersRelease() async throws {
+        let slow = SlowObject()
+        let (a, b) = try Channels.pair()
+        var options = PeerOptions()
+        options.dispatch = { _, method, _ in method == "slow" ? .object(ServiceObject(slow)) : .undefined }
+        let runtime = try Peer(channel: a, options: options)
+        var hostOptions = PeerOptions()
+        hostOptions.host = true
+        let host = try Peer(channel: b, options: hostOptions)
+        try runtime.start()
+        try host.start()
+        await host.ready()
+        await runtime.ready()
+        defer { runtime.close() }
+        let given = try await host.call(target: "t", method: "slow", args: [], sync: false)
+        guard case let .remoteObject(object) = given else { return XCTFail("\(given)") }
+        XCTAssertEqual(runtime.referenceTables.exports, 1)
+        let call = Task { try await object.call("run", [], sync: false) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        call.cancel()
+        for _ in 0 ..< 100 where slow.cancelled.all.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(slow.cancelled.all, ["cancelled"])
+        // The holder goes without releasing it: its end of the channel
+        // closes.
+        host.close()
+        b.close()
+        for _ in 0 ..< 100 where runtime.referenceTables.exports != 0 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(runtime.referenceTables.exports, 0, "the object is let go of")
+    }
+}

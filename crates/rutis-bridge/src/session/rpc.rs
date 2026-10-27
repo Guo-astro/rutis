@@ -163,7 +163,14 @@ impl Value {
         Self::future_inner(future, false)
     }
     fn future_inner(future: impl Future<Output = Reply> + Send + 'static, business: bool) -> Self {
-        Self::future_on(future, business, Executor::current())
+        // Made while a session's call is dispatched: what it calls in other
+        // sessions, however long after, is on that session's behalf.
+        match caller() {
+            Some(source) => {
+                Self::future_on(with_caller(source, future), business, Executor::current())
+            }
+            None => Self::future_on(future, business, Executor::current()),
+        }
     }
     fn future_on(
         future: impl Future<Output = Reply> + Send + 'static,
@@ -291,9 +298,12 @@ impl Reference {
     pub fn call(&self, args: Value) -> Reply {
         match &self.0 {
             ReferenceInner::Local(object) => object.call(args),
-            ReferenceInner::Remote(import) => import
-                .connection()?
-                .request_sync(Operation::Call(import.id, None, args)),
+            ReferenceInner::Remote(import) => {
+                let connection = import.connection()?;
+                forwarded(&connection, || {
+                    connection.request_sync(Operation::Call(import.id, None, args))
+                })
+            }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
@@ -301,10 +311,12 @@ impl Reference {
         match &self.0 {
             ReferenceInner::Local(object) => object.call(args),
             ReferenceInner::Remote(import) => {
-                import
-                    .connection()?
-                    .request_async(Operation::Call(import.id, None, args))
-                    .await
+                let connection = import.connection()?;
+                forwarded_async(
+                    &connection,
+                    connection.request_async(Operation::Call(import.id, None, args)),
+                )
+                .await
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -328,7 +340,9 @@ impl Reference {
         import
             .connection()
             .and_then(|connection| {
-                connection.request_sync(Operation::Call(import.id, Some(method.into()), args))
+                forwarded(&connection, || {
+                    connection.request_sync(Operation::Call(import.id, Some(method.into()), args))
+                })
             })
             .map_err(|error| import.gone(error))
     }
@@ -336,35 +350,43 @@ impl Reference {
     pub async fn call_method_async(&self, method: &str, args: Value) -> Reply {
         let import = self.remote_object()?;
         let connection = import.connection().map_err(|error| import.gone(error))?;
-        connection
-            .request_async(Operation::Call(import.id, Some(method.into()), args))
-            .await
-            .map_err(|error| import.gone(error))
+        forwarded_async(
+            &connection,
+            connection.request_async(Operation::Call(import.id, Some(method.into()), args)),
+        )
+        .await
+        .map_err(|error| import.gone(error))
     }
     /// Read a property of a remote object; every read is live.
     pub fn get(&self, property: &str) -> Reply {
         let import = self.remote_object()?;
-        import
-            .connection()?
-            .request_sync(Operation::Get(import.id, property.into()))
+        let connection = import.connection()?;
+        forwarded(&connection, || {
+            connection.request_sync(Operation::Get(import.id, property.into()))
+        })
     }
     pub async fn wait_async(&self) -> Reply {
         match &self.0 {
             ReferenceInner::Local(object) => object.wait(false, current_path()).await,
             ReferenceInner::Remote(import) => {
-                import
-                    .connection()?
-                    .request_async(Operation::Await(import.id, import.origin.clone()))
-                    .await
+                let connection = import.connection()?;
+                forwarded_async(
+                    &connection,
+                    connection.request_async(Operation::Await(import.id, import.origin.clone())),
+                )
+                .await
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
     }
     pub fn wait(&self) -> Reply {
         match &self.0 {
-            ReferenceInner::Remote(import) => import
-                .connection()?
-                .request_sync(Operation::Await(import.id, import.origin.clone())),
+            ReferenceInner::Remote(import) => {
+                let connection = import.connection()?;
+                forwarded(&connection, || {
+                    connection.request_sync(Operation::Await(import.id, import.origin.clone()))
+                })
+            }
             ReferenceInner::Local(_) => {
                 Err(Error::refused(
                 "the result is not ready yet and cannot be waited for synchronously: await it instead"
@@ -653,6 +675,24 @@ pub(crate) fn unchained<R>(call: impl FnOnce() -> R) -> R {
 /// notification nobody waits for, and is left out of the wait graph.
 pub(crate) fn unchained_now() -> bool {
     UNCHAINED.with(|flag| flag.get())
+}
+/// Run `call`, a call into `connection`, forwarded from the session whose
+/// dispatch it serves when that is another one ([`caller`]): a reference of
+/// one session called while another's call is handled, as a host service
+/// does with a function or an object it is given (#687).
+fn forwarded<R>(connection: &Connection, call: impl FnOnce() -> R) -> R {
+    match caller().filter(|source| source.tag() != connection.tag()) {
+        Some(source) => connection.forward(&source, call),
+        None => call(),
+    }
+}
+/// The async form of [`forwarded`]: the caller is the one when it is first
+/// polled.
+async fn forwarded_async<F: Future>(connection: &Connection, future: F) -> F::Output {
+    match caller().filter(|source| source.tag() != connection.tag()) {
+        Some(source) => connection.forward_async(&source, future).await,
+        None => future.await,
+    }
 }
 /// Poll `future` with `source` as the [`caller`]: what it calls in other
 /// sessions on that session's behalf is forwarded from it (its chain
@@ -1580,7 +1620,12 @@ impl Connection {
     /// and a reverse call can be routed to the wrong waiting thread.
     pub fn forward<R>(&self, source: &Connection, call: impl FnOnce() -> R) -> R {
         let _path = PathGuard::enter(rebase(&current_path(), source.tag(), self.tag()));
-        call()
+        // The chain is this session's now: what `call` sends here is not
+        // rebased again.
+        let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
+        let result = call();
+        CALLER.with(|caller| caller.replace(previous));
+        result
     }
     /// The async form of [`Connection::forward`]: the chain is taken when
     /// this is called and is current whenever `future` is polled.
@@ -1589,7 +1634,19 @@ impl Connection {
         source: &Connection,
         future: F,
     ) -> impl Future<Output = F::Output> {
-        with_path(rebase(&current_path(), source.tag(), self.tag()), future)
+        let path = rebase(&current_path(), source.tag(), self.tag());
+        let this = self.clone();
+        async move {
+            let mut future = std::pin::pin!(future);
+            std::future::poll_fn(|cx| {
+                let _path = PathGuard::enter(path.clone());
+                let previous = CALLER.with(|caller| caller.replace(Some(this.clone())));
+                let polled = future.as_mut().poll(cx);
+                CALLER.with(|caller| caller.replace(previous));
+                polled
+            })
+            .await
+        }
     }
     pub fn invoke(&self, target: &str, method: &str, args: Value) -> Reply {
         self.request_sync(Operation::Invoke(target.into(), method.into(), args))

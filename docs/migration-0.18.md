@@ -186,3 +186,35 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
+
+## 带方法的对象传给任何语言（#687）
+
+0.17 里带方法的对象（类的实例等）只能传给 Rust；传给 Node、Bun、Python、Go、Swift、Kotlin 时这次调用失败（`argument 1 of warmer.warm: an object with methods cannot cross to py; pass plain data or a function instead`）。0.18 起它们按引用传给任何语言：对方拿到代理，方法调用的是原对象（[设计](design-object-refs-2026-10-27.md)，规则见插件 API 的[带方法的对象](guide/plugin-api.md#带方法的对象)）。什么按引用、什么复制没有变：JS 的类实例和带函数值属性的普通对象，Python 里 dataclass 以外的实例，Go 的 `rutis.Ref(v)`，Swift、Kotlin 的 `@RutisService` 实例。Rust 宿主和 Cordis 绑定收到的值不变。
+
+要改的：
+
+- **靠这个失败的代码**：以前先传对象、失败后改传数据（`catch` 里转成 dict 或普通对象再调一次）的代码，现在不会走到 `catch`：对方收到的是代理，方法都是异步调用，没有数据字段。对方要的是数据时，直接传数据。
+- **收的一方的参数类型**：Go、Swift、Kotlin 里参数是数据类型时，收到对象的调用以 `bad-argument` 失败（以前是发送方的 `bad-value`），错误写明对象要怎样收：Go 是函数字段的结构体或 `any`，Swift 是 `@RutisClient` 协议或 `Any`，Kotlin 是 `@RutisClient` 接口或 `Any?`。Rust 的 `#[rutis::service]` 参数不收对象，以 `bad-argument` 失败，改传函数。
+- **两端都要升级**：0.18 之前的运行时不收对象。0.18 的宿主要把对象转给这样的运行时时，这次调用以 `bad-value` 失败，会话继续：
+
+  ```
+  chat: warmer.warm: argument 1 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it
+  ```
+
+  直接连着旧的一端时，SDK 自己拒绝：`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`。0.17.2 的宿主不认得 0.18 运行时收对象，它下面的运行时之间传对象照旧以 0.17.2 的文字失败；升级宿主。
+
+### `undefined`
+
+`undefined` 只在作为整个参数或整个返回值时保留；在数组、对象、Map、Set 里任何一层都是 `null`（Python 收到 `None`），各语言一样。以前作为参数的数组里的 `undefined` 保留成特殊值（Python 收到一个占位值，JS 收到 `undefined`），与文档不符。比较数组元素是不是 `undefined` 的 JS 代码改为同时看 `null`（`x == null`）。
+
+### Swift
+
+- 参数或 `@RutisClient` 方法的返回值类型写 `@RutisClient` 协议（`any Cache`）时，收到对象拿到这个协议的代理；类型写 `Any` 时拿到 `Rutis.Client`（`call(_:_:as:)`、`call(_:values:as:)`）。数组、字典、事件参数里的对象经 `Any` 拿到 `Rutis.Client`；`[any Cache]` 不支持。
+- 只有写在文件顶层的 `@RutisClient` 协议能收对象；嵌在别的类型里的协议照常可以 `ctx.use`，但用作参数类型时收不了对象（`bad-argument`）。要收对象，把协议移到文件顶层。
+- `RutisProxy` 多了 `rutisClient`：代理再交出去时发出原来那个对象。自己实现 `RutisProxy` 的代码（不经 `@RutisClient`）要加上它。
+
+### Kotlin
+
+- 新类型 `arcships.rutis.RemoteObject`：类型为 `Any?` 的参数收到对象时拿到它，`call(method, vararg args)` 挂起，`callBlocking(method, vararg args)` 阻塞，`release()` 立即交还引用。这是 0.18 里关于对象唯一新增的公开 API。
+- 参数或 `@RutisClient` 方法的返回值类型写 `@RutisClient` 接口时，收到对象拿到 KSP 生成的代理。
+- 以前把 `Any?` 参数当作只会收到数据（`Map`、`List`、基本类型）的代码，现在还可能收到 `RemoteObject`。

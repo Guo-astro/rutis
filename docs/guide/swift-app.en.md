@@ -75,6 +75,32 @@ Test plugins with `RutisTest` as in the plugin guide (§3); it runs in the iOS s
 
 A plugin definition a plugin hands to a service ([Swift plugin](swift-plugin.en.md#handing-a-plugin-to-a-service)) runs in the app's process; when the app dials in, it mounts only in that connection's instance (or deeper), and every copy mounted from it ends when the app calls `stop()` or disconnects.
 
+### Objects with methods
+
+As in the [Swift plugin](swift-plugin.en.md#objects-with-methods): an instance of a `@RutisService` type is handed over by reference; for an object another process passes, a parameter typed with a file-level `@RutisClient` protocol (`any Cache`) gets its proxy, and one typed `Any` gets a `Rutis.Client` (`try await client.call("get", values: ["a"], as: Int?.self)`).
+
+```swift
+@RutisClient
+protocol Cache {
+    func get(_ key: String) async throws -> Int?
+    func set(_ key: String, _ value: Int) async throws
+}
+
+@RutisService
+public final class Warmer: @unchecked Sendable {
+    public func warm(_ cache: any Cache) async throws -> Int? {
+        try await cache.set("a", 1)          // a call of the far end's object
+        return try await cache.get("a")
+    }
+}
+```
+
+- Every method is an async call across processes, and there are no data fields; a method the object lacks fails with `no-method`.
+- A `@RutisClient` protocol nested in another type, and a parameter of a data type, do not take objects: the call fails with `bad-argument` (`argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`). `[any Cache]` is not supported in 0.18; objects inside arrays and dictionaries arrive through `Any` as `Rutis.Client`.
+- A received proxy passed on sends the original object; passed back to its process, it is the original there.
+- Objects the app hands over live in the app's process: after the app calls `stop()` or disconnects, calls on them elsewhere fail with `peer-gone`.
+- Objects cannot go to a rutis older than 0.18: the call fails with `bad-value`, and the error says to upgrade.
+
 ## 3. Start and stop
 
 ```swift

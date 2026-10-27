@@ -54,6 +54,29 @@ interface ServiceHandle {
     fun callBlocking(method: String, args: List<Any?>): Any?
 }
 
+/**
+ * What a generated proxy also is: the handle it calls through, and the object
+ * of another process it calls, if it does. Handed on, such a proxy is that
+ * object again (#687). Not for plugin code.
+ */
+interface ObjectProxy {
+    val rutisHandle: ServiceHandle
+
+    val rutisObject: RemoteObject? get() = (rutisHandle as? ObjectHandle)?.target
+}
+
+/** The handle of an object of another process: no method table, every method called by name (#687). */
+internal class ObjectHandle(val target: RemoteObject) : ServiceHandle {
+    override val name: String get() = ""
+    override val kinds: Map<String, String> get() = emptyMap()
+
+    override suspend fun callSuspend(method: String, args: List<Any?>): Any? =
+        target.peer.callMethodSuspend(target, method, args, sync = false)
+
+    override fun callBlocking(method: String, args: List<Any?>): Any? =
+        target.peer.callMethod(target, method, args, sync = true)
+}
+
 /** Makes the proxies of a `@RutisClient` interface (generated). */
 abstract class ClientFactory<I : Any> {
     /** The methods the interface calls, by wire name. */
@@ -126,7 +149,8 @@ object Generated {
         } catch (e: Exception) {
             val expected = Refusals.expected(deserializer.descriptor)
             if (value === Undefined) throw ArgumentRefusal(method, i, expected, null)
-            val reason = Refusals.reason(value, e)
+            // An object is taken only by a @RutisClient interface or Any? (#687).
+            val reason = if (value is RemoteObject) "an object is received only as a @RutisClient interface or Any?" else Refusals.reason(value, e)
             throw ArgumentRefusal(method, i, expected, Refusals.shown(value) + (reason?.let { " ($it)" } ?: ""))
         }
     }
@@ -206,6 +230,36 @@ object Generated {
         null, Undefined, kotlinx.serialization.json.JsonNull -> if (nullable) null else throw ValueException(where("expected a plugin definition, got null"))
         else -> throw ValueException(where("expected a plugin definition, got ${describe(value)}"))
     }
+
+    /**
+     * Argument `i` of a `@RutisClient` interface type `type`: an object of
+     * another process as that interface's proxy, or this process's own object
+     * back home (#687 §四); null for none when [nullable].
+     */
+    fun <I : Any> clientArg(args: List<Any?>, i: Int, method: String, type: Class<I>, nullable: Boolean): I? {
+        val value = if (i < args.size) args[i] else Undefined
+        return when (value) {
+            null, Undefined, kotlinx.serialization.json.JsonNull ->
+                if (nullable) null else throw ArgumentRefusal(method, i, Refusals.article(type.simpleName), if (value === Undefined) null else "null")
+            else -> client(value, type)
+                ?: throw ArgumentRefusal(method, i, Refusals.article(type.simpleName), Refusals.shown(value) + if (value is RemoteObject) " (an object is received only as a @RutisClient interface or Any?)" else "")
+        }
+    }
+
+    /** A result of a `@RutisClient` interface type `type`. */
+    fun <I : Any> clientResult(value: Any?, type: Class<I>, nullable: Boolean): I? = when (value) {
+        null, Undefined, kotlinx.serialization.json.JsonNull -> if (nullable) null else throw ValueException("expected ${Refusals.article(type.simpleName)}, got null")
+        else -> client(value, type) ?: throw ValueException("expected ${Refusals.article(type.simpleName)}, got ${describe(value)}")
+    }
+
+    private fun <I : Any> client(value: Any, type: Class<I>): I? = when (value) {
+        is RemoteObject -> Tables.clientFactory(type)?.create(ObjectHandle(value))
+        is ExportedObject -> type.cast(value.original.takeIf { type.isInstance(it) })
+        else -> null
+    }
+
+    /** A `@RutisClient` interface value as a session value: a proxy of another process's object is that object. */
+    fun clientValue(value: Any?): Any? = Native.fromNative(value)
 
     /** A plugin definition as a session value: it crosses as a `plugin` reference. */
     fun plugin(value: Plugin?): Any? = value

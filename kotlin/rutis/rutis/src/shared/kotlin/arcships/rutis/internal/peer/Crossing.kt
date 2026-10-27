@@ -45,7 +45,9 @@ internal fun ofArguments(reason: String?, call: String, limit: Int? = null): Val
 /** An object with methods sent to a far end that did not declare `objects`. */
 internal fun objectRefused(original: Any?, far: String?): ValueException {
     val type = original?.javaClass?.simpleName?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""
-    return ValueException("an object with methods$type cannot cross to ${far ?: "the far end"}; pass plain data or a function instead")
+    val to = far ?: "the far end"
+    // One older than rutis 0.18 takes none.
+    return ValueException("an object with methods$type cannot cross to $to; pass plain data or a function instead, or upgrade $to to rutis 0.18")
 }
 
 /** An object reference received from the far end (an older host's, say): only its call fails. */

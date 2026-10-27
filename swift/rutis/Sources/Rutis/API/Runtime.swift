@@ -827,16 +827,39 @@ extension Rutis {
     /// A service used by name: calls its methods across the session (or on
     /// the provider's object, when it is in this process).
     public final class Client: @unchecked Sendable {
-        /// The service's name.
+        /// The service's name; empty for an object of another process.
         public let name: String
-        /// Its methods, each "sync" or "async".
+        /// Its methods, each "sync" or "async"; empty for an object of
+        /// another process, whose methods are known only to it.
         public let methods: [String: String]
         let invoke: (String, [Value], Bool) async throws -> Value
+        /// The far end's object this client calls, if it is one (#687).
+        let object: FarObject?
 
         init(name: String, methods: [String: String], invoke: @escaping (String, [Value], Bool) async throws -> Value) {
             self.name = name
             self.methods = methods
             self.invoke = invoke
+            object = nil
+        }
+
+        /// An object of another process as a client: its methods are
+        /// asynchronous calls of the object's.
+        init(object: FarObject) {
+            name = ""
+            methods = [:]
+            self.object = object
+            invoke = { method, args, sync in try await object.call(method, args, sync: sync) }
+        }
+
+        /// The client of `object`, one per object while it is held.
+        static func of(_ object: FarObject) -> Client {
+            object.lock.lock()
+            defer { object.lock.unlock() }
+            if let client = object.client { return client }
+            let client = Client(object: object)
+            object.client = client
+            return client
         }
 
         /// Calls `method` with `args` (encoded by `Rutis.encode` /
@@ -844,10 +867,23 @@ extension Rutis {
         /// service declares `sync` is a synchronous call (the far end hears
         /// so); the Task waits without holding a thread.
         public func call<R>(_ method: String, _ args: [Encoded], as type: R.Type = R.self) async throws -> R {
-            guard let kind = methods[method] else {
+            try await call(method, args, as: type, object: nil)
+        }
+
+        /// `call(_:_:as:)` whose result, an object of another process, is
+        /// made into `R` by `object` (a @RutisClient protocol's proxy,
+        /// `rutisObjectProxy`).
+        public func call<R>(_ method: String, _ args: [Encoded], as type: R.Type = R.self,
+                            object proxy: ((Rutis.Client) -> R)?) async throws -> R
+        {
+            // An object has no method table: one it lacks is its process's
+            // to say (no-method).
+            let kind = methods[method]
+            if kind == nil, object == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             let value = try await invoke(method, args.map(\.value), kind == "sync")
+            if let proxy, case let .remoteObject(far) = value { return proxy(Client.of(far)) }
             return try ValueCodec.decode(R.self, from: value)
         }
 
@@ -867,4 +903,13 @@ public protocol RutisProxy {
     static var rutisMethodNames: [String] { get }
     /// A proxy calling `client`.
     static func rutisMake(_ client: Rutis.Client) -> Service
+    /// The client it calls: handed on, a proxy of another process's object
+    /// is that object again (#687).
+    var rutisClient: Rutis.Client { get }
 }
+
+/// How a parameter or result of type `T` takes an object of another
+/// process: nil, it takes none (and `Any` takes a `Rutis.Client`).
+/// `@RutisClient` adds an overload for its protocol, which makes its proxy;
+/// the macros call this, and the overload wins (#687 §四).
+public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Client) -> T)? { nil }

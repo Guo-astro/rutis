@@ -82,7 +82,7 @@ object Native {
         return when (value) {
             null, Undefined -> value
             is String, is Boolean, is JsonElement, is WireMap, is WireSet, is Decimal,
-            is RemoteFunction, is RemoteFuture, is Exported, is ExportedObject, is Signal, is arcships.rutis.Plugin, is RemotePlugin,
+            is RemoteFunction, is RemoteFuture, is arcships.rutis.RemoteObject, is Exported, is ExportedObject, is Signal, is arcships.rutis.Plugin, is RemotePlugin,
             is Instant, is LocalDateTime, is LocalDate, is LocalTime, is ByteArray, is BigInteger, is UUID,
             -> value
             is Char -> value.toString()
@@ -125,11 +125,13 @@ object Native {
 
     @OptIn(InternalSerializationApi::class)
     private fun objectOf(value: Any): Any? {
+        // A proxy of an object of another process, handed on: that object (#687).
+        if (value is arcships.rutis.ObjectProxy) value.rutisObject?.let { return it }
         Tables.serviceTable(value.javaClass)?.let { return ServiceObject(value, it) }
         if (value is Function<*>) return exportFunction(value)
         @Suppress("UNCHECKED_CAST")
         val serializer = value::class.serializerOrNull() as KSerializer<Any>?
-            ?: throw ValueException("a ${value.javaClass.name} cannot cross: it is neither @Serializable nor a @RutisService")
+            ?: throw ValueException("a ${value.javaClass.simpleName.ifEmpty { value.javaClass.name }} cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it")
         return RutisFormat.encode(serializer, value)
     }
 

@@ -170,6 +170,9 @@ package enum ValueCodec {
         case let value as Rutis.TimeOfDay: return .time(value)
         case let value as Rutis.BigInt: return .bigint(value)
         case let function as Rutis.RemoteFunction: return function.value
+        // An object of another process, handed on: that object again (#687).
+        case let client as Rutis.Client where client.object != nil: return .remoteObject(client.object!)
+        case let proxy as any RutisProxy where proxy.rutisClient.object != nil: return .remoteObject(proxy.rutisClient.object!)
         // A plugin definition crosses as one (a `plugin` reference), to be
         // mounted by what receives it (plugin values, R1).
         case let definition as Rutis.Definition: return .plugin(definition)
@@ -228,7 +231,7 @@ package enum ValueCodec {
     /// them, and the session's own.
     static func decodes(_ type: Any.Type) -> Bool {
         if type == Any.self || type == Value.self || type == Rutis.RemoteFunction.self || type == Rutis.Definition.self
-            || type is Decodable.Type { return true }
+            || type == Rutis.Client.self || type is Decodable.Type { return true }
         if let optional = type as? OptionalProtocol.Type { return decodes(optional.wrappedType) }
         return false
     }
@@ -247,6 +250,7 @@ package enum ValueCodec {
         if let decodable = type as? Decodable.Type {
             return try ValueDecoderImpl(value, codingPath: codingPath).decodeExistential(decodable)
         }
+        if type == Rutis.Client.self, case let .remoteObject(far) = value { return Rutis.Client.of(far) }
         if type == Rutis.RemoteFunction.self {
             if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
             if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
@@ -300,6 +304,7 @@ package enum ValueCodec {
             }
             return out
         case let .remoteFunction(far): return Rutis.RemoteFunction(far)
+        case let .remoteObject(far): return Rutis.Client.of(far)
         case .remoteFuture: return nil
         case let .function(function): return Rutis.RemoteFunction(local: function)
         case let .object(object): return (object as? ServiceObject)?.service ?? object

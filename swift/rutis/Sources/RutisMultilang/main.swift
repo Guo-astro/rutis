@@ -3,4 +3,4 @@ import Rutis
 import RutisFixturePlugins
 
 Rutis.serve(swiftProvider, swiftConsumer, swiftLocal, swiftGated, swiftRegistrant, swiftRelay, callerPlugin, probePlugin, swiftUndeclared,
-            valuesOrigin, valuesCrash)
+            valuesOrigin, valuesCrash, swiftOwner, swiftHolder)

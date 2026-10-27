@@ -122,7 +122,11 @@ public struct ServiceMacro: MemberMacro, ExtensionMacro {
                     let type = optional ? "(\(trimmed(function)))?" : trimmed(function)
                     lines.append("let a\(index): \(type) = try args.\(optional ? "optionalFunction" : "function")(\(index))")
                 } else {
-                    lines.append("let a\(index) = try args.decode(\(index), as: (\(trimmed(bareType(parameter.type)))).self)")
+                    // A @RutisClient protocol takes an object of another
+                    // process: its overload of rutisObjectProxy makes its
+                    // proxy; for any other type the generic one says none.
+                    let type = trimmed(bareType(parameter.type))
+                    lines.append("let a\(index) = try args.decode(\(index), as: (\(type)).self, object: rutisObjectProxy((\(type)).self))")
                 }
                 arguments.append("\(label)a\(index)")
             }
@@ -244,7 +248,7 @@ public struct ClientMacro: PeerMacro {
                 names.append("\"\(function.name.text)\"")
                 methods.append("""
                 \(access)func \(function.name.text)(\(parameters)) async throws -> \(returns) {
-                    try await rutisClient.call("\(function.name.text)", [\(arguments.joined(separator: ", "))], as: (\(returns)).self)
+                    try await rutisClient.call("\(function.name.text)", [\(arguments.joined(separator: ", "))], as: (\(returns)).self, object: rutisObjectProxy((\(returns)).self))
                 }
                 """)
             } else if member.decl.is(VariableDeclSyntax.self) || member.decl.is(AssociatedTypeDeclSyntax.self)
@@ -256,16 +260,26 @@ public struct ClientMacro: PeerMacro {
             }
         }
         if failed { return [] }
+        // A protocol at file level takes objects of another process: its
+        // overload of rutisObjectProxy. One nested in a type gets none (it
+        // would hide the generic one from the code in that type).
+        let objectProxy: [DeclSyntax] = context.lexicalContext.isEmpty ? ["""
+        /// An object of another process received as `any \(raw: name)` is its
+        /// proxy (#687).
+        \(raw: access)func rutisObjectProxy(_: (any \(raw: name)).Type) -> ((Rutis.Client) -> any \(raw: name))? {
+            { \(raw: name)Proxy(rutisClient: $0) }
+        }
+        """] : []
         return ["""
         \(raw: access)struct \(raw: name)Proxy: \(raw: name), RutisProxy {
             \(raw: access)typealias Service = any \(raw: name)
             \(raw: access)static var rutisMethodNames: [String] { [\(raw: names.joined(separator: ", "))] }
             \(raw: access)static func rutisMake(_ client: Rutis.Client) -> any \(raw: name) { \(raw: name)Proxy(rutisClient: client) }
-            let rutisClient: Rutis.Client
+            \(raw: access)let rutisClient: Rutis.Client
             \(raw: access)init(rutisClient: Rutis.Client) { self.rutisClient = rutisClient }
         \(raw: methods.joined(separator: "\n"))
         }
-        """]
+        """] + objectProxy
     }
 }
 
