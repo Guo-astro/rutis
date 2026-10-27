@@ -169,6 +169,8 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 The rules (waterfall, failures, scope, filter, cancellation, reserved names) are the same in every language: see [plugin API: events](plugin-api.en.md#events) and the [Go guide's table](go-plugin.en.md#events). In Swift, a listener's Task is cancelled when its row unloads, and when the emitter of a `parallel`, `serial`, `waterfall` or `bail` gives up; every listener is called as a synchronous one, so `bail` reaches Swift listeners anywhere.
 
+The config is validated against `@RutisConfig`'s schema, its defaults filled, before it is decoded: a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). Optional properties (`T?`) and `var`s with a literal initial value (`var units = "metric"`, also numbers, booleans and arrays and dictionaries of them) are not required; the literal is the default. Any other initial value is no default, and the property is required. A plain `Decodable` type without `@RutisConfig` is only decoded.
+
 ## 3. Test
 
 `RutisTest` needs no host, but the plugin runs in its real runtime and values cross a real session (an in-memory socket pair); the test side is the host:

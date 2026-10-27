@@ -30,7 +30,7 @@ The generated `src/index.ts` is a `greeter` that uses no service, `test/index.te
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city?: string
+  city: string
 }
 
 interface Llm {
@@ -48,13 +48,15 @@ class Weather {
 export default definePlugin<Config>({
   inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
   provides: { weather: { today: 'async' } },      // What it provides: check knows before running; only declared methods are callable
-  config: { type: 'object', properties: { city: { type: 'string' } } },  // Configuration JSON Schema
+  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // Configuration JSON Schema
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
+    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
     return () => {}                                // Cleanup; ctx.effect(cleanup) also works, or return nothing
   },
 })
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`city` is `Oslo` when the row leaves it out) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); the testing tool does the same.
 
 The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 

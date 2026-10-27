@@ -8,8 +8,18 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 | --- | --- | --- | --- | --- | --- | --- |
 | 用到的服务 | `inject: ['llm']` | `inject=["llm"]` | `Inject: []string{"llm"}` | `inject: ["llm"]` | `inject = listOf("llm")` | 都就绪才启动；任何一个撤销，插件停下，等它回来再启动 |
 | 提供的服务（可选） | `provides: { weather: { today: 'sync' } }` | `provides={"weather": Weather}` 或 `{"weather": {"today": "sync"}}` | `Provides: rutis.Provides{"weather": rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`（导出方法，除 `Sync` 列出的外都是 `async`） | `provides: ["weather": .of(Weather.self, sync: ["unit"])]`（`@RutisService` 类型的方法，除 `sync` 列出的外都是 `async`） | `provides = mapOf("weather" to service<Weather>(sync = setOf("unit")))`（`@RutisService` 类的 public 成员函数，除 `sync` 列出的外都是 `async`） | 不写也行：`ctx.provide` 提供的服务自动对外（见下）。写了就按声明：把方法标成 `sync`，并让 `rutis-host check` 在运行前就知道谁提供什么；声明过的服务只能调用声明过的方法 |
-| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema；`rutis-host check` 打印它，目前不按它检查配置（0.18 起检查，#669） |
+| 配置 | `config: { type: 'object', ... }` | `config={...}`（模块变量写 `Config`） | 类型 `C`（Schema 由它生成），或 `Schema` | `config:` 的 `Decodable` 类型（Schema 由 `@RutisConfig` 生成，或 `static let rutisSchema`） | `@Serializable` 类型 `C`（Schema 由它的 `SerialDescriptor` 推出），或 `schema` | JSON Schema：`apply` 之前按它补默认值并校验配置（见[配置](#配置)）；`rutis-host check` 也一样 |
 | 启动 | `apply(ctx, config)` | `apply(ctx, config)` | `Apply: func(ctx *rutis.Ctx, config C) error` | `apply: { ctx, config in ... }`（`async throws`） | `{ ctx, config -> }`，可以挂起；抛异常即装载失败 | 可以是 async；返回清理函数或不返回（Go：返回错误即装载失败） |
+
+## 配置
+
+`apply` 之前，各语言的 SDK 给这一行的配置补上 Schema 里的默认值并校验，`rutis-host check` 按同样的规则做同样的事（各语言逐字一致，由一份共用用例表 `specs/config-schema/cases.json` 保证）：
+
+- **默认值**：没有配置（不写或 `null`）时取根的 `default`，没有时根的 `type` 是或含 `object` 就是 `{}`。再一层层补：在已有的对象里，缺的属性有 `default` 就补上，再进到它的子对象。顺着 `$ref` 和 `allOf`，不进 `anyOf` / `oneOf`；缺的子对象自己没有 `default` 时不会凭空造出来（要它总在，就给它 `default: {}`）。`apply` 拿到的是副本。
+- **检查的关键字**：`type`、`properties`、`required`、`additionalProperties`、`items`、`enum`、`const`、`minimum`、`maximum`、`default`、`anyOf`、`oneOf`（符合一个分支就行）、`allOf`、`$ref`（指向 `#/$defs/…` 和 `#/definitions/…`）。其他关键字（`format`、`pattern`、`minLength` 等）既不检查也不警告。不做类型转换：`"5"` 不是数字。
+- **多余的键**：Schema 有 `properties` 而没写 `additionalProperties` 时，它没列的键是警告（由宿主给出，每行每个值一次），拼写接近时给出提示；值原样交给 `apply`。`additionalProperties: false` 时是错误。
+- **配置不合格**：这一行失败，不调用 `apply`。所有问题一次列出，按路径排序，每个一行：`weather: config: units should be "metric" or "imperial", got "kelvin"`。依赖它的行写 `waiting for weather (row weather failed: config: …)`。这个错误是 `BindingError`，错误码 `bad-config`，`data: { issues: [{ path, message }] }`；测试工具抛同样的错误。
+- **类型化的配置**（Go、Swift、Kotlin、Rust）：Schema 由类型生成，只写出解码器本来就有的规则；先校验，再解码。哪些字段必填、默认值从哪来，见各语言的指南。
 
 ## ctx
 

@@ -66,6 +66,8 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 
   Each copy runs in the application's process; when the application dials in, it mounts only in that connection's instance (or deeper). It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
 
+- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the config is validated against it before it is decoded, and a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
+
 ## 3. Connecting to rutis
 
 ```kotlin

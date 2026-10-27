@@ -186,3 +186,17 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+
+## Configs are filled with defaults and validated before `apply` (#669)
+
+The plugin API guide has long said that the host validates configs with the plugin's JSON Schema; until 0.18 the schema was only printed. From 0.18 each language's SDK fills a row's config with the schema's defaults and validates it before `apply`, testing tools do the same, and `rutis-host check` checks every row by the same rules ([plugin API: configuration](guide/plugin-api.en.md#configuration), [checking a configuration](guide/rutis-host.en.md#the-config-of-each-row)).
+
+- **Configs that used to run although wrong now fail their row**: wrong types, missing `required` fields (Python ignored `required` entirely), a bare string as config, extra keys under `additionalProperties: false`. The row says each problem: `weather: config: units should be "metric" or "imperial", got "kelvin"`. **Before upgrading, run 0.18's `rutis-host check`**: it lists every row whose config does not pass.
+- **Tests can fail too**: tests passing partial or wrong configs to a testing tool now fail as the runtime does (a `BindingError` with code `bad-config`); complete the config per the schema, or let the schema say which fields may be left out.
+- **Defaults are now filled**: plugin code that checks "is this key in the config" sees the defaults; fallbacks written in code for defaults can be removed or kept.
+- **Extra keys** (keys the schema does not name, where it allows them): only a warning, once per row and config value; an error under `check --strict`.
+- **Go**: the generated schema no longer has `required` (a field left out is its zero value, as with `encoding/json`); `default` in a hand-written `Schema` is now filled. For binaries built with an older SDK, `check` ignores their `required`.
+- **Swift**: `var` fields with a literal initial value (`var units = "metric"`) are no longer required; left out, they take that value. A plain `Decodable` config type without `@RutisConfig` is only decoded, as before.
+- **Rust**: the text of loader rows' config errors changes from `config validation failed: [...]` to `config: <path> …`; the types do not change, nor does the display text of the kernel's `ErrorKind::Validation`. Rows registered with `Builtins`, dylib rows and rows of an embedder's own resolver given a schema (`Resolved::with_schema`) are filled and validated by the loader before `build`. `Definition` configs and dylibs without a `schema:` are decoded with the same error sentences. Extra keys are written on stderr by default; `Loader::on_config_warning` takes them instead.
+- **Node, Bun**: `definePlugin` with a Standard Schema object (schemastery, zod, …) as `config` fails: such a schema was only printed and never took effect. Cordis rows are validated by Cordis with their own `Config`, as before; their problems are now written as `config: …` too.
+- **Runtimes built with an SDK older than 0.18** do not check configs when they load rows; `check` still checks them.

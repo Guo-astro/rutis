@@ -169,6 +169,8 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 规则（waterfall、失败、作用域、过滤、取消、保留名）在各语言相同：见 [插件 API：事件](plugin-api.md#事件) 和 [Go 指南的表](go-plugin.md#事件)。在 Swift 里，监听器的 Task 在它的行卸载时被取消，`parallel`、`serial`、`waterfall`、`bail` 的发出方放弃时也被取消；监听器一律按同步监听器调用，所以 `bail` 在任何地方都能到达 Swift 监听器。
 
+配置先按 `@RutisConfig` 的 Schema 补默认值、校验，再解码：配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。可选属性（`T?`）和带字面量初值的 `var`（`var units = "metric"`，还有数字、布尔值以及它们的数组和字典）不必填，字面量就是默认值；其他初值不算默认值，这个属性仍必填。没有 `@RutisConfig` 的普通 `Decodable` 类型只解码。
+
 ## 3. 测试
 
 `RutisTest` 不需要宿主，但插件在它真实的运行时里运行，值经真实的会话（内存里的一对 socket）传递；测试一方就是宿主：
