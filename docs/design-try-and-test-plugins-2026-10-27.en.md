@@ -7,7 +7,7 @@ Issue: [#670](https://github.com/arcships/rutis/issues/670) (A5, A6 and H5 of [#
 Relation to 0.18: built on [diagnostics for 0.18](design-diagnostics-2026-10-26.en.md), without repeating or changing it: `call` uses the local socket and the way of finding it from its §5.3, the services `dev` lists are the `services` of its §5.1 `Loader::status()`, and error text follows its §4 (`site`, error codes, the banned words of §4.5). Depends on [#678](https://github.com/arcships/rutis/issues/678) being merged first.
 Relation to other 0.19 designs: generating strict fakes from the host's `#[rutis::service]` and putting them into the test tools belongs to [#684](https://github.com/arcships/rutis/issues/684); this design only covers fakes plugin authors write themselves and the test tools' `on`. SDK default entry points belong to [#692](https://github.com/arcships/rutis/issues/692): this design adds no names to an SDK root; `on` goes on the object the test tool loads. Limiting which services a plugin may use belongs to [#683](https://github.com/arcships/rutis/issues/683); it limits plugins, and `call` is the host's own call.
 
-Out of scope: `call` on Windows (0.18's `status` is not provided there either); writing values other than JSON on the command line (integers beyond 64 bits, instants, dates, bytes, Map, Set, Decimal, UUID, functions); calling services inside instances; emitting events from the command line (`rutis-host emit`); `call` starting a host (it only connects to a running one); `run` printing a service table (use `rutis-host status`); `new` generating fakes (template and guide examples belong to [#671](https://github.com/arcships/rutis/issues/671)); fakes in another language for TypeScript and Python projects (they can already use their own); a "collect the received events" shortcut in the test tools (`on` plus a list is enough); an install hint when the Node runtime lacks `@arcships/rutis` (error text, part of 0.18 #677's rewrite list).
+Out of scope: `call` on Windows (0.18's `status` is not provided there either); writing values other than JSON on the command line (integers beyond 64 bits, instants, dates, bytes, Map, Set, Decimal, UUID, functions); calling services inside instances; emitting events from the command line (`rutis-host emit`); `call` starting a host (it only connects to a running one); `run` printing a service table (use `rutis-host status`); `new` generating fakes (template and guide examples belong to [#671](https://github.com/arcships/rutis/issues/671)); fakes in another language for TypeScript and Python projects (they can already use their own); a "collect the received events" shortcut in the test tools (`on` plus a list is enough); an install hint when the Node runtime lacks `@arcships/rutis` (error text, part of 0.18 #677's rewrite list). Removed in review (no user): a peer credential check for `call`, a dedicated table of how non-JSON result values print, rebuilding only the binaries that contain a file by `go list -deps` / `swift package describe`, and not printing a service line "identical to the last one".
 
 ## 1. What developers want to do, and where they get stuck
 
@@ -35,7 +35,8 @@ The 0.17.0 evaluation (#663) got stuck on all four:
 | Finding a running host from another process | 0.18 §5.3: `run` / `dev` open a local socket (0600, the system's runtime directory, a file name with a hash of the configuration path); `rutis-host status` finds it from the same configuration path |
 | Services and providers | 0.18 §5.1: `Loader::status().services: [{name, provider}]` |
 | "The change has finished" in `dev` | `dev` already does `loader.settled().await` after starting, reloading, rebuilding and rereading `rutis.dev.json` (`crates/rutis-host/src/dev.rs`) |
-| Building Go and Swift binaries and running them as runtimes | `GoDev` / `SwiftDev` (`languages/go.rs`, `swift.rs`), `dev_rows` reads the rows from a binary's manifest, `GoRuntime.binaries` already lists several binaries, one runtime per binary |
+| Building Go and Swift binaries and running them as runtimes | `GoDev` / `SwiftDev` (`languages/go.rs`, `swift.rs`), `dev_rows` reads the rows from a binary's manifest, `GoRuntime.binaries` already lists several binaries, one runtime per binary; the caches of `go build` and `swift build` make an unchanged binary quick to build |
+| Text for each kind of value in a result | `Value::json()`; each value's `Display`; `describe()` from error text |
 | Test tools listening to events | Go `loaded.On(name, fn)`, Swift `loaded.on(name) { … }`, Kotlin `loaded.on(name) { … }` exist, with one rule: listen as the host does, at the root scope, returning a disposer |
 
 So all four fill gaps in what exists: no new channel, no new state data, no change to the kernel or the loader.
@@ -45,12 +46,12 @@ So all four fill gaps in what exists: no new channel, no new state data, no chan
 | # | Decision | Section |
 | --- | --- | --- |
 | T1 | `rutis-host call <service>.<method> [args…]`: connects to the same socket 0.18's `status` uses, which answers one more request, `call`; found as `status` finds it; Unix only | 4 |
-| T2 | `dev` accepts `call` by default; `run` does not, unless started with `run --allow-call`; a `call` request also checks that the connecting process is the same user | 4 |
-| T3 | Each argument is one JSON value; the result is printed as JSON; argument types JSON cannot express are not supported | 4 |
+| T2 | `dev` accepts `call` by default; `run` does not, unless started with `run --allow-call`; who can connect follows 0.18's socket (0600), with no extra check | 4 |
+| T3 | Each argument is one JSON value, and argument types JSON cannot express are not supported; the result is printed as JSON, values JSON lacks in the text they already have | 4 |
 | T4 | A call made by `call` has "the host" as its caller (as every call not made from a row in 0.18); the error's `site` is, as in 0.18, the called row | 4 |
-| T5 | `dev` prints one service line after starting and after each change has settled, from `Loader::status().services`; not again when it is the same as the last one printed | 5 |
+| T5 | `dev` prints one service line after starting and after each change has settled, from `Loader::status().services` | 5 |
 | T6 | Fakes in the plugin's own language: a row in `rutis.dev.json` whose `name` is a directory of the project (a Go main package, a Swift executable target) is built by `dev` as a second binary and run as its own runtime; `new` does not generate fakes | 6 |
-| T7 | When a source file of a Go or Swift project changes, only the binaries that contain it are rebuilt (Go: `go list -deps`, Swift: `swift package describe`); `check` builds them too | 6 |
+| T7 | When a source file of a Go or Swift project changes, every binary of the project is rebuilt, and only the runtimes whose binary changed restart; `check` builds them too | 6 |
 | T8 | The TypeScript (Node, Bun) and Python test tools get `t.on(name, listener, options)`, returning a disposer, the same form as the Go, Swift and Kotlin test tools and each language's `ctx.on`; on the loaded object, not on an SDK root | 7 |
 | T9 | The Python test tool's interface goes into the Python guide (a reference table); each language guide's "Test" section mentions `on` | 7 |
 
@@ -81,7 +82,7 @@ rutis-host call [--config <path>] <service>.<method> [args…]
 | `call` | accepted | refused, saying how to allow it | accepted |
 
 - **Why `run` refuses by default**: `call` runs any method of any service; in production that would be a back door for any process of the same user. The default matches 0.18's read-only socket; operators allow it explicitly on the command line when they need it. The switch is a command-line flag (`--allow-call`), not a `rutis.json` field: it is a decision about this run, and does not travel with a configuration file copied elsewhere.
-- **Who can connect**: the socket file is 0600, so only the same user (and root) can connect. A `call` request is also checked with the peer's credentials (Linux `SO_PEERCRED`, macOS `getpeereid`) to be from the same user, instead of relying on file permissions alone (some systems do not refuse connections by a socket file's permissions); otherwise it is refused and not run.
+- **Who can connect**: as in 0.18, the socket file is 0600, so only the same user (and root) can connect; Linux and macOS both require write permission on the file to connect to a Unix socket, so no peer credential check is added.
 - **Windows**: 0.18 provides no socket, so there is no `call`; it prints `rutis-host call is not available on Windows`.
 - The rutis-dev channel is not reused, for 0.18's reason: it is not published, and it carries commands that change things; `call` only needs the one socket 0.18 already adds.
 
@@ -89,17 +90,7 @@ rutis-host call [--config <path>] <service>.<method> [args…]
 
 Arguments support only what JSON can write: `null`, booleans, numbers, strings, arrays, objects. Integers within 64 bits follow the existing rule (beyond ±(2^53−1) they cross as big integers, [plugin API: the ten values](guide/plugin-api.en.md#the-ten-values)). Dates, bytes, Map, Set, Decimal, UUID, larger integers and functions cannot be written on the command line and are not supported: try such methods in a test. A string arrives as a string (a Python method expecting a `date` gets a `str`, as from a string JS sends).
 
-The result is printed as JSON (two-space indent) on standard output. Values JSON lacks are written in a readable form, for people only, not guaranteed to be sendable back as they were:
-
-| Value in the result | Printed as |
-| --- | --- |
-| No result (`undefined`, `None`, `nil`) | `null` |
-| Big integer | a number (all digits) |
-| Instant, local date-time, date, time of day, Decimal, UUID | a string (canonical form; instants in UTC) |
-| Bytes | the string `"<12 bytes>"` |
-| Map | an array `[[key, value], …]` |
-| Set | an array |
-| Function, object passed by reference, plugin definition | the strings `"<function>"`, `"<object>"`, `"<plugin>"` |
+The result is printed as JSON (two-space indent) on standard output with `Value::json()`; no result is `null`. Values JSON lacks get no new form, only the text they already have: instants, dates, big integers, Decimal and UUID their `Display` (such as `"2026-10-27"`); bytes, Map, Set and references the `describe()` text (such as `"<a map>"`). It is for people only, not guaranteed to be sendable back as it was.
 
 ### 4.5 Who the caller is
 
@@ -120,7 +111,7 @@ No separate "command line" identity: rutis-host itself calls no service, so in r
   ```
 
   Sorted by service name; in parentheses the row providing it (0.18's `provider`; `host` for the host). Without services: `rutis-host dev: services: none`.
-- After each reload, rebuild or reread of `rutis.dev.json` has finished (after the existing `settled`), it reads them again, and prints a new line only when it differs from the last one printed (most reloads do not change services; printing every time would bury useful lines).
+- After each reload, rebuild or reread of `rutis.dev.json` has finished (after the existing `settled`), it prints the line again, as the issue's "print after starting and reloading" says, without comparing with the last one.
 - The data comes only from `Loader::status().services`. `run` does not print it (production output does not change); use `rutis-host status` there.
 - It is a new kind of line in `dev`'s output, starting with `rutis-host dev: ` like the existing `rutis-host dev: running …`, not shaped like `<row>: <state>`, so scripts reading state lines are unaffected; existing lines do not change. It goes into the output table of "Developing plugins with dev" in rutis-host.md.
 
@@ -178,22 +169,21 @@ func main() { rutis.Serve(plugin) }
 
 Rules:
 
-- A row in `rutis.dev.json` whose `name` starts with `./` and names a directory of the project: in a Go project, a main package under the same go.mod; in a Swift project, the `path` of an executable target in Package.swift. `dev` builds it into `.rutis/go/fakellm-<n>` (Swift: `.rutis/swift/<target>-<n>`) and runs it as its own runtime (`go-fakellm`); the row is that binary's plugin.
+- A row in `rutis.dev.json` whose `name` starts with `./` and names a directory of the project: in a Go project, a main package under the same go.mod; in a Swift project, the directory's name is the name of an executable target in Package.swift. `dev` builds it into `.rutis/go/fakellm-<n>` (Swift: `.rutis/swift/<target>-<n>`, with `swift build --product <target>` as `SwiftDev` does today) and runs it as its own runtime (`go-fakellm`); the row is that binary's plugin.
 - The binary must serve exactly one plugin; with several it is an error (§8). A runtime name equal to the project's own is an error that asks to rename the directory.
 - Such rows exist only in `dev` and in `check` of a plugin project (both read `rutis.dev.json` through `project::dev_config`): reading turns them into the existing `go-<name>:<plugin>` rows and adds the build to the Go settings (`GoRuntime.dev` goes from one binary to a list). `rutis.json` and `run` do not accept this form; the loader does not change.
 - `dev/fakellm` is an ordinary package of the module: `go build ./...` and `go test ./...` compile it; the release workflow builds only `cmd/<name>` and is unaffected.
 - Tests still put a Go value into `rutistest.Load`'s `services`. To share one type with `dev`, put it in an ordinary package (such as `internal/fake`) imported by both `dev/fakellm/main.go` and the test; the guide says so in one sentence.
 
-Swift is the same: add an executable target to Package.swift (`.executableTarget(name: "FakeLLM", dependencies: [.product(name: "Rutis", package: "rutis")], path: "dev/FakeLLM")`) and name the row `./dev/FakeLLM`; `dev` builds it with `swift build --product FakeLLM`. The extra Package.swift entry is SwiftPM's rule, not rutis's.
+Swift is the same: add an executable target to Package.swift (`.executableTarget(name: "FakeLLM", dependencies: [.product(name: "Rutis", package: "rutis")], path: "dev/FakeLLM")`) and name the row `./dev/FakeLLM`. The extra Package.swift entry is SwiftPM's rule, not rutis's.
 
 ### 6.3 What a change rebuilds
 
 Today any changed `.go` file of a Go project rebuilds the project's binary and restarts its runtime. With a second binary, changing the fake should not restart the plugin, nor the other way round ("one plugin's change does not restart others"):
 
-- After building, each binary records the project directories it contains: Go with `go list -deps -f '{{.Dir}}' <package>`, Swift with the target's `path` and its local target dependencies from `swift package describe --type json`.
-- A changed source file rebuilds only the binaries containing its directory; a change to `go.mod`, `go.sum` or `go.work` (Swift: `Package.swift`, `Package.resolved`) rebuilds all of them.
+- When a source changes (by today's `is_source`), every binary of the project is rebuilt; one the change did not touch is built quickly from the cache of `go build` / `swift build`.
+- A new binary with the same content as the one its runtime runs is not swapped in and does not restart anything; only a different one is swapped in and restarted as today. Go builds give the same file for the same inputs; should a Swift build differ, it only restarts once more, and the result is still right.
 - Each binary keeps "a failed build leaves the last build running", with the lines printed today (`<project>: building` uses the binary's directory name).
-- When the fake imports the plugin's packages, changing those packages rebuilds both, as it should.
 
 ### 6.4 Other languages
 
@@ -265,7 +255,6 @@ In another terminal:
 | The method needs a calling row | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call`, 1 |
 | No host running | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)`, 1 |
 | The host is `run` without `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call`, 1 |
-| Another user | `rutis-host: the host runs as another user and does not accept calls from this one`, 1 |
 | Windows | `rutis-host call is not available on Windows`, 1 |
 | Ctrl-C while waiting | nothing printed; the host cancels the call; 130 |
 | `rutis-host status` meanwhile | `host → forecast.today  12s` |
@@ -273,13 +262,16 @@ In another terminal:
 After changing `dev/fakellm/main.go`:
 
 ```text
+weather: building
+weather: built in 0.2s
 fakellm: building
 fakellm: built in 0.5s
 go-fakellm: rebuilt and restarted
 weather: restarted (go-fakellm restarted)
+rutis-host dev: services: forecast (weather), llm (llm)
 ```
 
-`weather`'s binary is not rebuilt; it uses `llm`, so it restarts by the existing rule. Services did not change, so no service line.
+`weather`'s binary did not change and is not swapped; it uses `llm`, so it restarts by the existing rule.
 
 A fake written wrong:
 
@@ -289,7 +281,7 @@ A fake written wrong:
 | Two plugins in the binary | `rutis-host: rutis.dev.json: row llm: ./dev/fakes serves 2 plugins (fakellm, fakedb); give each its own directory` |
 | Runtime name equals the project's | `rutis-host: rutis.dev.json: row llm: ./dev/weather would run as go-weather, as the project does; rename the directory` |
 | The build fails | `fakellm: the build failed; the last build keeps running`, then the compiler's errors (at start there is no last build: `dev` exits with 1) |
-| Swift: not an executable target | `rutis-host: rutis.dev.json: row llm: ./dev/FakeLLM is not the path of an executable target in Package.swift; add .executableTarget(name: "FakeLLM", path: "dev/FakeLLM", …)` |
+| Swift: no such executable target | `rutis-host: rutis.dev.json: row llm: Package.swift has no executable target FakeLLM; add .executableTarget(name: "FakeLLM", path: "dev/FakeLLM", …)` |
 
 In tests: TypeScript's and Python's `t.on` receive the events; a name that breaks the rules (a reserved `rutis/` name, say) fails with the same error as `ctx.on`.
 
@@ -302,7 +294,7 @@ All additions; nothing goes into "Migrating to 0.19":
 - the new command `rutis-host call` and `run`'s new option `--allow-call`;
 - one more kind of line in `dev`'s output, starting with `rutis-host dev: services:`; existing lines unchanged;
 - one more `name` form for `rutis.dev.json` rows, valid only in `dev` / a project's `check`;
-- in Go and Swift projects, a changed source file no longer rebuilds binaries that do not contain it (before, any `.go` file rebuilt the project);
+- in Go and Swift projects, a binary whose content did not change no longer restarts its runtime;
 - one more method, `on`, in the test tools.
 
 0.18's socket answers one more request; a `run` without `--allow-call` behaves exactly as in 0.18.
@@ -313,13 +305,13 @@ All additions; nothing goes into "Migrating to 0.19":
 | --- | --- | --- | --- |
 | `call` | Authors in 4 languages and the host author each wrote a caller plugin | The socket, `call_service` | Kept; no new channel |
 | `run --allow-call` | The issue asks for `run` too; operators checking a deployment | 0.18's read-only default | Kept, off by default |
-| Peer credential check | Safety when `call` is allowed in production | 0600 | Kept; `call` only |
-| Table for non-JSON results | Something must be printed when a result holds a date or bytes | `Value::json()` handles plain JSON only | Kept, one table |
+| Peer credential check | None: 0600 already admits only the same user | 0.18's socket | Removed |
+| Table for non-JSON results | No user of its own | `Value::json()`, each value's `Display`, `describe()` | Removed; existing text used |
 | A separate "command line" caller | None | "the host" | Removed |
 | Dates, bytes etc. on the command line | No concrete user; tests can do it | — | Removed, out of scope |
-| `dev` service line | Item 2 of the issue | `Loader::status()` | Kept; not printed when unchanged |
+| `dev` service line | Item 2 of the issue | `Loader::status()` | Kept; printed every time |
 | Second binary | The Go author made a Node project for a fake | `GoDev`, `dev_rows`, `binaries` | Kept, dev only |
-| Rebuilding by dependency | Changing the fake does not restart the plugin | `go list`, `swift package describe` | Kept |
+| Rebuilding by dependency | Changing the fake does not restart the plugin | Build caches, comparing build results | Changed to: rebuild all, restart only changed ones |
 | Several plugins per directory, `./dir:<plugin>` | None | — | Removed; an error explains |
 | `new` generating fakes | Only helps the template's example | — | Removed; templates belong to #671 |
 | Test tool `on` | TS and Python authors added listener plugins | Go, Swift, Kotlin have it | Kept, same form |
@@ -329,9 +321,9 @@ All additions; nothing goes into "Migrating to 0.19":
 
 | Step | Content | Done when (the issue's "Done" list) |
 | --- | --- | --- |
-| C1 | `rutis-host call`, the socket's `call` request, the peer credential check, `run --allow-call`, printing results | Every `call` row of §8 is locked word for word by a test (including `run` refusing, not JSON, and both locations of a throwing method); one call each into services provided by Node, Bun, Python, Go and Swift; rutis-host.md's command table and a new section, and each language guide's "Run in a local host" gain `call` (done 1) |
-| C2 | `dev`'s service line | Output tests for start, services changed after a reload, and unchanged; rutis-host.md's output table (done 2) |
-| C3 | Directory rows in `rutis.dev.json`, the second binary, rebuilding by dependency, `check` building them | Go: tests for §8's start, changing the fake rebuilding only it, and the four wrong cases; Swift: the same cases, alongside the existing Swift `dev` tests (needs macOS and the Swift toolchain); the Go and Swift guides switch to fakes in their own language (done 3) |
+| C1 | `rutis-host call`, the socket's `call` request, `run --allow-call`, printing results | Every `call` row of §8 is locked word for word by a test (including `run` refusing, not JSON, and both locations of a throwing method); one call each into services provided by Node, Bun, Python, Go and Swift; rutis-host.md's command table and a new section, and each language guide's "Run in a local host" gain `call` (done 1) |
+| C2 | `dev`'s service line | Output tests for start and after a reload; rutis-host.md's output table (done 2) |
+| C3 | Directory rows in `rutis.dev.json`, the second binary, restarting only the runtimes whose binary changed, `check` building them | Go: tests for §8's start, changing the fake swapping only its binary, and the four wrong cases; Swift: the same cases, alongside the existing Swift `dev` tests (needs macOS and the Swift toolchain); the Go and Swift guides switch to fakes in their own language (done 3) |
 | C4 | `on` in the TypeScript and Python test tools; the Python test tool reference table; `on` in each language guide | Tests in both languages: the plugin emitting, the test emitting, arguments in strict mode, disposing, removal on unload, return values in `serial`; the guide examples run by the docs example tests (done 4) |
 
 C1 and C2 depend on 0.18 #678 (the socket, `Loader::status()`); C3 and C4 depend on nothing else and can go first.
