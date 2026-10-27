@@ -2,7 +2,7 @@
 
 [中文](design-host-contract-types-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: `main` `5abffe99` (0.18 #677 merged). Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-27. Base: `main` `5abffe99` (0.18 #677 merged). Scheduled: 0.19.
 Issue: [#684](https://github.com/arcships/rutis/issues/684) (part of [#663](https://github.com/arcships/rutis/issues/663), O2 and O5).
 Relation to 0.18: the errors a contract check raises are the `bad-argument` and `no-method` the real host raises today ([0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.3, `BadArgument` in `crates/rutis-bridge/src/marked.rs`); error names at run time do not change (G11).
 

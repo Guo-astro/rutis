@@ -2,7 +2,7 @@
 
 [English](design-host-contract-types-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：`main` `5abffe99`（0.18 #677 已合并）。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27。基准：`main` `5abffe99`（0.18 #677 已合并）。排期：0.19。
 Issue：[#684](https://github.com/arcships/rutis/issues/684)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 O2、O5）。
 与 0.18 的关系：契约检查报的错误就是真实宿主现在报的 `bad-argument`、`no-method`（[0.18 诊断](design-diagnostics-2026-10-26.md) §4.3，`crates/rutis-bridge/src/marked.rs` 的 `BadArgument`）；运行时的错误名不变（G11）。
 
