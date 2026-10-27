@@ -262,7 +262,7 @@ TypeScript 为例；其他语言同样的内容，位置写法各自的。这些
 | 3 | 方法不存在 / 参数错 | `chat: weather has no method tomorow (methods: today, tomorrow)`；`chat: weather.tomorrow: argument 1 should be a number, got "x"` |
 | 4 | `apply` 里出错 | `weather: failed in apply: KeyError: 'region'` + `weather.py:12 in apply` |
 | 5 | 导入错误 | `weather: cannot load src/util.ts: SyntaxError … (src/util.ts:3:7)`（写出错的子模块） |
-| 6 | 值传不过去 | `chat: weather.tomorrow: argument 0 cannot be sent: a sparse array (index 1 is empty)`；运行时不退出（#675） |
+| 6 | 值传不过去 | `chat: weather.tomorrow: argument 1 cannot be sent: NaN cannot cross processes`；运行时不退出（#675）。稀疏数组的空位是值（`null`），不在此列（[对象引用](design-object-refs-2026-10-27.md) §七） |
 | 7 | 监听器出错 | `weather: listener of weather/asked failed: …` + 位置；`parallel` 的调用方看到 `2 listeners of weather/asked failed`，下面逐个列出行与位置 |
 | 8 | 调用不返回 | `rutis-host status`：`chat → weather.tomorrow  42s` |
 | 9 | 互相调用 / 互相依赖 | `chat: weather.today would wait on itself: chat → weather → chat (synchronous calls)`；互相 `inject`：`check` 报错（§九） |

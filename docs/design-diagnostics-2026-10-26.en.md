@@ -262,7 +262,7 @@ TypeScript as the example; other languages show the same content, with locations
 | 3 | Method does not exist / wrong argument | `chat: weather has no method tomorow (methods: today, tomorrow)`; `chat: weather.tomorrow: argument 1 should be a number, got "x"` |
 | 4 | Error in `apply` | `weather: failed in apply: KeyError: 'region'` + `weather.py:12 in apply` |
 | 5 | Import error | `weather: cannot load src/util.ts: SyntaxError … (src/util.ts:3:7)` (names the failing submodule) |
-| 6 | A value cannot be sent | `chat: weather.tomorrow: argument 0 cannot be sent: a sparse array (index 1 is empty)`; the runtime does not exit (#675) |
+| 6 | A value cannot be sent | `chat: weather.tomorrow: argument 1 cannot be sent: NaN cannot cross processes`; the runtime does not exit (#675). Holes in sparse arrays are values (`null`) and do not belong here ([object references](design-object-refs-2026-10-27.en.md) §7) |
 | 7 | A listener fails | `weather: listener of weather/asked failed: …` + location; a `parallel` caller sees `2 listeners of weather/asked failed`, with each row and location listed below |
 | 8 | A call does not return | `rutis-host status`: `chat → weather.tomorrow  42s` |
 | 9 | Mutual calls / mutual dependencies | `chat: weather.today would wait on itself: chat → weather → chat (synchronous calls)`; mutual `inject`: `check` reports an error (§9) |
