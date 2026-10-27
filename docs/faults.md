@@ -36,7 +36,7 @@
 | 9 | 互相调用、互相依赖 | 2 个测试 | 1 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
 | 10 | 运行时进程中途退出 | 2 个测试 | 2 个测试 | 4 个测试 | 2 个测试 | 不适用 | [#682](https://github.com/arcships/rutis/issues/682) [#688](https://github.com/arcships/rutis/issues/688) |
 | 11 | 下断点、看日志 | 4 个测试 | 2 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#679](https://github.com/arcships/rutis/issues/679) [#678](https://github.com/arcships/rutis/issues/678) |
-| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 3 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
+| 12 | 配置写错 | 3 个测试 | 2 个测试 | 2 个测试 | 5 个测试 | 3 个测试 | [#669](https://github.com/arcships/rutis/issues/669) |
 | 13 | 两个插件提供同名服务 | 3 个测试 | 2 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#677](https://github.com/arcships/rutis/issues/677) |
 | 14 | 查看现在的运行状态 | 1 个测试 | 无测试 | 1 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 
@@ -133,7 +133,7 @@
 - TypeScript（Node）：`crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`，`crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`，`node/rutis-runtime/test/config.test.mjs` “a leaf plugin gets its config filled, and fails its row on a wrong one”
 - Bun：`bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”，`bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
 - Python：`python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`，`python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
-- Go：`go/rutis/config_internal_test.go` `TestEveryConfigCaseBeforeApply`，`go/rutis/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`，`go/rutis/rutistest/config_test.go` `TestEveryConfigCase`
+- Go：`go/rutis/config_internal_test.go` `TestEveryConfigCaseBeforeApply`，`go/rutis/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`，`go/rutis/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`，`go/rutis/rutistest/config_test.go` `TestEveryConfigCase`，`go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
 - Rust（插件与嵌入）：`crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`，`crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`，`crates/rutis-loader/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. 两个插件提供同名服务

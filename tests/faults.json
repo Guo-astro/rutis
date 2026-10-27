@@ -457,7 +457,9 @@
         "tests": [
           ["go/rutis/config_internal_test.go", "TestEveryConfigCaseBeforeApply"],
           ["go/rutis/config_internal_test.go", "TestATypedConfigIsCheckedThenDecoded"],
-          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"]
+          ["go/rutis/config_internal_test.go", "TestAConfigTheTypeDoesNotTakeIsSaidPlainly"],
+          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"],
+          ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"]
         ]
       },
       "rust": {
