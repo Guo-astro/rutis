@@ -66,6 +66,7 @@ from .peer import (
     _too_deep as peer_too_deep,
     decode_error,
     encode_error,
+    no_object_method,
 )
 
 
@@ -87,12 +88,17 @@ def _too_deep() -> str:
     return str(peer_too_deep())
 
 
-def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
+def _cross(value: Any, where: str, data: bool = False, depth: int = 0, service: bool = False) -> Any:
     """`value` as the other process sees it, by the rules of the runtime
     (`rutis.peer`); `data`: inside plain data, which crosses as JSON;
-    `depth`: the lists and dicts around it (at most MAX_DEPTH, #279)."""
+    `depth`: the lists and dicts around it (at most MAX_DEPTH, #279);
+    `service`: a service the test gives (`ctx.use`), which keeps its
+    shape; any other object with methods crosses as a proxy (#687)."""
     if value is None or isinstance(value, (bool, str)):
         return value
+    # A proxy passed back is its object again, as on the runtime.
+    if isinstance(value, _RemoteObject):
+        return value._target
     if value is UNDEFINED:
         return None
     tag = _values.tag_of(value)
@@ -132,7 +138,7 @@ def _cross(value: Any, where: str, data: bool = False, depth: int = 0) -> Any:
     if callable(value) and not isinstance(value, type):
         return _function(value, where)
     if _is_live(value):
-        return _Reference(value, where)
+        return _Reference(value, where) if service else _remote_object(value)
     raise _refused(where, f"{type(value).__name__} cannot cross the boundary")
 
 
@@ -203,6 +209,57 @@ class _Reference:
 
     def __getattr__(self, name: str) -> Any:
         return _cross(getattr(self._target, name), f"{self._where}.{name}")
+
+
+class _RemoteObject:
+    """An object with methods as another process receives it (#687 §四):
+    every public name is an asynchronous method of the original; no fields;
+    `repr` is `<remote object>`; a method it lacks fails with `no-method`
+    when called."""
+
+    def __init__(self, target: Any) -> None:
+        object.__setattr__(self, "_target", target)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        target = self._target
+
+        async def method(*args: Any) -> Any:
+            where = f"the method {name}"
+            own = getattr(target, name, None)
+            if not callable(own):
+                raise _crossed_error(no_object_method(target, name))
+            crossed = [_cross(arg, f"{where} argument {i + 1}") for i, arg in enumerate(args)]
+            try:
+                result = own(*crossed)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception as error:
+                raise _crossed_error(error) from error
+            return _cross(result, where)
+
+        method.__name__ = name
+        return method
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("an object passed by reference has no fields to set")
+
+    def __repr__(self) -> str:
+        return "<remote object>"
+
+
+# One proxy per object, kept for the test's run.
+_PROXIES: dict = {}
+
+
+def _remote_object(target: Any) -> _RemoteObject:
+    found = _PROXIES.get(id(target))
+    if found is not None and found[0] is target:
+        return found[1]
+    proxy = _RemoteObject(target)
+    _PROXIES[id(target)] = (target, proxy)
+    return proxy
 
 
 def _cannot_send(call: str, part: str, index: int | None, refused: PluginTestError) -> PluginTestError:
@@ -536,7 +593,7 @@ class _Context(sdk.Context):
         if name not in plugin.inject:
             raise not_declared(PluginTestError, name)
         service = self._services[name]
-        return _cross(service, f"service {name}") if self._loaded._strict else service
+        return _cross(service, f"service {name}", service=True) if self._loaded._strict else service
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
         shape = self._loaded._plugin.provides.get(name)

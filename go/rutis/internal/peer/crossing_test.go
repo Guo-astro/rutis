@@ -91,41 +91,59 @@ func TestAResultOverTheLimitIsAnsweredWithAThrow(t *testing.T) {
 	open(t, host)
 }
 
-const receivedObject = "received an object with methods, which Go cannot take; pass plain data or a function instead"
-
-func TestAnObjectReferenceFromTheFarEndFailsOnlyItsCall(t *testing.T) {
-	runtime, far, next := rawHost(t, `[]`)
+// objects-case(go): send-call-state
+// objects-case(go): same-proxy-home
+// An object of the far end is a *RemoteObject: calls of its methods are
+// call frames naming the method (blocking ones marked synchronous, for the
+// host's wait-cycle check); handed back, it is the far end's own again; the
+// same object granted twice is one proxy (#687).
+func TestAnObjectFromTheFarEndIsCalledAndGoesHome(t *testing.T) {
+	runtime, far, next := rawHost(t, `["sync-wait"]`)
 	object := `{"type":"reference","value":{"id":7,"kind":"object","home":false,"origin":[]}}`
-	// In a call's arguments: the call is answered with a throw.
+	// echo hands it back: home.
 	_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + object + `]}}`))
-	// Its grant goes back, then the call is answered.
-	if f := next(); f["op"] != "release" || f["reference"] != float64(7) || f["count"] != float64(1) {
-		t.Fatalf("%v", f)
-	}
 	f := next()
-	if f["op"] != "throw" || f["error"].(map[string]any)["message"] != receivedObject {
+	value, _ := f["value"].(map[string]any)
+	if f["op"] != "return" || value["type"] != "reference" || value["value"].(map[string]any)["home"] != true {
 		t.Fatalf("%v", f)
 	}
-	// In a reply: the call waiting for it fails.
-	done := make(chan error, 1)
-	go func() {
-		_, err := runtime.Call(context.Background(), "host:x", "m", nil, true)
-		done <- err
-	}()
-	call := next()
-	_ = far.Send([]byte(`{"op":"return","id":"` + call["id"].(string) + `","value":` + object + `}`))
-	if f := next(); f["op"] != "release" || f["reference"] != float64(7) {
-		t.Fatalf("%v", f)
+	// Received as a result: a *RemoteObject, one per object.
+	got := make(chan any, 2)
+	for range 2 {
+		go func() {
+			value, err := runtime.Call(context.Background(), "host:x", "m", nil, false)
+			if err != nil {
+				got <- err
+				return
+			}
+			got <- value
+		}()
+		call := next()
+		_ = far.Send([]byte(`{"op":"return","id":"` + call["id"].(string) + `","value":` + object + `}`))
 	}
-	err := testwait.Within(t, "the reply", done)
-	var refused *ValueError
-	if !errors.As(err, &refused) || err.Error() != receivedObject {
-		t.Fatalf("%T %v", err, err)
+	first, second := testwait.Within(t, "a result", got), testwait.Within(t, "a result", got)
+	remote, ok := first.(*RemoteObject)
+	if !ok || first != second {
+		t.Fatalf("%T %v / %v", first, first, second)
 	}
-	// The session goes on.
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:2","path":[],"target":"x","method":"echo","args":{"type":"list","value":[{"type":"data","value":"ok"}]}}`))
-	if f := next(); f["op"] != "return" {
-		t.Fatalf("%v", f)
+	for _, sync := range []bool{true, false} {
+		done := make(chan any, 1)
+		go func() {
+			value, err := remote.Call(context.Background(), "inc", []any{1}, sync)
+			if err != nil {
+				done <- err
+				return
+			}
+			done <- value
+		}()
+		call := next()
+		if call["op"] != "call" || call["method"] != "inc" || call["reference"] != float64(7) || (call["sync"] == true) != sync {
+			t.Fatalf("%v", call)
+		}
+		_ = far.Send([]byte(`{"op":"return","id":"` + call["id"].(string) + `","value":{"type":"data","value":2}}`))
+		if value := testwait.Within(t, "the result", done); string(value.(json.RawMessage)) != "2" {
+			t.Fatalf("%v", value)
+		}
 	}
 	open(t, runtime)
 }
@@ -139,6 +157,7 @@ func (c *counter) Call(ctx context.Context, method string, args []any) (any, err
 }
 func (c *counter) Get(ctx context.Context, property string) (any, error) { return c.n, nil }
 
+// objects-case(go): no-objects-declared
 func TestAnObjectGoesOnlyToAFarEndThatTakesObjects(t *testing.T) {
 	a, b := endpointPair(t, ValueCapabilities, func(ctx context.Context, target, method string, args []any) (any, error) {
 		if method == "object" {
@@ -149,13 +168,13 @@ func TestAnObjectGoesOnlyToAFarEndThatTakesObjects(t *testing.T) {
 	ctx := context.Background()
 	_, err := a.Call(ctx, "x", "take", []any{1, &counter{}}, true)
 	var refused *ValueError
-	want := "x.take: argument 2 cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
+	want := "x.take: argument 2 cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead, or upgrade b to rutis 0.18"
 	if !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("%v", err)
 	}
 	_, err = b.Call(ctx, "x", "object", nil, true)
 	var remote *RemoteError
-	want = "x.object: the result cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead"
+	want = "x.object: the result cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead, or upgrade b to rutis 0.18"
 	if !errors.As(err, &remote) || remote.Message != want {
 		t.Fatalf("%v", err)
 	}

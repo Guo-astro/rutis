@@ -162,6 +162,12 @@ func actual(arg any, t reflect.Type, cause error) string {
 	raw, isJSON := arg.(json.RawMessage)
 	if !isJSON {
 		switch v := arg.(type) {
+		case *peer.RemoteObject:
+			// A struct that cannot take it says how one would (#687 §八).
+			if errors.Is(cause, ErrNotForObjects) {
+				return "an object (" + ErrNotForObjects.Error() + ")"
+			}
+			return "an object"
 		case *big.Int:
 			return abbreviateText(v.String()) + " (out of range for " + t.String() + ")"
 		case []any:

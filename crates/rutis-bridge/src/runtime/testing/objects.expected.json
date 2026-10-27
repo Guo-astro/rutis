@@ -12,7 +12,9 @@
   "enforced": [
     "rust",
     "node",
-    "bun"
+    "bun",
+    "python",
+    "go"
   ],
   "cases": [
     {

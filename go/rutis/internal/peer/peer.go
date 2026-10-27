@@ -51,7 +51,7 @@ var (
 // host's wait-cycle check (#228). Not `sync-stack`: every incoming call runs
 // on a goroutine of its own. `value-<tag>`: it takes every tagged value
 // (#308). `events-v2`: the event protocol of rutis 0.13 (#464).
-var compatCapabilities = append([]string{"reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
+var compatCapabilities = append([]string{"objects", "reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
 
 // EventsCapability is the event protocol of rutis 0.13 (#464), which both
 // ends of every 0.13 session declare.
@@ -169,6 +169,7 @@ type imported struct {
 	function weak.Pointer[RemoteFunction]
 	future   weak.Pointer[RemoteFuture]
 	plugin   weak.Pointer[RemotePlugin]
+	object   weak.Pointer[RemoteObject]
 }
 
 // Peer is one session.
@@ -435,6 +436,45 @@ type RemoteFunction struct {
 	record *imported
 }
 
+// RemoteObject is an object with methods of the far end (#687): calls of
+// its methods reach the original object. It has no method table: a method
+// it lacks is the far end's to answer (no-method).
+type RemoteObject struct {
+	peer   *Peer
+	record *imported
+	once   sync.Once
+	made   any
+}
+
+// Peer is the session it came from.
+func (o *RemoteObject) Peer() *Peer { return o.peer }
+
+// As is what `make` makes of the object, made once: one object is one value
+// to the SDK (a *rutis.Service), however often it is received.
+func (o *RemoteObject) As(make func() any) any {
+	o.once.Do(func() { o.made = make() })
+	return o.made
+}
+
+// Call calls the method `method`: synchronously (marked so for the host's
+// wait-cycle check; the far end may call back on this chain while it runs)
+// or as an asynchronous call, which ctx cancels.
+func (o *RemoteObject) Call(ctx context.Context, method string, args []any, sync bool) (any, error) {
+	p := o.peer
+	p.mu.Lock()
+	err := o.record.check()
+	p.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	fields := p.waiting(map[string]any{"reference": o.record.id, "method": method}, sync)
+	value, err := p.call(ctx, "call", fields, args, true, nil, !sync)
+	if err != nil || sync {
+		return value, err
+	}
+	return Settle(ctx, value)
+}
+
 // RemotePlugin is a plugin definition of the far end (Options.Plugins): it
 // cannot be called, only sent back home, where it is the original value.
 type RemotePlugin struct {
@@ -524,6 +564,8 @@ func (p *Peer) Release(proxy any) {
 		p.release(proxy.record)
 	case *RemoteFuture:
 		p.release(proxy.record)
+	case *RemoteObject:
+		p.release(proxy.record)
 	}
 }
 
@@ -557,7 +599,7 @@ func (p *Peer) release(record *imported) {
 // it crosses as a list or record rather than as data.
 func marked(value any) bool {
 	switch v := value.(type) {
-	case Func, Object, Plugin, *RemoteFunction, *RemoteFuture, *RemotePlugin:
+	case Func, Object, Plugin, *RemoteFunction, *RemoteFuture, *RemotePlugin, *RemoteObject:
 		return true
 	case []any:
 		for _, item := range v {
@@ -678,6 +720,11 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 			return nil, err
 		}
 		return homeReference(v.record), nil
+	case *RemoteObject:
+		if err := v.record.check(); err != nil {
+			return nil, err
+		}
+		return homeReference(v.record), nil
 	case *RemotePlugin:
 		if v.peer != p {
 			return nil, valueErrorf("a plugin definition can only be handed back to the runtime that defined it")
@@ -711,6 +758,11 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		if marked(v) {
 			items := make([]any, len(v))
 			for i, item := range v {
+				// Undefined inside a value is null (#687 §七); an argument
+				// list (depth -1) keeps it, as an omitted argument.
+				if _, undefined := item.(UndefinedType); undefined && depth >= 0 {
+					item = nil
+				}
 				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
@@ -723,6 +775,9 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		if marked(v) {
 			items := make(map[string]any, len(v))
 			for key, item := range v {
+				if _, undefined := item.(UndefinedType); undefined {
+					item = nil
+				}
 				encoded, err := p.encode(item, grants, origin, depth+1)
 				if err != nil {
 					return nil, err
@@ -862,11 +917,18 @@ func (p *Peer) decodeWith(raw json.RawMessage, d *decoding) (any, error) {
 		if err := json.Unmarshal(wire.Value, &items); err != nil {
 			return nil, errors.New("invalid list")
 		}
+		// Undefined inside a value is null, also from an older far end
+		// (#687 §七); the items of an argument list keep it.
+		keep := d.arguments
+		d.arguments = false
 		out := make([]any, len(items))
 		for i, item := range items {
 			decoded, err := p.decodeWith(item, d)
 			if err != nil {
 				return nil, err
+			}
+			if _, undefined := decoded.(UndefinedType); undefined && !keep {
+				decoded = json.RawMessage("null")
 			}
 			out[i] = decoded
 		}
@@ -876,11 +938,15 @@ func (p *Peer) decodeWith(raw json.RawMessage, d *decoding) (any, error) {
 		if err := json.Unmarshal(wire.Value, &items); err != nil || items == nil {
 			return nil, errors.New("invalid record")
 		}
+		d.arguments = false
 		out := make(map[string]any, len(items))
 		for key, item := range items {
 			decoded, err := p.decodeWith(item, d)
 			if err != nil {
 				return nil, err
+			}
+			if _, undefined := decoded.(UndefinedType); undefined {
+				decoded = json.RawMessage("null")
 			}
 			out[key] = decoded
 		}
@@ -949,13 +1015,6 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 		}
 		return entry.value, nil
 	}
-	if value.Kind == "object" {
-		// Only the call it came in fails (#675): Go cannot call its methods.
-		// Its grant goes back with the call's other references.
-		d.fresh = append(d.fresh, &imported{id: ref, kind: value.Kind, origin: origin, grants: 1})
-		d.refuse(&ValueError{Message: "received an object with methods, which Go cannot take; pass plain data or a function instead"})
-		return nil, nil
-	}
 	// Plugin definitions travel back home only (this side's own), but to a
 	// side that takes them, as a host does (Options.Plugins).
 	if value.Kind == "plugin" && !p.opts.Plugins {
@@ -970,6 +1029,10 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 			}
 		case "plugin":
 			if live := record.plugin.Value(); live != nil {
+				proxy = live
+			}
+		case "object":
+			if live := record.object.Value(); live != nil {
 				proxy = live
 			}
 		default:
@@ -991,6 +1054,12 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	if value.Kind == "function" {
 		proxy := &RemoteFunction{peer: p, record: record}
 		record.function = weak.Make(proxy)
+		runtime.AddCleanup(proxy, func(r *imported) { go p.release(r) }, record)
+		return proxy, nil
+	}
+	if value.Kind == "object" {
+		proxy := &RemoteObject{peer: p, record: record}
+		record.object = weak.Make(proxy)
 		runtime.AddCleanup(proxy, func(r *imported) { go p.release(r) }, record)
 		return proxy, nil
 	}
@@ -1568,7 +1637,8 @@ func (p *Peer) invocation(f *frame) (*job, error) {
 		}
 	}
 	if f.Op == "invoke" || f.Op == "call" {
-		decoded, d, err := p.decode(f.Args, id)
+		d := &decoding{call: id, arguments: true}
+		decoded, err := p.decodeWith(f.Args, d)
 		if err != nil {
 			return nil, err
 		}
