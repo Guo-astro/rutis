@@ -22,62 +22,48 @@ fn expected() -> Value {
 }
 
 /// Every `objects-case(<language>): <case>` marker in the repository's
-/// sources, by language.
+/// tracked sources (`git ls-files`: not other checkouts in it), by
+/// language.
 fn markers() -> BTreeMap<String, BTreeSet<String>> {
-    const SKIP: [&str; 6] = [
-        "node_modules",
-        "target",
-        ".git",
-        ".build",
-        "build",
-        ".gradle",
-    ];
     const SOURCES: [&str; 11] = [
         "rs", "mjs", "js", "ts", "py", "go", "swift", "kt", "kts", "cjs", "mts",
     ];
+    let listed = std::process::Command::new("git")
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .current_dir(repo())
+        .output()
+        .expect("git lists the repository's files");
+    assert!(listed.status.success(), "git ls-files failed");
     let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut dirs = vec![repo()];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    for file in String::from_utf8_lossy(&listed.stdout).lines() {
+        let path: PathBuf = repo().join(file);
+        let source = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| SOURCES.contains(&e));
+        if !source {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if path.is_dir() {
-                if !SKIP.contains(&name.as_str()) {
-                    dirs.push(path);
-                }
-                continue;
-            }
-            let source = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| SOURCES.contains(&e));
-            if !source {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+        for line in text.lines() {
+            let Some(at) = line.find("objects-case(") else {
                 continue;
             };
-            for line in text.lines() {
-                let Some(at) = line.find("objects-case(") else {
-                    continue;
-                };
-                let rest = &line[at + "objects-case(".len()..];
-                let Some((language, case)) = rest.split_once("): ") else {
-                    continue;
-                };
-                let case = case.split_whitespace().next().unwrap_or_default();
-                // Prose about markers (`objects-case(<language>): …`).
-                if !language.chars().all(|c| c.is_ascii_lowercase()) {
-                    continue;
-                }
-                found
-                    .entry(language.to_owned())
-                    .or_default()
-                    .insert(case.to_owned());
+            let rest = &line[at + "objects-case(".len()..];
+            let Some((language, case)) = rest.split_once("): ") else {
+                continue;
+            };
+            let case = case.split_whitespace().next().unwrap_or_default();
+            // Prose about markers (`objects-case(<language>): …`).
+            if !language.chars().all(|c| c.is_ascii_lowercase()) {
+                continue;
             }
+            found
+                .entry(language.to_owned())
+                .or_default()
+                .insert(case.to_owned());
         }
     }
     found

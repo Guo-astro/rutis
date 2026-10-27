@@ -159,6 +159,8 @@ impl Connection {
     /// session (`stopped because it was idle`): calls on its objects that
     /// fail from then on say it (`runtime go-netkit stopped because it was
     /// idle`), instead of what the transport saw. The first word stays.
+    /// For the host's own runtimes (the loader's idle stop).
+    #[doc(hidden)]
     pub fn ending(&self, how: &str) {
         let _ = self.0.end.set(how.to_owned());
     }

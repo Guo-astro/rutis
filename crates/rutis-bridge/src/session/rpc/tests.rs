@@ -655,7 +655,6 @@ fn endpoint_pair() -> (Connection, Far) {
 }
 
 /// objects-case(rust): plain-object-by-reference
-/// objects-case(rust): same-proxy-home
 /// objects-case(rust): third-language
 /// objects-case(rust): return-array-event
 /// objects-case(rust): receiver-releases

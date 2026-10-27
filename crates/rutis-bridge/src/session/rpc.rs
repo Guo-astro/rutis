@@ -931,9 +931,10 @@ fn nulls(values: Vec<Value>) -> Vec<Value> {
 
 /// How a session ended, as messages say it of its runtime, from what ended
 /// it: `exited` when its process did (the local transport's `the process
-/// …`), else `disconnected`.
+/// …`, read as a row's call in progress reads it, `runtime/rows.rs`), else
+/// `disconnected`.
 fn ending(reason: &str) -> String {
-    match reason.starts_with("the process ") && !reason.ends_with("disconnected") {
+    match reason.starts_with("the process ") {
         true => "exited".into(),
         false => "disconnected".into(),
     }

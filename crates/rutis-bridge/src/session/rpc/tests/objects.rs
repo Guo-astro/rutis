@@ -45,6 +45,7 @@ async fn owner(name: &str) -> (Connection, Remote, Value) {
 /// the owner's object is released all the same, as the host's session to
 /// the holder ends and drops its relay.
 /// objects-case(rust): holder-killed-releases
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_object_is_released_when_its_holder_goes() {
     let (_a, mut far_a, object) = owner("node").await;
@@ -144,6 +145,7 @@ async fn gone(name: &str, how: Option<&str>, reason: &str, said: &str) {
 }
 
 /// objects-case(rust): owner-killed-peer-gone
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_on_an_object_whose_runtime_exited_is_peer_gone() {
     gone(
@@ -156,6 +158,7 @@ async fn a_call_on_an_object_whose_runtime_exited_is_peer_gone() {
 }
 
 /// objects-case(rust): idle-stop-peer-gone
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_on_an_object_whose_runtime_stopped_idle_says_so() {
     gone(
@@ -171,6 +174,7 @@ async fn a_call_on_an_object_whose_runtime_stopped_idle_says_so() {
 /// closing the cycle is refused (`SyncWaitCycle`), nothing hangs (#687
 /// §六, `bridge/sync-wait-cycle-refused`).
 /// objects-case(rust): sync-wait-cycle
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_synchronous_cycle_through_objects_is_refused() {
     let (a, mut far_a, object_a) = owner("go-a").await;
@@ -267,6 +271,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
 /// `undefined` is null inside a value at any depth, both ways; a whole
 /// argument or result keeps it (#687 §七).
 /// objects-case(rust): undefined-nested-null
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn undefined_is_null_inside_values() {
     struct Echo(Mutex<Option<Value>>);
@@ -359,6 +364,7 @@ async fn undefined_is_null_inside_values() {
 /// as its argument fails that call with `bad-argument`, saying where the
 /// object came from (#687 §九).
 /// objects-case(rust): declared-type-refuses
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rust_service_refuses_an_object_argument() {
     #[derive(serde::Deserialize)]
@@ -417,6 +423,7 @@ async fn hand(object: &Value) -> (Connection, Remote, u64) {
 /// A method the object does not have: the owner answers `no-method` with
 /// its data, and the holder gets it as it was, only that call failing.
 /// objects-case(rust): no-method
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_method_is_answered_by_the_owner() {
     let (_a, mut far_a, object) = owner("node").await;
@@ -476,6 +483,7 @@ async fn a_missing_method_is_answered_by_the_owner() {
 /// A call through a relay given up by its caller is cancelled on the
 /// owner's side.
 /// objects-case(rust): cancel
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_on_an_object_given_up_is_cancelled_at_its_owner() {
     let (_a, mut far_a, object) = owner("node").await;
@@ -518,6 +526,7 @@ async fn a_call_on_an_object_given_up_is_cancelled_at_its_owner() {
 /// and the holder's calls reach the owner, as for objects in one process.
 /// objects-case(rust): outlives-its-row
 /// objects-case(rust): send-call-state
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_object_stays_callable_through_its_relay_alone() {
     let (_a, mut far_a, object) = owner("node").await;
@@ -553,4 +562,44 @@ async fn an_object_stays_callable_through_its_relay_alone() {
         }
     });
     assert_eq!(script.await.unwrap(), json!(3));
+}
+
+/// One object given twice to the same runtime is one relay there; that
+/// relay sent back to the host is the original object again.
+/// objects-case(rust): same-proxy-home
+/// guarantee: bridge/object-refs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_object_given_twice_is_one_relay_and_comes_back_as_itself() {
+    let (_a, _far_a, object) = owner("node").await;
+    let (b, far_b) = connected(Arc::new(NoExports));
+    let holder = tokio::task::spawn_blocking(move || {
+        let mut far_b = Remote::start_declaring(far_b, &TAKES_OBJECTS);
+        let mut relays = Vec::new();
+        for _ in 0..2 {
+            let Frame::Invoke { id, args, .. } = far_b.read() else {
+                panic!("invoke expected")
+            };
+            let WireValue::List(args) = args else {
+                panic!("a list expected")
+            };
+            let relay = granted(&args[0]).0;
+            relays.push(relay);
+            // Back home: the relay itself.
+            far_b.ret(id, reference(relay, Kind::Object, true));
+        }
+        (far_b, relays)
+    });
+    b.ready().await.unwrap();
+    for _ in 0..2 {
+        let back = b
+            .invoke_async("t", "take", Value::List(vec![object.clone()]))
+            .await
+            .unwrap();
+        assert!(
+            back.reference().unwrap() == object.clone().reference().unwrap(),
+            "the relay comes back as the original"
+        );
+    }
+    let (_far_b, relays) = holder.await.unwrap();
+    assert_eq!(relays[0], relays[1], "one relay for one object");
 }
