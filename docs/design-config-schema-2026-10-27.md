@@ -2,7 +2,7 @@
 
 [English](design-config-schema-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则，调用处只列在 §11 的清单里；第五次修订：配置错误由它自己的 `Display` 写成文字，写明外面包一层时的样子）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
+状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则，调用处只列在 §11 的清单里；第五次修订：配置错误由它自己的 `Display` 写成文字，写明外面包一层时的样子；第六次修订：加上现有配置不被误拒的 CI 检查与发布前在 Dim 上的验证）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
 Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同，不出现它 §4.5 的禁用词。
 
 范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），不再校验一遍；Standard Schema 作为 `definePlugin` 的配置。
@@ -304,6 +304,7 @@ $ echo $?
 - **嵌入者自己的解析器**：用 `with_schema` 给了 Schema 的行，现在会按它补默认值并校验（`Resolved.schema` 的文档注释同步写明）。
 - **Node、Bun**：`definePlugin` 的 `config` 传 Standard Schema 对象时报错。只影响本来就不对的代码：这样的 Schema 以前只被打印，从没生效。
 - **0.18 以前的 SDK 构建的运行时**：运行时不检查它们的行的配置；`check` 照样检查。升级 SDK 后才在运行时生效。
+- **发布前在 Dim 上验证**：Dim（github.com/arcships/dim，主要的下游）嵌入 rutis-loader，没有 `rutis.json`，配置在代码里组装。发布前用 0.18 跑 Dim 的测试和一次启动：`ReconcileReport` 里没有 `config:` 失败、没有多出来的键的告警，结果写进发布清单。有失败的行时，是 rutis 的规则错了就改 rutis，是 Dim 的配置错了就告诉 Dim 去改。
 - **多出来的键**：只告警；`check --strict` 下是错误。
 - 发布说明写明：这是兑现文档早就写着的行为（插件 API 指南的"宿主据此校验"）。
 
@@ -313,10 +314,11 @@ $ echo $?
 | --- | --- |
 | 1a | 用例表 `specs/config-schema/`；Rust 实现（rutis-loader 的 `config` 模块：补默认值、校验、§六 的规则）；`check` 的检查、告警与退出码 |
 | 1b | loader 与 `rutis` 的 Rust 部分。配置步骤的函数（§2.1）及它的调用处：生成行之前的检查（`reconcile.rs` 约 372 行，现在直接调用内层 factory 的 `validate_config`）、试运行 `dry_run_copies`（`commit.rs` 256–261 行，不经过 `EntryFactory`）、`EntryFactory` 的 `validate_config` / `build`（`loader/plugins.rs`，只对 `Resolved.foreign_scope` 为假的行；Schema 取自 `config.resolved.schema`，Cordis 行看 `Resolved.meta["cordis"]`）、`RuntimeInstances::factory` 返回的按连接的 factory（`runtime/connections.rs`，它的 `validate_config` / `build` 告警，按行、实例、配置值去重）；去重记录放在 loader 的 `Inner` / `State`。带标记的配置错误的 `Display`（§2.1）：失败报告、等待原因、`tolerated` 比较、`rutis/row` 事件因此不用各自改；`LoaderError::Rejected` 包着它时直接显示里面的文字；rutis-host 打印多行错误时每一行带行名。`VolatileUpdate { config }` 发补过的副本。`rutis` 里基于 `Value` 的 `Deserializer` 与带标记的错误类型；它的使用者：`Definition`、rutis-sdk 的 dylib 解码（`crates/rutis-sdk/src/lib.rs`）、`resolver.rs` 的 `Json<C>::decode`。`site` 的补法；`Resolved.schema` 的文档注释 |
+| 1c | 现有的配置在 0.18 下照样通过（用例表只证明 7 份实现彼此一致，不证明今天在用的正确配置不会被拒）。CI 里：`rutis-host new` 的每个模板生成的项目连同它的 `rutis.dev.json`（例如 `greeting: "Hello"`）跑 `check`，没有配置错误——Node、Python、Go 加在已有的 `crates/rutis-host/tests/templates.rs`，Bun（有 Bun 的 job）与 Swift（macOS job）的模板补上同样的测试；`examples/` 下的例子没有 `rutis.json`，配置在 Rust 代码里组装，它们已有的测试跑过 loader 的配置步骤，必须照常通过。`tests/fixtures/persisted/*/rutis.json` 引用的插件与二进制并不存在，`check` 拿不到它们的 Schema，所以不跑 `check`，只由已有的 `persisted.rs` 照常读取（`rejected/` 本来就是读不了的样本，不在其中） |
 | 2 | Node 与 Bun：`definePlugin` 的行与测试工具；Cordis `ValidationError` 换成 `bad-config`；拒绝 Standard Schema 对象 |
 | 3 | Python：模块行、`define_plugin` 的行与测试工具 |
 | 4 | Go：校验后再解码；生成的 Schema 去掉 `required`；`rutistest` |
 | 5 | Swift 与 Kotlin：`@RutisConfig` 的字面量默认值；Kotlin `RutisFormat` 的错误带路径；两者的运行时、应用里的运行与测试工具 |
 | 6 | 文档：插件 API 指南（列出检查的关键字）、rutis-host 指南"检查配置"、各语言指南（撤回 #714 写的"目前不检查"）、诊断设计（两份）§4.3 的表加 `bad-config` 一行、《迁移到 0.18》、各语言模板去掉代码里重复的默认值（改写在 Schema 或类型里）、`docs/guarantees.md` 新条目"配置在 `apply` 之前补默认值并校验"（写明验证它的用例表） |
 
-每一步合并时，它那一列的用例全部通过；#669 在第 6 步合并、7 列都通过后关闭。
+每一步合并时，它那一列的用例全部通过，1c 里那种语言的模板检查也随这一步打开；#669 在第 6 步合并、7 列都通过后关闭。
