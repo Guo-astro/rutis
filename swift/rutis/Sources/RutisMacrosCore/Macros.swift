@@ -316,7 +316,7 @@ public struct ConfigMacro: ExtensionMacro {
                 // value is not, and the property stays required.
                 let literal = binding.initializer.map(\.value).flatMap { isLiteral($0) ? $0 : nil }
                 let defaulted = literal.map { ", default: Rutis.Schema.literal(\($0.trimmed) as \(trimmed(typeSyntax)))" } ?? ""
-                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional && literal == nil), description: \(quoted)\(defaulted))")
+                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted)\(defaulted))")
             }
         }
         return [try ExtensionDeclSyntax("""

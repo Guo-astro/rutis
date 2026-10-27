@@ -161,7 +161,7 @@ struct ConfigMacroTests {
                                       ("path", "String", ##"#"C:\path"#"##), ("ratio", "Double", "-1.5"), ("count", "Int", "5"),
                                       ("weights", "[String: Int]", #"["a": 1]"#)]
         {
-            let expected = ".init(\"\(name)\", .of((\(type)).self), required: false, description: nil, default: Rutis.Schema.literal(\(literal) as \(type)))"
+            let expected = ".init(\"\(name)\", .of((\(type)).self), required: true, description: nil, default: Rutis.Schema.literal(\(literal) as \(type)))"
             expect(code.contains(squeezed(expected)), "\(name): \(out)")
         }
         expect(code.contains(squeezed(".init(\"made\", .of((String).self), required: true, description: nil)")), "\(out)")

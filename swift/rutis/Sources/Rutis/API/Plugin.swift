@@ -141,10 +141,7 @@ extension Rutis {
                     schema = .object(inner)
                 }
                 fields.append((property.name, schema))
-                // A literal default with no JSON form is no default: required.
-                if property.required || (property.hasDefault && property.defaultJSON == nil) {
-                    required.append(.string(property.name))
-                }
+                if property.required { required.append(.string(property.name)) }
             }
             var out: [(String, JSON)] = [("type", .string("object")), ("properties", .object(fields))]
             if !required.isEmpty { out.append(("required", .array(required))) }
@@ -160,9 +157,6 @@ extension Rutis {
             /// Its `default`, as JSON text (`@RutisConfig`'s literal initial
             /// value).
             public var defaultJSON: String?
-            /// It was given a default (which may have no JSON form).
-            var hasDefault = false
-
             public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil) {
                 self.name = name
                 self.schema = schema
@@ -171,11 +165,11 @@ extension Rutis {
             }
 
             /// A property with a literal default (`@RutisConfig`'s `var units
-            /// = "metric"`): not required when the default has a JSON form.
+            /// = "metric"`): not required when the default has a JSON form
+            /// (one without, a `Character`, is no default).
             public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil, default defaultJSON: String?) {
-                self.init(name, schema, required: required, description: description)
+                self.init(name, schema, required: required && defaultJSON == nil, description: description)
                 self.defaultJSON = defaultJSON
-                hasDefault = true
             }
         }
 
@@ -339,6 +333,9 @@ extension Rutis {
             // An optional config type takes no config too.
             if C.self is OptionalProtocol.Type, let index = fields.firstIndex(where: { $0.0 == "type" }), case let .string(type) = fields[index].1 {
                 fields[index].1 = .array([.string(type), .string("null")])
+                if let at = fields.firstIndex(where: { $0.0 == "enum" }), case let .array(values) = fields[at].1 {
+                    fields[at].1 = .array(values + [.null])
+                }
             }
             (schema, validates) = (.object(fields), true)
         } else {
