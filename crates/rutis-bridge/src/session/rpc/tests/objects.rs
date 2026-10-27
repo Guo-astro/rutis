@@ -620,6 +620,12 @@ impl Dispatch for Poke {
 /// session `a`: the chain `a` gets is in `a`'s terms, `b`'s ids tagged with
 /// `b`, so an id of `b`'s never looks like one of `a`'s own (a runtime
 /// refuses a call whose chain holds its own id).
+///
+/// The ids are chosen to meet, as they did in CI (`objects_cross.rs`'s
+/// Node → Go case, before the fix): `b`'s caller was waiting on `rust:2`
+/// of `b`, and the call `a` gets is `rust:2` of `a` (its second, after
+/// `give`). Untagged, `a`'s Node runtime would see its own id in the chain
+/// and end the session ("invalid invocation").
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
@@ -636,7 +642,7 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
     let path = tokio::task::spawn_blocking(move || {
         far_b.send(Frame::Invoke {
             id: "node:1".into(),
-            path: vec!["rust:9".into()],
+            path: vec!["rust:2".into()],
             target: "t".into(),
             method: "poke".into(),
             args: data(json!([])),
@@ -652,17 +658,21 @@ async fn a_host_service_calling_another_sessions_object_rebases_its_chain() {
             reference: granted(&value).0,
             sync: false,
         });
-        let path = loop {
+        let (id, path) = loop {
             if let Frame::Call { id, path, .. } = far_a.read() {
-                far_a.ret(id, data(json!(1)));
-                break path;
+                far_a.ret(id.clone(), data(json!(1)));
+                break (id, path);
             }
         };
-        (path, far_a, far_b)
+        (id, path, far_a, far_b)
     });
-    let (path, _far_a, _far_b) = tokio::time::timeout(STEP, path)
+    let (id, path, _far_a, _far_b) = tokio::time::timeout(STEP, path)
         .await
         .expect("the object's method called")
         .unwrap();
-    assert_eq!(path, vec![format!("{tag}/rust:9"), format!("{tag}/node:1")]);
+    assert_eq!(id, "rust:2", "the ids meet");
+    // What a runtime checks (node/rutis-runtime's session.mjs): a call
+    // whose chain holds its own id is refused.
+    assert!(!path.contains(&id), "{path:?} holds {id}");
+    assert_eq!(path, vec![format!("{tag}/rust:2"), format!("{tag}/node:1")]);
 }
