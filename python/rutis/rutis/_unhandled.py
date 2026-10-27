@@ -122,7 +122,13 @@ def kind_text(kind: str, error: BaseException) -> str:
 class UnhandledError(Exception):
     """A load failed because the row's code left an exception unhandled
     while it loaded: says what, with that exception's traceback, code and
-    data."""
+    data, and the exception itself as its `__cause__`, so that its own
+    cause and an AggregateError's errors cross with it as they do for an
+    exception once the row has loaded."""
+
+    # Its stack is the exception's frames; the exception, with its chain,
+    # crosses as the cause (peer.encode_error).
+    reports_its_cause = True
 
 
 def unhandled_error(kind: str, error: BaseException) -> UnhandledError:
@@ -131,12 +137,23 @@ def unhandled_error(kind: str, error: BaseException) -> UnhandledError:
     for name in ("code", "data"):
         if hasattr(error, name):
             setattr(failure, name, getattr(error, name))
+    failure.__cause__ = error
     return failure
 
 
 def report_text(error: BaseException) -> str:
-    """The error as reported for no row: its whole traceback."""
-    return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()
+    """The error as reported for no row: its traceback with only the
+    plugin's frames, or the whole traceback when none of its frames is
+    the plugin's (it is then all there is to find its source by)."""
+    from .runner import _plugin_frame  # runner imports this module
+
+    every = traceback.extract_tb(error.__traceback__)
+    own = [frame for frame in every if _plugin_frame(frame)]
+    if not own:
+        return "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()
+    frames = "".join(traceback.StackSummary.from_list(own).format())
+    text = "".join(traceback.format_exception_only(type(error), error))
+    return f"Traceback (most recent call last):\n{frames}{text}".rstrip()
 
 
 def install_exit(name_row: Callable[[str | None, list[str]], str | None], runtime: Callable[[], str]) -> None:
