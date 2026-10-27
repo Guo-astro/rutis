@@ -2,7 +2,7 @@
 
 [中文](design-host-plugin-limits-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27 (reviewed the same day: removed the rutis.json forms, `runtimes.local`, `prefixed()`, the top-level default with per-field overrides, the options on remote runtimes, and the `not-allowed` code). Base: `main` `103c0d22`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-27 (reviewed the same day: removed the rutis.json forms, `runtimes.local`, `prefixed()`, the top-level default with per-field overrides, the options on remote runtimes, and the `not-allowed` code). Base: `main` `103c0d22`. Scheduled: 0.19.
 Issue: [#683](https://github.com/arcships/rutis/issues/683). Source: the host owner's end-to-end evaluation in [#663](https://github.com/arcships/rutis/issues/663) ([report](https://github.com/arcships/rutis/issues/663#issuecomment-6411076725)).
 Relation to 0.18: built on [0.18 diagnostics](design-diagnostics-2026-10-26.en.md). Error codes follow its §4.3 table, which gets one row, `timeout`. The calls that time out are the in-progress calls its §5.2 records. Error text follows its §4.5. Its §6.1, "the platform sets no call time limit", stays as it is; see §3.
 Other 0.19 designs: [#185](https://github.com/arcships/rutis/issues/185) gives plugins the loader as a service named `loader`, as Cordis's `ctx.loader` does; a host that wants to limit which plugins may use it uses this design's `allowed_services` (§4.3). Section 3 of [#671](https://github.com/arcships/rutis/issues/671)'s host owner's guide, `docs/guide/open-host.md`, explains these options (§7).

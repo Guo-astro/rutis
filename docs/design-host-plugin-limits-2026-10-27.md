@@ -2,7 +2,7 @@
 
 [English](design-host-plugin-limits-2026-10-27.en.md)
 
-状态：草案，未实现。日期：2026-10-27（同日复查：删去 rutis.json 的写法、`runtimes.local`、`prefixed()`、顶层与逐字段覆盖、远程运行时上的选项、`not-allowed` 码）。基准：`main` `103c0d22`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27（同日复查：删去 rutis.json 的写法、`runtimes.local`、`prefixed()`、顶层与逐字段覆盖、远程运行时上的选项、`not-allowed` 码）。基准：`main` `103c0d22`。排期：0.19。
 Issue：[#683](https://github.com/arcships/rutis/issues/683)。依据：[#663](https://github.com/arcships/rutis/issues/663) 的宿主持有者端到端评估（[报告](https://github.com/arcships/rutis/issues/663#issuecomment-6411076725)）。
 与 0.18 的关系：建在 [0.18 的诊断](design-diagnostics-2026-10-26.md) 上——错误码沿用它 §4.3 的表并加一行 `timeout`，超时的调用就是它 §5.2 登记的进行中的调用，出错文字遵守它 §4.5。它 §6.1 "平台不设调用时限"不变，见 §三。
 与其他 0.19 设计：[#185](https://github.com/arcships/rutis/issues/185) 把 loader 作为服务 `loader` 交给插件（与 Cordis 的 `ctx.loader` 相同），宿主想限制哪些插件能用它时用本稿的 `allowed_services`（§4.3）；[#671](https://github.com/arcships/rutis/issues/671) 的宿主持有者指南 `docs/guide/open-host.md` 第 3 节讲本稿的选项（§七）。
