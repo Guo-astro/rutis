@@ -97,7 +97,7 @@ site: {
 | --- | --- | --- |
 | `not-declared` | 用了没写进 `inject` 的服务 | `{service}` |
 | `unavailable` | 服务现在没有提供者 | `{service, reason}`（`Loader::waits` 的原因） |
-| `no-method` | 方法不存在 | `{service, method, methods}` |
+| `no-method` | 方法不存在 | `{service, method, methods}`；对象调用是 `{object, method, methods}`（`object` 是类名，普通对象为 `null`，见[对象引用](design-object-refs-2026-10-27.md) §八） |
 | `bad-argument` | 参数个数或类型不对 | `{service, method, argument, expected}` |
 | `bad-value` | 值传不过去，或消息超过上限 | `{argument?, part, limit?}` |
 | `peer-gone` | 调用进行中对面的运行时退出或断开 | `{runtime, reason}` |

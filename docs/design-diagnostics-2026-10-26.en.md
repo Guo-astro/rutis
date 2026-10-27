@@ -97,7 +97,7 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 | --- | --- | --- |
 | `not-declared` | A service not listed in `inject` was used | `{service}` |
 | `unavailable` | The service has no provider right now | `{service, reason}` (the reason from `Loader::waits`) |
-| `no-method` | The method does not exist | `{service, method, methods}` |
+| `no-method` | The method does not exist | `{service, method, methods}`; for object calls `{object, method, methods}` (`object` is the class name, `null` for a plain object; see [object references](design-object-refs-2026-10-27.en.md) §8) |
 | `bad-argument` | Wrong number or type of arguments | `{service, method, argument, expected}` |
 | `bad-value` | A value cannot be sent, or a message exceeds the limit | `{argument?, part, limit?}` |
 | `peer-gone` | The runtime on the other side exited or disconnected during the call | `{runtime, reason}` |

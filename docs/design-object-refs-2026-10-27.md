@@ -2,7 +2,7 @@
 
 [English](design-object-refs-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
+状态：定稿，未实现。日期：2026-10-27（同日修订三次。第三次：代理怎样再交出、Swift 怎样认出客户端协议、对象调用不查方法表、诊断 §4.3 的 `no-method`。前两次：发送规则保持现状，改正与 0.17 混用的事实，Go 只学会收，补空闲停止与 Rust 服务收到对象；出错文字只写写的一方知道的信息，参数从 1 数，`any` / `Any` 复用已有类型，去掉非本端插件引用与 dataclass 字段两项，顺带改正[诊断](design-diagnostics-2026-10-26.md) §8.1 第 6 行）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18。
 Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https://github.com/arcships/rutis/issues/675) 拆出，属于 [#663](https://github.com/arcships/rutis/issues/663)）。
 依据：[插件 API](guide/plugin-api.md)「值怎样传递」；[设计哲学](design-philosophy.md) §七；[值类型](design-value-types-2026-10-15.md)（V0 开发者无感、V4 能力协商、V10 `undefined`）；[插件定义](design-plugin-values-2026-10-25.md)（加一种引用的先例）；[诊断](design-diagnostics-2026-10-26.md)（错误码 `bad-value`、`bad-argument`、`no-method`、`peer-gone`，§十）。
 
@@ -59,12 +59,17 @@ Issue：[#687](https://github.com/arcships/rutis/issues/687)（从 [#675](https:
 | JS（Node、Bun） | 不用声明 | 代理：`await cache.get('a')`；读到的每个名字都是方法（symbol、`then`、`toJSON`、`toString`、`valueOf` 除外，所以 `await` 一个代理得到它自己）；`console.log` 显示 `[remote object]` |
 | Python | 不用声明 | 代理：`await cache.get("a")`，任何公开名字都是方法（和 `ctx.use` 一样）；`repr` 是 `<remote object>` |
 | Go | 参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名）；`any` 收到 `*rutis.Service` | 结构体的每个函数字段调用对应的方法（阻塞，第一个参数是 `context.Context`）。结构体里有不是函数的字段时，这次调用以 `bad-argument` 失败。`*rutis.Service` 就是 `ctx.Use` 得到的那个类型：`Call(ctx, method, result, args...) error`；对对象，`Methods()` 返回 `nil` |
-| Swift | 参数类型写成 `@RutisClient` 协议（`any Cache`）；`Any` 收到 `Rutis.Client` | `@RutisService` 展开时，`any Cache` 类型的参数按 `…Proxy` 的命名规则解码为 `CacheProxy.rutisMake(client)`，即 `ctx.use(name, CacheProxy.self)` 用的同一个代理。`Rutis.Client` 就是那个代理里的类型：`call(_:values:as:)` |
+| Swift | 参数类型写成 `@RutisClient` 协议（`any Cache`）；`Any` 收到 `Rutis.Client` | `ctx.use(name, CacheProxy.self)` 用的同一个代理（`CacheProxy.rutisMake(client)`）。`Rutis.Client` 就是那个代理里的类型：`call(_:values:as:)` |
 | Kotlin | 参数类型写成 `@RutisClient` 接口；`Any?` 收到 `RemoteObject` | KSP 生成的同一个代理；`suspend` 方法挂起，普通方法阻塞（和服务客户端一样）。`RemoteObject` 与 `RemoteFunction` 对应，有按名字的 `call`：Kotlin 没有公开的按名字调用的客户端，所以只有它加一个类型 |
 | Rust | 宿主手写分发、Cordis 绑定用 `rutis_bridge::session::ObjectRef`（已有） | `call` / `call_async` |
 
-- **方法在调用时才检查**：`ctx.use` 在 Go、Swift 里先按服务声明的方法表检查，对象没有方法表（线上的引用只有 `{id, home, kind, origin}`），所以不做事先检查：对象的 `*rutis.Service` 和 `Rutis.Client` 方法表为空，调用直接发出，没有的方法在调用时以 `no-method` 失败。
-- **同一个对象**：同一个对象交出几次，接收方拿到同一个代理（JS `===`、Python `is`）；代理交回原来的进程，那边拿到的就是原对象。交给第三个进程时，宿主照常转发。
+- **Swift 怎样认出客户端协议**：不按名字推（`any X` → `XProxy`）。`@RutisService` 现在对每个 `any P` 参数都写 `args.decode(i, as: (any P).self)`，`any Sendable`、`any Hashable` 这样的参数靠它照常解码，按名字推会让它们编译失败。改为 `@RutisClient` 为它的协议多生成一个重载 `rutisObjectProxy(_: (any Cache).Type)`；生成的代码调用 `rutisObjectProxy`，这个重载优先于一个泛型的兜底版本，兜底版本保持现在的解码。所以只有 `@RutisClient` 协议的参数收对象，其他 `any P` 不变。`@RutisClient` 方法的返回类型用同一个机制（现在 `ClientMacro` 的 `call(..., as: (any Cache).self)` 会失败）。
+- **在数据里**：数组、字典里的对象和事件参数，Swift 按 `Any` 收到 `Rutis.Client`，Kotlin 按 `Any?` 收到 `RemoteObject`。Kotlin 的 KSP 接口参数经 `Tables.clientFactory` 能收，但 `List<Cache>` 这样嵌套的类型没有序列化器；Swift 的 `[any Cache]` 也不在 0.18 里。
+- **对象的调用不查方法表**：线上的引用只有 `{id, home, kind, origin}`，对象没有方法表。现在 Go 的 `Service.Call`、`bind` 和 Swift 的 `Client.call` 在方法表里找不到方法时报 "has no method"，并从表里取 `sync`；对对象，它们跳过这一步（`*rutis.Service` 的 `Methods()` 为 `nil`，`Rutis.Client` 的方法表为空）。调用以 `call` 帧（不是服务的 `invoke`）发给对象；`sync` 只给 Go 结构体的阻塞函数字段用，和 `RemoteFunction` 的 `Call(ctx, args, true)` 一样。没有的方法由对象所在的一端以 `no-method` 回答。
+- **同一个对象**：同一个对象交出几次，接收方拿到同一个代理（JS `===`、Python `is`）；代理交回原来的进程，那边拿到的就是原对象。交给第三个进程时，宿主照常转发。各语言怎样把代理再交出：
+  - JS、Python：代理本身就是引用，原样发出。
+  - Go：只有 `*rutis.Service` 保持身份，交回时是原对象。这要在包 `rutis` 里给 `convert` 的 `toPeer` 直通（`encode.go` 约第 90 行）加一个钩子，和 `PluginFromPeer` 一样（`internal/convert` 不能导入 `rutis`）。函数字段的结构体是结构体，发出时按数据传（每个函数字段变成一个新的函数引用），函数字段也不能比较；要把对象本身交出去，参数写 `any`。
+  - Swift、Kotlin：编码器发出包着对象的客户端代理时，发的是那个对象的引用。这要让 `RutisProxy` 公开它的 `rutisClient`，KSP 生成的 `_RutisClient` 也一样（在 `Native.fromNative` 里认出它）。
 - **同一个进程里**拿到的是对象本身（Cordis 的语义），方法照常同步、字段照常可读。跨进程时只有方法、方法都是异步的：这条写进边界规则（原则 7）。测试工具的严格模式（默认）按跨进程的样子给代理，提前暴露差别。
 - **调用的语义**和函数引用相同：参数、返回值按「值怎样传递」跨边界；对方抛出的错误照常传回；取消照常传到对面（[诊断](design-diagnostics-2026-10-26.md) §6.1）。Go 对象的方法可能被并发调用（已有的规则）。
 
@@ -148,7 +153,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 
 | 情况 | 看到的 | 写的一方 | 码 |
 | --- | --- | --- | --- |
-| 调用对象没有的方法 | `chat: warmer.warm failed: Cache has no method gett (methods: get, set)`；普通对象写 `the object has no method gett (methods: get, set)` | 对象所在的一端，原样传回 | `no-method` |
+| 调用对象没有的方法 | `Cache has no method gett (methods: get, set)`；普通对象写 `the object has no method gett (methods: get, set)`。打印时按诊断设计加上前缀：`chat: warmer.warm failed: Cache has no method gett (methods: get, set)` | 对象所在的一端，原样传回 | `no-method` |
 | JS 代理上把数据字段当方法读 | `… Cache has no method size (size is a field; objects passed by reference expose only their methods)` | 对象所在的一端 | `no-method` |
 | 对方进程已经退出 | `chat: a call on an object from py failed: runtime py exited` | 宿主（本机运行时的对方总是宿主；经宿主转发的调用也是） | `peer-gone`，`data`：`{runtime, reason}` |
 | 对方因空闲停下 | `chat: a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle` | 宿主 | `peer-gone` |
@@ -157,11 +162,11 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | 0.18 运行时经 endpoint 会话直接发给 0.17 运行时 | 发出方已有的文字，加升级提示：`argument 1 of warmer.warm: an object with methods (Cache) cannot cross to py; pass plain data or a function instead, or upgrade py to rutis 0.18` | 发出方 | `bad-value` |
 | Swift 没标注的类 | `argument 1 of warmer.warm: a Cache cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it` | 发出方 | `bad-value` |
 | Kotlin 没标注的类 | `argument 1 of warmer.warm: a Cache cannot cross: annotate it @RutisService to pass it by reference, or @Serializable to copy it` | 发出方 | `bad-value` |
-| Go 参数类型收不了对象（不是结构体，或结构体有数据字段） | `warmer.warm: argument 1 should be a string, got an object`；`warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)` | 收的一方 | `bad-argument` |
-| Swift / Kotlin 参数类型收不了对象 | `warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a @RutisClient protocol or Any)`（Kotlin：`interface or Any?`） | 收的一方 | `bad-argument` |
+| Go 参数类型收不了对象（不是结构体，或结构体有数据字段） | `chat: warmer.warm: argument 1 should be a string, got an object`；`chat: warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)` | 收的一方 | `bad-argument` |
+| Swift / Kotlin 参数类型收不了对象 | `chat: warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a @RutisClient protocol or Any)`（Kotlin：`interface or Any?`） | 收的一方 | `bad-argument` |
 | 对象到了 Rust 服务（`#[rutis::service]`）的参数 | `chat: store.put: argument 1 should be a Config, got an object from py; store takes data and functions, so pass a function for each method` | 宿主 | `bad-argument` |
 
-`no-method` 的 `data`：[诊断](design-diagnostics-2026-10-26.md) §4.3 那一行（`{service, method, methods}`）不变；对象调用用它的对象形式 `{object, method, methods}`，`object` 是类名（普通对象为 `null`），由对象所在的一端填。
+`no-method` 的 `data`：服务调用仍是 `{service, method, methods}`；对象调用用它的对象形式 `{object, method, methods}`，`object` 是类名（普通对象为 `null`），由对象所在的一端填。本 PR 把这一形式加进[诊断](design-diagnostics-2026-10-26.md) §4.3 的 `no-method` 一行，#677 实施时照它做。
 
 [诊断](design-diagnostics-2026-10-26.md) §十"值是复制的"那条提示改为："按值复制；带方法的对象按引用，对方只能调用它的方法"。
 
@@ -180,9 +185,9 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | 发出带方法的对象，对方调用方法，原对象的状态改变 | 发 / 收 | 发 / 收 | 发 / 收 | 发（`Ref`）/ 收（结构体、`*Service`） | 发 / 收（协议、`Client`） | 发 / 收（接口、`RemoteObject`） | 转发；`ObjectRef` 收 |
 | 有函数值属性的普通对象按引用 | ✓ | ✓ | — | — | — | — | 转发 |
 | 数据仍是数据：普通对象 / dict / 结构体 / `Codable` / `@Serializable` 复制，里面的函数按引用 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| 交出两次是同一个代理；交回原进程是原对象 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
-| 交给第三种语言 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
-| 作为返回值、作为数组或 dict 里的元素、作为事件参数 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
+| 交出两次是同一个代理；交回原进程是原对象 | ✓ | ✓ | ✓ | ✓（`*Service`） | ✓ | ✓ | 转发 |
+| 交给第三种语言 | ✓ | ✓ | ✓ | ✓（`*Service`） | ✓ | ✓ | 转发 |
+| 作为返回值、作为数组或 dict 里的元素、作为事件参数 | ✓ | ✓ | ✓ | ✓ | ✓（返回值用 `@RutisClient` 类型；数据里、事件参数是 `Any` → `Client`） | ✓（数据里、事件参数是 `Any?` → `RemoteObject`） | 转发 |
 | 交出它的行卸载后，对象仍可调用 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
 | 通过方法调用取消（调用方放弃，对面收到取消） | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | 转发 |
 | 没有的方法：调用时 `no-method`，只有这次调用失败 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -206,7 +211,7 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 
 ## 十二、要改的文档
 
-- 本 PR：[诊断](design-diagnostics-2026-10-26.md)（两份）§8.1 第 6 行（§七）。
+- 本 PR：[诊断](design-diagnostics-2026-10-26.md)（两份）§8.1 第 6 行（§七）；§4.3 `no-method` 一行加上对象调用的 `data` `{object, method, methods}`（§八）。
 - [插件 API](guide/plugin-api.md)（两份）：「值怎样传递」的"带方法的对象、类的实例"一行去掉"只传给 Rust"，写成本稿 §三、§四；加一段"同一个进程与跨进程的差别"与空闲停止（§五）；测试工具差异表里"带方法的对象总是按引用传"那行改写。
 - 各语言指南（两份）：[TypeScript](guide/typescript-plugin.md)、[Bun](guide/bun-plugin.md)、[Python](guide/python-plugin.md)、[Go](guide/go-plugin.md)（函数字段结构体参数、`any` 收到 `*rutis.Service`）、[Swift](guide/swift-plugin.md)、[Swift App](guide/swift-app.md)（`@RutisClient` 参数、`Any` 收到 `Rutis.Client`）、[Kotlin App](guide/kotlin-app.md)（`@RutisClient` 参数、`RemoteObject`）、[Rust 插件](guide/rust-plugin.md)（对象到了服务参数）、[rutis-host](guide/rutis-host.md)（`idle` 不看引用）。
 - [协议设计](design-protocol-plugins-2026-09-25.md)：`objects` 能力在 compat 握手里的含义、`undefined` 的位置规则。
@@ -218,8 +223,8 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 | --- | --- |
 | O-1 | 规范与宿主：协议设计里的 `objects`、`undefined` 规则；`COMPAT_DECLARED` 加 `objects`；转发拒绝、`peer-gone`（含空闲停止）、`#[rutis::service]` 参数收到对象的文字与码（码表随 #677）；Rust 编解码里 `undefined` 在容器中写读为 `null`；共用的一致性期望文件与 Rust 列；保证条目 |
 | O-2 | Node、Bun：声明 `objects`；收对象的代理；`no-method` 的文字与 `data`；endpoint 会话上拒绝时的升级提示；测试工具严格模式；`undefined`；指南 |
-| O-3 | Python、Go：声明 `objects`；Python 的代理；Go 的函数字段结构体参数与 `any` 收到 `*rutis.Service`；测试工具；`undefined`；指南 |
-| O-4 | Swift、Kotlin：声明 `objects`；`@RutisClient` 类型的参数收对象（Swift 按 `…Proxy` 命名规则）、Swift `Any` 收到 `Rutis.Client`、Kotlin `RemoteObject`；测试工具；指南；《迁移到 0.18》与插件 API 指南的最终改写 |
+| O-3 | Python、Go：声明 `objects`；Python 的代理；Go 的函数字段结构体参数与 `any` 收到 `*rutis.Service`，调用对象时不查方法表，`*rutis.Service` 经 `toPeer` 的钩子原样交出；测试工具；`undefined`；指南 |
+| O-4 | Swift、Kotlin：声明 `objects`；`@RutisClient` 类型的参数与返回值收对象（Swift 用 `rutisObjectProxy` 重载）、Swift `Any` 收到 `Rutis.Client`、Kotlin `RemoteObject`；客户端代理再交出时发原来的引用（`rutisClient`、`Native.fromNative`）；调用对象时不查方法表；测试工具；指南；《迁移到 0.18》与插件 API 指南的最终改写 |
 
 每个阶段一个 PR，按顺序合并；后面的阶段复用 O-1 的期望文件。
 
