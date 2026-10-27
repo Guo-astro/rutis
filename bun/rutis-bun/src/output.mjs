@@ -103,7 +103,7 @@ export function watchBlocking({ runtime, limit = blockingLimit(), quiet = proces
   return {
     held(row, method, run) {
       if (!worker) {
-        worker = new Worker(new URL('./blocking.mjs', import.meta.url), { workerData: { state, text, limit } })
+        worker = new Worker(WATCH, { eval: true, workerData: { state, text, limit } })
         worker.unref()
         worker.on('error', error => say(`runtime ${runtime()}: the blocking watch failed: ${error?.message ?? error}\n`))
       }
@@ -126,6 +126,28 @@ export function watchBlocking({ runtime, limit = blockingLimit(), quiet = proces
     },
   }
 }
+
+// The watch's thread: it sleeps until a row's call starts holding the
+// runtime's thread, and says so once when the call still holds it after
+// `limit` ms. The wait's timeout is the clock: the thread it watches may be
+// too busy for any other. Evaluated, as the runner's watchdog: a module
+// would go through the loaders the runtime runs with (tsx), whose own
+// thread and channels a runtime process should not grow mid-session.
+const WATCH = `
+const { workerData: { state, text, limit } } = require('node:worker_threads')
+const { writeSync } = require('node:fs')
+${blockingText.toString()}
+for (;;) {
+  const generation = Atomics.load(state, 0)
+  // Even: no call holds the thread.
+  if (generation % 2 === 0) { Atomics.wait(state, 0, generation); continue }
+  if (Atomics.wait(state, 0, generation, limit) !== 'timed-out') continue
+  const [runtime, row, method] = Buffer.from(text.slice(0, Atomics.load(state, 1))).toString().split('\\0')
+  try { writeSync(2, blockingText(runtime, row, method, limit / 1000) + '\\n') } catch {}
+  // Once for the call: the next is watched once it ends.
+  Atomics.wait(state, 0, generation)
+}
+`
 
 /** What is said of row `row`'s `method` holding runtime `runtime` for
  * `seconds`. */
