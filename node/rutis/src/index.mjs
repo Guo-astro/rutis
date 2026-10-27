@@ -39,6 +39,13 @@ export const PLUGIN = Symbol.for('rutis.leaf-plugin')
 
 export function definePlugin(spec) {
   if (typeof spec?.apply !== 'function') throw new TypeError('a plugin needs apply(ctx, config)')
+  // `config` is a JSON Schema: rutis fills its defaults and validates the
+  // config with it before `apply`. A Standard Schema object (schemastery,
+  // zod, …) was never applied: refused (config schema design §2.3).
+  const standard = spec.config?.['~standard']
+  if (standard !== undefined) {
+    throw new TypeError(`config of definePlugin should be a JSON Schema object, got ${standard?.vendor === 'schemastery' ? 'a schemastery Schema' : 'a Standard Schema'}`)
+  }
   const inject = spec.inject ?? []
   if (!Array.isArray(inject) || inject.some(name => typeof name !== 'string')) throw new TypeError('inject must be a list of service names')
   for (const [name, methods] of Object.entries(spec.provides ?? {})) {

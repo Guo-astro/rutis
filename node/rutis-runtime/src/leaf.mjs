@@ -10,6 +10,7 @@
 import { KEEP, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
 import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
+import { checkConfig, configError } from './config.mjs'
 
 // The plugin APIs this runtime runs: a plugin written against a newer one
 // is refused, naming both.
@@ -131,6 +132,14 @@ export function toCordis(spec, undeclared, rowInject = [], providerOf) {
         },
         // Aborted when the row unloads, while its listeners are waited for.
         get signal() { return signalOf(context) },
+      }
+      // Defaults filled and the config validated against the plugin's
+      // schema before `apply` (config schema design §2.2); extra keys are
+      // the host's loader's to warn about.
+      if (spec.config !== undefined && spec.config !== null) {
+        const checked = checkConfig(spec.config, config)
+        if (checked.errors.length) throw configError(checked.errors)
+        config = checked.config
       }
       const cleanup = await spec.apply(ctx, config)
       if (cleanup !== undefined && cleanup !== null) {
