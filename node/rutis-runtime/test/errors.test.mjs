@@ -234,3 +234,13 @@ test('an apply failure crosses with the plugin\'s frames only (#677)', async () 
   assert.match(stack, /^Error: no region\n\s+at .*errors\.test\.mjs/)
   assert.doesNotMatch(stack, /leaf\.mjs|@deepseek-ai[\\/]cordis|node:internal/)
 })
+
+// guarantee: sdk/error-texts
+// A module that throws a value that is not an error at import: the value
+// alone, as written (#677).
+test('a thrown value at import is shown alone (#677)', async () => {
+  const { cannotLoad } = await import('../src/errors.mjs')
+  const error = cannotLoad('need 5 words', '/work/m/str.mjs', '/work')
+  assert.deepEqual([error.name, error.message], ['LoadError', 'cannot load m/str.mjs: "need 5 words"'])
+  assert.equal(cannotLoad({ code: 3 }, '/work/m/obj.mjs', '/work').message, 'cannot load m/obj.mjs: {code: 3}')
+})

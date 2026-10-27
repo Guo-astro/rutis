@@ -8,7 +8,7 @@ import { toJsonSchema } from './schema.mjs'
 import { isLeaf, oncePerName, supported, toCordis } from './leaf.mjs'
 import { Bus, EVENTS_V2, NO_EVENTS_V2, refuseRemoved } from './events.mjs'
 import { install } from './cordis-events.mjs'
-import { cannotLoad, entryGone, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
+import { cannotLoad, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
 // Local channels (`fd:3`, a socket path) speak the compat protocol unless
@@ -359,7 +359,7 @@ function provideWaitingLater() {
       if (holder(scope, name)) continue
       waitingHosts.delete(id)
       try { hosts.set(id, scope.provide(name, proxy)) } catch (error) {
-        process.stderr.write(`runtime node: cannot register host service ${id}: ${error?.message ?? error}\n`)
+        process.stderr.write(`runtime node: cannot register host service ${serviceName(id)}: ${error?.message ?? error}\n`)
       }
     }
   })
@@ -474,7 +474,7 @@ function describeDefinition(value) {
 async function declaredOf(entry, version = fresh) {
   const own = cordisOf(entry)
   if (cordisPath && own && own !== cordisPath) {
-    throw new Error(`${entry} resolves a different Cordis (${own}) than ${pluginPath} (${cordisPath})`)
+    throw new Error(`${fileShown(entry)} uses its own copy of @deepseek-ai/cordis (${fileShown(own)}), not the one ${fileShown(pluginPath)} uses (${fileShown(cordisPath)}): install a single copy`)
   }
   // An entry that was there and is no more is said so, not loaded from
   // the module cache (§8.1).
@@ -814,7 +814,7 @@ function mount(args) {
     for (const { entry } of plugins) {
       const own = cordisOf(entry)
       if (cordisPath && own && own !== cordisPath) {
-        throw new Error(`${entry} resolves a different Cordis (${own}) than ${pluginPath} (${cordisPath})`)
+        throw new Error(`${fileShown(entry)} uses its own copy of @deepseek-ai/cordis (${fileShown(own)}), not the one ${fileShown(pluginPath)} uses (${fileShown(cordisPath)}): install a single copy`)
       }
     }
     for (const { entry, config } of plugins) {

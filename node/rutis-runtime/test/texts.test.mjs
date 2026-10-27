@@ -26,6 +26,8 @@ test('a row that cannot load, or is refused a call, is told in the developer\'s 
   writeFileSync(file('entry.mjs'), "import { x } from './util.mjs'\nexport function apply() { return x }\n")
   writeFileSync(file('util.mjs'), "export const x = 1\nthrow new RangeError('bad util')\n")
   writeFileSync(file('kept.mjs'), 'export function apply() {}\n')
+  // A module that throws a string as it is imported.
+  writeFileSync(file('str.mjs'), "throw 'need 5 words'\n")
   // A host service's method it does not have; a service not declared.
   writeFileSync(file('caller.mjs'), `import { definePlugin } from '${sdk}'
 export default definePlugin({ inject: ['llm'], apply(ctx) { ctx.use('llm').other() } })
@@ -55,6 +57,7 @@ export default definePlugin({ apply(ctx) { ctx.provide('llm', { ask() { return 1
 
     assert.deepEqual(pick(await load('entry', 'entry.mjs')), { name: 'LoadError', message: `cannot load ${shown('util.mjs')}: RangeError: bad util (${shown('util.mjs')}:2:7)`, code: undefined, data: undefined })
 
+    assert.deepEqual(pick(await load('str', 'str.mjs')), { name: 'LoadError', message: `cannot load ${shown('str.mjs')}: "need 5 words"`, code: undefined, data: undefined })
     assert.equal(await load('kept', 'kept.mjs'), null)
     await host.call('rows.unload', ['kept'])
     rmSync(file('kept.mjs'))

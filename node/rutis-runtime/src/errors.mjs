@@ -119,20 +119,22 @@ function shiftNode(node, offset) {
   return shifted
 }
 
-export function decodeError({ name, message, graph }) {
+// `site`: where this process made the call the error answers (`callSite`):
+// the error's stack is the plugin's own from there (§4.4).
+export function decodeError({ name, message, graph }, site) {
   const make = node => node.errors !== undefined ? new AggregateError([], node.message)
     : new (Object.hasOwn(constructors, node.name) ? constructors[node.name] : Error)(node.message)
-  if (!graph) return Object.assign(make({ name, message }), { name })
+  if (!graph) return own(Object.assign(make({ name, message }), { name }), site)
   // A graph not in its shape (an older or another far end's) does not end
   // the session: the error is then its name and message (#675).
-  try { return decodeGraph(graph, make) } catch { return Object.assign(make({ name, message }), { name }) }
+  try { return decodeGraph(graph, make, site) } catch { return own(Object.assign(make({ name, message }), { name }), site) }
 }
 
-function decodeGraph(graph, make) {
+function decodeGraph(graph, make, site) {
   if (!Array.isArray(graph.nodes)) throw new TypeError('invalid error graph')
   const nodes = graph.nodes.map(node => {
     // `stack` stays this process's own; the other side's is in the graph.
-    if (node.type === 'error') return own(Object.assign(make(node), { name: node.name }))
+    if (node.type === 'error') return own(Object.assign(make(node), { name: node.name }), site)
     if (node.type === 'array') return []
     if (node.type === 'object') return {}
     throw new TypeError('invalid error node')
@@ -167,9 +169,20 @@ function decodeGraph(graph, make) {
   return root
 }
 
-// The stack from where the error is decoded, without the decoding's frames.
-function own(error) {
-  if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(error, decodeError)
+// Where this process makes a call, taken as it is made; its stack is read
+// only when an error answers it.
+export function callSite() {
+  const site = {}
+  if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(site, callSite)
+  return site
+}
+
+// The error's stack: the plugin's frames where it made the call (`site`),
+// else where the error is decoded.
+function own(error, site) {
+  const at = typeof site?.stack === 'string' ? frames(pluginStack(site.stack)) : undefined
+  if (at) Object.defineProperty(error, 'stack', { value: `${error.name}: ${error.message}\n${at}`, configurable: true, writable: true })
+  else if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(error, decodeError)
   return error
 }
 
@@ -226,7 +239,7 @@ export function cannotLoad(thrown, entry, cwd = process.cwd()) {
   const { file, line, column, name, message } = loadFailure(thrown)
   const shownFile = fileShown(file ?? entry, cwd)
   const where = line !== undefined ? ` (${shownFile}:${line}${column !== undefined ? `:${column}` : ''})` : ''
-  const error = new Error(`cannot load ${shownFile}: ${name}: ${message}${where}`, { cause: thrown })
+  const error = new Error(`cannot load ${shownFile}: ${name ? `${name}: ` : ''}${message}${where}`, { cause: thrown })
   Object.defineProperty(error, 'name', { value: LOAD_ERROR, configurable: true, writable: true, enumerable: false })
   error.stack = [`${LOAD_ERROR}: ${error.message}`, ...(pluginFrames(thrown?.stack) ?? [])].join('\n')
   return error
@@ -254,7 +267,8 @@ function pluginFrames(stack) {
 
 // Which file threw, where, and what, however the loader said it.
 function loadFailure(thrown) {
-  const name = typeof thrown?.name === 'string' ? thrown.name : 'ThrownValue'
+  // A thrown value that is not an error is shown alone, as written.
+  const name = errorLike(thrown) || typeof thrown?.position === 'object' ? String(thrown.name) : undefined
   const text = errorLike(thrown) ? String(thrown.message) : shown(thrown)
   const firstLine = text.split('\n')[0]
   // Bun: a syntax or resolution error says where in `position`.

@@ -73,19 +73,24 @@ function holdsSpecial(value, seen = new Set()) {
 const MAX_DEPTH = 64
 
 // `value` as the other process sees it, by the rules of the runtimes
-// (node/rutis-runtime/src/session.mjs); `data`: inside plain data; `depth`:
-// the arrays and objects around it.
-function cross(value, where, seen = new Set(), data = false, depth = 0) {
+// (node/rutis-runtime/src/session.mjs); `where`: what a refusal starts
+// with (`llm.ask: argument 1 cannot be sent`), the same for what `value`
+// holds, as the runtimes say it; `data`: inside plain data; `depth`: the
+// arrays and objects around it; `name`: what a call of `value` is called
+// (`llm.ask`; a function's, by default `a function`), or for an object
+// with methods, what a call of each method is (by default `the method m`).
+function cross(value, where, seen = new Set(), data = false, depth = 0, name = undefined) {
   if (value === undefined) return data ? null : undefined
   if (value === null) return value
   if (typeof value === 'symbol') {
-    throw new PluginTestError(`${where}: a ${typeof value} cannot cross between processes`)
+    throw refused(where, `a ${typeof value} cannot cross between processes`)
   }
   if (typeof value === 'number' && !Number.isFinite(value)) {
-    throw new PluginTestError(`${where}: ${value} cannot cross between processes (only finite numbers do)`)
+    throw refused(where, `${value} cannot cross between processes (only finite numbers do)`)
   }
   if (typeof value === 'function') {
-    return (...args) => crossResult(() => value(...args.map((arg, i) => cross(arg, sending(where, `argument ${i + 1}`)))), where)
+    const call = typeof name === 'string' ? name : 'a function'
+    return (...args) => crossResult(() => value(...args.map((arg, i) => cross(arg, sending(call, `argument ${i + 1}`)))), call)
   }
   if (value instanceof Promise) return value.then(result => cross(result, where), thrown => { throw crossThrown(thrown, where) })
   const tag = tagOf(value)
@@ -93,7 +98,7 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
     try {
       return crossTagged(value, tag, where, seen, depth)
     } catch (error) {
-      throw error instanceof ValueError ? new PluginTestError(`${where}: ${error.message}`) : error
+      throw error instanceof ValueError ? refused(where, `${error.message}`) : error
     }
   }
   if (typeof value !== 'object') return value
@@ -101,23 +106,23 @@ function cross(value, where, seen = new Set(), data = false, depth = 0) {
   // to the runtime that defined it, which loads it as it is
   // (docs/design-plugin-values-2026-10-25.md R10), so `load` takes it.
   if (isPlugin(value)) return value
-  if (hasBehaviour(value)) return reference(value, where)
-  if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
-  if (depth >= MAX_DEPTH) throw new PluginTestError(`${where}: a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
+  if (hasBehaviour(value)) return reference(value, typeof name === 'function' ? name : undefined)
+  if (seen.has(value)) throw refused(where, `cyclic data cannot cross between processes`)
+  if (depth >= MAX_DEPTH) throw refused(where, `a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
   // An Error passed as a value crosses as data: its name, message and stack.
   if (value instanceof Error && !data) {
     return { name: value.name, message: value.message, ...(typeof value.stack === 'string' ? { stack: value.stack } : {}) }
   }
   if (!Array.isArray(value) && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
     const kind = value.constructor?.name ?? 'object'
-    throw new PluginTestError(`${where}: a ${kind} cannot cross between processes (only plain data, functions and objects with methods do)`)
+    throw refused(where, `a ${kind} cannot cross between processes (only plain data, functions and objects with methods do)`)
   }
   seen.add(value)
   try {
     // An empty slot is undefined, as the runtimes send it (#675).
-    if (Array.isArray(value)) return Array.from(value, (item, i) => cross(item, `${where}[${i}]`, seen, data, depth + 1))
+    if (Array.isArray(value)) return Array.from(value, (item, i) => cross(item, where, seen, data, depth + 1))
     const inData = data || !holdsSpecial(value)
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, `${where}.${key}`, seen, inData, depth + 1)]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cross(item, where, seen, inData, depth + 1)]))
   } finally {
     seen.delete(value)
   }
@@ -131,8 +136,8 @@ function crossTagged(value, tag, where, seen, depth) {
     case 'bytes': return new Uint8Array(bytesOf(value))
     case 'bigint': return BigInt(checkText(tag, String(value)))
     case 'map': case 'set': {
-      if (seen.has(value)) throw new PluginTestError(`${where}: cyclic data cannot cross between processes`)
-      if (depth >= MAX_DEPTH) throw new PluginTestError(`${where}: a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
+      if (seen.has(value)) throw refused(where, `cyclic data cannot cross between processes`)
+      if (depth >= MAX_DEPTH) throw refused(where, `a value nested deeper than ${MAX_DEPTH} levels cannot cross between processes`)
       const what = tag === 'map' ? 'map key' : 'set element'
       const entries = tag === 'map' ? [...value] : [...value].map(element => [element])
       const keys = entries.map(([key]) => keyOf(key))
@@ -140,11 +145,11 @@ function crossTagged(value, tag, where, seen, depth) {
       seen.add(value)
       let made
       try {
-        const item = (item, at) => cross(item, `${where}${at}`, seen, false, depth + 1)
+        const item = item => cross(item, where, seen, false, depth + 1)
         made = tag === 'map'
           // Undefined in a map is null, as in data (design V10).
-          ? new Map(entries.map(([key, entry], i) => [item(key, ` key ${i}`), entry === undefined ? null : item(entry, ` value ${i}`)]))
-          : new Set(entries.map(([element], i) => item(element, ` element ${i}`)))
+          ? new Map(entries.map(([key, entry], i) => [item(key), entry === undefined ? null : item(entry)]))
+          : new Set(entries.map(([element]) => item(element)))
       } finally {
         seen.delete(value)
       }
@@ -158,7 +163,16 @@ function crossTagged(value, tag, where, seen, depth) {
 
 // What cannot be sent says which part of which call, as the runtimes do:
 // `llm.ask: argument 1 cannot be sent: …`.
-const sending = (where, what) => `${where}: ${what} cannot be sent`
+// It carries the code and data of the runtimes' refusal (`bad-value`,
+// `{ part, argument? }`), which `refused` gives the error.
+function sending(where, what) {
+  const argument = /^argument (\d+)$/.exec(what)
+  return Object.assign(new String(`${where}: ${what} cannot be sent`), { data: argument ? { part: 'argument', argument: Number(argument[1]) } : { part: 'result' } })
+}
+function refused(where, reason) {
+  const error = new PluginTestError(`${where}: ${reason}`)
+  return where?.data ? Object.assign(error, { code: 'bad-value', data: { ...where.data } }) : error
+}
 
 // Call `make` from the other process: its result crosses back, and so does
 // what it throws.
@@ -175,9 +189,11 @@ function crossResult(make, where) {
 }
 
 // A thrown value as the other process receives it: an Error is copied with
-// its name, message, stack, cause and (AggregateError) errors, as an Error
-// of the same built-in class or a plain Error; its other fields stay
-// behind. Other thrown values are copied.
+// its name, message, cause, (AggregateError) errors, a string `code` and
+// its `data` (when it is data that can cross), as an Error of the same
+// built-in class or a plain Error, with the receiving side's own stack, as
+// the runtimes do (§4.4); its other fields stay behind. Other thrown values
+// are copied.
 function crossThrown(thrown, where, copies = new Map()) {
   if (thrown instanceof PluginTestError) return thrown
   if (thrown === null || typeof thrown !== 'object') {
@@ -191,8 +207,13 @@ function crossThrown(thrown, where, copies = new Map()) {
     const copy = thrown instanceof AggregateError
       ? new AggregateError([], thrown.message)
       : new (Object.hasOwn(constructors, thrown.name) ? constructors[thrown.name] : Error)(thrown.message)
-    Object.assign(copy, { name: thrown.name }, typeof thrown.stack === 'string' ? { stack: thrown.stack } : {})
+    Object.assign(copy, { name: thrown.name })
+    if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(copy, crossThrown)
     copies.set(thrown, copy)
+    if (typeof thrown.code === 'string') copy.code = thrown.code
+    if (Object.hasOwn(thrown, 'data')) {
+      try { copy.data = cross(thrown.data, 'data', new Set(), true) } catch { /* data that cannot cross stays behind, as in the runtimes */ }
+    }
     if ('cause' in thrown) {
       Object.defineProperty(copy, 'cause', { value: crossThrown(thrown.cause, where, copies), configurable: true, writable: true })
     }
@@ -207,11 +228,15 @@ function crossThrown(thrown, where, copies = new Map()) {
 
 // An object with behaviour, used from the other process: its methods are
 // called by reference.
-function reference(target, where) {
+// `method(m)`: what a call of the method `m` is called, as the runtimes
+// say it: `llm.ask` for a service's, `the method ask` for an object's.
+function reference(target, method = property => `the method ${property}`) {
   return new Proxy(target, {
     get(object, property) {
       const value = Reflect.get(object, property, object)
-      return typeof value === 'function' ? cross(value.bind(object), `${where}.${String(property)}`) : cross(value, `${where}.${String(property)}`)
+      return typeof value === 'function'
+        ? cross(value.bind(object), undefined, new Set(), false, 0, method(String(property)))
+        : cross(value, sending(`the property ${String(property)}`, 'the result'))
     },
   })
 }
@@ -408,7 +433,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
           if (found === undefined) throw coded(`service ${name} is not available`, 'unavailable', { service: name })
           // A service another row here provides is the object itself.
           if (!found.test) return found.value
-          return strict ? withoutMissing(name, found.value, cross(found.value, `service ${name}`)) : found.value
+          return strict ? withoutMissing(name, found.value, cross(found.value, `service ${name}`, new Set(), false, 0, method => `${name}.${method}`)) : found.value
         },
         provide(name, value) {
           const shape = plugin.provides[name]

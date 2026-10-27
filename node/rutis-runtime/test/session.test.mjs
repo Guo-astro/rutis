@@ -512,3 +512,53 @@ test('an error thrown while a value is encoded is wrapped, not changed', async (
   assert.equal(fault(), undefined)
   peer.close()
 })
+
+// guarantee: sdk/error-codes
+// A value that cannot be sent is refused with code bad-value and data
+// `{ part, argument?, limit? }`, as every language says it (§4.3, #677).
+test('a value that cannot be sent carries code bad-value and its part', async () => {
+  const big = 'x'.repeat(2048)
+  const { peer, sent } = harness((_, method) => method === 'big' ? big : method === 'boom' ? (() => { throw new Error(big) })() : { f: Symbol('s') }, { maxMessage: 1024 })
+  const refusal = run => { try { run() } catch (error) { return { code: error.code, data: error.data } } }
+  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, big])), { code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024 } })
+  assert.deepEqual(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }])), { code: 'bad-value', data: { part: 'argument', argument: 2 } })
+  const { decodeError } = await import('../src/errors.mjs')
+  // The refusal this side sends, as the far end decodes it.
+  const wire = async (id, method) => { peer.receive(invoke(id, method)); await Promise.resolve(); return decodeError(sent.at(-1).error) }
+  const back = await wire(1, 'big')
+  assert.deepEqual([back.code, back.data], ['bad-value', { part: 'result', limit: 1024 }])
+  const boom = await wire(2, 'boom')
+  assert.deepEqual([boom.code, boom.data], ['bad-value', { part: 'error', limit: 1024 }])
+  const symbol = await wire(3, 'symbol')
+  assert.deepEqual([symbol.message, symbol.code, symbol.data], ['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result' }])
+  peer.close()
+})
+
+// guarantee: sdk/error-positions, sdk/error-rethrown
+// An error answering a call has the stack of the plugin's code where it made
+// the call, not the session's receive loop; thrown on, it adds that place
+// to `rethrown` (§4.4, #677).
+test('an error answering a call has the caller\'s stack, and a rethrow adds it', async () => {
+  const { encodeError } = await import('../src/errors.mjs')
+  const { peer, incoming } = harness(() => {})
+  const remote = { name: 'KeyError', message: "'region'", graph: { root: { type: 'reference', value: 0 }, nodes: [{ type: 'error', name: 'KeyError', message: "'region'", stack: 'KeyError: \'region\'\n  File "weather.py", line 31, in tomorrow' }] } }
+  // Synchronous.
+  incoming.push({ op: 'throw', id: 'node:1', error: remote })
+  function askTheWeatherSync() { return peer.invoke('host:weather', 'tomorrow', []) }
+  let sync
+  try { askTheWeatherSync() } catch (error) { sync = error }
+  assert.match(sync.stack, /^KeyError: 'region'\n\s+at askTheWeatherSync .*session\.test\.mjs/)
+  assert.doesNotMatch(sync.stack, /src[\\/]session\.mjs|weather\.py/)
+  // Asynchronous.
+  function askTheWeather() { return peer.invokeAsync('host:weather', 'tomorrow', []) }
+  const pending = askTheWeather()
+  peer.receive({ op: 'throw', id: 'node:2', error: remote })
+  const failed = await pending.catch(error => error)
+  assert.match(failed.stack, /^KeyError: 'region'\n\s+at askTheWeather .*session\.test\.mjs/)
+  // Thrown on: the graph as received, one `rethrown` item, the caller's frames.
+  const sent = encodeError(failed).graph.nodes[0]
+  assert.match(sent.stack, /weather\.py/)
+  assert.equal(sent.rethrown.length, 1)
+  assert.match(sent.rethrown[0], /^\s+at askTheWeather /)
+  peer.close()
+})

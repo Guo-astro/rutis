@@ -154,3 +154,49 @@ test('an error thrown while a value is encoded is wrapped, not changed', async (
   expect(fault()).toBeUndefined()
   peer.close()
 })
+
+// guarantee: sdk/error-codes
+// A value that cannot be sent: code bad-value, data `{ part, argument?, limit? }` (§4.3, #677).
+test('a value that cannot be sent carries code bad-value and its part (#677)', async () => {
+  const big = 'x'.repeat(2048)
+  const { peer, sent } = harness((_, method) => method === 'big' ? big : method === 'boom' ? (() => { throw new Error(big) })() : { f: Symbol('s') }, { maxMessage: 1024 })
+  const refusal = (run: () => unknown) => { try { run() } catch (error: any) { return { code: error.code, data: error.data } } }
+  expect(refusal(() => peer.invoke('host:svc', 'take', [1, big]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2, limit: 1024 } })
+  expect(refusal(() => peer.invoke('host:svc', 'take', [1, { a: [Symbol('s')] }]))).toEqual({ code: 'bad-value', data: { part: 'argument', argument: 2 } })
+  const wire = async (id: number, method: string) => { peer.receive(invoke(id, method)); await tick(); return decodeError(sent.at(-1).error) }
+  const back = await wire(1, 'big')
+  expect([back.code, back.data]).toEqual(['bad-value', { part: 'result', limit: 1024 }])
+  const boom = await wire(2, 'boom')
+  expect([boom.code, boom.data]).toEqual(['bad-value', { part: 'error', limit: 1024 }])
+  const symbol = await wire(3, 'symbol')
+  expect([symbol.message, symbol.code, symbol.data]).toEqual(['test.symbol: the result cannot be sent: a symbol cannot cross between processes', 'bad-value', { part: 'result' }])
+  peer.close()
+})
+
+// guarantee: sdk/error-positions, sdk/error-rethrown
+// An error answering a call has the stack of the plugin's code where it made
+// the call; thrown on, it adds that place to `rethrown` (§4.4, #677).
+test('an error answering a call has the caller\'s stack, and a rethrow adds it (#677)', async () => {
+  const { encodeError } = await import('../src/errors.ts')
+  const { peer, incoming } = harness(() => {})
+  const remote = { name: 'KeyError', message: "'region'", graph: { root: { type: 'reference', value: 0 }, nodes: [{ type: 'error', name: 'KeyError', message: "'region'", stack: 'KeyError: \'region\'\n  File "weather.py", line 31, in tomorrow' }] } }
+  incoming.push({ op: 'throw', id: 'node:1', error: remote })
+  // Not in tail position: JavaScriptCore drops a tail call's frame (and
+  // Bun's transpiler turns `const a = f(); return a` into one).
+  const asked: string[] = []
+  function askTheWeatherSync() { const answer = peer.invoke('host:weather', 'tomorrow', []); asked.push('sync'); return answer }
+  let sync: any
+  try { askTheWeatherSync() } catch (error) { sync = error }
+  expect(sync.stack).toMatch(/^KeyError: 'region'\n\s+at askTheWeatherSync .*bad-values\.test\.ts/)
+  expect(sync.stack).not.toMatch(/src[\\/]session\.ts|weather\.py/)
+  function askTheWeather() { const answer = peer.invokeAsync('host:weather', 'tomorrow', []); asked.push('async'); return answer }
+  const pending = askTheWeather()
+  peer.receive({ op: 'throw', id: 'node:2', error: remote })
+  const failed: any = await pending.catch((error: unknown) => error)
+  expect(failed.stack).toMatch(/^KeyError: 'region'\n\s+at askTheWeather .*bad-values\.test\.ts/)
+  const sentNode = encodeError(failed).graph.nodes[0]
+  expect(sentNode.stack).toMatch(/weather\.py/)
+  expect(sentNode.rethrown.length).toBe(1)
+  expect(sentNode.rethrown[0]).toMatch(/^\s+at askTheWeather /)
+  peer.close()
+})
