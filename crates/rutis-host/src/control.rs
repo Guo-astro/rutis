@@ -100,6 +100,11 @@ impl Drop for Serving {
             if ours {
                 let _ = std::fs::remove_file(&self.path);
             }
+            // The directory too, once no other host's socket is in it: a
+            // host leaves nothing behind.
+            if let Some(dir) = self.path.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
         }
     }
 }
@@ -298,6 +303,7 @@ mod tests {
         );
         drop(serving);
         assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists(), "the directory is left");
         let refused = status_in(base.path(), project.path()).await.unwrap_err();
         assert!(refused.starts_with("no rutis-host runs "), "{refused}");
     }
