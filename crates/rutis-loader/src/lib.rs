@@ -51,6 +51,16 @@ pub struct RustHostGuide;
 #[doc = include_str!("../../../docs/guide/rust-host.en.md")]
 pub struct RustHostGuideEn;
 
+/// The open-host guide's examples compile against these crates (#671).
+#[cfg(all(doctest, feature = "node"))]
+#[doc = include_str!("../../../docs/guide/open-host.md")]
+pub struct OpenHostGuide;
+
+/// The English open-host guide's examples compile against these crates.
+#[cfg(all(doctest, feature = "node"))]
+#[doc = include_str!("../../../docs/guide/open-host.en.md")]
+pub struct OpenHostGuideEn;
+
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;
