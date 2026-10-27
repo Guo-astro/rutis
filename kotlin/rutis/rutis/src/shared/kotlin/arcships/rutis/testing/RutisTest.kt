@@ -98,6 +98,27 @@ private const val WAIT_MILLIS = 30_000L
 
 /** The runtime under test and the host side of its session. */
 internal class Harness(val plugin: Plugin, private val services: Map<String, Any>, val runtime: String) {
+    /** The rows and config values warned about. */
+    private val warned = HashSet<String>()
+
+    /**
+     * The extra keys of [config] for row [row], on standard error as the
+     * host's loader writes them (`<row>: config: …`), once per row and
+     * config value (config schema design §3.2).
+     */
+    fun warn(row: String, config: Any?) {
+        val schema = plugin.schema as? kotlinx.serialization.json.JsonObject ?: return
+        val data = try {
+            arcships.rutis.internal.ConfigSchema.fromValue(config)
+        } catch (_: arcships.rutis.internal.ConfigSchema.NotData) {
+            return
+        }
+        val warnings = arcships.rutis.internal.ConfigSchema.check(arcships.rutis.internal.ConfigSchema.fromValue(schema), data).warnings
+        val seen = "$row\u0000${arcships.rutis.internal.ConfigSchema.toJson(data)}"
+        if (warnings.isEmpty() || !synchronized(lock) { warned.add(seen) }) return
+        for (warning in warnings) System.err.println("$row: config: ${warning.message}")
+    }
+
     lateinit var session: Peer
     private lateinit var served: RuntimeSession
     val lock = Object()
@@ -173,6 +194,7 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         val loaded = Loaded(this, key, scope)
         synchronized(lock) { rows.add(loaded) }
         val configValue = if (config == null) JsonNull else Native.fromNative(config)
+        warn(key, configValue)
         val placed = linkedMapOf("scope" to scope.map { linkedMapOf("id" to it.id, "group" to it.group) })
         val labels = isolate.map { (name, label) -> listOf(name, label) }
         try {
@@ -624,7 +646,9 @@ class Loaded internal constructor(private val h: Harness, val row: String, val s
             if (row !in h.scopes || h.closed) throw IllegalStateException("RutisTest: row $row is not loaded")
             h.withdrawRow(row)
         }
-        h.call("", "rows.update", listOf(row, if (config == null) JsonNull else Native.fromNative(config)))
+        val value = if (config == null) JsonNull else Native.fromNative(config)
+        h.warn(row, value)
+        h.call("", "rows.update", listOf(row, value))
     }
 
     /** Unloads every row, latest first, and ends the runtime (the first row's close), or this row. */

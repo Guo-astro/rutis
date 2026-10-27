@@ -133,6 +133,12 @@ extension Rutis {
                     inner.append(("description", .string(description)))
                     schema = .object(inner)
                 }
+                if let fallback = property.defaultJSON, case var .object(inner) = schema,
+                   let value = try? JSONReader.parse(fallback)
+                {
+                    inner.append(("default", value))
+                    schema = .object(inner)
+                }
                 fields.append((property.name, schema))
                 if property.required { required.append(.string(property.name)) }
             }
@@ -147,12 +153,16 @@ extension Rutis {
             public var schema: Schema
             public var required: Bool
             public var description: String?
+            /// Its `default`, as JSON text (`@RutisConfig`'s literal initial
+            /// value).
+            public var defaultJSON: String?
 
-            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil) {
+            public init(_ name: String, _ schema: Schema, required: Bool, description: String? = nil, default defaultJSON: String? = nil) {
                 self.name = name
                 self.schema = schema
                 self.required = required
                 self.description = description
+                self.defaultJSON = defaultJSON
             }
         }
 
@@ -220,7 +230,7 @@ extension Rutis {
         public let name: String
         let inject: [String]
         let provides: [String: Shape]
-        let schema: JSON
+        package let schema: JSON
         let version: String?
         let api: Int
         let apply: (Ctx, Value) async throws -> Void
@@ -279,11 +289,30 @@ extension Rutis {
         return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
                           version: plugin.version, api: pluginAPI)
         { ctx, config in
+            // Defaults filled and the config validated against the schema
+            // before decoding (config schema design §2.2); a decoder error
+            // after that is the schema and the type disagreeing (§3.3).
+            var value = config
+            if case .object = schema {
+                // A config of plain data (one holding tagged values, which
+                // only Swift's own callers send, is decoded as it is).
+                var json: JSON??
+                switch config {
+                case .undefined: json = .some(nil)
+                case let .data(data): json = .some(data == .null ? nil : data)
+                default: json = config.isNullish ? .some(nil) : nil
+                }
+                if let json {
+                    let checked = ConfigSchema.check(schema, json)
+                    if !checked.errors.isEmpty { throw ConfigSchema.error(checked.errors) }
+                    value = checked.config == .null && C.self != NoConfig.self ? .data(.object([])) : .data(checked.config)
+                }
+            }
             let decoded: C
             do {
-                decoded = try ValueCodec.decode(C.self, from: config.isNullish ? .data(.object([])) : config)
+                decoded = try ValueCodec.decode(C.self, from: value.isNullish ? .data(.object([])) : value)
             } catch {
-                throw RutisError(name: "Error", message: "config: \(errorMessage(error))")
+                throw ConfigSchema.error([ConfigSchema.issue(ConfigSchema.path(of: error), "is not a value the plugin accepts")])
             }
             try await apply(ctx, decoded)
         }

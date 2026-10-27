@@ -273,7 +273,9 @@ public struct ClientMacro: PeerMacro {
 
 /// `@RutisConfig` on a configuration type: its JSON Schema from the stored
 /// properties, each `///` comment its description; optional properties are
-/// not required.
+/// not required, and neither are `var`s with a literal initial value
+/// (`var units = "metric"`), whose literal is their `default` (config schema
+/// design §3.3): rutis fills it in before decoding.
 public struct ConfigMacro: ExtensionMacro {
     public static func expansion(of _: AttributeSyntax, attachedTo declaration: some DeclGroupSyntax,
                                  providingExtensionsOf type: some TypeSyntaxProtocol, conformingTo protocols: [TypeSyntax],
@@ -295,16 +297,26 @@ public struct ConfigMacro: ExtensionMacro {
                 // decoded.
                 if binding.accessorBlock != nil { continue }
                 if isLet, binding.initializer != nil { continue }
-                guard let annotation = binding.typeAnnotation else {
+                // The type as written, or that of a literal initial value
+                // (`var units = "metric"`).
+                let typeSyntax: TypeSyntax
+                if let annotation = binding.typeAnnotation {
+                    typeSyntax = bareType(annotation.type)
+                } else if let inferred = binding.initializer.flatMap({ literalType($0.value) }) {
+                    typeSyntax = TypeSyntax(stringLiteral: inferred)
+                } else {
                     context.diagnose(Diagnostic(node: binding, message: MacroError(
                         "@RutisConfig: \(pattern.identifier.text) needs a type annotation for its schema")))
                     continue
                 }
-                let typeSyntax = bareType(annotation.type)
                 let optional = typeSyntax.is(OptionalTypeSyntax.self) || typeSyntax.is(ImplicitlyUnwrappedOptionalTypeSyntax.self)
                     || trimmed(typeSyntax).hasPrefix("Optional<")
-                let quoted = description.map { "\"" + $0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"" } ?? "nil"
-                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted))")
+                let quoted = description.map(swiftString) ?? "nil"
+                // A literal initial value is the default; any other initial
+                // value is not, and the property stays required.
+                let literal = binding.initializer.flatMap { jsonLiteral($0.value) }
+                let defaulted = literal.map { ", default: \(swiftString($0))" } ?? ""
+                properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional && literal == nil), description: \(quoted)\(defaulted))")
             }
         }
         return [try ExtensionDeclSyntax("""
@@ -314,6 +326,83 @@ public struct ConfigMacro: ExtensionMacro {
             }
         }
         """)]
+    }
+
+    /// The type Swift gives a plain literal: `String`, `Int`, `Double`,
+    /// `Bool`; `nil` for anything else.
+    static func literalType(_ expression: ExprSyntax) -> String? {
+        if expression.is(StringLiteralExprSyntax.self) { return "String" }
+        if expression.is(IntegerLiteralExprSyntax.self) { return "Int" }
+        if expression.is(FloatLiteralExprSyntax.self) { return "Double" }
+        if expression.is(BooleanLiteralExprSyntax.self) { return "Bool" }
+        if let prefix = expression.as(PrefixOperatorExprSyntax.self), prefix.operator.text == "-" {
+            let inner = literalType(prefix.expression)
+            return inner == "Int" || inner == "Double" ? inner : nil
+        }
+        return nil
+    }
+
+    /// `text` as a Swift string literal.
+    static func swiftString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n") + "\""
+    }
+
+    /// The JSON text of `expression` when it is a literal: a string without
+    /// interpolation, a number, a boolean, or an array or string-keyed
+    /// dictionary of them. `nil` for anything else.
+    static func jsonLiteral(_ expression: ExprSyntax) -> String? {
+        if let string = expression.as(StringLiteralExprSyntax.self) {
+            var text = ""
+            for segment in string.segments {
+                guard let part = segment.as(StringSegmentSyntax.self) else { return nil }
+                text += part.content.text
+            }
+            // Swift escapes as written are JSON's for the usual ones.
+            if text.contains("\\(") || text.contains("\\u{") { return nil }
+            let unescaped = text.replacingOccurrences(of: "\\\"", with: "\"")
+            var out = "\""
+            for c in unescaped.unicodeScalars {
+                switch c {
+                case "\"": out += "\\\""
+                case "\n": out += "\\n"
+                case "\t": out += "\\t"
+                default: out.unicodeScalars.append(c)
+                }
+            }
+            return out + "\""
+        }
+        if let integer = expression.as(IntegerLiteralExprSyntax.self) {
+            return Int(integer.literal.text.replacingOccurrences(of: "_", with: "")).map(String.init)
+        }
+        if let float = expression.as(FloatLiteralExprSyntax.self) {
+            return Double(float.literal.text.replacingOccurrences(of: "_", with: "")).map { "\($0)" }
+        }
+        if let boolean = expression.as(BooleanLiteralExprSyntax.self) {
+            return boolean.literal.tokenKind == .keyword(.true) ? "true" : "false"
+        }
+        if let prefix = expression.as(PrefixOperatorExprSyntax.self), prefix.operator.text == "-" {
+            guard let number = jsonLiteral(prefix.expression), number.first?.isNumber == true else { return nil }
+            return "-" + number
+        }
+        if let array = expression.as(ArrayExprSyntax.self) {
+            var items: [String] = []
+            for element in array.elements {
+                guard let item = jsonLiteral(element.expression) else { return nil }
+                items.append(item)
+            }
+            return "[" + items.joined(separator: ",") + "]"
+        }
+        if let dictionary = expression.as(DictionaryExprSyntax.self) {
+            guard case let .elements(elements) = dictionary.content else { return "{}" }
+            var fields: [String] = []
+            for element in elements {
+                guard let key = jsonLiteral(element.key), key.hasPrefix("\""), let value = jsonLiteral(element.value) else { return nil }
+                fields.append(key + ":" + value)
+            }
+            return "{" + fields.joined(separator: ",") + "}"
+        }
+        return nil
     }
 
     /// The text of `///` comments before a declaration.
