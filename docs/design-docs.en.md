@@ -2,7 +2,7 @@
 
 [中文](design-docs.md)
 
-How rutis design documents (`docs/design-<topic>-<date>.md`) are written, and when one is done. They follow the [design principles](design-philosophy.en.md) §7 and [#690](https://github.com/arcships/rutis/issues/690): while developer experience has no standard and does not stop a release, effort drifts toward internal correctness, so every design document first says what developers see.
+How rutis design documents (`docs/design-<topic>-<date>.md`) are written, and when one is done. It applies to those written or revised from now on; earlier undated design documents (such as the [design principles](design-philosophy.en.md)) are not rewritten to it. They follow the design principles §7, for the reason [#690](https://github.com/arcships/rutis/issues/690) gives: while developer experience has no standard and does not stop a release, effort drifts toward internal correctness, so every design document first says what developers see.
 
 ## File and heading
 
@@ -24,9 +24,10 @@ Their names and order may suit the topic, but all of these are there:
 
 A design document without this section, or one that covers only the case where everything works, is not done. Reviews read it first.
 
+- A design that touches no developer (CI, a change inside only) has this section too, in one line: developers see no change.
 - **By role**, for the roles the design touches: plugin authors, those assembling plugins with `rutis-host`, host owners (applications embedding rutis, or products using `rutis-host` as their runtime), those deploying.
 - **When it works**: the code and configuration the role writes and the output it sees, in full in one language (TypeScript, say), the other languages only where they differ.
-- **When it fails**: each error the role meets, one line each: how it is caused, the output **word for word** (the line rutis prints, and the error code a host gets), which row it is charged to, how to fix it. The output names only what developers wrote (row names, service and method names, files and lines, what to change), no words internal to rutis (the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.5).
+- **When it fails**: each error the role meets, one line each: how it is caused, the output **word for word** (the line rutis prints, and the error code a host gets), which row it is recorded on, how to fix it. The output names only what developers wrote (row names, service and method names, files and lines, what to change), no words internal to rutis (the [diagnostics design](design-diagnostics-2026-10-26.en.md) §4.5).
 - **Concepts to learn**: the concepts the design adds for the role, against the concept budget per layer kept in #663; going over budget says why, or the design changes.
 - The implementing PRs' acceptance tests compare the output this section writes, word for word; when the output changes, this section changes first.
 
