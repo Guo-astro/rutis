@@ -119,13 +119,13 @@ fn states<'a>(output: &'a [String], row: &str) -> Vec<&'a String> {
 }
 
 /// Whether `row` ran until the host stopped: it was running, and its only
-/// other state is the stop's.
+/// other states are the stop's (`unloading`, `inactive`; a slower machine
+/// prints both), never failed or waiting.
 fn ran_on(output: &[String], row: &str) -> bool {
+    let allowed = ["running", "unloading", "inactive"].map(|state| format!("{row}: {state}"));
     let states = states(output, row);
-    states.first().map(|line| line.as_str()) == Some(&format!("{row}: running"))
-        && states
-            .iter()
-            .all(|line| [format!("{row}: running"), format!("{row}: inactive")].contains(line))
+    states.first().map(|line| line.as_str()) == Some(allowed[0].as_str())
+        && states.iter().all(|line| allowed.contains(line))
 }
 
 /// Wait until every file of `files` exists.

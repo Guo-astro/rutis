@@ -35,3 +35,24 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 改法：按提示给其中一个设单独的 `RUTIS_TOKEN_<名字>`（连进来的运行时那一边也出示这个新 token）。这样的配置在 0.17 里本来就连不上，改好之后才能用。
+
+## Node、Bun、Python 运行时：没处理的错误不再让进程退出（#688）
+
+0.17 里一个插件没处理的 promise 拒绝（或 Python 任务里没处理的异常）让它所在的运行时进程退出，同一运行时里的行一起停下等待。0.18 起进程不退出：
+
+- `rutis-host dev` 下的 Node 与 Python（任何模式）追到产生它的那一行，这一行失败，写明原因和位置；同一运行时里的其他行继续。
+
+  ```
+  weather: failed: unhandled rejection: Error: no region (at file:///…/weather.mjs:12:9)
+  ```
+
+- `rutis-host run` 下的 Node 与 Bun 追不到是哪一行，写一行来源不明，哪一行都不失败：
+
+  ```
+  runtime node: an unhandled error from an unknown row: Error: no region
+      at …
+  ```
+
+- 插件调用 `process.exit` / `os._exit` 时进程照常结束，运行时先写一行 `runtime node: row weather called process.exit(1)`。
+
+要改的：以前靠"出错就让运行时退出、宿主按 `restart` 重启运行时"恢复的项目，现在出错的行失败（或运行时照常运行），不会有运行时退出。要让这一行出错后重启，在插件里处理错误；确实要结束进程的，显式调用 `process.exit`。详见插件 API 指南的[同一运行时里的插件共用一个进程](guide/plugin-api.md#同一运行时里的插件共用一个进程)。

@@ -35,3 +35,24 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 ```
 
 Fix: as the error says, set `RUTIS_TOKEN_<name>` for one of them (and have the runtime that connects in present the new token). Such a configuration could not connect in 0.17 either; once fixed, it does.
+
+## Node, Bun and Python runtimes: an unhandled error no longer ends the process (#688)
+
+In 0.17 a promise rejection a plugin left unhandled (or an exception nobody retrieved from a Python task) ended its runtime's process, and every row of that runtime stopped and waited. From 0.18 the process goes on:
+
+- Node under `rutis-host dev`, and Python always, trace the row that produced it: that row fails, saying what and where; the other rows of the runtime run on.
+
+  ```
+  weather: failed: unhandled rejection: Error: no region (at file:///…/weather.mjs:12:9)
+  ```
+
+- Node under `rutis-host run`, and Bun, cannot tell which row it came from: they write a line saying the source is unknown, and no row fails.
+
+  ```
+  runtime node: an unhandled error from an unknown row: Error: no region
+      at …
+  ```
+
+- A plugin calling `process.exit` / `os._exit` still ends the process, and the runtime first writes `runtime node: row weather called process.exit(1)`.
+
+What to change: a project that recovered by letting the runtime exit on an error and having the host restart it (`restart`) now sees the row fail (or the runtime go on) instead; the runtime does not exit. To restart after an error, handle the error in the plugin; to end the process, call `process.exit` explicitly. See [Plugins in one runtime share its process](guide/plugin-api.en.md#plugins-in-one-runtime-share-its-process) in the plugin API guide.
