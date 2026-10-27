@@ -3,10 +3,12 @@
 //! with kill(2); and a project of a Python and a Node row that print their
 //! process and record their cleanups.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rutis_test_support::{scaled, HANG_GUARD};
@@ -137,6 +139,9 @@ pub struct Host {
     pub child: Child,
     pub lines: Receiver<String>,
     pub stderr: Receiver<String>,
+    /// Its standard output has ended (its standard error may stay open
+    /// longer: a process it started, such as Go's, can hold it).
+    stdout_ended: Arc<AtomicBool>,
     /// Every line read so far, for the failure message.
     pub seen: Vec<String>,
     /// The runtime processes seen: in process groups of their own, they
@@ -161,8 +166,7 @@ impl Host {
     }
 
     /// [`Host::start_in_env`] with an input to write to, as a terminal
-    /// gives one, and its standard error read line by line with its
-    /// output (a debugger's address is printed there).
+    /// gives one.
     pub fn start_talking(
         args: &[&str],
         dir: &Path,
@@ -189,8 +193,9 @@ impl Host {
         Self::start_full(program, args, dir, ignored, env, false)
     }
 
-    /// With `talking`, its input is a pipe and its standard error lines
-    /// come with its output's too ([`Host::start_talking`]).
+    /// With `talking`, its input is a pipe ([`Host::start_talking`]). Its
+    /// standard error's lines come with its output's: the host's own lines
+    /// are written there (#678), and a debugger's address too.
     fn start_full(
         program: &[&str],
         args: &[&str],
@@ -240,30 +245,26 @@ impl Host {
         }
         let mut child = command.spawn().expect("the rutis-host binary");
         let (send, lines) = mpsc::channel();
-        let lines_too = talking.then(|| send.clone());
+        let lines_too = send.clone();
         let stdout = child.stdout.take().unwrap();
+        let stdout_ended = Arc::new(AtomicBool::new(false));
+        let ended = stdout_ended.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if send.send(line).is_err() {
                     break;
                 }
             }
+            ended.store(true, Ordering::SeqCst);
         });
         let (send_text, stderr) = mpsc::channel();
-        let mut error = child.stderr.take().unwrap();
+        let error = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             let mut text = String::new();
-            match lines_too {
-                None => {
-                    let _ = error.read_to_string(&mut text);
-                }
-                Some(lines) => {
-                    for line in BufReader::new(error).lines().map_while(Result::ok) {
-                        text.push_str(&line);
-                        text.push('\n');
-                        let _ = lines.send(line);
-                    }
-                }
+            for line in BufReader::new(error).lines().map_while(Result::ok) {
+                text.push_str(&line);
+                text.push('\n');
+                let _ = lines_too.send(line);
             }
             let _ = send_text.send(text);
         });
@@ -271,6 +272,7 @@ impl Host {
             child,
             lines,
             stderr,
+            stdout_ended,
             seen: Vec::new(),
             runtimes: Vec::new(),
         }
@@ -320,7 +322,8 @@ impl Host {
         while pids.contains(&None) || running < rows.len() {
             let (applied, ran) = self.wait_line(|line| {
                 let applied = rows.iter().enumerate().find_map(|(index, row)| {
-                    line.strip_prefix(&format!("plugin {row} applied in "))
+                    unprefixed(line)
+                        .strip_prefix(&format!("plugin {row} applied in "))
                         .and_then(|pid| pid.trim().parse::<i32>().ok())
                         .map(|pid| (index, pid))
                 });
@@ -354,14 +357,20 @@ impl Host {
             }
         };
         let stderr = self.stderr.recv_timeout(scaled(GUARD));
+        // Until its standard output ended, and what its standard error
+        // brought by then is read: a process it started may hold the
+        // latter open.
+        let since = std::time::Instant::now();
         loop {
-            match self.lines.recv_timeout(scaled(GUARD)) {
+            match self.lines.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(error) => {
+                Err(_) if self.stdout_ended.load(Ordering::SeqCst) => break,
+                Err(error) if since.elapsed() > scaled(GUARD) => {
                     kill_all(pid, &self.runtimes);
                     panic!("the output did not end: {error}; {:#?}", self.seen)
                 }
+                Err(_) => {}
             }
         }
         (status, stderr.unwrap_or_default(), self.seen)
@@ -373,6 +382,15 @@ impl Host {
         let stderr = self.stderr.recv_timeout(scaled(GUARD)).unwrap_or_default();
         panic!("{what}; output: {:#?}; stderr: {stderr}", self.seen);
     }
+}
+
+/// `line` without the row's name `dev` starts a plugin's line with
+/// (`[marker] plugin marker applied in 42`, #678).
+pub fn unprefixed(line: &str) -> &str {
+    line.strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .filter(|(name, _)| !name.contains(' '))
+        .map_or(line, |(_, rest)| rest)
 }
 
 /// Kill the host's process group and the runtime processes, so a failing

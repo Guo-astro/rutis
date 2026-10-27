@@ -31,6 +31,7 @@ import threading
 from typing import Any, Callable
 
 from . import _eager
+from ._output import say
 from .peer import (
     UNDEFINED,
     AggregateError,
@@ -100,7 +101,7 @@ def failed_line(kind: str, name: str, row: str | None, error: BaseException) -> 
 
 def print_report(kind: str, name: str, row: str | None, error: BaseException) -> None:
     """Report a failure nobody receives on stderr, in one line."""
-    print(failed_line(kind, name, row, error), file=sys.stderr, flush=True)
+    say(failed_line(kind, name, row, error))
 
 
 def check_scope(chain: Any) -> list:
@@ -492,7 +493,7 @@ async def _raise(error: BaseException) -> Any:
 
 
 def _say(line: str) -> None:
-    print(line, file=sys.stderr, flush=True)
+    say(line)
 
 
 class Emitter:

@@ -26,11 +26,12 @@ import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
 import { MANIFEST } from './session.ts'
 import { EVENTS_V2, NO_EVENTS_V2 } from './events.mjs'
+import { say } from './output.mjs'
 
 const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> [--id <endpoint>] [--peer <endpoint>] <project>'
 
 function fail(message: string): never {
-  process.stderr.write(`runtime bun: ${message}\n`)
+  say(`runtime bun: ${message}\n`)
   process.exit(2)
 }
 
@@ -62,7 +63,7 @@ function reportUnhandled() {
   for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
     process.on(event, (error: any) => {
       const text = typeof error?.stack === 'string' && error.stack ? reportedStack(error.stack) : typeof error === 'string' ? JSON.stringify(error) : Bun.inspect(error)
-      process.stderr.write(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
+      say(`runtime ${runtimeName()}: an unhandled error from an unknown row: ${text}\n`)
     })
   }
 }
@@ -137,10 +138,11 @@ let client: Client
 try {
   // The logical bus (#464): `events.elsewhere` runs as its frame arrives;
   // a host older than 0.13 (no events-v2) is refused (protocol §2.2).
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2], ended: channelEnded })
+  // A function or object a row hands over runs as that row's (#678).
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2], ended: channelEnded, owner: runtime.running, within: runtime.within })
 } catch (error: any) {
   if (error?.message === NO_EVENTS_V2) {
-    process.stderr.write(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
+    say(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
     await flushed()
     process.exit(1)
   }
@@ -163,7 +165,7 @@ if (dialed) {
 }
 let ended = false
 process.on('exit', code => {
-  if (!ended) process.stderr.write(`runtime bun: exiting (${code}) before the host disconnected\n`)
+  if (!ended) say(`runtime bun: exiting (${code}) before the host disconnected\n`)
 })
 await client.closed()
 ended = true
@@ -171,7 +173,7 @@ runtime.ended()
 clearInterval(alive)
 // The host ending the session is the normal end; anything else is said.
 if (client.reason && client.reason !== HOST_GONE) {
-  process.stderr.write(`runtime bun: disconnected from the host: ${client.reason}\n`)
+  say(`runtime bun: disconnected from the host: ${client.reason}\n`)
 }
 runtime.closing = true
 // The rows go now, unless the host disposed them first: it went away (it
@@ -179,13 +181,16 @@ runtime.closing = true
 // finish within the deadline are given up (exit status 1).
 const deadline = shutdownDeadline()
 setTimeout(() => {
-  process.stderr.write(`runtime bun: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting\n`)
+  say(`runtime bun: cleanups did not finish within ${deadline / 1000} s after the host disconnected; exiting\n`)
   process.exit(1)
 }, deadline)
 await runtime.dispose().catch(error => {
-  process.stderr.write(`rutis-bun: unloading failed: ${error?.stack ?? error}\n`)
+  say(`rutis-bun: unloading failed: ${error?.stack ?? error}\n`)
   process.exitCode = 1
 })
+// What is still being written goes out first: under the prefix the
+// plugins' console writes through the streams, stdout too (#678).
+await Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { stream.write('', () => resolve()) })))
 // Stray plugin timers and sockets must not keep the process alive: the host
 // waits for it to exit.
 process.exit(process.exitCode ?? 0)

@@ -312,14 +312,16 @@ PR 模板中有对应的检查项。
 
 ---
 
-## 13. 宿主的输出：`host/link-state-output`、`host/runtime-state-lines`
+## 13. 宿主的输出：`host/link-state-output`、`host/runtime-state-lines`、`host/output-prefix`、`host/blocking-hint`
 
-出处：用户文档 [rutis-host](guide/rutis-host.md) 的「run 打印什么」、[连接节点](guide/nodes.md) 的重连一段（#321）；[rutis-host](guide/rutis-host.md) 的“输出”一节（#332）。
+出处：用户文档 [rutis-host](guide/rutis-host.md) 的「run 打印什么」、[连接节点](guide/nodes.md) 的重连一段（#321）；[rutis-host](guide/rutis-host.md) 的“输出”一节（#332、#678）；[插件 API](guide/plugin-api.md) 的「同一运行时里的插件共用一个进程」「输出」（#678）。
 
 | 编号 | 内容 | 级别 | 状态 | 验证 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `host/link-state-output` | `rutis-host run` 启动时为每个监听器打印一次实际绑定的地址（`rutis-host: listening on <名字> <地址>`）；节点行的 link 状态变化时各打印一行，与行状态行分开：`<行 id>: link connected`、`link down (<原因>); retrying in <时间>`、`link refused: auth-rejected (<原因>); retrying in 30s`、`link stopped: incompatible (<原因>)`；类别来自 link 对失败的分类（`Failure`），不靠错误文字；token 被拒、服务端证书名字不符或过期都报为 `auth-rejected`；输出里不出现 token | 契约行为 | 已验证 | `rutis-host/src/status.rs::tests::each_link_state_has_its_line`、`rutis-host/tests/links.rs::a_link_reports_connected_and_down`、`::an_unreachable_far_end_is_reported_as_down`、`::a_refused_token_is_reported_by_its_category_without_it`、`::an_incompatible_far_end_is_reported_as_stopped`；`tests/e2e/tests/nodes.rs::a_refused_reconnect_is_reported_by_its_category`、`::a_refused_certificate_is_reported_by_its_category`；两个容器之间的心跳超时、重拨失败与被拒（`tests/e2e/tests/netem.rs::two_containers_over_tls_through_delay_loss_and_an_outage`，每晚） | 括号里的原因只给人看，措辞不保证；状态每 200 毫秒检查一次，只打印变化，持续更短的状态可能不打印 |
-| `host/output-lines-whole` | `rutis-host` 运行的运行时进程（Node、Bun、Python、Go）写到 stdout、stderr 的每一行，原样、整行地出现在 `rutis-host` 的同一个流上：`rutis-host` 自己的行和其他运行时的行不会落进它中间，插件把一行分几次写也一样；运行时结束时没有换行的最后一行作为单独一行写出，在 `rutis-host` 退出之前 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`、`rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`；`tests/e2e` 的每个场景（harness 遇到被拆开的探针行即失败） | 同一个运行时进程里的两个插件各写半行，仍会拼在一起（一个进程只有一份输出）。超过 64 KiB 没有换行的行分段写出。黑盒测试只在 Unix 上跑（用 SIGTERM 结束宿主） |
+| `host/output-lines-whole` | `rutis-host` 运行的运行时进程（Node、Bun、Python、Go）写到 stdout、stderr 的每一行，整行地出现在 `rutis-host` 的同一个流上（带行名时与行名一起，见 `host/output-prefix`；`rutis-host` 自己的状态行在 stderr）：`rutis-host` 自己的行和其他运行时的行不会落进它中间，插件把一行分几次写也一样；运行时结束时没有换行的最后一行作为单独一行写出，在 `rutis-host` 退出之前 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::plugin_lines_written_in_pieces_come_out_whole`、`rutis-bridge/src/transport/local/output.rs::tests::a_line_written_in_pieces_is_passed_on_whole`；`tests/e2e` 的每个场景（harness 遇到被拆开的探针行即失败） | 同一个运行时进程里的两个插件各写半行，仍会拼在一起（一个进程只有一份输出）。超过 64 KiB 没有换行的行分段写出。黑盒测试只在 Unix 上跑（用 SIGTERM 结束宿主） |
+| `host/output-prefix` | 插件写的每一行可以带上写它的行的名字（`[weather] `）：`rutis-host dev` 默认带、`run` 默认不带，`--prefix-output` / `--no-prefix-output` 切换。Node、Bun、Python 运行时（`RUTIS_PREFIX_OUTPUT=1`）按当前在跑的行加（行的 `apply`、服务方法、监听器、交出去的函数及它们启动的异步工作），追不到的（Python 插件自己的线程、不在任何一行里运行的代码）加运行时名；Go、Swift 由宿主读管道时加运行时名（`[go-<二进制>] `），前缀与行一起整行写出；`rutis-host` 和运行时自己的行不带 | 契约行为 | 已验证 | `rutis-host/tests/output.rs::prefix_output_starts_each_plugin_line_with_its_row`、`::run_writes_plugin_lines_as_written_by_default`；`rutis-bridge/src/transport/local/output.rs::tests::each_line_is_passed_on_after_the_prefix`；`node/rutis-runtime/test/output.test.mjs`、`bun/rutis-bun/test/output.test.ts`、`python/rutis/tests/test_output.py` | 直接写文件描述符的输出（子进程、`os.write`、原生模块）不带。`dev --debug` 下 Python 运行时读终端，它的输出不带。Go、Swift 的前缀只有单元测试，没有黑盒测试 |
+| `host/blocking-hint` | Node、Bun、Python 运行时里一个服务方法一口气占住运行时 5 秒（固定）时（Python：`def` 方法，或 `async def` 方法两次 `await` 之间的一段；Node、Bun：方法开始到第一次 `await`），运行时在 stderr 写一次 `runtime <名字>: <服务>.<方法> of row <行> has held the runtime for 5 s, and the other rows wait meanwhile: …`（写明怎么改：Python 改成 `async def`），只写不打断；`RUTIS_DEBUG=1`（`dev --debug`）时不写 | 契约行为 | 已验证 | `node/rutis-runtime/test/output.test.mjs`、`bun/rutis-bun/test/output.test.ts`、`python/rutis/tests/test_output.py`（测试把 5 秒缩短为 `RUTIS_TEST_BLOCKING_MS`） | Node、Bun 的方法在 `await` 之后的阻塞不提示；`apply`、监听器里的阻塞不提示 |
 | `host/runtime-state-lines` | `rutis-host run`、`dev` 在本机运行时（`node`、`py`、`bun`、`go-<二进制>`）的进程自己结束或起不来时打印 `runtime <名字>: down (<原因>)`，原因写进程怎样结束（如 `exited with signal: 9 (SIGKILL)`）；打印过 `down` 的运行时重新运行时打印 `runtime <名字>: running`；重新启动后又结束的，不论运行了多久，再打印一次 `down`；宿主停止它们时不打印；其他运行时和它们的行不受影响 | 契约行为 | 已验证 | `rutis-host/src/status.rs::tests::a_runtime_has_a_line_when_it_goes_down_and_when_it_comes_back`、`::a_runtime_line_is_printed_once_per_change`、`::a_runtime_down_again_after_it_started_again_has_the_line_again`、`rutis-host/tests/runtimes.rs::a_killed_runtime_is_reported_with_how_it_ended`；`tests/e2e/tests/runtime_crash.rs::a_killed_runtime_fails_its_calls_and_a_restart_recovers` | 括号里的原因只给人看，措辞不保证；Go 运行时的状态由 `rutis-loader/tests/go_rows.rs::a_crash_stops_only_its_runtimes_rows_and_is_not_restarted` 验证（`GoRuntimesHandle::states`） |
 
 ---
@@ -425,13 +427,13 @@ PR 模板中有对应的检查项。
 | `bridge/*`（不含已撤回的 `exported-services`） | 29 | 0 | 0 | 1 | 30 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 7 | 1 | 0 | 0 | 8 |
-| `host/*`（§13） | 3 | 0 | 0 | 0 | 3 |
+| `host/*`（§13） | 5 | 0 | 0 | 0 | 5 |
 | `loader/*`（§14） | 38 | 4 | 0 | 0 | 42 |
 | `host/*`（§15） | 16 | 3 | 1 | 1 | 21 |
-| 合计 | 168 | 12 | 1 | 3 | 184 |
+| 合计 | 170 | 12 | 1 | 3 | 186 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 
-核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 144 条：已验证 134，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
+核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 146 条：已验证 136，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

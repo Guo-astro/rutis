@@ -72,4 +72,10 @@ let registry: [(String, () async throws -> Void)] = [
     ("ClientMacroTests.aProxyOfTheProtocol", { ClientMacroTests().aProxyOfTheProtocol() }),
     ("ClientMacroTests.aMethodMustBeAsyncThrows", { ClientMacroTests().aMethodMustBeAsyncThrows() }),
     ("ConfigMacroTests.aSchemaFromStoredProperties", { ConfigMacroTests().aSchemaFromStoredProperties() }),
+    ("ConfigSchemaTests.everyCaseOfTheSharedListPasses", { try ConfigSchemaTests().everyCaseOfTheSharedListPasses() }),
+    ("ConfigSchemaTests.aRowsConfigIsFilledAndValidatedBeforeItIsDecoded", { try await ConfigSchemaTests().aRowsConfigIsFilledAndValidatedBeforeItIsDecoded() }),
+    ("ConfigSchemaTests.aLiteralInitialValueIsTheDefault", { try await ConfigSchemaTests().aLiteralInitialValueIsTheDefault() }),
+    ("ConfigSchemaTests.aDecoderErrorAfterTheSchemaIsOneSentence", { try await ConfigSchemaTests().aDecoderErrorAfterTheSchemaIsOneSentence() }),
+    ("ConfigSchemaTests.aConfigTypeWithoutASchemaIsOnlyDecoded", { try await ConfigSchemaTests().aConfigTypeWithoutASchemaIsOnlyDecoded() }),
+    ("ConfigSchemaTests.numbersAreWrittenAsJavaScriptWritesThem", { ConfigSchemaTests().numbersAreWrittenAsJavaScriptWritesThem() }),
 ]

@@ -227,7 +227,7 @@ class RemotePromise extends Promise {
 // plugin is itself inside a synchronous call: do not hold a lock across a
 // call into rutis.
 export class Session {
-  #send; #pump; #dispatch; #abort; #settled; #inline; #requires
+  #send; #pump; #dispatch; #abort; #settled; #inline; #requires; #owner; #within
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #sites = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
@@ -248,8 +248,13 @@ export class Session {
   // `endpoint` ({ local, expected?, verified?, declare? }) selects the
   // endpoint format (`declare`: capabilities beyond the session's, such as
   // the contract); without it the session speaks the compat protocol.
-  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, maxMessage = MAX_MESSAGE }) {
+  constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, owner, within, maxMessage = MAX_MESSAGE }) {
     this.#send = send; this.#pump = pump; this.#dispatch = dispatch; this.#abort = abort; this.#settled = settled
+    // `owner()`: whose code is running now (the runtime's row, #678), kept
+    // with each function or object exported; `within(owner, run)` runs a
+    // call of it as that owner's.
+    this.#owner = typeof owner === 'function' ? owner : () => undefined
+    this.#within = typeof within === 'function' ? within : (_owner, run) => run()
     this.#max = maxMessage
     // `inline`: control methods (empty target) run as their frame arrives,
     // in frame order, before the next frame is read, also while a
@@ -332,7 +337,7 @@ export class Session {
         // An older one (before rutis 0.18) takes none.
         if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead, or upgrade ${this.greeting.endpoint} to rutis 0.18`)
         if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
-        entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined }
+        entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined, owner: this.#owner() }
         this.#identities.set(value, id); this.#exports.set(id, entry)
         if (entry.kind === 'future') {
           if (business) this.#active++
@@ -714,9 +719,9 @@ export class Session {
                 const method = entry.value[frame.method]
                 // Object's own (`hasOwnProperty`, ...) are not the object's methods.
                 if (typeof method !== 'function' || method === Object.prototype[frame.method]) throw noMethod(entry.value, frame.method, method)
-                return Reflect.apply(method, entry.value, args)
+                return this.#within(entry.owner, () => Reflect.apply(method, entry.value, args))
               })()
-                : frame.op === 'call' ? Reflect.apply(entry.value, undefined, args)
+                : frame.op === 'call' ? this.#within(entry.owner, () => Reflect.apply(entry.value, undefined, args))
                   : this.#dispatch(frame.target, frame.method, args)
           } finally {
             if (frame.op !== 'invoke' && !(value instanceof Promise)) this.#settled?.()

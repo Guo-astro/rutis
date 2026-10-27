@@ -360,10 +360,15 @@ fn dev_debug_runs_the_binary_under_delve() {
         ("GOFLAGS", "-mod=mod"),
     ];
     let (mut host, _input) = Host::start_talking(&["dev", "--debug", "."], &project, &env);
-    host.wait_lines(&[
-        "API server listening at: 127.0.0.1:2345",
-        "net-probe: running",
-    ]);
+    // Delve's line, with the runtime's name as every line of a Go
+    // runtime's under `dev` (#678).
+    let (mut delve, mut running) = (false, false);
+    host.wait_line(|line| {
+        delve |=
+            line.starts_with("[go-") && line.ends_with("] API server listening at: 127.0.0.1:2345");
+        running |= line == "net-probe: running";
+        (delve && running).then_some(())
+    });
     match halt_in_delve("127.0.0.1:2345") {
         Ok(state) if state["Running"] == json!(false) => {}
         other => host.fail(&format!("{other:?}")),
