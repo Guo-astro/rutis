@@ -46,7 +46,9 @@ pub enum LoaderError {
     #[error("{}", resolve_text(name, message))]
     Resolve { name: String, message: String },
     /// The dry run (config validation, build, instance validation) failed.
-    #[error("entry {id:?} rejected: {error}")]
+    /// A config that does not match its schema shows as itself
+    /// (`config: …`): where it is printed, the row is named.
+    #[error("{}", rejected_text(id, error))]
     Rejected { id: String, error: Arc<ErrorKind> },
     #[error("no entry {0:?}")]
     UnknownEntry(String),
@@ -127,6 +129,32 @@ impl Unavailable {
                 ErrorKind::PluginFailed(source) if source.is::<Unavailable>()
             ),
             _ => false,
+        }
+    }
+}
+
+fn rejected_text(id: &str, error: &ErrorKind) -> String {
+    match config_error(error) {
+        Some(config) => config.to_string(),
+        None => format!("entry {id:?} rejected: {error}"),
+    }
+}
+
+/// The config error a row failed with: its config does not match its
+/// plugin's schema.
+fn config_error(error: &ErrorKind) -> Option<&rutis::ConfigError> {
+    match error {
+        ErrorKind::PluginFailed(source) => rutis::ConfigError::find(source.as_ref()),
+        _ => None,
+    }
+}
+
+impl LoaderError {
+    /// The row's config does not match its plugin's schema: the problems.
+    pub fn config(&self) -> Option<&rutis::ConfigError> {
+        match self {
+            LoaderError::Rejected { error, .. } => config_error(error),
+            _ => None,
         }
     }
 }
