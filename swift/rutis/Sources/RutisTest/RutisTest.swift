@@ -21,7 +21,7 @@ public enum RutisTest {
     /// types, their methods all `sync`). More rows load into the same
     /// runtime with `Loaded.load`.
     public static func load(_ plugin: Rutis.Definition, config: Any? = nil, services: [String: RutisExportable] = [:],
-                            row: String = "test", scope: [Rutis.Scope] = [], runtimeName: String = "swift") async throws -> Loaded
+                            row: String = "test", scope: [Rutis.Advanced.Scope] = [], runtimeName: String = "swift") async throws -> Loaded
     {
         let harness = try await Harness.start(plugin, services: services, runtimeName: runtimeName)
         do {
@@ -35,11 +35,11 @@ public enum RutisTest {
     /// The scope chain of the path `t1/s1`: one loader instance per segment,
     /// its id the path up to it, its group `groups[i]` (default: the
     /// segment).
-    public static func scope(_ path: String, groups: [String] = []) -> [Rutis.Scope] {
+    public static func scope(_ path: String, groups: [String] = []) -> [Rutis.Advanced.Scope] {
         if path.isEmpty || path == "root" { return [] }
         let segments = path.split(separator: "/").map(String.init)
         return segments.indices.map { i in
-            Rutis.Scope(id: segments[...i].joined(separator: "/"), group: i < groups.count ? groups[i] : segments[i])
+            Rutis.Advanced.Scope(id: segments[...i].joined(separator: "/"), group: i < groups.count ? groups[i] : segments[i])
         }
     }
 
@@ -81,10 +81,10 @@ final class BusEntry: EventEntry, @unchecked Sendable {
         self.local = local
     }
 
-    var info: Rutis.Listener {
-        if local != nil { return Rutis.Listener(name: name, plugin: "rutistest", row: nil, runtime: nil, scope: [], global: global) }
+    var info: Rutis.Advanced.Listener {
+        if local != nil { return Rutis.Advanced.Listener(name: name, plugin: "rutistest", row: nil, runtime: nil, scope: [], global: global) }
         let scope = harness.map { harness in harness.lock.withLock { harness.scopes[row ?? ""] ?? [] } } ?? []
-        return Rutis.Listener(name: name, plugin: plugin, row: row, runtime: harness?.runtimeName, scope: scope, global: global)
+        return Rutis.Advanced.Listener(name: name, plugin: plugin, row: row, runtime: harness?.runtimeName, scope: scope, global: global)
     }
 
     var live: Bool {
@@ -163,7 +163,7 @@ final class Invocation: EventEntry, @unchecked Sendable {
         self.own = own
     }
 
-    var info: Rutis.Listener { entry.info }
+    var info: Rutis.Advanced.Listener { entry.info }
 
     func begin() -> EventCall? {
         guard entry.live else { return nil }
@@ -203,7 +203,7 @@ final class Harness: @unchecked Sendable {
     let lock = Lock()
     var handles: [String: String] = [:]
     var announced: [String: [String: String]] = [:]
-    var scopes: [String: [Rutis.Scope]] = [:]
+    var scopes: [String: [Rutis.Advanced.Scope]] = [:]
     var rows: [String] = []
     var entries: [BusEntry] = []
     var dispatches = 0
@@ -217,7 +217,7 @@ final class Harness: @unchecked Sendable {
         self.plugin = plugin
         self.services = services
         self.runtimeName = runtimeName
-        let manifest = try JSONReader.parse(Rutis.manifest([plugin]))
+        let manifest = try JSONReader.parse(Rutis.Advanced.manifest([plugin]))
         let declared = manifest["plugins"]?[plugin.name]
         declaredInject = declared?["inject"]?.arrayValue?.compactMap(\.stringValue) ?? []
         var provides: [String: [String: String]] = [:]
@@ -294,7 +294,7 @@ final class Harness: @unchecked Sendable {
         }
     }
 
-    func load(config: Any?, row: String, scope: [Rutis.Scope]) async throws -> Loaded {
+    func load(config: Any?, row: String, scope: [Rutis.Advanced.Scope]) async throws -> Loaded {
         let exports: Value = try lock.withLock {
             if scopes[row] != nil { throw RutisError(name: "Error", message: "RutisTest: a row \(row) is already loaded") }
             scopes[row] = scope
@@ -410,7 +410,7 @@ final class Harness: @unchecked Sendable {
         let table = service.rutisMethods()
         let callee = Refusal.Callee(service: name, method: method)
         guard let body = table[method] else { throw Refusal.noMethod(callee, table.keys) }
-        return try await body(Rutis.Arguments(args, callee: callee)).value
+        return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
     }
 
     /// A dispatch of `name` (§5.1); delivery is by name.
@@ -523,16 +523,16 @@ public final class Loaded: @unchecked Sendable {
     /// The row's key.
     public let row: String
     /// The row's scope chain.
-    public let scope: [Rutis.Scope]
+    public let scope: [Rutis.Advanced.Scope]
 
-    init(harness: Harness, row: String, scope: [Rutis.Scope]) {
+    init(harness: Harness, row: String, scope: [Rutis.Advanced.Scope]) {
         self.harness = harness
         self.row = row
         self.scope = scope
     }
 
     /// Loads another row of the same plugin into the same runtime.
-    public func load(config: Any? = nil, row: String? = nil, scope: [Rutis.Scope] = []) async throws -> Loaded {
+    public func load(config: Any? = nil, row: String? = nil, scope: [Rutis.Advanced.Scope] = []) async throws -> Loaded {
         let key = row ?? harness.lock.withLock { "test-\(harness.rows.count + 1)" }
         return try await harness.load(config: config, row: key, scope: scope)
     }
@@ -602,7 +602,7 @@ public final class Loaded: @unchecked Sendable {
         }
     }
 
-    func dispatch(_ name: String, _ mode: Mode, _ args: [Any?], keep: ((Rutis.Listener) async throws -> Bool)?,
+    func dispatch(_ name: String, _ mode: Mode, _ args: [Any?], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                   terminal: (([Value]) async throws -> Value)?) async throws -> Value
     {
         try Events.checkEmit(name)

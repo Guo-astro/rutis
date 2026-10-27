@@ -86,7 +86,7 @@ package struct PeerOptions {
     /// Selects the endpoint format; nil speaks compat.
     package var endpoint: Endpoint?
     /// Sent in the endpoint handshake.
-    package var implementation: [(String, String)] = [("name", Rutis.implementation), ("version", Rutis.sdkVersion)]
+    package var implementation: [(String, String)] = [("name", Rutis.Advanced.implementation), ("version", Rutis.Advanced.sdkVersion)]
     /// What this side declares in the endpoint format.
     package var capabilities: [String] = runtimeCapabilities
     /// This side is the host of a compat session (call ids `rust:`), for
@@ -217,7 +217,7 @@ package final class FarObject: @unchecked Sendable {
     let record: Imported
     let lock = Lock()
     /// Its client, while one is held: one object is one client.
-    weak var client: Rutis.Client?
+    weak var client: Rutis.Advanced.Client?
 
     init(peer: Peer, record: Imported) {
         self.peer = peer
@@ -688,7 +688,7 @@ package final class Peer: @unchecked Sendable {
             return .object([("type", .string("undefined"))])
         case let .data(json):
             if depth + json.depth > maxDepth { throw tooDeep }
-            if case let .number(text) = json, JSONNumber.isIntegerLiteral(text), let big = Rutis.BigInt(text), !big.isSafe {
+            if case let .number(text) = json, JSONNumber.isIntegerLiteral(text), let big = Rutis.Advanced.BigInt(text), !big.isSafe {
                 return try encode(.bigint(big), &grants, origin, depth)
             }
             if containsUnsafeInteger(json) {
@@ -1219,7 +1219,7 @@ package final class Peer: @unchecked Sendable {
         let far = frame["version"].map(JSONWriter.string) ?? "null"
         let mismatch = "the far end speaks protocol \(far), this side \(local)"
         guard let version = frame["version"]?.int64Value, version != Int64(local) else { return mismatch }
-        if version > Int64(local) { return mismatch + ": upgrade this side (Swift package \(Rutis.implementation))" }
+        if version > Int64(local) { return mismatch + ": upgrade this side (Swift package \(Rutis.Advanced.implementation))" }
         if let name = frame["implementation"]?["name"]?.stringValue, let v = frame["implementation"]?["version"]?.stringValue {
             return "\(mismatch): upgrade the far end (\(name) \(v))"
         }
@@ -1494,7 +1494,7 @@ func containsUnsafeInteger(_ json: JSON) -> Bool {
     switch json {
     case let .number(text):
         guard JSONNumber.isIntegerLiteral(text) else { return false }
-        if let big = Rutis.BigInt(text) { return !big.isSafe }
+        if let big = Rutis.Advanced.BigInt(text) { return !big.isSafe }
         return false
     case let .array(items): return items.contains(where: containsUnsafeInteger)
     case let .object(fields): return fields.contains { containsUnsafeInteger($0.1) }
@@ -1506,7 +1506,7 @@ func containsUnsafeInteger(_ json: JSON) -> Bool {
 func liftUnsafe(_ json: JSON) -> Value {
     switch json {
     case let .number(text):
-        if JSONNumber.isIntegerLiteral(text), let big = Rutis.BigInt(text), !big.isSafe { return .bigint(big) }
+        if JSONNumber.isIntegerLiteral(text), let big = Rutis.Advanced.BigInt(text), !big.isSafe { return .bigint(big) }
         return .data(json)
     case let .array(items): return .list(items.map(liftUnsafe))
     case let .object(fields): return .record(fields.map { ($0.0, liftUnsafe($0.1)) })

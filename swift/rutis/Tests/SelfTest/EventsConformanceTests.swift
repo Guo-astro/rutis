@@ -23,7 +23,7 @@ final class EventsLogService: @unchecked Sendable {
     func add(_ entry: String) { lock.withLock { entries.append(entry) } }
 
     /// Logs filter:<row> of the description.
-    func filter(_ description: Rutis.Listener) { add("filter:" + (description.row ?? "")) }
+    func filter(_ description: Rutis.Advanced.Listener) { add("filter:" + (description.row ?? "")) }
 
     var list: [String] { lock.withLock { entries } }
 }
@@ -54,12 +54,12 @@ private final class EventRun: @unchecked Sendable {
         self.log = log
     }
 
-    func scope(_ path: String?) -> [Rutis.Scope] {
+    func scope(_ path: String?) -> [Rutis.Advanced.Scope] {
         guard let path, path != "root", !path.isEmpty else { return [] }
         let segments = path.split(separator: "/").map(String.init)
         return segments.indices.map { i in
             let id = segments[...i].joined(separator: "/")
-            return Rutis.Scope(id: id, group: groups[id] ?? segments[i])
+            return Rutis.Advanced.Scope(id: id, group: groups[id] ?? segments[i])
         }
     }
 
@@ -113,7 +113,7 @@ private final class EventRun: @unchecked Sendable {
             let tag = String(fields[0].0.dropFirst())
             let inner = fields[0].1
             switch tag {
-            case "callback": return Rutis.export { (text: String) in text.uppercased() }.value
+            case "callback": return Rutis._Generated.export { (text: String) in text.uppercased() }.value
             case "map": return .map((inner.arrayValue ?? []).map { pair in
                     (fromWritten(pair.arrayValue![0]), fromWritten(pair.arrayValue![1]))
                 })

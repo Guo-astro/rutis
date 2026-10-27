@@ -1,0 +1,241 @@
+## Rutis
+Plugin  struct Plugin<Config> where Config : Decodable
+Plugin.apply  var apply: (Rutis.Ctx, Config) async throws -> Void
+Plugin.init(name:inject:provides:version:apply:)  init(name: String, inject: [String] = [], provides: [String : Rutis.Advanced.Shape] = [:], version: String? = nil, apply: @escaping (Rutis.Ctx) async throws -> Void)
+Plugin.init(name:inject:provides:version:config:apply:)  init(name: String, inject: [String] = [], provides: [String : Rutis.Advanced.Shape] = [:], version: String? = nil, config _: Config.Type, apply: @escaping (Rutis.Ctx, Config) async throws -> Void)
+Plugin.inject  var inject: [String]
+Plugin.name  var name: String
+Plugin.provides  var provides: [String : Rutis.Advanced.Shape]
+Plugin.version  var version: String?
+Rutis  enum Rutis
+Rutis.Advanced  enum Advanced
+Rutis.Advanced.BigInt  struct BigInt
+Rutis.Advanced.BigInt.<(_:_:)  static func < (a: Rutis.Advanced.BigInt, b: Rutis.Advanced.BigInt) -> Bool
+Rutis.Advanced.BigInt.description  var description: String { get }
+Rutis.Advanced.BigInt.encode(to:)  func encode(to encoder: any Encoder) throws
+Rutis.Advanced.BigInt.exactly(_:)  func exactly<T>(_: T.Type = T.self) -> T? where T : FixedWidthInteger
+Rutis.Advanced.BigInt.init(_:)  init(_ value: some BinaryInteger)
+Rutis.Advanced.BigInt.init(_:)  init?(_ description: String)
+Rutis.Advanced.BigInt.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.BigInt.init(integerLiteral:)  init(integerLiteral value: Int)
+Rutis.Advanced.BigInt.isNegative  let isNegative: Bool
+Rutis.Advanced.CalendarDate  struct CalendarDate
+Rutis.Advanced.CalendarDate.<(_:_:)  static func < (a: Rutis.Advanced.CalendarDate, b: Rutis.Advanced.CalendarDate) -> Bool
+Rutis.Advanced.CalendarDate.dateComponents  var dateComponents: DateComponents { get }
+Rutis.Advanced.CalendarDate.day  var day: Int
+Rutis.Advanced.CalendarDate.description  var description: String { get }
+Rutis.Advanced.CalendarDate.encode(to:)  func encode(to encoder: any Encoder) throws
+Rutis.Advanced.CalendarDate.init(_:)  init?(_ components: DateComponents)
+Rutis.Advanced.CalendarDate.init(_:)  init?(_ description: String)
+Rutis.Advanced.CalendarDate.init(_:in:)  init(_ date: Date, in timeZone: TimeZone)
+Rutis.Advanced.CalendarDate.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.CalendarDate.init(year:month:day:)  init(year: Int, month: Int, day: Int)
+Rutis.Advanced.CalendarDate.isValid  var isValid: Bool { get }
+Rutis.Advanced.CalendarDate.month  var month: Int
+Rutis.Advanced.CalendarDate.year  var year: Int
+Rutis.Advanced.Client  final class Client
+Rutis.Advanced.Client.call(_:_:as:)  func call<R>(_ method: String, _ args: [Rutis._Generated.Encoded], as type: R.Type = R.self) async throws -> R
+Rutis.Advanced.Client.call(_:_:as:object:)  func call<R>(_ method: String, _ args: [Rutis._Generated.Encoded], as type: R.Type = R.self, object proxy: ((Rutis.Advanced.Client) -> R)?) async throws -> R
+Rutis.Advanced.Client.call(_:values:as:)  func call<R>(_ method: String, values args: [Any?], as type: R.Type = R.self) async throws -> R
+Rutis.Advanced.Client.methods  let methods: [String : String]
+Rutis.Advanced.Client.name  let name: String
+Rutis.Advanced.DateTime  struct DateTime
+Rutis.Advanced.DateTime.<(_:_:)  static func < (a: Rutis.Advanced.DateTime, b: Rutis.Advanced.DateTime) -> Bool
+Rutis.Advanced.DateTime.date  var date: Rutis.Advanced.CalendarDate
+Rutis.Advanced.DateTime.dateComponents  var dateComponents: DateComponents { get }
+Rutis.Advanced.DateTime.description  var description: String { get }
+Rutis.Advanced.DateTime.encode(to:)  func encode(to encoder: any Encoder) throws
+Rutis.Advanced.DateTime.init(_:)  init?(_ components: DateComponents)
+Rutis.Advanced.DateTime.init(_:)  init?(_ description: String)
+Rutis.Advanced.DateTime.init(_:in:)  init(_ date: Date, in timeZone: TimeZone)
+Rutis.Advanced.DateTime.init(date:time:)  init(date: Rutis.Advanced.CalendarDate, time: Rutis.Advanced.TimeOfDay)
+Rutis.Advanced.DateTime.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.DateTime.init(year:month:day:hour:minute:second:nanosecond:)  init(year: Int, month: Int, day: Int, hour: Int = 0, minute: Int = 0, second: Int = 0, nanosecond: Int = 0)
+Rutis.Advanced.DateTime.isValid  var isValid: Bool { get }
+Rutis.Advanced.DateTime.time  var time: Rutis.Advanced.TimeOfDay
+Rutis.Advanced.Emitter  struct Emitter
+Rutis.Advanced.Emitter.bail(_:_:as:)  func bail<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Advanced.Emitter.bail(_:arguments:as:)  func bail<R>(_ name: String, arguments: [Any?], as type: R.Type) async throws -> R?
+Rutis.Advanced.Emitter.emit(_:_:)  func emit(_ name: String, _ args: Any?...) throws
+Rutis.Advanced.Emitter.emit(_:arguments:)  func emit(_ name: String, arguments: [Any?]) throws
+Rutis.Advanced.Emitter.parallel(_:_:)  func parallel(_ name: String, _ args: Any?...) async throws
+Rutis.Advanced.Emitter.parallel(_:arguments:)  func parallel(_ name: String, arguments: [Any?]) async throws
+Rutis.Advanced.Emitter.serial(_:_:as:)  func serial<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Advanced.Emitter.serial(_:arguments:as:)  func serial<R>(_ name: String, arguments: [Any?], as type: R.Type) async throws -> R?
+Rutis.Advanced.Emitter.waterfall(_:_:as:)  func waterfall<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Advanced.Emitter.waterfall(_:_:as:terminal:)  func waterfall<R, each T, TR>(_ name: String, _ args: Any?..., as type: R.Type, terminal: @escaping (repeat each T) async throws -> TR) async throws -> R?
+Rutis.Advanced.Emitter.waterfall(_:arguments:as:terminal:)  func waterfall<R>(_ name: String, arguments: [Any?], as type: R.Type, terminal: (([Any?]) async throws -> Any?)? = nil) async throws -> R?
+Rutis.Advanced.Listener  struct Listener
+Rutis.Advanced.Listener.encode(to:)  func encode(to encoder: any Encoder) throws
+Rutis.Advanced.Listener.global  var global: Bool
+Rutis.Advanced.Listener.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.Listener.init(name:prefix:plugin:row:runtime:node:scope:global:)  init(name: String, prefix: Bool = false, plugin: String, row: String?, runtime: String?, node: String? = nil, scope: [Rutis.Advanced.Scope], global: Bool)
+Rutis.Advanced.Listener.name  var name: String
+Rutis.Advanced.Listener.node  var node: String?
+Rutis.Advanced.Listener.plugin  var plugin: String
+Rutis.Advanced.Listener.prefix  var prefix: Bool
+Rutis.Advanced.Listener.row  var row: String?
+Rutis.Advanced.Listener.runtime  var runtime: String?
+Rutis.Advanced.Listener.scope  var scope: [Rutis.Advanced.Scope]
+Rutis.Advanced.MethodKind  enum MethodKind
+Rutis.Advanced.MethodKind.async  case async
+Rutis.Advanced.MethodKind.init(rawValue:)  init?(rawValue: String)
+Rutis.Advanced.MethodKind.sync  case sync
+Rutis.Advanced.Next  struct Next<R>
+Rutis.Advanced.Next.callAsFunction()  func callAsFunction() async throws -> R?
+Rutis.Advanced.RemoteFunction  final class RemoteFunction
+Rutis.Advanced.RemoteFunction.call(_:as:)  func call<R>(_ args: [Any?], as type: R.Type = R.self) async throws -> R
+Rutis.Advanced.RemoteFunction.callAsFunction(_:)  @discardableResult func callAsFunction(_ args: Any?...) async throws -> Any?
+Rutis.Advanced.Scope  struct Scope
+Rutis.Advanced.Scope.group  var group: String
+Rutis.Advanced.Scope.id  var id: String
+Rutis.Advanced.Scope.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.Scope.init(id:group:)  init(id: String, group: String)
+Rutis.Advanced.Shape  struct Shape
+Rutis.Advanced.Shape.init(dictionaryLiteral:)  init(dictionaryLiteral elements: (String, Rutis.Advanced.MethodKind)...)
+Rutis.Advanced.Shape.of(_:sync:)  static func of<T>(_ type: T.Type, sync: [String] = []) -> Rutis.Advanced.Shape where T : RutisExportable
+Rutis.Advanced.TimeOfDay  struct TimeOfDay
+Rutis.Advanced.TimeOfDay.<(_:_:)  static func < (a: Rutis.Advanced.TimeOfDay, b: Rutis.Advanced.TimeOfDay) -> Bool
+Rutis.Advanced.TimeOfDay.dateComponents  var dateComponents: DateComponents { get }
+Rutis.Advanced.TimeOfDay.description  var description: String { get }
+Rutis.Advanced.TimeOfDay.encode(to:)  func encode(to encoder: any Encoder) throws
+Rutis.Advanced.TimeOfDay.hour  var hour: Int
+Rutis.Advanced.TimeOfDay.init(_:)  init?(_ components: DateComponents)
+Rutis.Advanced.TimeOfDay.init(_:)  init?(_ description: String)
+Rutis.Advanced.TimeOfDay.init(from:)  init(from decoder: any Decoder) throws
+Rutis.Advanced.TimeOfDay.init(hour:minute:second:nanosecond:)  init(hour: Int, minute: Int, second: Int = 0, nanosecond: Int = 0)
+Rutis.Advanced.TimeOfDay.isValid  var isValid: Bool { get }
+Rutis.Advanced.TimeOfDay.minute  var minute: Int
+Rutis.Advanced.TimeOfDay.nanosecond  var nanosecond: Int
+Rutis.Advanced.TimeOfDay.second  var second: Int
+Rutis.Advanced.implementation  static let implementation: String
+Rutis.Advanced.manifest(_:)  static func manifest(_ plugins: [Rutis.Definition]) -> String
+Rutis.Advanced.pluginAPI  static let pluginAPI: Int
+Rutis.Advanced.sdkVersion  static let sdkVersion: String
+Rutis.Advanced.serveArgs(_:_:)  static func serveArgs(_ args: [String], _ plugins: [Rutis.Definition]) throws
+Rutis.Ctx  final class Ctx
+Rutis.Ctx.bail(_:_:as:)  func bail<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Ctx.bail(_:arguments:as:)  func bail<R>(_ name: String, arguments: [Any?], as type: R.Type) async throws -> R?
+Rutis.Ctx.effect(_:)  func effect(_ cleanup: @escaping () async throws -> Void)
+Rutis.Ctx.emit(_:_:)  func emit(_ name: String, _ args: Any?...) throws
+Rutis.Ctx.emit(_:arguments:)  func emit(_ name: String, arguments: [Any?]) throws
+Rutis.Ctx.filter(_:)  func filter(_ keep: @escaping (Rutis.Advanced.Listener) async throws -> Bool) -> Rutis.Advanced.Emitter
+Rutis.Ctx.on(_:prepend:global:_:)  @discardableResult func on<each A, R>(_ name: String, prepend: Bool = false, global: Bool = false, _ listener: @escaping (repeat each A) async throws -> R) -> () -> Void
+Rutis.Ctx.parallel(_:_:)  func parallel(_ name: String, _ args: Any?...) async throws
+Rutis.Ctx.parallel(_:arguments:)  func parallel(_ name: String, arguments: [Any?]) async throws
+Rutis.Ctx.project  var project: String { get }
+Rutis.Ctx.provide(_:_:)  @discardableResult func provide(_ name: String, _ service: any RutisExportable) -> () -> Void
+Rutis.Ctx.scope  var scope: [Rutis.Advanced.Scope] { get }
+Rutis.Ctx.serial(_:_:)  func serial(_ name: String, _ args: Any?...) async throws -> Any?
+Rutis.Ctx.serial(_:_:as:)  func serial<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Ctx.serial(_:arguments:as:)  func serial<R>(_ name: String, arguments: [Any?], as type: R.Type) async throws -> R?
+Rutis.Ctx.spawn(_:)  func spawn(_ task: @escaping () async throws -> Void)
+Rutis.Ctx.use(_:)  func use(_ name: String) throws -> Rutis.Advanced.Client
+Rutis.Ctx.use(_:_:)  func use<P>(_ name: String, _: P.Type) throws -> P.Service where P : RutisProxy
+Rutis.Ctx.waterfall(_:_:as:)  func waterfall<R>(_ name: String, _ args: Any?..., as type: R.Type) async throws -> R?
+Rutis.Ctx.waterfall(_:_:as:terminal:)  func waterfall<R, each T, TR>(_ name: String, _ args: Any?..., as type: R.Type, terminal: @escaping (repeat each T) async throws -> TR) async throws -> R?
+Rutis.Ctx.waterfall(_:arguments:as:terminal:)  func waterfall<R>(_ name: String, arguments: [Any?], as type: R.Type, terminal: (([Any?]) async throws -> Any?)? = nil) async throws -> R?
+Rutis.Definition  final class Definition
+Rutis.Definition.name  let name: String
+Rutis.NoConfig  struct NoConfig
+Rutis.NoConfig.encode(to:)  func encode(to _: any Encoder) throws
+Rutis.NoConfig.init()  init()
+Rutis.NoConfig.init(from:)  init(from _: any Decoder) throws
+Rutis.define(_:)  static func define<C>(_ plugin: Plugin<C>) -> Rutis.Definition where C : Decodable
+Rutis.serve(_:)  static func serve(_ plugins: Rutis.Definition...) -> Never
+RutisApp  final class RutisApp
+RutisApp.State  enum State
+RutisApp.State.connected  case connected
+RutisApp.State.connecting  case connecting
+RutisApp.State.description  var description: String { get }
+RutisApp.State.stopped(reason:)  case stopped(reason: String?)
+RutisApp.init(plugins:connect:id:token:peer:trust:shutdownTimeout:log:)  convenience init(plugins: [Rutis.Definition], connect: String, id: String, token: String, peer: String? = nil, trust: [SecCertificate] = [], shutdownTimeout: Double = 10, log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
+RutisApp.init(plugins:listen:id:token:certificate:peer:shutdownTimeout:log:)  convenience init(plugins: [Rutis.Definition], listen: String, id: String, token: String, certificate: SecIdentity? = nil, peer: String? = nil, shutdownTimeout: Double = 10, log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
+RutisApp.standardError(_:)  @Sendable static func standardError(_ line: String)
+RutisApp.start()  func start() async throws
+RutisApp.state  var state: RutisApp.State { get }
+RutisApp.states  var states: AsyncStream<RutisApp.State> { get }
+RutisApp.stop()  func stop() async
+RutisClient()  @attached(peer, names: suffixed(Proxy), named(rutisObjectProxy)) macro RutisClient()
+RutisConfig()  @attached(extension, conformances: RutisConfigurable, names: named(rutisSchema)) macro RutisConfig()
+RutisConfigurable  protocol RutisConfigurable
+RutisConfigurable.rutisSchema  static var rutisSchema: Rutis._Generated.Schema { get }
+RutisError  struct RutisError
+RutisError.Name  enum Name
+RutisError.Name.aggregateError  static let aggregateError: String
+RutisError.Name.asyncListener  static let asyncListener: String
+RutisError.Name.bindingError  static let bindingError: String
+RutisError.Name.reservedEvent  static let reservedEvent: String
+RutisError.Name.syncWaitCycle  static let syncWaitCycle: String
+RutisError.Name.waterfallNext  static let waterfallNext: String
+RutisError.cause  var cause: RutisError? { get set }
+RutisError.code  var code: String?
+RutisError.data  var data: Any?
+RutisError.description  var description: String { get }
+RutisError.errorDescription  var errorDescription: String? { get }
+RutisError.errors  var errors: [RutisError]
+RutisError.init(name:message:code:data:errors:cause:)  init(name: String, message: String, code: String? = nil, data: Any? = nil, errors: [RutisError] = [], cause: RutisError? = nil)
+RutisError.message  var message: String
+RutisError.name  var name: String
+RutisExportable  protocol RutisExportable
+RutisExportable.rutisMethodNames  static var rutisMethodNames: [String] { get }
+RutisExportable.rutisMethods()  func rutisMethods() -> [String : Rutis._Generated.Method]
+RutisProxy  protocol RutisProxy
+RutisProxy.Service  associatedtype Service
+RutisProxy.rutisClient  var rutisClient: Rutis.Advanced.Client { get }
+RutisProxy.rutisMake(_:)  static func rutisMake(_ client: Rutis.Advanced.Client) -> Self.Service
+RutisProxy.rutisMethodNames  static var rutisMethodNames: [String] { get }
+RutisService()  @attached(member, names: named(rutisMethodNames), named(rutisMethods)) @attached(extension, conformances: RutisExportable) macro RutisService()
+rutisObjectProxy(_:)  func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Advanced.Client) -> T)?
+## Rutis (deprecated: moved to Rutis.Advanced or Rutis._Generated in 0.19)
+Rutis.Arguments  typealias Arguments = Rutis._Generated.Arguments
+Rutis.BigInt  typealias BigInt = Rutis.Advanced.BigInt
+Rutis.CalendarDate  typealias CalendarDate = Rutis.Advanced.CalendarDate
+Rutis.Client  typealias Client = Rutis.Advanced.Client
+Rutis.DateTime  typealias DateTime = Rutis.Advanced.DateTime
+Rutis.Emitter  typealias Emitter = Rutis.Advanced.Emitter
+Rutis.Encoded  typealias Encoded = Rutis._Generated.Encoded
+Rutis.Listener  typealias Listener = Rutis.Advanced.Listener
+Rutis.Method  typealias Method = Rutis._Generated.Method
+Rutis.MethodKind  typealias MethodKind = Rutis.Advanced.MethodKind
+Rutis.Next  typealias Next<R> = Rutis.Advanced.Next<R>
+Rutis.RemoteFunction  typealias RemoteFunction = Rutis.Advanced.RemoteFunction
+Rutis.Schema  typealias Schema = Rutis._Generated.Schema
+Rutis.Scope  typealias Scope = Rutis.Advanced.Scope
+Rutis.Shape  typealias Shape = Rutis.Advanced.Shape
+Rutis.TimeOfDay  typealias TimeOfDay = Rutis.Advanced.TimeOfDay
+Rutis.encode(_:)  static func encode<T>(_ value: T) throws -> Rutis._Generated.Encoded
+Rutis.export(_:)  static func export<each A, R>(_ function: ((repeat each A) async throws -> R)?) -> Rutis._Generated.Encoded
+Rutis.export(_:)  static func export<each A, R>(_ function: @escaping (repeat each A) async throws -> R) -> Rutis._Generated.Encoded
+Rutis.implementation  static var implementation: String { get }
+Rutis.located(_:_:_:_:)  static func located<T>(_ method: String, _ file: String, _ line: Int, _ body: () async throws -> T) async throws -> T
+Rutis.manifest(_:)  static func manifest(_ plugins: [Rutis.Definition]) -> String
+Rutis.pluginAPI  static var pluginAPI: Int { get }
+Rutis.sdkVersion  static var sdkVersion: String { get }
+Rutis.serveArgs(_:_:)  static func serveArgs(_ args: [String], _ plugins: [Rutis.Definition]) throws
+
+## RutisTest
+Loaded  final class Loaded
+Loaded.bail(_:_:as:)  func bail<R>(_ name: String, _ args: Any?..., as _: R.Type) async throws -> R?
+Loaded.close()  func close() async
+Loaded.emit(_:_:)  func emit(_ name: String, _ args: Any?...) async throws
+Loaded.load(config:row:scope:)  func load(config: Any? = nil, row: String? = nil, scope: [Rutis.Advanced.Scope] = []) async throws -> Loaded
+Loaded.on(_:prepend:global:_:)  @discardableResult func on<each A, R>(_ name: String, prepend: Bool = false, global: Bool = false, _ listener: @escaping (repeat each A) async throws -> R) async -> () async -> Void
+Loaded.parallel(_:_:)  func parallel(_ name: String, _ args: Any?...) async throws
+Loaded.provided  var provided: [String] { get }
+Loaded.reported  var reported: [String] { get }
+Loaded.row  let row: String
+Loaded.scope  let scope: [Rutis.Advanced.Scope]
+Loaded.serial(_:_:as:)  func serial<R>(_ name: String, _ args: Any?..., as _: R.Type) async throws -> R?
+Loaded.service(_:)  func service(_ name: String) async throws -> Service
+Loaded.unload()  func unload() async throws
+Loaded.update(config:)  func update(config: Any?) async throws
+Loaded.waterfall(_:_:as:terminal:)  func waterfall<R>(_ name: String, _ args: Any?..., as _: R.Type, terminal: (([Any?]) async throws -> Any?)? = nil) async throws -> R?
+RutisTest  enum RutisTest
+RutisTest.load(_:config:services:row:scope:runtimeName:)  static func load(_ plugin: Rutis.Definition, config: Any? = nil, services: [String : any RutisExportable] = [:], row: String = "test", scope: [Rutis.Advanced.Scope] = [], runtimeName: String = "swift") async throws -> Loaded
+RutisTest.scope(_:groups:)  static func scope(_ path: String, groups: [String] = []) -> [Rutis.Advanced.Scope]
+Service  final class Service
+Service.call(_:_:as:)  func call<R>(_ method: String, _ args: Any?..., as _: R.Type = R.self) async throws -> R
+Service.methods  let methods: [String : String]
+Service.name  let name: String
+

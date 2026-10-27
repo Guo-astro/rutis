@@ -11,13 +11,13 @@ public protocol RutisExportable {
     /// The wire names of the type's methods (each method's base name).
     static var rutisMethodNames: [String] { get }
     /// The methods of this instance by wire name.
-    func rutisMethods() -> [String: Rutis.Method]
+    func rutisMethods() -> [String: Rutis._Generated.Method]
 }
 
-extension Rutis {
+extension Rutis._Generated {
     /// One method of a service: called with the call's arguments, it
     /// returns the encoded result.
-    public typealias Method = (Rutis.Arguments) async throws -> Rutis.Encoded
+    public typealias Method = (Rutis._Generated.Arguments) async throws -> Rutis._Generated.Encoded
 
     /// The arguments of a call, decoded by the declared types.
     public struct Arguments: @unchecked Sendable {
@@ -44,11 +44,11 @@ extension Rutis {
         /// another process: made into a `T` by `object` (a @RutisClient
         /// protocol's proxy, `rutisObjectProxy`), or a `Rutis.Client` for
         /// `Any`; any other type takes none (#687 §四).
-        public func decode<T>(_ index: Int, as type: T.Type = T.self, object proxy: ((Rutis.Client) -> T)?) throws -> T {
+        public func decode<T>(_ index: Int, as type: T.Type = T.self, object proxy: ((Rutis.Advanced.Client) -> T)?) throws -> T {
             let value = index < values.count ? values[index] : .undefined
             if case let .remoteObject(far) = value {
-                if let proxy { return proxy(Rutis.Client.of(far)) }
-                if let client = Rutis.Client.of(far) as? T { return client }
+                if let proxy { return proxy(Rutis.Advanced.Client.of(far)) }
+                if let client = Rutis.Advanced.Client.of(far) as? T { return client }
                 let callee = callee ?? Refusal.Callee(method: "")
                 throw Refusal.badArgument(callee, index, expected: Refusal.expected(T.self),
                                           actual: "an object (an object is received only as a @RutisClient protocol or Any)")
@@ -71,14 +71,14 @@ extension Rutis {
         /// the closure type it is assigned to.
         public func function<each A, R>(_ index: Int) throws -> (repeat each A) async throws -> R {
             let value = index < values.count ? values[index] : .undefined
-            return try Rutis.function(from: value)
+            return try Rutis._Generated.function(from: value)
         }
 
         /// The argument at `index` as an optional function.
         public func optionalFunction<each A, R>(_ index: Int) throws -> ((repeat each A) async throws -> R)? {
             let value = index < values.count ? values[index] : .undefined
             if value.isNullish { return nil }
-            return try Rutis.function(from: value)
+            return try Rutis._Generated.function(from: value)
         }
     }
 
@@ -131,7 +131,7 @@ final class ServiceObject: SessionObject, @unchecked Sendable {
     let service: RutisExportable
     let identity: ObjectIdentifier
     private let lock = Lock()
-    private var table: [String: Rutis.Method]?
+    private var table: [String: Rutis._Generated.Method]?
 
     init(_ service: RutisExportable) {
         self.service = service
@@ -140,7 +140,7 @@ final class ServiceObject: SessionObject, @unchecked Sendable {
 
     private final class Box {}
 
-    var methods: [String: Rutis.Method] {
+    var methods: [String: Rutis._Generated.Method] {
         lock.lock()
         defer { lock.unlock() }
         if let table { return table }
@@ -154,7 +154,7 @@ final class ServiceObject: SessionObject, @unchecked Sendable {
         guard let body = methods[method] else {
             throw Refusal.noMethod(callee, methods.keys)
         }
-        return try await body(Rutis.Arguments(args, callee: callee)).value
+        return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
     }
 
     func get(property: String) async throws -> Value {

@@ -42,17 +42,17 @@ struct JSONTests {
 
 struct TaggedValueTests {
     func testDatesAndTimes() throws {
-        XCTAssertEqual(Rutis.CalendarDate("2026-10-15"), Rutis.CalendarDate(year: 2026, month: 10, day: 15))
-        XCTAssertNil(Rutis.CalendarDate("2026-02-29"))
-        XCTAssertNotNil(Rutis.CalendarDate("2024-02-29"))
-        XCTAssertNil(Rutis.CalendarDate("0000-01-01"))
-        XCTAssertNil(Rutis.CalendarDate("2026-1-15"))
-        XCTAssertEqual(Rutis.TimeOfDay("14:30:05.25")?.nanosecond, 250_000_000)
-        XCTAssertEqual(Rutis.TimeOfDay(hour: 14, minute: 30, second: 5, nanosecond: 250_000_000).description, "14:30:05.25")
-        XCTAssertNil(Rutis.TimeOfDay("24:00:00"))
-        XCTAssertNil(Rutis.TimeOfDay("14:30:05.1234567890"))
-        XCTAssertEqual(Rutis.DateTime("2026-10-15T14:30:05.25")?.description, "2026-10-15T14:30:05.25")
-        XCTAssertNil(Rutis.DateTime("2026-10-15T14:30:05Z"))
+        XCTAssertEqual(Rutis.Advanced.CalendarDate("2026-10-15"), Rutis.Advanced.CalendarDate(year: 2026, month: 10, day: 15))
+        XCTAssertNil(Rutis.Advanced.CalendarDate("2026-02-29"))
+        XCTAssertNotNil(Rutis.Advanced.CalendarDate("2024-02-29"))
+        XCTAssertNil(Rutis.Advanced.CalendarDate("0000-01-01"))
+        XCTAssertNil(Rutis.Advanced.CalendarDate("2026-1-15"))
+        XCTAssertEqual(Rutis.Advanced.TimeOfDay("14:30:05.25")?.nanosecond, 250_000_000)
+        XCTAssertEqual(Rutis.Advanced.TimeOfDay(hour: 14, minute: 30, second: 5, nanosecond: 250_000_000).description, "14:30:05.25")
+        XCTAssertNil(Rutis.Advanced.TimeOfDay("24:00:00"))
+        XCTAssertNil(Rutis.Advanced.TimeOfDay("14:30:05.1234567890"))
+        XCTAssertEqual(Rutis.Advanced.DateTime("2026-10-15T14:30:05.25")?.description, "2026-10-15T14:30:05.25")
+        XCTAssertNil(Rutis.Advanced.DateTime("2026-10-15T14:30:05Z"))
     }
 
     func testInstants() throws {
@@ -70,18 +70,18 @@ struct TaggedValueTests {
     }
 
     func testBigIntegers() {
-        let big = Rutis.BigInt("-123456789012345678901")
+        let big = Rutis.Advanced.BigInt("-123456789012345678901")
         XCTAssertEqual(big?.description, "-123456789012345678901")
-        XCTAssertNil(Rutis.BigInt("-0"))
-        XCTAssertNil(Rutis.BigInt("012"))
-        XCTAssertNil(Rutis.BigInt(String(repeating: "9", count: 4301)))
-        XCTAssertEqual(Rutis.BigInt(UInt64.max).exactly(UInt64.self), UInt64.max)
-        XCTAssertNil(Rutis.BigInt(UInt64.max).exactly(Int64.self))
-        XCTAssertTrue(Rutis.BigInt(9_007_199_254_740_991).isSafe)
-        XCTAssertFalse(Rutis.BigInt(9_007_199_254_740_992).isSafe)
-        XCTAssertTrue(Rutis.BigInt(-5) < Rutis.BigInt(-4))
-        XCTAssertTrue(Rutis.BigInt(-5) < Rutis.BigInt(3))
-        XCTAssertTrue(Rutis.BigInt(10) > Rutis.BigInt(9))
+        XCTAssertNil(Rutis.Advanced.BigInt("-0"))
+        XCTAssertNil(Rutis.Advanced.BigInt("012"))
+        XCTAssertNil(Rutis.Advanced.BigInt(String(repeating: "9", count: 4301)))
+        XCTAssertEqual(Rutis.Advanced.BigInt(UInt64.max).exactly(UInt64.self), UInt64.max)
+        XCTAssertNil(Rutis.Advanced.BigInt(UInt64.max).exactly(Int64.self))
+        XCTAssertTrue(Rutis.Advanced.BigInt(9_007_199_254_740_991).isSafe)
+        XCTAssertFalse(Rutis.Advanced.BigInt(9_007_199_254_740_992).isSafe)
+        XCTAssertTrue(Rutis.Advanced.BigInt(-5) < Rutis.Advanced.BigInt(-4))
+        XCTAssertTrue(Rutis.Advanced.BigInt(-5) < Rutis.Advanced.BigInt(3))
+        XCTAssertTrue(Rutis.Advanced.BigInt(10) > Rutis.Advanced.BigInt(9))
     }
 
     func testBytesDecimalsAndUUIDs() throws {
@@ -103,7 +103,7 @@ struct TaggedValueTests {
         XCTAssertThrowsError(try checkKeys([.data(.number("9007199254740992"))], "map key"), "beyond ±(2^53−1)")
         XCTAssertThrowsError(try checkKeys([.instant(Instant(seconds: 0, nanoseconds: 0))], "map key"))
         XCTAssertThrowsError(try checkKeys([.data(.null)], "set element"))
-        XCTAssertNoThrow(try checkKeys([.bigint(Rutis.BigInt(UInt64.max)), .date(Rutis.CalendarDate(year: 2026, month: 1, day: 1))], "map key"))
+        XCTAssertNoThrow(try checkKeys([.bigint(Rutis.Advanced.BigInt(UInt64.max)), .date(Rutis.Advanced.CalendarDate(year: 2026, month: 1, day: 1))], "map key"))
     }
 }
 
@@ -115,7 +115,7 @@ struct Reading: Codable, Equatable {
     var byDay: [Int: String]?
     var amount: Decimal?
     var id: UUID?
-    var day: Rutis.CalendarDate?
+    var day: Rutis.Advanced.CalendarDate?
 }
 
 struct CodecTests {
@@ -135,7 +135,7 @@ struct CodecTests {
         // big Int64 a bigint, a Dictionary with Int keys a map.
         let reading = Reading(at: Instant("2025-10-15T03:22:15.123Z")!.date, raw: Data("hello".utf8), n: 1 << 60,
                               byDay: [1: "mon"], amount: Decimal(string: "1.5"), id: UUID(uuidString: "0F8FAD5B-D9CB-469F-A165-70867728950E"),
-                              day: Rutis.CalendarDate(year: 2026, month: 10, day: 15))
+                              day: Rutis.Advanced.CalendarDate(year: 2026, month: 10, day: 15))
         let value = try ValueCodec.encode(reading)
         XCTAssertEqual(written(value), "{at:instant(2025-10-15T03:22:15.123Z),raw:bytes(aGVsbG8=),n:bigint(1152921504606846976),byDay:map(1=\"mon\"),amount:decimal(1.5),id:uuid(0f8fad5b-d9cb-469f-a165-70867728950e),day:date(2026-10-15)}")
         let back = try ValueCodec.decode(Reading.self, from: value)
@@ -152,8 +152,8 @@ struct CodecTests {
     func testIntegersBeyondTheSafeRangeAreBigInts() throws {
         XCTAssertEqual(written(try ValueCodec.encode(9_007_199_254_740_991)), "9007199254740991")
         XCTAssertEqual(written(try ValueCodec.encode(UInt64.max)), "bigint(18446744073709551615)")
-        XCTAssertEqual(try ValueCodec.decode(UInt64.self, from: .bigint(Rutis.BigInt(UInt64.max))), UInt64.max)
-        XCTAssertThrowsError(try ValueCodec.decode(Int64.self, from: .bigint(Rutis.BigInt(UInt64.max))))
+        XCTAssertEqual(try ValueCodec.decode(UInt64.self, from: .bigint(Rutis.Advanced.BigInt(UInt64.max))), UInt64.max)
+        XCTAssertThrowsError(try ValueCodec.decode(Int64.self, from: .bigint(Rutis.Advanced.BigInt(UInt64.max))))
         XCTAssertEqual(try ValueCodec.decode(Int.self, from: .data(.number("2.0"))), 2)
         XCTAssertThrowsError(try ValueCodec.decode(Int.self, from: .data(.number("2.5"))))
     }
@@ -166,7 +166,7 @@ struct CodecTests {
     func testAnyDecodesIntoNativeValues() throws {
         let value = Value.list([.data(.number("1")), .data(.number("1.5")), .data(.string("a")), .null,
                                 .map([(.data(.number("1")), .data(.string("a")))]), .set([.data(.string("s"))]),
-                                .bigint(Rutis.BigInt(UInt64.max)), .uuid("0f8fad5b-d9cb-469f-a165-70867728950e")])
+                                .bigint(Rutis.Advanced.BigInt(UInt64.max)), .uuid("0f8fad5b-d9cb-469f-a165-70867728950e")])
         let native = try XCTUnwrap(ValueCodec.native(value) as? [Any?])
         XCTAssertEqual(native[0] as? Int, 1)
         XCTAssertEqual(native[1] as? Double, 1.5)
@@ -174,7 +174,7 @@ struct CodecTests {
         XCTAssertNil(native[3] ?? nil)
         XCTAssertEqual((native[4] as? [AnyHashable: Any?])?[1] as? String, "a")
         XCTAssertEqual(native[5] as? Set<AnyHashable>, ["s"])
-        XCTAssertEqual(native[6] as? Rutis.BigInt, Rutis.BigInt(UInt64.max))
+        XCTAssertEqual(native[6] as? Rutis.Advanced.BigInt, Rutis.Advanced.BigInt(UInt64.max))
         XCTAssertEqual(native[7] as? UUID, UUID(uuidString: "0f8fad5b-d9cb-469f-a165-70867728950e"))
         // Sent on as they are, they keep their kinds.
         let again = try ValueCodec.encodeAny(native as Any)

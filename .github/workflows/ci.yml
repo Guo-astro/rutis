@@ -223,6 +223,7 @@ jobs:
             swift:
               - Package.swift
               - swift/**
+              - tools/public-api-swift.sh
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
               - crates/rutis-loader/src/runtime/swift.rs
@@ -1104,6 +1105,10 @@ jobs:
         run: |
           swift build
           swift run RutisSelfTest
+      # The public API of Rutis and RutisTest against
+      # swift/rutis/public-api.txt (SDK entry design §6, #692).
+      - name: public API of the Swift SDK
+        run: tools/public-api-swift.sh
       # The library for iOS (design §13: its core is iOS too), when this
       # toolchain has the iOS SDK (Xcode).
       - name: iOS build of the library

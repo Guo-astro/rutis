@@ -47,7 +47,7 @@ Rutis.serve(weather)
 
 - `swift build` makes the binary; `<binary> --rutis-manifest` prints what it serves. `rutis-host` runs it from `runtimes.swift` (rows `swift:<plugin>`), Rust hosts with rutis-loader's `SwiftResolver` / `SwiftRuntimes`.
 - Plugin code takes no context parameter: the call chain travels with the Task. Each incoming call runs in a Task of its own; a synchronous call suspends the Task, never a thread.
-- Values: the SDK's own encoder and decoder, driven by `Codable` (never `JSONEncoder`). `Date`, `Data`, `Decimal`, `UUID`, `Set` and non-`String`-keyed dictionaries cross as rutis's tagged values; `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay` and `Rutis.BigInt` are the types Swift lacks. Instances of `@RutisService` types and closures cross by reference.
+- Values: the SDK's own encoder and decoder, driven by `Codable` (never `JSONEncoder`). `Date`, `Data`, `Decimal`, `UUID`, `Set` and non-`String`-keyed dictionaries cross as rutis's tagged values; `Rutis.Advanced.DateTime`, `Rutis.Advanced.CalendarDate`, `Rutis.Advanced.TimeOfDay` and `Rutis.Advanced.BigInt` are the types Swift lacks. Instances of `@RutisService` types and closures cross by reference.
 - Errors cross with their name (the type's), message, `code` and `data` (stored properties of those names); a received error is a `RutisError`, matched by `name`.
 - Events: `ctx.on`, `emit`, `parallel`, `serial`, `waterfall`, `bail`, `filter` (the [plugin API](../docs/guide/plugin-api.en.md#events)).
 - Tests: `RutisTest` (product `RutisTest`) runs a plugin across a real in-memory session, the test being its host:
