@@ -310,12 +310,18 @@ impl Resolver for RuntimeResolver {
                     return Ok(found.clone());
                 }
             }
-            // The declarations need Node. Without a running runtime the row
-            // still resolves (it waits for the runtime like any dependency),
-            // and says why it has no schema; it is not cached, and
-            // `RuntimeRowsPlugin` resolves it again once the runtime is up,
-            // before the row may start.
-            let Some(process) = self.runtime.ready().await else {
+            // The declarations need the runtime. Without a running runtime
+            // (one still starting included: it may take long, as one waiting
+            // for a debugger does, and the other runtimes' rows must not
+            // wait for it) the row still resolves (it waits for the runtime
+            // like any dependency), and says why it has no schema; it is not
+            // cached, and `RuntimeRowsPlugin` resolves it again once the
+            // runtime is up, before the row may start.
+            let running = match self.runtime.state() {
+                RuntimeState::Ready(process) => Some(process),
+                _ => None,
+            };
+            let Some(process) = running else {
                 self.offline.lock().unwrap().insert(name.to_owned());
                 let module = JsModule {
                     name: name.to_owned(),
