@@ -63,6 +63,7 @@ Before upgrading, run `rutis-host check` with 0.17.2: the warnings it writes for
   | `bad-argument` | arguments of the wrong number or type | number: `{service, method, expected, received}`; type or missing: `{service, method, argument, expected}` (`argument` counts from 1) |
   | `bad-value` | a value that cannot cross, or a message over the limit | `{part, argument?, limit?}` (`part` is `argument`, `result` or `error`) |
   | `peer-gone` | the far end's process exited or went away during the call | on the host's side `{runtime, reason}`; on a plugin's side `{reason}` |
+  | `bad-config` | a row's config does not match its plugin's schema (see the #669 section below) | `{issues: [{path, message}]}` (the items of `path` are keys or indices) |
 
   Protocol refusals (one end not keeping to the protocol) have no code.
 

@@ -63,6 +63,7 @@
   | `bad-argument` | 参数个数或类型不对 | 个数：`{service, method, expected, received}`；类型或缺少：`{service, method, argument, expected}`（`argument` 从 1 数起） |
   | `bad-value` | 值传不过去，或消息超过上限 | `{part, argument?, limit?}`（`part` 是 `argument`、`result` 或 `error`） |
   | `peer-gone` | 调用进行中对面的进程退出或断开 | 宿主一侧 `{runtime, reason}`；插件一侧 `{reason}` |
+  | `bad-config` | 这一行的配置不符合插件的 Schema（见下面 #669 一节） | `{issues: [{path, message}]}`（`path` 的每一项是键或下标） |
 
   协议层面的拒绝（一端没按约定办事）没有码。
 
