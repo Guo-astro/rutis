@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use rutis::host::BoxFuture;
+use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use serde_json::{json, Value};
 
 use super::binary::{self, DevBuild};
@@ -71,11 +72,15 @@ impl Language for Go {
         &["go"]
     }
 
-    /// The binaries' resolver now; their runtimes once the loader runs.
+    /// The binaries' resolver now; their runtimes once the loader runs,
+    /// under Delve with `dev --debug`.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
-        match &config.runtimes.go {
-            Some(go) => binary::start::<rutis_loader::runtime::go::Go>(self, go, config, mount),
-            None => Ok(()),
+        match (&config.runtimes.go, config.runtimes.debug) {
+            (Some(go), false) => {
+                binary::start::<rutis_loader::runtime::go::Go>(self, go, config, mount)
+            }
+            (Some(go), true) => binary::start::<Delve>(self, go, config, mount),
+            (None, _) => Ok(()),
         }
     }
 
@@ -118,8 +123,26 @@ impl Language for Go {
         ))
     }
 
-    fn dev_build(&self, dir: &Path) -> Option<Box<dyn DevBuild>> {
-        GoDev::of(dir).map(|go| Box::new(go) as Box<dyn DevBuild>)
+    fn dev_build(&self, dir: &Path, debug: bool) -> Option<Box<dyn DevBuild>> {
+        GoDev::of(dir).map(|go| Box::new(GoDev { debug, ..go }) as Box<dyn DevBuild>)
+    }
+
+    /// Delve runs each Go runtime ([`Delve`]); it must be installed.
+    fn debugging(&self) -> Option<Result<&'static str, String>> {
+        let installed = std::process::Command::new(DELVE)
+            .arg("version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        Some(match installed {
+            true => Ok(
+                "the Go runtime runs under Delve, listening on 127.0.0.1:2345 (`dlv connect 127.0.0.1:2345`); after a rebuild, connect again",
+            ),
+            false => Err(
+                "rutis-host dev --debug runs the Go runtime under Delve, and dlv does not run: install it with \
+                 `go install github.com/go-delve/delve/cmd/dlv@latest` (and put $(go env GOPATH)/bin on PATH)"
+                    .into(),
+            ),
+        })
     }
 }
 
@@ -176,6 +199,9 @@ pub struct GoDev {
     /// The main package (`./cmd/<name>`, or `.`).
     pub package: String,
     pub runtime: String,
+    /// Built for a debugger (`dev --debug`): without optimisations or
+    /// inlining, so that every variable and line can be stopped at.
+    pub debug: bool,
 }
 
 impl GoDev {
@@ -211,6 +237,7 @@ impl GoDev {
             name,
             package,
             runtime,
+            debug: false,
         })
     }
 
@@ -227,8 +254,12 @@ impl GoDev {
             std::fs::create_dir_all(builds).map_err(|error| error.to_string())?;
         }
         let mut command = std::process::Command::new("go");
+        command.arg("build");
+        if self.debug {
+            command.arg("-gcflags=all=-N -l");
+        }
         command
-            .args(["build", "-o"])
+            .arg("-o")
             .arg(&binary)
             .arg(&self.package)
             .current_dir(&self.dir);
@@ -281,6 +312,44 @@ fn built(
     match output.status.success() {
         true => Ok(binary),
         false => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    }
+}
+
+/// The Delve program.
+const DELVE: &str = "dlv";
+
+/// Where Delve listens under `dev --debug`: its own default address.
+pub const DELVE_ADDRESS: &str = "127.0.0.1:2345";
+
+/// Go as `dev --debug` runs it: each runtime's binary started by Delve
+/// (`dlv exec`), headless on [`DELVE_ADDRESS`], running at once and
+/// taking clients as they come and go. Delve does not pass an inherited
+/// socket on, so the binary dials its channel back (a socket path; on
+/// Windows, as always, a loopback address).
+struct Delve;
+
+impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
+    const PREFIX: &'static str = rutis_loader::runtime::go::Go::PREFIX;
+    const TITLE: &'static str = rutis_loader::runtime::go::Go::TITLE;
+    const MARKER: &'static [u8] = rutis_loader::runtime::go::Go::MARKER;
+    const PLUGIN_API: u64 = rutis_loader::runtime::go::Go::PLUGIN_API;
+
+    fn runtime_name(path: &Path) -> String {
+        rutis_bridge::runtime::go_runtime_name(path)
+    }
+
+    fn launch(binary: &Path, project: &Path) -> LocalRuntime {
+        let launcher = Launcher::new(DELVE)
+            .arg("exec")
+            .arg("--headless")
+            .arg(format!("--listen={DELVE_ADDRESS}"))
+            .arg("--api-version=2")
+            .arg("--accept-multiclient")
+            .arg("--continue")
+            .arg(binary)
+            .arg("--")
+            .cwd(project);
+        LocalRuntime::launcher(Self::runtime_name(binary), launcher, project)
     }
 }
 

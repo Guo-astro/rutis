@@ -259,6 +259,22 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
 
+### Debugging
+
+`--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
+
+<!-- example: python-en run until="weather: running" order=100 -->
+```bash
+uv run rutis-host dev --debug
+```
+
+- While it is stopped at a breakpoint, the whole Python runtime waits: calls to its other rows wait too.
+- Without `--debug` the runtime has no standard input, and `breakpoint()` fails the row.
+- The runtime shares the terminal with `dev`, so Ctrl-C reaches it too: it exits at once, and the plugin's cleanups may not get to run.
+- What the plugin prints, and what it writes to standard error, shows in `dev`'s output.
+- With a graphical debugger (VS Code and the like): install `debugpy` in the project's environment, call `debugpy.listen(5678)` in `apply`, and attach the debugger to `127.0.0.1:5678`.
+- Tests (§3) run the plugin in the test process, where `breakpoint()` works without `--debug`.
+
 ## 5. Publish
 
 ```bash

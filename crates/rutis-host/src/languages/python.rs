@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use rutis_bridge::runtime::LocalRuntime;
 use serde_json::{json, Value};
 
-use super::{id_of, rebase_program, Language};
-use crate::config::{venv_python, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
+use super::{id_of, rebase_program, Language, Mount};
+use crate::config::{venv_python, HostConfig, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
 use crate::host::Error;
 
 pub struct Python;
@@ -67,6 +67,27 @@ impl Language for Python {
 
     fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
         runtimes.py.as_ref().map(runtime)
+    }
+
+    /// Under `dev --debug` the runtime reads this terminal: `breakpoint()`
+    /// stops in pdb there.
+    fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
+        let Some(runtime) = self.runtime(&config.runtimes) else {
+            return Ok(());
+        };
+        let runtime = runtime?;
+        let rows = |handle| self.rows(handle);
+        match config.runtimes.debug {
+            true => mount.local_terminal(self.key(), runtime, rows),
+            false => mount.local(self.key(), runtime, rows),
+        }
+        Ok(())
+    }
+
+    fn debugging(&self) -> Option<Result<&'static str, String>> {
+        Some(Ok(
+            "the Python runtime reads this terminal: breakpoint() stops there in pdb",
+        ))
     }
 
     fn new_names(&self) -> &'static [&'static str] {

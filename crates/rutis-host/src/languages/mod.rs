@@ -169,8 +169,16 @@ pub trait Language: Sync {
 
     /// A compiled language's project in `dir`, which `rutis-host dev`
     /// rebuilds as it changes and restarts its runtime on, instead of
-    /// reloading its rows; `None` for the others.
-    fn dev_build(&self, _dir: &Path) -> Option<Box<dyn DevBuild>> {
+    /// reloading its rows; `None` for the others. With `debug`
+    /// (`dev --debug`), built for a debugger: without optimisation.
+    fn dev_build(&self, _dir: &Path, _debug: bool) -> Option<Box<dyn DevBuild>> {
+        None
+    }
+
+    /// How its runtime is debugged under `rutis-host dev --debug`
+    /// ([`Runtimes::debug`]), as `dev` says it; `None` when it has no
+    /// debugger there, an error when the debugger is not installed.
+    fn debugging(&self) -> Option<Result<&'static str, String>> {
         None
     }
 }
@@ -321,6 +329,32 @@ impl Mount<'_> {
         rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
     ) {
         let runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
+        self.local_as_is(name, runtime, rows);
+    }
+
+    /// [`Mount::local`] for a runtime that reads this terminal (a debugger
+    /// prompting there, `dev --debug`): its standard input is this
+    /// process's, and its output is not held back until a line ends, or a
+    /// prompt would not show.
+    pub fn local_terminal(
+        &mut self,
+        name: &str,
+        runtime: LocalRuntime,
+        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
+    ) {
+        let runtime = runtime
+            .stdin(Stdio::Inherit)
+            .stdout(Stdio::Inherit)
+            .stderr(Stdio::Inherit);
+        self.local_as_is(name, runtime, rows);
+    }
+
+    fn local_as_is(
+        &mut self,
+        name: &str,
+        runtime: LocalRuntime,
+        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
+    ) {
         let handle = runtime.handle();
         let rows = Arc::new(rows(handle.clone()).with_catalog(self.catalog));
         self.processes.push((name.to_owned(), runtime.processes()));

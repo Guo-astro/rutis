@@ -102,6 +102,20 @@ bunx --bun rutis-host dev
 - `runtimes.bun` 的字段：`project`（默认 `.`）、`runtime`（`@arcships/rutis-bun` 的位置，默认项目里装的）、`program`（Bun 可执行文件，默认 `PATH` 上的 `bun`）。
 - 可以和 `runtimes.node`、`runtimes.py` 同时配置；服务按名字跨运行时共享。
 
+### 调试
+
+`--debug` 打开 Bun 运行时进程自己的检查器，地址固定为 `ws://127.0.0.1:6499/rutis`：
+
+```bash
+bunx --bun rutis-host dev --debug
+```
+
+在浏览器里打开输出里的 `https://debug.bun.sh/#127.0.0.1:6499/rutis`，或者用 VS Code 的 Bun 扩展 attach 到 `ws://127.0.0.1:6499/rutis`。在源文件里下断点，或者在代码里写 `debugger;`。
+
+- 地址每次启动都一样，运行时重启后重新连上即可。
+- 停在断点时整个 Bun 运行时停着：这个运行时里其他行的调用也等它继续。
+- `console.log` 的内容出现在 `dev` 的输出里。
+
 ## 4. 运行时的约定
 
 - **只用项目里装好的包**：运行时总是带 `--no-install` 启动，缺少的包会让加载失败，不会被下载。用 `bun add` 安装插件和它的依赖。`bun install` 默认只为 Bun 内置受信名单里的依赖运行安装脚本；项目里写 `trustedDependencies` 会**替换**这个名单，只列确实需要安装脚本的包。

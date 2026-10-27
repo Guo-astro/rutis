@@ -632,6 +632,10 @@ builtins.register("weather", Weather::new); // 行：{ "id": "weather", "name": 
 
 每个实例各构造一份时用 `register_with(name, |build, config| …)`。加载器（`Chain` 里放进 `builtins`）、运行时和其他语言的行见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
 
+### 调试
+
+插件在宿主的进程里运行：用 IDE、`rust-lldb` 或 `rust-gdb` 运行宿主（或者 `cargo test` 的测试二进制），在插件代码里下断点。宿主里每一行的状态、服务的提供者和进行中的调用怎样看，见 [Rust 宿主指南](rust-host.md#调试)。
+
 ### dylib 插件
 
 同一个插件也可以编译成 dylib，由宿主在运行时加载。crate 只依赖 `rutis-sdk`，经 `rutis_sdk::rutis` 用 rutis（`use rutis_sdk::rutis::{Ctx, Plugin, Result};`），再用构造函数导出：

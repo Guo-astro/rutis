@@ -259,6 +259,22 @@ plugin = define_plugin(apply, provides={"llm": FakeLlm})
 
 只重新导入插件模块本身；它导入的其他模块改了，要重启 `rutis-host dev`。
 
+### 调试
+
+`--debug` 让 Python 运行时读这个终端：插件里的 `breakpoint()` 停在 pdb，在终端里用 `w` 看调用栈、`p <变量>` 看变量、`c` 继续。
+
+<!-- example: python run until="weather: running" order=100 -->
+```bash
+uv run rutis-host dev --debug
+```
+
+- 停在断点时整个 Python 运行时停着：这个运行时里其他行的调用也等它继续。
+- 不加 `--debug` 时运行时没有标准输入，`breakpoint()` 让这一行失败。
+- 运行时和 `dev` 共用终端，Ctrl-C 也送到运行时：它直接退出，插件的清理可能来不及运行。
+- 插件 `print` 的内容和写到标准错误的内容出现在 `dev` 的输出里。
+- 用图形界面的调试器（VS Code 等）：在项目环境里装 `debugpy`，在 `apply` 里调用 `debugpy.listen(5678)`，再用调试器连 `127.0.0.1:5678`。
+- 测试（§3）在测试进程里运行插件，`breakpoint()` 不用 `--debug` 也能用。
+
 ## 5. 发布
 
 ```bash

@@ -497,6 +497,20 @@ root.plugin(go_runtimes).await?;
 
 - To run one fixed binary, it also works as Python does: `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (rows `<runtime name>:<plugin>`).
 
+## Debugging
+
+The host is an ordinary Rust program, and the Rust plugins compiled into it and the dylib plugins run in its process: run the host in an IDE, `rust-lldb` or `rust-gdb`, and breakpoints and call stacks work as usual.
+
+Three things show what happens in the host:
+
+- **Default output**: a load that fails, a dependency that does not come for a long time, and a language runtime that exits are written to standard error by default, naming the plugin or row (it can be turned off).
+- **Current state**: `Loader::status()` returns a snapshot: each row's state and why, which plugin provides each service, each runtime (its state, why, and a local runtime's pid), and the calls in progress. It implements `Display`, one item a line, ready to print. Under `rutis-host`, `rutis-host status` prints the same.
+- **Kernel diagnostics**: `root.diagnostics()`'s `Display` lists the plugins, the services they provide and wait for, by the plugins' and rows' names, without the internal plugins by default.
+
+The language runtimes (Node, Bun, Python, Go) are processes of their own, each debugged with its own debugger: run the plugin project with `rutis-host dev --debug` (see the [TypeScript](typescript-plugin.en.md#debugging), [Bun](bun-plugin.en.md#debugging), [Python](python-plugin.en.md#debugging) and [Go](go-plugin.en.md#debugging) guides), or attach the debugger to the running process by the pid in the state.
+
+rutis has no `tracing` / `log` integration; the host's own logging works as usual. The environment variable `RUTIS_TRACE=1` prints each message crossing a runtime channel (its direction and length only) on standard error.
+
 ## Nodes
 
 ```rust,no_run

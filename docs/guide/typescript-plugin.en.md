@@ -179,6 +179,23 @@ export default definePlugin({
 
 The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins to run. `npx rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem. It is suitable for CI.
 
+### Debugging
+
+`--debug` opens the Node runtime process's own inspector, on `127.0.0.1:9229`:
+
+<!-- example: typescript-en run until="weather: running" order=100 -->
+```bash
+npx rutis-host dev --debug
+```
+
+The output has `Debugger listening on ws://127.0.0.1:9229/…`. Open `chrome://inspect` in Chrome and click inspect under Remote Target, or attach VS Code to port 9229. Open `src/index.ts` in Sources and set a breakpoint, or write `debugger;` in the code.
+
+- The npm launcher that starts `rutis-host` does not take the port. Do not use `NODE_OPTIONS=--inspect`: it opens an inspector in the launcher too, which starts first and takes the port, so you would attach to the launcher; `--inspect-brk` stops the launcher.
+- After a reload the module's URL ends in `?rutis-reload=<n>`, a new script: set the breakpoint again in it, or use `debugger;`.
+- While it is stopped at a breakpoint, the whole Node runtime waits: calls to its other rows wait too.
+- When port 9229 is taken, Node prints `Starting inspector on 127.0.0.1:9229 failed` and runs without an inspector: end the process holding the port first.
+- What `console.log` prints shows in `dev`'s output.
+
 ## 5. Publish
 
 ```bash

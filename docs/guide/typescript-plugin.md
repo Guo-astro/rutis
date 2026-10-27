@@ -179,6 +179,23 @@ export default definePlugin({
 
 和插件 id 相同的那一行给插件本身加配置；其他行是一起运行的插件。`npx rutis-host check` 列出每一行的依赖、提供的服务和配置 Schema，有问题时以非零状态退出，适合放进 CI。
 
+### 调试
+
+`--debug` 打开 Node 运行时进程自己的检查器，监听 `127.0.0.1:9229`：
+
+<!-- example: typescript run until="weather: running" order=100 -->
+```bash
+npx rutis-host dev --debug
+```
+
+输出里有 `Debugger listening on ws://127.0.0.1:9229/…`。用 Chrome 打开 `chrome://inspect`，在 Remote Target 下点 inspect；或者用 VS Code 的 attach 配置连端口 9229。在 Sources 里打开 `src/index.ts` 下断点，或者在代码里写 `debugger;`。
+
+- 启动 `rutis-host` 的 npm 启动器不占这个端口。不要用 `NODE_OPTIONS=--inspect`：它也给启动器开检查器，先启动的启动器占掉端口，连上的是启动器；`--inspect-brk` 会让启动器停住。
+- 重新加载后模块的地址带 `?rutis-reload=<n>`，是一个新的脚本：在新脚本里重新下断点，或者用 `debugger;`。
+- 停在断点时整个 Node 运行时停着：这个运行时里其他行的调用也等它继续。
+- 端口 9229 已被占用时，Node 打印 `Starting inspector on 127.0.0.1:9229 failed` 并照常运行，没有检查器：先结束占用端口的进程。
+- `console.log` 的内容出现在 `dev` 的输出里。
+
 ## 5. 发布
 
 ```bash

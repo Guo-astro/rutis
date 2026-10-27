@@ -133,7 +133,7 @@ impl Language for Swift {
         ))
     }
 
-    fn dev_build(&self, dir: &Path) -> Option<Box<dyn DevBuild>> {
+    fn dev_build(&self, dir: &Path, _debug: bool) -> Option<Box<dyn DevBuild>> {
         SwiftDev::of(dir).map(|swift| Box::new(swift) as Box<dyn DevBuild>)
     }
 }

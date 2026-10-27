@@ -316,6 +316,41 @@ Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找
 
 这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
 
+### 调试
+
+`--debug` 不优化地构建（`-gcflags=all=-N -l`），在 [Delve](https://github.com/go-delve/delve) 下启动运行时：Delve 监听 `127.0.0.1:2345`，程序照常运行，连上后再下断点。先装 Delve：
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+```bash
+rutis-host dev --debug
+```
+
+在另一个终端连上，在 `Today` 上下断点，继续运行；有调用到 `Today` 时停住：
+
+```bash
+dlv connect 127.0.0.1:2345
+```
+
+```
+(dlv) break (*Weather).Today
+(dlv) continue
+```
+
+停住后 `stack` 看调用栈、`locals` 和 `print <变量>` 看变量。
+
+- 断开而让运行时继续：`exit -c`。直接 `exit` 会问是否结束 Delve，选 `n`。
+- VS Code：`launch.json` 里写 `{ "type": "go", "request": "attach", "mode": "remote", "host": "127.0.0.1", "port": 2345 }`。
+- 每次重新构建，运行时连同 Delve 重新启动：重新连接，重新下断点。
+- Delve 的地址固定，`--debug` 下只能运行一个 Go 二进制。
+- `rutis.dev.json` 加的 Python 运行时这时也读这个终端（见 [Python 指南](python-plugin.md#调试)），Ctrl-C 也送到它。
+- 停在断点时整个运行时停着：这个二进制里其他插件的调用也等它继续。
+- macOS 上第一次调试时，系统会请求允许开发者工具。
+- `fmt.Println`、`log` 的内容出现在 `dev` 的输出里。
+- 测试（§3）不用宿主：`dlv test .`。
+
 ## 5. 发布
 
 推一个 `v0.1.0` 这样的 tag：模板里的工作流运行测试和 `rutis-host check`，为 Linux、macOS（x64 / arm64）和 Windows x64 构建二进制，连同 `SHA256SUMS` 发布到 GitHub Release。

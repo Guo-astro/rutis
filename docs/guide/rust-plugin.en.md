@@ -632,6 +632,10 @@ builtins.register("weather", Weather::new); // row: { "id": "weather", "name": "
 
 For one copy per instance, `register_with(name, |build, config| …)`. The loader (with `builtins` in its `Chain`), runtimes and rows of other languages: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
 
+### Debugging
+
+The plugin runs in the host's process: run the host (or the test binary of `cargo test`) in an IDE, `rust-lldb` or `rust-gdb`, and set breakpoints in the plugin's code. How to see each row's state, which plugin provides a service, and the calls in progress in the host: the [Rust host guide](rust-host.en.md#debugging).
+
 ### Dylib plugin
 
 The same plugin can also be built as a dylib that a host loads at run time. The crate depends on `rutis-sdk` only, reaches rutis through `rutis_sdk::rutis` (`use rutis_sdk::rutis::{Ctx, Plugin, Result};`) and exports its constructor:

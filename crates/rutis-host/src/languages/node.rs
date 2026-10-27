@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle};
+use rutis_bridge::runtime::{Launcher, LocalRuntime, RuntimeHandle};
 use rutis_loader::runtime::RuntimeResolver;
 use serde_json::{json, Value};
 
@@ -85,7 +85,16 @@ impl Language for Node {
     }
 
     fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
-        runtimes.node.as_ref().map(runtime)
+        runtimes
+            .node
+            .as_ref()
+            .map(|node| runtime(node, runtimes.debug))
+    }
+
+    fn debugging(&self) -> Option<Result<&'static str, String>> {
+        Some(Ok(
+            "the Node runtime's inspector listens on 127.0.0.1:9229 (chrome://inspect, or a debugger attaching to port 9229)",
+        ))
     }
 
     fn new_names(&self) -> &'static [&'static str] {
@@ -125,9 +134,15 @@ impl Language for Node {
     }
 }
 
+/// Where the Node runtime's inspector listens under `dev --debug`: Node's
+/// own default port, taken by the runtime's process alone (not by an npm
+/// launcher that started this host, as `NODE_OPTIONS=--inspect` would).
+pub const INSPECT: &str = "127.0.0.1:9229";
+
 /// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
-/// package installed there (or given, or next to this program).
-fn runtime(node: &NodeRuntime) -> Result<LocalRuntime, Error> {
+/// package installed there (or given, or next to this program); with
+/// `debug`, its inspector on [`INSPECT`].
+fn runtime(node: &NodeRuntime, debug: bool) -> Result<LocalRuntime, Error> {
     let anchor = node.project.join("package.json");
     if !anchor.exists() {
         return Err(format!(
@@ -150,7 +165,13 @@ fn runtime(node: &NodeRuntime) -> Result<LocalRuntime, Error> {
                 node.project.display()
             )
         })?;
-    Ok(LocalRuntime::node(package, anchor))
+    let mut launcher = Launcher::node(&package);
+    if debug {
+        launcher
+            .args
+            .insert(0, format!("--inspect={INSPECT}").into());
+    }
+    Ok(LocalRuntime::launcher("node", launcher, anchor))
 }
 
 const TEMPLATE: &[(&str, &str)] = &[
