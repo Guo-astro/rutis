@@ -19,6 +19,7 @@ import { AsyncLocalStorage, createHook } from 'node:async_hooks'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { inspect } from 'node:util'
+import { reportedStack } from './errors.mjs'
 
 // Rows are traced only when `enabled`: `within(row, run)` runs `run` as
 // the row's (undefined: no row's), `current()` is the row running now,
@@ -81,7 +82,10 @@ export function kindText(kind, error) {
 
 // The error a load fails with when the row's code left `error` unhandled
 // while it loaded: an `UnhandledError` saying what, with the error's own
-// frames, code and data.
+// frames, code and data, and the error itself as its cause, so that its
+// own `cause` and an AggregateError's `errors` cross with it as they do
+// for an error once the row has loaded. (The host prints the root's text
+// and frames, not its causes, so the error is not printed twice.)
 export function unhandledError(kind, error) {
   const failure = new Error(kindText(kind, error))
   failure.name = 'UnhandledError'
@@ -90,14 +94,16 @@ export function unhandledError(kind, error) {
   if (error && typeof error === 'object') {
     if (typeof error.code === 'string') failure.code = error.code
     if (Object.hasOwn(error, 'data')) failure.data = error.data
+    failure.cause = error
   }
   return failure
 }
 
-// The error as reported for no row: the whole stack, which is all there is
-// to find its source by.
+// The error as reported for no row: its stack with only the plugin's
+// frames, or the whole stack when none is the plugin's (it is then all
+// there is to find its source by).
 export function reportText(error) {
-  if (typeof error?.stack === 'string' && error.stack.length) return error.stack
+  if (typeof error?.stack === 'string' && error.stack.length) return reportedStack(error.stack)
   return errorText(error)
 }
 
