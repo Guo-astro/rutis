@@ -46,9 +46,10 @@ final class Warmer: @unchecked Sendable {
         return try await cache.get("a")
     }
 
-    /// Whether `cache` is the proxy it keeps.
+    /// Whether `cache` is the proxy it keeps (its client, one per object).
     func same(_ cache: any CacheClient) -> Bool {
-        (cache as? any RutisProxy)?.rutisClient === (kept as? any RutisProxy)?.rutisClient
+        guard let given = (cache as? any RutisProxy)?.rutisClient, let held = (kept as? any RutisProxy)?.rutisClient else { return false }
+        return given === held
     }
 
     func back() -> any CacheClient { kept! }
@@ -71,6 +72,39 @@ final class Warmer: @unchecked Sendable {
         }
     }
 }
+
+/// Hands out its cache, an object with methods.
+@RutisService
+final class Source: @unchecked Sendable {
+    let cache = Cache()
+    func make() -> Cache { cache }
+}
+
+/// How a plugin uses `Source`: its result is an object of another process.
+@RutisClient
+protocol SourceClient {
+    func make() async throws -> any CacheClient
+}
+
+/// Uses the cache `SourceClient.make` returns, received twice.
+@RutisService
+final class Reader: @unchecked Sendable {
+    let source: any SourceClient
+    init(source: any SourceClient) { self.source = source }
+
+    func read() async throws -> String {
+        let first = try await source.make()
+        let second = try await source.make()
+        try await first.set("k", 5)
+        let same = (first as? any RutisProxy)?.rutisClient
+        let again = (second as? any RutisProxy)?.rutisClient
+        let value = try await second.get("k") ?? -1
+        return "\(same != nil && same === again) \(value)"
+    }
+}
+
+/// A class that is neither marked nor Codable.
+final class Unmarked {}
 
 /// An object whose method runs until its call is cancelled.
 @RutisService
@@ -128,6 +162,33 @@ struct ObjectTests {
         let y = try await service.call("keep", spot, as: Int.self)
         XCTAssertEqual(y, 2)
         XCTAssertEqual(warmer.seen, spot, "data arrives as an equal copy")
+    }
+
+    // objects-case(swift): return-array-event
+    /// As the result of a @RutisClient protocol method, an object of
+    /// another process is that protocol's proxy, of the same client each
+    /// time.
+    func anObjectAsAResultIsAClientProtocol() async throws {
+        let plugin = Rutis.define(Plugin(name: "reader", inject: ["source"]) { ctx in
+            ctx.provide("reader", Reader(source: try ctx.use("source", SourceClientProxy.self)))
+        })
+        let source = Source()
+        let loaded = try await RutisTest.load(plugin, services: ["source": source])
+        defer { Task { await loaded.close() } }
+        let read = try await loaded.service("reader").call("read", as: String.self)
+        XCTAssertEqual(read, "true 5")
+        XCTAssertEqual(source.cache.get("k"), 5, "the original object changed")
+    }
+
+    /// A class neither marked @RutisService nor Codable says how to make it
+    /// cross (#687 §八).
+    func anUnmarkedClassSaysHowToCross() throws {
+        do {
+            _ = try ValueCodec.encodeAny(Unmarked())
+            XCTFail("an unmarked class does not cross")
+        } catch {
+            XCTAssertTrue("\(error)".contains("a Unmarked cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it"), "\(error)")
+        }
     }
 
     // objects-case(swift): cancel

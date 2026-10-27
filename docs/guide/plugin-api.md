@@ -311,7 +311,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 | Go | 参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样）；或写 `any` | 调用各个方法的函数字段（阻塞）；`any` 收到 `*rutis.Service` |
 | Swift | 参数类型写 `@RutisClient` 协议（`any Cache`）；或写 `Any` | 这个协议的代理；`Any` 收到 `Rutis.Client` |
 | Kotlin | 参数类型写 `@RutisClient` 接口；或写 `Any?` | 这个接口的代理；`Any?` 收到 `RemoteObject` |
-| Rust | 手写的 `HostDispatch` | `rutis_bridge::session::Reference`（`call_method`、`call_method_async`）；`#[rutis::service]` 的参数不收对象（`bad-argument`） |
+| Rust | 手写的 `HostDispatch` | `rutis_bridge::session::Reference`（`call_method`、`call_method_async`），Cordis 绑定里是 `ObjectRef`；`#[rutis::service]` 的参数不收对象（`bad-argument`） |
 
 - 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象；交给第三个进程，仍是同一个对象。
 - 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`，`data` 是 `{object, method, methods}`。

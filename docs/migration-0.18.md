@@ -215,6 +215,6 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 
 ### Kotlin
 
-- 新类型 `arcships.rutis.RemoteObject`：类型为 `Any?` 的参数收到对象时拿到它，`call(method, vararg args)` 挂起，`callBlocking(method, vararg args)` 阻塞，`release()` 立即交还引用。这是 0.18 里关于对象唯一新增的公开 API。
+- 新类型 `arcships.rutis.RemoteObject`：类型为 `Any?` 的参数收到对象时拿到它，`call(method, vararg args)` 挂起，`callBlocking(method, vararg args)` 阻塞，`release()` 立即交还引用。这是 0.18 里插件代码为对象要用的唯一新类型（`arcships.rutis.ObjectProxy` 也是公开的，但只由 KSP 生成的代理实现，插件代码不用它，和 `ServiceHandle` 一样）。
 - 参数或 `@RutisClient` 方法的返回值类型写 `@RutisClient` 接口时，收到对象拿到 KSP 生成的代理。
 - 以前把 `Any?` 参数当作只会收到数据（`Map`、`List`、基本类型）的代码，现在还可能收到 `RemoteObject`。

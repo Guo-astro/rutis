@@ -77,7 +77,7 @@ A plugin definition a plugin hands to a service ([Swift plugin](swift-plugin.en.
 
 ### Objects with methods
 
-As in the [Swift plugin](swift-plugin.en.md#objects-with-methods): an instance of a `@RutisService` type is handed over by reference; for an object another process passes, a parameter typed with a file-level `@RutisClient` protocol (`any Cache`) gets its proxy, and one typed `Any` gets a `Rutis.Client` (`try await client.call("get", values: ["a"], as: Int?.self)`).
+As in the [Swift plugin](swift-plugin.en.md#objects-with-methods): an instance of a `@RutisService` type is handed over by reference; for an object another process passes, a parameter typed with a file-level `@RutisClient` protocol (`any Cache`, not optional) gets its proxy, and one typed `Any` gets a `Rutis.Client` (`try await client.call("get", values: ["a"], as: Int?.self)`).
 
 ```swift
 @RutisClient

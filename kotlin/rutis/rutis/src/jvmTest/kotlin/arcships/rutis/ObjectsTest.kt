@@ -47,6 +47,31 @@ interface CacheClient {
     suspend fun set(key: String, value: Long)
 }
 
+/** Hands out its cache, an object with methods. */
+@RutisService
+class Source {
+    val cache = Cache()
+
+    fun make(): Cache = cache
+}
+
+/** How a plugin uses [Source]: its result is an object of another process. */
+@RutisClient
+interface SourceClient {
+    suspend fun make(): CacheClient
+}
+
+/** Uses the cache [SourceClient.make] returns, received twice. */
+@RutisService
+class Reader(private val source: SourceClient) {
+    suspend fun read(): String {
+        val first = source.make()
+        val second = source.make()
+        first.set("k", 5)
+        return "${first === second} ${second.get("k")}"
+    }
+}
+
 /** An object whose method runs until its call is cancelled. */
 @RutisService
 class Slow {
@@ -73,6 +98,9 @@ class Warmer {
 
     fun back(): CacheClient = kept!!
 
+    /** Whether `cache` is the proxy it keeps. */
+    fun same(cache: CacheClient): Boolean = cache === kept
+
     fun anything(value: Any?): String = value.toString()
 
     fun point(p: Point): Long = p.x.toLong()
@@ -85,7 +113,7 @@ class Warmer {
     }
 
     suspend fun missing(): String = try {
-        (kept as ObjectProxy).rutisObject!!.call("gett")
+        kept!!.let { (it as ObjectProxy).rutisObject!! }.call("gett")
         "answered"
     } catch (e: RutisException) {
         "${e.code}: ${e.message}"
@@ -135,6 +163,8 @@ class ObjectsTest {
         // Back home: the original.
         val back = host.call("t", "back", emptyList(), true)
         assertSame(cache, (back as ExportedObject).original)
+        // Received again: the same proxy.
+        assertEquals(JsonPrimitive(true), host.call("t", "same", listOf(Native.fromNative(cache)), true))
         // Any? takes a RemoteObject.
         assertTrue((host.call("t", "anything", listOf(Native.fromNative(cache)), true) as JsonPrimitive).content.startsWith("RemoteObject("))
         // A method the object lacks: its process answers no-method.
@@ -209,11 +239,9 @@ class ObjectsTest {
     }
 
     // objects-case(kotlin): cancel
-    // objects-case(kotlin): holder-killed-releases
     // An object of this side: a call of its method the caller gives up is
-    // cancelled here; once the host releases it (its holder let go or
-    // went), it is let go of. And a call of a far end's object this side
-    // gives up is cancelled there.
+    // cancelled here; once the host releases it, it is let go of. And a
+    // call of a far end's object this side gives up is cancelled there.
     @Test
     fun callsOnObjectsAreCancelledBothWays() {
         val slow = Slow()
@@ -247,6 +275,21 @@ class ObjectsTest {
         assertEquals(call["id"], frame["id"])
     }
 
+    // objects-case(kotlin): holder-killed-releases
+    // The holder goes without releasing the object (its process killed:
+    // the channel ends): the object is let go of all the same.
+    @Test
+    fun anObjectIsLetGoOfWhenItsHolderGoes() {
+        raw { _, method, _ -> if (method == "slow") Native.fromNative(Slow()) else "ok" }
+        far.send("""{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"slow","args":{"type":"list","value":[]}}""".toByteArray())
+        assertEquals("return", read()["op"]?.jsonPrimitive?.content)
+        assertEquals(1, runtime.references().first, "the object is exported")
+        far.close("killed")
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (runtime.references().first != 0 && System.nanoTime() < deadline) Thread.sleep(20)
+        assertEquals(0, runtime.references().first, "the object is let go of")
+    }
+
     // objects-case(kotlin): strict-testing-tool
     // The testing tool hands the plugin an object across its session, as
     // between processes: the plugin's interface proxy calls the original.
@@ -260,6 +303,21 @@ class ObjectsTest {
             assertEquals(1L, loaded.service("warmer").call("warm", cache))
             assertEquals(1L, cache.size(), "the original object changed")
             assertSame(cache, loaded.service("warmer").call("back"), "back home, the original")
+        }
+    }
+
+    // objects-case(kotlin): return-array-event
+    // As the result of a @RutisClient interface method, an object of another
+    // process is that interface's proxy, the same one each time.
+    @Test
+    fun anObjectAsAResultIsAClientInterface() = kotlinx.coroutines.runBlocking<Unit> {
+        val plugin = Rutis.define<Rutis.NoConfig>(name = "reader", inject = listOf("source"), provides = mapOf("reader" to service<Reader>())) { ctx, _ ->
+            ctx.provide("reader", Reader(ctx.use<SourceClient>("source")))
+        }
+        val source = Source()
+        arcships.rutis.testing.RutisTest.load(plugin, services = mapOf("source" to source)).use { loaded ->
+            assertEquals("true 5", loaded.service("reader").call("read"))
+            assertEquals(5L, source.cache.get("k"), "the original object changed")
         }
     }
 }

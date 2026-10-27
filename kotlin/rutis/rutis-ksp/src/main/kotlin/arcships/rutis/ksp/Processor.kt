@@ -127,6 +127,12 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
             declaration.annotations.any { it.annotationType.resolve().declaration.qualifiedName?.asString() == CLIENT }
     }
 
+    /** A `@RutisService` class: its instances cross by reference (#687 §三). */
+    private fun isService(type: KSType): Boolean {
+        val declaration = expand(type).declaration as? KSClassDeclaration ?: return false
+        return declaration.annotations.any { it.annotationType.resolve().declaration.qualifiedName?.asString() == SERVICE }
+    }
+
     /** `type`'s class, without nullability, as Kotlin source. */
     private fun classOf(type: KSType): String = render(expand(type).makeNotNullable()) + "::class.java"
 
@@ -177,7 +183,7 @@ class RutisProcessor(private val generator: CodeGenerator, private val logger: K
         isAny(type) -> "$G.nativeResult($value)"
         isFunction(type) -> if (type.isMarkedNullable) "$value?.let { f -> ${exportFunction(type.makeNotNullable(), "f")} }" else exportFunction(type, value)
         isPlugin(type) -> "$G.plugin($value)"
-        isClient(type) -> "$G.clientValue($value)"
+        isClient(type) || isService(type) -> "$G.clientValue($value)"
         else -> "$G.encode(${serializer(type)}, $value)"
     }
 

@@ -215,6 +215,6 @@ What to change:
 
 ### Kotlin
 
-- New type `arcships.rutis.RemoteObject`: a parameter of type `Any?` receives an object as one; `call(method, vararg args)` suspends, `callBlocking(method, vararg args)` blocks, and `release()` gives the reference back now. It is the only new public API for objects in 0.18.
+- New type `arcships.rutis.RemoteObject`: a parameter of type `Any?` receives an object as one; `call(method, vararg args)` suspends, `callBlocking(method, vararg args)` blocks, and `release()` gives the reference back now. It is the only new type plugin code uses for objects in 0.18 (`arcships.rutis.ObjectProxy` is public too, but only the proxies KSP generates implement it; plugin code does not use it, as with `ServiceHandle`).
 - A parameter, or the result of a `@RutisClient` method, typed with a `@RutisClient` interface receives an object as the KSP-generated proxy.
 - Code that treated an `Any?` parameter as receiving only data (`Map`, `List`, primitives) may now receive a `RemoteObject` too.

@@ -532,7 +532,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             is Map<*, *> -> if (marked(value)) {
                 wire("record", JsonObject(value.entries.associate { (key, item) ->
-                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(item, grants, origin, depth + 1)
+                    (key as? String ?: throw ValueException("a record key is not a string")) to encode(if (item === Undefined) null else item, grants, origin, depth + 1)
                 }))
             } else {
                 data(plain(value), depth)

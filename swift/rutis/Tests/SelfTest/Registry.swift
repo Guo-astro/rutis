@@ -15,6 +15,8 @@ let registry: [(String, () async throws -> Void)] = [
     ("BadValueTests.testAnObjectGoesOnlyToAFarEndThatTakesObjects", { try await BadValueTests().testAnObjectGoesOnlyToAFarEndThatTakesObjects() }),
     ("BadValueTests.testAReceivedObjectIsAProxyOfItsMethods", { try await BadValueTests().testAReceivedObjectIsAProxyOfItsMethods() }),
     ("ObjectTests.anObjectIsTakenAsAClientProtocolAndGoesHome", { try await ObjectTests().anObjectIsTakenAsAClientProtocolAndGoesHome() }),
+    ("ObjectTests.anObjectAsAResultIsAClientProtocol", { try await ObjectTests().anObjectAsAResultIsAClientProtocol() }),
+    ("ObjectTests.anUnmarkedClassSaysHowToCross", { try ObjectTests().anUnmarkedClassSaysHowToCross() }),
     ("ObjectTests.callsOnObjectsAreCancelledAndHoldersRelease", { try await ObjectTests().callsOnObjectsAreCancelledAndHoldersRelease() }),
     ("BadValueTests.testARelayedNonErrorThrowKeepsItsGraph", { try await BadValueTests().testARelayedNonErrorThrowKeepsItsGraph() }),
     ("EmitReplyTests.theReplyIsToldBeforeTheNextFrameIsHandled", { try await EmitReplyTests().theReplyIsToldBeforeTheNextFrameIsHandled() }),

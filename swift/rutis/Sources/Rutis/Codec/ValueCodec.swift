@@ -132,6 +132,11 @@ package enum ValueCodec {
         case let set as Set<AnyHashable>:
             return .set(try set.map { try encodeAny($0.base, depth: depth + 1) }.sorted(by: keyOrder))
         default:
+            // A class instance is passed by reference once marked, copied once
+            // Codable (#687 §八).
+            if type(of: value) is AnyClass {
+                throw ValueError("a \(type(of: value)) cannot cross: mark it @RutisService to pass it by reference, or make it Codable to copy it")
+            }
             throw ValueError("a \(type(of: value)) cannot cross processes: it is neither Codable, a @RutisService instance, nor a value rutis knows")
         }
     }

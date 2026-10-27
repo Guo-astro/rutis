@@ -55,15 +55,16 @@ interface ServiceHandle {
 }
 
 /**
- * What a generated proxy also is: the handle it calls through, and the object
- * of another process it calls, if it does. Handed on, such a proxy is that
- * object again (#687). Not for plugin code.
+ * What a generated proxy also is (generated code implements it, as it uses
+ * [ServiceHandle]): the handle it calls through. Handed on, a proxy of an
+ * object of another process is that object again (#687).
  */
 interface ObjectProxy {
     val rutisHandle: ServiceHandle
-
-    val rutisObject: RemoteObject? get() = (rutisHandle as? ObjectHandle)?.target
 }
+
+/** The object of another process the proxy calls, if it does. */
+internal val ObjectProxy.rutisObject: RemoteObject? get() = (rutisHandle as? ObjectHandle)?.target
 
 /** The handle of an object of another process: no method table, every method called by name (#687). */
 internal class ObjectHandle(val target: RemoteObject) : ServiceHandle {
@@ -253,7 +254,10 @@ object Generated {
     }
 
     private fun <I : Any> client(value: Any, type: Class<I>): I? = when (value) {
-        is RemoteObject -> Tables.clientFactory(type)?.create(ObjectHandle(value))
+        // One object, one proxy of each interface.
+        is RemoteObject -> type.cast(
+            value.proxies[type] ?: Tables.clientFactory(type)?.create(ObjectHandle(value))?.let { value.proxies.putIfAbsent(type, it) ?: it },
+        )
         is ExportedObject -> type.cast(value.original.takeIf { type.isInstance(it) })
         else -> null
     }

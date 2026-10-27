@@ -12,6 +12,9 @@ import arcships.rutis.internal.peer.Peer
  * interface was expected, the same object arrives as that interface's proxy.
  */
 class RemoteObject internal constructor(internal val peer: Peer, internal val record: Imported) {
+    /** Its proxy of each `@RutisClient` interface it was received as: one object, one proxy. */
+    internal val proxies = java.util.concurrent.ConcurrentHashMap<Class<*>, Any>()
+
     /** Calls the method `method`, suspending until it returns. */
     suspend fun call(method: String, vararg args: Any?): Any? =
         Native.toNative(peer.callMethodSuspend(this, method, args.map { Native.fromNative(it) }, sync = false))

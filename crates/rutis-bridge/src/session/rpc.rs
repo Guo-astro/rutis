@@ -164,7 +164,9 @@ impl Value {
     }
     fn future_inner(future: impl Future<Output = Reply> + Send + 'static, business: bool) -> Self {
         // Made while a session's call is dispatched: what it calls in other
-        // sessions, however long after, is on that session's behalf.
+        // sessions, however long after, is on that session's behalf, with
+        // the chain of the call that made it (not of whoever awaits it:
+        // that one only waits for it).
         match caller() {
             Some(source) => {
                 Self::future_on(with_caller(source, future), business, Executor::current())
@@ -707,10 +709,8 @@ pub(crate) fn with_caller<F: Future>(
         with_path(
             path,
             std::future::poll_fn(|cx| {
-                let previous = CALLER.with(|caller| caller.replace(Some(source.clone())));
-                let polled = future.as_mut().poll(cx);
-                CALLER.with(|caller| caller.replace(previous));
-                polled
+                let _caller = CallerGuard::enter(source.clone());
+                future.as_mut().poll(cx)
             }),
         )
         .await
@@ -769,6 +769,18 @@ fn current_path() -> Vec<String> {
         .with(|p| p.borrow().clone())
         .or_else(|| ASYNC_PATH.try_with(Clone::clone).ok())
         .unwrap_or_default()
+}
+/// [`caller`] is `connection` until this drops, even by a panic.
+struct CallerGuard(Option<Connection>);
+impl CallerGuard {
+    fn enter(connection: Connection) -> Self {
+        Self(CALLER.with(|caller| caller.replace(Some(connection))))
+    }
+}
+impl Drop for CallerGuard {
+    fn drop(&mut self) {
+        CALLER.with(|caller| caller.replace(self.0.take()));
+    }
 }
 struct PathGuard(Option<Vec<String>>);
 impl PathGuard {
@@ -1622,10 +1634,8 @@ impl Connection {
         let _path = PathGuard::enter(rebase(&current_path(), source.tag(), self.tag()));
         // The chain is this session's now: what `call` sends here is not
         // rebased again.
-        let previous = CALLER.with(|caller| caller.replace(Some(self.clone())));
-        let result = call();
-        CALLER.with(|caller| caller.replace(previous));
-        result
+        let _caller = CallerGuard::enter(self.clone());
+        call()
     }
     /// The async form of [`Connection::forward`]: the chain is taken when
     /// this is called and is current whenever `future` is polled.
@@ -1640,10 +1650,8 @@ impl Connection {
             let mut future = std::pin::pin!(future);
             std::future::poll_fn(|cx| {
                 let _path = PathGuard::enter(path.clone());
-                let previous = CALLER.with(|caller| caller.replace(Some(this.clone())));
-                let polled = future.as_mut().poll(cx);
-                CALLER.with(|caller| caller.replace(previous));
-                polled
+                let _caller = CallerGuard::enter(this.clone());
+                future.as_mut().poll(cx)
             })
             .await
         }

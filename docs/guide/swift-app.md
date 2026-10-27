@@ -77,7 +77,7 @@ public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("de
 
 ### 带方法的对象
 
-和 [Swift 插件](swift-plugin.md#带方法的对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`）拿到它的代理，写 `Any` 拿到 `Rutis.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
+和 [Swift 插件](swift-plugin.md#带方法的对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`，不是可选类型）拿到它的代理，写 `Any` 拿到 `Rutis.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
 
 ```swift
 @RutisClient

@@ -5,7 +5,6 @@
 // another runtime; the holder keeps what it is given as a @RutisClient proxy.
 package arcships.rutis.conformance.plugins.objects
 
-import arcships.rutis.ObjectProxy
 import arcships.rutis.RemoteObject
 import arcships.rutis.Rutis
 import arcships.rutis.RutisClient
@@ -109,6 +108,10 @@ class Holder(private val poker: Poker) {
     @Volatile
     var kept: Counted? = null
 
+    /** The object as it arrived inside data: a [RemoteObject]. */
+    @Volatile
+    var listedObject: RemoteObject? = null
+
     fun take(counter: Counted): String {
         kept = counter
         return "taken"
@@ -119,7 +122,9 @@ class Holder(private val poker: Poker) {
     fun listed(items: Any?): String {
         val list = items as List<*>
         val data = (list[0] as Map<*, *>)["data"]
-        return "{\"data\":$data} ${list[1] === (kept as ObjectProxy).rutisObject}"
+        // Inside data the object is a RemoteObject; the event compares with it.
+        listedObject = list[1] as? RemoteObject
+        return "{\"data\":$data} ${listedObject != null}"
     }
 
     fun back(): Counted = kept!!
@@ -148,7 +153,7 @@ val ktHolder = Rutis.define<Rutis.NoConfig>(name = "kt_holder", inject = listOf(
     ctx.on("counter") { args ->
         val counter = args[0] as RemoteObject
         val value = counter.call("value")
-        probe.record("event: ${counter === (holder.kept as ObjectProxy).rutisObject} $value")
+        probe.record("event: ${counter === holder.listedObject} $value")
         null
     }
     ctx.provide("holder", holder)

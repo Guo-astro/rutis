@@ -311,7 +311,7 @@ Objects inside arrays and dictionaries each go by reference too. A received obje
 | Go | A parameter whose type is a struct of function fields (as for a `ctx.Use` target); or `any` | Function fields that call the methods (blocking); `any` receives `*rutis.Service` |
 | Swift | A parameter typed with a `@RutisClient` protocol (`any Cache`); or `Any` | The protocol's proxy; `Any` receives `Rutis.Client` |
 | Kotlin | A parameter typed with a `@RutisClient` interface; or `Any?` | The interface's proxy; `Any?` receives `RemoteObject` |
-| Rust | Hand-written `HostDispatch` | `rutis_bridge::session::Reference` (`call_method`, `call_method_async`); a `#[rutis::service]` parameter does not take objects (`bad-argument`) |
+| Rust | Hand-written `HostDispatch` | `rutis_bridge::session::Reference` (`call_method`, `call_method_async`), `ObjectRef` in Cordis bindings; a `#[rutis::service]` parameter does not take objects (`bad-argument`) |
 
 - One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there, and passed to a third process it is still the same object.
 - Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`, with `data` `{object, method, methods}`.

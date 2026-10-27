@@ -1,5 +1,7 @@
 package arcships.rutis.internal
 
+import arcships.rutis.rutisObject
+
 import arcships.rutis.RemoteFunction
 import arcships.rutis.RutisFormat
 import arcships.rutis.ServiceObject

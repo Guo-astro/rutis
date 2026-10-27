@@ -49,7 +49,3 @@ internal fun objectRefused(original: Any?, far: String?): ValueException {
     // One older than rutis 0.18 takes none.
     return ValueException("an object with methods$type cannot cross to $to; pass plain data or a function instead, or upgrade $to to rutis 0.18")
 }
-
-/** An object reference received from the far end (an older host's, say): only its call fails. */
-internal fun objectReceived(): ValueException =
-    ValueException("received an object with methods, which Kotlin cannot take; pass plain data or a function instead")
