@@ -2,7 +2,7 @@
 
 [English](design-config-schema-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则——配置步骤只有一处、错误只在一处变成文字，调用处只列在 §11 的清单里）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
+状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则，调用处只列在 §11 的清单里；第五次修订：配置错误由它自己的 `Display` 写成文字，写明外面包一层时的样子）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
 Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同，不出现它 §4.5 的禁用词。
 
 范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），不再校验一遍；Standard Schema 作为 `definePlugin` 的配置。
@@ -42,7 +42,8 @@ Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊�
 - 0.18 以前的 SDK 构建的运行时，运行时不检查；`check` 照样检查它们的行（§七）。
 - **进程内的 Rust 行没有单独的运行时**：`Builtins` 登记的、dylib 的、嵌入者自己的解析器给的行（loader 里不属于别的运行时的行），由 loader 用 Rust 实现补默认值并校验；别的运行时的行由它们的 SDK 做，loader 不再做一遍（否则会做两遍、0.18 以前的 SDK 的行会失败、Cordis 行会按转换出来的 Schema 校验）。两条原则：
   - **配置步骤只有一处。** loader 里一个函数做完补默认值、校验、算出多出来的键的告警、返回带标记的错误；凡是检查配置的地方（第一次装载前的检查、`commit` 的试运行、真正的装载与改配置、连进来的运行时按连接给出的行）都调用它，不各写一份。已告警的记录放在 loader 的共享状态里，试运行和真正提交共用。调用处的清单在 §11 的 1b。
-  - **一行的错误只在一处变成文字。** 一个格式化函数，凡是把一行的错误写成文字的地方（失败报告、等待原因、`commit` 判断"这一行本来就失败"时的比较）都用它；带标记的配置错误写成 `config: <问题>`，每个问题一行。
+  - **配置错误自己会写成文字。** 带标记的配置错误类型（在 `rutis` 里）的 `Display` 就是 `config: <问题>`，每个问题一行。于是任何地方把这一行的错误转成文字（失败报告、等待原因、`commit` 判断"这一行本来就失败"时的比较、`LoaderError::Rejected` 的显示、`rutis/row` 事件的 `error`、宿主打印的错误），得到的都是同样的文字，不需要一个要处处记得调用的格式化函数。
+  - 外面再包一层时的样子：`LoaderError::Rejected` 包着配置错误时不加 `entry "weather" rejected: `，直接显示里面的文字（打印它的地方——`check`、重新装载前的检查、`dev` 的 `cannot reload`——都已经写出行名）；诊断设计 §4.2 去掉 `plugin failed: ` 前缀后，`ErrorKind::PluginFailed` 也直接显示它。rutis-host 打印多行的错误时每一行都带行的前缀（§九 的 `check` 与 `dev` 输出就是这样）；只能写一行的地方（等待原因、状态行）只写第一个问题。`rutis/row` 事件的 `error` 是 `config: …` 本身，行名在事件的 `row` 里。
 - loader 保存的仍是原来的配置值，不存补过的：否则每次对比配置都会看到两者不同，把这一行再更新一遍。
 
 ### 2.2 每一行经过的步骤
@@ -166,7 +167,7 @@ Cordis 行（导出 `Config` 的 Cordis 插件）按 Cordis 的规则：Cordis �
 - 错误是 `BindingError`，错误码 `bad-config`。诊断设计 §4.3 写明"表在实施时可以加行，不改已有的行"，本稿在那张表加一行：`bad-config`，什么时候：配置不符合 Schema，`data`：`{ issues: [{ path: ["home", "lat"], message: "home.lat should be a number, got \"north\"" }] }`（`path` 的数组项是键或下标）。
 - SDK 只发 `code` 与 `data`；`site`（这一行、`doing: "apply"`，诊断设计 §4.1）由 loader 在边界上补；测试工具里没有 `site`。rutis 打印时见到 `bad-config` 写 `config:`，不写 `failed in apply:`。
 - Cordis 行的 `ValidationError` 也是 `bad-config`（§2.3）。
-- Rust 的行（loader 补默认值并校验的行）：配置步骤失败时返回带标记的错误（`rutis` 里的类型，包着每个问题的文字），作为插件的错误放在 `ErrorKind::PluginFailed` 里传递；dylib 直接传 Rust 值（SDK 已核对），所以能认出来。按 §2.1 的第二条原则，它在失败报告、等待原因（`chat: waiting for weather (row weather failed: config: …)`）里都写成 `config: <问题>`，也和插件自己检查配置时返回的错误、内核的 `config type mismatch` 分得开。内核的 `ErrorKind::Validation` 不只用于配置，它的显示文字不改。
+- Rust 的行（loader 补默认值并校验的行）：配置步骤失败时返回带标记的错误（`rutis` 里的类型，包着每个问题的文字），作为插件的错误放在 `ErrorKind::PluginFailed` 里传递；dylib 直接传 Rust 值（SDK 已核对），所以能认出来。它自己的 `Display`（§2.1）在失败报告、等待原因（`chat: waiting for weather (row weather failed: config: …)`）、`rutis/row` 事件里都给出 `config: <问题>`，也和插件自己检查配置时返回的错误、内核的 `config type mismatch` 分得开。内核的 `ErrorKind::Validation` 不只用于配置，它的显示文字不改。
 - 宿主认出其他语言的行（含 Cordis 行）的配置错误，用诊断设计 §4.2 / §8.2 的 `rutis_bridge::thrown(&e)` 读错误码：`code() == "bad-config"`。不按文字匹配。
 
 ### 5.3 记在哪一行，之后怎样
@@ -311,7 +312,7 @@ $ echo $?
 | 步 | PR 内容 |
 | --- | --- |
 | 1a | 用例表 `specs/config-schema/`；Rust 实现（rutis-loader 的 `config` 模块：补默认值、校验、§六 的规则）；`check` 的检查、告警与退出码 |
-| 1b | loader 与 `rutis` 的 Rust 部分。配置步骤的函数（§2.1）及它的调用处：生成行之前的检查（`reconcile.rs` 约 372 行，现在直接调用内层 factory 的 `validate_config`）、试运行 `dry_run_copies`（`commit.rs` 256–261 行，不经过 `EntryFactory`）、`EntryFactory` 的 `validate_config` / `build`（`loader/plugins.rs`，只对 `Resolved.foreign_scope` 为假的行；Schema 取自 `config.resolved.schema`，Cordis 行看 `Resolved.meta["cordis"]`）、`RuntimeInstances::factory` 返回的按连接的 factory（`runtime/connections.rs`，它的 `validate_config` / `build` 告警，按行、实例、配置值去重）；去重记录放在 loader 的 `Inner` / `State`。格式化函数（§2.1）及它的调用处：`Loader::failures()`（`reconcile.rs` 约 698 行）、`loader/waits.rs` 的 `provider()`（约 341–351 行，构造 `WaitReason::ProviderFailed`）、`commit.rs` 的 `tolerated` 比较。`VolatileUpdate { config }` 发补过的副本。`rutis` 里基于 `Value` 的 `Deserializer` 与带标记的错误类型；它的使用者：`Definition`、rutis-sdk 的 dylib 解码（`crates/rutis-sdk/src/lib.rs`）、`resolver.rs` 的 `Json<C>::decode`。`site` 的补法；`Resolved.schema` 的文档注释 |
+| 1b | loader 与 `rutis` 的 Rust 部分。配置步骤的函数（§2.1）及它的调用处：生成行之前的检查（`reconcile.rs` 约 372 行，现在直接调用内层 factory 的 `validate_config`）、试运行 `dry_run_copies`（`commit.rs` 256–261 行，不经过 `EntryFactory`）、`EntryFactory` 的 `validate_config` / `build`（`loader/plugins.rs`，只对 `Resolved.foreign_scope` 为假的行；Schema 取自 `config.resolved.schema`，Cordis 行看 `Resolved.meta["cordis"]`）、`RuntimeInstances::factory` 返回的按连接的 factory（`runtime/connections.rs`，它的 `validate_config` / `build` 告警，按行、实例、配置值去重）；去重记录放在 loader 的 `Inner` / `State`。带标记的配置错误的 `Display`（§2.1）：失败报告、等待原因、`tolerated` 比较、`rutis/row` 事件因此不用各自改；`LoaderError::Rejected` 包着它时直接显示里面的文字；rutis-host 打印多行错误时每一行带行名。`VolatileUpdate { config }` 发补过的副本。`rutis` 里基于 `Value` 的 `Deserializer` 与带标记的错误类型；它的使用者：`Definition`、rutis-sdk 的 dylib 解码（`crates/rutis-sdk/src/lib.rs`）、`resolver.rs` 的 `Json<C>::decode`。`site` 的补法；`Resolved.schema` 的文档注释 |
 | 2 | Node 与 Bun：`definePlugin` 的行与测试工具；Cordis `ValidationError` 换成 `bad-config`；拒绝 Standard Schema 对象 |
 | 3 | Python：模块行、`define_plugin` 的行与测试工具 |
 | 4 | Go：校验后再解码；生成的 Schema 去掉 `required`；`rutistest` |
