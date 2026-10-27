@@ -62,6 +62,23 @@ export default definePlugin<Config>({
 
 插件本身也是一个值：把 `definePlugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，用的是你在 `apply` 里准备好的东西。见 [插件 API](plugin-api.md#插件定义)。
 
+### 带方法的对象
+
+类的实例、有函数属性的普通对象按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
+
+```ts
+const cache = await ctx.use('store').cache()
+await cache.set('a', 1)          // 方法都是异步调用，调用的是对方的原对象
+const value = await cache.get('a')
+```
+
+- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用），没有数据字段：要数据，让方法返回它。`console.log` 显示 `[remote object]`。
+- 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象。
+- 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
+- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。
+- 数组、对象里的 `undefined` 到了对方是 `null`；只有作为整个参数或整个返回值时保留。
+- 同一个运行时里的行拿到的是对象本身（方法照常同步、字段可读）。测试工具的严格模式按跨进程的样子给代理。
+
 ## 3. 测试
 
 `@arcships/rutis/testing` 不需要宿主，给插件提供假服务、调用它提供的服务：
