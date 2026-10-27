@@ -448,6 +448,12 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
+同一个监听器上，每个接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token：两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+
+```
+rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it is refused as ambiguous: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+```
+
 环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。
 
 ## 部署
