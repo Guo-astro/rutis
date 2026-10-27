@@ -85,6 +85,7 @@ use crate::{
 #[cfg(feature = "binary")]
 pub mod binary;
 mod connections;
+mod discover;
 /// Go runtimes: binaries built with the Go SDK.
 #[cfg(feature = "go")]
 pub mod go;
@@ -360,24 +361,51 @@ impl Resolver for RuntimeResolver {
                     ))),
                 }));
             };
-            let described = process.describe_row(&entry).await;
+            let described = match self.runtime.is_remote() {
+                // As for a runtime that comes in many times: a plugin the
+                // runtime does not contain fails the row, unavailable, and
+                // is read again when the runtime runs again.
+                true => match discover::describe(&process, &entry).await {
+                    discover::Described::Found(found) => Ok(found),
+                    discover::Described::Missing => {
+                        self.offline.lock().unwrap().remove(name);
+                        self.described
+                            .lock()
+                            .unwrap()
+                            .insert(name.to_owned(), process.connection().tag().to_owned());
+                        let plugin = entry.to_string_lossy();
+                        let why = discover::missing(self.runtime.name(), &plugin);
+                        return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
+                    }
+                    discover::Described::Failed(message) => Err(LoaderError::Resolve {
+                        name: name.to_owned(),
+                        message,
+                    }),
+                },
+                false => process
+                    .describe_row(&entry)
+                    .await
+                    .map_err(|error| match error {
+                        // The runtime looked and found no such plugin.
+                        rutis_bridge::session::Error::Remote { name: kind, .. }
+                            if kind == "NotFound" =>
+                        {
+                            LoaderError::NotFound {
+                                name: name.to_owned(),
+                            }
+                        }
+                        error => LoaderError::Resolve {
+                            name: name.to_owned(),
+                            message: error.to_string(),
+                        },
+                    }),
+            };
             if described.is_err() && !marked_before {
                 // Resolved with the runtime, if to an error: not again,
                 // unless it was waiting to be (a restart may help).
                 self.offline.lock().unwrap().remove(name);
             }
-            let described = described.map_err(|error| match error {
-                // The runtime looked and found no such plugin.
-                rutis_bridge::session::Error::Remote { name: kind, .. } if kind == "NotFound" => {
-                    LoaderError::NotFound {
-                        name: name.to_owned(),
-                    }
-                }
-                error => LoaderError::Resolve {
-                    name: name.to_owned(),
-                    message: error.to_string(),
-                },
-            })?;
+            let described = described?;
             // A leaf runtime has no dependency resolution of its own: every
             // service its plugins inject waits in rutis. In Cordis, only the
             // shared names do; the others resolve natively.
@@ -432,6 +460,43 @@ impl Resolver for RuntimeResolver {
 /// Declarations not known, and why.
 pub(crate) fn unknown(why: String) -> crate::Declarations {
     Arc::new(move |_: &Value| Err(why.clone()))
+}
+
+/// The resolution of a row `name` whose runtime does not contain its plugin
+/// `entry`: the row fails with `why`, alone, and an edit adding it is not
+/// refused.
+fn unavailable_resolved(name: &str, entry: &Path, why: crate::Unavailable) -> Resolved {
+    Resolved {
+        factory: Arc::new(UnavailableFactory {
+            name: name.to_owned(),
+            why: why.clone(),
+        }),
+        schema: None,
+        meta: json!({ "source": "runtime", "entry": entry }),
+        foreign_scope: true,
+        scoped: None,
+        declares: Some(unknown(why.0)),
+    }
+}
+
+/// The factory of a row whose plugin its runtime does not contain.
+struct UnavailableFactory {
+    name: String,
+    why: crate::Unavailable,
+}
+
+impl PluginFactory<Value> for UnavailableFactory {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn validate_config(&self, _config: &Value) -> Result<(), Error> {
+        Err(self.why.clone().into_error())
+    }
+
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        Err(self.why.clone().into_error())
+    }
 }
 
 /// The resolution of a row `name` whose plugin `entry` runs in the runtime
