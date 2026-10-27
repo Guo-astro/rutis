@@ -50,15 +50,44 @@ class ConfigSchemaTest {
                 failures.add("$name: unexpected errors ${checked.errors}")
             } else if (ConfigSchema.toJson(checked.config) != ConfigSchema.toJson(ConfigSchema.fromValue(then["config"]))) {
                 failures.add("$name: config ${ConfigSchema.toJson(checked.config)}")
+            } else {
+                // What is filled is a copy: changing it changes nothing of the next check.
+                scribble(checked.config)
+                val again = ConfigSchema.check(schema, if (c.containsKey("config")) ConfigSchema.fromValue(c["config"]) else null)
+                if (ConfigSchema.toJson(again.config) != ConfigSchema.toJson(ConfigSchema.fromValue(then["config"]))) failures.add("$name: a second check differs")
             }
         }
         assertEquals(emptyList(), failures)
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun scribble(value: Any?) {
+        when (value) {
+            is MutableMap<*, *> -> {
+                value.values.forEach(::scribble)
+                (value as MutableMap<String, Any?>)["scribbled"] = true
+            }
+            is MutableList<*> -> {
+                value.forEach(::scribble)
+                (value as MutableList<Any?>).add(true)
+            }
+        }
+    }
+
+    /** A nullable config that is not a class gets null when there is none, as before. */
+    @Test
+    fun aNullableConfigGetsNull() {
+        val seen = ArrayList<Int?>()
+        val plugin = Rutis.define<Int?>(name = "count") { _, config -> synchronized(seen) { seen.add(config) } }
+        RutisTest.load(plugin).close()
+        assertEquals(listOf<Int?>(null), seen)
+    }
+
     @Test
     fun numbersAreWrittenAsJavaScriptWritesThem() {
         for ((value, text) in listOf(1.0 to "1", 1.5 to "1.5", -0.0 to "0", 1e21 to "1e+21", 1.5e21 to "1.5e+21", 1e-7 to "1e-7",
-            0.000001 to "0.000001", 0.00001 to "0.00001", 123.456 to "123.456", -2.5 to "-2.5", 0.1 to "0.1", 1.5e20 to "150000000000000000000")) {
+            0.000001 to "0.000001", 0.00001 to "0.00001", 123.456 to "123.456", -2.5 to "-2.5", 0.1 to "0.1", 1.5e20 to "150000000000000000000",
+            1e23 to "1e+23", 5e-324 to "5e-324", 2.82879384806159E17 to "282879384806159000")) {
             assertEquals(text, ConfigSchema.doubleText(value), "$value")
         }
     }

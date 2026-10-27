@@ -133,9 +133,10 @@ extension Rutis {
                     inner.append(("description", .string(description)))
                     schema = .object(inner)
                 }
-                if let fallback = property.defaultJSON, case var .object(inner) = schema,
-                   let value = try? JSONReader.parse(fallback)
-                {
+                if let fallback = property.defaultJSON, case var .object(inner) = schema {
+                    guard let value = try? JSONReader.parse(fallback) else {
+                        preconditionFailure("rutis: \(property.name): its default is not JSON: \(fallback)")
+                    }
                     inner.append(("default", value))
                     schema = .object(inner)
                 }
@@ -170,6 +171,15 @@ extension Rutis {
         /// floats, booleans, arrays, string-keyed dictionaries, nested
         /// configuration types, String-valued enums; `{}` for any other.
         public static func of<T>(_ type: T.Type) -> Schema { Schema(schema(of: type, depth: 0)) }
+
+        /// The JSON text of a literal default (what `@RutisConfig` writes
+        /// for `var units = "metric"`).
+        public static func literal<T>(_ value: T) -> String {
+            guard case let .data(json)? = try? ValueCodec.encodeAny(value) else {
+                preconditionFailure("rutis: a default that is not JSON data: \(value)")
+            }
+            return String(decoding: JSONWriter.write(json), as: UTF8.self)
+        }
 
         /// Whether a property of type `T` may be left out.
         public static func isOptional<T>(_: T.Type) -> Bool { T.self is OptionalProtocol.Type }
@@ -277,13 +287,21 @@ extension Rutis {
                 }
             }
         }
+        // The schema the host checks rows with (`check`) and this runtime
+        // validates them with: the type's own (`@RutisConfig`,
+        // `rutisSchema`), or what its type says (a `String` config:
+        // `{"type": "string"}`); a type that says nothing more takes any
+        // object, checked only when decoded.
         let schema: JSON
+        let validates: Bool
         if C.self == NoConfig.self {
-            schema = .null
+            (schema, validates) = (.null, false)
         } else if let configurable = C.self as? RutisConfigurable.Type {
-            schema = configurable.rutisSchema.json
+            (schema, validates) = (configurable.rutisSchema.json, true)
+        } else if case let .object(fields) = Schema.of(C.self).json, !fields.isEmpty {
+            (schema, validates) = (.object(fields), true)
         } else {
-            schema = Schema.anyObject.json
+            (schema, validates) = (Schema.anyObject.json, false)
         }
         let apply = plugin.apply
         return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
@@ -292,8 +310,11 @@ extension Rutis {
             // Defaults filled and the config validated against the schema
             // before decoding (config schema design §2.2); a decoder error
             // after that is the schema and the type disagreeing (§3.3).
+            // Only a schema of the type's own (`@RutisConfig` or
+            // `rutisSchema`): the `{"type": "object"}` other Decodable types
+            // get is checked only when decoded (a `String` config, say).
             var value = config
-            if case .object = schema {
+            if validates {
                 // A config of plain data (one holding tagged values, which
                 // only Swift's own callers send, is decoded as it is).
                 var json: JSON??
@@ -305,7 +326,7 @@ extension Rutis {
                 if let json {
                     let checked = ConfigSchema.check(schema, json)
                     if !checked.errors.isEmpty { throw ConfigSchema.error(checked.errors) }
-                    value = checked.config == .null && C.self != NoConfig.self ? .data(.object([])) : .data(checked.config)
+                    value = .data(checked.config)
                 }
             }
             let decoded: C

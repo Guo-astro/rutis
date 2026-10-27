@@ -142,6 +142,10 @@ struct ConfigMacroTests {
             var limit: Int = -5
             var tags: [String] = ["a", "b\\"c"]
             var made: String = String(repeating: "x", count: 2)
+            var path = #"C:\\path"#
+            var ratio = -1.5
+            var count = 5
+            var weights: [String: Int] = ["a": 1]
         }
         """)
         expect(diagnostics.isEmpty, "\(diagnostics)")
@@ -150,11 +154,16 @@ struct ConfigMacroTests {
         expect(code.contains(squeezed(".init(\"city\", .of((String).self), required: true, description: \"the city to report on\")")), "\(out)")
         expect(code.contains(squeezed(".init(\"days\", .of((Int?).self), required: false, description: nil)")), "\(out)")
         expect(!code.contains("\"fixed\"") && !code.contains("\"computed\""), "\(out)")
-        // A literal initial value is the default, and not required; any
-        // other initial value is no default (config schema design §3.3).
-        expect(code.contains(squeezed(#".init("units", .of((String).self), required: false, description: nil, default: "\"metric\"")"#)), "\(out)")
-        expect(code.contains(squeezed(#".init("limit", .of((Int).self), required: false, description: nil, default: "-5")"#)), "\(out)")
-        expect(code.contains(squeezed(#".init("tags", .of(([String]).self), required: false, description: nil, default: "[\"a\",\"b\\\"c\"]")"#)), "\(out)")
+        // A literal initial value is the default, written as the literal
+        // typed as the property, and not required; any other initial value
+        // is no default (config schema design §3.3).
+        for (name, type, literal) in [("units", "String", #""metric""#), ("limit", "Int", "-5"), ("tags", "[String]", #"["a", "b\"c"]"#),
+                                      ("path", "String", ##"#"C:\path"#"##), ("ratio", "Double", "-1.5"), ("count", "Int", "5"),
+                                      ("weights", "[String: Int]", #"["a": 1]"#)]
+        {
+            let expected = ".init(\"\(name)\", .of((\(type)).self), required: false, description: nil, default: Rutis.Schema.literal(\(literal) as \(type)))"
+            expect(code.contains(squeezed(expected)), "\(name): \(out)")
+        }
         expect(code.contains(squeezed(".init(\"made\", .of((String).self), required: true, description: nil)")), "\(out)")
     }
 }

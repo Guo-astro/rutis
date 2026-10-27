@@ -22,6 +22,8 @@ struct LiteralWeather: Decodable {
     var city: String
     var units = "metric"
     var days: Int = 3
+    var path = #"C:\x"#
+    var weights: [String: Int] = ["a": 1]
 }
 
 /// A schema that does not say what the type needs: `days` is an Int.
@@ -105,6 +107,8 @@ struct ConfigSchemaTests {
         await loaded.close()
         XCTAssertEqual(seen.all.map(\.units), ["metric"])
         XCTAssertEqual(seen.all.map(\.days), [3])
+        XCTAssertEqual(seen.all.map(\.path), [#"C:\x"#])
+        XCTAssertEqual(seen.all.map(\.weights), [["a": 1]])
         do {
             let failed = try await RutisTest.load(plugin, config: ["units": 1])
             await failed.close()
@@ -128,10 +132,22 @@ struct ConfigSchemaTests {
         }
     }
 
+    /// A plain Decodable config (no schema of its own) is only decoded: a
+    /// `String` config takes a string.
+    func aConfigTypeWithoutASchemaIsOnlyDecoded() async throws {
+        let seen = Seen<String>()
+        let plugin = Rutis.define(Plugin(name: "named", config: String.self) { _, config in seen.add(config) })
+        // What `check` validates rows with: what the type says.
+        XCTAssertEqual(plugin.schema, .object([("type", .string("string"))]))
+        let loaded = try await RutisTest.load(plugin, config: "pixel 1")
+        await loaded.close()
+        XCTAssertEqual(seen.all, ["pixel 1"])
+    }
+
     func numbersAreWrittenAsJavaScriptWritesThem() {
         for (value, text) in [(1.0, "1"), (1.5, "1.5"), (-0.0, "0"), (1e21, "1e+21"), (1.5e21, "1.5e+21"), (1e-7, "1e-7"),
                               (0.000001, "0.000001"), (0.00001, "0.00001"), (123.456, "123.456"), (-2.5, "-2.5"), (0.1, "0.1"),
-                              (1.5e20, "150000000000000000000")]
+                              (1.5e20, "150000000000000000000"), (1e23, "1e+23"), (5e-324, "5e-324")]
         {
             XCTAssertEqual(ConfigSchema.doubleText(value), text, "\(value)")
         }

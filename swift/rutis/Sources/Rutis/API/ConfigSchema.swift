@@ -151,7 +151,7 @@ package enum ConfigSchema {
         if length <= 2 { return nil }
         let limit = length <= 6 ? 1 : 2
         var best: (String, Int)?
-        for candidate in known where candidate != name {
+        for candidate in known where !eq(candidate, name) {
             let d = distance(name, candidate)
             if d <= limit, best == nil || d < best!.1 { best = (candidate, d) }
         }
@@ -250,7 +250,7 @@ package enum ConfigSchema {
             case let (.index(i), .index(j)): if i != j { return i < j }
             case (.key, .index): return true
             case (.index, .key): return false
-            case let (.key(k), .key(l)): if k != l { return byCodePoint(k, l) }
+            case let (.key(k), .key(l)): if !eq(k, l) { return byCodePoint(k, l) }
             }
         }
         return a.count < b.count
@@ -264,13 +264,35 @@ package enum ConfigSchema {
             return lhs.offset < rhs.offset
         }.map(\.element)
         var out: [ConfigIssue] = []
-        for problem in ordered where !out.contains(problem) { out.append(problem) }
+        for problem in ordered where !out.contains(where: { eq($0.message, problem.message) && $0.path.count == problem.path.count
+                && zip($0.path, problem.path).allSatisfy(same) })
+        {
+            out.append(problem)
+        }
         return out
+    }
+
+    /// Strings scalar by scalar (Swift's `==` takes canonically equal strings
+    /// as equal: `"\u{e9}" == "e\u{301}"`).
+    static func eq(_ a: String, _ b: String) -> Bool { a.unicodeScalars.elementsEqual(b.unicodeScalars) }
+
+    static func same(_ a: ConfigPathSegment, _ b: ConfigPathSegment) -> Bool {
+        switch (a, b) {
+        case let (.key(x), .key(y)): return eq(x, y)
+        case let (.index(x), .index(y)): return x == y
+        default: return false
+        }
+    }
+
+    /// A key in a JSON Pointer: `~` and `/` escaped.
+    static func escaped(_ key: String) -> String {
+        key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
     }
 
     /// JSON equality: numbers by value, objects regardless of key order.
     static func same(_ a: JSON, _ b: JSON) -> Bool {
         switch (a, b) {
+        case let (.string(x), .string(y)): return eq(x, y)
         case let (.number(x), .number(y)):
             if let i = Int64(x), let j = Int64(y), JSONNumber.isIntegerLiteral(x), JSONNumber.isIntegerLiteral(y) { return i == j }
             return Double(x) == Double(y)
@@ -282,7 +304,7 @@ package enum ConfigSchema {
     }
 
     static func lookup(_ object: [(String, JSON)], _ key: String) -> JSON? {
-        object.first { $0.0 == key }?.1
+        object.first { eq($0.0, key) }?.1
     }
 
     static let typeNames = ["string", "number", "integer", "boolean", "object", "array", "null"]
@@ -354,7 +376,7 @@ package enum ConfigSchema {
         var pointer: String
 
         subscript(_ key: String) -> JSON? { ConfigSchema.lookup(fields, key) }
-        func has(_ key: String) -> Bool { fields.contains { $0.0 == key } }
+        func has(_ key: String) -> Bool { fields.contains { ConfigSchema.eq($0.0, key) } }
     }
 
     /// A schema and its pointer.
@@ -432,7 +454,7 @@ package enum ConfigSchema {
         /// The schemas a child at `key` is checked against.
         static func property(_ parts: [Part], _ key: String) -> [Node] {
             parts.compactMap { part in
-                properties(part).flatMap { lookup($0, key) }.map { Node(schema: $0, pointer: "\(part.pointer)/properties/\(key)") }
+                properties(part).flatMap { lookup($0, key) }.map { Node(schema: $0, pointer: "\(part.pointer)/properties/\(escaped(key))") }
             }
         }
 
@@ -445,7 +467,7 @@ package enum ConfigSchema {
         static func known(_ parts: [Part]) -> [String] {
             var keys: [String] = []
             for part in parts {
-                for (key, _) in properties(part) ?? [] where !keys.contains(key) { keys.append(key) }
+                for (key, _) in properties(part) ?? [] where !keys.contains(where: { eq($0, key) }) { keys.append(key) }
             }
             return keys.sorted(by: byCodePoint)
         }
@@ -468,7 +490,7 @@ package enum ConfigSchema {
             case var .object(fields):
                 for part in parts {
                     for (key, property) in Document.properties(part) ?? [] where lookup(fields, key) == nil {
-                        if let fallback = defaultOf([Node(schema: property, pointer: "\(part.pointer)/properties/\(key)")]) {
+                        if let fallback = defaultOf([Node(schema: property, pointer: "\(part.pointer)/properties/\(escaped(key))")]) {
                             fields.append((key, fallback))
                         }
                     }
@@ -478,7 +500,7 @@ package enum ConfigSchema {
                 for index in fields.indices {
                     let key = fields[index].0
                     var below: [Node]
-                    if known.contains(key) {
+                    if known.contains(where: { eq($0, key) }) {
                         below = Document.property(parts, key)
                     } else if let additional, case .object = additional.schema {
                         below = [additional]
@@ -592,7 +614,7 @@ package enum ConfigSchema {
                     let key = fields[index].0
                     let at = path + [.key(key)]
                     var fresh: [String: Tried] = [:]
-                    if known.contains(key) {
+                    if known.contains(where: { eq($0, key) }) {
                         validate(Document.property(parts, key), &fields[index].1, at, required, &sink, &fresh)
                     } else if let additional {
                         switch additional.schema {

@@ -379,10 +379,16 @@ class RuntimeState(plugins: List<Plugin>) {
                 if (checked.errors.isNotEmpty()) throw configError(checked.errors)
                 config = ConfigSchema.toJson(checked.config)
             }
+            // No config: `{}` for a class, as before (a nullable value gets null).
+            val kind = plugin.config.descriptor.kind
+            val structured = kind == kotlinx.serialization.descriptors.StructureKind.CLASS || kind == kotlinx.serialization.descriptors.StructureKind.OBJECT
+            val absent = config == null || config === Undefined || config == kotlinx.serialization.json.JsonNull
             return try {
-                RutisFormat.decode(plugin.config, if (config == kotlinx.serialization.json.JsonNull) JsonObject(emptyMap()) else config)
+                RutisFormat.decode(plugin.config, if (absent && structured) JsonObject(emptyMap()) else config)
             } catch (e: Exception) {
-                if (e !is kotlinx.serialization.SerializationException && e !is arcships.rutis.internal.peer.ValueException) throw e
+                // Any failure of decoding (the decoder's, or an `init` check
+                // of the type's): one sentence, as in Swift.
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 throw configError(listOf(ConfigSchema.Issue(DecodePaths.of(e), "${ConfigSchema.pathText(DecodePaths.of(e))} is not a value the plugin accepts")))
             }
         }

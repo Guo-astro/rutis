@@ -102,9 +102,18 @@ object ConfigSchema {
         if (!f.isFinite()) return "null"
         if (f == 0.0) return "0"
         if (f == Math.rint(f) && Math.abs(f) <= 9007199254740992.0) return f.toLong().toString()
-        // Shortest round-trip digits and the exponent (Java's `Double.toString`
-        // gives the shortest digits since JDK 19).
-        val shortest = BigDecimal(java.lang.Double.toString(Math.abs(f))).stripTrailingZeros()
+        // The shortest digits that read back as `f` (Java's own
+        // `Double.toString` is not shortest before JDK 19, nor on Android).
+        val exact = BigDecimal(Math.abs(f))
+        var shortest = exact
+        for (precision in 1..17) {
+            val rounded = exact.round(java.math.MathContext(precision, java.math.RoundingMode.HALF_EVEN))
+            if (rounded.toDouble() == Math.abs(f)) {
+                shortest = rounded
+                break
+            }
+        }
+        shortest = shortest.stripTrailingZeros()
         val digits = shortest.unscaledValue().toString()
         val n = digits.length - shortest.scale()
         val k = digits.length
@@ -218,11 +227,18 @@ object ConfigSchema {
 
     /** JSON equality: numbers by value, objects regardless of key order. */
     private fun same(a: Any?, b: Any?): Boolean = when {
-        a is Num && b is Num -> a.decimal.compareTo(b.decimal) == 0
+        a is Num && b is Num -> compare(a, b) == 0
         a is List<*> && b is List<*> -> a.size == b.size && a.indices.all { same(a[it], b[it]) }
         a is Map<*, *> && b is Map<*, *> -> a.size == b.size && a.all { (k, v) -> b.containsKey(k) && same(v, b[k]) }
         else -> a == b
     }
+
+    /** Numbers as Rust and Swift compare them: integers exactly, others as doubles. */
+    private fun compare(a: Num, b: Num): Int =
+        if (a.isIntegerLiteral && b.isIntegerLiteral) a.text.toBigInteger().compareTo(b.text.toBigInteger()) else a.double.compareTo(b.double)
+
+    /** A key in a JSON Pointer: `~` and `/` escaped. */
+    private fun escaped(key: String): String = key.replace("~", "~0").replace("/", "~1")
 
     private fun types(type: Any?): List<String> {
         val names = when (type) {
@@ -329,7 +345,7 @@ object ConfigSchema {
         fun properties(part: Part): Map<*, *>? = part["properties"] as? Map<*, *>
 
         fun property(parts: List<Part>, key: String): List<Node> =
-            parts.mapNotNull { part -> properties(part)?.takeIf { it.containsKey(key) }?.let { Node(it[key], "${part.pointer}/properties/$key") } }
+            parts.mapNotNull { part -> properties(part)?.takeIf { it.containsKey(key) }?.let { Node(it[key], "${part.pointer}/properties/${escaped(key)}") } }
 
         fun additional(parts: List<Part>): Node? = parts.firstOrNull { it.has("additionalProperties") }?.let { Node(it["additionalProperties"], "${it.pointer}/additionalProperties") }
 
@@ -349,7 +365,7 @@ object ConfigSchema {
                         for ((key, property) in properties(part) ?: continue) {
                             key as String
                             if (map.containsKey(key)) continue
-                            val fallback = defaultOf(listOf(Node(property, "${part.pointer}/properties/$key")))
+                            val fallback = defaultOf(listOf(Node(property, "${part.pointer}/properties/${escaped(key)}")))
                             if (fallback !== MISSING) map[key] = copy(fallback)
                         }
                     }
@@ -401,8 +417,8 @@ object ConfigSchema {
                 if (value is Num) {
                     val minimum = part["minimum"]
                     val maximum = part["maximum"]
-                    if (minimum is Num && value.decimal < minimum.decimal) sink.errors.add(issue(path, "should be at least ${valueText(minimum)}, got ${valueText(value)}"))
-                    if (maximum is Num && value.decimal > maximum.decimal) sink.errors.add(issue(path, "should be at most ${valueText(maximum)}, got ${valueText(value)}"))
+                    if (minimum is Num && compare(value, minimum) < 0) sink.errors.add(issue(path, "should be at least ${valueText(minimum)}, got ${valueText(value)}"))
+                    if (maximum is Num && compare(value, maximum) > 0) sink.errors.add(issue(path, "should be at most ${valueText(maximum)}, got ${valueText(value)}"))
                 }
                 for (keyword in listOf("anyOf", "oneOf")) {
                     val branches = part[keyword] as? List<*> ?: continue
