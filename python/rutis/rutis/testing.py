@@ -202,6 +202,23 @@ def _function(function: Callable, where: str) -> Callable:
     return call
 
 
+def _listener(listener: Callable, where: str) -> Callable:
+    """A test's listener heard from another process: its arguments and
+    what it returns or raises cross; an `async def` stays one."""
+    if not inspect.iscoroutinefunction(listener):
+        return _function(listener, where)
+
+    async def call(*args: Any) -> Any:
+        crossed = [_cross(arg, f"{where} argument {i + 1}") for i, arg in enumerate(args)]
+        try:
+            result = await listener(*crossed)
+        except Exception as error:
+            raise _crossed_error(error) from error
+        return _cross(result, where)
+
+    return call
+
+
 class _Reference:
     """An object with behaviour, used from the other process."""
 
@@ -474,6 +491,8 @@ class Loaded:
         self.runtime = runtime
         self._deadline = deadline
         self._emitter = Emitter(_send(bus._bus, row, strict))
+        # The test's own listeners (`on`), withdrawn when it unloads.
+        self._listening: list = []
 
     # ── Events, as the plugin's row emits them ───────────────────
 
@@ -508,6 +527,30 @@ class Loaded:
     def reported(self) -> list[Reported]:
         """The failures nobody received on this plugin's bus."""
         return self.bus.reported
+
+    def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
+        """Listen to the event `name` as the host does, at the root scope,
+        until the returned function is called or the plugin unloads: the
+        plugin's emissions of `name` reach `listener`, and so do the test's
+        own. Strict, its arguments and what it returns cross as from another
+        process. `listener` may be `async`; `prepend` and `global_` as
+        `ctx.on`."""
+        if self._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        reserved(name, listening=True)
+        if not callable(listener):
+            raise PluginTestError("on needs a listener function")
+        bus = self.bus._bus
+        callback = _listener(listener, f"listener of {name}") if self._strict else listener
+        entry = bus.add(name, None, "test", callback, [], prepend, global_)  # type: ignore[arg-type]
+        self._listening.append(entry)
+
+        def off() -> None:
+            bus.withdraw(entry)
+            if entry in self._listening:
+                self._listening.remove(entry)
+
+        return off
 
     # ── Services ─────────────────────────────────────────────────
 
@@ -574,7 +617,12 @@ class Loaded:
         one."""
         if self._unloaded:
             raise PluginTestError("the plugin is unloaded")
-        await self.unload()
+        # The test's own listeners stay.
+        listening, self._listening = self._listening, []
+        try:
+            await self.unload()
+        finally:
+            self._listening = listening
         self._unloaded = False
         self.bus._rows.add(self.row)
         await self._apply(config)
@@ -590,6 +638,9 @@ class Loaded:
         self._unloaded = True
         bus = self.bus._bus
         bus.withdraw_row(self.row)
+        for entry in self._listening:
+            bus.withdraw(entry)
+        self._listening.clear()
         self._provided.clear()
         try:
             await bus.stop(self.row, shutdown_deadline() if self._deadline is None else self._deadline)

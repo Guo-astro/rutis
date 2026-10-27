@@ -36,7 +36,7 @@
 
 import { PLUGIN_API, isPlugin } from './index.mjs'
 import { checkConfig, configError, schemaOf } from './config.mjs'
-import { Bus, refuseRemoved } from './events.mjs'
+import { Bus, kindOf, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
 export class PluginTestError extends Error {
@@ -461,6 +461,8 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
   const reported = []
   const bus = new Bus({ runtime, report: (line, details = {}) => { reported.push({ line, ...details }) } })
   const rows = new Map()
+  // The test's own listeners (`on`), withdrawn when the host unloads.
+  const listening = []
   let counter = 0
   let closed = false
   // Where the service `name` comes from: the test (`own`, then `services`),
@@ -540,6 +542,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
     async unload() {
       closed = true
       for (const row of [...rows.values()].reverse()) await unloadRow(row)
+      for (const entry of listening.splice(0)) bus.off(entry)
     },
     // The five ways to emit and `filter`, as the test: values cross as from
     // another process (strict).
@@ -602,6 +605,15 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
 
   function loaded(row) {
     const { plugin } = row
+    // This row's test listeners: withdrawn when it unloads (not on update).
+    const mine = []
+    const withdraw = entry => {
+      for (const list of [mine, listening]) {
+        const at = list.indexOf(entry)
+        if (at >= 0) list.splice(at, 1)
+      }
+      bus.off(entry)
+    }
     return {
       /** The row's key. */
       row: row.key,
@@ -628,6 +640,23 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       // from another process (strict).
       ...emitters(bus, null, strict),
       /**
+       * Listen to the event `name` as the host does, at the root scope, until
+       * the returned function is called or the row unloads: the plugin's
+       * emissions of `name` reach `listener`, and so do the test's own.
+       * Strict, its arguments and what it returns cross as from another
+       * process. Options as `ctx.on`: `prepend`, `global`.
+       */
+      on(name, listener, options) {
+        if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
+        if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
+        internal(name)
+        const callback = strict ? cross(listener, undefined, new Set(), false, 0, `listener of ${name}`) : listener
+        const entry = bus.on({ name, callback, kind: kindOf(listener), prepend: options?.prepend, global: options?.global, row: null, plugin: 'test', scope: [] })
+        mine.push(entry)
+        listening.push(entry)
+        return () => { withdraw(entry) }
+      },
+      /**
        * Change the row's config, as a host's `rows.update`: the row unloads
        * (as `unload`) and applies again with `config` under the same key, so
        * its listeners register again, after every existing one (§4.3).
@@ -645,6 +674,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
       async unload() {
         if (row.unloaded) return
         await unloadRow(row)
+        for (const entry of [...mine]) withdraw(entry)
       },
     }
   }

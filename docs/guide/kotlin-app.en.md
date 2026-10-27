@@ -204,7 +204,7 @@ Battery optimization:
 
 ## 7. Testing
 
-- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device.
+- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device. On what it loads, `loaded.on(name) { args -> ... }` listens as the host does, at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
 - The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each an instance; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
 
 ## 8. Acceptance on real devices

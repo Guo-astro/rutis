@@ -204,7 +204,7 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 ## 7. 测试
 
-- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。
+- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。装载出来的 `loaded.on(name) { args -> ... }` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
 - 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各成实例；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
 
 ## 8. 真机验收清单
