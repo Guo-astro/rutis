@@ -67,7 +67,7 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 
 ## 四、进阶内容去哪里
 
-- 插件作为值、其余事件方式、过滤、作用域、取消、同步方法、严格模式、各语言测试工具的其余接口、Rust 的进阶写法 → plugin-api.md，按 #692 定下的进阶位置写。
+- 插件作为值、其余事件方式、过滤、作用域、取消、同步方法、严格模式、各语言测试工具的其余接口、Rust 的进阶写法 → plugin-api.md。`ctx` 上的方法照原样写（`ctx.parallel` 等，#692 不移动它们）；从根上移走的导出名按 #692 的新位置写。
 - 在另一台机器上运行 → nodes.md（#698 改完远程配置之后搬）。
 - 宿主怎样装各语言插件、Bun 的 `runtimes.bun` → rutis-host.md（已有）。
 - 已有的 Cordis 插件 → cordis.md。

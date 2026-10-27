@@ -67,7 +67,7 @@ The templates keep the existing `greeter.hello` and the `greeting` config; only 
 
 ## 4. Where the advanced content goes
 
-- Plugins as values, the other ways to emit, filters, scopes, cancellation, synchronous methods, strict mode, the rest of each language's test kit, Rust's advanced forms → plugin-api.md, at the advanced locations #692 fixes.
+- Plugins as values, the other ways to emit, filters, scopes, cancellation, synchronous methods, strict mode, the rest of each language's test kit, Rust's advanced forms → plugin-api.md. Methods on `ctx` are written as they are (`ctx.parallel` and so on; #692 does not move them); exports moved off the root are written at #692's new locations.
 - Running on another machine → nodes.md (moved after #698 rewrites remote configuration).
 - How a host installs each language's plugins, Bun's `runtimes.bun` → rutis-host.md (already there).
 - Existing Cordis plugins → cordis.md.
