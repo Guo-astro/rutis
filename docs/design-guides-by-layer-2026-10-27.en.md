@@ -58,7 +58,7 @@ Each step's code block is the whole file and carries a doc-examples marker, so #
 ### 3.2 Differences between languages
 
 - **Bun**: the commands become `bun`'s; it still has all 8 steps, so readers do not jump between two guides.
-- **Go, Swift**: they compile to a binary, and one binary is one runtime process in the host (one sentence in step 1); step 7's fake `translate` is written as #670 defines.
+- **Go, Swift**: they compile to a binary, and one binary is one runtime process in the host (one sentence in step 1); step 7's fake `translate`: Go writes it as #670 defines; Swift has no same-language fake (#670 does not do it) and uses TypeScript or Python.
 - **Rust**: no template and no `dev` (a Rust plugin is compiled into a Rust host). Step 1 is `cargo new --lib`; step 7 is a minimal Rust host under `examples/` that builds a root, adds the plugin and a fake `translate`, and calls it once; step 8 is `cargo publish`. Rust's seventh concept is therefore "the host adds the plugin", not "rows".
 
 ### 3.3 Templates

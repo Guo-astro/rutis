@@ -58,7 +58,7 @@ Issue：[#671](https://github.com/arcships/rutis/issues/671)（含并入的 [#68
 ### 3.2 各语言的差别
 
 - **Bun**：命令换成 `bun` 的；仍写全 8 步，不让读者在两份指南之间跳。
-- **Go、Swift**：编译成二进制，一个二进制是宿主里的一个运行时进程（第 1 步一句）；第 7 步的假 `translate` 按 #670 定的写法。
+- **Go、Swift**：编译成二进制，一个二进制是宿主里的一个运行时进程（第 1 步一句）；第 7 步的假 `translate`：Go 按 #670 定的写法；Swift 没有本语言的假依赖（#670 不做），用 TypeScript 或 Python 写。
 - **Rust**：没有模板与 `dev`（Rust 插件编进 Rust 宿主）。第 1 步是 `cargo new --lib`；第 7 步是 `examples/` 里一个最小的 Rust 宿主，建根、装插件与假的 `translate`、调一次；第 8 步 `cargo publish`。Rust 的第 7 个概念因此是「宿主装插件」，不是「行」。
 
 ### 3.3 模板
