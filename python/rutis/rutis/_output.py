@@ -8,15 +8,17 @@ docs/design-diagnostics-2026-10-26.en.md §6.4, §7).
   writes (a thread a plugin started, which has a context of its own) with
   `[<runtime>] `. What is written to the file descriptor itself (a child
   process, `os.write`) is not seen here: the host passes it on as it is.
-- Blocking: a row's synchronous method (`def`) that keeps the event loop
-  for 5 s is said once, on stderr, by a thread of its own: which row's
-  which method, that the other rows wait meanwhile, and what to do. Only
-  said, never stopped; not under a debugger (RUTIS_DEBUG=1), which stops
-  the runtime for as long as the person likes.
+- Blocking: a row's service method that keeps the event loop for 5 s in
+  one go (a `def` method, or a blocking call between two `await`s of an
+  `async def` one) is said once, on stderr, by a thread of its own: which
+  row's which method, that the other rows wait meanwhile, and what to do.
+  Only said, never stopped; not under a debugger (RUTIS_DEBUG=1), which
+  stops the runtime for as long as the person likes.
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import threading
@@ -28,7 +30,9 @@ def say(text: str) -> None:
     without a prefix."""
     stream = sys.stderr
     stream = getattr(stream, "_rutis_raw", stream)
-    print(text, file=stream, flush=True)
+    # One write: the line is never split by another thread's.
+    stream.write(text + "\n")
+    stream.flush()
 
 
 def prefix_lines(text: str, prefix: str, at_start: bool) -> tuple[str, bool]:
@@ -99,8 +103,10 @@ def blocking_text(runtime: str, row: str, method: str, seconds: float) -> str:
     shown = f"{seconds:g}"
     return (
         f"runtime {runtime}: {method} of row {row} has held the runtime for {shown} s, "
-        "and the other rows wait meanwhile: it is a synchronous method (def); "
-        "make it async def, awaiting what it waits for, and it will not hold the runtime"
+        "and the other rows wait meanwhile: it blocks the event loop (a def method, or a blocking call "
+        "in an async def one); make it async def and await what it waits for "
+        "(asyncio.sleep, an async client, asyncio.to_thread for a blocking call), "
+        "and it will not hold the runtime"
     )
 
 
@@ -143,6 +149,14 @@ class BlockingWatch:
                     self._held = None
                     self._changed.notify_all()
 
+    def watched(self, row: str, method: str, value: Any) -> Any:
+        """`value`, a coroutine a call of row `row`'s `method` returned, with
+        each of its steps (from its start to an `await` that suspends, and
+        between two such) run as [`held`]; anything else as it is."""
+        if self.quiet or not inspect.iscoroutine(value):
+            return value
+        return _watched(_Steps(value, lambda step: self.held(row, method, step)))
+
     def _watch(self) -> None:
         with self._changed:
             while True:
@@ -158,3 +172,40 @@ class BlockingWatch:
                     except Exception:  # noqa: BLE001 - nowhere to say it
                         pass
                     self._changed.wait_for(ended)
+
+
+async def _watched(steps: "_Steps") -> Any:
+    return await steps
+
+
+class _Steps:
+    """Awaiting it drives `coroutine` a step at a time, each step through
+    `held(step)`, passing what it waits for, and what it is sent or thrown,
+    through."""
+
+    def __init__(self, coroutine: Any, held: Callable[[Callable[[], Any]], Any]) -> None:
+        self.coroutine = coroutine
+        self.held = held
+
+    def __await__(self):  # noqa: ANN204 - a generator
+        coroutine = self.coroutine
+        sent: Any = None
+        thrown: BaseException | None = None
+        try:
+            while True:
+                try:
+                    if thrown is None:
+                        waits = self.held(lambda: coroutine.send(sent))
+                    else:
+                        error, thrown = thrown, None
+                        waits = self.held(lambda: coroutine.throw(error))
+                except StopIteration as stop:
+                    return stop.value
+                try:
+                    sent = yield waits
+                except BaseException as error:  # noqa: BLE001 - passed on to the coroutine
+                    if isinstance(error, GeneratorExit):
+                        raise
+                    sent, thrown = None, error
+        finally:
+            coroutine.close()

@@ -189,7 +189,7 @@ rutis-host: listener public: link row main and remote runtime phone both accept 
 
 ## `rutis-host` 的输出：状态行写到标准错误，`dev` 里插件的行带行名（#678）
 
-- **`run` 和 `dev` 的状态行写到标准错误**（以前写到标准输出）：`weather: running`、`runtime py: down (…)`、`rutis-host: listening on …`、`rutis-host: reloaded …`、`dev` 的 `reloaded`、`building` 等。插件的输出照旧按它写的流。从 `rutis-host` 的标准输出里读状态行的脚本改为读标准错误（或 `2>&1`）。
+- **`run` 和 `dev` 的状态行写到标准错误**（以前写到标准输出）：`weather: running`、`runtime py: down (…)`、`rutis-host: listening on …`、`rutis-host: reloaded …`、`dev` 的 `reloaded`、`building` 等。在 Go、Swift 项目里不带参数运行的 `rutis-host check` 先构建项目，它的 `building`、`built in` 两行也写到标准错误；`check` 对每一行的描述仍在标准输出。插件的输出照旧按它写的流。从 `rutis-host` 的标准输出里读状态行的脚本改为读标准错误（或 `2>&1`）。
 - **`dev` 里插件写的每一行前面带上行名**：`[weather] fetching forecast for Berlin`；Go、Swift 的是运行时名（`[go-weather] `）。按整行匹配插件输出的脚本或测试，在 `dev` 下加 `--no-prefix-output`，或者去掉前缀再比。`run` 默认不变，`--prefix-output` 打开。
 
 详见 [rutis-host 指南的输出](guide/rutis-host.md#输出)。

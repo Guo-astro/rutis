@@ -331,7 +331,7 @@ rutis-host: reload rejected: <原因>; nothing changed
 - `rutis-host` 自己的行和运行时自己的行（`runtime py: …`）不加。
 - `dev --debug` 下 Python 运行时读这个终端（pdb），它的输出不经管道，不加名字也不等换行；Node、Bun、Go 照常加。
 
-Node、Bun、Python 运行时里，一个服务方法同步地占住运行时 5 秒时，运行时在 stderr 写一次是哪一行的哪个方法、其他行在等、怎么改（`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`，见[插件 API](plugin-api.md#同一运行时里的插件共用一个进程)）。只写不打断；`dev --debug` 下不写。
+Node、Bun、Python 运行时里，一个服务方法一口气占住运行时 5 秒时，运行时在 stderr 写一次是哪一行的哪个方法、其他行在等、怎么改（`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`，见[插件 API](plugin-api.md#同一运行时里的插件共用一个进程)）。只写不打断；`dev --debug` 下不写。
 
 - 一行在它的换行到来时写出，没有按时间的刷新：不带换行的提示、用 `\r` 重画的进度条，要到换行时才出现。运行时结束时，没有换行的最后一行作为单独的一行写出。
 - 超过 64 KiB 还没有换行的行分段写出。

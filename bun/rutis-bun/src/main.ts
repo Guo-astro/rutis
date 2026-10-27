@@ -188,6 +188,9 @@ await runtime.dispose().catch(error => {
   say(`rutis-bun: unloading failed: ${error?.stack ?? error}\n`)
   process.exitCode = 1
 })
+// What is still being written goes out first: under the prefix the
+// plugins' console writes through the streams, stdout too (#678).
+await Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { stream.write('', () => resolve()) })))
 // Stray plugin timers and sockets must not keep the process alive: the host
 // waits for it to exit.
 process.exit(process.exitCode ?? 0)

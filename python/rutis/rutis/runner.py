@@ -1100,8 +1100,15 @@ class Runtime:
         if owner is None and entry["name"] in self.services:
             owner = self.services[entry["name"]][0]
         shown = self._runtime_name() if owner is None else (self.bus.row_id(owner) or owner)
-        # One that holds the loop for 5 s is said (#678).
-        return as_row(owner, lambda: self.blocking.held(shown, f"{service}.{method}", lambda: function(*args)))
+        # One that holds the loop for 5 s is said (#678): a `def` method, or
+        # a step of an `async def` one.
+        label = f"{service}.{method}"
+
+        def call() -> Any:
+            value = self.blocking.held(shown, label, lambda: function(*args))
+            return self.blocking.watched(shown, label, value)
+
+        return as_row(owner, call)
 
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":

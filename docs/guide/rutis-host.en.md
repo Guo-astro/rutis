@@ -331,7 +331,7 @@ Each line a plugin writes can start with the name of the row that wrote it (from
 - `rutis-host`'s own lines and the runtimes' own lines (`runtime py: …`) have none.
 - Under `dev --debug` the Python runtime reads this terminal (pdb): its output does not go through a pipe, and has no name and is not held until a line ends; Node, Bun and Go are prefixed as usual.
 
-In the Node, Bun and Python runtimes, when a service method holds the runtime synchronously for 5 seconds, the runtime says once on stderr which row's which method it is, that the other rows wait, and what to change (`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`, see the [plugin API](plugin-api.en.md#plugins-in-one-runtime-share-its-process)). It is only said, never interrupted; under `dev --debug` nothing is said.
+In the Node, Bun and Python runtimes, when a service method holds the runtime for 5 seconds in one go, the runtime says once on stderr which row's which method it is, that the other rows wait, and what to change (`runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, …`, see the [plugin API](plugin-api.en.md#plugins-in-one-runtime-share-its-process)). It is only said, never interrupted; under `dev --debug` nothing is said.
 
 - A line comes out when its newline comes; nothing is flushed after a time: a prompt without a newline, or a progress bar redrawn with `\r`, shows when the line ends. When a runtime ends, a last line without a newline comes out as a line of its own.
 - A line longer than 64 KiB without a newline comes out in pieces.

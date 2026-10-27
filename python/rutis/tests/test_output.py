@@ -46,13 +46,29 @@ class Talk:
         time.sleep(seconds)
         return None
 
+    async def block_later(self, seconds):
+        await asyncio.sleep(0)
+        time.sleep(seconds)
+        return None
+
+    async def wait(self, seconds):
+        await asyncio.sleep(seconds)
+        return None
+
 
 def apply(ctx, config):
     print(f"applied {config['label']}")
     ctx.provide(f"talk-{config['label']}", Talk())
 
 
-METHODS = {"say": "sync", "later": "async", "threaded": "sync", "block": "sync"}
+METHODS = {
+    "say": "sync",
+    "later": "async",
+    "threaded": "sync",
+    "block": "sync",
+    "block_later": "async",
+    "wait": "async",
+}
 
 
 def module() -> str:
@@ -108,7 +124,7 @@ class Prefixes(background.TestCase):
 
 
 class Blocking(background.TestCase):
-    def run_blocking(self, watch: BlockingWatch, seconds: list) -> str:
+    def run_blocking(self, watch: BlockingWatch, seconds: list, method: str = "block") -> str:
         runtime = Runtime()
         runtime._control("mount", {"announce": True})
         runtime.blocking = watch
@@ -119,7 +135,7 @@ class Blocking(background.TestCase):
                 await runtime.load("a", module(), {"label": "a"}, {"talk-a": METHODS}, id="weather")
             with contextlib.redirect_stderr(written):
                 for wait in seconds:
-                    await call(runtime, "talk-a", "block", wait)
+                    await call(runtime, "talk-a", method, wait)
                 # The watch's line, written by its thread, is in.
                 await asyncio.sleep(0.05)
             await runtime.unload("a")
@@ -133,6 +149,17 @@ class Blocking(background.TestCase):
         hints = [line for line in said.splitlines() if "held the runtime" in line]
         self.assertEqual(hints, [blocking_text("py", "weather", "talk-a.block", 0.2)])
         self.assertIn("make it async def", hints[0])
+
+    def test_a_blocking_call_in_an_async_method_is_said(self):
+        watch = BlockingWatch(lambda: "py", limit=0.2, quiet=False)
+        said = self.run_blocking(watch, [0.6], "block_later")
+        hints = [line for line in said.splitlines() if "held the runtime" in line]
+        self.assertEqual(hints, [blocking_text("py", "weather", "talk-a.block_later", 0.2)])
+
+    def test_an_async_method_awaiting_long_is_not_said(self):
+        watch = BlockingWatch(lambda: "py", limit=0.1, quiet=False)
+        said = self.run_blocking(watch, [0.4], "wait")
+        self.assertNotIn("held the runtime", said)
 
     def test_under_a_debugger_nothing_is_said(self):
         with mock.patch.dict(os.environ, {"RUTIS_DEBUG": "1"}):

@@ -142,6 +142,8 @@ for (;;) {
   // Even: no call holds the thread.
   if (generation % 2 === 0) { Atomics.wait(state, 0, generation); continue }
   if (Atomics.wait(state, 0, generation, limit) !== 'timed-out') continue
+  // The call may have ended just now: then it is not said.
+  if (Atomics.load(state, 0) !== generation) continue
   const [runtime, row, method] = Buffer.from(text.slice(0, Atomics.load(state, 1))).toString().split('\\0')
   try { writeSync(2, blockingText(runtime, row, method, limit / 1000) + '\\n') } catch {}
   // Once for the call: the next is watched once it ends.

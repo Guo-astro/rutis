@@ -240,13 +240,13 @@ Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `ruti
 
 The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance.
 
-When a service method holds the runtime synchronously for 5 seconds (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
+When a service method holds the runtime for 5 seconds in one go (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
 
 ```text
-runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it is a synchronous method (def); make it async def, awaiting what it waits for, and it will not hold the runtime
+runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it blocks the event loop (a def method, or a blocking call in an async def one); make it async def and await what it waits for (asyncio.sleep, an async client, asyncio.to_thread for a blocking call), and it will not hold the runtime
 ```
 
-In Python this is a `def` method (make it `async def`, and `await` what it waits for); in Node and Bun, code that runs synchronously (`readFileSync`, `execSync`, a busy loop): use asynchronous calls and `await` them, or move the computation to a worker thread. It is said once and only said: the method runs on to its end. Under `rutis-host dev --debug` nothing is said (a runtime stopped at a breakpoint may stay there as long as you like). The synchronous methods of Go, Swift and Kotlin do not hold the whole runtime, and have no such line.
+In Python every stretch of a method is watched: a whole `def` method, and each stretch of an `async def` method between two `await`s (a `time.sleep` or `requests.get` in it, say); make it `async def` and `await` what it waits for (`asyncio.sleep`, an async client, `asyncio.to_thread` for a blocking call). In Node and Bun, the stretch from a method's start to its first `await` is watched (`readFileSync`, `execSync`, a busy loop), not blocking after an `await`; use asynchronous calls and `await` them, or move the computation to a worker thread. Blocking in `apply` or a listener is not said. It is said once and only said: the method runs on to its end. Under `rutis-host dev --debug` nothing is said (a runtime stopped at a breakpoint may stay there as long as you like). The synchronous methods of Go, Swift and Kotlin do not hold the whole runtime, and have no such line.
 
 An error a plugin leaves unhandled (an unhandled promise rejection or an exception thrown in a timer in JavaScript, an exception nobody retrieves from a Python task) does not end the process (from 0.18, #688):
 
@@ -265,6 +265,7 @@ What a plugin writes to standard output and standard error (`console.log`, `prin
 
 - The rows of a Node, Bun or Python runtime share its process, so the runtime adds the name of the row running: a row's `apply` and cleanups, its service methods, its listeners and the functions it hands over, and the asynchronous work they start (the async context in Node and Bun, contextvars in Python). Output whose row cannot be told starts with the runtime's name (`[py] `): a thread a Python plugin started itself, and code that runs in no row. What is written to the file descriptor itself (a child process, `os.write`, a native module) the runtime does not see; it is passed on as it is.
 - Go and Swift run one plugin per process: the host adds the runtime's name as it reads the output (`[go-weather] `); the SDKs are unchanged.
+- Bun's `console` writes to the file descriptors itself: under the prefix the runtime puts in a `console` that writes through `process.stdout` / `process.stderr`, which prints objects in Node's format on one line (`{ a: 1 }`), not Bun's usual multi-line one.
 - `rutis-host run` adds nothing by default (plugins' output in production stays as written); `--prefix-output` / `--no-prefix-output` turn it on or off, see [rutis-host](rutis-host.en.md#output).
 
 Python's `logging` is unchanged: by default it shows WARNING and above, which is Python's own rule. To see INFO, configure logging in the plugin:

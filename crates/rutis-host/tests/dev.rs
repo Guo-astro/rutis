@@ -391,6 +391,14 @@ fn the_dev_loop(lang: &Lang) {
             .filter(|line| unprefixed(line).starts_with(text))
             .count()
     };
+    // guarantee: host/output-prefix — `dev` starts each line a plugin
+    // writes with its row's name by default (#678).
+    assert!(
+        output
+            .iter()
+            .any(|line| line.starts_with("[weather] plugin weather v1 applied")),
+        "{context}"
+    );
     // llm reloaded once, for its own file; weather's reloads did not.
     assert_eq!(count("plugin llm v1 applied"), 1, "{context}");
     assert_eq!(count("llm: reloaded"), 1, "{context}");

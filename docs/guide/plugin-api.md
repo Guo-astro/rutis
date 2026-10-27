@@ -240,13 +240,13 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。
 
-一个服务方法同步地占住运行时 5 秒（固定，0.18 起，#678）时，运行时在 stderr 写一次是哪一行的哪个方法、这期间其他行都在等、怎么改，例如：
+一个服务方法一口气占住运行时 5 秒（固定，0.18 起，#678）时，运行时在 stderr 写一次是哪一行的哪个方法、这期间其他行都在等、怎么改，例如：
 
 ```text
-runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it is a synchronous method (def); make it async def, awaiting what it waits for, and it will not hold the runtime
+runtime py: forecast.tomorrow of row weather has held the runtime for 5 s, and the other rows wait meanwhile: it blocks the event loop (a def method, or a blocking call in an async def one); make it async def and await what it waits for (asyncio.sleep, an async client, asyncio.to_thread for a blocking call), and it will not hold the runtime
 ```
 
-Python 里这是 `def` 方法（改成 `async def`，等待的东西用 `await`）；Node、Bun 里是同步运行的代码（`readFileSync`、`execSync`、忙等），改用异步调用并 `await`，或者把计算放进 worker 线程。只写一次、只写不打断：方法照常运行完。`rutis-host dev --debug` 下不写（停在断点上的运行时可以停多久都行）。Go、Swift、Kotlin 的同步方法不占住整个运行时，没有这个提示。
+Python 里看方法的每一段：`def` 方法整个，`async def` 方法两次 `await` 之间的每一段（例如里面的 `time.sleep`、`requests.get`）；改成 `async def`，等待的东西用 `await`（`asyncio.sleep`、异步的客户端，阻塞的调用放进 `asyncio.to_thread`）。Node、Bun 里看方法开始到它第一次 `await` 之前同步运行的那一段（`readFileSync`、`execSync`、忙等），`await` 之后的阻塞不提示；改用异步调用并 `await`，或者把计算放进 worker 线程。`apply` 和监听器里的阻塞不提示。只写一次、只写不打断：方法照常运行完。`rutis-host dev --debug` 下不写（停在断点上的运行时可以停多久都行）。Go、Swift、Kotlin 的同步方法不占住整个运行时，没有这个提示。
 
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
@@ -265,6 +265,7 @@ Python 里这是 `def` 方法（改成 `async def`，等待的东西用 `await`�
 
 - Node、Bun、Python 的几行共用一个进程，运行时按当前在跑的行加前缀：行的 `apply` 与清理、服务方法、监听器、交出去的函数，以及它们启动的异步工作（Node、Bun 的异步上下文，Python 的 contextvars）。追不到是哪一行的输出加运行时的名字（`[py] `）：Python 插件自己开的线程，以及不在任何一行里运行的代码。直接写文件描述符的输出（子进程、`os.write`、原生模块）运行时看不到，原样传过去。
 - Go、Swift 一个进程只有一个插件：宿主读它的输出时加运行时的名字（`[go-weather] `），SDK 不变。
+- Bun 的 `console` 自己直接写文件描述符：加前缀时运行时换上一个经过 `process.stdout` / `process.stderr` 写的 `console`，对象按 Node 的格式打印在一行里（`{ a: 1 }`），不是 Bun 平时的多行格式。
 - `rutis-host run` 默认不加（生产环境里插件的输出原样不动）；`--prefix-output` / `--no-prefix-output` 打开或关掉，见 [rutis-host](rutis-host.md#输出)。
 
 Python 的 `logging` 不改：默认只显示 WARNING 及以上，这是 Python 自己的规则。要看 INFO，在插件里配置日志：

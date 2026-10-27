@@ -103,7 +103,9 @@ const unloaded = new WeakMap()
 // too: each line its code writes starts with its name.
 const prefixing = process.env.RUTIS_PREFIX_OUTPUT === '1'
 const tracking = rowTracking(process.env.RUTIS_DEV === '1', { output: prefixing })
-const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading), within: tracking.within })
+// The bus's lines (a listener that failed in `emit`) are the runtime's own:
+// never prefixed with a row's name.
+const bus = new Bus({ loading: key => key === null ? !mounted : Boolean(rows.get(key)?.loading), within: tracking.within, report: line => say(`${line}\n`) })
 if (prefixing) {
   prefixOutput(() => {
     const key = tracking.running()

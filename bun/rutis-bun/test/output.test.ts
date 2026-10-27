@@ -20,6 +20,7 @@ export function apply(ctx, config) {
     shout(text) { console.error(text); return null },
     async later(text) { await new Promise(resolve => setTimeout(resolve, 10)); console.log('later ' + text); return null },
     pieces() { process.stdout.write('one\\ntwo\\nthr'); process.stdout.write('ee\\n'); return null },
+    async wait(ms) { await new Promise(resolve => setTimeout(resolve, ms)); return null },
     block(ms) { const end = Date.now() + ms; while (Date.now() < end) {} return null },
   })
 }
@@ -59,6 +60,11 @@ test('without RUTIS_PREFIX_OUTPUT the output is as written', async () => {
 test('a method holding the runtime is said once; a short one is not', async () => {
   const { stderr } = await run(['block:20', 'block:700'], { RUTIS_TEST_BLOCKING_MS: '200' })
   expect(stderr.filter(line => line.includes('held the runtime'))).toEqual([blockingText('bun', 'weather', 'talk-a.block', 0.2)])
+})
+
+test('a method awaiting for long does not hold the runtime, and is not said', async () => {
+  const { stderr } = await run(['wait:400'], { RUTIS_TEST_BLOCKING_MS: '100' })
+  expect(stderr.join('\n')).not.toContain('held the runtime')
 })
 
 test('under a debugger nothing is said of a method holding the runtime', async () => {

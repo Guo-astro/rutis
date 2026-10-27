@@ -26,6 +26,10 @@ export default definePlugin({
         process.stdout.write('ee\n')
         return null
       },
+      async wait(ms) {
+        await new Promise(resolve => setTimeout(resolve, ms))
+        return null
+      },
       block(ms) {
         const end = Date.now() + ms
         while (Date.now() < end) {}

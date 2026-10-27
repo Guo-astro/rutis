@@ -33,7 +33,7 @@ import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
-import { prefixOutput, watchBlocking } from './output.mjs'
+import { prefixOutput, say, watchBlocking } from './output.mjs'
 
 // internal/* names Cordis's own events on Node; no leaf plugin listens to or
 // emits them (internal/* stays in each runtime). The wording matches the
@@ -150,7 +150,9 @@ export class Runtime {
   running = (): string | undefined => this.#store?.getStore()
   // A row's listener the host refuses while the row loads fails the load
   // (protocol §11).
-  #bus = new Bus({ loading: (key: string) => Array.isArray(this.#rows.get(key)?.pending), within: this.within })
+  // Its lines (a listener that failed in `emit`) are the runtime's own:
+  // never prefixed with a row's name.
+  #bus = new Bus({ loading: (key: string) => Array.isArray(this.#rows.get(key)?.pending), within: this.within, report: (line: string) => say(`${line}\n`) })
   // A row's method holding this thread for 5 s is said (#678).
   #blocking = watchBlocking({ runtime: () => this.name })
   #deadline = shutdownDeadline()
@@ -228,7 +230,7 @@ export class Runtime {
         row.announced.push(id)
       } else if (this.#mounted && !this.#told.has(name)) {
         this.#told.add(name)
-        process.stderr.write(`${oldHost(name)}\n`)
+        say(`${oldHost(name)}\n`)
       }
     }
     this.#refresh(id)

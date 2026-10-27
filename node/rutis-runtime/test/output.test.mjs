@@ -13,7 +13,7 @@ import { blockingText, prefixLines } from '../src/output.mjs'
 
 const runner = fileURLToPath(new URL('../src/runner.mjs', import.meta.url))
 const plugin = fileURLToPath(new URL('./fixtures/output-rows.mjs', import.meta.url))
-const METHODS = { say: 'async', shout: 'async', later: 'async', pieces: 'async', block: 'async' }
+const METHODS = { say: 'async', shout: 'async', later: 'async', pieces: 'async', block: 'async', wait: 'async' }
 
 async function started(env) {
   const host = await fakeHost([process.execPath, runner, plugin], { env })
@@ -79,6 +79,19 @@ test('a method holding the runtime is said once; a short one is not', async () =
     await eventually('the hint', () => host.stderr.includes('held the runtime'))
     const hints = host.stderr.split('\n').filter(line => line.includes('held the runtime'))
     assert.deepEqual(hints, [blockingText('node', 'weather', 'talk-a.block', 0.2)])
+  } finally {
+    await host.end()
+  }
+})
+
+test('a method awaiting for long does not hold the runtime, and is not said', async () => {
+  const { host, row } = await started({ RUTIS_TEST_BLOCKING_MS: '100', RUTIS_PREFIX_OUTPUT: '' })
+  try {
+    const a = await row('a', 'weather')
+    await a('wait', 400)
+    await a('say', 'done')
+    await eventually('the line', () => host.stdout.includes('done'))
+    assert.doesNotMatch(host.stderr, /held the runtime/)
   } finally {
     await host.end()
   }
