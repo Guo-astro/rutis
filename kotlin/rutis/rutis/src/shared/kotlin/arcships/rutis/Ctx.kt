@@ -140,7 +140,7 @@ internal class HostHandle(
     private val target: String,
     override val kinds: Map<String, String>,
 ) : ServiceHandle {
-    private fun session() = rt.session ?: throw arcships.rutis.internal.peer.HostGoneException(null)
+    private fun session() = rt.session ?: throw HostGoneException(null)
 
     override suspend fun callSuspend(method: String, args: List<Any?>): Any? =
         session().callSuspend(target, method, args, kinds[method] == "sync")
