@@ -87,7 +87,7 @@
 
 - 宿主服务的方法在堆栈里显示为 `weather.today`，不再是 `HostProxy.__getattr__.<locals>.call`；返回"没有值"的调用得到 `None`，不会再见到 `UNDEFINED`。
 - 宿主断开时调用抛出 `ConnectionError`，带码 `peer-gone`。
-- 导入插件模块（或它导入的模块）时出错，抛出 `LoadError`，写明出错的文件和行号；入口模块本身不存在时仍是原来的 `ModuleNotFoundError`。
+- 导入插件模块（或它导入的模块）时出错，抛出 `LoadError`（`from rutis import LoadError`，是 `Exception` 的子类），写明出错的文件和行号；入口模块本身不存在时仍是原来的 `ModuleNotFoundError`。
 
 ### Go
 
@@ -97,12 +97,12 @@
 
 ### Kotlin
 
-- 没写进 `inject` 与服务不在时，仍分别抛出 `NotDeclaredException`（`IllegalArgumentException`）与 `UnavailableException`（`IllegalStateException`），现在带码与 `data`。宿主断开时是 `HostGoneException`（仍是 `IOException`）。
+- 没写进 `inject` 与服务不在时，抛出新的 `NotDeclaredException`（是 `IllegalArgumentException` 的子类）与 `UnavailableException`（是 `IllegalStateException` 的子类）；宿主断开时抛出 `HostGoneException`（是 `IOException` 的子类）。它们带码与 `data`（`code`、`data` 属性），接住原来那几个类型的代码照常工作。
 
 ### Rust 插件
 
 - 写错时的编译错误改为说人话：服务方法的参数不能跨语言、错误类型没有 `Display`、服务类型不是 `Send + Sync`、事件类型没实现 `rutis::Event`、`type Deps` 里不是 `Arc<T>` 等时，第一行写明哪里不对、怎么改，不再出现宏和 trait 的内部名字。没有代码要改。
-- `ctx.on(async |e, _| …)` 仍报 E0282（推不出参数类型）；写成 `async |event: Arc<Ping>, _: Call<Ping>| …` 或 `|event, _| async move { … }`，见 `Ctx::on` 的文档。
+- `ctx.on(async |e, _| …)` 仍报 E0282（推不出参数类型）；写成 `async |event: Arc<Ping>, _: Call<Ping>| …` 或 `|event, _| async move { … }`，见 `Listener` 与 `Ctx::on` 的文档。
 
 ### Rust 宿主
 

@@ -44,6 +44,7 @@ import asyncio
 import concurrent.futures
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import os
 import sys
@@ -1067,18 +1068,33 @@ def _awaitable(sent):
 
 # This package's own files: their frames are not the plugin's.
 _RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
-# The import machinery's own files.
-_IMPORTLIB_DIR = os.path.dirname(os.path.abspath(importlib.__file__)) + os.sep
+# Where Python and installed packages live: the import machinery, the
+# standard library, site-packages. Their frames are not the plugin's own
+# code either, unless the plugin itself is there.
+_NOT_THE_PLUGINS = tuple(
+    dict.fromkeys(
+        os.path.join(os.path.realpath(prefix), "") for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix)
+    )
+)
 
 
-def _plugin_frame(frame: traceback.FrameSummary) -> bool:
-    """Whether a frame is of the plugin's code (or of what it imports),
-    not of this runtime or of Python's import machinery."""
+def _plugin_frame(frame: traceback.FrameSummary, own: str | None = None) -> bool:
+    """Whether a frame is of the plugin's own code: not of this runtime, of
+    Python's import machinery or standard library, or of an installed
+    package (`site-packages`, `dist-packages`), unless it is the plugin's
+    own (`own`: its package's directory, or its module's file)."""
     filename = frame.filename or ""
-    if filename.startswith("<frozen ") or filename.startswith("<"):
+    if filename.startswith("<"):
         return False
-    path = os.path.abspath(filename)
-    return not path.startswith(_RUNTIME_DIR) and not path.startswith(_IMPORTLIB_DIR)
+    path = os.path.realpath(filename)
+    if path.startswith(_RUNTIME_DIR):
+        return False
+    if own is not None and path.startswith(own):
+        return True
+    parts = path.split(os.sep)
+    if "site-packages" in parts or "dist-packages" in parts:
+        return False
+    return not path.startswith(_NOT_THE_PLUGINS)
 
 
 def _shown_path(path: str) -> str:
@@ -1095,7 +1111,20 @@ def cannot_load(error: BaseException, module: str) -> LoadError:
     that raised it (a module it imports, say), not of the entry:
     `cannot load weather/util.py: KeyError: 'region' (weather/util.py:3)`.
     Its stack is the plugin's frames only."""
-    frames = [frame for frame in traceback.extract_tb(error.__traceback__) if _plugin_frame(frame)]
+    every = traceback.extract_tb(error.__traceback__)
+    # A plugin installed as a package lives in site-packages itself: the
+    # frames of its own package are its code.
+    try:
+        spec = importlib.util.find_spec(module.split(".", 1)[0]) if module else None
+    except Exception:  # noqa: BLE001 - only a hint
+        spec = None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    own = None
+    if isinstance(origin, str) and os.path.isabs(origin):
+        own = os.path.realpath(origin)
+        if getattr(spec, "submodule_search_locations", None):
+            own = os.path.join(os.path.dirname(own), "")
+    frames = [frame for frame in every if _plugin_frame(frame, own)]
     if isinstance(error, SyntaxError):
         text = str(error.msg)
         file, line = error.filename, error.lineno

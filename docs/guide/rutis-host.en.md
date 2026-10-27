@@ -104,7 +104,7 @@ At start, each [`listen`](#listen) listener prints once the address it is actual
 rutis-host: listening on <listener name> <address:port>
 ```
 
-Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for …`, `starting`, `failed: …`, `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
+Then each change of a row's state prints `<row id>: <state>` (`running`, `waiting for …`, `starting`, `failed: …` (when the failed step can be said, `failed in apply: …`, `call to <service>.<method> failed: …` and so on, with the row and the location the plugin's language gave indented under it), `disabled`, `removed`, and so on; a copy inside an instance is `<row id> in PluginId(n)`).
 
 A waiting row says what it waits for and why (from 0.17.2, #676). Waiting for its own runtime, it names only the runtime; otherwise each missing service is `<service> (<why>)`, several joined by `; `:
 

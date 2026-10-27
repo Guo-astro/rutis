@@ -104,7 +104,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 rutis-host: listening on <监听器名> <地址:端口>
 ```
 
-之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
+之后每一行状态变化时打印一行 `<行 id>: <状态>`（`running`、`waiting for …`、`starting`、`failed: …`（说得出失败在哪一步时写成 `failed in apply: …`、`call to <服务>.<方法> failed: …` 等，下面缩进写出错的行和插件语言给出的位置）、`disabled`、`removed` 等；实例里的副本写成 `<行 id> in PluginId(n)`）。
 
 等待的行写明在等什么、为什么（0.17.2 起，#676）。在等自己的运行时时只写运行时；否则每个缺的服务写成 `<服务> (<原因>)`，多个用 `; ` 隔开：
 

@@ -87,7 +87,7 @@
 
 - A host service's methods show as `weather.today` in tracebacks, no longer `HostProxy.__getattr__.<locals>.call`; a call that returns no value gives `None`, and `UNDEFINED` no longer shows.
 - When the host disconnects, calls raise `ConnectionError` with code `peer-gone`.
-- An error while importing a plugin's module (or a module it imports) raises `LoadError`, naming the file and line that raised; a missing entry module itself is still the original `ModuleNotFoundError`.
+- An error while importing a plugin's module (or a module it imports) raises `LoadError` (`from rutis import LoadError`, a subclass of `Exception`), naming the file and line that raised; a missing entry module itself is still the original `ModuleNotFoundError`.
 
 ### Go
 
@@ -97,12 +97,12 @@
 
 ### Kotlin
 
-- Not in `inject` and service not there still throw `NotDeclaredException` (an `IllegalArgumentException`) and `UnavailableException` (an `IllegalStateException`), now with a code and `data`. A host that went away is `HostGoneException` (still an `IOException`).
+- Not in `inject` and service not there throw the new `NotDeclaredException` (a subclass of `IllegalArgumentException`) and `UnavailableException` (a subclass of `IllegalStateException`); a host that went away throws `HostGoneException` (a subclass of `IOException`). They carry a code and `data` (`code`, `data` properties); code catching the former types works as before.
 
 ### Rust plugins
 
 - Compile errors for common mistakes speak plainly: a service method parameter that cannot cross languages, an error type without `Display`, a service type that is not `Send + Sync`, an event type that does not implement `rutis::Event`, a `type Deps` member that is not `Arc<T>` and so on now say on their first line what is wrong and how to fix it, without macro or trait internals. No code needs changing.
-- `ctx.on(async |e, _| …)` still gives E0282 (argument types cannot be inferred); write `async |event: Arc<Ping>, _: Call<Ping>| …` or `|event, _| async move { … }`, as `Ctx::on`'s documentation shows.
+- `ctx.on(async |e, _| …)` still gives E0282 (argument types cannot be inferred); write `async |event: Arc<Ping>, _: Call<Ping>| …` or `|event, _| async move { … }`, as the documentation of `Listener` and `Ctx::on` shows.
 
 ### Rust hosts
 

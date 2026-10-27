@@ -308,7 +308,7 @@ Written into "Migrating to 0.18" (both languages):
 - **All languages**: error type names and fields do not change. Error text will change.
 - **Node, Bun, Python runtimes**: unhandled errors no longer make the process exit ("boundary rule 8" rewritten).
 - **`check`**: cycles and same-name providers exit with 1.
-- **Protocol**: error nodes have one more optional field, `site`, which an older side ignores; the protocol version is not raised, and different versions work together as usual.
+- **Protocol**: error nodes have two more optional fields, `site` and `rethrown`, which an older side ignores; the protocol version is not raised, and different versions work together as usual.
 
 ## 12. Implementation
 

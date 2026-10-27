@@ -37,6 +37,22 @@ class FakePeer:
         return self.call(target, method, args)
 
 
+class Exported(unittest.TestCase):
+    def test_load_error_is_exported(self):
+        import rutis
+
+        self.assertIs(rutis.LoadError, LoadError)
+        self.assertIn("LoadError", rutis.__all__)
+
+    def test_a_sync_wait_cycle_prints_its_message_alone(self):
+        from rutis import SyncWaitCycle
+        from rutis.peer import decode_error
+
+        error = decode_error({"name": "SyncWaitCycle", "message": "a.b would wait on itself: x → y → x (synchronous calls)"})
+        self.assertIsInstance(error, SyncWaitCycle)
+        self.assertEqual(str(error), "a.b would wait on itself: x → y → x (synchronous calls)")
+
+
 class HostProxyTexts(unittest.TestCase):
     def test_a_traceback_through_a_host_service_names_the_service_and_method(self):
         proxy = HostProxy(FakePeer(error=KeyError("region")), "weather\0tenant", {"today": "sync"})
@@ -263,6 +279,8 @@ class LoadFailures(background.TestCase):
             "lf_util.py": "x = 1\n\nraise KeyError('region')\n",
             "lf_syntax.py": "import lf_bad\n\ndef apply(ctx, config):\n    pass\n",
             "lf_bad.py": "x = 1\ndef broken(:\n    pass\n",
+            "lf_json.py": "import lf_parse\n\ndef apply(ctx, config):\n    pass\n",
+            "lf_parse.py": "import json\n\nSETTINGS = json.loads('{bad')\n",
         }
         for name, text in files.items():
             with open(os.path.join(self.dir, name), "w") as file:
@@ -272,7 +290,7 @@ class LoadFailures(background.TestCase):
         cwd = os.getcwd()
         os.chdir(self.dir)
         self.addCleanup(os.chdir, cwd)
-        for name in ("lf_entry", "lf_util", "lf_syntax", "lf_bad"):
+        for name in ("lf_entry", "lf_util", "lf_syntax", "lf_bad", "lf_json", "lf_parse"):
             self.addCleanup(sys.modules.pop, name, None)
 
     def test_the_submodule_that_raised_is_named(self):
@@ -294,6 +312,18 @@ class LoadFailures(background.TestCase):
         with self.assertRaises(LoadError) as failed:
             Runtime().describe("lf_syntax")
         self.assertEqual(str(failed.exception), "cannot load lf_bad.py: SyntaxError: invalid syntax (lf_bad.py:2)")
+
+    def test_a_standard_library_call_that_raises_names_the_plugin_file(self):
+        # json raises inside its own decoder: the file named is the
+        # plugin's, which called it, not json/decoder.py.
+        with self.assertRaises(LoadError) as failed:
+            Runtime().describe("lf_json")
+        self.assertEqual(
+            str(failed.exception),
+            "cannot load lf_parse.py: JSONDecodeError: Expecting property name enclosed in double quotes: "
+            "line 1 column 2 (char 1) (lf_parse.py:3)",
+        )
+        self.assertNotIn("decoder.py", failed.exception.stack)
 
     def test_loading_a_row_fails_the_same_way(self):
         with self.assertRaisesRegex(LoadError, "^cannot load lf_util.py: KeyError: 'region' \\(lf_util.py:3\\)$"):

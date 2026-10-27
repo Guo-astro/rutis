@@ -219,6 +219,10 @@ class SyncWaitCycle(RemoteError):
     def __init__(self, message: str):
         super().__init__("SyncWaitCycle", message)
 
+    def __str__(self) -> str:
+        # The class says what it is: the message alone, as it was sent.
+        return self.message
+
 
 class Incompatible(ValueError):
     """The far end greeted, but this side cannot work with it: it lacks a
