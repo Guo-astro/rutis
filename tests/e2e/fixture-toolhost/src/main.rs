@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::{BoxFuture, CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::{LocalRuntime, Stdio};
 use rutis_loader::report::EntryStatus;
@@ -204,17 +204,21 @@ async fn start() -> Result<(Ctx, Arc<Tools>), String> {
         .collect();
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let states: Vec<String> = ids
+        let states: Vec<(bool, String)> = ids
             .iter()
             .map(|id| match loader.get(id).map(|entry| entry.status) {
-                Some(EntryStatus::Running(snapshot)) => format!("{:?}", snapshot.state),
-                other => format!("{other:?}"),
+                Some(EntryStatus::Running(snapshot)) => (
+                    snapshot.state == FiberState::Active,
+                    format!("{:?}", snapshot.state),
+                ),
+                other => (false, format!("{other:?}")),
             })
             .collect();
-        if states.iter().all(|state| state == "Active") {
+        if states.iter().all(|(active, _)| *active) {
             break;
         }
         if std::time::Instant::now() > deadline {
+            let states: Vec<&String> = states.iter().map(|(_, state)| state).collect();
             return Err(format!("the plugins did not start: {ids:?} {states:?}"));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

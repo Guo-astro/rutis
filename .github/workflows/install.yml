@@ -258,7 +258,8 @@ jobs:
         env:
           RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
-        run: cargo test --locked -p rutis-e2e --test devx -- --ignored
+        # Three at a time: two of them compile Rust (the plugin, the host).
+        run: cargo test --locked -p rutis-e2e --test devx -- --ignored --test-threads=3
       # The guides install from the registries, so their examples run once
       # the version is published.
       - name: the guides' examples

@@ -34,8 +34,6 @@ use std::path::{Path, PathBuf};
 use rutis_e2e::{build_guard, repo, Host, Lang, Scenario};
 use serde_json::{json, Value};
 
-const IGNORED: &str = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS";
-
 // ── The packages ────────────────────────────────────────────────
 
 /// Where the built packages are (npm/, wheels/, binary/).
@@ -212,13 +210,17 @@ fn dev(
     // (A Go binary's: it names one of the binary's plugins, not always
     // the project's own.)
     dev.expect("; changes reload it (Ctrl-C ends)");
-    s.edit(format!("{project}/{source}"), |text| {
-        assert!(
-            text.contains("weather v1 applied"),
-            "{source} has no `weather v1 applied`"
-        );
-        text.replace("weather v1 applied", "weather v2 applied")
-    });
+    // Saved whole, as an editor does: a watcher never reads half a file.
+    let file = format!("{project}/{source}");
+    let text = std::fs::read_to_string(s.path(&file)).unwrap();
+    assert!(
+        text.contains("weather v1 applied"),
+        "{source} has no `weather v1 applied`"
+    );
+    s.replace(
+        &file,
+        text.replace("weather v1 applied", "weather v2 applied"),
+    );
     dev.wait_for_within(build_guard(), "the edit to reload the plugin", |line| {
         line.contains(reloaded)
     });
@@ -336,16 +338,64 @@ fn from_artifacts(s: &Scenario, project: &str, dev: &[&str]) {
     s.write_json(&file, &manifest);
 }
 
+/// The `@arcships/*` packages npm installed in `project` came from the
+/// artifacts, not a registry (as install.rs checks).
+fn npm_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
+    let lock: Value = serde_json::from_str(
+        &std::fs::read_to_string(s.path(project).join("package-lock.json")).unwrap(),
+    )
+    .unwrap();
+    for package in packages {
+        let resolved = lock["packages"][format!("node_modules/@arcships/{package}")]["resolved"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            resolved.starts_with("file:"),
+            "@arcships/{package} came from {resolved:?}"
+        );
+    }
+}
+
+/// The same for what Bun installed: `bun.lock` names a path, not a
+/// registry URL.
+fn bun_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
+    let lock = std::fs::read_to_string(s.path(project).join("bun.lock")).unwrap();
+    for package in packages {
+        let entry = format!("\"@arcships/{package}\": [\"@arcships/{package}@");
+        let line = lock
+            .lines()
+            .find(|line| line.trim_start().starts_with(&entry))
+            .unwrap_or_else(|| panic!("bun.lock has no @arcships/{package}"));
+        assert!(
+            !line.contains("://"),
+            "@arcships/{package} came from a registry: {line}"
+        );
+    }
+}
+
+/// `rutis-host check` on the template as `new` wrote it: it knows the
+/// template's `greeter`.
+fn check_template(s: &Scenario, project: &str, launcher: &Path, env: &[(&str, &str)]) {
+    let mut check = run(s, project, launcher, &["check"], env);
+    check.expect("\"greeter\":{\"hello\":\"async\"}");
+}
+
 /// risk: B1 (the TypeScript plugin author's path, #663)
 #[test]
 #[ignore = "needs built packages: install.yml runs it with RUTIS_E2E_ARTIFACTS"]
 fn a_typescript_plugin_is_written_tested_reloaded_and_packed() {
-    let _ = IGNORED;
     let s = Scenario::installed("devx-typescript");
     let launcher = tools(&s);
     let project = new(&s, &launcher, "ts", "node");
     let platform = format!("rutis-host-{}", npm_platform());
-    from_artifacts(&s, &project, &["rutis-host", &platform, "rutis-runtime"]);
+    let ours = ["rutis", "rutis-host", platform.as_str(), "rutis-runtime"];
+    from_artifacts(&s, &project, &ours[1..]);
+    run(&s, &project, npm(), &["install", "--omit=optional"], &[]);
+    npm_from_artifacts(&s, &project, &ours);
+    // The template as it comes: its example and its tests.
+    run(&s, &project, npm(), &["test"], &[]);
+    check_template(&s, &project, &launcher, &[]);
+    // The weather plugin.
     s.replace(format!("{project}/src/index.ts"), WEATHER_TS);
     s.write(format!("{project}/dev/fake-llm.ts"), FAKE_LLM_TS);
     s.replace(
@@ -365,7 +415,6 @@ fn a_typescript_plugin_is_written_tested_reloaded_and_packed() {
             ],
         }),
     );
-    run(&s, &project, npm(), &["install", "--omit=optional"], &[]);
     run(&s, &project, npm(), &["test"], &[]);
     check(&s, &project, &launcher, &[]);
     dev(
@@ -390,7 +439,28 @@ fn a_bun_plugin_is_written_tested_reloaded_and_packed() {
     let launcher = tools(&s);
     let project = new(&s, &launcher, "bun", "bun");
     let platform = format!("rutis-host-{}", npm_platform());
-    from_artifacts(&s, &project, &["rutis-host", &platform, "rutis-bun"]);
+    // rutis-host depends on rutis-runtime: this build's too.
+    let ours = [
+        "rutis",
+        "rutis-host",
+        platform.as_str(),
+        "rutis-runtime",
+        "rutis-bun",
+    ];
+    from_artifacts(&s, &project, &ours[1..]);
+    // Bun's own temporary files (the tarballs it unpacks, which it may
+    // remove only later) in a directory of their own: the residue checks
+    // look for this scenario's processes' leftovers in its tmp/.
+    let bun_tmp = s.path("bun-tmp");
+    std::fs::create_dir_all(&bun_tmp).unwrap();
+    let bun_tmp = bun_tmp.display().to_string();
+    let bun_env = [("TMPDIR", bun_tmp.as_str())];
+    run(&s, &project, "bun", &["install"], &bun_env);
+    bun_from_artifacts(&s, &project, &ours);
+    // The template as it comes: its example and its tests.
+    run(&s, &project, "bun", &["test"], &[]);
+    check_template(&s, &project, &launcher, &[]);
+    // The weather plugin.
     s.replace(format!("{project}/src/index.ts"), WEATHER_TS);
     s.write(format!("{project}/dev/fake-llm.ts"), FAKE_LLM_TS);
     s.replace(
@@ -410,14 +480,6 @@ fn a_bun_plugin_is_written_tested_reloaded_and_packed() {
             ],
         }),
     );
-    // Bun's own temporary files (the tarballs it unpacks, which it may
-    // remove only later) in a directory of their own: the residue checks
-    // look for this scenario's processes' leftovers in its tmp/.
-    let bun_tmp = s.path("bun-tmp");
-    std::fs::create_dir_all(&bun_tmp).unwrap();
-    let bun_tmp = bun_tmp.display().to_string();
-    let bun_env = [("TMPDIR", bun_tmp.as_str())];
-    run(&s, &project, "bun", &["install"], &bun_env);
     run(&s, &project, "bun", &["test"], &[]);
     check(&s, &project, &launcher, &[]);
     dev(
@@ -522,19 +584,6 @@ fn a_python_plugin_is_written_tested_reloaded_and_packed() {
     let s = Scenario::installed("devx-python");
     let launcher = tools(&s);
     let project = new(&s, &launcher, "py", "python");
-    s.replace(format!("{project}/src/weather/__init__.py"), WEATHER_PY);
-    s.write(format!("{project}/src/fake_llm.py"), FAKE_LLM_PY);
-    s.replace(format!("{project}/tests/test_plugin.py"), WEATHER_TEST_PY);
-    s.write_json(
-        format!("{project}/rutis.dev.json"),
-        &json!({
-            "format": 1,
-            "rows": [
-                { "id": "weather", "config": { "city": "Oslo" } },
-                { "id": "llm", "name": "py:fake_llm" },
-            ],
-        }),
-    );
     // The project's environment, with rutis and rutis-host from the
     // wheels, and the plugin itself (editable, as `uv sync` does).
     run(&s, &project, "uv", &["venv", ".venv"], &[]);
@@ -550,15 +599,27 @@ fn a_python_plugin_is_written_tested_reloaded_and_packed() {
         ],
         &[],
     );
-    run(
-        &s,
-        &project,
-        &python,
-        &["-m", "unittest", "discover", "-s", "tests"],
-        &[],
-    );
     // The venv's rutis-host, the one the PyPI package installs.
     let venv_host = venv_program(&venv, "rutis-host");
+    // The template as it comes: its example and its tests.
+    let unittest = ["-m", "unittest", "discover", "-s", "tests"];
+    run(&s, &project, &python, &unittest, &[]);
+    check_template(&s, &project, &venv_host, &[]);
+    // The weather plugin.
+    s.replace(format!("{project}/src/weather/__init__.py"), WEATHER_PY);
+    s.write(format!("{project}/src/fake_llm.py"), FAKE_LLM_PY);
+    s.replace(format!("{project}/tests/test_plugin.py"), WEATHER_TEST_PY);
+    s.write_json(
+        format!("{project}/rutis.dev.json"),
+        &json!({
+            "format": 1,
+            "rows": [
+                { "id": "weather", "config": { "city": "Oslo" } },
+                { "id": "llm", "name": "py:fake_llm" },
+            ],
+        }),
+    );
+    run(&s, &project, &python, &unittest, &[]);
     check(&s, &project, &venv_host, &[]);
     dev(
         &s,
@@ -735,6 +796,20 @@ fn a_go_plugin_is_written_tested_reloaded_and_packed() {
     s.edit(format!("{project}/go.mod"), |module| {
         format!("{module}\nreplace github.com/arcships/rutis/go/rutis => {sdk}\n")
     });
+    let cache = std::process::Command::new("go")
+        .args(["env", "GOCACHE"])
+        .output()
+        .expect("go env GOCACHE");
+    let cache = String::from_utf8_lossy(&cache.stdout).trim().to_owned();
+    let env = go_env(&cache);
+    let env: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    // The template as it comes: its example and its tests.
+    run(&s, &project, "go", &["test", "./..."], &env);
+    check_template(&s, &project, &launcher, &env);
+    // The weather plugin.
     s.replace(format!("{project}/plugin.go"), WEATHER_GO);
     s.replace(format!("{project}/plugin_test.go"), WEATHER_TEST_GO);
     s.replace(
@@ -752,16 +827,6 @@ fn a_go_plugin_is_written_tested_reloaded_and_packed() {
             ],
         }),
     );
-    let cache = std::process::Command::new("go")
-        .args(["env", "GOCACHE"])
-        .output()
-        .expect("go env GOCACHE");
-    let cache = String::from_utf8_lossy(&cache.stdout).trim().to_owned();
-    let env = go_env(&cache);
-    let env: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect();
     run(&s, &project, "go", &["test", "./..."], &env);
     check(&s, &project, &launcher, &env);
     dev(
@@ -955,6 +1020,13 @@ fn a_rust_plugin_is_written_tested_and_packed() {
         )
     });
     s.replace("weather/src/lib.rs", WEATHER_RS);
+    // This checkout's lockfile: the dependency versions its CI built and
+    // checked, not whatever crates.io has newest tonight (cargo adds the
+    // plugin and drops what it does not use).
+    s.write(
+        "weather/Cargo.lock",
+        std::fs::read(repo().join("Cargo.lock")).unwrap(),
+    );
     s.write("weather/tests/weather.rs", WEATHER_TEST_RS);
     // Its builds next to this checkout's: the same dependencies, built once.
     let target = repo().join("target/devx").display().to_string();
@@ -1052,7 +1124,7 @@ fn plugins_in_two_languages_are_assembled_run_changed_and_stopped() {
 
     // The configuration changed while it runs: the row restarts with it.
     host.skip_written();
-    s.write_json("tools/rutis.json", &config("Bergen", false));
+    s.replace("tools/rutis.json", config("Bergen", false).to_string());
     host.expect("rutis-host: reloaded rutis.json (1 row changed)");
     probe.started(&mut host);
     assert_eq!(
@@ -1062,7 +1134,7 @@ fn plugins_in_two_languages_are_assembled_run_changed_and_stopped() {
 
     // A row disabled: the one using its service waits, and says for what.
     host.skip_written();
-    s.write_json("tools/rutis.json", &config("Bergen", true));
+    s.replace("tools/rutis.json", config("Bergen", true).to_string());
     host.expect("llm: disabled");
     host.expect("weather: waiting for llm");
 
@@ -1098,7 +1170,9 @@ export default definePlugin({
 
 /// One JSON line the tool host answers.
 fn toolhost_answer(host: &mut Host, what: &str) -> Value {
-    let line = host.wait_for(what, |line| line.starts_with('{'));
+    // As long as a start may take (the host waits up to a minute for its
+    // plugins): a busy runner starts Node slowly.
+    let line = host.wait_for_within(build_guard(), what, |line| line.starts_with('{'));
     serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"))
 }
 
@@ -1115,9 +1189,13 @@ fn a_host_owners_extension_point_takes_a_template_plugin_and_its_errors() {
     // installs.
     let project = new(&s, &launcher, "third-party", "node");
     let platform = format!("rutis-host-{}", npm_platform());
-    from_artifacts(&s, &project, &["rutis-host", &platform, "rutis-runtime"]);
+    let ours = ["rutis", "rutis-host", platform.as_str(), "rutis-runtime"];
+    from_artifacts(&s, &project, &ours[1..]);
     s.replace(format!("{project}/src/index.ts"), TOOL_TS);
+    // Its tests were the template's greeter's.
+    std::fs::remove_file(s.path(&project).join("test/index.test.ts")).unwrap();
     run(&s, &project, npm(), &["install", "--omit=optional"], &[]);
+    npm_from_artifacts(&s, &project, &ours);
     let entry = s.path(&project).join("src/index.ts").display().to_string();
     s.write_json(
         format!("{project}/toolhost.json"),

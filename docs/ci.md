@@ -20,7 +20,7 @@
 | workflow | 什么时候运行 | 做什么 |
 | --- | --- | --- |
 | `ci.yml` | 每个 PR；每晚由 `nightly.yml` 调用（`all=true`）；发布门里由 `release.yml` 调用（`all=true`）；手动（任何分支，`all` 默认打开） | 测试和检查（下文） |
-| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（`all=true`）和 `stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查（`cordis-latest`，只报告）；按改动调用 `install.yml`（五个平台）、`dylib-windows.yml` 和 `ci.yml` 的 `specs`、`sdk-repro`（每周一全跑）；调用 `netem.yml`（只报告）；失败时开问题单（下文、§7） |
+| `nightly.yml` | 每天 UTC 19:00，main 有新提交时；手动（`force`：没有新提交也跑） | 调用 `ci.yml`（`all=true`）和 `stress.yml`；用最新已发布的 Cordis 插件跑一遍 Cordis 检查（`cordis-latest`，只报告）；按改动调用 `install.yml`（五个平台；没改打包路径时只跑 linux-x64，为了每晚的开发者体验场景，#690）、`dylib-windows.yml` 和 `ci.yml` 的 `specs`、`sdk-repro`（每周一全跑）；调用 `netem.yml`（只报告）；失败时开问题单（下文、§7） |
 | `dylib-windows.yml` | 每晚由 `nightly.yml` 按 dylib 路径或周一调用；发布门里由 `release.yml` 调用（打 `v*` tag 不再单独触发）；手动 | Windows 上的 dylib 测试 |
 | `stress.yml` | 每晚由 `nightly.yml` 调用；手动 | 重复运行内核测试和多进程测试；网络长时间测试；大规模运行内核的 shuttle 模型，以及模糊测试；宿主长时间运行的 S8（三个平台）（下文） |
 | `netem.yml` | 每晚由 `nightly.yml` 调用（只报告）；手动 | S5 的容器版（风险 E12，#341）：两个 Docker 容器，非 loopback 地址 + TLS，netem 延迟、丢包、断网（下文） |
@@ -36,7 +36,7 @@
 
 - 时间：每天 UTC 19:00（北京时间凌晨 3 点）。第一个任务 `plan` 比较 main 当前的提交和上一次成功的每晚运行的提交，相同就跳过，后面的任务都不跑。
 - 内容：调用 `ci.yml`（`all=true`，全部任务）、`stress.yml`（默认轮数）、`netem.yml`（任务 `netem`），以及任务 `cordis-latest`。`plan` 用 `git diff` 看上一次成功的每晚运行到这次改了哪些文件，决定另外几项（`plan` 和 `report` 只用 `curl`、`jq`、`git`，不用 `gh`：带 `ubuntu-24.04` 标签的自托管 Linux runner 也会接这两个任务，上面没有 `gh`）：
-  - `install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）：只有改了打包相关路径才跑五个平台（`scripts/train.mjs`、`**/pyproject.toml`、`**/package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**`），其余的晚上只跑 linux-x64，为了开发者体验场景（#690）每晚都跑；
+  - `install.yml`（构建这次提交的包，五个平台安装运行；`darwin-arm64` 在自托管 macOS 上，其他格子用 GitHub 的干净机器）：只有改了打包相关路径才跑五个平台（`scripts/train.mjs`、`**/pyproject.toml`、`**/package.json`、`crates/*/Cargo.toml`、`node/rutis-host/scripts/**`），其余的晚上只跑 linux-x64，为了开发者体验场景（#690）每晚都跑（要构建 linux-x64 的二进制、x86_64 的 wheel 和 npm 包，每晚多出几十个 runner 分钟）；
   - `dylib-windows.yml`：只有改了 dylib 相关路径才跑；
   - `ci.yml` 的 `specs`：只有改了 `specs/**` 才跑；`sdk-repro`：只有改了 SDK 可复现相关路径才跑；
   - `stress.yml` 的 `events-all`：每晚抽样（`RUTIS_EVENTS_PLACEMENTS=sampled`），周一跑全部（`all`）。
