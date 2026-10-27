@@ -109,6 +109,26 @@ class Cases(unittest.TestCase):
         )
 
 
+class Branches(unittest.TestCase):
+    def test_true_branches_are_not_remembered_by_identity(self):
+        # Every JSON `true` is the same Python object: a second `true`
+        # branch must not give back the value as it was before another
+        # branch normalised it.
+        schema = {
+            "type": "object",
+            "allOf": [
+                {"anyOf": [True]},
+                {"anyOf": [{"properties": {"n": {"type": "integer"}}}]},
+                {"anyOf": [True]},
+            ],
+        }
+        self.assertTrue(strictly_equal(check(schema, {"n": 1.0}).config, {"n": 1}))
+
+    def test_a_key_that_is_not_a_string_is_refused_without_a_crash(self):
+        checked = check({"type": "object", "properties": {"city": {}}, "additionalProperties": False}, {1: "x"})
+        self.assertEqual(config_lines(checked.errors), ["config: config[1] is not a config key"])
+
+
 class TestingTool(unittest.TestCase):
     """Each case through `rutis.testing.load`: what `apply` gets, the error
     `load` raises, the warnings on standard error."""
@@ -161,6 +181,30 @@ class TestingTool(unittest.TestCase):
 
         asyncio.run(go())
         self.assertEqual(got, [{}, "Oslo"])
+
+    def test_a_config_crosses_before_it_is_checked(self):
+        # As it reaches a runtime: a tuple is an array there.
+        got = []
+        plugin = define_plugin(lambda ctx, config: got.append(config), config={"type": "object", "properties": {"xs": {"type": "array"}}})
+
+        async def go():
+            async with load(plugin, config={"xs": (1, 2)}):
+                pass
+
+        asyncio.run(go())
+        self.assertEqual(got, [{"xs": [1, 2]}])
+
+    def test_an_extra_key_is_warned_about_once(self):
+        plugin = define_plugin(lambda ctx, config: None, config={"type": "object", "properties": {"city": {"type": "string"}}})
+        stderr = io.StringIO()
+
+        async def go():
+            async with load(plugin, config={"cty": "Oslo"}, row="weather") as t:
+                await t.update({"cty": "Oslo"})
+
+        with contextlib.redirect_stderr(stderr):
+            asyncio.run(go())
+        self.assertEqual(stderr.getvalue(), "weather: config: cty is not a config key (did you mean city?)\n")
 
     def test_update_checks_the_new_config(self):
         schema = {"type": "object", "properties": {"days": {"type": "integer", "default": 3}}}
@@ -232,8 +276,22 @@ class RuntimeRows(background.TestCase):
         root = wire["graph"]["nodes"][wire["graph"]["root"]["value"]]
         self.assertEqual((wire["name"], wire["message"]), ("BindingError", "config: city is required"))
         self.assertEqual(root["code"], "bad-config")
-        data = wire["graph"]["nodes"][root["data"]["value"]]
-        self.assertEqual(data["type"], "object")
+        from rutis.peer import decode_error
+
+        received = decode_error(wire)
+        self.assertEqual((received.code, received.data), ("bad-config", {"issues": [{"path": ["city"], "message": "city is required"}]}))
+
+    def test_a_definition_entry_is_checked_as_a_module_row(self):
+        got = []
+        definition = define_plugin(lambda ctx, config: got.append(config), config={"type": "object", "properties": {"days": {"type": "integer", "default": 3}}})
+        plugin = types.ModuleType("config_definition")
+        plugin.plugin = definition
+        sys.modules["config_definition"] = plugin
+        asyncio.run(Runtime().load("w", "config_definition", None, {}, id="weather"))
+        with self.assertRaises(BindingError) as refused:
+            asyncio.run(Runtime().load("w", "config_definition", {"days": "three"}, {}, id="weather"))
+        self.assertEqual(str(refused.exception), 'config: days should be an integer, got "three"')
+        self.assertEqual(got, [{"days": 3}])
 
 
 if __name__ == "__main__":

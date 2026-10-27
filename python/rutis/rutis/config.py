@@ -472,17 +472,23 @@ class _Document:
                     # At one value each branch is tried once: one being
                     # tried (reached again through $ref) does not match,
                     # one tried before gives its result again.
-                    state = tried.get(id(branch), _MISSING)
+                    # Only a schema object has an identity to remember it
+                    # by: `true` / `false` branches never recurse (and every
+                    # JSON `true` is the same Python object).
+                    memo = isinstance(branch, dict)
+                    state = tried.get(id(branch), _MISSING) if memo else _MISSING
                     if state is _TRYING or state is _FAILED:
                         result = _MISSING
                     elif state is not _MISSING:
                         result = copy.deepcopy(state[0])
                     else:
                         trial = _Sink()
-                        tried[id(branch)] = _TRYING
+                        if memo:
+                            tried[id(branch)] = _TRYING
                         candidate = self.validate([branch], copy.deepcopy(value), path, required, trial, tried)
                         result = _MISSING if trial.errors else candidate
-                        tried[id(branch)] = _FAILED if result is _MISSING else (copy.deepcopy(result),)
+                        if memo:
+                            tried[id(branch)] = _FAILED if result is _MISSING else (copy.deepcopy(result),)
                     if result is not _MISSING:
                         passed = result
                         break
@@ -545,9 +551,9 @@ class _Document:
         return texts
 
 
-def _extra(path: list, key: str, known: list) -> ConfigIssue:
+def _extra(path: list, key: Any, known: list) -> ConfigIssue:
     """`<path> is not a config key`, with a close known key suggested."""
-    like = closest(key, known)
+    like = closest(key, known) if isinstance(key, str) else None
     return issue(path, f"is not a config key (did you mean {like}?)" if like is not None else "is not a config key")
 
 
