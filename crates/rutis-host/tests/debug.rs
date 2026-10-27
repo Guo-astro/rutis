@@ -233,8 +233,8 @@ fn dev_debug_stops_python_at_breakpoint() {
         "rutis-host dev: debugging: the Python runtime reads this terminal: breakpoint() stops there in pdb",
     ]);
     // pdb's prompt has no newline: its answer ends the line.
-    // The line it stopped at: `breakpoint()` itself before Python 3.13,
-    // the next one since.
+    // The line it stopped at: the next one before Python 3.13,
+    // `breakpoint()` itself since.
     host.wait_line(|line| {
         (line == "-> breakpoint()" || line.starts_with("-> print(")).then_some(())
     });
