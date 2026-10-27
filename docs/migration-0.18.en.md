@@ -203,3 +203,21 @@ runtime py: down (runtime process exited with exit status: 1)
 - **One cause can print several lines**: a plugin that fails to start reports the errors of the cleanups its rollback ran, then `StartFailed` (whose error holds them too); a parent failing because a child failed reports once for each; errors gathered together print over several lines.
 - **`shutdown()` does not change**: it still has no time limit, how long to wait is the host's choice. The error of `shutdown_with_timeout` / `dispose_with_timeout` running out names the plugins and cleanups not finished (`not finished after 3s: weather: still running the cleanup registered at src/weather.rs:12:9`) instead of `fiber PluginId(1) generation 0 still Unloading after …`; `DisposeWaitError::TimedOut` gained a field `stuck: Vec<Stuck>`, so code destructuring it with every field adds `..`.
 - `root.diagnostics()` implements `Display` (one item a line, by names, without rutis's own plugins by default); `PluginDiagnostics` gained the fields `row` and `platform`.
+
+## Rust embedding: `reconcile` does not wait for a runtime still starting (#678)
+
+In 0.17, while a runtime was still starting, the loader waited for it to resolve its rows, and `reconcile` waited with it; one runtime stuck (waiting for a debugger, say) held up every row. From 0.18 it does not wait: that runtime's rows wait for it first, and start once it is up and they are resolved again; the other rows start as usual, and `reconcile` returns.
+
+What you see: a `reconcile` called before the runtimes are up has nothing in its report of how their rows load (their errors are not in `failures` either); those rows wait for their runtime first. `Loader::check` and `Loader::schema_of` do not have their schema and declarations then either. For the full report as before, wait for the runtimes first:
+
+```rust
+let runtimes = [node.handle(), python.handle()];
+root.plugin(node);
+root.plugin(python);
+for runtime in &runtimes {
+    runtime.ready().await;
+}
+let report = handle.reconcile(layers, None).await?;
+```
+
+`rutis-host` is not affected: it still counts as started once every runtime is up and every row has been through its load.

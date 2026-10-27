@@ -563,6 +563,21 @@ impl Host {
         result
     }
 
+    /// Load `rows` while the runtimes start, not after: a runtime that
+    /// takes long to start (one waiting for its debugger) holds up only its
+    /// own rows, which wait for it; the others start as soon as they can.
+    /// Done, as before, once every runtime runs ([`Host::runtimes_ready`])
+    /// and every row has been through its load: the rows are loaded again
+    /// then, which changes nothing but waits for the rows the runtimes
+    /// released. An error says which runtime could not start, or why the
+    /// rows could not load.
+    pub async fn start_rows(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
+        let (ready, loaded) = tokio::join!(self.runtimes_ready(), self.load(rows.clone()));
+        ready?;
+        loaded?;
+        self.load(rows).await
+    }
+
     /// Load `rows` (replacing what was loaded before).
     pub async fn load(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
         self.loader
