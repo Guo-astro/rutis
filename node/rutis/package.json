@@ -16,6 +16,10 @@
       "types": "./src/index.d.ts",
       "default": "./src/index.mjs"
     },
+    "./advanced": {
+      "types": "./src/advanced.d.ts",
+      "default": "./src/advanced.mjs"
+    },
     "./testing": {
       "types": "./src/testing.d.ts",
       "default": "./src/testing.mjs"

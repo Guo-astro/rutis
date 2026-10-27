@@ -12,7 +12,7 @@
 // filter call and cancellation is logged with the host's synchronous
 // service `events-log.add(entry)`. It imports the SDK by path, so it is
 // loaded where it is, not copied.
-import * as rutis from '../../../rutis/src/index.mjs'
+import * as rutis from '../../../rutis/src/advanced.mjs'
 import { definePlugin } from '../../../rutis/src/index.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
