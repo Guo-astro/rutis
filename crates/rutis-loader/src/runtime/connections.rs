@@ -1,6 +1,5 @@
 //! Runtimes that dial in: each connection an access point admits is an
-//! instance of one `instanced` group
-//! (`docs/design-remote-runtime-dial-2026-10-14.md` §四).
+//! instance of one `instanced` group.
 //!
 //! [`RuntimeInstances`] is both halves. As the access point's
 //! [`Accept`] ([`RuntimeInstances::accept`]) it mounts a runtime on each
@@ -40,8 +39,10 @@ use rutis_bridge::{Accept, Accepted, PeerId, Release};
 use serde_json::{json, Value};
 
 use super::{unknown, JsFactory, RowRuntime};
+use crate::error::Unavailable;
+use crate::resolver::Resolved;
 use crate::resolver::{Build, ScopedFactory};
-use crate::{Loader, LoaderError, Resolved, Resolver, ServiceCatalog, Unavailable};
+use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 
 /// What the rows of a runtime need from it (as for a runtime rutis mounts
 /// itself): describing plugins, exporting their services, leasing host

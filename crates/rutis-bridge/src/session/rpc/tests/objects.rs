@@ -171,8 +171,8 @@ async fn a_call_on_an_object_whose_runtime_stopped_idle_says_so() {
 }
 
 /// Two runtimes calling each other's objects synchronously: the forward
-/// closing the cycle is refused (`SyncWaitCycle`), nothing hangs (#687
-/// §六, `bridge/sync-wait-cycle-refused`).
+/// closing the cycle is refused (`SyncWaitCycle`), nothing hangs
+/// (`bridge/sync-wait-cycle-refused`).
 /// objects-case(rust): sync-wait-cycle
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -269,7 +269,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
 }
 
 /// `undefined` is null inside a value at any depth, both ways; a whole
-/// argument or result keeps it (#687 §七).
+/// argument or result keeps it.
 /// objects-case(rust): undefined-nested-null
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -362,7 +362,7 @@ async fn undefined_is_null_inside_values() {
 
 /// A Rust service (`#[rutis::service]`) takes data and functions: an object
 /// as its argument fails that call with `bad-argument`, saying where the
-/// object came from (#687 §九).
+/// object came from.
 /// objects-case(rust): declared-type-refuses
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
