@@ -98,15 +98,14 @@ export function watchBlocking({ runtime, limit = blockingLimit(), quiet = proces
   const state = new Int32Array(new SharedArrayBuffer(8))
   const text = new Uint8Array(new SharedArrayBuffer(1024))
   const encoder = new TextEncoder()
-  let worker
+  // Started with the runtime, not in a row's first call: starting a thread
+  // there would hold that call up.
+  const worker = new Worker(WATCH, { eval: true, workerData: { state, text, limit } })
+  worker.unref()
+  worker.on('error', error => say(`runtime ${runtime()}: the blocking watch failed: ${error?.message ?? error}\n`))
   let depth = 0
   return {
     held(row, method, run) {
-      if (!worker) {
-        worker = new Worker(WATCH, { eval: true, workerData: { state, text, limit } })
-        worker.unref()
-        worker.on('error', error => say(`runtime ${runtime()}: the blocking watch failed: ${error?.message ?? error}\n`))
-      }
       // The outermost call: one a synchronous call of it waits for is
       // part of it.
       if (depth++ === 0) {
