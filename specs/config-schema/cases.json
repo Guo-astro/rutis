@@ -3073,6 +3073,54 @@
       "warnings": [
         "config: config[\"abc😀\"] is not a config key (did you mean abcd?)"
       ]
+    },
+    {
+      "name": "a $ref through an array's index",
+      "schema": {
+        "$defs": {
+          "a": {
+            "anyOf": [
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "properties": {
+          "v": {
+            "$ref": "#/$defs/a/anyOf/0"
+          }
+        }
+      },
+      "config": {
+        "v": 3
+      },
+      "then": {
+        "errors": [
+          "config: v should be a string, got 3"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "name": "a key named __proto__ is an ordinary key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "__proto__": {
+            "type": "integer",
+            "default": 1
+          }
+        }
+      },
+      "config": {},
+      "then": {
+        "config": {
+          "__proto__": 1
+        }
+      },
+      "warnings": []
     }
   ]
 }

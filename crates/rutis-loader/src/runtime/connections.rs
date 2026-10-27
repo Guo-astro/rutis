@@ -234,6 +234,9 @@ struct Instances {
     /// Every plugin a row named so far: each new connection describes
     /// them before its instance is created.
     plugins: Mutex<BTreeSet<String>>,
+    /// The loader the connections are accepted into ([`Self::accept`]):
+    /// its config step warns of a copy's extra config keys.
+    loader: Mutex<Option<crate::loader::WeakLoader>>,
 }
 
 impl RuntimeInstances {
@@ -250,6 +253,7 @@ impl RuntimeInstances {
                 catalog: catalog.clone(),
                 live: Mutex::default(),
                 plugins: Mutex::default(),
+                loader: Mutex::default(),
             }),
         }
     }
@@ -269,6 +273,7 @@ impl RuntimeInstances {
     /// in `loader`, from `ctx` (the loader's context or one above it; the
     /// group is a top-level one). The release removes the instance.
     pub fn accept(&self, loader: Loader, ctx: Ctx) -> AcceptInstances {
+        *self.inner.loader.lock().unwrap() = Some(loader.downgrade());
         AcceptInstances {
             instances: self.clone(),
             loader,
@@ -312,6 +317,8 @@ impl RuntimeInstances {
             }
         };
         let process = connection.process().clone();
+        let schema = described.config.clone();
+        let cordis = described.cordis;
         // A leaf runtime has no dependency resolution of its own: every
         // service its plugins inject waits in rutis. In Cordis, only the
         // shared names do.
@@ -356,7 +363,19 @@ impl RuntimeInstances {
                 host_key(name).instance(instance).erase()
             })),
         );
-        Ok(factory)
+        // The schema is known per connection: the loader warns of extra
+        // keys once per row, instance and value; the runtime's SDK fills
+        // and validates.
+        Ok(Arc::new(Warning {
+            loader: self.inner.loader.lock().unwrap().clone(),
+            // The row's id; its plugin's name only where the copy's row is
+            // not known.
+            row: build.row.clone().unwrap_or_else(|| row.to_owned()),
+            instance: format!("{instance:?}"),
+            schema,
+            cordis,
+            factory,
+        }))
     }
 
     /// Describe `plugin` on every connection, for a row naming it.
@@ -366,6 +385,51 @@ impl RuntimeInstances {
         for connection in live {
             connection.describe(plugin).await;
         }
+    }
+}
+
+/// A copy's factory on a connection, through the loader's config step.
+struct Warning {
+    loader: Option<crate::loader::WeakLoader>,
+    row: String,
+    instance: String,
+    schema: Option<Value>,
+    cordis: bool,
+    factory: Arc<dyn PluginFactory<Value>>,
+}
+
+impl Warning {
+    fn step(&self, config: &Value) -> Result<Value, Error> {
+        match &self.loader {
+            Some(loader) => loader
+                .connection_step(
+                    &self.row,
+                    &self.instance,
+                    self.schema.as_ref(),
+                    self.cordis,
+                    config,
+                )
+                .map_err(rutis::ConfigError::into_error),
+            None => Ok(config.clone()),
+        }
+    }
+}
+
+impl PluginFactory<Value> for Warning {
+    fn name(&self) -> &str {
+        self.factory.name()
+    }
+
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        self.factory.injects()
+    }
+
+    fn validate_config(&self, config: &Value) -> Result<(), Error> {
+        self.factory.validate_config(&self.step(config)?)
+    }
+
+    fn build(&self, config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        self.factory.build(&self.step(config)?)
     }
 }
 

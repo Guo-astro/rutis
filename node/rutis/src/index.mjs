@@ -32,6 +32,8 @@
 // 3: the unified events of rutis 0.13 (#464): ctx.parallel, serial,
 // waterfall, bail and filter, ctx.signal, and `prepend` / `global` on
 // ctx.on. A runtime of 0.12 or older refuses such a plugin at load.
+import { schemaOf } from './config.mjs'
+
 export const PLUGIN_API = 3
 
 // Marks what definePlugin returns, across copies of this package.
@@ -39,6 +41,10 @@ export const PLUGIN = Symbol.for('rutis.leaf-plugin')
 
 export function definePlugin(spec) {
   if (typeof spec?.apply !== 'function') throw new TypeError('a plugin needs apply(ctx, config)')
+  // `config` is a JSON Schema: rutis fills its defaults and validates the
+  // config with it before `apply`. A Standard Schema object (schemastery,
+  // zod, …) was never applied: refused (config schema design §2.3).
+  schemaOf(spec.config)
   const inject = spec.inject ?? []
   if (!Array.isArray(inject) || inject.some(name => typeof name !== 'string')) throw new TypeError('inject must be a list of service names')
   for (const [name, methods] of Object.entries(spec.provides ?? {})) {

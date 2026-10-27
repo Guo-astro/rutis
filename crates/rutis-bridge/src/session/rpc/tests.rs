@@ -654,6 +654,7 @@ fn endpoint_pair() -> (Connection, Far) {
     (connection, far)
 }
 
+/// guarantee: bridge/object-refs
 /// objects-case(rust): plain-object-by-reference
 /// objects-case(rust): third-language
 /// objects-case(rust): return-array-event
@@ -2602,6 +2603,7 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
 /// end. No relay is left behind, the object is released on its owner once
 /// dropped, and the session goes on.
 /// objects-case(rust): no-objects-declared
+/// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread")]
 async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     struct Holding(Mutex<Option<Value>>);

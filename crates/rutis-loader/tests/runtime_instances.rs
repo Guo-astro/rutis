@@ -57,7 +57,12 @@ impl Runtime {
     fn schema(&self, plugin: &str) -> Value {
         match self.undeclared {
             true => json!({ "inject": [], "provides": {} }),
-            false => json!({ "inject": [], "provides": { plugin: { "whoami": "async" } } }),
+            // A config schema: the loader warns of a copy's extra keys.
+            false => json!({
+                "inject": [],
+                "provides": { plugin: { "whoami": "async" } },
+                "config": { "type": "object", "properties": { "label": { "type": "string" } } }
+            }),
         }
     }
 
@@ -280,6 +285,8 @@ struct Main {
     _root: Ctx,
     loader: Loader,
     log: Log,
+    /// The config warnings the loader gave.
+    warnings: Log,
     events: broadcast::Receiver<AccessEvent>,
 }
 
@@ -352,10 +359,20 @@ async fn main() -> Main {
         },
     );
     let loader = plugin.handle();
+    let warnings = Log::default();
+    {
+        let warnings = warnings.clone();
+        loader.on_config_warning(Arc::new(move |row: &str, issue: &rutis::ConfigIssue| {
+            warnings
+                .lock()
+                .unwrap()
+                .push(format!("{row}: config: {}", issue.message))
+        }));
+    }
     (&root.plugin(plugin)).await.unwrap();
     let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [{
         "id": "phone", "group": true, "instanced": true, "config": [
-            { "id": "contacts", "name": "phone:contacts" },
+            { "id": "contacts", "name": "phone:contacts", "config": { "labl": "x" } },
             { "id": "reader", "name": "reader" },
             { "id": "weather-reader", "name": "weather-reader" }
         ]
@@ -382,6 +399,7 @@ async fn main() -> Main {
         _root: root,
         loader,
         log,
+        warnings,
         events,
     }
 }
@@ -457,6 +475,28 @@ async fn connections_with_the_same_plugin_each_get_their_own_instance() {
         ._root
         .get_at(&rutis_bridge::session::host_key("contacts"))
         .is_none());
+}
+
+/// A copy's extra config key, its schema known per connection, is warned
+/// about once per row and instance, named after the row (config schema
+/// design §3.2); the copies run.
+#[tokio::test(flavor = "multi_thread")]
+async fn extra_config_keys_are_warned_about_per_instance() {
+    let mut main = main().await;
+    let _pixel = dial(&main, "pixel", &["contacts"], true).await;
+    main.connected("pixel").await;
+    let _tablet = dial(&main, "tablet", &["contacts"], false).await;
+    main.connected("tablet").await;
+    main.heard("reader in pixel hears pixel").await;
+    main.heard("reader in tablet hears tablet").await;
+    assert_eq!(main.states("contacts"), (2, Vec::new()));
+    assert_eq!(
+        *main.warnings.lock().unwrap(),
+        [
+            "contacts: config: labl is not a config key (did you mean label?)",
+            "contacts: config: labl is not a config key (did you mean label?)",
+        ]
+    );
 }
 
 /// guarantee: loader/runtime-connection-instances

@@ -29,6 +29,7 @@
 import { realpathSync } from 'node:fs'
 import type { Client } from './client.ts'
 import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
+import { checkConfig, configError, schemaOf } from './config.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
 import { UNDECLARED, noMethod, notDeclared, serviceName, unavailable } from './errors.ts'
@@ -335,6 +336,15 @@ export class Runtime {
       },
     }
     try {
+      // Defaults filled and the config validated against the plugin's
+      // schema before `apply` (config schema design §2.2); extra keys are
+      // the host's loader's to warn about.
+      const schema = schemaOf(plugin.config)
+      if (schema !== undefined) {
+        const checked = checkConfig(schema, config)
+        if (checked.errors.length) throw configError(checked.errors)
+        config = checked.config
+      }
       const cleanup = await plugin.apply(ctx, config)
       if (cleanup !== undefined && cleanup !== null) {
         if (typeof cleanup !== 'function') throw new TypeError('apply must return a cleanup function or nothing')

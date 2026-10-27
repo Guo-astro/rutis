@@ -2,11 +2,13 @@
 # installed as a user gets it, from npm, from PyPI and as the release
 # binary, in a new directory, running a minimal project
 # (tests/e2e/tests/install.rs). One job per platform runs the three
-# channels one after another.
+# channels one after another. On linux-x64 the developer-experience
+# scenarios follow (#690, tests/e2e/tests/devx.rs).
 #
 #   nightly.yml   calls it every night main has new commits: builds that
-#                 commit's packages (package.yml) on every platform and
-#                 installs them (self-hosted: true)
+#                 commit's packages (package.yml) and installs them
+#                 (self-hosted: true), on every platform when the packages
+#                 changed (or on Monday), else on linux-x64 alone
 #   pull requests not at all: the nightly runs and the release gate cover it
 #   release.yml   calls it twice: before publishing, on every platform,
 #                 with the packages it built (source: local, build: false);
@@ -243,6 +245,21 @@ jobs:
         run: |
           node --version; python3 --version 2>/dev/null || python --version; uv --version
           cargo test --locked -p rutis-e2e --test install -- --ignored --test-threads=1
+      # The developer's view (#690, tests/e2e/tests/devx.rs): a plugin
+      # written in each language from the template, tested, reloaded under
+      # dev and packed; plugins of two languages assembled, run, changed and
+      # stopped; a small Rust host's extension point taking a plugin from
+      # the template, and its errors structured; with these packages,
+      # before they are published (the release gate) and every night.
+      # Linux only: the steps are the same on every platform, a few minutes
+      # here.
+      - name: the developer-experience scenarios
+        if: env.RUTIS_E2E_SOURCE == 'local' && runner.os == 'Linux' && matrix.platform == 'linux-x64'
+        env:
+          RUTIS_E2E_ARTIFACTS: ${{ runner.temp }}/artifacts
+          RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
+        # Three at a time: two of them compile Rust (the plugin, the host).
+        run: cargo test --locked -p rutis-e2e --test devx -- --ignored --test-threads=3
       # The guides install from the registries, so their examples run once
       # the version is published.
       - name: the guides' examples

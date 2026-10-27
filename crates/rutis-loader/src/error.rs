@@ -143,10 +143,7 @@ fn rejected_text(id: &str, error: &ErrorKind) -> String {
 /// The config error a row failed with: its config does not match its
 /// plugin's schema.
 fn config_error(error: &ErrorKind) -> Option<&rutis::ConfigError> {
-    match error {
-        ErrorKind::PluginFailed(source) => rutis::ConfigError::find(source.as_ref()),
-        _ => None,
-    }
+    rutis::ConfigError::of(error)
 }
 
 impl LoaderError {
