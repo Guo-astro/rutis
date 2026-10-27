@@ -132,7 +132,7 @@ async def apply(ctx, config):
 ## 九、兼容
 
 - 新增，默认可用，与 Cordis 一致：所有共享名字的宿主多了一个服务 `loader`。
-- 已经有插件或宿主按名字提供 `loader` 的，会与它同名冲突（后提供的那个失败，已有的同名规则）。这一条写进《迁移到 0.19》：改名，或用 `share_registered_only`。
+- 已经有插件或宿主按名字提供 `loader` 的，会与它同名冲突（后提供的那个失败，已有的同名规则）。`loader` 是与 Cordis 一致的保留名，这不算 0.19 的不兼容项，只在《迁移到 0.19》里写一句说明：改名，或用 `share_registered_only`。
 - rutis-host：运行中经 `loader` 加、删的行写回 `rutis.json`；文件里其他字段不变。
 
 ## 十、实施
