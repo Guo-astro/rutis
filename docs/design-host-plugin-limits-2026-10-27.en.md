@@ -119,7 +119,16 @@ set.add(rows);
 // removing: delete the row with a loader edit, unload both fibers (the process ends), then set.remove("agent-weather")
 ```
 
-rutis-host still refuses a new runtime in rutis.json while it runs, as now and as in #691. `runtimes.local` is read only at start.
+**`runtimes.local` when rutis-host reads its configuration again**: rutis-host builds its loader with one `RuntimeSet` that holds all of `runtimes.local`'s entries. When it reads the configuration again (`dev`, `run --watch-config` and SIGUSR1, a write by [#185](https://github.com/arcships/rutis/issues/185)'s management service), it handles each entry on its own, without asking for a restart:
+
+| Entry | What happens |
+| --- | --- |
+| Running and unchanged | Nothing |
+| Added | Added while running: the runtime, its `RuntimeRowsPlugin`, `set.add`, then its rows. Other runtimes are not restarted |
+| Removed | Its rows are deleted first, then the runtime is unloaded (its process ends), then `set.remove` |
+| Changed (any field, `limits` and `greeting` included) | Only this runtime restarts (`FiberView::restart`). Its rows wait for it and are resolved again |
+
+Today `restart_needed` (`crates/rutis-host/src/host.rs`) asks for a host restart when an entry of `runtimes.remote` or of a language is added or changed. A language entry that is removed already has its runtime stopped during the reload (`Reloaded::stopped`). This design only takes `runtimes.local` out of that check and handles it as in the table. The rules for `runtimes.node`, `py`, `bun`, `go`, `swift` and `remote` stay as they are: adding one while running still asks for a host restart, which #691 relies on.
 
 ### 4.2 Options live on the runtime
 
@@ -149,7 +158,7 @@ let limits = Limits::new().call(Duration::from_secs(30)).stop(Stop::Process).ser
   It does not matter whether the caller is the host, a plugin in another runtime, or a Rust plugin in the host. `rutis-host call` (#670) goes through `call_service` and is recorded as "the host". When it enters a runtime with a limit, the limit applies to it too. The time runs from when the call is sent until it ends, so for a remote runtime it includes the network.
 - **What it does not cover**: calls between plugins in the same runtime, which do not pass through the host and do not show in 0.18's status either. Cleanup is not covered either, because the host owns the shutdown limit (0.18 §6.2).
 - **After a timeout**: the caller gets an error with code `timeout`, and the call is cancelled on the far side, using each language's existing cancellation. A row that times out while starting fails.
-- **`stop: "process"`**: also ends the runtime's process with `processes().kill()`. After that, the runtime's `restart` applies: rutis-host's `no`, `on-failure` or `exit`, or Go/Swift's `RestartPolicy`. In a Rust embedding, the host decides whether to call `restart`. Other in-progress calls into that process fail with 0.18's existing `peer-gone`. This works only for local runtimes. On a remote runtime it is an error at start, because the host cannot end a process on another machine.
+- **`stop: "process"`**: also ends the runtime's process with `processes().kill()`. After that, the runtime's `restart` applies: rutis-host's `no`, `on-failure` or `exit`, or Go/Swift's `RestartPolicy`. In a Rust embedding, the host decides whether to restart it, with an existing interface: `FiberView::restart()` on the fiber `root.plugin(runtime)` returned starts a new process, and its rows come back. For Go/Swift, use the existing `BinaryRuntimesHandle::restart(name)`. No new interface is needed. Other in-progress calls into that process fail with 0.18's existing `peer-gone`. This works only for local runtimes. On a remote runtime it is an error at start, because the host cannot end a process on another machine.
 - **Why `process` is needed**: cancellation depends on the plugin's cooperation. A TypeScript promise cannot be cancelled (0.18 §6.1). A Python `def` method or a JS busy loop holds the whole process, and cancellation cannot stop it. Then only ending the process lets the other plugins go on.
 - If the caller also set its own limit, the one that runs out first wins.
 
@@ -185,7 +194,11 @@ What the host owner writes and the output that follows (rutis-host). A Rust embe
 | 8 | `stop: "process"` on a remote runtime | An error at start: `runtime gpu: limits.stop "process" needs a runtime this host starts; gpu is remote` |
 | 9 | A repeated `local` name, or a wrong language | `runtimes.local: wordcount is already the name of another runtime`; `runtime wordcount: the language is node, python or bun, not go` |
 | 10 | A Rust embedding calls `set.add` for a runtime at run time and inserts its row, then deletes the row and unloads the runtime | When it is added, only that runtime's start line and the row's status line appear. When it is removed: `runtime agent-weather: stopped`, and its process ends. Other runtimes keep their pids, and their rows run as before |
-| 11 | A row written `wordcunt:wordcount-plugin` (misspelt prefix) | The same as now when no resolver accepts a name (0.18's text). Nothing new is printed |
+| 11 | While rutis-host runs, an entry `agent-notes` and its row are added to `runtimes.local` in rutis.json (by hand, `--watch-config`, or the management service) | The reload line, after the existing `1 row changed`, continues `, runtime agent-notes started`. Other runtimes are not restarted |
+| 12 | The `agent-notes` entry and its row are removed | `1 row changed, runtime agent-notes stopped` (as when a language runtime is removed today), and its process ends |
+| 13 | `agent-notes`'s `limits.call` changes | `runtime agent-notes restarted`. Only its rows wait for it briefly |
+| 14 | `runtimes.bun` is added while running | As now: `runtimes.bun added: restart the host`, and the configuration is not applied |
+| 15 | A row written `wordcunt:wordcount-plugin` (misspelt prefix) | The same as now when no resolver accepts a name (0.18's text). Nothing new is printed |
 
 Plugin authors write nothing new. Their code sees ordinary errors (name, message, code) and handles them like any other error.
 
@@ -224,7 +237,7 @@ One issue (#683), in four steps:
 | --- | --- | --- |
 | 1 rutis-bridge | `Limits` and `Stop`; `RuntimePlugin::limits`, `LocalRuntime::limits` / `greeting`. At the places a call enters a runtime (`RowService::invoke`, calls of functions passed by reference, listeners, loading a row and its `apply`): time the call, cancel it, and end the process when `stop` says so. The `timeout` and `not-allowed` codes | For each language (Node, Bun, Python, Go, Swift), tests show: an async method that times out is cancelled; with `stop: process`, a method holding the process synchronously gets the process ended while other runtimes are unaffected; a function passed by reference times out; `apply` times out. One test each for a local `greeting` of 1 s and of `None` |
 | 2 rutis-loader | Prefixed Node names and `prefixed()`; `RuntimeSet`. The `services` check at resolution: a required dependency fails the row, an optional one is not leased. `BinaryRuntimes::limits` / `greeting` | Two Node runtimes each run their own rows in their own process, and one crashing leaves the other running. With `RuntimeSet`, a runtime with limits and its row are added and removed at run time, its process ends, and other runtimes keep their processes. Tests cover the three `services` cases: allowed, a required one not allowed, and an optional one not allowed and then called. Rows of the same runtime that provide services to each other are not limited |
-| 3 rutis-host | Top-level and per-entry `limits` and `greeting`; `runtimes.local`; the static check in `check`; the §5 output; `dev` restarts only the changed plugin's runtime | Each §5 item has a test asserting its exact text, and the error text contains none of 0.18 §4.5's banned words. The deskmate scenario runs end to end: two TS plugins in their own processes, the one in a busy loop ended and restarted, and a service the host does not allow refused |
+| 3 rutis-host | Top-level and per-entry `limits` and `greeting`; `runtimes.local`, held by a `RuntimeSet`, with single runtimes added, removed and restarted on reload as in §4.1's table (`restart_needed` no longer checks it, and `Reloaded` gains started and restarted); the static check in `check`; the §5 output; `dev` restarts only the changed plugin's runtime | Each §5 item has a test asserting its exact text, and the error text contains none of 0.18 §4.5's banned words. On reload, adding, removing or changing one `local` entry leaves other runtimes' pids unchanged. The deskmate scenario runs end to end: two TS plugins in their own processes, the one in a busy loop ended and restarted, and a service the host does not allow refused |
 | 4 Docs | Section 3 of open-host.md (#671's guide, written after this step); the options in the reference tables of rust-host.md and rutis-host.md (§7); a `host/plugin-limits` entry in `docs/guarantees.md` that names the test verifying each rule | The doc link check and the doc example check pass |
 
 The issue's "Done" list maps as follows: steps 1–3 are "the options and tests", and step 4 is "the guide section". The issue puts that section in rust-host.md; following #671, it goes into section 3 of open-host.md instead.

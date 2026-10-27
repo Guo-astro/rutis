@@ -119,7 +119,16 @@ set.add(rows);
 // 移除：先用 loader 编辑删掉这一行，再卸载两个 fiber（进程随之结束），最后 set.remove("agent-weather")
 ```
 
-rutis-host 的 rutis.json 在运行中新增运行时仍然拒绝（与现在、与 #691 相同），`runtimes.local` 只在启动时读。
+**rutis-host 重读配置时的 `runtimes.local`**：rutis-host 建 loader 时用同一个 `RuntimeSet` 承载 `runtimes.local` 的所有条目，所以重读配置（`dev`、`run --watch-config` 与 SIGUSR1、[#185](https://github.com/arcships/rutis/issues/185) 的管理服务写配置）时按条目处理，不要求重启宿主：
+
+| 条目 | 处理 |
+| --- | --- |
+| 在运行、内容没变 | 不动 |
+| 新增 | 运行中加上（运行时、`RuntimeRowsPlugin`、`set.add`），再加它的行；其他运行时不重启 |
+| 删掉 | 先删它的行，再卸载运行时（进程结束），最后 `set.remove` |
+| 内容变了（任一字段，含 `limits`、`greeting`） | 只重启这一个运行时（`FiberView::restart`），它的行等它回来后重新解析 |
+
+现在 `restart_needed`（`crates/rutis-host/src/host.rs`）对 `runtimes.remote` 和各语言条目的增加、修改都要求重启宿主；语言条目被删时已经在重读中停掉它的运行时（`Reloaded::stopped`）。本稿只把 `runtimes.local` 从这个检查里拿出来，按上表处理；`runtimes.node`、`py`、`bun`、`go`、`swift` 与 `remote` 的规则不变（运行中新增仍要求重启宿主，#691 依赖这一条）。
 
 ### 4.2 选项放在运行时上
 
@@ -143,7 +152,7 @@ let limits = Limits::new().call(Duration::from_secs(30)).stop(Stop::Process).ser
 - **管哪些调用**：这一侧进入这个运行时里插件代码的每次调用——按名字调用服务（`RowService::invoke`，0.18 在这里登记进行中的调用）、按引用传过来的函数（deskmate 的工具处理函数就是这种）、事件监听器、行的启动（导入入口模块与 `apply`）。调用方是宿主、别的运行时的插件还是同一宿主里的 Rust 插件都一样；`rutis-host call`（#670，经 `call_service`，记为"宿主"）进入受限的运行时，同样受这个时限。从发出到结束计时，远程运行时包括网络时间。
 - **不管的**：同一运行时里插件之间的调用（不经过宿主，0.18 的状态里也看不到）；清理（关闭的时限归宿主，0.18 §6.2）。
 - **超时以后**：调用方收到错误码 `timeout` 的错误；同时向对面取消这个调用（各语言已有的取消）。行的启动超时，这一行失败。
-- **`stop: "process"`**：再结束这个运行时的进程（`processes().kill()`），之后按它的 `restart` 处理（rutis-host 的 `no` / `on-failure` / `exit`，Go/Swift 的 `RestartPolicy`；Rust 嵌入由宿主决定是否 `restart`）。同一进程里其他进行中的调用报 0.18 已有的 `peer-gone`。只用于本机运行时：写在远程运行时上时启动报错（宿主结束不了别处的进程）。
+- **`stop: "process"`**：再结束这个运行时的进程（`processes().kill()`），之后按它的 `restart` 处理（rutis-host 的 `no` / `on-failure` / `exit`，Go/Swift 的 `RestartPolicy`；Rust 嵌入由宿主决定是否重启：对 `root.plugin(runtime)` 返回的 fiber 调用已有的 `FiberView::restart()`，起一个新进程，它的行随之回来；Go/Swift 用已有的 `BinaryRuntimesHandle::restart(名字)`。不需要新接口）。同一进程里其他进行中的调用报 0.18 已有的 `peer-gone`。只用于本机运行时：写在远程运行时上时启动报错（宿主结束不了别处的进程）。
 - **为什么要 `process`**：取消是协作的。TypeScript 的 promise 取消不了（0.18 §6.1），Python 的 `def` 方法和 JS 的忙循环占住整个进程，取消传过去也停不下；这时只有结束进程能让别的插件继续。
 - 调用方自己也限了时：先到的那个生效。
 
@@ -179,7 +188,11 @@ let limits = Limits::new().call(Duration::from_secs(30)).stop(Stop::Process).ser
 | 8 | `stop: "process"` 写在远程运行时上 | 启动报错：`runtime gpu: limits.stop "process" needs a runtime this host starts; gpu is remote` |
 | 9 | `local` 的名字重复 / 语言写错 | `runtimes.local: wordcount is already the name of another runtime`；`runtime wordcount: the language is node, python or bun, not go` |
 | 10 | Rust 嵌入运行中 `set.add` 一个运行时再插入它的行，之后删行、卸载运行时 | 加入时只有这个运行时的启动行与这一行的状态行；移除后 `runtime agent-weather: stopped`，进程结束，其他运行时的 pid 不变、行照常 |
-| 11 | 行写了 `wordcunt:wordcount-plugin`（前缀写错） | 与现在没有解析器接受这个名字时相同（0.18 的文字），不另加输出 |
+| 11 | rutis-host 运行中，rutis.json 的 `runtimes.local` 新增 `agent-notes` 一条和它的行（手改、`--watch-config` 或管理服务写入） | 重读的那一行在现有的 `1 row changed` 之后接 `, runtime agent-notes started`；其他运行时不重启 |
+| 12 | 删掉 `agent-notes` 一条和它的行 | `1 row changed, runtime agent-notes stopped`（与现在语言运行时被删时的写法相同），进程结束 |
+| 13 | 改了 `agent-notes` 的 `limits.call` | `runtime agent-notes restarted`；只有它的行短暂等它 |
+| 14 | 运行中新增 `runtimes.bun` | 与现在相同：`runtimes.bun added: restart the host`，配置不生效 |
+| 15 | 行写了 `wordcunt:wordcount-plugin`（前缀写错） | 与现在没有解析器接受这个名字时相同（0.18 的文字），不另加输出 |
 
 插件作者不写任何新东西：他的代码看到的只是普通的错误（名字、消息、错误码），与别的出错一样处理。
 
@@ -218,7 +231,7 @@ let limits = Limits::new().call(Duration::from_secs(30)).stop(Stop::Process).ser
 | --- | --- | --- |
 | 1 rutis-bridge | `Limits`、`Stop`；`RuntimePlugin::limits`、`LocalRuntime::limits` / `greeting`；在进入运行时的几处（`RowService::invoke`、按引用的函数调用、监听器、行的加载与 `apply`）计时、取消、按 `stop` 结束进程；`timeout`、`not-allowed` 两个错误码 | 每种语言（Node、Bun、Python、Go、Swift）各一个测试：异步方法超时被取消、同步占住时 `stop: process` 结束进程且其他运行时不受影响、按引用的函数超时、`apply` 超时；本机 `greeting` 设为 1 秒与 `None` 各一个测试 |
 | 2 rutis-loader | Node 的前缀写法与 `prefixed()`；`RuntimeSet`；解析时检查 `services`（必需的失败、可选的不租借）；`BinaryRuntimes::limits` / `greeting` | 两个 Node 运行时各自的行进各自的进程，其中一个崩溃另一个照常；运行中 `RuntimeSet` 加入、移除一个带限制的运行时与它的行，进程结束，其他运行时的进程不变；`services` 的三种情况（允许、必需不允许、可选不允许后调用）；同一运行时里的行互相提供不受限 |
-| 3 rutis-host | 顶层与各条目的 `limits`、`greeting`；`runtimes.local`；`check` 的静态检查；§五 的输出；`dev` 只重启改动的插件所在的运行时 | §五 每一条有逐字断言的测试，出错文字不含 0.18 §4.5 的禁用词；deskmate 的场景端到端：两个 TS 插件各一个进程、忙循环的那个被结束并重启、用了不让用的服务被拒 |
+| 3 rutis-host | 顶层与各条目的 `limits`、`greeting`；`runtimes.local` 经 `RuntimeSet` 承载，重读配置时按 §4.1 的表增、删、重启单个运行时（`restart_needed` 不再管它，`Reloaded` 加 started / restarted）；`check` 的静态检查；§五 的输出；`dev` 只重启改动的插件所在的运行时 | §五 每一条有逐字断言的测试，出错文字不含 0.18 §4.5 的禁用词；重读配置时新增、删掉、修改一条 `local`，其他运行时的 pid 不变；deskmate 的场景端到端：两个 TS 插件各一个进程、忙循环的那个被结束并重启、用了不让用的服务被拒 |
 | 4 文档 | open-host.md 第 3 节（#671 的指南，在本步之后写）、rust-host.md 与 rutis-host.md 参考表里的选项（§七），`docs/guarantees.md` 登记 `host/plugin-limits`（每条写明验证它的测试） | 文档链接检查、doc 例子检查通过 |
 
 对应 issue 的「完成」：步 1–3 是"选项与测试"，步 4 是"指南一节"（issue 原文写在 rust-host.md，按 #671 改为 open-host.md 第 3 节）。
