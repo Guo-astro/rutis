@@ -390,9 +390,7 @@ def apply(ctx, config):
     /// Wait until `state` says what `want` looks for.
     async fn until(handle: &RuntimeHandle, what: &str, want: fn(&RuntimeState) -> bool) {
         COLD.within(what, async {
-            while !want(&handle.state()) {
-                handle.changed().await;
-            }
+            handle.wait_for(want).await;
         })
         .await;
     }
