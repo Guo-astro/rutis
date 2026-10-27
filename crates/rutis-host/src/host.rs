@@ -147,6 +147,7 @@ impl Host {
     pub async fn start_with(config: &HostConfig, embedding: Embedding) -> Result<Self, Error> {
         config.check_runtime_names()?;
         config.check_dialing_runtimes()?;
+        config.check_listener_tokens(embedding.identity.is_none())?;
         // The token of each runtime that dials in, before anything starts.
         let mut dialing = Vec::new();
         for remote in &config.runtimes.remote {
@@ -580,6 +581,7 @@ impl Host {
         restart_needed(&self.config, &new)?;
         new.check_runtime_names()?;
         new.check_dialing_runtimes()?;
+        new.check_listener_tokens(self.accepted.is_some())?;
         let removed: Vec<&'static str> = LANGUAGES
             .iter()
             .filter(|language| {
