@@ -192,7 +192,7 @@ pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
 ) -> Option<control::Serving> {
-    match control::serve(target, host.loader.clone()) {
+    match control::serve(target, host.status_report()) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
         Err(why) => {

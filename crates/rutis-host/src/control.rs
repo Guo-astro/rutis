@@ -1,6 +1,6 @@
 //! `rutis-host status`: a host started by `run` or `dev` answers it on a
 //! local socket that only its user can open (design §5.3). The socket
-//! answers one request, `status`, with [`Loader::status`] as printed; it
+//! answers one request, `status`, with [`rutis_loader::Loader::status`] as printed (and the remote runtimes' connections); it
 //! changes nothing. It sits in the system's runtime directory
 //! (`$XDG_RUNTIME_DIR`, else the temporary directory), in a directory of
 //! the user's own, named after the configuration's path, so nothing is
@@ -8,7 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_loader::Loader;
+/// What the socket answers `status` with: the loader's status
+/// ([`rutis_loader::Loader::status`], as printed), and what the host adds.
+pub type Report = std::sync::Arc<dyn Fn() -> String + Send + Sync>;
 
 /// What a host and `rutis-host status` agree to name a configuration by:
 /// the configuration file `target` names (a directory's `rutis.json` when
@@ -114,13 +116,13 @@ impl Drop for Serving {
 /// (another host answers for the same configuration, the directory is not
 /// the user's own): the host runs on without it.
 #[cfg(unix)]
-pub fn serve(target: &Path, loader: Loader) -> Result<Serving, String> {
-    serve_in(&base(), target, loader)
+pub fn serve(target: &Path, report: Report) -> Result<Serving, String> {
+    serve_in(&base(), target, report)
 }
 
 /// [`serve`] under the runtime directory `base`.
 #[cfg(unix)]
-fn serve_in(base: &Path, target: &Path, loader: Loader) -> Result<Serving, String> {
+fn serve_in(base: &Path, target: &Path, report: Report) -> Result<Serving, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
     let dir = directory(base);
@@ -161,9 +163,9 @@ fn serve_in(base: &Path, target: &Path, loader: Loader) -> Result<Serving, Strin
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
-            let loader = loader.clone();
+            let report = report.clone();
             tokio::spawn(async move {
-                let _ = answer(stream, &loader).await;
+                let _ = answer(stream, &report).await;
             });
         }
     });
@@ -173,7 +175,7 @@ fn serve_in(base: &Path, target: &Path, loader: Loader) -> Result<Serving, Strin
 /// Read one request and answer it: `status`, or that only `status` is
 /// answered.
 #[cfg(unix)]
-async fn answer(stream: tokio::net::UnixStream, loader: &Loader) -> std::io::Result<()> {
+async fn answer(stream: tokio::net::UnixStream, report: &Report) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let mut stream = stream;
@@ -184,7 +186,7 @@ async fn answer(stream: tokio::net::UnixStream, loader: &Loader) -> std::io::Res
     )
     .await;
     let reply = match (read, request.trim()) {
-        (Ok(Ok(_)), "status") => loader.status().to_string(),
+        (Ok(Ok(_)), "status") => report(),
         _ => "error: this socket answers only `status`\n".to_owned(),
     };
     stream.write_all(reply.as_bytes()).await?;
@@ -236,7 +238,7 @@ async fn ask(base: &Path, target: &Path) -> Result<String, String> {
 }
 
 #[cfg(not(unix))]
-pub fn serve(_target: &Path, _loader: Loader) -> Result<Serving, String> {
+pub fn serve(_target: &Path, _report: Report) -> Result<Serving, String> {
     Err("rutis-host status is not available on Windows".into())
 }
 
@@ -275,12 +277,13 @@ mod tests {
 
         let base = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let loader = || {
-            rutis_loader::LoaderPlugin::new(
+        let loader = || -> Report {
+            let loader = rutis_loader::LoaderPlugin::new(
                 rutis_loader::Chain::new(),
                 rutis_loader::LoaderOptions::default(),
             )
-            .handle()
+            .handle();
+            std::sync::Arc::new(move || loader.status().to_string())
         };
         let serving = serve_in(base.path(), project.path(), loader()).unwrap();
         let said = status_in(base.path(), project.path()).await.unwrap();
