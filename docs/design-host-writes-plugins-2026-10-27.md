@@ -2,7 +2,7 @@
 
 [English](design-host-writes-plugins-2026-10-27.en.md) · [中文](design-host-writes-plugins-2026-10-27.md)
 
-状态：草案，未实现。日期：2026-10-27。基准：`main` `103c0d22`。排期：0.19（只做设计）；实现在 0.19 之后。
+状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`。排期：0.19（只做设计）；实现在 0.19 之后。
 Issue：[#185](https://github.com/arcships/rutis/issues/185)（含并入的 [#693](https://github.com/arcships/rutis/issues/693)）。取代 [#505](https://github.com/arcships/rutis/pull/505) 的草案。
 与 0.18 的关系：状态用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §五 的 `Loader::status()`，出错文字按它 §四；不加结构。
 
@@ -146,9 +146,3 @@ async def apply(ctx, config):
 | S1（§八）；rutis-host.md 与插件 API 指南加"用 `loader` 管理插件"一节（中英） | Linux、macOS 通过 |
 
 依赖：0.18 的 `Loader::status()`（#678）与出错文字（#677）；S1 用 #670 的 `call`。不依赖 #683（宿主要限制时才用它的 `allowed_services`）与 #691。
-
-## 十一、自审：还有没有没有使用方的东西
-
-- 4 个方法：`create`、`reload`、`remove` 是 S1 的第 2、4–5、6 步；`status` 是第 1、6 步。其余 `Loader` 方法不放。
-- 权限、命名运行时、默认限制、管理服务、工具注册、批准、排队、版本检查：都没有使用方，不做。
-- rutis-host 的可编辑层：没有它 S1 在 rutis-host 里做不成，保留。

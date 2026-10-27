@@ -2,7 +2,7 @@
 
 [English](design-host-writes-plugins-2026-10-27.en.md) · [中文](design-host-writes-plugins-2026-10-27.md)
 
-Status: draft, not implemented. Date: 2026-10-27. Base: `main` `103c0d22`. Scheduled: 0.19 (design only); implementation after 0.19.
+Status: final, not implemented. Date: 2026-10-27. Base: `main` `103c0d22`. Scheduled: 0.19 (design only); implementation after 0.19.
 Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)). Replaces the [#505](https://github.com/arcships/rutis/pull/505) draft.
 Relation to 0.18: state is [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §5's `Loader::status()`, error text follows its §4; no new structure.
 
@@ -146,9 +146,3 @@ After 0.19, one PR:
 | S1 (§8); a section "managing plugins with `loader`" in rutis-host.md and the plugin API guide (both languages) | Passes on Linux and macOS |
 
 Dependencies: 0.18's `Loader::status()` (#678) and error text (#677); S1 uses #670's `call`. No dependency on #683 (only a host that wants limits uses its `allowed_services`) or #691.
-
-## 11. Self-review: anything without a user?
-
-- 4 methods: `create`, `reload`, `remove` are S1's steps 2, 4–5 and 6; `status` is steps 1 and 6. No other `Loader` method.
-- Permissions, named runtimes, default limits, a management service, tool registration, approvals, queues, version checks: no user, not done.
-- rutis-host's editable layer: without it S1 cannot work in rutis-host; kept.
