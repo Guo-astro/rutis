@@ -150,8 +150,8 @@ type forecast struct {
 }
 
 // A typed config through the test tool: the error crosses with its data;
-// an Update to a bad config fails as a load does; an extra key is warned
-// about once per row and config.
+// an extra key is warned about once per row and config, an Update to the
+// same config saying nothing again.
 func TestATypedConfigInTheTestTool(t *testing.T) {
 	var got forecast
 	plugin := rutis.Define(rutis.Plugin[forecast]{

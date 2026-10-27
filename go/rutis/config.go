@@ -37,7 +37,7 @@ func configured(schema, given any, t reflect.Type) (reflect.Value, error) {
 	}
 	decoded, err := convert.FromPeer(json.RawMessage(data), t)
 	if err != nil {
-		return reflect.Value{}, badConfig([]config.Issue{config.At(decoderPath(err), "is not a value the plugin accepts")})
+		return reflect.Value{}, badConfig([]config.Issue{config.At(decoderPath(err, t), "is not a value the plugin accepts")})
 	}
 	return decoded, nil
 }
@@ -57,16 +57,35 @@ func configValue(given any) (any, error) {
 	return config.Normalize(given)
 }
 
-// decoderPath is where encoding/json says a value did not decode (its
-// keys only: it names no array index).
-func decoderPath(err error) []any {
+// decoderPath is where encoding/json says a value did not decode, as far
+// as it can be told: its `Field` names struct fields only, so the path
+// stops at the first map or array on the way (whose key or index it does
+// not say).
+func decoderPath(err error, t reflect.Type) []any {
 	var mismatch *json.UnmarshalTypeError
 	if !errors.As(err, &mismatch) || mismatch.Field == "" {
 		return nil
 	}
 	path := []any{}
+	at := t
 	for _, key := range strings.Split(mismatch.Field, ".") {
+		for at.Kind() == reflect.Pointer {
+			at = at.Elem()
+		}
+		if at.Kind() != reflect.Struct {
+			break
+		}
+		var next reflect.Type
+		for _, field := range jsonFields(at) {
+			if field.name == key {
+				next = field.typ
+			}
+		}
+		if next == nil {
+			break
+		}
 		path = append(path, key)
+		at = next
 	}
 	return path
 }

@@ -661,7 +661,14 @@ func isType(name string, value any) bool {
 // integral is an integral fraction written as an integer.
 func integral(value any) any {
 	n, ok := value.(json.Number)
-	if !ok || integerText(n) {
+	if !ok {
+		return value
+	}
+	if integerText(n) {
+		// `-0` is the integer 0 (Rust and JavaScript read it as -0.0).
+		if string(n) == "-0" {
+			return json.Number("0")
+		}
 		return value
 	}
 	if f, ok := number(n); ok && f == math.Trunc(f) && math.Abs(f) <= exact {

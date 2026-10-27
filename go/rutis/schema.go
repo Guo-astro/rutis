@@ -19,7 +19,109 @@ var (
 	schemerType         = reflect.TypeFor[Schemer]()
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+	jsonNumberType      = reflect.TypeFor[json.Number]()
 )
+
+// jsonField is a field of a struct as encoding/json decodes it.
+type jsonField struct {
+	name, goName, doc string
+	typ               reflect.Type
+	// The `,string` option: a number, boolean or string written inside
+	// a JSON string.
+	quoted bool
+	depth  int
+}
+
+// jsonFields is the fields encoding/json decodes a struct's keys into:
+// exported fields by their tag name or Go name; an untagged embedded
+// struct's fields promoted (the shallower of two of one name wins, two at
+// one depth both drop, as encoding/json has it); a tagged embedded struct,
+// or an embedded type that is not a struct, as one field.
+func jsonFields(t reflect.Type) []jsonField {
+	byName := map[string][]jsonField{}
+	var order []string
+	var walk func(t reflect.Type, depth int, visited map[reflect.Type]bool)
+	walk = func(t reflect.Type, depth int, visited map[reflect.Type]bool) {
+		if visited[t] {
+			return
+		}
+		visited[t] = true
+		defer delete(visited, t)
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			tag, tagged := f.Tag.Lookup("json")
+			tagName, rest, _ := strings.Cut(tag, ",")
+			if tagged && tagName == "-" && rest == "" {
+				continue
+			}
+			inner := f.Type
+			if inner.Kind() == reflect.Pointer {
+				inner = inner.Elem()
+			}
+			if f.Anonymous {
+				if !f.IsExported() && inner.Kind() != reflect.Struct {
+					continue
+				}
+				if tagName == "" && inner.Kind() == reflect.Struct {
+					walk(inner, depth+1, visited)
+					continue
+				}
+			} else if !f.IsExported() {
+				continue
+			}
+			name := f.Name
+			if tagName != "" {
+				name = tagName
+			}
+			if _, ok := byName[name]; !ok {
+				order = append(order, name)
+			}
+			byName[name] = append(byName[name], jsonField{
+				name: name, goName: f.Name, doc: f.Tag.Get("doc"), typ: f.Type,
+				quoted: strings.Contains(","+rest+",", ",string,"), depth: depth,
+			})
+		}
+	}
+	walk(t, 0, map[reflect.Type]bool{})
+	var out []jsonField
+	for _, name := range order {
+		candidates := byName[name]
+		shallowest := candidates[0]
+		count := 0
+		for _, c := range candidates {
+			if c.depth < shallowest.depth {
+				shallowest, count = c, 0
+			}
+			if c.depth == shallowest.depth {
+				count++
+			}
+		}
+		if count == 1 {
+			out = append(out, shallowest)
+		}
+	}
+	return out
+}
+
+// quotedSchema is a `,string` field's schema: a string (or null for a
+// pointer) where its kind takes the option, else its own.
+func quotedSchema(t reflect.Type) map[string]any {
+	inner := t
+	if inner.Kind() == reflect.Pointer {
+		inner = inner.Elem()
+	}
+	switch inner.Kind() {
+	case reflect.String, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		if t.Kind() == reflect.Pointer {
+			return map[string]any{"type": []any{"string", "null"}}
+		}
+		return map[string]any{"type": "string"}
+	}
+	schema, _ := schemaOf(t)
+	return schema
+}
 
 // decodesItself: the type (or its pointer) implements `iface`.
 func decodesItself(t reflect.Type, iface reflect.Type) bool {
@@ -48,6 +150,10 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 		if decodesItself(t, textUnmarshalerType) {
 			return map[string]any{"type": "string"}, nil
 		}
+	}
+	if t == jsonNumberType {
+		// A number, or a string holding one.
+		return map[string]any{"type": []any{"number", "string"}}, nil
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -78,14 +184,21 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 	case reflect.Interface:
 		return map[string]any{}, nil
 	case reflect.Slice, reflect.Array:
+		// A byte slice crosses as a base64 string, as encoding/json has it.
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{"type": "string"}, nil
+		}
 		items, err := schemaFor(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "array", "items": items}, nil
 	case reflect.Map:
-		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("%s: only string keys are configuration", t)
+		// Keys encoding/json takes: strings, integers, TextUnmarshalers.
+		switch key := t.Key(); {
+		case key.Kind() == reflect.String, key.Kind() >= reflect.Int && key.Kind() <= reflect.Uint64, decodesItself(key, textUnmarshalerType):
+		default:
+			return nil, fmt.Errorf("%s: only string, integer or text keys are configuration", t)
 		}
 		values, err := schemaFor(t.Elem(), seen)
 		if err != nil {
@@ -102,33 +215,23 @@ func schemaFor(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, erro
 		// encoding/json and the Go plugin guide have it (config schema
 		// design §3.3); a pointer tells "not written" apart.
 		properties := map[string]any{}
-		for _, field := range reflect.VisibleFields(t) {
-			if !field.IsExported() || field.Anonymous {
-				continue
-			}
-			name := field.Name
-			if tag, ok := field.Tag.Lookup("json"); ok {
-				tagName, rest, _ := strings.Cut(tag, ",")
-				if tagName == "-" && rest == "" {
-					continue
-				}
-				if tagName != "" {
-					name = tagName
-				}
-			}
-			property, err := schemaFor(field.Type, seen)
+		for _, field := range jsonFields(t) {
+			property, err := schemaFor(field.typ, seen)
 			if err != nil {
-				return nil, fmt.Errorf("%s.%s: %w", t, field.Name, err)
+				return nil, fmt.Errorf("%s.%s: %w", t, field.goName, err)
 			}
-			if doc, ok := field.Tag.Lookup("doc"); ok {
+			if field.quoted {
+				property = quotedSchema(field.typ)
+			}
+			if field.doc != "" {
 				copied := map[string]any{}
 				for key, value := range property {
 					copied[key] = value
 				}
-				copied["description"] = doc
+				copied["description"] = field.doc
 				property = copied
 			}
-			properties[name] = property
+			properties[field.name] = property
 		}
 		return map[string]any{"type": "object", "properties": properties}, nil
 	}

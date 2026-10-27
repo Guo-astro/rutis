@@ -78,11 +78,12 @@ func ValueText(value any) string {
 // integer written without a fraction as it is (when it fits 64 bits).
 func NumberText(n json.Number) string {
 	if integerText(n) {
-		if _, err := strconv.ParseInt(string(n), 10, 64); err == nil {
-			return string(n)
+		// As parsed (`-0` is 0, as in JavaScript).
+		if i, err := strconv.ParseInt(string(n), 10, 64); err == nil {
+			return strconv.FormatInt(i, 10)
 		}
-		if _, err := strconv.ParseUint(string(n), 10, 64); err == nil {
-			return string(n)
+		if u, err := strconv.ParseUint(string(n), 10, 64); err == nil {
+			return strconv.FormatUint(u, 10)
 		}
 	}
 	f, _ := number(n)

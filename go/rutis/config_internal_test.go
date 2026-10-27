@@ -186,3 +186,38 @@ func TestNoConfigTakesWhatItIsGiven(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type deepConfig struct {
+	Home  forecastHome            `json:"home"`
+	Homes []forecastHome          `json:"homes"`
+	ByKey map[string]forecastHome `json:"byKey"`
+	Count uint                    `json:"count"`
+}
+
+// A decoder error below the top level names the path as far as it can be
+// told: the fields down to the first array or map; `-0` is 0.
+func TestDecoderPathsAndNegativeZero(t *testing.T) {
+	var got deepConfig
+	def := Define(Plugin[deepConfig]{
+		Name: "weather",
+		// The schema lets anything through, so the decoder decides.
+		Schema: map[string]any{"type": "object", "properties": map[string]any{"home": map[string]any{}, "homes": map[string]any{}, "byKey": map[string]any{}, "count": map[string]any{"type": "integer"}}},
+		Apply:  func(_ *Ctx, config deepConfig) error { got = config; return nil },
+	})
+	for given, want := range map[string]string{
+		`{"home":{"lat":"north"}}`:          "config: home.lat is not a value the plugin accepts",
+		`{"homes":[{},{"lat":"north"}]}`:    "config: homes is not a value the plugin accepts",
+		`{"byKey":{"a.b":{"lat":"north"}}}`: "config: byKey is not a value the plugin accepts",
+	} {
+		err := def.apply(nil, json.RawMessage(given))
+		if coded := badConfigOf(t, err); coded.Error() != want {
+			t.Errorf("%s: %q, want %q", given, coded.Error(), want)
+		}
+	}
+	if err := def.apply(nil, json.RawMessage(`{"count":-0}`)); err != nil || got.Count != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if text := config.ValueText(json.Number("-0")); text != "0" {
+		t.Fatalf("%q", text)
+	}
+}

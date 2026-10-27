@@ -74,3 +74,40 @@ func TestATypeThatDecodesItselfIsNotConstrainedByItsShape(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+type Named string
+
+type innerConfig struct {
+	Lat float64 `json:"lat"`
+}
+
+type promoted struct {
+	Units string `json:"units"`
+}
+
+// Fields as encoding/json decodes them (config schema design §3.3): a byte
+// slice is a base64 string, a json.Number a number or a string, a
+// `,string` field a string; a tagged embedded struct is one field, an
+// untagged one's fields are promoted, an embedded type that is not a
+// struct is a field named by its type; integer keys are keys.
+func TestFieldsAreWhatEncodingJSONDecodes(t *testing.T) {
+	type config struct {
+		Bytes  []byte      `json:"bytes"`
+		Num    json.Number `json:"num"`
+		Port   int         `json:"port,string"`
+		Maybe  *bool       `json:"maybe,string"`
+		Inner  innerConfig `json:"inner"`
+		ByCode map[int]string
+		promoted
+		Named
+	}
+	schema, err := schemaOf(reflect.TypeFor[config]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(schema)
+	want := `{"properties":{"ByCode":{"additionalProperties":{"type":"string"},"type":"object"},"Named":{"type":"string"},"bytes":{"type":"string"},"inner":{"properties":{"lat":{"type":"number"}},"type":"object"},"maybe":{"type":["string","null"]},"num":{"type":["number","string"]},"port":{"type":"string"},"units":{"type":"string"}},"type":"object"}`
+	if string(got) != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
