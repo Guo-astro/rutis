@@ -499,7 +499,8 @@ async fn a_name_taken_by_another_package() {
         error.to_string(),
         "wordcount is already installed from ./plugins/wordcount: remove it first"
     );
-    assert_eq!(bench.asked(), ["npm [rutis-loader] view wordcount --json"]);
+    // The record settles it: npm is not asked.
+    assert!(bench.asked().is_empty());
 }
 
 #[tokio::test]
