@@ -7,7 +7,7 @@ use rutis::host::FiberView;
 use serde_json::Value;
 
 use crate::edit::Edit;
-use crate::patch::{Layer, Patch};
+use crate::patch::Layer;
 use crate::LoaderError;
 
 use super::{
@@ -93,53 +93,12 @@ impl Loader {
         self.inner.state.lock().unwrap().layers.clone()
     }
 
-    /// The overlay layers, in composition order.
-    pub fn overlays(&self) -> Vec<Layer> {
-        self.inner.state.lock().unwrap().overlays.clone()
-    }
-
     /// The editable layer and the stored version the loader holds for it.
     pub fn editable(&self) -> Option<Editable> {
         let state = self.inner.state.lock().unwrap();
         state
             .editable
             .map(|i| Editable::new(state.layers[i].name.clone(), state.version.clone()))
-    }
-
-    /// Set (`Some`) or remove (`None`) the overlay layer `name` and reconcile.
-    ///
-    /// Overlays are composed after the application's layers and kept across
-    /// `reconcile`; they are never persisted and their rows cannot be edited
-    /// (they sit above the editable layer). A development channel loads
-    /// plugins this way without touching the user's configuration.
-    pub async fn set_overlay(
-        &self,
-        name: &str,
-        patches: Option<Vec<Patch>>,
-    ) -> Result<ReconcileReport, LoaderError> {
-        let inner = &self.inner;
-        let _op = inner.op.lock().await;
-        inner.check_open()?;
-        {
-            let mut state = inner.state.lock().unwrap();
-            if state.layers.iter().any(|l| l.name == name) {
-                return Err(LoaderError::InvalidEntry(format!(
-                    "{name:?} is an application layer"
-                )));
-            }
-            let at = state.overlays.iter().position(|l| l.name == name);
-            match (at, patches) {
-                (Some(i), Some(patches)) => state.overlays[i].patches = patches,
-                (None, Some(patches)) => state.overlays.push(Layer::new(name, patches)),
-                (Some(i), None) => {
-                    state.overlays.remove(i);
-                }
-                (None, None) => {}
-            }
-        }
-        let report = inner.reconcile_inner().await;
-        inner.emit(LoaderChanged::Overlay(name.to_owned()));
-        Ok(report)
     }
 
     /// Edits applied but not yet persisted.
@@ -443,7 +402,7 @@ impl Loader {
             (
                 name.clone(),
                 state.resolved.get(&name).cloned(),
-                state.composed_layers(),
+                state.layers.clone(),
                 Inner::failures(&state),
             )
         };

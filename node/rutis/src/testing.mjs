@@ -34,7 +34,7 @@
 // to the millisecond, a datetime, date, time, decimal or uuid as its
 // text); what works only in one process fails here too.
 
-import { PLUGIN_API, isPlugin } from './index.mjs'
+import { PLUGIN_API, isPlugin } from './advanced.mjs'
 import { checkConfig, configError, schemaOf } from './config.mjs'
 import { Bus, kindOf, refuseRemoved } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'

@@ -1012,11 +1012,6 @@ impl JsRow {
             {
                 continue;
             }
-            // From outside the runtime: only what the host lets it use
-            // (`LocalRuntime::allowed_services`).
-            if let Some(runtime) = runtime {
-                runtime.may_use(name).map_err(failed)?;
-            }
             let label = label_of(&isolate, name);
             let lease = process
                 .lease_host_for(
