@@ -83,16 +83,15 @@ test('a call in progress when the host disconnects fails with peer-gone', async 
   const { createServer } = await import('node:net')
   const { tmpdir } = await import('node:os')
   const { Process } = await import('../src/client.mjs')
-  const { readFileSync } = await import('node:fs')
-  const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
+  const { ENDPOINT_PROTOCOL: version } = await import('../src/session.mjs')
   const path = join(mkdtempSync(join(tmpdir(), 'rutis-texts-')), 'far.sock')
   const server = createServer(socket => {
-    socket.write(JSON.stringify({ op: 'hello', version }) + '\n')
+    socket.write(JSON.stringify({ op: 'hello', version, endpoint: 'host', capabilities: [] }) + '\n')
     let seen = ''
     socket.on('data', chunk => { seen += chunk; if (seen.includes('"invoke"')) socket.destroy() })
   })
   await new Promise(resolve => server.listen(path, resolve))
-  const peer = await within('the handshake', Process.connect(path, () => 'ok'))
+  const peer = await within('the handshake', Process.connect(path, () => 'ok', undefined, { local: 'app' }))
   const failed = await within('the call to fail', peer.callAsync('host:llm', 'ask', [])).catch(error => error)
   server.close()
   await peer.closed()

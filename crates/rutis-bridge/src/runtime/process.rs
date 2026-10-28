@@ -194,10 +194,11 @@ pub struct Mount<'a> {
     pub launcher: Option<&'a Launcher>,
 }
 
-/// The command that starts a runtime process. It receives its channel and
-/// then the first plugin (or the anchor) as its last two arguments: `fd:3`
-/// when it takes an inherited socket ([`Launcher::inherit_fd`]), otherwise
-/// a socket path to dial.
+/// The command that starts a runtime process. It receives its channel,
+/// `--id <name>` (the endpoint it greets as: the runtime's name) and then
+/// the first plugin (or the anchor) as its last arguments: `fd:3` when it
+/// takes an inherited socket ([`Launcher::inherit_fd`]), otherwise a socket
+/// path to dial.
 ///
 /// Build one with [`Launcher::new`] (or `Launcher::node` with the `node`
 /// feature, `Launcher::python` with `python`) and its builders.
@@ -909,15 +910,17 @@ impl Process {
                 ))
             }
         };
+        let id = crate::channel::PeerId::new(name)
+            .unwrap_or_else(|_| crate::channel::PeerId::new("runtime").expect("a valid id"));
         let (command, connect) = crate::runtime::spawn::command(launcher, node_package)?;
-        let spawned = crate::runtime::spawn::spawn(command, plugin, connect).await?;
+        let spawned = crate::runtime::spawn::spawn(command, id.as_str(), plugin, connect).await?;
+        let main = crate::channel::PeerId::new("main").expect("a valid id");
         Self::start(
             spawned.channel,
             Some(spawned.child),
             spawned.directory,
             started,
-            crate::runtime::rpc::Format::Compat,
-            &name,
+            crate::runtime::rpc::Endpoint::rust(main).expect(id),
         )
         .await
     }
@@ -927,31 +930,25 @@ impl Process {
     /// listens on a WebSocket and was dialed). [`Mount::launcher`] and
     /// [`Mount::anchor`] do not apply: that process was started with its own.
     /// It has no exit status here, and its end is the session's end.
-    ///
-    /// Network sessions use the endpoint [`Format`](crate::runtime::rpc::Format).
+    /// This side greets as `endpoint`.
     pub async fn attach(
         channel: crate::channel::Channel,
         mount: Mount<'_>,
-        format: crate::runtime::rpc::Format,
+        endpoint: crate::runtime::rpc::Endpoint,
     ) -> Result<Arc<Self>, Error> {
-        let name = far_name(&mount, "runtime");
         let (started, _) = Started::from(mount);
-        Self::start(channel, None, None, started, format, &name).await
+        Self::start(channel, None, None, started, endpoint).await
     }
 
-    /// `name`: the runtime, for messages, when its greeting does not name
-    /// it (the compat format).
     async fn start(
         channel: crate::channel::Channel,
         child: Option<crate::runtime::spawn::Child>,
         directory: Option<tempfile::TempDir>,
         started: Started,
-        format: crate::runtime::rpc::Format,
-        name: &str,
+        endpoint: crate::runtime::rpc::Endpoint,
     ) -> Result<Arc<Self>, Error> {
         let (imports, rest) = Self::imports(started);
-        let peer = Connection::open_with(channel, imports.clone(), format)?;
-        peer.name_far_end(name);
+        let peer = Connection::open(channel, imports.clone(), endpoint)?;
         peer.ready().await?;
         Self::finish(peer, imports, child, directory, None, rest).await
     }

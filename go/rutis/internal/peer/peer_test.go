@@ -59,11 +59,11 @@ func recordedPair(t *testing.T, host, runtime func(ctx context.Context, target, 
 	t.Helper()
 	a, b := net.Pipe()
 	hostChannel := &recorder{Channel: NewLines(a)}
-	h, err := New(hostChannel, Options{Host: true, Dispatch: host})
+	h, err := New(hostChannel, Options{Endpoint: &Endpoint{Local: "main"}, Capabilities: TestCapabilities, Dispatch: host})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := New(NewLines(b), Options{Dispatch: runtime})
+	r, err := New(NewLines(b), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: TestCapabilities, Dispatch: runtime})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +117,8 @@ func TestTheChainTravelsInTheContext(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 2 || seen[0] != "rust:1" || !strings.HasPrefix(seen[1], "node:") {
-		t.Fatalf("the callback carries the chain rust:1 -> node:N: %v", seen)
+	if len(seen) != 2 || seen[0] != "main:1" || !strings.HasPrefix(seen[1], "go:") {
+		t.Fatalf("the callback carries the chain main:1 -> go:N: %v", seen)
 	}
 }
 
@@ -345,11 +345,11 @@ func TestACallBeforeTheHandshakeEndsTheSession(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
-	runtime, _ := New(NewLines(a), Options{})
+	runtime, _ := New(NewLines(a), Options{Endpoint: &Endpoint{Local: "go"}})
 	go func() {
 		reader := NewLines(b)
 		_, _ = reader.Recv() // its hello
-		_ = reader.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"m","args":{"type":"list","value":[]}}`))
+		_ = reader.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"m","args":{"type":"list","value":[]}}`))
 	}()
 	_ = runtime.Start()
 	testwait.Within(t, "the session to end", runtime.Closed())
@@ -370,11 +370,10 @@ func TestSynchronousCallsSayTheyWaitToAFarEndThatAsked(t *testing.T) {
 		hello    string
 		declares string
 	}{
-		{"compat", Options{}, `{"op":"hello","version":2,"capabilities":%s}`, `["objects","reentrant-sync","sync-wait","events-v2","value-instant","value-datetime","value-date","value-time","value-bytes","value-map","value-set","value-bigint","value-decimal","value-uuid"]`},
 		{
 			"endpoint",
 			Options{Endpoint: &Endpoint{Local: "go", Expected: "main"}, Capabilities: []string{"signals", "reentrant-sync", "sync-wait"}},
-			`{"op":"hello","version":3,"endpoint":"main","capabilities":%s}`,
+			`{"op":"hello","version":4,"endpoint":"main","capabilities":%s}`,
 			`["signals","reentrant-sync","sync-wait"]`,
 		},
 	}
@@ -455,17 +454,17 @@ func TestConcurrentCallsGoOutInTheOrderOfTheirIdentities(t *testing.T) {
 	}
 }
 
-// A reference's origin, in the compat format, holds this session's ids and
-// other sessions' tagged with them, whatever their format: refusing those
-// ended the session of a nested call (#225).
-func TestCompatOriginsTakeOtherSessionsTaggedIds(t *testing.T) {
-	for _, id := range []string{"node:1", "rust:12", "s1/rust:7", "s1/node:2", "s12/mac-2:3"} {
-		if !compatOrigin.MatchString(id) {
+// A reference's origin holds this session's ids and other sessions'
+// tagged with them: refusing those ended the session of a nested call
+// (#225).
+func TestOriginsTakeOtherSessionsTaggedIds(t *testing.T) {
+	for _, id := range []string{"go:1", "main:12", "s1/main:7", "s1/node:2", "s12/mac-2:3"} {
+		if !originID.MatchString(id) {
 			t.Errorf("%s: refused", id)
 		}
 	}
-	for _, id := range []string{"py:1", "node:0", "s1/s2/node:1", "s1/node", "S1/node:1", "node:01"} {
-		if compatOrigin.MatchString(id) {
+	for _, id := range []string{"go:0", "s1/s2/node:1", "s1/node", "S1/node:1", "node:01", "Go:1"} {
+		if originID.MatchString(id) {
 			t.Errorf("%s: taken", id)
 		}
 	}
@@ -479,26 +478,23 @@ func TestCompatOriginsTakeOtherSessionsTaggedIds(t *testing.T) {
 // guarantee: bridge/version-refusal
 func TestAFarEndOfAnotherProtocolVersionIsRefusedSayingWhichEndToUpgrade(t *testing.T) {
 	const module = "upgrade this side (Go module github.com/arcships/rutis/go/rutis)"
-	endpoint := &Endpoint{Local: "go"}
 	for _, c := range []struct {
-		endpoint *Endpoint
-		far      string
-		version  int
-		ours     int
-		hint     string
+		far     string
+		version int
+		hint    string
 	}{
-		{endpoint, `{"op":"hello","version":99,"endpoint":"main","capabilities":[]}`, 99, EndpointProtocol, module},
-		{nil, `{"op":"hello","version":99}`, 99, Protocol, module},
-		{endpoint, `{"op":"hello","version":1,"endpoint":"main","implementation":{"name":"rutis","version":"0.1.0"},"capabilities":[]}`, 1, EndpointProtocol, "upgrade the far end (rutis 0.1.0)"},
-		{endpoint, `{"op":"hello","version":1,"endpoint":"main","capabilities":[]}`, 1, EndpointProtocol, "upgrade the far end"},
-		{nil, `{"op":"hello","version":1}`, 1, Protocol, "upgrade the far end"},
+		{`{"op":"hello","version":99,"endpoint":"main","capabilities":[]}`, 99, module},
+		// rutis 0.18 speaks protocol 3.
+		{`{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis-bridge","version":"0.18.0"},"capabilities":[]}`, 3, "upgrade the far end (rutis-bridge 0.18.0)"},
+		{`{"op":"hello","version":1,"endpoint":"main","implementation":{"name":"rutis","version":"0.1.0"},"capabilities":[]}`, 1, "upgrade the far end (rutis 0.1.0)"},
+		{`{"op":"hello","version":1,"endpoint":"main","capabilities":[]}`, 1, "upgrade the far end"},
 	} {
 		var f frame
 		if err := json.Unmarshal([]byte(c.far), &f); err != nil {
 			t.Fatal(err)
 		}
-		p := &Peer{opts: Options{Endpoint: c.endpoint}}
-		want := fmt.Sprintf("incompatible session: the far end speaks protocol %d, this side %d: %s", c.version, c.ours, c.hint)
+		p := &Peer{opts: Options{Endpoint: &Endpoint{Local: "go"}}}
+		want := fmt.Sprintf("incompatible session: the far end speaks protocol %d, this side %d: %s", c.version, EndpointProtocol, c.hint)
 		if err := p.greet(&f); err == nil || err.Error() != want {
 			t.Errorf("%s: got %v, want %q", c.far, err, want)
 		}

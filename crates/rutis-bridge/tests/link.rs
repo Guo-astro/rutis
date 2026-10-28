@@ -10,7 +10,7 @@ use rutis::host::{CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::Error;
-use rutis_bridge::session::{Connection, Endpoint, Format, Value};
+use rutis_bridge::session::{Connection, Endpoint, Value};
 use rutis_bridge::{
     peer_key, Accepting, Credential, Dialer, Failure, Identity, IdentityPlugin, LinkConfig,
     LinkPlugin, LinkState, Peer, Registrations, Retry, StaticIdentity,
@@ -250,10 +250,10 @@ async fn a_newer_connection_takes_over_and_the_old_one_is_told() {
             Ok(Value::Undefined)
         }
     }
-    let newer = Connection::open_with(
+    let newer = Connection::open(
         channel,
         Arc::new(Nothing),
-        Format::Endpoint(Endpoint::rust(id("mac")).expect(id("main"))),
+        Endpoint::rust(id("mac")).expect(id("main")),
     )
     .unwrap();
     newer.ready().await.unwrap();

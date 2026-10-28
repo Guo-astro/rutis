@@ -1,4 +1,4 @@
-// `bun --no-install --no-env-file src/main.ts <channel> [--id <endpoint>]
+// `bun --no-install --no-env-file src/main.ts <channel> --id <endpoint>
 // [--peer <endpoint>] <project>`: one runtime process, started by a rutis
 // host (rutis-bridge's `Launcher::bun`), or a remote one.
 //
@@ -11,11 +11,9 @@
 // in RUTIS_TOKEN, a listener certificate and key in RUTIS_CERT and
 // RUTIS_KEY), or `dial:ws://…` / `dial:wss://…`, a rutis access point to
 // dial and to dial again (dialing.ts), presenting the token in RUTIS_TOKEN
-// and trusting the CA in RUTIS_CA besides the default roots. A channel
-// speaks the endpoint format, as `--id`, expecting `--peer` as the
-// controller when given: remote ones always, local ones when given `--id`
-// (or `--format endpoint`); a local channel without either speaks the
-// compat protocol. Plugin modules resolve from <project>.
+// and trusting the CA in RUTIS_CA besides the default roots. Every
+// channel greets as `--id`, expecting `--peer` as the controller when
+// given. Plugin modules resolve from <project>.
 import { realpathSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +27,7 @@ import { MANIFEST } from './session.ts'
 import { EVENTS_V2, NO_EVENTS_V2 } from './events.mjs'
 import { say } from './output.mjs'
 
-const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> [--id <endpoint>] [--peer <endpoint>] <project>'
+const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> --id <endpoint> [--peer <endpoint>] <project>'
 
 function fail(message: string): never {
   say(`runtime bun: ${message}\n`)
@@ -106,7 +104,7 @@ if (!channel || rest.length !== 1) fail(USAGE)
 const project = resolve(rest[0])
 const remote = /^(listen|dial):/.test(channel)
 if (remote && !flags.id) fail(`a network channel needs --id <endpoint>: ${channel}`)
-if (flags.format === 'endpoint' && !flags.id) fail(`the endpoint format needs --id <endpoint>: ${channel}`)
+if (!flags.id) fail(`a local channel needs --id <endpoint>: ${channel}`)
 if (channel.startsWith('listen:')) {
   try { await serve(channel.slice('listen:'.length), { id: flags.id, peer: flags.peer, project }) } catch (error: any) {
     fail(error.message)
@@ -118,7 +116,7 @@ if (channel.startsWith('dial:')) {
   process.exit(code)
 }
 // A runner is a runtime: the controller manages its rows.
-const endpoint = flags.id ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
+const endpoint = { local: flags.id, expected: flags.peer, declare: ['runtime'] }
 // The session of a dialing runtime: its supervisor reports what ends it.
 const dialed = flags.supervisor === 'dial'
 const token = takeToken()

@@ -1,8 +1,7 @@
 import Foundation
 @testable import Rutis
 
-/// A local channel given `--id` speaks the endpoint format and greets as
-/// that id (#811 R5).
+/// A local channel needs `--id`, and greets as that endpoint.
 struct LocalEndpointTests {
     func aLocalChannelWithAnIDGreetsAsThatEndpoint() async throws {
         // serveArgs runs the binary again in its place (Responsibility), so
@@ -12,8 +11,7 @@ struct LocalEndpointTests {
         let (runtimeSide, hostSide) = try Channels.pair()
         let plugin = Rutis.define(Plugin(name: "any") { _ in })
         let served = Task { try await Rutis.serveSession(channel: runtimeSide, endpoint: endpoint, project: project, [plugin]) }
-        var options = PeerOptions()
-        options.endpoint = Endpoint(local: "host", expected: "swiftrun")
+        var options = PeerOptions(endpoint: Endpoint(local: "host", expected: "swiftrun"))
         options.dispatch = { _, method, _ in throw RutisError(name: "Error", message: "not served: \(method)") }
         let host = try Peer(channel: hostSide, options: options)
         try host.start()
@@ -26,6 +24,16 @@ struct LocalEndpointTests {
         host.close()
         hostSide.close()
         try await served.value
+    }
+
+    func aLocalChannelWithoutAnIDIsRefused() throws {
+        let plugin = Rutis.define(Plugin(name: "any") { _ in })
+        do {
+            try Rutis.Advanced.serveArgs(["unix:/nowhere", NSTemporaryDirectory()], [plugin])
+            XCTFail("expected an error")
+        } catch let error as RutisError {
+            XCTAssertEqual(error.message, "a local channel needs --id <endpoint>: unix:/nowhere")
+        }
     }
 
     func anInvalidIDIsRefusedBeforeTheChannelOpens() throws {

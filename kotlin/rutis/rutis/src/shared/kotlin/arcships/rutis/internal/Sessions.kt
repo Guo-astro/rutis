@@ -50,10 +50,10 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
 
     companion object {
         /**
-         * Starts serving `plugins` on `channel`: compat (no endpoint) or
-         * endpoint format; `shutdownMillis` overrides `RUTIS_SHUTDOWN_TIMEOUT`.
+         * Starts serving `plugins` on `channel` as `endpoint`;
+         * `shutdownMillis` overrides `RUTIS_SHUTDOWN_TIMEOUT`.
          */
-        fun start(channel: Channel, endpoint: Endpoint?, plugins: List<Plugin>, shutdownMillis: Long? = null): RuntimeSession {
+        fun start(channel: Channel, endpoint: Endpoint, plugins: List<Plugin>, shutdownMillis: Long? = null): RuntimeSession {
             checkPlugins(plugins)
             val runtime = RuntimeState(plugins)
             if (shutdownMillis != null) runtime.shutdownMillis = shutdownMillis

@@ -1182,8 +1182,9 @@ while conn.recv(4096):
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A binary of a Go SDK older than 0.13 is refused at the handshake (events
-/// protocol §2.2), as a local runtime of Node, Bun or Python is: its runtime
+/// A binary of an older Go SDK (here one speaking protocol 2) is refused at
+/// the handshake by protocol version, as a local runtime of Node, Bun or
+/// Python is: its runtime
 /// is down saying why, its binary is marked refused and is not started
 /// again, and its rows fail with the same message instead of waiting for
 /// it. A new binary in its place is tried.
@@ -1196,7 +1197,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
     let plugins = fixture.dir.path().join("plugins");
     let count = fixture.dir.path().join("runs");
     old_sdk(&plugins.join("legacy"), &count);
-    let refusal = "incompatible session: the far end (a runtime older than rutis 0.13) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later";
+    let refusal = "incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end";
     fixture
         .loader
         .reconcile(

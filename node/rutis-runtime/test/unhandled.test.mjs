@@ -29,7 +29,7 @@ test('the files on a stack are real paths, a module query left out', () => {
 test("the runtime's own failure to connect still ends it with status 1", () => {
   const runner = fileURLToPath(new URL('../src/runner.mjs', import.meta.url))
   const anchor = fileURLToPath(new URL('../package.json', import.meta.url))
-  const ran = spawnSync(process.execPath, ['--import', 'tsx', runner, '/nonexistent/rutis.sock', anchor], { encoding: 'utf8', timeout: 30_000 })
+  const ran = spawnSync(process.execPath, ['--import', 'tsx', runner, '/nonexistent/rutis.sock', '--id', 'rt', anchor], { encoding: 'utf8', timeout: 30_000 })
   assert.equal(ran.status, 1, ran.stderr)
   assert.doesNotMatch(ran.stderr, /unknown row/)
 })

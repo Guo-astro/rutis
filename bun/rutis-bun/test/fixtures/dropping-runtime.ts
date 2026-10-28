@@ -3,9 +3,10 @@
 import { Client } from '../../src/client.ts'
 import { Runtime } from '../../src/runner.ts'
 
-const [channel, project] = process.argv.slice(2)
+// Started as a host starts a runtime: `<channel> --id <name> <project>`.
+const [channel, , id, project] = process.argv.slice(2)
 const runtime = new Runtime(project)
-const client = await Client.connect(channel, { dispatch: runtime.dispatch })
+const client = await Client.connect(channel, { dispatch: runtime.dispatch, endpoint: { local: id, declare: ['runtime'] } })
 const callAsync = client.callAsync.bind(client)
 client.callAsync = (target: string, method: string, args: any) =>
   method === 'service' && args[1] === null ? Promise.resolve(null) : callAsync(target, method, args)

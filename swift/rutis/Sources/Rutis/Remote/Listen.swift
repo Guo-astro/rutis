@@ -3,7 +3,7 @@
 // runtime's listener (Go's listen.go, rutis-bridge's): a non-loopback
 // address needs TLS (RUTIS_CERT, RUTIS_KEY); the controller presents
 // RUTIS_TOKEN as a Bearer token, compared in constant time; the session
-// protocol is `rutis.3`; one controller at a time, a newer connection taking
+// protocol is `rutis.4`; one controller at a time, a newer connection taking
 // over. The listener is Network.framework's; the upgrade and the frames are
 // this SDK's (WebSocket.swift), so every refusal has its own status.
 #if canImport(Network)

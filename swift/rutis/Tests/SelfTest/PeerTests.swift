@@ -1,14 +1,14 @@
 import Foundation
 @testable import Rutis
 
-/// A compat session in this process: `host` drives `runtime`, which serves
+/// A session in this process: `host` drives `runtime`, which serves
 /// `dispatch`.
 func pairOfPeers(_ dispatch: @escaping (String, String, [Value]) async throws -> Value) async throws -> (host: Peer, runtime: Peer) {
     let (a, b) = try Channels.pair()
-    var runtimeOptions = PeerOptions()
+    var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     runtimeOptions.dispatch = dispatch
     let runtime = try Peer(channel: a, options: runtimeOptions)
-    var hostOptions = PeerOptions()
+    var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
     hostOptions.host = true
     let host = try Peer(channel: b, options: hostOptions)
     try runtime.start()
@@ -50,10 +50,10 @@ struct PeerTests {
             XCTAssertEqual(error.name, "Nope")
         }
         // The callee runs with the caller's chain and its own call id.
-        let chain = try await CallChain.$path.withValue(["node:9"]) {
+        let chain = try await CallChain.$path.withValue(["main:9"]) {
             try await host.call(target: "t", method: "chain", args: [], sync: false)
         }
-        XCTAssertEqual(chain.plainJSON?.arrayValue?.first, .string("node:9"))
+        XCTAssertEqual(chain.plainJSON?.arrayValue?.first, .string("main:9"))
     }
 
     func testCancellingAnAsyncCallAbortsTheCallee() async throws {
@@ -107,11 +107,24 @@ struct PeerTests {
         XCTAssertNotNil(runtime.error)
     }
 
+    /// A far end speaking protocol 3 (rutis 0.18) is refused at its hello,
+    /// with which end to upgrade.
+    func testAFarEndOfProtocol3IsRefused() async throws {
+        let (a, far) = try Channels.pair()
+        let runtime = try Peer(channel: a, options: PeerOptions(endpoint: Endpoint(local: "swift", expected: "main")))
+        try runtime.start()
+        defer { far.close() }
+        try far.send(Array(#"{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":["events-v2"]}"#.utf8))
+        await runtime.closed()
+        XCTAssertEqual("\(runtime.error.map { "\($0)" } ?? "")",
+                       "incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)")
+    }
+
     /// A read that fails ends the session and closes its channel: nothing
     /// reads it any more, and its descriptor would stay open (#542).
     func testAReadErrorClosesTheChannel() async throws {
         let channel = FailingChannel()
-        let peer = try Peer(channel: channel, options: PeerOptions())
+        let peer = try Peer(channel: channel, options: PeerOptions(endpoint: Endpoint(local: "swift", expected: "main")))
         try peer.start()
         await peer.closed()
         XCTAssertTrue("\(peer.error.map { "\($0)" } ?? "")".contains("read failed"), "\(String(describing: peer.error))")

@@ -18,16 +18,15 @@ A runtime is a process (or a remote connection) that holds one **session** with 
   | `unix:<path>` or a bare path | Dial back to a socket rutis created in a private directory |
   | `tcp:127.0.0.1:<port>` | Dial back to a local port; first send the value of the environment variable `RUTIS_CHANNEL_TOKEN` and a newline, then remove it from the environment (used on Windows) |
 
-- Remote channels: `listen:wss://…` (wait for rutis to dial in) and `dial:wss://…` (connect to a rutis access point; Python implements it). WebSocket subprotocol `rutis.3`. Non-loopback requires TLS (`RUTIS_CERT` / `RUTIS_KEY`); the credential `RUTIS_TOKEN` is compared in constant time; 30-second heartbeat (`RUTIS_HEARTBEAT` overrides); one controller at a time, a new connection takes over from the old one.
+- Remote channels: `listen:wss://…` (wait for rutis to dial in) and `dial:wss://…` (connect to a rutis access point; Python implements it). WebSocket subprotocol `rutis.4`. Non-loopback requires TLS (`RUTIS_CERT` / `RUTIS_KEY`); the credential `RUTIS_TOKEN` is compared in constant time; 30-second heartbeat (`RUTIS_HEARTBEAT` overrides); one controller at a time, a new connection takes over from the old one.
 - Dialing out: present `RUTIS_TOKEN` as a Bearer token, trust `RUTIS_CA` besides the system roots, greet with `--id` declaring `runtime`; refuse a non-loopback `ws://` and an invalid id at start. Classify failures like rutis-bridge's dialer: 401 / 403 at the upgrade or close code 4003 after the hello → retry every 30 s; 400 / 404 / 405 / 426 or a subprotocol mismatch → stop, exit status 1; anything else (4002 included) → backoff 0.5 s doubling to 30 s, reset after a 60-second session (`RUTIS_RETRY=<initial ms>,<max ms>,<stable ms>,<rejected ms>` shortens them for tests). Unload every row (cleanups in reverse) on each disconnect; SIGTERM unloads, closes and exits 0. State lines on stderr: `rutis: connected to …`, `rutis: cannot connect (…); retrying in <s>s`, `rutis: connection lost (…); retrying in <s>s`, `rutis: refused: auth-rejected (…); retrying in <s>s`, `rutis: refused: incompatible (…); stopping`. `dial_conformance.rs` checks all of it.
-- Process arguments: `<channel> [--id <endpoint>] [--peer <endpoint>] <project>`.
+- Process arguments: `<channel> --id <endpoint> [--peer <endpoint>] <project>`. `--id` is required on every channel: rutis starts a local runtime with `--id <runtime name>` and expects the runtime to greet as that name; without `--id`, refuse to start (`a local channel needs --id <endpoint>: <channel>`).
 
 ## 2. Handshake
 
-| Format | Used for | Handshake |
-| --- | --- | --- |
-| compat, protocol 2 | Local channels | `{"op":"hello","version":2,"capabilities":[…]}` |
-| endpoint, protocol 3 | Remote | Local and peer endpoint ids, implementation name and version, capabilities; a remote runtime also declares the capability `runtime` (a rutis link with `runtime` checks it after the handshake and stops with `incompatible` if it is missing) |
+Every channel, local or remote, uses the endpoint format, protocol 4: `{"op":"hello","version":4,"endpoint":"<--id>","implementation":{"name":…,"version":…},"capabilities":[…]}`. Call ids are `<endpoint id>:<n>`. A runtime also declares the capability `runtime` (a rutis link with `runtime` checks it after the handshake and stops with `incompatible` if it is missing). With `--peer`, refuse a far end that greets as another endpoint.
+
+A far end greeting with another version is refused at the handshake, saying which end to upgrade: `incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (<implementation> <version>)`; a newer far end: `… upgrade this side`. rutis 0.18 and older speak protocol 3, so a 0.19 runtime refuses them and they refuse it.
 
 ### Capabilities (declare what is true; never inferred)
 
@@ -38,8 +37,8 @@ A runtime is a process (or a remote connection) that holds one **session** with 
 | `sync-stack` | One thread, one stack: calls run while waiting are stacked on top of the waiting one (last in, first out) | You take part only in call-chain edges (runtimes with one execution unit per call do not declare it) |
 | `signals` | Signal frames of the endpoint format; every existing implementation (Rust, Node, Python, Bun, Go) declares it | — |
 | `objects` | You can receive object references from the peer | You can send references but not receive them |
-| `plugins` | You can receive plugin definitions (`plugin` references, §5). rutis declares it in both formats; runtimes do not | Send no `plugin` reference to a far end that did not declare it: fail only that call |
-| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it in both handshake formats, and end the session right after the handshake when the far end does not | A 0.13 host ends the session: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later` |
+| `plugins` | You can receive plugin definitions (`plugin` references, §5). rutis declares it; runtimes do not | Send no `plugin` reference to a far end that did not declare it: fail only that call |
+| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it, and end the session right after the handshake when the far end does not | A 0.13 host ends the session: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later` |
 
 How to choose: one execution unit per incoming call (thread / goroutine / Task / virtual thread) → `sync-wait` + `reentrant-sync`, no `sync-stack`; single-threaded event loops that run incoming calls while waiting, like Python and Bun → all three; Node is not reentrant → no `reentrant-sync`.
 
@@ -97,7 +96,7 @@ As in the plugin API's "how values cross" (see `plugin-api.md`): JSON-compatible
 
 Ten tagged values cross beside `reference` and `signal`: `instant`, `datetime`, `date`, `time`, `bytes`, `map`, `set`, `bigint`, `decimal`, `uuid` (wire text and rules: protocol design §6.1, https://github.com/arcships/rutis/blob/main/docs/design-protocol-plugins-2026-09-25.en.md; per-language mapping: https://github.com/arcships/rutis/blob/main/docs/design-value-types-2026-10-15.en.md §2).
 
-- Each tag has a capability `value-<tag>`, declared in both handshake formats. Send a tag only to a far end that declared it; otherwise fail only that call, naming the value. A runtime may implement a subset and declare only that.
+- Each tag has a capability `value-<tag>`, declared in the handshake. Send a tag only to a far end that declared it; otherwise fail only that call, naming the value. A runtime may implement a subset and declare only that.
 - Map each value to the language's native type; where the language has none, use the closest type that loses nothing (JS receives `datetime`, `date`, `time`, `decimal`, `uuid` as plain strings). Plugin authors must not need rutis-specific types; SDK constructors are only for creating a value of a type the language lacks.
 - An integer beyond ±(2^53−1) is sent as a `bigint` automatically; a received `bigint` decodes into a declared integer type that holds it.
 - Map keys and set elements: strings, finite numbers, booleans, `bigint`, `datetime`, `date`, `time`, `decimal`, `uuid` only. Keys that become equal after conversion fail the call.

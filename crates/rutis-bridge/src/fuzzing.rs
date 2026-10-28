@@ -339,7 +339,7 @@ pub fn websocket_upgrade(data: &[u8]) {
     use tokio_tungstenite::tungstenite;
     use tungstenite::handshake::server::{Request, Response};
 
-    const PROTOCOL: &str = "rutis.3";
+    let ours = crate::link::protocol();
     #[allow(clippy::result_large_err)] // tungstenite fixes the signature
     let check = |request: &Request, mut response: Response| {
         let upgrade = read_upgrade(request, "/rutis")?;
@@ -349,8 +349,8 @@ pub fn websocket_upgrade(data: &[u8]) {
             let header = request.headers()["Authorization"].as_bytes();
             assert!(header.ends_with(token.as_bytes()));
         }
-        let protocol = agree_protocol(PROTOCOL, &upgrade.offered)?;
-        assert_eq!(protocol, PROTOCOL);
+        let protocol = agree_protocol(&ours, &upgrade.offered)?;
+        assert_eq!(protocol, ours.as_str());
         response
             .headers_mut()
             .insert("Sec-WebSocket-Protocol", protocol);

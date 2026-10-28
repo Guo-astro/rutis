@@ -134,7 +134,7 @@ async fn a_lease_for_a_row_names_it_and_a_shared_one_does_not() {
 async fn a_runtime_without_scopes_shares_the_lease_and_names_no_row() {
     use rutis_bridge::channel::PeerId;
     use rutis_bridge::runtime::RuntimeSession;
-    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format};
+    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error};
 
     /// A runtime with rows and hosts, but not `scopes`: it records what it
     /// is asked to provide.
@@ -184,11 +184,11 @@ async fn a_runtime_without_scopes_shares_the_lease_and_names_no_row() {
     }
 
     let (a, b) = rutis_bridge::memory::pair();
-    let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
+    let endpoint = |name| Endpoint::rust(PeerId::new(name).unwrap());
     let runtime = Arc::new(OldRuntime::default());
-    let old = Connection::open_with(b, runtime.clone(), endpoint("old")).unwrap();
+    let old = Connection::open(b, runtime.clone(), endpoint("old")).unwrap();
     let router = Arc::new(Router::default());
-    let session = Connection::open_with(a, router.clone(), endpoint("main")).unwrap();
+    let session = Connection::open(a, router.clone(), endpoint("main")).unwrap();
     session.ready().await.unwrap();
     old.ready().await.unwrap();
     let process = Process::over(Arc::new(Session(session.clone(), router)), Mount::default())

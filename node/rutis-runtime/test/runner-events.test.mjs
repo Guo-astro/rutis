@@ -138,7 +138,7 @@ test('the removed mount fields are refused, naming the replacement', async () =>
 
 test('a host that does not declare events-v2 is refused', async () => {
   const host = await fakeHost([process.execPath, runner, conformance], {
-    hello: { op: 'hello', version: 3, endpoint: 'host', implementation: { name: 'rutis-host', version: '0.12.1' }, capabilities: ['signals', 'sync-wait'] },
+    hello: { op: 'hello', version: 4, endpoint: 'host', implementation: { name: 'rutis-host', version: '0.12.1' }, capabilities: ['signals', 'sync-wait'] },
   })
   const code = await within('the runtime to stop', host.exited)
   assert.equal(code, 1)

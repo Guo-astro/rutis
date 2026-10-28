@@ -3,7 +3,7 @@ import Foundation
 /// Why a host that does not declare events-v2 is refused.
 let oldEventsHost = "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
 
-let serveUsage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
+let serveUsage = "usage: <binary> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 /// A session this side refused at its handshake (an old host): the runtime
 /// stops, and does not retry.
@@ -40,7 +40,7 @@ extension Rutis {
         }
         let (channel, endpoint, project) = try parse(args)
         Responsibility.claim()
-        if let endpoint, channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
+        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
             #if canImport(Network)
             let remote = String(channel.drop(while: { $0 != ":" }).dropFirst())
             try block { try await serveRemote(channel, remote, endpoint: endpoint, project: project, plugins) }
@@ -55,10 +55,9 @@ extension Rutis {
         try serve(channel: try Channels.open(channel), endpoint: endpoint, project: project, plugins)
     }
 
-    /// Serves `plugins` on `channel` (one message per line: the endpoint
-    /// format with `endpoint`, else compat) until the session ends, then
-    /// unloads them.
-    static func serve(channel: Channel, endpoint: Endpoint? = nil, project: String, _ plugins: [Definition]) throws {
+    /// Serves `plugins` on `channel` (one message per line, greeting as
+    /// `endpoint`) until the session ends, then unloads them.
+    static func serve(channel: Channel, endpoint: Endpoint, project: String, _ plugins: [Definition]) throws {
         try block { try await serveSession(channel: channel, endpoint: endpoint, project: project, plugins) }
     }
 
@@ -78,7 +77,7 @@ extension Rutis {
 
     /// `started` sees the session once it starts (RutisTest reads the
     /// plugin definitions it exports).
-    package static func serveSession(channel: Channel, endpoint: Endpoint? = nil, project: String, _ plugins: [Definition],
+    package static func serveSession(channel: Channel, endpoint: Endpoint, project: String, _ plugins: [Definition],
                                      started: ((Peer) -> Void)? = nil) async throws
     {
         let (session, runtime) = try startSession(channel: channel, project: project, plugins, endpoint: endpoint)
@@ -134,12 +133,11 @@ extension Rutis {
 
     /// Starts a session serving `plugins`: a host older than 0.13 is
     /// refused right after its handshake.
-    static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint? = nil,
+    static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint,
                              settings: Events.Settings = Events.Settings()) throws -> (Peer, Runtime)
     {
         let runtime = Runtime(plugins, project: project, settings: settings)
-        var options = PeerOptions()
-        options.endpoint = endpoint
+        var options = PeerOptions(endpoint: endpoint)
         // Weak: a frame that arrives once the runtime is gone finds it gone.
         options.dispatch = { [weak runtime] target, method, args in
             guard let runtime else { throw RutisError(name: "Error", message: "runtime is closed") }
@@ -196,10 +194,9 @@ extension Rutis {
     }
 
     /// The channel, the endpoint `--id` names (a runtime, its controller
-    /// managing its rows; required on `listen:` and `dial:`) and the
-    /// project. What
+    /// managing its rows; required on every channel) and the project. What
     /// retrying cannot fix fails here, before any dial.
-    static func parse(_ args: [String]) throws -> (channel: String, endpoint: Endpoint?, project: String) {
+    static func parse(_ args: [String]) throws -> (channel: String, endpoint: Endpoint, project: String) {
         guard let channel = args.first else { throw RutisError(name: "Error", message: serveUsage) }
         var rest = Array(args.dropFirst())
         var flags: [String: String] = [:]
@@ -212,18 +209,14 @@ extension Rutis {
             rest.removeFirst(2)
         }
         guard rest.count == 1 else { throw RutisError(name: "Error", message: serveUsage) }
-        var endpoint: Endpoint?
-        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:"), flags["id"]?.isEmpty ?? true {
-            throw RutisError(name: "Error", message: "a network channel needs --id <endpoint>: \(channel)")
+        let network = channel.hasPrefix("listen:") || channel.hasPrefix("dial:")
+        guard let id = flags["id"], !id.isEmpty else {
+            throw RutisError(name: "Error", message: "a \(network ? "network" : "local") channel needs --id <endpoint>: \(channel)")
         }
-        // With --id, every channel speaks the endpoint format, greeting as
-        // that id.
-        if let id = flags["id"] {
-            guard validEndpointID(id) else {
-                throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
-            }
-            endpoint = Endpoint(local: id, expected: flags["peer"], declare: ["runtime"])
+        guard validEndpointID(id) else {
+            throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
         }
+        let endpoint = Endpoint(local: id, expected: flags["peer"], declare: ["runtime"])
         #if canImport(Network)
         if channel.hasPrefix("dial:") {
             do {

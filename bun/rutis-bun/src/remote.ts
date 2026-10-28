@@ -71,7 +71,7 @@ export async function spawnSession({ id, peer, project }: Remote, args: string[]
   const main = fileURLToPath(new URL('./main.ts', import.meta.url))
   const child = spawn(process.execPath, [
     '--no-install', '--no-env-file', main, listener.address,
-    '--id', id, ...(peer ? ['--peer', peer] : []), '--format', 'endpoint', ...args, project,
+    '--id', id, ...(peer ? ['--peer', peer] : []), ...args, project,
   ], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, [TOKEN]: token } })
   const gone = new Promise<undefined>(resolve => child.once('exit', () => {
     listener.server.close()

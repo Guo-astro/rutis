@@ -343,7 +343,6 @@ impl Shared {
             expected: None,
             declare: &self.config.declare,
             require: &self.config.require,
-            compat: false,
             timeout: self.config.handshake,
         };
         // A connection still greeting when the access point stops has
@@ -544,17 +543,20 @@ mod tests {
     fn only_an_endpoint_format_hello_reports_an_id() {
         let hello = |text: &str| reported(text.as_bytes());
         assert_eq!(
-            hello(r#"{"op":"hello","version":3,"endpoint":"pixel"}"#),
+            hello(r#"{"op":"hello","version":4,"endpoint":"pixel"}"#),
             Some(PeerId::new("pixel").unwrap())
         );
-        assert_eq!(hello(r#"{"op":"hello","version":3}"#), None);
-        assert_eq!(hello(r#"{"op":"hello","version":3,"endpoint":7}"#), None);
+        assert_eq!(hello(r#"{"op":"hello","version":4}"#), None);
+        assert_eq!(hello(r#"{"op":"hello","version":4,"endpoint":7}"#), None);
         assert_eq!(
-            hello(r#"{"op":"hello","version":3,"endpoint":"Pixel 7"}"#),
+            hello(r#"{"op":"hello","version":4,"endpoint":"Pixel 7"}"#),
             None
         );
-        assert_eq!(hello(r#"{"op":"hello","version":2}"#), None);
-        assert_eq!(hello(r#"{"op":"invoke","version":3}"#), None);
+        assert_eq!(
+            hello(r#"{"op":"hello","version":3,"endpoint":"pixel"}"#),
+            None
+        );
+        assert_eq!(hello(r#"{"op":"invoke","version":4}"#), None);
         assert_eq!(hello("not json"), None);
     }
 }

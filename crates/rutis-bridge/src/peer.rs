@@ -93,7 +93,6 @@ pub(crate) struct Operations {
     /// one.
     offered: std::sync::atomic::AtomicU64,
     session: Mutex<Option<Connection>>,
-    announcing: Mutex<bool>,
     /// Versions of what features say about the session (services announced
     /// and withdrawn): one sequence for the session, so a feature that
     /// restarts keeps counting up and is never taken for an older message.
@@ -101,11 +100,9 @@ pub(crate) struct Operations {
 }
 
 impl Operations {
-    /// Serve `session`; `announce` tells the far end what is offered (a
-    /// compat far end, a local runtime, takes no `link.offers`).
-    pub(crate) fn attach(&self, session: Connection, announce: bool) {
+    /// Serve `session` and tell the far end what is offered.
+    pub(crate) fn attach(&self, session: Connection) {
         *self.session.lock().unwrap() = Some(session);
-        *self.announcing.lock().unwrap() = announce;
         self.announce();
     }
 
@@ -133,9 +130,6 @@ impl Operations {
     /// announcement is superseded by the next, and a closed session ends
     /// the question.
     fn announce(&self) {
-        if !*self.announcing.lock().unwrap() {
-            return;
-        }
         let Some(session) = self.session.lock().unwrap().clone() else {
             return;
         };
@@ -342,7 +336,12 @@ mod tests {
     async fn a_family_is_announced_only_with_its_offer() {
         let (channel, _far) = crate::memory::pair();
         let operations = Arc::new(Operations::default());
-        let connection = Connection::open(channel, operations.clone()).unwrap();
+        let connection = Connection::open(
+            channel,
+            operations.clone(),
+            crate::session::rpc::Endpoint::rust(PeerId::new("main").unwrap()),
+        )
+        .unwrap();
         let peer = Peer::new(
             PeerId::new("mac").unwrap(),
             connection,

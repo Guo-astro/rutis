@@ -142,7 +142,7 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
 /// call lasts more than twice the timeout (the fixture sleeps 2.5 s).
 #[tokio::test(flavor = "multi_thread")]
 async fn node_answers_heartbeats_while_its_main_thread_waits() {
-    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format};
+    use rutis_bridge::session::{Connection, Dispatch, Endpoint};
 
     struct Sleeper;
     impl Dispatch for Sleeper {
@@ -202,10 +202,10 @@ async fn node_answers_heartbeats_while_its_main_thread_waits() {
             .await
             .unwrap()
             .unwrap();
-    let session = Connection::open_with(
+    let session = Connection::open(
         channel,
         Arc::new(Sleeper),
-        Format::Endpoint(Endpoint::rust(id("main")).expect(id("node"))),
+        Endpoint::rust(id("main")).expect(id("node")),
     )
     .unwrap();
     session.ready().await.unwrap();

@@ -95,8 +95,8 @@ class PeerTest {
 
     private fun start(): Pair<Peer, Peer> {
         val (a, b) = MemoryChannel.pair()
-        runtime = Peer(a, Options(dispatch = ::serve))
-        host = Peer(b, Options(host = true, dispatch = { _, method, _ ->
+        runtime = Peer(a, Options(dispatch = ::serve, endpoint = Endpoint("kotlin", "main")))
+        host = Peer(b, Options(endpoint = Endpoint("main", "kotlin"), plugins = true, dispatch = { _, method, _ ->
             if (method == "inner") CallChain.current() else throw IllegalArgumentException("host has no $method")
         }))
         runtime.start()
@@ -166,7 +166,7 @@ class PeerTest {
         val chain = seenChain.get()
         assertEquals(1, chain.size, "the incoming call's id: $chain")
         // The nested call carried the chain: the host saw its own call in it.
-        assertEquals(JsonArray(listOf(JsonPrimitive(chain[0]), JsonPrimitive("node:1"))), inner)
+        assertEquals(JsonArray(listOf(JsonPrimitive(chain[0]), JsonPrimitive("kotlin:1"))), inner)
     }
 
     @Test

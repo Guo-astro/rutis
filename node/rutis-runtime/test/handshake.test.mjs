@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { Process } from '../src/client.mjs'
@@ -13,11 +13,11 @@ import { within } from './support.mjs'
 const runner = fileURLToPath(new URL('../src/runner.mjs', import.meta.url))
 const conformance = fileURLToPath(new URL('./fixtures/conformance-events.mjs', import.meta.url))
 
-// A local channel given `--id` speaks the endpoint format and greets as
-// that id, declaring `runtime`: an inherited socket (`fd:3`, as rutis
-// starts a runtime) and a socket path (the fake host's).
-test('a local channel given --id greets in the endpoint format as that id', async () => {
-  const child = spawn(process.execPath, [runner, 'fd:3', '--id', 'weather', '--peer', 'host', conformance], { stdio: ['ignore', 'ignore', 'pipe', 'pipe'] })
+// A local channel greets as `--id`, declaring `runtime`: an inherited
+// socket (`fd:3`, as rutis starts a runtime: no `--peer`, rutis greets as
+// `main`) and a socket path (the fake host's, with `--peer host`).
+test('a local channel greets as its --id', async () => {
+  const child = spawn(process.execPath, [runner, 'fd:3', '--id', 'weather', conformance], { stdio: ['ignore', 'ignore', 'pipe', 'pipe'] })
   let stderr = ''
   child.stderr.on('data', chunk => { stderr += chunk })
   const exited = new Promise(resolve => child.once('exit', resolve))
@@ -25,7 +25,7 @@ test('a local channel given --id greets in the endpoint format as that id', asyn
     send: text => channel.send(text),
     pump: () => { throw new Error('no synchronous calls') },
     dispatch: () => undefined,
-    endpoint: { local: 'host', expected: 'weather' },
+    endpoint: { local: 'main', expected: 'weather' },
   })
   const channel = frame(child.stdio[3], {
     message: text => session.receive(decode(text)),
@@ -50,6 +50,14 @@ test('a local channel given --id greets in the endpoint format as that id', asyn
   }
 })
 
+test('a local channel without --id is refused', () => {
+  for (const channel of ['fd:3', '/tmp/rutis.sock']) {
+    const ran = spawnSync(process.execPath, [runner, channel, conformance], { encoding: 'utf8', timeout: 30_000 })
+    assert.equal(ran.status, 1)
+    assert.match(ran.stderr, new RegExp(`a local channel needs --id <endpoint>: ${channel}`))
+  }
+})
+
 // The far end greets the moment it accepts, so its hello can arrive in the
 // same read as the upgrade: this side still says hello before anything else.
 test('a dialer greets first even when the far end greets at once', async () => {
@@ -59,7 +67,7 @@ test('a dialer greets first even when the far end greets at once', async () => {
     try {
       await new Promise(resolve => server.once('listening', resolve))
       const first = new Promise(resolve => server.once('connection', socket => {
-        socket.send(JSON.stringify({ op: 'hello', version: 3, endpoint: 'far', implementation: { name: 'test', version: '0' }, capabilities: [] }))
+        socket.send(JSON.stringify({ op: 'hello', version: 4, endpoint: 'far', implementation: { name: 'test', version: '0' }, capabilities: [] }))
         socket.once('message', data => resolve(JSON.parse(data.toString())))
       }))
       peer = await Process.connect(`ws://127.0.0.1:${server.address().port}/rutis`, () => undefined, undefined, { local: 'near' })

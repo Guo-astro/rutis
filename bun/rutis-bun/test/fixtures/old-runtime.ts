@@ -2,8 +2,10 @@
 // not know the row contract would.
 import { Client } from '../../src/client.ts'
 
-const [channel] = process.argv.slice(2)
+// Started as a host starts a runtime: `<channel> --id <name> <project>`.
+const [channel, , id] = process.argv.slice(2)
 const client = await Client.connect(channel, {
+  endpoint: { local: id },
   dispatch: (target, method) => {
     if (target === '' && method === 'mount') return { services: {} }
     throw new Error(`no ${method}`)

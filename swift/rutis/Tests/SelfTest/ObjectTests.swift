@@ -199,10 +199,10 @@ struct ObjectTests {
     func callsOnObjectsAreCancelledAndHoldersRelease() async throws {
         let slow = SlowObject()
         let (a, b) = try Channels.pair()
-        var options = PeerOptions()
+        var options = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
         options.dispatch = { _, method, _ in method == "slow" ? .object(ServiceObject(slow)) : .undefined }
         let runtime = try Peer(channel: a, options: options)
-        var hostOptions = PeerOptions()
+        var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
         hostOptions.host = true
         let host = try Peer(channel: b, options: hostOptions)
         try runtime.start()

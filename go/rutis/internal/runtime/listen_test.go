@@ -18,7 +18,7 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
-const testProtocol = "rutis.3"
+const testProtocol = "rutis.4"
 
 func startListener(t *testing.T) (<-chan *wsConn, string) {
 	t.Helper()
@@ -77,6 +77,8 @@ func TestAProtocolRefusalSaysWhichEndToUpgrade(t *testing.T) {
 	for protocol, want := range map[string]string{
 		"rutis.99": "this endpoint speaks " + testProtocol + ", the dialer offered rutis.99: upgrade this endpoint (Go module github.com/arcships/rutis/go/rutis)",
 		"rutis.1":  "this endpoint speaks " + testProtocol + ", the dialer offered rutis.1: upgrade the dialer",
+		// rutis 0.18 offers rutis.3.
+		"rutis.3": "this endpoint speaks " + testProtocol + ", the dialer offered rutis.3: upgrade the dialer",
 	} {
 		request, _ := http.NewRequest("GET", base, nil)
 		request.Header.Set("Authorization", "Bearer secret")

@@ -189,12 +189,12 @@ func TestATaggedValueFailsOnlyItsCallToAFarEndThatDoesNotTakeIt(t *testing.T) {
 }
 
 // rawHost is a far end written frame by frame: it greets the Go session
-// (compat format, as the host) with `capabilities` and returns what it
+// (as the host `main`) with `capabilities` and returns what it
 // receives, one frame at a time.
 func rawHost(t *testing.T, capabilities string) (*Peer, Channel, func() map[string]any) {
 	t.Helper()
 	x, y := net.Pipe()
-	runtime, err := New(NewLines(x), Options{Dispatch: echo})
+	runtime, err := New(NewLines(x), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: TestCapabilities, Dispatch: echo})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func rawHost(t *testing.T, capabilities string) (*Peer, Channel, func() map[stri
 		}
 	}()
 	go func() { _ = runtime.Start() }()
-	if err := far.Send([]byte(`{"op":"hello","version":2,"capabilities":` + capabilities + `}`)); err != nil {
+	if err := far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":` + capabilities + `}`)); err != nil {
 		t.Fatal(err)
 	}
 	next := func() map[string]any {
@@ -252,7 +252,7 @@ func TestARefusedCallReleasesTheReferencesItCarries(t *testing.T) {
 		{`{"type":"uuid","value":"0F8FAD5B-D9CB-469F-A165-70867728950E"}`, "invalid uuid"},
 		{`{"type":"bigint","value":"-0"}`, `invalid bigint "-0"`},
 	} {
-		id := `"rust:` + string(rune('1'+i)) + `"`
+		id := `"main:` + string(rune('1'+i)) + `"`
 		args := `{"type":"list","value":[` + c.value + `,` + reference(1) + `]}`
 		frame := `{"op":"invoke","id":` + id + `,"path":[],"target":"x","method":"echo","args":` + args + `}`
 		if err := far.Send([]byte(frame)); err != nil {
@@ -290,7 +290,7 @@ func TestARefusedCallReleasesTheReferencesItCarries(t *testing.T) {
 		t.Errorf("%d imports left", imports)
 	}
 	// The session goes on.
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:9","path":[],"target":"x","method":"echo","args":{"type":"list","value":[{"type":"data","value":"ok"}]}}`))
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:9","path":[],"target":"x","method":"echo","args":{"type":"list","value":[{"type":"data","value":"ok"}]}}`))
 	if f := next(); f["op"] != "return" {
 		t.Fatalf("%v", f)
 	}
@@ -328,7 +328,7 @@ func TestAValueOfTheWrongShapeIsAMalformedFrame(t *testing.T) {
 		`{"type":"set","value":{}}`,
 	} {
 		runtime, far, _ := rawHost(t, `[]`)
-		_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + value + `]}}`))
+		_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + value + `]}}`))
 		testwait.Within(t, "the session to end", runtime.Closed())
 		if !strings.Contains(runtime.Err().Error(), "invalid") {
 			t.Errorf("%s: %v", value, runtime.Err())
@@ -349,7 +349,7 @@ func TestAnUndeclaredTagIsRefusedEvenInsideAMap(t *testing.T) {
 	if _, err := far.Recv(); err != nil {
 		t.Fatal(err)
 	}
-	_ = far.Send([]byte(`{"op":"hello","version":3,"endpoint":"a","capabilities":[]}`))
+	_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"a","capabilities":[]}`))
 	testwait.Within(t, "the handshake", older.Ready())
 	_ = far.Send([]byte(`{"op":"invoke","id":"a:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[{"type":"map","value":[[{"type":"data","value":"k"},{"type":"reference","value":{"id":4,"kind":"function","home":false,"origin":[]}}]]}]}}`))
 	var frames []string

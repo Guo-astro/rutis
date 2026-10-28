@@ -587,7 +587,7 @@ func refusingHost(t *testing.T, rt *runtimeState, silent bool) (end func()) {
 	t.Helper()
 	a, b := net.Pipe()
 	hold := make(chan struct{})
-	host, err := peer.New(peer.NewLines(a), peer.Options{Host: true, Dispatch: func(ctx context.Context, target, method string, args []any) (any, error) {
+	host, err := peer.New(peer.NewLines(a), peer.Options{Endpoint: &peer.Endpoint{Local: "main"}, Capabilities: peer.TestCapabilities, Dispatch: func(ctx context.Context, target, method string, args []any) (any, error) {
 		switch {
 		case method == "events.dispatch" && silent:
 			<-hold
@@ -600,7 +600,7 @@ func refusingHost(t *testing.T, rt *runtimeState, silent bool) (end func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := peer.New(peer.NewLines(b), peer.Options{Dispatch: rt.dispatch, Arrive: rt.arrive})
+	runtime, err := peer.New(peer.NewLines(b), peer.Options{Endpoint: &peer.Endpoint{Local: "go"}, Capabilities: peer.TestCapabilities, Dispatch: rt.dispatch, Arrive: rt.arrive})
 	if err != nil {
 		t.Fatal(err)
 	}

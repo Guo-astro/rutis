@@ -358,12 +358,12 @@ fn check_runtime(runtime: &Path, install: &str) -> Result<(), Box<dyn std::error
     println!("cargo:rerun-if-changed={}", manifest.display());
     let package: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest)?)?;
     let protocol = package["rutisProtocol"].as_u64();
-    if protocol != Some(crate::cordis::PROTOCOL as u64) {
+    if protocol != Some(crate::cordis::ENDPOINT_PROTOCOL as u64) {
         return Err(format!(
             "{} speaks protocol {}, this rutis-bridge speaks {}: install a matching @arcships/rutis-runtime",
             runtime.display(),
             protocol.map_or("(unknown)".into(), |protocol| protocol.to_string()),
-            crate::cordis::PROTOCOL
+            crate::cordis::ENDPOINT_PROTOCOL
         )
         .into());
     }
@@ -455,7 +455,10 @@ mod manifest_tests {
 
         write(
             &runtime.join("package.json"),
-            &format!(r#"{{ "rutisProtocol": {} }}"#, crate::cordis::PROTOCOL),
+            &format!(
+                r#"{{ "rutisProtocol": {} }}"#,
+                crate::cordis::ENDPOINT_PROTOCOL
+            ),
         );
         fs::create_dir_all(runtime.join("node_modules")).unwrap();
         let error = failure(root, config);

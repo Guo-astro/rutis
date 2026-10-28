@@ -296,16 +296,19 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 		scope:       map[string][]rutis.Scope{},
 	}
 	go func() {
-		err := advanced.ServeConn(runtimeSide, plugin)
+		// As rutis-host starts a runtime: `--id <runtime name>`.
+		err := advanced.ServeConn(runtimeSide, h.runtime, plugin)
 		// A runtime that ended early reads nothing more: closing its end
 		// fails the test side's writes at once instead of hanging them.
 		runtimeSide.Close()
 		h.done <- err
 	}()
 	session, err := peer.New(peer.NewLines(hostSide), peer.Options{
-		Host:     true,
-		Dispatch: h.dispatch,
-		Arrive:   h.arrive,
+		// The host greets as the endpoint `main`.
+		Endpoint:     &peer.Endpoint{Local: "main", Expected: h.runtime},
+		Capabilities: peer.TestCapabilities,
+		Dispatch:     h.dispatch,
+		Arrive:       h.arrive,
 		// Plugin definitions the plugin hands to test services, as rutis
 		// takes them.
 		Plugins: true,

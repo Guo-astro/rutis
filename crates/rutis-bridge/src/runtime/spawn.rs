@@ -1,4 +1,4 @@
-//! How the `Process` compatibility facade starts its runtime process: on an
+//! How the `Process` facade starts its runtime process: on an
 //! inherited socket (fd 3) or, for runtimes that cannot take one, on a Unix
 //! socket in a private directory that the process dials back; on Windows
 //! (or with `RUTIS_LOCAL_HANDOVER=loopback`), on a loopback address with a
@@ -52,24 +52,30 @@ fn transport(error: std::io::Error) -> Error {
     Error::Transport(error.to_string())
 }
 
-/// Start `command` with the channel and `first` (the first plugin or the
-/// anchor) as its last two arguments, and connect it. The channel ends with
+/// Start `command` with the channel, `--id <id>` (the endpoint it greets
+/// as) and `first` (the first plugin or the anchor) as its last arguments,
+/// and connect it. The channel ends with
 /// how the process ended (`Cordis process exited …`).
 pub(crate) async fn spawn(
     command: tokio::process::Command,
+    id: &str,
     first: &Path,
     connect: Connect,
 ) -> Result<Spawned, Error> {
     match connect {
         #[cfg(unix)]
-        Connect::Inherit => inherit(command, first),
+        Connect::Inherit => inherit(command, id, first),
         #[cfg(unix)]
-        Connect::DialBack => dial_back(command, first).await,
-        _ => loopback(command, first).await,
+        Connect::DialBack => dial_back(command, id, first).await,
+        _ => loopback(command, id, first).await,
     }
 }
 
-async fn loopback(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
+async fn loopback(
+    mut command: tokio::process::Command,
+    id: &str,
+    first: &Path,
+) -> Result<Spawned, Error> {
     use crate::pipe::spawn::{adopt, Loopback, CHANNEL_TOKEN};
     let transport = |error: std::io::Error| Error::Transport(error.to_string());
     let listener = Loopback::bind().await.map_err(transport)?;
@@ -78,6 +84,7 @@ async fn loopback(mut command: tokio::process::Command, first: &Path) -> Result<
     let mut child = command
         .env(CHANNEL_TOKEN, listener.token())
         .arg(listener.address())
+        .args(["--id", id])
         .arg(first)
         .kill_on_drop(true)
         .spawn()
@@ -224,12 +231,13 @@ fn on_exit(channel: Channel, child: &Child) -> Channel {
 }
 
 #[cfg(unix)]
-fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
+fn inherit(mut command: tokio::process::Command, id: &str, first: &Path) -> Result<Spawned, Error> {
     let (ours, theirs) = UnixStream::pair().map_err(transport)?;
     // Only fd 3 (and stdio) crosses exec, whatever other threads opened.
     crate::pipe::spawn::hand_over(&mut command, Some(theirs.as_raw_fd()));
     let child = command
         .arg(format!("fd:{CHANNEL_FD}"))
+        .args(["--id", id])
         .arg(first)
         .kill_on_drop(true)
         .spawn()
@@ -246,7 +254,11 @@ fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned
 }
 
 #[cfg(unix)]
-async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
+async fn dial_back(
+    mut command: tokio::process::Command,
+    id: &str,
+    first: &Path,
+) -> Result<Spawned, Error> {
     let directory = tempfile::Builder::new()
         .prefix("rutis-mount-")
         .tempdir()
@@ -256,6 +268,7 @@ async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result
     crate::pipe::spawn::hand_over(&mut command, None);
     let mut child = command
         .arg(&socket)
+        .args(["--id", id])
         .arg(first)
         .kill_on_drop(true)
         .spawn()
@@ -567,7 +580,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let gate = fifo(directory.path());
         let Spawned { channel, child, .. } =
-            inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+            inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         let mut receiver = channel.receiver;
         let (ended, end) = mpsc::channel();
         std::thread::spawn(move || ended.send(receiver.recv()).unwrap());
@@ -637,7 +650,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let gate = fifo(directory.path());
         let Spawned { channel, child, .. } =
-            inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+            inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         let Channel {
             sender,
             mut receiver,
@@ -670,7 +683,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let gate = fifo(directory.path());
         let Spawned { channel, child, .. } =
-            inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+            inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         let Channel {
             sender,
             mut receiver,
@@ -705,7 +718,7 @@ mod tests {
         let gate = fifo(directory.path());
         let Spawned {
             mut channel, child, ..
-        } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        } = inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         channel.closer.close(crate::channel::Close::Done);
         let sending = std::time::Instant::now();
         let error = channel.sender.send(b"{}").unwrap_err();
@@ -727,7 +740,7 @@ mod tests {
         let gate = fifo(directory.path());
         let Spawned {
             mut channel, child, ..
-        } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        } = inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         let sending = std::time::Instant::now();
         let newline = channel.sender.send(b"a\nb").unwrap_err();
         assert_eq!(newline.to_string(), "message contains a raw newline");
@@ -747,7 +760,8 @@ mod tests {
     async fn a_process_that_does_not_exit_is_reported_as_such() {
         let directory = tempfile::tempdir().unwrap();
         let gate = fifo(directory.path());
-        let Spawned { child, .. } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
+        let Spawned { child, .. } =
+            inherit(closes_then_waits(&gate), "rt", Path::new("first")).unwrap();
         let ended = child.ended.clone();
         let error =
             tokio::task::spawn_blocking(move || ended_with(&ended, Duration::from_millis(100)))

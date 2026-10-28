@@ -30,8 +30,8 @@ import java.util.concurrent.TimeoutException
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 
-// One session of the rutis protocol: the compat format (version 2) local
-// channels speak, and the endpoint format (version 3) network channels speak.
+// One session of the rutis protocol, in the endpoint format (version 4) every
+// channel speaks, local or network.
 //
 // One thread reads frames and one writes them; every incoming call runs on a
 // thread of its own (design K5), so a synchronous call blocks only the thread
@@ -39,8 +39,7 @@ import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 // reentrant. The call chain (`path`) of a call is in CallChain: set on the
 // call's thread, carried into coroutines, taken by outgoing calls.
 
-const val PROTOCOL: Int = 2
-const val ENDPOINT_PROTOCOL: Int = 3
+const val ENDPOINT_PROTOCOL: Int = 4
 
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
@@ -49,14 +48,13 @@ const val MAX_DEPTH: Int = 64
 const val EVENTS_CAPABILITY: String = "events-v2"
 
 /**
- * What this side declares in either format: `signals`; `sync-wait` (its
+ * What this side declares: `signals`; `sync-wait` (its
  * synchronous calls say so); `reentrant-sync` (a thread per incoming call);
  * not `sync-stack`; `events-v2`; every `value-<tag>`.
  */
 val SESSION_CAPABILITIES: List<String> = listOf("objects", "signals", "reentrant-sync", "sync-wait", EVENTS_CAPABILITY) + VALUE_CAPABILITIES
 
 private val endpointId = Regex("^[a-z0-9-]+$")
-private val compatOrigin = Regex("^(node|rust|s[0-9]+/[a-z0-9-]+):[1-9][0-9]*$")
 private val endpointOrigin = Regex("^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$")
 private val sequence = Regex("^[1-9][0-9]*$")
 
@@ -89,14 +87,14 @@ class Endpoint(val local: String, val expected: String? = null, val declare: Lis
 class Options(
     /** Serves `invoke`: target "" is a control operation. Runs on the call's own thread. */
     val dispatch: (suspend (target: String, method: String, args: List<Any?>) -> Any?)? = null,
-    /** Selects the endpoint format; null speaks compat. */
-    val endpoint: Endpoint? = null,
+    /** This side's id and the far end's expected one. */
+    val endpoint: Endpoint,
     /** Sent in the endpoint handshake. */
     val implementation: Map<String, String> = emptyMap(),
     /** Declared in the endpoint handshake. */
     val capabilities: List<String> = SESSION_CAPABILITIES,
-    /** This side is the host of a compat session (call ids `rust:`), for tests that drive a runtime. */
-    val host: Boolean = false,
+    /** This side takes the far end's plugin definitions and declares `plugins`, as rutis does: a test host (RutisTest). */
+    val plugins: Boolean = false,
     /** Capabilities the far end must declare: the session ends right after its handshake when it does not. */
     val require: List<String> = emptyList(),
     val refuse: ((String) -> String)? = null,
@@ -115,7 +113,7 @@ class Options(
     val localPlugin: ((id: Long) -> Plugin?)? = null,
 )
 
-/** What the far end said of itself (endpoint format). */
+/** What the far end said of itself. */
 class Greeting(val endpoint: String, val implementation: JsonElement?, val capabilities: List<String>)
 
 internal class Outcome(val value: Any?, val error: Throwable?, val ended: Boolean = false)
@@ -237,22 +235,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private var closeError: Throwable? = null
 
     init {
-        val endpoint = opts.endpoint
-        when {
-            endpoint != null -> {
-                require(endpointId.matches(endpoint.local)) { "invalid endpoint id ${endpoint.local}" }
-                local = endpoint.local + ":"
-                remote = ""
-            }
-            opts.host -> {
-                local = "rust:"
-                remote = "node:"
-            }
-            else -> {
-                local = "node:"
-                remote = "rust:"
-            }
-        }
+        require(endpointId.matches(opts.endpoint.local)) { "invalid endpoint id ${opts.endpoint.local}" }
+        local = opts.endpoint.local + ":"
+        remote = ""
     }
 
     /** Sends the handshake and starts reading and writing. */
@@ -261,17 +246,10 @@ class Peer(private val channel: Channel, private val opts: Options) {
         Thread(::write, "rutis-writer").apply { isDaemon = true }.start()
         val hello = buildJsonObject {
             put("op", "hello")
-            val endpoint = opts.endpoint
-            if (endpoint == null) {
-                put("version", PROTOCOL)
-                // A test host takes plugin definitions, as rutis does.
-                put("capabilities", JsonArray((SESSION_CAPABILITIES + if (opts.host) listOf("plugins") else emptyList()).map(::JsonPrimitive)))
-            } else {
-                put("version", ENDPOINT_PROTOCOL)
-                put("endpoint", endpoint.local)
-                put("implementation", JsonObject(opts.implementation.mapValues { JsonPrimitive(it.value) }))
-                put("capabilities", JsonArray((opts.capabilities + endpoint.declare).map(::JsonPrimitive)))
-            }
+            put("version", ENDPOINT_PROTOCOL)
+            put("endpoint", opts.endpoint.local)
+            put("implementation", JsonObject(opts.implementation.mapValues { JsonPrimitive(it.value) }))
+            put("capabilities", JsonArray(declaredHere().map(::JsonPrimitive)))
         }
         outbox.offer(compact(hello))
     }
@@ -290,7 +268,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
     /** The plugin definition exported as `id`, while the far end holds it. */
     fun exportedPlugin(id: Long): Plugin? = synchronized(lock) { exports[id]?.value as? Plugin }
 
-    /** What the far end said of itself, once it greeted (endpoint format). */
+    /** What the far end said of itself, once it greeted. */
     fun greeting(): Greeting? = synchronized(lock) { greeting }
 
     /** The number of incoming calls running now. */
@@ -497,7 +475,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             is Exported -> exportValue(value, "function", value.original, grants, origin)
             is ExportedObject -> {
-                if (opts.endpoint != null && !supportsLocked("objects")) throw objectRefused(value.original, greeting?.endpoint)
+                if (!supportsLocked("objects")) throw objectRefused(value.original, greeting?.endpoint)
                 exportValue(value, "object", value.original, grants, origin)
             }
             is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) {
@@ -664,7 +642,8 @@ class Peer(private val channel: Channel, private val opts: Options) {
         }
     }
 
-    private fun declaredHere(): List<String> = opts.endpoint?.let { opts.capabilities + it.declare } ?: SESSION_CAPABILITIES
+    private fun declaredHere(): List<String> =
+        opts.capabilities + opts.endpoint.declare + if (opts.plugins) listOf("plugins") else emptyList()
 
     private fun decodeReference(raw: JsonElement?, d: Decoding): Any? {
         val value = raw as? JsonObject ?: throw ProtocolException("invalid reference")
@@ -677,10 +656,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
         if (id <= 0 || id > MAX_SAFE) throw invalid()
         val kind = (value["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (kind != "function" && kind != "future" && kind != "object" && kind != "plugin") throw invalid()
-        val pattern = if (opts.endpoint == null) compatOrigin else endpointOrigin
         val origin = originElement.map {
             val text = (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: throw invalid()
-            if (!pattern.matches(text)) throw invalid()
+            if (!endpointOrigin.matches(text)) throw invalid()
             text
         }
         if (home == "true") {
@@ -690,7 +668,7 @@ class Peer(private val channel: Channel, private val opts: Options) {
         }
         // Only a test host takes the far end's plugin definitions; rutis
         // never sends one that is not this side's.
-        if (kind == "plugin" && !opts.host) throw ProtocolException("plugin definitions from the far end are not supported")
+        if (kind == "plugin" && !opts.plugins) throw ProtocolException("plugin definitions from the far end are not supported")
         imports[id]?.let { record ->
             val proxy: Any? = when (record.kind) {
                 "function" -> record.function?.get()
@@ -1183,14 +1161,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
     private fun greet(frame: JsonObject) {
         val version = (frame["version"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()
         val endpoint = opts.endpoint
-        if (endpoint == null) {
-            if (version != PROTOCOL || frame.containsKey("endpoint")) {
-                throw IncompatibleException("incompatible session: " + versionMismatch(frame, PROTOCOL))
-            }
-            declared = capabilitiesOf(frame)
-            required()
-            return
-        }
         if (version != ENDPOINT_PROTOCOL) throw IncompatibleException("incompatible session: " + versionMismatch(frame, ENDPOINT_PROTOCOL))
         val far = (frame["endpoint"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (far == null || !endpointId.matches(far)) throw IncompatibleException("incompatible session: the far end named no valid endpoint")

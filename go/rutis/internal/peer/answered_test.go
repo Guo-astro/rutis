@@ -10,12 +10,12 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
-// farEnd is a scripted host in the compat format: it greets, then hands
+// farEnd is a scripted host (`main`): it greets, then hands
 // each frame the runtime sends to `frames`.
 func farEnd(t *testing.T, dispatch func(ctx context.Context, target, method string, args []any) (any, error)) (*Peer, *Lines, chan frame) {
 	t.Helper()
 	a, b := net.Pipe()
-	runtime, err := New(NewLines(a), Options{Dispatch: dispatch})
+	runtime, err := New(NewLines(a), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: TestCapabilities, Dispatch: dispatch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func farEnd(t *testing.T, dispatch func(ctx context.Context, target, method stri
 		if _, err := far.Recv(); err != nil { // its hello
 			return
 		}
-		_ = far.Send([]byte(`{"op":"hello","version":2,"capabilities":["events-v2"]}`))
+		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2"]}`))
 		for {
 			message, err := far.Recv()
 			if err != nil {
@@ -73,7 +73,7 @@ func TestSendAnsweredTellsTheReplyBeforeTheNextFrame(t *testing.T) {
 	sent := testwait.Within(t, "the dispatch", frames)
 	// The reply, then at once a frame the runtime handles after it.
 	_ = far.Send([]byte(`{"op":"return","id":` + string(sent.ID) + `,"value":{"type":"undefined"}}`))
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}`))
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}`))
 	if !testwait.Within(t, "the next frame's call", seen) {
 		t.Fatal("the frame after the reply was handled before the reply was told")
 	}

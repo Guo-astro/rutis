@@ -1,8 +1,7 @@
 import Foundation
 
-// One session of the rutis protocol: the compat format (version 2) local
-// runtimes speak, and the endpoint format (version 3) network channels
-// speak.
+// One session of the rutis protocol, in the endpoint format (version 4),
+// on a local channel or a network one.
 //
 // One thread reads the channel and parses frames; every incoming call runs
 // in a Task of its own, so a synchronous call suspends only the Task that
@@ -11,20 +10,16 @@ import Foundation
 // an incoming call's Task carries its chain, and outgoing calls take theirs
 // from the Task they are made in.
 
-package let compatProtocol = 2
-package let endpointProtocol = 3
+package let endpointProtocol = 4
 package let maxSafe: Int64 = 9_007_199_254_740_991
 
 /// The event protocol of rutis 0.13 (#464), which both ends of every 0.13
 /// session declare.
 package let eventsCapability = "events-v2"
 
-/// What this side declares in the compat format, where older hosts ignore
-/// it. `sync-wait`: its synchronous calls say so (`sync: true`). Not
-/// `sync-stack`: every incoming call runs in a Task of its own.
-package let compatCapabilities = ["objects", "signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
-
-/// What every runtime of this SDK declares in the endpoint format.
+/// What every runtime of this SDK declares. `sync-wait`: its synchronous
+/// calls say so (`sync: true`). Not `sync-stack`: every incoming call runs
+/// in a Task of its own.
 package let runtimeCapabilities = ["objects", "signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
 
 /// How deep a value crossing a session may nest (#279): each array, object,
@@ -50,7 +45,7 @@ private func sequenceNumber(_ text: Substring) -> UInt64? {
 }
 
 /// Whether `text` is a call id another session may originate (`origin`).
-private func validOrigin(_ text: String, endpoint: Bool) -> Bool {
+private func validOrigin(_ text: String) -> Bool {
     guard let colon = text.lastIndex(of: ":"), sequenceNumber(text[text.index(after: colon)...]) != nil else { return false }
     var prefix = text[..<colon]
     if let slash = prefix.firstIndex(of: "/") {
@@ -59,7 +54,7 @@ private func validOrigin(_ text: String, endpoint: Bool) -> Bool {
         prefix = prefix[prefix.index(after: slash)...]
         return valid(id: String(prefix))
     }
-    return endpoint ? valid(id: String(prefix)) : (prefix == "node" || prefix == "rust")
+    return valid(id: String(prefix))
 }
 
 package struct Endpoint {
@@ -83,14 +78,14 @@ package struct PeerOptions {
     /// frame order. It returns the rest of the call, run in a Task as
     /// `dispatch` would be, or nil to have `dispatch` serve it.
     package var arrive: ((_ method: String, _ args: [Value]) -> (() async throws -> Value)?)?
-    /// Selects the endpoint format; nil speaks compat.
-    package var endpoint: Endpoint?
+    /// This side's endpoint, and the far end it expects.
+    package var endpoint: Endpoint
     /// Sent in the endpoint handshake.
     package var implementation: [(String, String)] = [("name", Rutis.Advanced.implementation), ("version", Rutis.Advanced.sdkVersion)]
     /// What this side declares in the endpoint format.
     package var capabilities: [String] = runtimeCapabilities
-    /// This side is the host of a compat session (call ids `rust:`), for
-    /// tests that drive a runtime.
+    /// This side is a test host driving a runtime (RutisTest): it takes the
+    /// far end's plugin definitions, and declares `plugins` as rutis does.
     package var host = false
     /// Capabilities the far end must declare: the session ends right after
     /// its handshake when it does not, refused for the reason `refuse` gives.
@@ -101,7 +96,9 @@ package struct PeerOptions {
     /// the definition itself, as the runtime would take it back.
     package var localPlugin: ((_ id: Int64) -> Rutis.Definition?)?
 
-    package init() {}
+    package init(endpoint: Endpoint) {
+        self.endpoint = endpoint
+    }
 }
 
 /// Why a session ended.
@@ -138,7 +135,7 @@ package struct SessionEnded: Error, CustomStringConvertible, CustomErrorName {
 
 /// The greeting of the far end.
 package struct Greeting {
-    package var endpoint: String?
+    package var endpoint: String
     package var implementation: JSON?
     package var capabilities: [String]
 }
@@ -436,17 +433,9 @@ package final class Peer: @unchecked Sendable {
     package init(channel: Channel, options: PeerOptions) throws {
         self.channel = channel
         self.options = options
-        if let endpoint = options.endpoint {
-            guard valid(id: endpoint.local) else { throw ChannelError("invalid endpoint id \(endpoint.local)") }
-            local = endpoint.local + ":"
-            remote = ""
-        } else if options.host {
-            local = "rust:"
-            remote = "node:"
-        } else {
-            local = "node:"
-            remote = "rust:"
-        }
+        guard valid(id: options.endpoint.local) else { throw ChannelError("invalid endpoint id \(options.endpoint.local)") }
+        local = options.endpoint.local + ":"
+        remote = ""
     }
 
     /// Sends the handshake and starts reading.
@@ -455,18 +444,16 @@ package final class Peer: @unchecked Sendable {
         thread.stackSize = 8 << 20
         thread.name = "rutis session"
         thread.start()
-        var hello: [(String, JSON)] = [("op", .string("hello"))]
-        if let endpoint = options.endpoint {
-            hello.append(("version", .int(endpointProtocol)))
-            hello.append(("endpoint", .string(endpoint.local)))
-            hello.append(("implementation", .object(options.implementation.map { ($0.0, .string($0.1)) })))
-            hello.append(("capabilities", .array((options.capabilities + endpoint.declare).map(JSON.string))))
-        } else {
-            hello.append(("version", .int(compatProtocol)))
-            // A test host takes plugin definitions, as rutis does.
-            hello.append(("capabilities", .array((compatCapabilities + (options.host ? ["plugins"] : [])).map(JSON.string))))
-        }
-        try send(.object(hello))
+        let endpoint = options.endpoint
+        // A test host takes plugin definitions, as rutis does.
+        let capabilities = options.capabilities + endpoint.declare + (options.host ? ["plugins"] : [])
+        try send(.object([
+            ("op", .string("hello")),
+            ("version", .int(endpointProtocol)),
+            ("endpoint", .string(endpoint.local)),
+            ("implementation", .object(options.implementation.map { ($0.0, .string($0.1)) })),
+            ("capabilities", .array(capabilities.map(JSON.string))),
+        ]))
     }
 
     /// Returns once the far end greeted (or the session closed).
@@ -730,7 +717,7 @@ package final class Peer: @unchecked Sendable {
         case let .object(object):
             // Only to a far end that can call its methods; only this call
             // fails (#675).
-            if options.endpoint != nil, !declared.contains("objects") {
+            if !declared.contains("objects") {
                 let shown: String
                 if let service = object as? ServiceObject {
                     shown = String(describing: Swift.type(of: service.service))
@@ -851,7 +838,7 @@ package final class Peer: @unchecked Sendable {
         guard kind == "function" || kind == "future" || kind == "object" || kind == "plugin" else { throw invalid }
         var origin: [String] = []
         for item in originJSON {
-            guard let text = item.stringValue, validOrigin(text, endpoint: options.endpoint != nil) else { throw invalid }
+            guard let text = item.stringValue, validOrigin(text) else { throw invalid }
             origin.append(text)
         }
         if home {
@@ -1229,15 +1216,7 @@ package final class Peer: @unchecked Sendable {
     private func greet(_ frame: JSON) throws {
         let version = frame["version"]?.int64Value
         func strings(_ json: JSON?) -> [String] { json?.arrayValue?.compactMap(\.stringValue) ?? [] }
-        guard let endpoint = options.endpoint else {
-            guard version == Int64(compatProtocol), frame["endpoint"] == nil else {
-                throw SessionEnded(.incompatible, versionMismatch(frame, compatProtocol))
-            }
-            declared = strings(frame["capabilities"])
-            greeting = Greeting(endpoint: nil, implementation: frame["implementation"], capabilities: declared)
-            try required()
-            return
-        }
+        let endpoint = options.endpoint
         guard version == Int64(endpointProtocol) else {
             throw SessionEnded(.incompatible, versionMismatch(frame, endpointProtocol))
         }

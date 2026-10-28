@@ -1,4 +1,4 @@
-"""`python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>`:
+"""`python3 -m rutis <channel> --id <endpoint> [--peer <endpoint>] <project>`:
 one runtime process.
 
 The channel is `fd:<n>`, a socket inherited from the process that started
@@ -11,9 +11,8 @@ listener certificate and key in RUTIS_CERT and RUTIS_KEY); or
 `dial:ws://…` / `dial:wss://…`, a rutis access point to dial and to dial
 again (`dialing`), presenting the token in RUTIS_TOKEN and trusting the CA
 in RUTIS_CA besides the system's.
-A channel speaks the endpoint format, as `--id`, expecting `--peer` as the
-controller when given: network channels always, local ones when given
-`--id`; a local channel without `--id` speaks the compat protocol.
+Every channel speaks the session protocol as the endpoint `--id`, expecting
+`--peer` as the controller when given.
 """
 
 import asyncio
@@ -53,10 +52,10 @@ def open_channel(spec: str):
     return connection
 
 
-def parse(argv: list[str]) -> tuple[str, dict | None, str]:
-    """The channel, the endpoint (given `--id`), and the project."""
+def parse(argv: list[str]) -> tuple[str, dict, str]:
+    """The channel, the endpoint, and the project."""
     if not argv:
-        raise ValueError("usage: python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>")
+        raise ValueError("usage: python3 -m rutis <channel> --id <endpoint> [--peer <endpoint>] <project>")
     channel, rest, flags = argv[0], list(argv[1:]), {}
     while rest and rest[0].startswith("--"):
         flag = rest.pop(0)[2:]
@@ -64,11 +63,12 @@ def parse(argv: list[str]) -> tuple[str, dict | None, str]:
             raise ValueError(f"--{flag} needs a value")
         flags[flag] = rest.pop(0)
     if len(rest) != 1:
-        raise ValueError("usage: python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>")
-    if channel.startswith(("listen:", "dial:")) and "id" not in flags:
-        raise ValueError(f"a network channel needs --id <endpoint>: {channel}")
+        raise ValueError("usage: python3 -m rutis <channel> --id <endpoint> [--peer <endpoint>] <project>")
+    if "id" not in flags:
+        kind = "network" if channel.startswith(("listen:", "dial:")) else "local"
+        raise ValueError(f"a {kind} channel needs --id <endpoint>: {channel}")
     # A runner is a runtime: the controller manages its rows.
-    endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]} if "id" in flags else None
+    endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]}
     if channel.startswith("dial:"):
         # What retrying cannot fix fails here, before any dial.
         from . import websocket
@@ -84,7 +84,7 @@ class Session:
     """One control session and the lease it holds: the rows, proxies and
     references of one controller."""
 
-    def __init__(self, channel, endpoint: dict | None):
+    def __init__(self, channel, endpoint: dict):
         self.channel = channel
         self.runtime = Runtime()
         # A host older than rutis 0.13 does not speak its event protocol: the
@@ -124,7 +124,7 @@ class Session:
         self.channel.close("the runtime stopped")
 
 
-async def run(channel: str, endpoint: dict | None, project: str) -> int:
+async def run(channel: str, endpoint: dict, project: str) -> int:
     if project and project not in sys.path:
         sys.path.insert(0, project)
     if channel.startswith("listen:"):

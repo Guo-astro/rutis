@@ -14,10 +14,11 @@ from decimal import Decimal
 from uuid import UUID
 
 import background
+from support import LOCAL, hello
 
 from rutis import _values as values
 from rutis._values import BigInt, Map
-from rutis.peer import CAPABILITIES, COMPAT_CAPABILITIES, UNDEFINED, Peer, RemoteFunction
+from rutis.peer import CAPABILITIES, UNDEFINED, Peer, RemoteFunction
 from rutis.testing import PluginTestError, _cross
 
 ALL = [f"value-{tag}" for tag in values.TAGS]
@@ -191,10 +192,10 @@ class SessionTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, dispatch)
+        peer = Peer(ours, dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2, "capabilities": capabilities})
+        peer._receive(hello(capabilities))
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -205,12 +206,11 @@ class SessionTests(background.IsolatedAsyncioTestCase):
 
     @staticmethod
     def invoke(sequence, args, method="m"):
-        return {"op": "invoke", "id": f"rust:{sequence}", "path": [], "target": "test", "method": method, "args": args}
+        return {"op": "invoke", "id": f"main:{sequence}", "path": [], "target": "test", "method": method, "args": args}
 
-    def test_both_formats_declare_every_tagged_value(self):
+    def test_the_session_declares_every_tagged_value(self):
         for capability in ALL:
             self.assertIn(capability, CAPABILITIES)
-            self.assertIn(capability, COMPAT_CAPABILITIES)
 
     async def test_values_cross_by_value_under_their_tags(self):
         peer, _read = self.session(lambda target, method, args: None)
@@ -324,9 +324,9 @@ class SessionTests(background.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "did not declare the capability value-"):
                     peer.call("test", "m", [value])
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
-        peer._deliver({"op": "return", "id": "node:6", "value": {"type": "data", "value": 7}})
+        peer._deliver({"op": "return", "id": "py:6", "value": {"type": "data", "value": 7}})
         self.assertEqual(peer.call("test", "good", [{"a": 1}]), 7)
-        self.assertEqual((await read())["id"], "node:6")
+        self.assertEqual((await read())["id"], "py:6")
         self.assertIsNone(peer.closed_error)
 
     async def test_a_result_the_far_end_did_not_declare_is_thrown(self):
@@ -360,23 +360,23 @@ class SessionTests(background.IsolatedAsyncioTestCase):
                     continue
                 break
             self.assertEqual(frame["op"], "throw", frame)
-            self.assertEqual(frame["id"], f"rust:{sequence}")
+            self.assertEqual(frame["id"], f"main:{sequence}")
             self.assertEqual(frame["error"]["name"], "ValueError")
         self.assertEqual(sorted(released), [(1, 1), (2, 1), (3, 2), (4, 1), (5, 1)])
         self.assertEqual(peer.references(), {"exports": 0, "imports": 0})
         self.assertEqual(called, [])
         peer._receive(self.invoke(len(refused) + 1, {"type": "list", "value": [{"type": "date", "value": "2026-10-15"}]}))
-        self.assertEqual(await read(), {"op": "return", "id": "rust:6", "value": {"type": "data", "value": "ok"}})
+        self.assertEqual(await read(), {"op": "return", "id": "main:6", "value": {"type": "data", "value": "ok"}})
         self.assertEqual(called, [[date(2026, 10, 15)]])
         self.assertIsNone(peer.closed_error)
 
     async def test_a_refused_result_fails_the_call_waiting_for_it(self):
         peer, read = self.session(lambda target, method, args: None)
-        peer._deliver({"op": "return", "id": "node:1", "value": {"type": "instant", "value": "2026-10-15T03:22:15+02:00"}})
+        peer._deliver({"op": "return", "id": "py:1", "value": {"type": "instant", "value": "2026-10-15T03:22:15+02:00"}})
         with self.assertRaisesRegex(ValueError, "invalid instant"):
             peer.call("test", "m", [])
         await read()
-        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "instant", "value": "2026-10-15T03:22:15.9999999Z"}})
+        peer._deliver({"op": "return", "id": "py:2", "value": {"type": "instant", "value": "2026-10-15T03:22:15.9999999Z"}})
         self.assertEqual(peer.call("test", "m", []), datetime(2026, 10, 15, 3, 22, 15, 999999, tzinfo=timezone.utc))
         self.assertIsNone(peer.closed_error)
 

@@ -73,10 +73,10 @@ func ServeArgs(args []string, defs ...*rutis.Definition) error {
 	return runtime.ServeArgs(args, defs...)
 }
 
-// ServeConn serves the plugins `defs` on `conn` (the compat protocol, one
-// message per line) until the session ends, then unloads them.
-func ServeConn(conn net.Conn, defs ...*rutis.Definition) error {
-	return runtime.ServeConn(conn, defs...)
+// ServeConn serves the plugins `defs` on `conn` (one message per line),
+// greeting as the endpoint `id`, until the session ends, then unloads them.
+func ServeConn(conn net.Conn, id string, defs ...*rutis.Definition) error {
+	return runtime.ServeConn(conn, id, defs...)
 }
 
 // ── Values ───────────────────────────────────────────────────────

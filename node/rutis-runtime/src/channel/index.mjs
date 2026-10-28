@@ -7,8 +7,7 @@ import * as websocket from './websocket.mjs'
 
 export { ConnectError }
 
-// Network sessions speak the endpoint format; its version is the
-// WebSocket subprotocol.
+// Network sessions name the protocol version as the WebSocket subprotocol.
 const PROTOCOL = `rutis.${ENDPOINT_PROTOCOL}`
 
 // open(spec, { message(text), closed(reason) }) → { send(text), end(), close(reason) }

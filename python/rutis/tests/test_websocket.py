@@ -24,7 +24,9 @@ try:
 except ImportError:  # the optional `network` dependency is missing
     websocket = None
 
-PROTOCOL = "rutis.2"
+from rutis.peer import ENDPOINT_PROTOCOL  # noqa: E402
+
+PROTOCOL = f"rutis.{ENDPOINT_PROTOCOL}"
 
 
 def listen(**options):
@@ -193,7 +195,7 @@ class WebSocketTest(background.TestCase):
 import os, resource, sys
 from rutis import websocket
 resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-listener = websocket.listen("ws://127.0.0.1:0/rutis", "rutis.2", "secret", announce=lambda a: print(a, flush=True))
+listener = websocket.listen("ws://127.0.0.1:0/rutis", "rutis.4", "secret", announce=lambda a: print(a, flush=True))
 held = []
 try:
     while True:

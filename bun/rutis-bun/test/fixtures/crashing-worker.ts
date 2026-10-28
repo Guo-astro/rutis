@@ -13,4 +13,4 @@ port.on('message', (message: any) => {
   if (message?.frame) throw new Error('the worker broke')
 })
 send({ ready: true })
-send({ op: 'hello', version: 2 })
+send({ op: 'hello', version: 4, endpoint: 'main', capabilities: [] })

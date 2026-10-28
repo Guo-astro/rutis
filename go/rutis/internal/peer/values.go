@@ -347,11 +347,7 @@ func (d *decoding) refuse(err error) {
 // declares reports whether this side declared `capability`; p.mu is
 // held or not needed.
 func (p *Peer) declares(capability string) bool {
-	declared := compatCapabilities
-	if p.opts.Endpoint != nil {
-		declared = append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
-	}
-	for _, c := range declared {
+	for _, c := range append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...) {
 		if c == capability {
 			return true
 		}

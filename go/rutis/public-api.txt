@@ -64,7 +64,7 @@ func Prepend() rutis.ListenOption
 func Project() string
 func Rename(method, wire string) rutis.ShapeOption
 func ServeArgs(args []string, defs ...*rutis.Definition) error
-func ServeConn(conn net.Conn, defs ...*rutis.Definition) error
+func ServeConn(conn net.Conn, id string, defs ...*rutis.Definition) error
 type AggregateError = peer.AggregateError
 type Date = values.Date
 func DateOf(t time.Time) Date

@@ -42,13 +42,12 @@ function needsRecord(value, seen = new Set()) {
   return Object.values(value).some(item => needsRecord(item, seen))
 }
 
-// The protocol version this runtime speaks; builds check it against the
-// rutis-bridge crate (package.json `rutisProtocol`).
 const MANIFEST = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-const PROTOCOL = MANIFEST.rutisProtocol
-// The endpoint format: endpoint ids in the handshake and the call ids,
-// capabilities, either side calling the other.
-export const ENDPOINT_PROTOCOL = 3
+// The protocol version this runtime speaks (package.json `rutisProtocol`
+// too, which builds check against the rutis-bridge crate): endpoint ids in
+// the handshake and the call ids, capabilities, either side calling the
+// other.
+export const ENDPOINT_PROTOCOL = 4
 
 // Why a far end's protocol version is refused, saying which end to upgrade
 // (standard Q6.2.4): this side when the far end is newer, naming the
@@ -63,25 +62,22 @@ export function versionMismatch(far, local, implementation) {
     ? `${mismatch}: upgrade the far end (${name} ${version})`
     : `${mismatch}: upgrade the far end`
 }
-// What this implementation supports in the endpoint format. `objects`: it
+// What this implementation supports. `objects`: it
 // takes objects with methods, as a proxy whose methods call them (#687).
 // `sync-wait`: its synchronous calls say so (`sync: true`), for the host's
 // wait-cycle check; `sync-stack`: calls run while it waits are stacked on
 // its one thread. It is not reentrant, so it does not declare that.
 // `value-<tag>`: it takes all ten tagged values (#308, ./values.mjs).
 export const CAPABILITIES = ['objects', 'signals', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
-// What it declares in the compat format, where older hosts ignore it.
-const COMPAT_CAPABILITIES = ['objects', 'sync-wait', 'sync-stack', ...VALUE_CAPABILITIES, 'events-v2']
 export const ENDPOINT_ID = /^[a-z0-9-]+$/
-// `events-v2` (#464): the event protocol of rutis 0.13, declared in both
-// formats. A runtime requires it of its host (`requires`) and ends the
+// `events-v2` (#464): the event protocol of rutis 0.13. A runtime requires it of its host (`requires`) and ends the
 // session right after the handshake without it (protocol §2.1).
 export const EVENTS_V2_REFUSAL = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
 function required(capabilities, requires) {
   if (requires?.includes('events-v2') && !capabilities.includes('events-v2')) throw Object.assign(new Error(EVENTS_V2_REFUSAL), { category: 'incompatible' })
 }
 
-// What a far end's endpoint-format hello says of it, or why it is refused:
+// What a far end's hello says of it, or why it is refused:
 // an error whose `category` says what it means for a link or a dialer
 // (incompatible: stop; auth-rejected: retry slowly). `endpoint` is this
 // side's ({ local, expected?, verified? }).
@@ -221,8 +217,8 @@ export class Session {
   #next = 0; #received = 0; #ref = 0; #pending = new Map(); #sites = new Map(); #exports = new Map(); #identities = new WeakMap()
   #imports = new Map(); #proxies = new WeakMap(); #finalizer
   #closed; #handshake = false; #resolveReady; #rejectReady
-  // Call id prefixes: `node:` / `rust:` (compat), `<endpoint>:` (endpoint format).
-  #endpoint; #local = 'node:'; #remote = 'rust:'
+  // Call id prefixes: `<endpoint>:`, this side's and the far end's.
+  #endpoint; #local; #remote
   #context = new AsyncLocalStorage(); #syncPath; #waiting = []; #queued = new Set()
   #active = 0; #draining = []
   // AbortControllers for incoming calls that received a signal argument.
@@ -235,9 +231,9 @@ export class Session {
   // `settled` runs after a call or property read on an exported reference
   // returns (or its Promise settles): the owner may have changed state that
   // invoke dispatch would otherwise observe, such as replaced services.
-  // `endpoint` ({ local, expected?, verified?, declare? }) selects the
-  // endpoint format (`declare`: capabilities beyond the session's, such as
-  // the contract); without it the session speaks the compat protocol.
+  // `endpoint` ({ local, expected?, verified?, declare? }): this side's
+  // endpoint id, the far end's expected one, and `declare`: capabilities
+  // beyond the session's, such as the contract.
   // `report(line, details?)`: where a session-end loss is reported (local
   // emits still queued, #546); a no-op when not configured.
   constructor({ send, pump, dispatch, abort, settled, endpoint, inline, requires, holds, report = () => {}, owner, within, maxMessage = MAX_MESSAGE }) {
@@ -257,39 +253,26 @@ export class Session {
     // later local work may have to wait behind (`behind`), or undefined.
     this.#holds = holds
     this.#inline = new Set(inline ?? []); this.#requires = requires ?? endpoint?.requires
-    if (endpoint) {
-      if (!ENDPOINT_ID.test(endpoint.local)) throw new Error(`invalid endpoint id ${endpoint.local}`)
-      this.#endpoint = endpoint; this.#local = `${endpoint.local}:`; this.#remote = undefined
-    }
+    if (!ENDPOINT_ID.test(endpoint?.local)) throw new Error(`invalid endpoint id ${endpoint?.local}`)
+    this.#endpoint = endpoint; this.#local = `${endpoint.local}:`
     this.ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject })
     this.#finalizer = new FinalizationRegistry(record => this.#release(record))
   }
   start() {
-    this.#send(encode(this.#endpoint
-      ? { op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: this.#endpoint.local, implementation: { name: MANIFEST.name, version: MANIFEST.version }, capabilities: [...CAPABILITIES, ...(this.#endpoint.declare ?? [])] }
-      : { op: 'hello', version: PROTOCOL, capabilities: COMPAT_CAPABILITIES }))
+    this.#send(encode({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: this.#endpoint.local, implementation: { name: MANIFEST.name, version: MANIFEST.version }, capabilities: [...CAPABILITIES, ...(this.#endpoint.declare ?? [])] }))
   }
-  // What the far end declared (either format), once it greeted.
+  // What the far end declared, once it greeted.
   #declared = []
-  // What the far end said of itself (endpoint format), once it greeted.
+  // What the far end said of itself, once it greeted.
   greeting
+  // Handshake failures carry what they mean for a link (`greetingOf`): stop
+  // on an incompatible far end, retry slowly on a mismatched identity.
   #greet(frame) {
-    // Handshake failures carry what they mean for a link: stop on an
-    // incompatible far end, retry slowly on a mismatched identity.
-    const fail = (category, message) => Object.assign(new Error(message), { category })
-    if (!this.#endpoint) {
-      if (frame.version !== PROTOCOL || frame.endpoint !== undefined) throw fail('incompatible', `incompatible session: ${versionMismatch(frame.version, PROTOCOL, frame.implementation)}`)
-      if (Array.isArray(frame.capabilities)) this.#declared = frame.capabilities
-      required(this.#declared, this.#requires)
-      return
-    }
     this.greeting = greetingOf(frame, { ...this.#endpoint, requires: this.#requires })
     this.#remote = `${this.greeting.endpoint}:`
     this.#declared = this.greeting.capabilities
   }
-  supports(capability) { return this.greeting?.capabilities.includes(capability) ?? false }
-  // Whether the far end declared `capability` (either format).
-  declares(capability) { return this.#declared.includes(capability) }
+  supports(capability) { return this.#declared.includes(capability) }
   close(error = new Error('session closed')) {
     if (this.#closed) return
     this.#closed = error; this.#rejectReady(error)
@@ -316,9 +299,6 @@ export class Session {
   // tagged with the session it came through (`s3/mac:4`).
   #callId(id) {
     if (typeof id !== 'string') return false
-    // Compat: this session's ids are `node:`/`rust:`; another session's
-    // come tagged with it, whatever its format (`s1/node:3`, #225).
-    if (!this.#endpoint) return /^(node|rust|s[0-9]+\/[a-z0-9-]+):[1-9][0-9]*$/.test(id)
     return /^(s[0-9]+\/)?[a-z0-9-]+:[1-9][0-9]*$/.test(id)
   }
   #path() { return this.#syncPath ?? this.#context.getStore() ?? [] }
@@ -346,7 +326,7 @@ export class Session {
         const kind = typeof value === 'function' ? 'function' : value instanceof Promise ? 'future' : isPluginDefinition(value) ? 'plugin' : 'object'
         // An object goes only to a far end that can call its methods.
         // An older one (before rutis 0.18) takes none.
-        if (kind === 'object' && this.#endpoint && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead, or upgrade ${this.greeting.endpoint} to rutis 0.18`)
+        if (kind === 'object' && !this.supports('objects')) throw new ValueError(`an object with methods${className(value)} cannot cross to ${this.greeting.endpoint}; pass plain data or a function instead, or upgrade ${this.greeting.endpoint} to rutis 0.18`)
         if (kind === 'plugin' && !this.#declared.includes('plugins')) throw new ValueError('cannot send a plugin definition: the far end does not accept plugin definitions (it did not declare the capability plugins)')
         entry = { origin: [...this.#path()], value, kind, grants: 0, business, call: kind === 'future' ? this.#promiseCalls.get(value) : undefined, owner: this.#owner() }
         this.#identities.set(value, id); this.#exports.set(id, entry)

@@ -128,7 +128,7 @@ What an implementation of B must provide (the model's assumptions):
 1. A host-wide table of forwarded synchronous calls that have not returned (source session and id, target session and id, decoded chain);
 2. Returns recorded in frame-reading order: within a session, a return read earlier leaves the table before a call read later is checked;
 3. A check before every synchronous forward; on a cycle, do not forward, answer `SyncWaitCycle` naming the calls on the cycle;
-4. Reliable reentrancy per runtime: `reentrant-sync` in the endpoint-format handshake; the compat format has no capabilities, so the runtime plugin's configuration says it (Node: no);
+4. Reliable reentrancy per runtime: `reentrant-sync` in the handshake (the Node runtime does not declare it);
 5. Only **synchronous** waits in the graph (see below).
 
 ## Open questions

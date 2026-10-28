@@ -8,12 +8,12 @@ struct EmitReplyTests {
     /// A runtime session whose far end the test writes and reads by hand.
     private func scripted(_ dispatch: @escaping (String, String, [Value]) async throws -> Value) async throws -> (Peer, LineChannel) {
         let (a, b) = try Channels.pair()
-        var options = PeerOptions()
+        var options = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
         options.dispatch = dispatch
         let runtime = try Peer(channel: a, options: options)
         try runtime.start()
         _ = try await next(b) // its hello
-        try send(b, #"{"op":"hello","version":2,"capabilities":["events-v2"]}"#)
+        try send(b, #"{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2"]}"#)
         await runtime.ready()
         return (runtime, b)
     }
@@ -58,7 +58,7 @@ struct EmitReplyTests {
         XCTAssertEqual(sent["method"]?.stringValue, "events.dispatch")
         // The reply, then at once a frame the runtime handles after it.
         try send(far, #"{"op":"return","id":"# + id(sent) + #","value":{"type":"undefined"}}"#)
-        try send(far, #"{"op":"invoke","id":"rust:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}"#)
+        try send(far, #"{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}"#)
         let wasHandled = await handled.wait(seconds: 5)
         XCTAssertTrue(wasHandled, "the frame after the reply was not handled")
         XCTAssertEqual(seen.get(), true, "the frame after the reply was handled before the reply was told")
