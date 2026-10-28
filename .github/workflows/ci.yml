@@ -71,7 +71,7 @@ env:
   # a test that starts nothing and opens nothing belongs in PURE_TESTS_*. A
   # name here without its file fails the `lint` job.
   PURE_TESTS_BRIDGE: >-
-    link memory_mux memory_plugin memory_session multihop node
+    link memory_mux memory_session multihop node
     node_conformance
   PURE_TESTS_LOADER: >-
     check instance_peers instance_services instances lifecycle loader
