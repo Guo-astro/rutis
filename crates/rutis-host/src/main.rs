@@ -84,8 +84,8 @@ usage:
                                               types
   rutis-host --version
 
-Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
-RUTIS_CERT and RUTIS_KEY.
+Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
+RUTIS_KEY.
 
 Exit status: 0 when it ends normally (also on Ctrl-C or SIGTERM once every
 cleanup ran), 1 when it cannot start or run (configuration, loading, a row
