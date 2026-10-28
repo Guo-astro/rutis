@@ -133,6 +133,15 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     // Before saying it runs: a change made once it says so is a change.
     let mut seen = project::sources(&dir);
     errln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
+    // Once every row settled: a row whose apply does not return keeps it
+    // waiting, not the changes nor a signal.
+    {
+        let loader = host.loader.clone();
+        tokio::spawn(async move {
+            loader.settled().await;
+            errln!("{}", services_line(&loader));
+        });
+    }
     status::follow(host.followed());
     let mut exits = host.supervise();
     let mut project = Project {
@@ -161,7 +170,11 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
             _ = triggers.next() => {
                 // A signal ends a reload half way: the host stops anyway.
                 tokio::select! {
-                    () = project.reconfigure(&mut host, &mut triggers) => {}
+                    () = async {
+                        project.reconfigure(&mut host, &mut triggers).await;
+                        host.loader.settled().await;
+                        errln!("{}", services_line(&host.loader));
+                    } => {}
                     signal = signals.next() => {
                         break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
                     }
@@ -201,7 +214,13 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         // Then the rows whose files changed. A plugin whose new code hangs
         // does not keep a signal out either.
         tokio::select! {
-            () = project.reload(&host, &changed) => {}
+            () = async {
+                // Once the change ended, the services as they are now.
+                if project.reload(&host, &changed).await || rebuild {
+                    host.loader.settled().await;
+                    errln!("{}", services_line(&host.loader));
+                }
+            } => {}
             signal = signals.next() => {
                 break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
             }
@@ -210,6 +229,28 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     // Stopped: no runtime runs them now.
     remove_builds(&mut project.stale);
     Ok(stopped)
+}
+
+/// The services and the rows providing them, as `Loader::status()` has
+/// them: `rutis-host dev: services: forecast (weather), llm (llm)`, by
+/// name; `host` for one the host provides; `none` when there is none.
+fn services_line(loader: &rutis_loader::Loader) -> String {
+    let services: Vec<String> = loader
+        .status()
+        .services
+        .iter()
+        .map(|service| {
+            format!(
+                "{} ({})",
+                service.name,
+                service.provider.as_deref().unwrap_or("host")
+            )
+        })
+        .collect();
+    match services.is_empty() {
+        true => "rutis-host dev: services: none".to_owned(),
+        false => format!("rutis-host dev: services: {}", services.join(", ")),
+    }
 }
 
 /// `--debug` taken out of `args`: whether it was there, and the rest.
@@ -298,11 +339,12 @@ impl Project {
     }
 
     /// Reload the rows whose files are among `changed`; a runtime that is
-    /// down starts again instead, its rows with it.
-    async fn reload(&self, host: &Host, changed: &[PathBuf]) {
+    /// down starts again instead, its rows with it. Whether any row had a
+    /// file among them.
+    async fn reload(&self, host: &Host, changed: &[PathBuf]) -> bool {
         let plan = self.plan(host, changed);
         if plan.is_empty() {
-            return;
+            return false;
         }
         // Their new code is described again, also once a runtime started
         // again resolves its rows.
@@ -342,6 +384,7 @@ impl Project {
         for line in affected.lines(&|id| reloaded.contains(id) || skip.contains(id)) {
             errln!("{line}");
         }
+        true
     }
 
     /// Of the project's rows, those whose files are among `changed`, each
