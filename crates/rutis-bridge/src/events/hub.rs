@@ -15,8 +15,7 @@ use rutis::host::BoxFuture;
 use rutis::host::{CtxHost, ErrorKind, ListenerKind};
 use rutis::internal::events::{
     BatchFilter, Candidate, Dispatch, FilterAnswer, PayloadRef, RawTerminal, RemoteCall,
-    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
-    TableEntry,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
 };
 use rutis::internal::{CtxInternal, EventOptions};
 use rutis::{Ctx, Disposer, Error as RutisError};
@@ -1156,14 +1155,6 @@ pub(crate) fn next_function(next: RemoteNext) -> Value {
     })
 }
 
-/// `next` of a synchronous waterfall as the far end gets it.
-pub(crate) fn sync_next_function(next: RemoteSyncNext) -> Value {
-    Value::callback(move |_| {
-        let rest = next.call().map_err(|error| to_session(&error))?;
-        result_to_wire(rest)
-    })
-}
-
 impl RemoteListener for WireEntry {
     fn kind(&self) -> ListenerKind {
         self.kind
@@ -1251,7 +1242,7 @@ impl RemoteListener for WireEntry {
                 dispatch: call.dispatch(),
                 own,
                 event: call.event(),
-                next: call.next().map(sync_next_function),
+                next: None,
             })?;
             connection
                 .invoke("", "events.call", request)

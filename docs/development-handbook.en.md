@@ -257,7 +257,7 @@ A listener is registered once and every dispatch mode calls it; the sender choos
 | `parallel` | Call listeners concurrently; wait for all | Returns `()` on success; failures aggregate into `ListenersFailed` (also for a single failure), in registration order |
 | `serial` | Call one at a time in registration order; stop on a result or error | Return first result; `None` and `Some(false)` count as no result |
 | `waterfall` | Listeners call later handlers through `call.next()` and can process their result | Return the outermost listener's result |
-| `bail` / `waterfall_sync` | As `serial` / `waterfall`, but synchronously on the caller's thread (`waterfall_sync` is a host method) | Listeners must be registered with `on_sync`; an async listener is an `AsyncListener` error |
+| `bail` | As `serial`, but synchronously on the caller's thread | Listeners must be registered with `on_sync`; an async listener is an `AsyncListener` error |
 
 Listeners return `rutis::Result<Option<E::Value>>`. For example, if the event declares `type Value = String`, a serial listener can return a title with `Ok(Some(title))` or pass to the next handler with `Ok(None)`.
 

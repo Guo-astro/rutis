@@ -90,12 +90,7 @@ async fn listener_closures_need_no_annotations() {
 
     let other = Ctx::root().unwrap();
     other
-        .on_sync::<Ping>(|event, call| {
-            if call.mode() == Mode::WaterfallSync {
-                return call.next();
-            }
-            Ok(Some(event.0 * 10))
-        })
+        .on_sync::<Ping>(|event, _| Ok(Some(event.0 * 10)))
         .unwrap();
     assert_eq!(other.bail(Ping(4)).unwrap(), Some(40));
     other.emit(Arc::new(Ping(5))).unwrap();

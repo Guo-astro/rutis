@@ -6,7 +6,7 @@
     "Scopes: each scope path is one instance of its group, created once; t2's group is `team`, not `tenant`, so that rows placed in t1 are not copied into t2 (a loader instance copies its group's rows). A listener's scope is a descriptor for filters; delivery is by name on one flat bus, as in Cordis, so every listener hears every event regardless of its scope.",
     "Additions to the format of §13.2: a listener's `fails` ({name, message}: its row's apply throws that error, after registering nothing); a listener's `inject` (service names: the row's own `inject` list, as a configuration gives it: `rutis/row-failed-gated` checks that such a row, behind a gate in a Cordis runtime, fails with its apply's error as `rutis/row-failed` does, #584); `typed: \"unit\"` (a Rust unit struct event); `observesDispatch` (a Cordis listener row that also logs `<label>:dispatch:<mode>` from its internal/dispatch for each dispatch of the case's name); the filter `{\"throws\": {name, message}}` (the predicate throws); the step `{\"update\": label}` (the row's config changes, so it registers again); and `expect` on a `load` step. Rust events cross by serde without a declaration, so there is no NoWire case.",
     "Expectations, strictly: a step without `throws` or `cancelled` requires every dispatch that ends in it to succeed. `cancelled: true`: the dispatch ends with its emitter's language's cancellation (Python `CancelledError`, Go `Canceled`, Swift `CancellationError`, Kotlin `CancellationException`, the Rust fixture's `Cancelled`). `reported` entries ({label, name, filter?}): exactly one §5.6 line about the step's event names that row (`in row <label>`, or the dispatcher's `in runtime <its runtime>` / `in node <peer>`) with that error name; `filter: true` for a filter's line (`rutis: filter of <name> from row <label>`). `logLacks` (and `reported`) are checked again a moment after the rest held. A `$` tag that does not parse is an error of the file. `toolCases`: how many cases each testing tool runs (crates/rutis-bridge/tests/events_expected.rs checks it against the cases; each tool checks it ran that many).",
-    "The rows: plugin `conformance-events`, one row per participant, keyed by its label; its config is the participant as resolved by the runner (name, kind and log filled in). It injects `events-log`, a host service: add(entry) sync; filter(description) sync (logs `filter:<row>` and keeps the description for `filterSees`); wait(entry) async (resolves once entry is logged, for `cancel`). Emitter rows (labelled e or f) load the plugin `conformance-events-e` or `conformance-events-f` (Python `conformance_events_e` / `_f`): the same plugin, declaring only its own `emitter-<label>` (a declared service is exported whether the row provides it or not), with dispatch(spec) async and dispatch_sync(spec) sync (for bail and waterfall-sync). `conformance-events` itself declares nothing."
+    "The rows: plugin `conformance-events`, one row per participant, keyed by its label; its config is the participant as resolved by the runner (name, kind and log filled in). It injects `events-log`, a host service: add(entry) sync; filter(description) sync (logs `filter:<row>` and keeps the description for `filterSees`); wait(entry) async (resolves once entry is logged, for `cancel`). Emitter rows (labelled e or f) load the plugin `conformance-events-e` or `conformance-events-f` (Python `conformance_events_e` / `_f`): the same plugin, declaring only its own `emitter-<label>` (a declared service is exported whether the row provides it or not), with dispatch(spec) async and dispatch_sync(spec) sync (for bail). `conformance-events` itself declares nothing."
   ],
   "plugin": "conformance-events",
   "languages": ["rust", "node", "node-leaf", "bun", "python", "go", "swift", "kotlin"],
@@ -205,15 +205,6 @@
       ],
       "steps": [
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "BErr"}, "log": ["a", "b"]}}
-      ] },
-
-    { "case": "waterfall-sync/chain", "rule": "5.4 waterfall-sync", "name": "t/wfs", "tool": false, "vary": ["a", "b"],
-      "listeners": [
-        {"label": "a", "at": "X", "does": {"next": "a"}},
-        {"label": "b", "at": "Y", "does": {"next": "b"}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t"}, "expect": {"returns": "abt", "log": ["a", "b", "terminal"]}}
       ] },
 
     { "case": "bail/first-result", "rule": "5.4 bail", "name": "t/bail", "vary": ["a", "b", "c", "e"],
@@ -577,22 +568,6 @@
       ],
       "steps": [
         {"emit": {"from": "X", "mode": "waterfall", "args": [], "terminal": "t"}, "expect": {"returns": false, "log": ["a"]}}
-      ] },
-
-    { "case": "waterfall/next-twice-in-sync", "rule": "5.4 next", "name": "t/wfs-twice", "tool": false, "vary": ["a"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
-      "listeners": [
-        {"label": "a", "at": "Y", "does": {"nextTwice": true}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t"}, "expect": {"throws": {"name": "WaterfallNext", "message": "was already called"}}}
-      ] },
-
-    { "case": "waterfall-sync/async-listener", "rule": "5.4 kinds", "name": "t/wfs-async", "tool": false, "vary": ["a"], "except": [{"a": ["go", "swift", "kotlin"], "why": "Go, Swift and Kotlin listeners are synchronous"}],
-      "listeners": [
-        {"label": "a", "at": "Y", "kind": "async", "does": {"next": "a"}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "waterfall-sync", "args": []}, "expect": {"throws": {"name": "AsyncListener", "message": "cannot run in a synchronous waterfall-sync"}, "log": []}}
       ] },
 
     { "case": "rust/sync-next-in-async-waterfall", "rule": "11 WaterfallNext", "name": "t/rust-sync-next", "tool": false,
