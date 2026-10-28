@@ -2,7 +2,7 @@
 
 [中文](migration-0.19.md)
 
-0.19 is for host owners. The one incompatible change is how remote runtimes connect (the first section below); the rest are new options, off by default, whose sections are added as 0.19's changes land.
+0.19 is for host owners. Two changes are incompatible: how remote runtimes connect (the first section below) and the platform cleanup (the last section: removed forms are removed outright, not deprecated, with no conversion or hint); the rest are new options, off by default, whose sections are added as 0.19's changes land.
 
 ## Remote runtimes (#696, #698)
 
