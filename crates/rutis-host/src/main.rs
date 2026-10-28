@@ -9,7 +9,7 @@
 //!                                  call a service of a running host
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
-//! rutis-host types [crate dir] [-o file]
+//! rutis-host types [crate dir] [-o file] [--python file]
 //! ```
 
 use std::collections::HashSet;
@@ -76,10 +76,12 @@ usage:
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
-  rutis-host types [dir] [-o file]            write the TypeScript declarations of the Rust
+  rutis-host types [dir] [-o file] [--python file]
+                                              write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
                                               dir (default .) and the crates it uses (to stdout,
-                                              or to file)
+                                              or to file); --python also writes their Python
+                                              types
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
@@ -145,15 +147,18 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
     })
 }
 
-/// `rutis-host types [dir] [-o file]`: the declarations of the marked Rust
-/// services, as `build::Exports` writes them.
+/// `rutis-host types [dir] [-o file] [--python file]`: the declarations of
+/// the marked Rust services and their Python types, as `build::Exports`
+/// writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
     let mut output = None;
+    let mut python = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
+            "--python" => python = Some(args.next().ok_or("--python needs a file")?.to_owned()),
             other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
@@ -165,16 +170,18 @@ fn types(args: &[String]) -> Result<(), String> {
             dir.display()
         ));
     }
-    let typescript = rutis_bridge::build::Exports::new()
-        .declarations(&dir)
-        .map_err(|error| error.to_string())?;
-    match output {
-        Some(file) => std::fs::write(&file, typescript).map_err(|error| format!("{file}: {error}")),
-        None => {
-            outln!("{}", typescript.trim_end());
-            Ok(())
-        }
+    let mut exports = rutis_bridge::build::Exports::new();
+    if let Some(file) = &output {
+        exports = exports.typescript(file);
     }
+    if let Some(file) = &python {
+        exports = exports.python(file);
+    }
+    let typescript = exports.write(&dir).map_err(|error| error.to_string())?;
+    if output.is_none() {
+        outln!("{}", typescript.trim_end());
+    }
+    Ok(())
 }
 
 /// `rutis-host status [rutis.json | dir]`: ask the host running that
