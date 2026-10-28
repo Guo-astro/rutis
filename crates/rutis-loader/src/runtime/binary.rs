@@ -41,7 +41,7 @@ use rutis_bridge::transport::local::{isolate_manifest_command, ManifestChild, Pr
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{leaf_resolved, retry_busy, RowsSource, RuntimeRowsPlugin};
+use super::{leaf_resolved, RowsSource, RuntimeRowsPlugin};
 use crate::backoff::{Backoff, LIMIT, WINDOW};
 use crate::loader::EntryStatus;
 use crate::resolver::Resolved;
@@ -100,6 +100,11 @@ const STOP_EXIT: Duration = Duration::from_secs(5);
 /// keeps failing (or hangs until [`MANIFEST_TIMEOUT`]) is not run again on
 /// every lookup of a missing name.
 const FAILED_READ_STANDS: Duration = Duration::from_secs(5);
+
+/// How often starting a binary is tried while it is busy (ETXTBSY), and
+/// the first pause between tries, doubled after each.
+const BUSY_TRIES: u32 = 5;
+const BUSY_PAUSE: Duration = Duration::from_millis(10);
 
 // ── Binaries ─────────────────────────────────────────────────────
 
@@ -230,6 +235,29 @@ pub struct BinaryFile {
 #[doc(hidden)]
 pub fn read_binary_manifest(path: &Path) -> Result<BinaryManifest, String> {
     read_manifest(path)
+}
+
+/// Run `spawn` again while it fails because the file is busy: on Linux a
+/// file just written cannot be run (ETXTBSY) while a process another
+/// thread is starting still holds it open for writing, until that process
+/// runs its own program a moment later (Go's os/exec and cargo retry too).
+fn retry_busy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    // ETXTBSY on Linux and macOS.
+    const ETXTBSY: i32 = 26;
+    let mut pause = BUSY_PAUSE;
+    let mut tries = 1;
+    loop {
+        match spawn() {
+            Err(error)
+                if cfg!(unix) && error.raw_os_error() == Some(ETXTBSY) && tries < BUSY_TRIES =>
+            {
+                std::thread::sleep(pause);
+                pause *= 2;
+                tries += 1;
+            }
+            result => return result,
+        }
+    }
 }
 
 fn read_manifest(path: &Path) -> Result<BinaryManifest, String> {
@@ -575,7 +603,7 @@ fn candidate(path: &Path, marker: &[u8]) -> bool {
     contains_marker(path, marker)
 }
 
-pub(crate) fn contains_marker(path: &Path, marker: &[u8]) -> bool {
+fn contains_marker(path: &Path, marker: &[u8]) -> bool {
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
@@ -2351,14 +2379,7 @@ mod tests {
             Err(busy())
         });
         assert_eq!(started.unwrap_err().raw_os_error(), Some(26));
-        assert_eq!(
-            tries,
-            if cfg!(unix) {
-                crate::runtime::BUSY_TRIES
-            } else {
-                1
-            }
-        );
+        assert_eq!(tries, if cfg!(unix) { BUSY_TRIES } else { 1 });
 
         let mut tries = 0;
         let started: std::io::Result<()> = retry_busy(|| {

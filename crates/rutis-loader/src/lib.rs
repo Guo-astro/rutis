@@ -19,8 +19,6 @@ pub mod config;
 pub mod edit;
 mod error;
 mod framework;
-#[cfg(feature = "install")]
-pub mod install;
 mod loader;
 mod patch;
 #[cfg(feature = "peer")]
@@ -37,8 +35,7 @@ mod volatile;
     feature = "node",
     feature = "python",
     feature = "go",
-    feature = "peer",
-    feature = "install"
+    feature = "peer"
 ))]
 #[doc = include_str!("../../../docs/guide/rust-host.md")]
 pub struct RustHostGuide;
@@ -49,8 +46,7 @@ pub struct RustHostGuide;
     feature = "node",
     feature = "python",
     feature = "go",
-    feature = "peer",
-    feature = "install"
+    feature = "peer"
 ))]
 #[doc = include_str!("../../../docs/guide/rust-host.en.md")]
 pub struct RustHostGuideEn;
@@ -83,10 +79,6 @@ pub mod resolve {
 /// What rutis-host and the tests use. No stability promise.
 #[doc(hidden)]
 pub mod internal {
-    #[cfg(feature = "install")]
-    pub use crate::install::{
-        install_go_module, node_runtime_package, quoted_path, venv_of, venv_python, DEFAULT_PYTHON,
-    };
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};

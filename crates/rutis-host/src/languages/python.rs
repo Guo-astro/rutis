@@ -7,9 +7,9 @@ use rutis_bridge::runtime::LocalRuntime;
 use serde_json::{json, Value};
 
 use super::{id_of, rebase_program, Language, Mount};
-use crate::config::{HostConfig, PythonRuntime, Restart, Runtimes};
+use crate::config::{venv_python, HostConfig, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
 use crate::host::Error;
-use rutis_loader::internal::{quoted_path as quoted, venv_of, venv_python, DEFAULT_PYTHON};
+use crate::installer::quoted_path as quoted;
 
 pub struct Python;
 
@@ -241,6 +241,15 @@ fn create_venv(venv: &Path) -> String {
         venv = quoted(venv),
         package = package()
     )
+}
+
+/// The virtual environment whose interpreter `interpreter` is, by its
+/// place (`<venv>/bin/python`, on Windows `<venv>\Scripts\python.exe`).
+pub(crate) fn venv_of(interpreter: &Path) -> Option<PathBuf> {
+    let dir = interpreter.parent()?;
+    let bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    let named = interpreter.file_name()?.to_str()?.starts_with("python");
+    (named && dir.file_name()? == bin).then(|| dir.parent().map(Path::to_path_buf))?
 }
 
 /// The first entry under `[project.entry-points."rutis.plugins"]`: its name

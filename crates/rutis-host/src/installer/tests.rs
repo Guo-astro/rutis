@@ -21,6 +21,37 @@ struct Bench {
 /// killed.
 static BENCHES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The one program every recording program links to, written once and run
+/// once before any bench uses it.
+fn dispatcher() -> &'static Path {
+    static DISPATCHER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DISPATCHER.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("rutis-host-benches-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dispatch");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+             name=$(basename \"$0\")\n\
+             [ \"$name\" = dispatch ] && exit 0\n\
+             bin=$(dirname \"$0\")\n\
+             echo \"$name [$(basename \"$PWD\")]${GOBIN:+ GOBIN=$GOBIN} $*\" >> \"$bin/../log\"\n\
+             . \"$bin/$name.sh\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Until it runs: only this once can it be busy.
+        while std::process::Command::new(&path)
+            .current_dir(&dir)
+            .status()
+            .is_err()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        path
+    })
+}
+
 impl Bench {
     fn new() -> Self {
         let bench = Self {
@@ -47,18 +78,15 @@ impl Bench {
     }
 
     /// A program `name` that logs `<name> [<cwd>] <args>` and then runs
-    /// `body` (a shell script).
+    /// `body` (a shell script): a link to [`dispatcher`], which sources
+    /// `<name>.sh` beside it. A file just written is not run: on Linux it
+    /// can be refused (ETXTBSY) while another test's process is starting.
     fn program(&self, name: &str, body: &str) {
-        let path = self.bin().join(name);
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\necho \"{name} [$(basename \"$PWD\")]${{GOBIN:+ GOBIN=$GOBIN}} $*\" >> '{}'\n{body}\n",
-                self.log().display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(self.bin().join(format!("{name}.sh")), body).unwrap();
+        let link = self.bin().join(name);
+        if !link.exists() {
+            std::os::unix::fs::symlink(dispatcher(), link).unwrap();
+        }
     }
 
     /// What the programs were asked, one line each; paths under the bench
@@ -128,7 +156,7 @@ fn an_npm_package_without_bun_is_node() {
     assert_eq!(
         bench.asked(),
         [
-            "npm [rutis-loader] view @ana/wordcount@1.2.0 --json".to_owned(),
+            "npm [rutis-host] view @ana/wordcount@1.2.0 --json".to_owned(),
             "npm [app] init -y".into(),
             format!("npm [app] install @ana/wordcount@1.2.0 @arcships/rutis-runtime@{VERSION}"),
         ]
@@ -153,7 +181,7 @@ fn a_node_project_with_its_runtime_gets_the_package_only() {
     assert_eq!(
         bench.asked(),
         [
-            "npm [rutis-loader] view wordcount --json",
+            "npm [rutis-host] view wordcount --json",
             "npm [app] install wordcount"
         ]
     );
@@ -174,7 +202,7 @@ fn an_npm_package_depending_on_rutis_bun_is_bun() {
     assert_eq!(
         bench.asked(),
         [
-            "npm [rutis-loader] view @ana/clock --json".to_owned(),
+            "npm [rutis-host] view @ana/clock --json".to_owned(),
             format!("bun [app] add -d @arcships/rutis-bun@{VERSION}"),
             "bun [app] add @ana/clock".into(),
         ]
@@ -211,11 +239,11 @@ fn a_pypi_package_is_python_in_a_new_environment() {
     assert_eq!(
         bench.asked(),
         [
-            "uv [rutis-loader] --version".to_owned(),
-            "uv [rutis-loader] venv $B/app/.venv".into(),
+            "uv [rutis-host] --version".to_owned(),
+            "uv [rutis-host] venv $B/app/.venv".into(),
             "python import rutis".into(),
-            format!("uv [rutis-loader] pip install --python {python} rutis=={VERSION}"),
-            format!("uv [rutis-loader] pip install --python {python} bo-llm==0.3.0"),
+            format!("uv [rutis-host] pip install --python {python} rutis=={VERSION}"),
+            format!("uv [rutis-host] pip install --python {python} bo-llm==0.3.0"),
             "python query distribution bo-llm".into(),
         ]
     );
@@ -278,7 +306,7 @@ fn a_go_module_path_is_go() {
         .unwrap();
     assert_eq!(
         bench.asked(),
-        ["go [rutis-loader] GOBIN=$B/app/plugins/go install github.com/bo/netkit/cmd/netkit@v0.4.1"]
+        ["go [rutis-host] GOBIN=$B/app/plugins/go install github.com/bo/netkit/cmd/netkit@v0.4.1"]
     );
     // The recording go wrote no binary: not a plugin, and how to remove it.
     let binary = bench.app().join("plugins/go/netkit");
@@ -297,7 +325,7 @@ fn a_go_module_path_is_go() {
         .unwrap();
     assert_eq!(
         bench.asked()[1],
-        "go [rutis-loader] GOBIN=$B/app/plugins/go install example.com/x/v2@latest"
+        "go [rutis-host] GOBIN=$B/app/plugins/go install example.com/x/v2@latest"
     );
     assert_eq!(go_command_name("example.com/x/v2"), "x");
 }
@@ -511,7 +539,7 @@ async fn a_name_taken_by_another_package() {
     }]);
     let error = installer.add("npm:wordcount").await.unwrap_err();
     assert!(!error.to_string().contains("already installed"), "{error}");
-    assert_eq!(bench.asked()[0], "npm [rutis-loader] view wordcount --json");
+    assert_eq!(bench.asked()[0], "npm [rutis-host] view wordcount --json");
 }
 
 #[tokio::test]
@@ -534,27 +562,19 @@ async fn removing_a_node_package() {
     assert_eq!(bench.asked(), ["npm [app] uninstall @ana/wordcount"]);
 }
 
-/// The record is `from`; the row name, its key, says the name and the
-/// language.
+/// The row name, a record's key, says the name and the language.
 #[test]
-fn records_and_row_names() {
+fn row_names() {
     let plugin = Installed {
         name: "dns".into(),
         from: "github.com/bo/netkit/cmd/netkit".into(),
         language: "go".into(),
-        version: Some("0.4.1".into()),
+        version: None,
     };
-    assert_eq!(
-        serde_json::to_value(&plugin).unwrap(),
-        serde_json::json!({ "from": "github.com/bo/netkit/cmd/netkit" })
-    );
     assert_eq!(plugin.row_name(), "go:dns");
     assert_eq!(
         Installed::of_row("go:dns", "github.com/bo/netkit/cmd/netkit"),
-        Some(Installed {
-            version: None,
-            ..plugin.clone()
-        })
+        Some(plugin)
     );
     let node = Installed::of_row("@ana/wordcount", "npm:@ana/wordcount").unwrap();
     assert_eq!(
@@ -564,11 +584,5 @@ fn records_and_row_names() {
     assert_eq!(node.row_name(), "@ana/wordcount");
     for row in ["deno:x", "node:x", "py:", "./x"] {
         assert_eq!(Installed::of_row(row, "x"), None, "{row}");
-    }
-    for record in [
-        serde_json::json!({ "from": "x", "language": "go" }),
-        serde_json::json!({ "from": "x", "version": "1" }),
-    ] {
-        assert!(serde_json::from_value::<Installed>(record).is_err());
     }
 }

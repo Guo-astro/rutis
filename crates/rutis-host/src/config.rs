@@ -35,7 +35,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::languages::LANGUAGES;
-pub use rutis_loader::install::Installed;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -337,7 +336,25 @@ impl BinaryRuntime {
     }
 }
 
-pub use rutis_loader::internal::{venv_python, DEFAULT_PYTHON};
+/// The interpreter of the virtual environment `venv`.
+pub fn venv_python(venv: &Path) -> PathBuf {
+    match cfg!(windows) {
+        true => venv.join("Scripts").join("python.exe"),
+        false => venv.join("bin").join("python"),
+    }
+}
+
+/// The interpreter used when no environment names one.
+pub const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
+
+/// A plugin `rutis-host add` installed (`installed.<row name>`): where it
+/// came from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Installed {
+    /// The reference it was installed from, without a version.
+    pub from: String,
+}
 
 /// `path` as a `file:` URL (percent-encoded, with a drive letter on
 /// Windows); a relative path, which has none, as `file://<path>`.
@@ -417,15 +434,14 @@ impl HostConfig {
         Ok(config)
     }
 
-    /// Each record of `installed` given its name and language, from its
-    /// key; a key that is not a row name `add` writes is refused.
+    /// Refuse a key of `installed` that is not a row name `add` writes.
     fn name_installed(&mut self) -> Result<(), String> {
-        for (row, record) in &mut self.installed {
-            *record = Installed::of_row(row, record.from.clone()).ok_or_else(|| {
-                format!(
+        for (row, record) in &self.installed {
+            if crate::installer::Installed::of_row(row, record.from.clone()).is_none() {
+                return Err(format!(
                     "installed.{row}: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin"
-                )
-            })?;
+                ));
+            }
         }
         Ok(())
     }

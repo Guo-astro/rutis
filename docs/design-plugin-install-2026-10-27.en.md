@@ -1,14 +1,15 @@
-# Plugin installation: `rutis-host add` / `remove` / `upgrade` and an embedding API
+# Plugin installation: `rutis-host add` / `remove` / `upgrade`
 
 [中文](design-plugin-install-2026-10-27.md)
 
 Status: final, not implemented. Date: 2026-10-27. Base: `main` `103c0d22` (after 0.17.2). Scheduled: 0.19.
 Issue: [#691](https://github.com/arcships/rutis/issues/691) (part of [#663](https://github.com/arcships/rutis/issues/663), H2 and O4).
 Changed 2026-10-28 (I6, §6): `add` writes rows with the existing row names (the Node package name, `bun:`, `py:`, `go:`, `swift:`); `installed` is keyed by row name and records `from` only; the layer "a row whose name is a record's key resolves by the record" is gone, and row names resolve exactly as before. Why: rewriting names by the record gave one plugin two row names, and added a naming rule duplicating the existing forms.
+Changed again 2026-10-28 (I1, I8, §8, §9): the embedding API (the `install` feature of `rutis-loader`) and seeing the description before installing (`add --dry-run`, `describe`) are gone; the install code lives inside rutis-host only. Why: see Out of scope.
 Relation to the 0.18 designs: the plugin description `add` prints is the description `check` already prints (version, `inject`, `provides`, config schema), not a second one; rows `add` writes carry no `config`, defaults are filled by the SDK as in [0.18 config schema](design-config-schema-2026-10-27.en.md) C1, and when a required field is missing `add` says so with the same check `check` runs; error text follows [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.5.
 Compatibility: fully compatible, not part of "Migrating to 0.19". The old row names (`py:`, `bun:`, `go:`, `swift:` prefixes, npm package names), manual installation and `rutis-host go add` keep working, unconverted.
 
-Out of scope: sandboxing or reviewing install scripts; installing the language toolchains; version ranges; pnpm, yarn, private registry settings (use the package managers' own config); reinstalling every recorded plugin; hot upgrade of a running host; remote runtimes and plugins in applications; downloading binaries from URLs; undoing what the package manager already did when a later step fails (running npm / uv directly does not either, §5).
+Out of scope: sandboxing or reviewing install scripts; installing the language toolchains; version ranges; pnpm, yarn, private registry settings (use the package managers' own config); reinstalling every recorded plugin; hot upgrade of a running host; remote runtimes and plugins in applications; downloading binaries from URLs; undoing what the package manager already did when a later step fails (running npm / uv directly does not either, §5); an embedding API (install code in `rutis-loader` for other hosts to call): rutis-host is its only user, deskmate in the evaluation is a hypothetical host, and without a real need there is no public API; seeing the description before installing (`add --dry-run`): `add` prints the plugin's description once installed anyway, which is not worth a second path installing into a temporary directory.
 
 ## 1. The scenario: where it gets stuck now
 
@@ -30,7 +31,7 @@ rutis-host add pypi:bo-llm
 rutis-host run
 ```
 
-The host owner says only where the plugin comes from; they need not know its language, package manager, environment or row prefix. An embedding host builds its own "install a plugin" on the same code.
+The host owner says only where the plugin comes from; they need not know its language, package manager, environment or row prefix.
 
 ## 2. What exists
 
@@ -51,14 +52,14 @@ Cordis 4 has no install command. Koishi's plugin market (the installer service o
 
 | # | Decision | Section |
 | --- | --- | --- |
-| I1 | `rutis-host add <reference> [rutis.json]`, `remove <plugin or reference>`, `upgrade [<plugin or reference>[@version]]`; `add --dry-run` to see the description before installing; `go add` stays, calling the same install code, behaving as before | 5, 7, 8 |
+| I1 | `rutis-host add <reference> [rutis.json]`, `remove <plugin or reference>`, `upgrade [<plugin or reference>[@version]]`; `go add` stays, calling the same install code, behaving as before | 5, 7 |
 | I2 | A plugin reference names the source, not the language: `npm:`, `pypi:` prefixes; Go module paths and local paths say their source themselves; versions are always `@version`; a name without a source is an error | 4 |
 | I3 | The package decides the language: an npm package depending on `@arcships/rutis-bun` is Bun, otherwise Node; PyPI is Python; a Go module is Go; a local directory by its project file; a local executable by its SDK marker (Go, Swift) | 4 |
 | I4 | Install where the host already looks: where `runtimes.<language>` points when written; otherwise its default (`plugins/go`, `plugins/swift` for Go and Swift), and the settings used are written into `runtimes` (`"py": {}`, `"go": { "dir": "plugins/go" }`), so the runtime starts by the existing rules, with no new inference rule | 5 |
 | I5 | Prepare the runtime when missing: run the commands the runtime names today when something is missing (§2), and create the Go / Swift directory; Node, Bun, Python and Go themselves are not installed | 5 |
 | I6 | The install record is the top-level `installed` of `rutis.json`, keyed by row name, with only `from`; rows use the existing row names, which `add` writes | 6 |
 | I7 | The plugin description is what plugins already declare (the description `check` prints); no new manifest format; `provides` stays optional | 8 |
-| I8 | The embedding API is the `install` feature of `rutis-loader` (off by default): `Installer`, `Places`, `Installed`; references are strings; the caller keeps the records; the `rutis` kernel is unchanged | 9 |
+| I8 | The install code is inside rutis-host only (a private module): no `rutis-loader` feature, no new public types; the `rutis` kernel is unchanged | 9 |
 | I9 | `rutis.json` is written last, so it is unchanged when any earlier step fails; what the package manager already installed is not undone, and the error says how to uninstall it | 5 |
 | I10 | A running host picks up new rows by the existing reload rules (`run --watch-config`, `dev`); `upgrade` only replaces the packages on disk, taking effect on restart | 7 |
 
@@ -95,7 +96,7 @@ Why the source and not the language: the source is what the host owner knows (th
 
    `runtimes.go` (`swift`) written without a `dir` is an error: `add` does not know where to install. The package manager's output is shown as it is.
 3. Find the plugins in the package: for Node and Bun, the package name (one plugin per package); for Python, the distribution's entry points in the `rutis.plugins` group (a package can have several); for Go and Swift, the plugins in the binary's manifest.
-4. Describe each plugin: start its runtime and describe the row as `check` does (§8), and print it.
+4. Describe each plugin: start its runtime and describe the row as `check` does (§8); one that cannot be described is not a plugin (§11). The descriptions are printed in step 6, with what the check finds.
 5. Write the file: add each plugin's record to `installed` (keyed by row name); append a row `{ "id": <id>, "name": <row name> }` per plugin to `rows`, the row name in its existing form (§6), the id from the plugin name (the existing `id_of`), with `-2`, `-3` when taken, and no row when one with the same name exists; when `runtimes` has no entry for the language, write the settings used (I4). Keys keep their order, two-space indent, written to a temporary file and renamed (`--watch-config` never reads a half-written file).
 6. Run `check`'s check on the new rows and print its result: a missing service it needs, or a missing required config field (0.18), shows here. `add` still exits 0: the row is written, and the dependency or config can follow.
 
@@ -136,44 +137,21 @@ When any of steps 2 to 4 fails: `rutis.json` is unchanged, exit 1. Packages the 
 - `rutis-host upgrade [<row name, plugin name or reference>[@version]] [rutis.json]`: without a name, every record. Install the latest version (or the one given) from the recorded source; rows are not changed. A plugin the new version adds gets one line on how to add its row; for a plugin it drops, the record is deleted and each row using it gets one line, "the new version has no such plugin".
 - **A running host**: `upgrade` only replaces the packages on disk; a running host keeps running the old code and the new code takes effect on restart, which `upgrade` says at the end (Koishi needs a restart after a dependency update too). Why no hot swap: reloading a row re-imports only its own entry module (`dev`'s existing rule), while an upgrade replaces the whole package.
 
-## 8. Seeing the description before installing
+## 8. The plugin description
 
-The plugin description is what plugins already declare: TypeScript `definePlugin({ inject, provides, config })`, Python `define_plugin(...)`, Go's manifest and `rutis.Plugin`. `check` already prints it as `version`, `inject`, `provides` and `config` lines.
-
-`rutis-host add --dry-run <reference>` installs the package into a temporary directory (the same commands as step 2), describes each plugin in it, prints the descriptions and deletes the directory; `rutis.json`, the host's project and its environment are untouched.
+The description `add` prints is what plugins already declare: TypeScript `definePlugin({ inject, provides, config })`, Python `define_plugin(...)`, Go's manifest and `rutis.Plugin`. `check` already prints it as `version`, `inject`, `provides` and `config` lines, and `add` prints it with the same check (§5 step 6).
 
 - No new manifest format: the existing declarations exist in all four languages, and `check` already uses them; a second one would be one more rutis-specific thing for plugin authors to write.
 - Registry metadata (`npm view`, PyPI's JSON) is not read: the declarations of TypeScript leaf plugins, Python and Go are in code, not in package metadata.
 - Without `provides`, the description says `provides: none declared (it may provide more once it runs)`.
-- Cost: `--dry-run` downloads and imports the plugin, running the package's code (§10).
+- Seeing the description before installing (`add --dry-run`) was removed on 2026-10-28; see Out of scope.
 
-## 9. Embedding API
+## 9. Where the install code lives
 
-`rutis-loader` gets an `install` feature (off by default), which with the language features decides which languages can be installed:
-
-```rust
-use rutis_loader::install::{Installer, Places};
-
-let installer = Installer::new(Places {
-    node: Some(home.join("plugins/node")),    // the Node project
-    python: Some(home.join("plugins/.venv")), // the Python environment (created when missing)
-    go: Some(home.join("plugins/go")),        // the binary directory
-    ..Places::default()
-});
-let about = installer.describe("npm:@ana/wordcount").await?;  // Vec<RowSchema>: before installing
-let added = installer.add("npm:@ana/wordcount").await?;       // Vec<Installed>: one per plugin
-for plugin in &added {
-    rows.push(json!({ "id": my_id(&plugin.name), "name": plugin.row_name() }));  // py:llm and so on
-}
-installer.upgrade(&added[0], None).await?;
-installer.remove(&added[0]).await?;
-```
-
-- `Installed` is one entry of `installed` (`from` only) plus the plugin name `name` and its `language` (computed, not written to the file), serializable; rutis-host reads and writes `installed` with it. `row_name()` gives the plugin's row name, which is also the record's key; `Installed::of_row(row name, from)` reads one back.
-- References are strings; parse errors come back from `add` / `describe`, with no type of their own. `describe` returns the existing `RowSchema`.
-- **In rutis-loader**: embedding hosts already depend on it, and the runtimes that describe plugins live there. npm, uv and go are run as external commands only when called. The `rutis` kernel is unchanged. rutis-host's library is not a public API, so it does not go there.
-- **The caller keeps the records**: the API reads and writes no configuration file and does not touch the loader or runtimes.
-- rutis-host's `add` / `remove` / `upgrade` and `go add` all call it; there is one copy of the install logic.
+- The install code is a private module of rutis-host (`crates/rutis-host/src/installer/`): parsing references, setting up runtimes and installing per language, finding a package's plugins, uninstalling and upgrading. `add` / `remove` / `upgrade` and `go add` all call it, so there is one copy of the install logic.
+- It is not a public API of `rutis-loader` (removed on 2026-10-28; see Out of scope).
+- Only what exists is used: a binary's plugins are found with `rutis-loader`'s `BinaryResolver::binaries` (as the Go and Swift runtimes find binaries); the Python environment and the Node runtime are located as rutis-host already does. npm, uv and go run as external commands only when called. The `rutis` kernel is unchanged.
+- rutis-host reads and writes the records (`installed`); the install code itself reads and writes no configuration file.
 
 ## 10. Other designs, and security
 
@@ -181,7 +159,7 @@ installer.remove(&added[0]).await?;
 - **`dev` (#670)**: in a plugin project `add` writes `rutis.dev.json`, which `dev` reads again by the existing rules: the new row is `added` and starts, the other rows are untouched. When the runtime the new row needs is not running, the `runtimes.<language>` that `add` wrote is refused by the existing rule with a restart hint (`reload rejected: runtimes.py added: restart the host; nothing changed`). The same for `run --watch-config`.
 - **#683**: which process a plugin runs in and which services it may use are #683's options on the runtime (process), unrelated to how it was installed.
 - **#698**: installs go to local runtimes only.
-- **Security**: `add`, `upgrade` and `--dry-run` run the package manager, which may run install scripts in the package, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
+- **Security**: `add` and `upgrade` run the package manager, which may run install scripts in the package, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
 
 ## 11. What developers see
 
@@ -203,14 +181,6 @@ llm (py:llm): ok
   version: "0.3.0"
   provides: none declared (it may provide more once it runs)
 rutis.json: added row llm, runtimes.py
-
-$ rutis-host add --dry-run github.com/bo/netkit/cmd/netkit
-(go's output)
-github.com/bo/netkit/cmd/netkit v0.4.1 (go): plugin dns
-dns
-  version: "0.4.1"
-  provides: {"dns":{"lookup":"async"}}
-nothing was installed (--dry-run)
 
 $ rutis-host remove llm
 uninstalled bo-llm from /app/.venv
@@ -246,9 +216,9 @@ An npm package's row name is its package name (`bun:<package>` for Bun), so a cl
 
 | Step | Content | Done when |
 | --- | --- | --- |
-| P1 | The `install` feature of `rutis-loader`: reference parsing, `Places`, `Installer`'s `add` / `remove` / `upgrade` / `describe`, `Installed`; `go add` calls it | Unit tests: for each form in §4, the source, language and package manager command (fake commands on `PATH` that record their arguments) |
-| P2 | rutis-host: the `installed` field (keyed by row name), `add` (with `--dry-run`) / `remove` / `upgrade`, writing the file back (with `runtimes`) | `crates/rutis-host/tests/install.rs`: rows with records resolve as usual; a key not in a row-name form is refused; write-back keeps key order; every error output of §11 compared word for word |
-| P3 | End to end: `tests/e2e/tests/plugin_install.rs` (in ci.yml's e2e job, beside `dev_loop.rs`) | One scenario each for Node, Bun, Python and Go: local packages made from `rutis-host new` templates (`npm pack`, the wheel of `uv build`, a Go module directory) → `add --dry-run` → `add` → `check` → `run`, the probe calls its service → `upgrade` after a version change → `remove`; the Python scenario starts with no environment; the `pypi:` and Go module path forms run once against uv's local `--find-links` and `GOPROXY=file://`; one `dev` scenario: after `add` writes `rutis.dev.json` the new row is `added` and the project's own row does not restart |
-| P4 | Documentation | The [rutis-host guide](guide/rutis-host.en.md) (command table, "Quick start", "How a host installs plugins", the `installed` field), the host owner guide (#671, formerly #685), the `Installer` section of [Embedding in a Rust application](guide/rust-host.en.md), both languages in step; installation scripts and trust (§10) |
+| P1 | Withdrawn on 2026-10-28: it was the `install` feature of `rutis-loader` (the embedding API); its code moved into P2 | — |
+| P2 | rutis-host: the install code (a private module, §9), the `installed` field (keyed by row name), `add` / `remove` / `upgrade`, writing the file back (with `runtimes`); `go add` calls the install code | Unit tests: for each form in §4, the source, language and package manager command (fake commands on `PATH` that record their arguments); `crates/rutis-host/tests/install.rs`: rows with records resolve as usual; a key not in a row-name form is refused; write-back keeps key order; every error output of §11 compared word for word |
+| P3 | End to end: `tests/e2e/tests/plugin_install.rs` (in ci.yml's e2e job, beside `dev_loop.rs`) | One scenario each for Node, Bun, Python and Go: local packages made from `rutis-host new` templates (`npm pack`, the wheel of `uv build`, a Go module directory) → `add` → `check` → `run`, the probe calls its service → `upgrade` after a version change → `remove`; the Python scenario starts with no environment; the `pypi:` and Go module path forms run once against uv's local `--find-links` and `GOPROXY=file://`; one `dev` scenario: after `add` writes `rutis.dev.json` the new row is `added` and the project's own row does not restart |
+| P4 | Documentation | The [rutis-host guide](guide/rutis-host.en.md) (command table, "Quick start", "How a host installs plugins", the `installed` field), the host owner guide (#671, formerly #685), both languages in step; installation scripts and trust (§10) |
 
-P1 → P2 → P3; P4 goes with P2. The issue's "done": the commands, the API and the end-to-end tests of the four languages are P1–P3; the two guides are P4.
+P1 → P2 → P3; P4 goes with P2. The issue's "done": the commands and the end-to-end tests of the four languages are P2 and P3; the two guides are P4.

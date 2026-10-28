@@ -117,18 +117,6 @@ What `add` does:
 
 The file written: the second argument; without one, `rutis.json` here; without `rutis.json`, `rutis.dev.json` (a plugin project); without either, a new `rutis.json`.
 
-`add --dry-run <plugin>` installs the package into a temporary directory, prints the introduction of each plugin in it and removes it again, leaving `rutis.json` and the host's project and environment as they were:
-
-```text
-$ rutis-host add --dry-run github.com/bo/netkit/cmd/netkit
-(go's output)
-github.com/bo/netkit/cmd/netkit 0.4.1 (go): plugin dns
-dns
-  version: "0.4.1"
-  provides: {"dns":{"lookup":"async"}}
-nothing was installed (--dry-run)
-```
-
 `remove` and `upgrade`:
 
 ```text
@@ -160,7 +148,7 @@ On errors (on stderr, exit status 1, `rutis.json` unchanged):
 
 What the package manager installed before a failure stays, as when npm or uv are run directly; the error gives the command that uninstalls it.
 
-**Install only plugins you trust.** `add`, `upgrade` and `--dry-run` run the package manager, which may run the package's install scripts, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review.
+**Install only plugins you trust.** `add` and `upgrade` run the package manager, which may run the package's install scripts, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review.
 
 ### Without add
 
@@ -188,7 +176,7 @@ Installing by hand works as before, with the same row names: each language's plu
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
-| `rutis-host add [--dry-run] <plugin> [rutis.json]` | Installs a plugin by its source (`npm:`, `pypi:`, a Go module path, a local path) with what its runtime lacks, records it under `installed` and adds its row; `--dry-run` only prints its introduction (see [How a host installs plugins](#how-a-host-installs-plugins)). |
+| `rutis-host add <plugin> [rutis.json]` | Installs a plugin by its source (`npm:`, `pypi:`, a Go module path, a local path) with what its runtime lacks, records it under `installed`, adds its row and prints its introduction (see [How a host installs plugins](#how-a-host-installs-plugins)). |
 | `rutis-host remove <plugin> [rutis.json]` | Uninstalls the package of a plugin `add` installed, and removes its records and rows. |
 | `rutis-host upgrade [<plugin>[@<version>]] [rutis.json]` | Upgrades plugins `add` installed to the newest version (or the one given); a running host uses it once it restarts. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
