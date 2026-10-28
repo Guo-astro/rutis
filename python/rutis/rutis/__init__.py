@@ -12,35 +12,8 @@ linked node: `ctx.on` listens, `ctx.emit` / `parallel` / `serial` /
 `rutis.events` for the rules.
 """
 
-import warnings as _warnings
-
-from . import advanced as _advanced
 from .peer import BindingError, RemoteError
 from .plugin import Context, Plugin, define_plugin
-
-# Moved to `rutis.advanced` in 0.19 (#692). The old names still work and stay
-# in `__all__` (so `from rutis import *` is unchanged); the first use warns
-# with the new place. They are removed when the plugin API version changes.
-_MOVED = frozenset(_advanced.__all__)
-
-
-def __getattr__(name: str):
-    if name not in _MOVED:
-        raise AttributeError(f"module 'rutis' has no attribute {name!r}")
-    _warnings.warn(
-        f"{name} moved in 0.19: import it from rutis.advanced. "
-        "The old name is removed when the plugin API version changes.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    # Kept here: `from rutis import X` looks the name up twice.
-    value = globals()[name] = getattr(_advanced, name)
-    return value
-
-
-def __dir__():
-    return sorted(set(globals()) | _MOVED)
-
 
 __all__ = [
     "define_plugin",
@@ -48,12 +21,4 @@ __all__ = [
     "Context",
     "RemoteError",
     "BindingError",
-    # Moved to rutis.advanced in 0.19, kept until the plugin API version changes.
-    "PLUGIN_API",
-    "AggregateError",
-    "AsyncListener",
-    "LoadError",
-    "ReservedEvent",
-    "SyncWaitCycle",
-    "WaterfallNext",
 ]
