@@ -26,11 +26,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
-import sys
 import threading
 from typing import Any, Callable
 
-from . import _eager
 from ._output import say
 from .peer import (
     UNDEFINED,
@@ -123,9 +121,7 @@ def start(awaitable: Any) -> asyncio.Future:
     suspends."""
     loop = asyncio.get_running_loop()
     context = contextvars.copy_context()
-    if sys.version_info >= (3, 12):
-        return asyncio.Task(_settle(awaitable), loop=loop, context=context, eager_start=True)
-    return _eager.start(loop, _settle(awaitable), context)
+    return asyncio.Task(_settle(awaitable), loop=loop, context=context, eager_start=True)
 
 
 async def _settle(value: Any) -> Any:

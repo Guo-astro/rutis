@@ -85,8 +85,7 @@ class PeerTests(background.IsolatedAsyncioTestCase):
 class AsyncMethodTests(background.IsolatedAsyncioTestCase):
     """`async def` methods start at once, like JS async functions (#196):
     the first step runs before the reply, so one that never suspends is
-    already done, on every supported Python (eager start is native on
-    3.12+, emulated by rutis._eager on 3.10 and 3.11)."""
+    already done."""
 
     def session(self, dispatch):
         ours, theirs = socket.socketpair()
@@ -318,19 +317,8 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         # The call runs on the loop: read its reply off the loop.
         return json.loads(await within("the reply", asyncio.to_thread(lines.readline)))
 
-    async def test_an_object_is_refused_to_a_far_end_without_objects(self):
-        # guarantee: bridge/bad-values (#675): only that call fails.
-        # objects-case(python): no-objects-declared
-        reply = await self.session(["signals"])
-        self.assertEqual(reply["op"], "throw", reply)
-        self.assertEqual(
-            reply["error"]["message"],
-            "svc.get: the result cannot be sent: an object with methods (Weather) cannot cross to main; "
-            "pass plain data or a function instead, or upgrade main to rutis 0.18",
-        )
-
-    async def test_an_object_goes_to_a_far_end_with_objects(self):
-        reply = await self.session(["objects"])
+    async def test_an_object_goes_to_the_far_end_by_reference(self):
+        reply = await self.session([])
         self.assertEqual(reply["op"], "return", reply)
         self.assertEqual(reply["value"]["type"], "reference")
         self.assertEqual(reply["value"]["value"]["kind"], "object")
@@ -741,21 +729,6 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         peer._receive(self.invoke(3, "small"))
         reply = await read()
         self.assertEqual((reply["op"], reply["value"]), ("return", {"type": "data", "value": "small"}))
-        self.assertIsNone(peer.closed_error)
-
-    async def test_an_object_argument_to_a_far_end_without_objects_fails_that_call(self):
-        peer, read = self.session(lambda target, method, args: None, endpoint={"local": "py", "expected": "main"}, greet=False)
-        peer.start()
-        self.assertEqual((await read())["op"], "hello")
-        peer._receive({"op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "main", "capabilities": ["events-v2"]})
-        with self.assertRaises(ValueError) as refused:
-            peer.call("host:svc", "take", [Weather()])
-        self.assertEqual(
-            str(refused.exception),
-            "svc.take: argument 1 cannot be sent: an object with methods (Weather) cannot cross to main; "
-            "pass plain data or a function instead, or upgrade main to rutis 0.18",
-        )
-        self.assertEqual(peer._exports, {})
         self.assertIsNone(peer.closed_error)
 
     async def test_a_malformed_error_graph_fails_only_its_call(self):

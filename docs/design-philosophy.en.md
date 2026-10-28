@@ -106,7 +106,7 @@ So rutis is not a translation of Cordis. Mechanisms that only hold within one pr
 - **Processes and latency**: each language needs at least one process, and a synchronous cross-language call takes about 30µs (measured on the Node side), far slower than a call within a process. Capabilities called often should eventually be solidified in Rust or placed in the same runtime.
 - **Synchronous waits are limited**: the five event modes mean the same across a process boundary ([unified events](design-events-2026-10-18.en.md)); only synchronous waits cannot do what they do in one process: a synchronous `bail` / `waterfall_sync` waiting on a listener elsewhere fails with `SyncWaitCycle` when the wait forms a cycle and fails on an asynchronous listener, as a synchronous service call does; services provided by the host are proxies, so `instanceof` does not hold; see the [boundary rules](requirements-protocol-plugins.en.md) §5.
 - **Failure scope**: plugins in one runtime share a process; if one crashes the process, the others in it stop too. Isolation means more runtime instances.
-- **Environment requirements**: each language used needs its environment (Node 22+, Python 3.10+), deployed along with it.
+- **Environment requirements**: each language used needs its environment (Node 22+, Python 3.12+), deployed along with it.
 - **More verbose code**: obtaining services and passing the context explicitly takes a few more words than Cordis's `ctx.foo`.
 - **Maintenance surface**: every language connected is one more runtime and one more SDK to maintain over the long term.
 

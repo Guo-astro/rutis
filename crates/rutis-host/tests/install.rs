@@ -395,7 +395,7 @@ async fn the_errors_say_what_to_do() {
         (
             vec!["add", "pypi:bo-llm"],
             None,
-            "rutis-host: cannot create the Python environment <dir>/.venv: install uv, or Python 3.10 or later",
+            "rutis-host: cannot create the Python environment <dir>/.venv: install uv, or Python 3.12 or later",
         ),
         (
             vec!["add", "npm:@ana/wordcount"],

@@ -32,7 +32,7 @@
 //!
 //! Running: `npm --prefix node/rutis-runtime ci`, `npm --prefix
 //! node/baseline ci` (the published Cordis plugins of S6), a `python3`
-//! (3.10 or newer; the checkout's `python/rutis` is used), then
+//! (3.12 or newer; the checkout's `python/rutis` is used), then
 //! `cargo test -p rutis-e2e`, which builds `rutis-host` first (and the
 //! fixture Rust host, `tests/e2e/fixture-host`, for the scenarios that run
 //! it, and the fixture Rust application `tests/e2e/fixture-tenants` for

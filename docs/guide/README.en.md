@@ -35,7 +35,7 @@ Upgrading from 0.16: see [migrating to 0.17](../migration-0.17.en.md) (Rust plug
 
 - Linux, macOS or Windows x64 (MSVC).
 - Node 22 or later, or Bun 1.4 or later, for TypeScript / JavaScript plugins.
-- Python 3.10 or later for Python plugins.
+- Python 3.12 or later for Python plugins.
 - Go 1.24 or later only to write Go plugins and build their binaries; running a Go plugin binary needs no Go.
 - macOS 14 or later and a Swift 6.2 toolchain only to write Swift plugins and build their binaries; running a Swift plugin binary needs no toolchain, and runs on macOS only.
 - JDK 17 and Android 10 (API 29) or later for Kotlin plugins, compiled into an Android application (the packages are `io.github.arcships:rutis` on Maven Central and, at compile time, `io.github.arcships:rutis-ksp`).

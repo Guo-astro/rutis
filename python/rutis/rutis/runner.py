@@ -34,8 +34,7 @@ other name is dispatched here (`rutis.events`), the rest through the host
 (`events.dispatch`), which calls this process's listeners back with
 `events.call`. A row's scope chain is the seventh `rows.load` argument.
 Unloading a row withdraws its listeners, then cancels its running ones and
-waits for them, at most RUTIS_SHUTDOWN_TIMEOUT. The session requires the
-host to declare `events-v2`.
+waits for them, at most RUTIS_SHUTDOWN_TIMEOUT.
 """
 
 from __future__ import annotations
@@ -62,7 +61,6 @@ from ._unhandled import (
     failure_text,
     install_exit,
     kind_text,
-    record_task_rows,
     report_text,
     row_of,
     unhandled_error,
@@ -71,8 +69,7 @@ from .events import Bus, Emitter, check_scope, discard, plain, reserved, start
 from .peer import UNDEFINED, AsyncListener, BindingError, LoadError, Peer, RemoteFuture, encode_error
 
 # rows.announce: services rows provide without declaring them are announced
-# with their methods, to a host whose mount says `announce`. Events are not
-# a feature any more: from rutis 0.13 they are the `events-v2` capability.
+# with their methods.
 # plugin-values: a plugin definition this runtime handed over comes back to
 # be described (`plugins.read`) and loaded as a row's entry
 # (docs/design-plugin-values-2026-10-25.md §5).
@@ -97,14 +94,6 @@ def shutdown_deadline() -> float:
     except ValueError:
         return 10.0
     return seconds if 0 < seconds < float("inf") else 10.0
-
-
-def removed(field: str) -> str:
-    """What a mount still carrying the 0.12 event declarations is told."""
-    return (
-        f"the mount argument {field} was removed in rutis 0.13: listeners register themselves; "
-        "emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
-    )
 
 
 def undeclared_use(name: str) -> str:
@@ -134,16 +123,6 @@ def unavailable(name: str, reason: str | None = None) -> LookupError:
     error.code = "unavailable"
     error.data = {"service": name, **({"reason": reason} if reason else {})}
     return error
-
-
-def old_host(name: str) -> str:
-    """What a plugin providing the undeclared service `name` is told when
-    the host, older than 0.12, mounted without `announce`: such a host
-    does not take the service, which stays in this process."""
-    return (
-        f"rutis: service {name} is not declared in provides, and this host (older than 0.12) "
-        "does not take undeclared services; declare it or upgrade rutis-host"
-    )
 
 
 def scoped_id(name: str, label: str | None) -> str:
@@ -344,12 +323,6 @@ class Runtime:
         self.handles: dict[str, dict] = {}
         self.version = 0
         self.closing = False
-        # The host takes announced services (mount `announce`).
-        self.announce = False
-        # Mounted by a host; one without `announce` is older than 0.12.
-        self.mounted = False
-        # The undeclared names a plugin was told such a host does not take.
-        self.told: set = set()
         # This process's listeners; a failure nobody receives (an `emit`
         # listener's) is a line on stderr, never the end of the process.
         self.bus = Bus()
@@ -394,15 +367,10 @@ class Runtime:
             raise ValueError(f"{name} is already provided by {self.bus.row_id(self.services[id][0])}")
         self.services[id] = (row.key, value)
         row.provided.append(id)
-        # Not declared: announced, with the methods it has; a host older
-        # than 0.12 does not take it, and the plugin is told, once per name.
+        # Not declared: announced, with the methods it has.
         if id not in self.slots and "#" not in name:
-            if self.announce:
-                self.slots[id] = Slot(row.key, set(), name, announced=True)
-                row.announced.append(id)
-            elif self.mounted and name not in self.told:
-                self.told.add(name)
-                say(old_host(name))
+            self.slots[id] = Slot(row.key, set(), name, announced=True)
+            row.announced.append(id)
         self._refresh(id)
 
         def withdraw() -> None:
@@ -576,7 +544,6 @@ class Runtime:
             return
         self._handling = loop
         loop.set_exception_handler(self._unhandled)
-        record_task_rows(loop)
 
     def _unhandled(self, loop: asyncio.AbstractEventLoop, context: dict) -> None:
         error = context.get("exception")
@@ -647,9 +614,9 @@ class Runtime:
         row.failed = True
 
         def told(done) -> None:
-            # A host older than 0.18 fails no row so: the row goes on.
-            if done.cancelled() or done.exception() is not None:
-                say(f"runtime {name}: row {self.bus.row_id(key)}: {why}")
+            # The host gone: there is no one to tell.
+            if not done.cancelled():
+                done.exception()
 
         try:
             # What it was, and the error as a raised one crosses: its code,
@@ -1034,10 +1001,7 @@ class Runtime:
         name = entry.name
         args = request.get("args")
         args = [plain(arg) for arg in args] if isinstance(args, list) else []
-        if mode in ("bail", "waterfall-sync"):
-            if mode == "waterfall-sync":
-                following = request.get("next")
-                args.append(lambda: plain(following()))
+        if mode == "bail":
             refused = AsyncListener(
                 f"listener of {name} in row {self.bus.row_id(entry.row)} is asynchronous and cannot run in a synchronous {mode}"
             )
@@ -1123,15 +1087,10 @@ class Runtime:
             self._elsewhere(args[0] if args else None)
             return None
         if method == "mount":
-            for removed_field in ("emits", "events"):
-                if removed_field in args:
-                    raise ValueError(removed(removed_field))
             # The runtime's name, which filters see in this process's
             # listeners' descriptors.
             runtime = args.get("runtime")
             self.bus.runtime = runtime if isinstance(runtime, str) else None
-            self.announce = args.get("announce") is True
-            self.mounted = True
             return {"services": {}, "features": FEATURES}
         if method == "dispose":
             self.closing = True

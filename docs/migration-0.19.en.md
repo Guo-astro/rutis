@@ -217,3 +217,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 ### Go plugins
 
 Rebuild them with SDK 0.18 or later (the `required` exception for binaries built before 0.18 is removed).
+
+### Python
+
+The minimum is 3.12 (3.10 and 3.11 are no longer supported).

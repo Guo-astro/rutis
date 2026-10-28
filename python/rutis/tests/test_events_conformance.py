@@ -151,7 +151,7 @@ class Case:
         self.emitters = {}
         self.background = None
         modes = [spec["mode"] for step in case["steps"] for spec in emits_of(step)]
-        self.kind = "sync" if modes and all(mode in ("bail", "waterfall-sync") for mode in modes) else "async"
+        self.kind = "sync" if modes and all(mode == "bail" for mode in modes) else "async"
 
     async def load(self, stack, participant: dict):
         config = {key: value for key, value in participant.items() if key not in ("at", "scope")}
@@ -183,7 +183,7 @@ class Case:
         wire.setdefault("name", self.case["name"])
         wire["args"] = decode(spec.get("args", []))
         try:
-            if wire["mode"] in ("bail", "waterfall-sync"):
+            if wire["mode"] == "bail":
                 # Run at the call, synchronously; an undeclared service's
                 # method answers through an awaitable all the same.
                 result = service.dispatch_sync(wire)

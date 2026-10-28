@@ -181,7 +181,7 @@
       "what": "The far end did not declare objects: the call fails, the session goes on",
       "node": "yes",
       "bun": "yes",
-      "python": "yes",
+      "python": "no",
       "go": "yes",
       "swift": "yes",
       "kotlin": "yes",

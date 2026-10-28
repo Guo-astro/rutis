@@ -26,7 +26,7 @@ import traceback
 
 from ._output import say
 from .channel import SocketChannel
-from .peer import EVENTS_REFUSAL, HOST_FAILED, Incompatible, Peer, host_gone
+from .peer import HOST_FAILED, Peer, host_gone
 from .runner import Runtime, shutdown_deadline
 
 
@@ -88,11 +88,7 @@ class Session:
     def __init__(self, channel, endpoint: dict):
         self.channel = channel
         self.runtime = Runtime()
-        # A host older than rutis 0.13 does not speak its event protocol: the
-        # session ends right after the handshake (§2.2).
-        self.peer = Peer(
-            channel, self.runtime.dispatch, settled=None, endpoint=endpoint, require={"events-v2": EVENTS_REFUSAL}
-        )
+        self.peer = Peer(channel, self.runtime.dispatch, settled=None, endpoint=endpoint)
         self.runtime.peer = self.peer
         # A function or object a row hands over runs as that row's (#688).
         self.runtime.traced(self.peer)
@@ -136,10 +132,6 @@ async def run(channel: str, endpoint: dict, project: str) -> int:
     session = Session(Watched(SocketChannel(open_channel(channel))), endpoint)
     session.start()
     await session.peer.closed
-    if isinstance(session.peer.closed_error, Incompatible):
-        # A host this runtime cannot work with: nothing was loaded.
-        say(f"rutis: refused: incompatible ({session.peer.closed_error}); stopping")
-        return 1
     # The rows go now, unless the host disposed them first: it went away
     # (it was killed, say) and nothing else ends this process. Cleanups that
     # do not finish within the deadline are given up (exit status 1), also
