@@ -329,6 +329,15 @@ async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
         .await
         .unwrap();
     fixture.probe.wait_for("v1: start").await;
+    // `start` is recorded inside `apply`, before the row runs in rutis, and
+    // `reconcile` does not wait for that when the row waits for the
+    // runtime's rows stage (`RuntimeRows`). A reload that fails changes
+    // nothing, so a row still loading stays `Loading`: wait until it runs.
+    COLD.until(
+        || row_state(&fixture.loader, "e") == Some(FiberState::Active),
+        "the row running in rutis",
+    )
+    .await;
 
     touch("export default {{ this is not TypeScript\n".into(), 5);
     let reload = fixture.loader.reload("e").await;
