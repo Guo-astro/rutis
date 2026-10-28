@@ -415,6 +415,13 @@ pub fn describe_waits(waits: &[Wait], runtime: &RuntimeLookup<'_>) -> String {
     {
         return own_runtime_line(&own.service, runtime(&own.service));
     }
+    // A row on a connection whose far end is not there.
+    if let Some(own) = waits
+        .iter()
+        .find(|wait| matches!(wait.reason, WaitReason::OwnSession))
+    {
+        return format!("waiting for {}", own.service);
+    }
     if waits.is_empty() {
         return "waiting for its services".into();
     }
