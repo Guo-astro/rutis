@@ -14,8 +14,10 @@ snapshot="$repo_dir/swift/rutis/public-api.txt"
 current="$(mktemp)"
 trap 'rm -f "$current"' EXIT
 cd "$repo_dir"
-swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members > /dev/null
-graphs="$(swift build --show-bin-path)/../symbolgraph"
+# The command says where it wrote the graphs; the place differs between
+# SwiftPM's build systems, so it is read, not worked out.
+written="$(swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members | sed -n 's/^Files written to //p' | tail -n 1)"
+graphs="${written:-$(swift build --show-bin-path)/../symbolgraph}"
 # One line per symbol: its path, then its declaration. Members the compiler
 # synthesizes are left out; `deprecated` marks the moved names.
 lines() {
