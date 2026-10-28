@@ -28,25 +28,8 @@ import (
 // (docs/design-plugin-values-2026-10-25.md §5).
 var features = []string{"rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values"}
 
-// Future is an asynchronous result of another process.
-//
-// Deprecated: moved in 0.19: use advanced.Future.
-type Future = convert.Future
-
-// Function is a function of another process, received where a value of
-// any type was expected.
-//
-// Deprecated: moved in 0.19: use advanced.Function.
-type Function = convert.Function
-
 // RemoteError is an error thrown in another process.
 type RemoteError = peer.RemoteError
-
-// ErrSyncWaitCycle matches (errors.Is) a SyncWaitCycle error from another
-// process.
-//
-// Deprecated: moved in 0.19: use advanced.ErrSyncWaitCycle.
-var ErrSyncWaitCycle = peer.ErrSyncWaitCycle
 
 // Ref marks v to cross by reference: the other process gets a proxy
 // calling v's exported methods. Values otherwise cross as data.
@@ -998,8 +981,6 @@ func contains(list []string, item string) bool {
 // Service is a service used by name, or an object with methods of another
 // process received as `any` (#687 §四): its methods call the original
 // object; it has no method table.
-//
-// Deprecated: moved in 0.19: use advanced.Service.
 type Service struct {
 	name    string
 	methods map[string]string
@@ -1163,9 +1144,10 @@ func (s *Service) bind(target any) error {
 }
 
 var (
-	warned   sync.Map
-	devMode  = os.Getenv("RUTIS_DEV") == "1"
-	selfPath = reflect.TypeFor[runtimeState]().PkgPath()
+	warned  sync.Map
+	devMode = os.Getenv("RUTIS_DEV") == "1"
+	// The SDK's packages: the module, this package being internal/runtime.
+	selfPath = strings.TrimSuffix(reflect.TypeFor[runtimeState]().PkgPath(), "/internal/runtime")
 )
 
 // warnChainless warns, in development mode, of a call without a call chain

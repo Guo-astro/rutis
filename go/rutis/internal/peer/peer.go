@@ -450,7 +450,7 @@ type RemoteObject struct {
 func (o *RemoteObject) Peer() *Peer { return o.peer }
 
 // As is what `make` makes of the object, made once: one object is one value
-// to the SDK (a *rutis.Service), however often it is received.
+// to the SDK (a *advanced.Service), however often it is received.
 func (o *RemoteObject) As(make func() any) any {
 	o.once.Do(func() { o.made = make() })
 	return o.made

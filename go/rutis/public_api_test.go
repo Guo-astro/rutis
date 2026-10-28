@@ -2,9 +2,10 @@ package rutis_test
 
 // The public API of the Go SDK, locked by public-api.txt (#692, SDK entry
 // design §6): every exported declaration of rutis, rutis/advanced and
-// rutis/rutistest with its signature, methods and exported fields, the
-// deprecated ones in a section of their own. Adding or changing a name
-// changes the text, and review sees it.
+// rutis/rutistest with its signature, methods and exported fields. A type
+// that is an alias of one in internal/runtime is listed as that type, with
+// its fields and methods. Adding or changing a name changes the text, and
+// review sees it.
 //
 // To accept an intended change:
 //
@@ -29,18 +30,18 @@ var update = flag.Bool("update", false, "rewrite public-api.txt")
 const module = "github.com/arcships/rutis/go/rutis"
 
 func TestPublicAPI(t *testing.T) {
+	fset := token.NewFileSet()
+	internal := map[string]*doc.Type{}
+	for _, typ := range parsePackage(t, fset, "internal/runtime").Types {
+		internal[typ.Name] = typ
+	}
 	var out bytes.Buffer
 	for _, dir := range []string{".", "advanced", "rutistest"} {
-		current, deprecated := publicAPI(t, dir)
 		path := module
 		if dir != "." {
 			path += "/" + dir
 		}
-		out.WriteString("## " + path + "\n" + strings.Join(current, "\n") + "\n")
-		if len(deprecated) > 0 {
-			out.WriteString("## " + path + " (deprecated: moved to advanced in 0.19)\n" + strings.Join(deprecated, "\n") + "\n")
-		}
-		out.WriteString("\n")
+		out.WriteString("## " + path + "\n" + strings.Join(publicAPI(fset, parsePackage(t, fset, dir), internal), "\n") + "\n\n")
 	}
 	if *update {
 		if err := os.WriteFile("public-api.txt", out.Bytes(), 0o644); err != nil {
@@ -57,11 +58,8 @@ func TestPublicAPI(t *testing.T) {
 	}
 }
 
-// publicAPI lists dir's exported declarations, one per entry, and the
-// deprecated ones apart.
-func publicAPI(t *testing.T, dir string) (current, deprecated []string) {
+func parsePackage(t *testing.T, fset *token.FileSet, dir string) *doc.Package {
 	t.Helper()
-	fset := token.NewFileSet()
 	names, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -81,15 +79,13 @@ func publicAPI(t *testing.T, dir string) (current, deprecated []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The members of a deprecated type go with it.
-	inDeprecated := false
-	add := func(docText string, text string) {
-		if inDeprecated || isDeprecated(docText) {
-			deprecated = append(deprecated, text)
-		} else {
-			current = append(current, text)
-		}
-	}
+	return pkg
+}
+
+// publicAPI lists pkg's exported declarations, one per entry; `internal`
+// has the types of internal/runtime its aliases name.
+func publicAPI(fset *token.FileSet, pkg *doc.Package, internal map[string]*doc.Type) []string {
+	var lines []string
 	values := func(list []*doc.Value) {
 		for _, value := range list {
 			for _, spec := range value.Decl.Specs {
@@ -97,17 +93,13 @@ func publicAPI(t *testing.T, dir string) (current, deprecated []string) {
 				if !spec.Names[0].IsExported() {
 					continue
 				}
-				docText := value.Doc
-				if spec.Doc != nil {
-					docText = spec.Doc.Text()
-				}
-				add(docText, value.Decl.Tok.String()+" "+source(fset, stripValue(spec)))
+				lines = append(lines, value.Decl.Tok.String()+" "+source(fset, stripValue(spec)))
 			}
 		}
 	}
 	funcs := func(list []*doc.Func) {
 		for _, fn := range list {
-			add(fn.Doc, source(fset, &ast.FuncDecl{Recv: fn.Decl.Recv, Name: fn.Decl.Name, Type: fn.Decl.Type}))
+			lines = append(lines, source(fset, &ast.FuncDecl{Recv: fn.Decl.Recv, Name: fn.Decl.Name, Type: fn.Decl.Type}))
 		}
 	}
 	values(pkg.Consts)
@@ -115,19 +107,37 @@ func publicAPI(t *testing.T, dir string) (current, deprecated []string) {
 	funcs(pkg.Funcs)
 	for _, typ := range pkg.Types {
 		spec := typ.Decl.Specs[0].(*ast.TypeSpec)
-		add(typ.Doc, "type "+source(fset, stripType(spec)))
-		inDeprecated = isDeprecated(typ.Doc)
+		methods := typ.Methods
+		if target := internal[runtimeAlias(spec)]; target != nil {
+			named := *target.Decl.Specs[0].(*ast.TypeSpec)
+			named.Name = spec.Name
+			spec, methods = &named, target.Methods
+		}
+		lines = append(lines, "type "+source(fset, stripType(spec)))
 		values(typ.Consts)
 		values(typ.Vars)
 		funcs(typ.Funcs)
-		funcs(typ.Methods)
-		inDeprecated = false
+		funcs(methods)
 	}
-	return current, deprecated
+	return lines
 }
 
-func isDeprecated(text string) bool {
-	return strings.HasPrefix(text, "Deprecated: ") || strings.Contains(text, "\nDeprecated: ")
+// runtimeAlias is the name of the internal/runtime type `spec` is an
+// alias of (`type X = runtime.Y` or `runtime.Y[C]`), else "".
+func runtimeAlias(spec *ast.TypeSpec) string {
+	if !spec.Assign.IsValid() {
+		return ""
+	}
+	typ := spec.Type
+	if index, ok := typ.(*ast.IndexExpr); ok {
+		typ = index.X
+	}
+	if sel, ok := typ.(*ast.SelectorExpr); ok {
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "runtime" {
+			return sel.Sel.Name
+		}
+	}
+	return ""
 }
 
 // stripValue drops comments, and Version's value: the release train
