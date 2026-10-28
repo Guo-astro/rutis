@@ -327,6 +327,13 @@ pub struct Loader {
     inner: Arc<Inner>,
 }
 
+/// The rows the loader follows right now: its follower map's size, for the
+/// tests of the listener's life (`internal::followed_rows`).
+#[doc(hidden)]
+pub fn followed_rows(loader: &Loader) -> usize {
+    loader.inner.followers.followed()
+}
+
 impl Loader {
     /// The instances enclosing a plugin mounted at `at`, innermost first:
     /// what its keys are computed for, as a row's copy there would be.
@@ -400,6 +407,8 @@ struct Inner {
     warned: config_step::Warned,
     /// Where extra config keys are written ([`Loader::on_config_warning`]).
     config_warnings: Mutex<ConfigWarnings>,
+    /// The rows this loader follows with one `FiberStatusChanged` listener.
+    followers: Arc<crate::framework::Followers>,
     state: Mutex<State>,
 }
 
