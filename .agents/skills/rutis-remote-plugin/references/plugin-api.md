@@ -207,10 +207,10 @@ In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an e
 
 ### Mixing with 0.12 and earlier
 
-The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a 0.13 host is refused before anything loads:
+The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a current host is refused by its protocol version before anything loads:
 
 ```text
-incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
 A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md).
