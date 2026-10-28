@@ -76,10 +76,10 @@ use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
+use crate::resolver::Resolved;
 use crate::resolver::{Build, ScopedFactory};
-use crate::{
-    volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
-};
+use crate::volatile::{volatile_key, VolatileUpdate};
+use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 
 /// Runtimes started from a binary that carries its own manifest.
 #[cfg(feature = "binary")]
@@ -458,7 +458,7 @@ impl Resolver for RuntimeResolver {
 }
 
 /// Declarations not known, and why.
-pub(crate) fn unknown(why: String) -> crate::Declarations {
+pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
     Arc::new(move |_: &Value| Err(why.clone()))
 }
 
@@ -511,7 +511,7 @@ pub(crate) fn leaf_resolved(
     catalog: &ServiceCatalog,
     meta: Value,
 ) -> Resolved {
-    let declared = crate::Declared {
+    let declared = crate::resolver::Declared {
         requires: gated.clone(),
         provides: described.provides.keys().cloned().collect(),
         announces: described.announces,

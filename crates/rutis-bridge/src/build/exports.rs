@@ -40,6 +40,7 @@ type Result<T> = std::result::Result<T, String>;
 pub struct Exports {
     declared: Vec<(String, String)>,
     typescript: Option<PathBuf>,
+    contract: Option<PathBuf>,
 }
 
 impl Exports {
@@ -65,14 +66,26 @@ impl Exports {
         self
     }
 
-    /// Write the declarations to the [`Exports::typescript`] file, and have
-    /// Cargo run the build script again when a source it read changes.
+    /// Write the contract description to `path` (relative to the package's
+    /// `Cargo.toml`): a JSON file the testing tools of
+    /// `@arcships/rutis` and `rutis` read (their `contract` option), to fail
+    /// a test where these services would refuse the call. It describes the
+    /// types only, is read by the testing tools of the same major version,
+    /// and is written only when it changes.
+    pub fn contract(mut self, path: impl AsRef<Path>) -> Self {
+        self.contract = Some(path.as_ref().to_owned());
+        self
+    }
+
+    /// Write the files named with [`Exports::typescript`] and
+    /// [`Exports::contract`], and have Cargo run the build script again
+    /// when a source it read changes.
     pub fn generate(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let Some(path) = &self.typescript else {
+        if self.typescript.is_none() && self.contract.is_none() {
             return Err(
-                "nothing to generate: name the declarations' file with .typescript(path)".into(),
+                "nothing to generate: name a file with .typescript(path) or .contract(path)".into(),
             );
-        };
+        }
         println!("cargo:rerun-if-changed=build.rs");
         let mut sources = Sources::of_build()?;
         let generated = self.generate_from(&mut sources);
@@ -84,13 +97,7 @@ impl Exports {
             println!("cargo:warning={warning}");
         }
         let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
-        let path = root.join(path);
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(&generated.typescript) {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&path, &generated.typescript)?;
-        }
+        self.write_files(&root, &generated)?;
         Ok(())
     }
 
@@ -110,6 +117,50 @@ impl Exports {
         Ok(generated.typescript)
     }
 
+    /// What `rutis-host types` does: generate for the crate in
+    /// `crate_dir`, write the files named with [`Exports::typescript`] and
+    /// [`Exports::contract`] (relative to the current directory), and
+    /// return the TypeScript declarations.
+    pub fn write(
+        self,
+        crate_dir: impl AsRef<Path>,
+    ) -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut sources = Sources::of_crate(crate_dir.as_ref())?;
+        let generated = self.generate_from(&mut sources)?;
+        for warning in &generated.warnings {
+            eprintln!("warning: {warning}");
+        }
+        self.write_files(Path::new("."), &generated)?;
+        Ok(generated.typescript)
+    }
+
+    /// Write each named file under `root`, only when it changes.
+    fn write_files(
+        &self,
+        root: &Path,
+        generated: &Generated,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let files = [
+            (&self.typescript, &generated.typescript),
+            (&self.contract, &generated.contract),
+        ];
+        for (path, text) in files {
+            let Some(path) = path else { continue };
+            let path = root.join(path);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, text)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn generate_from(&self, sources: &mut Sources) -> Result<Generated> {
         let root = sources.host_root()?;
         let mut generator = Generator {
@@ -121,6 +172,7 @@ impl Exports {
             thrown: BTreeMap::new(),
             warnings: Vec::new(),
             cyclic: HashMap::new(),
+            contract_types: BTreeMap::new(),
         };
         for (path, typescript) in &self.declared {
             let parsed: syn::Path =
@@ -132,6 +184,7 @@ impl Exports {
             generator.declared.insert(res, typescript.clone());
         }
         let mut services_ts = String::new();
+        let mut services_contract = serde_json::Map::new();
         let mut names: HashMap<String, String> = HashMap::new();
         for (module, index, ident, name) in generator.marked_types()? {
             if let Some(first) = names.insert(name.clone(), ident.clone()) {
@@ -139,8 +192,9 @@ impl Exports {
                     "the service name {name} is given twice: {first} and {ident} are both marked #[rutis::service] with it"
                 ));
             }
-            let interface = generator.service(module, index, &ident)?;
+            let (interface, methods) = generator.service(module, index, &ident)?;
             services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&name)));
+            services_contract.insert(name, serde_json::json!({ "methods": methods }));
         }
         let mut typescript = String::from(
             "// Generated from the service declarations; do not edit.\n\n\
@@ -158,10 +212,19 @@ impl Exports {
         typescript.push_str(&format!(
             "\n/** The exported services by name: `ctx.use<Services['name']>('name')`. */\nexport interface Services {{\n{services_ts}}}\n"
         ));
+        let contract = serde_json::json!({
+            "version": CONTRACT_VERSION,
+            "services": services_contract,
+            "types": generator.contract_types,
+        });
+        let mut contract =
+            serde_json::to_string_pretty(&contract).expect("a contract description is JSON");
+        contract.push('\n');
         let mut warnings = std::mem::take(&mut generator.sources.warnings);
         warnings.extend(generator.warnings);
         Ok(Generated {
             typescript,
+            contract,
             warnings,
         })
     }
@@ -170,26 +233,41 @@ impl Exports {
 #[derive(Debug)]
 pub(super) struct Generated {
     pub(super) typescript: String,
+    /// The contract description, as JSON.
+    pub(super) contract: String,
     pub(super) warnings: Vec<String>,
 }
 
+/// The format version of the contract description, which the testing
+/// tools of the same major version read. It is their internal format, not
+/// a published one.
+const CONTRACT_VERSION: u32 = 1;
+
 // ── Types ───────────────────────────────────────────────────────
 
-/// A type as it crosses: its TypeScript.
+/// A type as it crosses: its TypeScript, and its contract description.
 #[derive(Clone, Debug)]
 enum Ty {
     Unit,
     Bool,
-    Number,
-    /// An integer of 64 bits or more: beyond ±(2^53−1) it crosses as a
-    /// bigint.
-    Big,
+    /// An integer, by its Rust primitive: one of 64 bits or more crosses as
+    /// a bigint beyond ±(2^53−1).
+    Int(String),
+    Float,
     Str,
     Json,
     Option(Box<Ty>),
     Array(Box<Ty>),
     Tuple(Vec<Ty>),
     Record(Box<Ty>),
+    /// A declared struct or enum, by its name, with its type arguments.
+    Named(String, Vec<Ty>),
+    /// A generic parameter of a declared type.
+    Param(String),
+    /// A plugin definition.
+    Definition,
+    /// Only its TypeScript is known: a type the application declared, or
+    /// one whose form the contract does not describe.
     Ts(String),
 }
 
@@ -198,23 +276,46 @@ impl Ty {
         match self {
             Ty::Unit => "null".into(),
             Ty::Bool => "boolean".into(),
-            Ty::Number => "number".into(),
-            Ty::Big => "number | bigint".into(),
+            Ty::Int(_) if self.big() => "number | bigint".into(),
+            Ty::Int(_) | Ty::Float => "number".into(),
             Ty::Str => "string".into(),
             Ty::Json => "unknown".into(),
             Ty::Option(inner) => format!("{} | null", inner.ts()),
             Ty::Array(inner) => match inner.as_ref() {
-                Ty::Big | Ty::Option(_) => format!("({})[]", inner.ts()),
-                Ty::Ts(text) if text.contains(['|', '&', '=']) => format!("({text})[]"),
-                _ => format!("{}[]", inner.ts()),
+                Ty::Option(_) => format!("({})[]", inner.ts()),
+                Ty::Int(_) if inner.big() => format!("({})[]", inner.ts()),
+                _ => {
+                    let text = inner.ts();
+                    if matches!(
+                        inner.as_ref(),
+                        Ty::Ts(_) | Ty::Definition | Ty::Named(..) | Ty::Param(_)
+                    ) && text.contains(['|', '&', '='])
+                    {
+                        format!("({text})[]")
+                    } else {
+                        format!("{text}[]")
+                    }
+                }
             },
             Ty::Tuple(items) => format!(
                 "[{}]",
                 items.iter().map(Ty::ts).collect::<Vec<_>>().join(", ")
             ),
             Ty::Record(value) => format!("Record<string, {}>", value.ts()),
+            Ty::Named(name, args) if args.is_empty() => name.clone(),
+            Ty::Named(name, args) => format!(
+                "{name}<{}>",
+                args.iter().map(Ty::ts).collect::<Vec<_>>().join(", ")
+            ),
+            Ty::Param(name) => name.clone(),
+            Ty::Definition => DEFINITION_TS.into(),
             Ty::Ts(text) => text.clone(),
         }
+    }
+
+    /// An integer of 64 bits or more.
+    fn big(&self) -> bool {
+        matches!(self, Ty::Int(name) if matches!(name.as_str(), "u64" | "i64" | "u128" | "i128" | "usize" | "isize"))
     }
 
     /// As a method's result: `void` for nothing.
@@ -224,6 +325,51 @@ impl Ty {
             other => other.ts(),
         }
     }
+
+    /// Its contract description (§六 of the design): what the testing
+    /// tools check an argument against. A type whose form is not certain
+    /// is `any`, which every value passes.
+    fn contract(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Ty::Unit => json!({ "kind": "null" }),
+            Ty::Bool => json!({ "kind": "bool" }),
+            Ty::Int(name) => {
+                let (min, max) = int_range(name);
+                json!({ "kind": "int", "min": min, "max": max })
+            }
+            Ty::Float => json!({ "kind": "float" }),
+            Ty::Str => json!({ "kind": "string" }),
+            Ty::Option(inner) => json!({ "kind": "option", "of": inner.contract() }),
+            Ty::Array(inner) => json!({ "kind": "list", "of": inner.contract() }),
+            Ty::Tuple(items) => {
+                json!({ "kind": "tuple", "items": items.iter().map(Ty::contract).collect::<Vec<_>>() })
+            }
+            Ty::Record(value) => json!({ "kind": "map", "values": value.contract() }),
+            Ty::Named(name, args) if args.is_empty() => json!({ "kind": "ref", "name": name }),
+            Ty::Definition => json!({ "kind": "plugin" }),
+            Ty::Json | Ty::Named(..) | Ty::Param(_) | Ty::Ts(_) => json!({ "kind": "any" }),
+        }
+    }
+}
+
+/// The range of a Rust integer primitive, as text (a JSON number cannot
+/// hold every 64-bit value exactly). `usize` and `isize` are 64 bits.
+fn int_range(name: &str) -> (String, String) {
+    let (min, max): (i128, u128) = match name {
+        "u8" => (0, u8::MAX.into()),
+        "u16" => (0, u16::MAX.into()),
+        "u32" => (0, u32::MAX.into()),
+        "u64" | "usize" => (0, u64::MAX.into()),
+        "u128" => (0, u128::MAX),
+        "i8" => (i8::MIN.into(), i8::MAX as u128),
+        "i16" => (i16::MIN.into(), i16::MAX as u128),
+        "i32" => (i32::MIN.into(), i32::MAX as u128),
+        "i128" => (i128::MIN, i128::MAX as u128),
+        // i64, isize
+        _ => (i64::MIN.into(), i64::MAX as u128),
+    };
+    (min.to_string(), max.to_string())
 }
 
 /// Where a type is written: its module, and what its generic parameters
@@ -269,6 +415,8 @@ struct Generator<'a> {
     warnings: Vec<String>,
     /// Whether a type alias refers to itself, by alias.
     cyclic: HashMap<(usize, usize), bool>,
+    /// The contract descriptions of the declared types, by name.
+    contract_types: BTreeMap<String, serde_json::Value>,
 }
 
 /// `rutis::Error`, `rutis::host::ErrorKind` (or 0.16's `rutis::CordisError`),
@@ -391,7 +539,7 @@ impl Generator<'_> {
         if let Some(binding) = Self::binding(scope, ty) {
             return match binding {
                 Binding::Type(ty, scope) => self.ty(&scope, &ty),
-                Binding::Ts(name) => Ok(Ty::Ts(name)),
+                Binding::Ts(name) => Ok(Ty::Param(name)),
             };
         }
         match ty {
@@ -440,8 +588,8 @@ impl Generator<'_> {
             Res::Primitive(name) => Ok(match name.as_str() {
                 "bool" => Ty::Bool,
                 "char" | "str" => Ty::Str,
-                "u64" | "i64" | "u128" | "i128" | "usize" | "isize" => Ty::Big,
-                _ => Ty::Number,
+                "f32" | "f64" => Ty::Float,
+                other => Ty::Int(other.to_owned()),
             }),
             Res::External(path) => self.known(scope, path, args, ty),
             Res::Item { module, index } => {
@@ -458,15 +606,11 @@ impl Generator<'_> {
                     }
                     Item::Struct(_) | Item::Enum(_) => {
                         let name = self.declare(module, index)?;
-                        if args.is_empty() {
-                            Ok(Ty::Ts(name))
-                        } else {
-                            let args = args
-                                .iter()
-                                .map(|arg| self.ty(scope, arg).map(|ty| ty.ts()))
-                                .collect::<Result<Vec<_>>>()?;
-                            Ok(Ty::Ts(format!("{name}<{}>", args.join(", "))))
-                        }
+                        let args = args
+                            .iter()
+                            .map(|arg| self.ty(scope, arg))
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(Ty::Named(name, args))
                     }
                     _ => Err(format!("`{}` is not a data type", ty.to_token_stream())),
                 }
@@ -528,7 +672,7 @@ impl Generator<'_> {
             ));
         }
         if is_rutis_definition(path) {
-            return Ok(Ty::Ts(DEFINITION_TS.into()));
+            return Ok(Ty::Definition);
         }
         if krate == "serde_json" && last == "Value" {
             return Ok(Ty::Json);
@@ -583,12 +727,14 @@ impl Generator<'_> {
             self.declarations.len(),
             self.named.clone(),
             self.names.clone(),
+            self.contract_types.clone(),
         );
         let declared = self.declare_new(module, index);
         if declared.is_err() {
             self.declarations.truncate(snapshot.0);
             self.named = snapshot.1;
             self.names = snapshot.2;
+            self.contract_types = snapshot.3;
         }
         declared
     }
@@ -650,9 +796,20 @@ impl Generator<'_> {
                 .map_err(|error| format!("{location}: {ident}: {error}"))?,
             _ => unreachable!(),
         };
+        let contract = match &item {
+            _ if !ts_params.is_empty() || !derives(&attrs, "Deserialize") || serde.asymmetric => {
+                serde_json::json!({ "kind": "any" })
+            }
+            Item::Struct(_) => body.contract(serde.deny_unknown_fields),
+            Item::Enum(item) => self.enum_contract(&scope, item, &serde)?,
+            _ => unreachable!(),
+        };
+        self.contract_types.insert(name.clone(), contract);
         let docs = jsdoc(&attrs, "");
         let declaration = match body {
-            Body::Object { fields, flattened } if flattened.is_empty() => {
+            Body::Object {
+                fields, flattened, ..
+            } if flattened.is_empty() => {
                 format!(
                     "{docs}export interface {header} {}\n",
                     object(&fields, false)
@@ -690,7 +847,7 @@ impl Generator<'_> {
         rename_all: Option<&str>,
     ) -> Result<Body> {
         match fields {
-            syn::Fields::Unit => Ok(Body::Alias("null".into())),
+            syn::Fields::Unit => Ok(Body::Alias(Ty::Unit)),
             syn::Fields::Unnamed(fields) => {
                 let fields: Vec<_> = fields
                     .unnamed
@@ -702,13 +859,13 @@ impl Generator<'_> {
                     .filter(|field| !SerdeAttrs::of(&field.attrs).is_ok_and(|attrs| attrs.skip))
                     .collect();
                 if kept.len() == 1 {
-                    return Ok(Body::Alias(self.ty(scope, &kept[0].ty)?.ts()));
+                    return Ok(Body::Alias(self.ty(scope, &kept[0].ty)?));
                 }
                 let items = kept
                     .iter()
-                    .map(|field| self.ty(scope, &field.ty).map(|ty| ty.ts()))
+                    .map(|field| self.ty(scope, &field.ty))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(Body::Alias(format!("[{}]", items.join(", "))))
+                Ok(Body::Alias(Ty::Tuple(items)))
             }
             syn::Fields::Named(named) => {
                 if serde.transparent {
@@ -717,15 +874,19 @@ impl Generator<'_> {
                         .iter()
                         .find(|field| !SerdeAttrs::of(&field.attrs).is_ok_and(|attrs| attrs.skip))
                         .ok_or("a transparent struct needs a field")?;
-                    return Ok(Body::Alias(self.ty(scope, &field.ty)?.ts()));
+                    return Ok(Body::Alias(self.ty(scope, &field.ty)?));
                 }
                 let mut fields = Vec::new();
                 let mut flattened = Vec::new();
+                let mut asymmetric = false;
                 for field in &named.named {
                     if !self.sources_enabled(scope, &field.attrs) {
                         continue;
                     }
                     let attrs = SerdeAttrs::of(&field.attrs)?;
+                    if attrs.asymmetric {
+                        asymmetric = true;
+                    }
                     if attrs.skip {
                         continue;
                     }
@@ -733,7 +894,7 @@ impl Generator<'_> {
                     let ident = ident.strip_prefix("r#").unwrap_or(&ident).to_owned();
                     let ty = self.ty(scope, &field.ty)?;
                     if attrs.flatten {
-                        flattened.push(ty.ts());
+                        flattened.push(ty);
                         continue;
                     }
                     let key = attrs
@@ -746,12 +907,16 @@ impl Generator<'_> {
                         || serde.default;
                     fields.push(Field {
                         docs: doc_lines(&field.attrs),
-                        key: ts_key(&key),
+                        key,
                         optional,
-                        ty: ty.ts(),
+                        ty,
                     });
                 }
-                Ok(Body::Object { fields, flattened })
+                Ok(Body::Object {
+                    fields,
+                    flattened,
+                    loose: asymmetric,
+                })
             }
         }
     }
@@ -781,22 +946,29 @@ impl Generator<'_> {
                 fields => Some(self.struct_body(scope, fields, &attrs, rename_all)?),
             };
             // An internally tagged variant's fields sit beside the tag.
-            if let (Some(tag), None, false, Some(Body::Object { fields, flattened })) =
-                (&serde.tag, &serde.content, serde.untagged, &body)
+            if let (
+                Some(tag),
+                None,
+                false,
+                Some(Body::Object {
+                    fields, flattened, ..
+                }),
+            ) = (&serde.tag, &serde.content, serde.untagged, &body)
             {
                 let mut fields = fields.clone();
                 fields.insert(
                     0,
                     Field {
                         docs: Vec::new(),
-                        key: ts_key(tag),
+                        key: tag.clone(),
                         optional: false,
-                        ty: literal.clone(),
+                        ty: Ty::Ts(literal.clone()),
                     },
                 );
                 let merged = Body::Object {
                     fields,
                     flattened: flattened.clone(),
+                    loose: true,
                 };
                 alternatives.push(format!(
                     "{}{}",
@@ -830,21 +1002,21 @@ impl Generator<'_> {
             alternatives.push(format!("{}{alternative}", inline_doc(&variant.attrs)));
         }
         if alternatives.is_empty() {
-            return Ok(Body::Alias("never".into()));
+            return Ok(Body::Alias(Ty::Ts("never".into())));
         }
         let long = alternatives.iter().map(String::len).sum::<usize>() > 80
             || alternatives
                 .iter()
                 .any(|alternative| alternative.starts_with("/**"));
         if long {
-            Ok(Body::Alias(
+            Ok(Body::Alias(Ty::Ts(
                 alternatives
                     .iter()
                     .map(|alternative| format!("\n  | {alternative}"))
                     .collect(),
-            ))
+            )))
         } else {
-            Ok(Body::Alias(alternatives.join(" | ")))
+            Ok(Body::Alias(Ty::Ts(alternatives.join(" | "))))
         }
     }
 
@@ -872,6 +1044,33 @@ impl Generator<'_> {
             variants.push((variant, name));
         }
         Ok(variants)
+    }
+
+    /// The contract description of an enum: the names of an enum of unit
+    /// variants written as their names; any other enum is `any`.
+    fn enum_contract(
+        &self,
+        scope: &Scope,
+        item: &syn::ItemEnum,
+        serde: &SerdeAttrs,
+    ) -> Result<serde_json::Value> {
+        let any = serde_json::json!({ "kind": "any" });
+        if serde.tag.is_some() || serde.untagged {
+            return Ok(any);
+        }
+        let mut names = Vec::new();
+        for (variant, name) in self.variants(scope, item, serde)? {
+            if !matches!(variant.fields, syn::Fields::Unit) {
+                return Ok(any);
+            }
+            names.push(name);
+        }
+        for variant in &item.variants {
+            if SerdeAttrs::of(&variant.attrs)?.asymmetric {
+                return Ok(any);
+            }
+        }
+        Ok(serde_json::json!({ "kind": "enum", "names": names }))
     }
 
     // ── Methods ──────────────────────────────────────────────────
@@ -972,8 +1171,14 @@ impl Generator<'_> {
 
     /// The TypeScript interface of the marked service type at
     /// `module`/`index`: the methods of its `#[rutis::service]` blocks,
-    /// without their `#[service(skip)]` ones. Returns the interface's name.
-    fn service(&mut self, module: usize, index: usize, ident: &str) -> Result<String> {
+    /// without their `#[service(skip)]` ones. Returns the interface's name
+    /// and the contract descriptions of its methods.
+    fn service(
+        &mut self,
+        module: usize,
+        index: usize,
+        ident: &str,
+    ) -> Result<(String, serde_json::Value)> {
         let interface = self.unique(ident);
         let item = self.sources.item(module, index).clone();
         let item_attrs = match &item {
@@ -982,6 +1187,7 @@ impl Generator<'_> {
             _ => Vec::new(),
         };
         let mut methods_ts = String::new();
+        let mut methods_contract = serde_json::Map::new();
         let mut seen = HashSet::new();
         for candidate in self.sources.crate_modules(module) {
             let impls: Vec<(usize, syn::ItemImpl)> = self.sources.modules[candidate]
@@ -1048,8 +1254,15 @@ impl Generator<'_> {
                     }
                     let scope = Scope::of(impl_module);
                     match self.method(&scope, method) {
-                        Ok(signature) => methods_ts.push_str(&signature),
+                        Ok((signature, params)) => {
+                            methods_ts.push_str(&signature);
+                            methods_contract.insert(js, serde_json::json!({ "params": params }));
+                        }
                         Err(reason) => {
+                            // The service still has it: callable, with its
+                            // arguments not checked.
+                            methods_contract
+                                .insert(js.clone(), serde_json::json!({ "params": null }));
                             seen.remove(&js);
                             self.warnings.push(format!(
                                 "{location}: {ident}::{rust_name} is not exported: {reason}"
@@ -1069,11 +1282,16 @@ impl Generator<'_> {
         self.declarations.push(format!(
             "{docs}export interface {interface} {{\n{methods_ts}}}\n"
         ));
-        Ok(interface)
+        Ok((interface, serde_json::Value::Object(methods_contract)))
     }
 
-    /// One method's TypeScript signature, or why it cannot be declared.
-    fn method(&mut self, scope: &Scope, method: &syn::ImplItemFn) -> Result<String> {
+    /// One method's TypeScript signature and the contract descriptions of
+    /// its parameters, or why it cannot be declared.
+    fn method(
+        &mut self,
+        scope: &Scope,
+        method: &syn::ImplItemFn,
+    ) -> Result<(String, serde_json::Value)> {
         let sig = &method.sig;
         if sig.unsafety.is_some() {
             return Err("it is unsafe".into());
@@ -1106,6 +1324,7 @@ impl Generator<'_> {
             }
         }
         let mut params_ts = Vec::new();
+        let mut params_contract = Vec::new();
         let mut count = 0;
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(input) = input else {
@@ -1137,6 +1356,7 @@ impl Generator<'_> {
                     return Err("it takes a mutable reference".into());
                 }
                 params_ts.push(format!("{js}: {DEFINITION_TS}"));
+                params_contract.push(Ty::Definition.contract());
                 count += 1;
                 continue;
             }
@@ -1152,6 +1372,11 @@ impl Generator<'_> {
                     "{js}: ({}) => {ok} | Promise<{ok}>",
                     args_ts.join(", ")
                 ));
+                params_contract.push(serde_json::json!({
+                    "kind": "function",
+                    "params": callback.args.iter().map(Ty::contract).collect::<Vec<_>>(),
+                    "result": callback.ok.contract(),
+                }));
                 count += 1;
                 continue;
             }
@@ -1160,6 +1385,7 @@ impl Generator<'_> {
             }
             let ty = self.ty(scope, &input.ty)?;
             params_ts.push(format!("{js}: {}", ty.ts()));
+            params_contract.push(ty.contract());
             count += 1;
         }
         // Trailing optional parameters may be left out.
@@ -1203,10 +1429,13 @@ impl Generator<'_> {
         }
         let docs = render_jsdoc(&docs, "  ");
         let js = camel(&sig.ident.to_string());
-        Ok(format!(
-            "{docs}  {js}({}): Promise<{}>\n",
-            params_ts.join(", "),
-            ok.returned()
+        Ok((
+            format!(
+                "{docs}  {js}({}): Promise<{}>\n",
+                params_ts.join(", "),
+                ok.returned()
+            ),
+            serde_json::Value::Array(params_contract),
         ))
     }
 
@@ -1565,31 +1794,68 @@ impl Generator<'_> {
 }
 
 enum Body {
-    /// The fields of an object, and the types flattened into it.
+    /// The fields of an object, and the types flattened into it; `loose`
+    /// when a field is read under another name than it is written.
     Object {
         fields: Vec<Field>,
-        flattened: Vec<String>,
+        flattened: Vec<Ty>,
+        loose: bool,
     },
-    Alias(String),
+    Alias(Ty),
 }
 
 #[derive(Clone)]
 struct Field {
     docs: Vec<String>,
+    /// As serde writes it.
     key: String,
     optional: bool,
-    ty: String,
+    ty: Ty,
 }
 
 impl Body {
     /// As a type expression: on one line inside a union (`compact`).
     fn inline(&self, compact: bool) -> String {
         match self {
-            Body::Alias(alias) => alias.clone(),
-            Body::Object { fields, flattened } => std::iter::once(object(fields, compact))
-                .chain(flattened.iter().cloned())
+            Body::Alias(alias) => alias.ts(),
+            Body::Object {
+                fields, flattened, ..
+            } => std::iter::once(object(fields, compact))
+                .chain(flattened.iter().map(Ty::ts))
                 .collect::<Vec<_>>()
                 .join(" & "),
+        }
+    }
+
+    /// The contract description of a struct of this body: its fields
+    /// as serde reads them, with no others when `deny_unknown_fields`.
+    fn contract(&self, deny_unknown_fields: bool) -> serde_json::Value {
+        match self {
+            Body::Alias(alias) => alias.contract(),
+            Body::Object {
+                fields,
+                flattened,
+                loose,
+            } => {
+                if *loose || !flattened.is_empty() {
+                    return serde_json::json!({ "kind": "any" });
+                }
+                let fields: Vec<serde_json::Value> = fields
+                    .iter()
+                    .map(|field| {
+                        serde_json::json!({
+                            "name": field.key,
+                            "type": field.ty.contract(),
+                            "optional": field.optional,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "kind": "struct",
+                    "fields": fields,
+                    "denyUnknown": deny_unknown_fields,
+                })
+            }
         }
     }
 }
@@ -1599,9 +1865,9 @@ fn object(fields: &[Field], compact: bool) -> String {
     let field = |field: &Field| {
         format!(
             "{}{}: {}",
-            field.key,
+            ts_key(&field.key),
             if field.optional { "?" } else { "" },
-            field.ty
+            field.ty.ts()
         )
     };
     if compact {
@@ -1870,27 +2136,39 @@ struct SerdeAttrs {
     skip: bool,
     skip_if: bool,
     flatten: bool,
+    deny_unknown_fields: bool,
+    /// Read (deserialized) otherwise than written: under another name, by
+    /// another function or type, or skipped one way only. Its contract
+    /// description is `any`.
+    asymmetric: bool,
 }
 
 impl SerdeAttrs {
     fn of(attrs: &[syn::Attribute]) -> Result<Self> {
         let mut found = Self::default();
+        let mut asymmetric = false;
         for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
             attr.parse_nested_meta(|meta| {
                 let key = meta.path.get_ident().map(ToString::to_string).unwrap_or_default();
                 // `rename = "x"` or `rename(serialize = "x", ...)`.
-                let text = |meta: &syn::meta::ParseNestedMeta| -> syn::Result<Option<String>> {
+                let mut text = |meta: &syn::meta::ParseNestedMeta| -> syn::Result<Option<String>> {
                     if meta.input.peek(syn::Token![=]) {
                         return Ok(Some(meta.value()?.parse::<syn::LitStr>()?.value()));
                     }
                     let mut serialized = None;
+                    let mut deserialized = None;
                     meta.parse_nested_meta(|inner| {
                         let value = inner.value()?.parse::<syn::LitStr>()?.value();
                         if inner.path.is_ident("serialize") {
                             serialized = Some(value);
+                        } else if inner.path.is_ident("deserialize") {
+                            deserialized = Some(value);
                         }
                         Ok(())
                     })?;
+                    if serialized != deserialized {
+                        asymmetric = true;
+                    }
                     Ok(serialized)
                 };
                 match key.as_str() {
@@ -1904,6 +2182,13 @@ impl SerdeAttrs {
                     "flatten" => found.flatten = true,
                     "skip" | "skip_serializing" => {
                         found.skip = true;
+                        found.asymmetric |= key == "skip_serializing";
+                        skip_value(&meta)?;
+                    }
+                    "deny_unknown_fields" => found.deny_unknown_fields = true,
+                    "alias" | "other" | "skip_deserializing" | "deserialize_with" | "from"
+                    | "try_from" => {
+                        found.asymmetric = true;
                         skip_value(&meta)?;
                     }
                     "default" => {
@@ -1925,6 +2210,7 @@ impl SerdeAttrs {
             })
             .map_err(|error| error.to_string())?;
         }
+        found.asymmetric |= asymmetric;
         Ok(found)
     }
 }
@@ -2285,6 +2571,124 @@ mod tests {
         assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
+    }
+
+    /// The contract description names each service's methods and what
+    /// each parameter takes; what it cannot be sure of is `any`.
+    #[test]
+    fn the_contract_describes_what_each_parameter_takes() {
+        let source = r#"
+use std::collections::HashMap;
+use rutis::host::BoxFuture;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Item { pub item_name: String, #[serde(default)] pub done: bool, pub note: Option<String> }
+
+#[derive(Serialize, Deserialize)]
+pub struct Open { pub name: String }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level { Low, High }
+
+#[derive(Serialize, Deserialize)]
+pub enum Shape { Dot, Line(u8) }
+
+#[derive(Serialize, Deserialize)]
+pub struct Flat { #[serde(flatten)] pub open: Open }
+
+#[derive(Serialize, Deserialize)]
+pub struct Aliased { #[serde(alias = "nm")] pub name: String }
+
+#[derive(Serialize, Deserialize)]
+pub struct Page<T> { pub items: Vec<T> }
+
+pub struct Board;
+
+#[rutis::service]
+impl Board {
+    pub fn put(&self, ctx: &rutis::Ctx, item: Item, open: Open, level: Level, count: i8, ratio: f32) {}
+    pub fn more(&self, tags: Vec<String>, pair: (u16, bool), map: HashMap<String, u64>, note: Option<String>) {}
+    pub fn loose(&self, shape: Shape, flat: Flat, aliased: Aliased, page: Page<u8>) {}
+    pub fn each(&self, visit: impl Fn(Item, u32) -> BoxFuture<'static, rutis::Result<String>> + Send) {}
+    pub fn load(&self, def: rutis::Definition) {}
+    pub fn odd(&self, it: std::sync::mpsc::Sender<u8>) {}
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        assert_eq!(generated.warnings.len(), 1, "{:?}", generated.warnings);
+        let contract: serde_json::Value = serde_json::from_str(&generated.contract).unwrap();
+        assert_eq!(contract["version"], 1);
+        let methods = &contract["services"]["board"]["methods"];
+        let int =
+            |min: &str, max: &str| serde_json::json!({ "kind": "int", "min": min, "max": max });
+        // The calling row's context is not a parameter.
+        assert_eq!(
+            methods["put"]["params"],
+            serde_json::json!([
+                { "kind": "ref", "name": "Item" },
+                { "kind": "ref", "name": "Open" },
+                { "kind": "ref", "name": "Level" },
+                int("-128", "127"),
+                { "kind": "float" },
+            ])
+        );
+        assert_eq!(
+            methods["more"]["params"],
+            serde_json::json!([
+                { "kind": "list", "of": { "kind": "string" } },
+                { "kind": "tuple", "items": [int("0", "65535"), { "kind": "bool" }] },
+                { "kind": "map", "values": int("0", "18446744073709551615") },
+                { "kind": "option", "of": { "kind": "string" } },
+            ])
+        );
+        assert_eq!(
+            methods["loose"]["params"],
+            serde_json::json!([
+                { "kind": "ref", "name": "Shape" },
+                { "kind": "ref", "name": "Flat" },
+                { "kind": "ref", "name": "Aliased" },
+                { "kind": "any" },
+            ])
+        );
+        assert_eq!(
+            methods["each"]["params"],
+            serde_json::json!([{
+                "kind": "function",
+                "params": [{ "kind": "ref", "name": "Item" }, int("0", "4294967295")],
+                "result": { "kind": "string" },
+            }])
+        );
+        assert_eq!(
+            methods["load"]["params"],
+            serde_json::json!([{ "kind": "plugin" }])
+        );
+        // A method the generator cannot declare is still the service's: its
+        // arguments are not checked.
+        assert_eq!(methods["odd"], serde_json::json!({ "params": null }));
+        let types = &contract["types"];
+        assert_eq!(
+            types["Item"],
+            serde_json::json!({
+                "kind": "struct",
+                "fields": [
+                    { "name": "itemName", "type": { "kind": "string" }, "optional": false },
+                    { "name": "done", "type": { "kind": "bool" }, "optional": true },
+                    { "name": "note", "type": { "kind": "option", "of": { "kind": "string" } }, "optional": true },
+                ],
+                "denyUnknown": true,
+            })
+        );
+        assert_eq!(types["Open"]["denyUnknown"], false);
+        assert_eq!(
+            types["Level"],
+            serde_json::json!({ "kind": "enum", "names": ["low", "high"] })
+        );
+        for any in ["Shape", "Flat", "Aliased", "Page"] {
+            assert_eq!(types[any], serde_json::json!({ "kind": "any" }), "{any}");
+        }
     }
 
     /// Two marked types given one name are an error naming both.

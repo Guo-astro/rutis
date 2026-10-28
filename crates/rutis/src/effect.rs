@@ -7,15 +7,17 @@ use crate::error::{aggregate_arcs, join_panic_error, panic_error, Error, ErrorKi
 use crate::fiber::FiberInner;
 use crate::BoxFuture;
 
-/// 插件装配交回的清理(D18:清理可报错;闭包捕获 owned `Ctx`,不传 `&Ctx`)。
+/// The cleanup a plugin hands back. A cleanup may fail; a closure that needs
+/// the context captures an owned `Ctx` (it is not passed a `&Ctx`).
 pub enum Effect {
-    /// 无清理。
+    /// No cleanup.
     Done,
-    /// 同步清理。
+    /// A synchronous cleanup.
     Disposer(Box<dyn FnOnce() -> Result<(), Error> + Send>),
-    /// 异步清理(在任务边界执行,panic 经 JoinError 包 `PluginFailed`,D30)。
+    /// An asynchronous cleanup. It runs in its own task; a panic becomes a
+    /// `PluginFailed`.
     AsyncDisposer(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Error>> + Send>),
-    /// 多个清理,按声明序逆序(LIFO)执行。
+    /// Several cleanups, run in reverse order of declaration (LIFO).
     Many(Vec<Effect>),
 }
 
@@ -81,10 +83,6 @@ pub(crate) enum Cleanup {
     Async(Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Error>> + Send>),
 }
 
-/// EffectRecord(§四):执行与清理分离;清理恰好一次,重复调用 join 同一结果;
-/// 严格 LIFO 串行;单错原样、多错聚合不压平;一个清理失败不阻止其余清理。
-/// 宿主 fiber(`owner`):清理进 Done 后从宿主 effects 列表自摘——长寿
-/// parent 下反复注册/清理的瞬态记录不残留(0.2.1 瞬态子插件释放)。
 /// Where a cleanup came from, for a shutdown that runs out of time to
 /// say what it still waits for (#678).
 pub(crate) enum Origin {
@@ -100,6 +98,13 @@ pub(crate) enum Origin {
     Other,
 }
 
+/// A registered cleanup, kept apart from the code that registered it. The
+/// cleanups run exactly once, strictly LIFO and one at a time; repeated
+/// drains wait for the same result. One error is returned as it is, several
+/// as an unflattened aggregate, and one failing cleanup does not stop the
+/// rest. When done, the record removes itself from its owner fiber's
+/// effects list, so short-lived records under a long-lived parent do not
+/// accumulate.
 pub(crate) struct EffectRecord {
     /// `crate::sync`: a shuttle mutex in the shuttle models (#179).
     st: crate::sync::Mutex<EffectState>,
@@ -150,10 +155,11 @@ impl EffectRecord {
         Some(metadata)
     }
 
-    /// 排干清理。首个调用者把清理移入独立任务执行,所有调用者(含被
-    /// drop 后重来的)join 同一终态——取消安全:本 future 被 drop 不影响
-    /// 清理进度,不会卡死在 Draining(评审 #4)。重复调用 join 同一结果
-    /// (`exactly_once_same_error` 断言 `Arc` identity)。
+    /// Runs the cleanups. The first caller moves them into a separate task;
+    /// every caller, including one that retries after its future was
+    /// dropped, waits for the same result (the same `Arc`). Dropping this
+    /// future does not stop the cleanups, so the record never stays in
+    /// `Draining`.
     pub(crate) async fn drain(
         self: &Arc<Self>,
         handle: &tokio::runtime::Handle,
@@ -242,8 +248,9 @@ impl EffectRecord {
     }
 }
 
-/// 严格 LIFO 串行执行清理;闭包调用(`f()`)与 Future poll 两处 panic
-/// 边界都捕获为 `PluginFailed`(评审 #7),一个清理失败不阻止其余清理。
+/// Runs the cleanups strictly LIFO, one at a time. A panic in the closure
+/// call (`f()`) or while polling its future becomes a `PluginFailed`; one
+/// failing cleanup does not stop the rest.
 pub(crate) async fn run_cleanups(
     cleanups: &mut Vec<Cleanup>,
     handle: &tokio::runtime::Handle,
@@ -280,8 +287,9 @@ pub(crate) async fn run_cleanups(
     aggregate_arcs(errors.into_iter().map(Error::shared).collect())
 }
 
-/// 清理句柄(D28):仅表示提前释放,不需要也不应再放回 `Effect`;
-/// drop 不触发清理(fiber 卸载仍兜底)。
+/// A handle to release a cleanup early. It is not meant to be put back into
+/// an `Effect`. Dropping it does not run the cleanup; the fiber's unload
+/// still runs it.
 pub struct Disposer {
     run: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> + Send>>,
 }
@@ -293,7 +301,8 @@ impl Disposer {
         Self { run: Some(run) }
     }
 
-    /// 提前释放并等待清理完成(幂等:重复调用 join 同一终态)。
+    /// Runs the cleanup now and waits for it to finish. If it is already
+    /// running or done, waits for the same result.
     pub fn dispose(mut self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         match self.run.take() {
             Some(run) => run(),

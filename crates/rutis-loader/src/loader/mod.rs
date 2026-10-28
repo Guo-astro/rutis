@@ -331,7 +331,7 @@ impl Loader {
     /// The instances enclosing a plugin mounted at `at`, innermost first:
     /// what its keys are computed for, as a row's copy there would be.
     #[cfg(feature = "runtimes")]
-    pub(crate) fn build_at(&self, at: &Ctx) -> crate::Build {
+    pub(crate) fn build_at(&self, at: &Ctx) -> crate::resolver::Build {
         let scope = rutis::host::CtxHost::scope(at);
         let state = self.inner.state.lock().unwrap();
         let chain = scope
@@ -349,7 +349,7 @@ impl Loader {
                     })
             })
             .collect();
-        crate::Build { chain, row: None }
+        crate::resolver::Build { chain, row: None }
     }
 
     #[cfg(feature = "runtimes")]
@@ -363,7 +363,7 @@ impl Loader {
     pub(crate) fn service_key_in(
         &self,
         name: &str,
-        build: &crate::Build,
+        build: &crate::resolver::Build,
     ) -> Result<rutis::host::TypeKey, LoaderError> {
         self.inner.catalog.key_in(name, build)
     }
@@ -375,7 +375,7 @@ impl Loader {
     pub(crate) fn shared_key_in(
         &self,
         name: &str,
-        build: &crate::Build,
+        build: &crate::resolver::Build,
     ) -> Result<rutis::host::TypeKey, LoaderError> {
         match self.inner.catalog.is_shared(name) {
             true => self.inner.catalog.key_in(name, build),

@@ -81,7 +81,7 @@ pub trait CtxInternal: sealed::Sealed {
     /// fiber is neither that instance's fiber nor a descendant of it).
     fn in_instance_key(&self, key: &TypeKey) -> bool;
 
-    /// 事件总线(全局唯一;事件分发不跨 isolate 过滤,D29)。
+    /// The event bus: one per root. Dispatch does not filter by isolate scope.
     fn events(&self) -> &EventBus;
 
     /// Make this context's fiber a scope of `group`: the loader calls it
@@ -95,7 +95,7 @@ pub trait CtxInternal: sealed::Sealed {
     /// is a no-op.
     fn mark_row(&self, key: &str) -> Result<(), Error>;
 
-    /// 带显式 key 的读取(多实例,shaku Keyed 模式)。
+    /// An optional read under an explicit key (several instances of one type).
     fn get_key<T: ?Sized + Send + Sync + 'static>(&self, key: impl Into<TypeKey>)
         -> Option<Arc<T>>;
 
@@ -118,14 +118,14 @@ pub trait CtxInternal: sealed::Sealed {
         actor: Option<&Ctx>,
     ) -> Result<Arc<T>, ServiceReadError>;
 
-    /// trait 对象 / 共享实例注册入口。
+    /// Registers `value` under an explicit key (trait objects, shared instances).
     fn provide_key<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,
         value: Arc<T>,
     ) -> Result<Disposer, Error>;
 
-    /// 带 `check()` 谓词的注册(§四:check 门控保留)。
+    /// Registers `value` with a `check()` predicate that gates its consumers.
     ///
     /// `check` runs whenever a consumer's gate is evaluated, so at least
     /// twice per load: at the gate and again once the consumer's
@@ -145,8 +145,9 @@ pub trait CtxInternal: sealed::Sealed {
         value: Arc<T>,
     ) -> Result<(Disposer, ServiceWriter<T>), Error>;
 
-    /// 注册清理效应(D23):`f` 立即执行,返回的清理在卸载时 LIFO 执行。
-    /// fiber 已 Disposed/Unloading 时返回 `InactiveEffect`(§四:重入报错)。
+    /// Registers a cleanup: `f` runs at once, and the cleanup it returns runs at
+    /// unload, last registered first. Fails with `InactiveEffect` when the fiber
+    /// is unloading or disposed.
     fn effect_raw(&self, f: impl FnOnce() -> Effect) -> Result<Disposer, Error>;
 
     /// Register a cleanup with a label visible through [`FiberView::effects`](crate::host::FiberView::effects).
@@ -156,7 +157,8 @@ pub trait CtxInternal: sealed::Sealed {
         f: impl FnOnce() -> Effect,
     ) -> Result<Disposer, Error>;
 
-    /// 触发依赖重查(check() 谓词结果变更等场景)。
+    /// Asks every fiber that declares dependencies to re-check them (when the
+    /// result of a `check()` predicate changes).
     fn refresh(&self);
 
     /// `ctx.filter` with a predicate that can fail: its error fails the
