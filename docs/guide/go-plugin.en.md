@@ -84,18 +84,18 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 })
 ```
 
-In short:
+In short (`advanced.*` is package `github.com/arcships/rutis/go/rutis/advanced`: the names a plugin rarely writes, such as value types, services called by name, and the options and errors of events):
 
 | Topic | Rule |
 | --- | --- |
-| Method names | An exported method's wire name has its first letter lowercased (`Today` → `today`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `rutis.Rename` overrides it |
+| Method names | An exported method's wire name has its first letter lowercased (`Today` → `today`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `advanced.Rename` overrides it |
 | Sync or async | `async` by default; `rutis.Sync("Unit")` marks synchronous ones. A sync method blocks a Node caller's event loop: keep methods that do I/O `async` |
 | Signatures | `func (T) M([ctx context.Context,] params...) ([result,] [error])` |
 | Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description), without `required`: a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`, which also takes `null`). Before `Apply` the config is validated against the schema, then decoded: a row whose config does not match fails with `config: …`, and `Apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); a decoding error after the schema passed is written `<path> is not a value the plugin accepts`. The `Schema` field takes a hand-written JSON Schema instead: its `default`s are filled in before decoding |
-| Using services | A struct of function fields may list only the methods it uses; or call by name with `*rutis.Service`: `svc.Call(ctx, "ask", &answer, "q")` |
+| Using services | A struct of function fields may list only the methods it uses; or call by name with `*advanced.Service`: `svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads; goroutines the plugin starts use `ctx.Go(...)` or watch `ctx.Done()` |
 | Concurrency | Every incoming call runs on its own goroutine: provided objects must be safe for concurrent use; do not hold a lock while calling another service |
-| Values | Data (numbers, strings, slices, maps, structs) is copied, struct fields and the items of slices and maps checked one by one (field names follow `json` tags); `time.Time` (an instant, in UTC), `[]byte`, `*big.Int`, maps whose keys are not strings, `map[K]struct{}` (a set) and `rutis.DateTime`, `rutis.Date`, `rutis.TimeOfDay`, `rutis.Decimal`, `rutis.UUID` cross as their own values, see [Passing values](plugin-api.en.md#passing-values); integers beyond ±(2^53−1) (`int64`, `uint64`, ...) cross as big integers by themselves, and a big integer received decodes into the declared integer type, or `*big.Int` into `any`; functions cross by reference; an object crosses by reference only as `rutis.Ref(v)` |
+| Values | Data (numbers, strings, slices, maps, structs) is copied, struct fields and the items of slices and maps checked one by one (field names follow `json` tags); `time.Time` (an instant, in UTC), `[]byte`, `*big.Int`, maps whose keys are not strings, `map[K]struct{}` (a set) and `advanced.DateTime`, `advanced.Date`, `advanced.TimeOfDay`, `advanced.Decimal`, `advanced.UUID` cross as their own values, see [Passing values](plugin-api.en.md#passing-values); integers beyond ±(2^53−1) (`int64`, `uint64`, ...) cross as big integers by themselves, and a big integer received decodes into the declared integer type, or `*big.Int` into `any`; functions cross by reference; an object crosses by reference only as `rutis.Ref(v)` |
 | Errors | A returned `error` crosses with its type name (`*QuotaError` → `QuotaError`; `Name() string` overrides); with `Code() string` and `Data() any` it carries a code and data, which the caller reads as its error's `code` and `data` (`Data` is encoded as JSON); a panic becomes an error named `Panic`. An error received is a `*rutis.RemoteError` with `Name`, `Message`, `Code` and `Data` |
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
@@ -124,10 +124,10 @@ Every listener on a host, in any language and any process, is on one event bus (
 ```go
 off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
 	return nil, nil // nil and false are no result; anything else is one
-}, rutis.Prepend()) // options: rutis.Prepend(), rutis.Global()
+}, advanced.Prepend()) // options: advanced.Prepend(), advanced.Global()
 
 err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; err only for a refused emission
-err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *rutis.AggregateError in registration order
+err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *advanced.AggregateError in registration order
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
 value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil; terminal is a rutis.Terminal, func(ctx context.Context, args ...any) (any, error), called with the event's arguments
@@ -144,6 +144,7 @@ import (
 	"fmt"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 type Greeter struct{ ctx *rutis.Ctx }
@@ -178,7 +179,7 @@ var Plugin = rutis.Define(rutis.Plugin[struct{}]{
 			return nil, nil // no result: the next listener goes on
 		})
 		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(rutis.Next) // waterfall: next is the last argument
+			next := args[len(args)-1].(advanced.Next) // waterfall: next is the last argument
 			inner, err := next(ctx)
 			if err != nil {
 				return nil, err
@@ -195,18 +196,18 @@ Python or TypeScript plugins, or Rust code in the host, listening to the same na
 
 | Topic | Rule |
 | --- | --- |
-| Waterfall | The listener gets `next` (a `rutis.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
-| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*rutis.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
+| Waterfall | The listener gets `next` (a `advanced.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
+| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*advanced.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
 | Scope | Events are delivered by name on one bus; `ctx.Scope()` is a descriptor for filters, not a delivery rule |
-| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Prefix`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error (`Emit` does not return it but reports a line `rutis: filter of <name> from row <row> failed: …`); listeners registered with `rutis.Global()` skip filters |
+| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Prefix`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error (`Emit` does not return it but reports a line `rutis: filter of <name> from row <row> failed: …`); listeners registered with `advanced.Global()` skip filters |
 | Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the row unloads, and when the emitter of a `Parallel`, `Serial`, `Waterfall` or `Bail` gives up; an `Emit` listener is not cancelled when the emitter gives up. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
 | Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
 
-Pass on the context your caller gave you, as with service calls. `errors.Is(err, rutis.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
+Pass on the context your caller gave you, as with service calls. `errors.Is(err, advanced.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
 
 ### Objects with methods
 
-Structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`: the far end gets a proxy whose calls reach the original here. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*rutis.Service`:
+Structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`: the far end gets a proxy whose calls reach the original here. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*advanced.Service`:
 
 ```go
 type Cache struct {
@@ -223,8 +224,8 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 ```
 
 - A function field's call blocks; its first parameter is a `context.Context`. A struct with a field that is not a function, or a parameter of another type, fails the call with `bad-argument`: `warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`.
-- `any` receives a `*rutis.Service`, the type `ctx.Use` gives: `Call(ctx, method, result, args...)`. An object has no method table, so `Methods()` returns `nil`, and a method it lacks is answered `no-method` by the object's own process.
-- Only a `*rutis.Service` keeps its identity: one object received several times is one `*rutis.Service`, and handed back to its process it is the original there. A struct of function fields is data: handed over, each field becomes a new function reference; to hand over the object itself, make the parameter `any`.
+- `any` receives a `*advanced.Service`, the type `ctx.Use` gives: `Call(ctx, method, result, args...)`. An object has no method table, so `Methods()` returns `nil`, and a method it lacks is answered `no-method` by the object's own process.
+- Only a `*advanced.Service` keeps its identity: one object received several times is one `*advanced.Service`, and handed back to its process it is the original there. A struct of function fields is data: handed over, each field becomes a new function reference; to hand over the object itself, make the parameter `any`.
 - An object does not follow its row: after the row that passed it unloads, it can still be called. But an on-demand runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
 - An object's methods may be called concurrently.
 

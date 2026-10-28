@@ -142,7 +142,7 @@ impl DynPlugin for Router {
 ### Errors a host sees
 
 - Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly; with rutis's `anyhow` feature, one returning `anyhow::Result` does too.
-- `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …: 0.16's `CordisError` renamed, the same variants), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
+- `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
 - Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
 
 ```rust,no_run
@@ -713,7 +713,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 | An enum without serde (or `untagged`) | its type name | the variant's Rust name (from its derived `Debug`) | its serde value if it has one |
 | A struct with serde | its type name | the string it serializes to, else its type name | its serde value |
 | `String` | `Error` | `Error` (the string is the `message`) | — |
-| `rutis::Error`, `rutis::host::ErrorKind` | `CordisError` (the name on the wire is unchanged) | the `ErrorKind` variant (`PluginFailed` for an error from plugin code) | — |
+| `rutis::Error`, `rutis::host::ErrorKind` | `Error` (declared as `ErrorThrown`) | the `ErrorKind` variant (`PluginFailed` for an error from plugin code) | — |
 | `rutis_bridge::session::Error` | thrown as it is (a call it forwarded keeps the far end's error) | | |
 | Anything else (`anyhow::Error`, `io::Error`) | its type name | its type name | — |
 

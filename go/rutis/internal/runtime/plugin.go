@@ -1,31 +1,6 @@
-// Package rutis writes rutis plugins in Go, and is the runtime that runs
-// them.
-//
-// A plugin declares the services it injects, the services it provides and
-// its configuration, and has an Apply function:
-//
-//	var Plugin = rutis.Define(rutis.Plugin[Config]{
-//		Name:   "weather",
-//		Inject: []string{"llm"},
-//		Apply: func(ctx *rutis.Ctx, config Config) error {
-//			var llm LLM
-//			if err := ctx.Use("llm", &llm); err != nil {
-//				return err
-//			}
-//			ctx.Provide("weather", &Weather{llm: llm, city: config.City})
-//			return nil
-//		},
-//	})
-//
-// What Ctx.Provide provides reaches rutis: its methods are the value's
-// exported ones, all asynchronous. Provides is optional; it marks methods
-// synchronous, `Provides: rutis.Provides{"weather":
-// rutis.MethodsOf[*Weather](rutis.Sync("Unit"))}`, and tells `rutis-host
-// check` what the plugin provides before it runs.
-//
-// A binary serves one or more plugins: `func main() { rutis.Serve(weather.Plugin) }`.
-// rutis decides when a plugin runs: Apply runs once every injected service
-// is there, and the plugin is unloaded when one goes away.
+// Package rutis, in internal/runtime, is the Go SDK; package rutis at the
+// module root and package advanced are its public faces (#692, #813 §7.6).
+// It is named rutis so that its types print as rutis.Ctx, rutis.Service.
 package rutis
 
 import (
@@ -125,7 +100,13 @@ func (d *Definition) key() string {
 
 // Define checks a plugin's declarations and makes it servable. It panics
 // on a declaration that cannot work, so a broken plugin fails at start.
-func Define[C any](p Plugin[C]) *Definition {
+func Define[C any](p Plugin[C]) *Definition { return define(p, 0) }
+
+// DefineWrapped is Define called through `frames` wrappers (rutis.Define):
+// the plugin is defined in the package that called the outermost one.
+func DefineWrapped[C any](p Plugin[C], frames int) *Definition { return define(p, frames) }
+
+func define[C any](p Plugin[C], frames int) *Definition {
 	if strings.ContainsAny(p.Name, ":/\x00") {
 		panic(fmt.Sprintf("rutis: invalid plugin name %q", p.Name))
 	}
@@ -155,7 +136,7 @@ func Define[C any](p Plugin[C]) *Definition {
 		schema = derived
 	}
 	pkg := ""
-	if pc, _, _, ok := runtime.Caller(1); ok {
+	if pc, _, _, ok := runtime.Caller(2 + frames); ok {
 		if fn := runtime.FuncForPC(pc); fn != nil {
 			pkg = packageOf(fn.Name())
 		}
@@ -270,8 +251,6 @@ func Sync(methods ...string) ShapeOption {
 }
 
 // Rename gives the Go method `method` the wire name `wire`.
-//
-// Deprecated: moved in 0.19: use advanced.Rename.
 func Rename(method, wire string) ShapeOption {
 	return func(o *shapeOptions) {
 		if o.renames == nil {

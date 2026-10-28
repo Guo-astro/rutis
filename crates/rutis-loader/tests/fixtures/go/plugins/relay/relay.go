@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 type Work struct {
@@ -20,7 +21,7 @@ type Relay struct{ work Work }
 // Work calls `b_work` synchronously, on the caller's chain.
 func (r *Relay) Work(ctx context.Context) (string, error) {
 	value, err := r.work.Work(ctx)
-	if errors.Is(err, rutis.ErrSyncWaitCycle) {
+	if errors.Is(err, advanced.ErrSyncWaitCycle) {
 		return "g_relay: SyncWaitCycle", nil
 	}
 	if err != nil {
@@ -51,7 +52,7 @@ type ObjectRelay struct{ work Work }
 // Work calls the object's `work` synchronously, on the caller's chain.
 func (r *ObjectRelay) Work(ctx context.Context) (string, error) {
 	value, err := r.work.Work(ctx)
-	if errors.Is(err, rutis.ErrSyncWaitCycle) {
+	if errors.Is(err, advanced.ErrSyncWaitCycle) {
 		return "g_obj_relay: SyncWaitCycle", nil
 	}
 	if err != nil {

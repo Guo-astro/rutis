@@ -268,10 +268,10 @@ async fn a_provided_marked_type_is_served_by_name() {
     );
     let error = call(&calendar, "io", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("Error"));
-    // rutis's own error keeps its 0.16 name on the wire, its kind the code.
+    // rutis's own error is thrown as `Error`, its kind the code.
     let error = call(&calendar, "closed", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("Closed"));
-    assert!(error.to_string().starts_with("CordisError: "), "{error}");
+    assert!(error.to_string().starts_with("Error: "), "{error}");
     call(&calendar, "add", json!([entry])).await.unwrap();
     call(&calendar, "add", json!([entry])).await.unwrap();
     let error = call(&calendar, "add", json!([entry])).await.unwrap_err();

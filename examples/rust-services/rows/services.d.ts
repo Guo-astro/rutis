@@ -60,20 +60,20 @@ export interface Calendar {
   /**
    * Tell `handler` of every change from now on, until `ctx`'s plugin
    * unloads or [`Calendar::unsubscribe`]; returns the subscription.
-   * @throws {CordisErrorThrown}
+   * @throws {ErrorThrown}
    */
   subscribe(handler: (arg0: Change) => void | Promise<void>): Promise<number | bigint>
   unsubscribe(subscription: number | bigint): Promise<boolean>
   /**
    * Visit every entry in order, each visit finishing before the next;
    * returns how many were visited.
-   * @throws {CordisErrorThrown}
+   * @throws {ErrorThrown}
    */
   each(visit: (arg0: Entry) => void | Promise<void>): Promise<number | bigint>
   /**
    * Hand `change` to every subscriber in turn; done once each of them
    * handled it, failed when one of them failed.
-   * @throws {CordisErrorThrown}
+   * @throws {ErrorThrown}
    */
   publish(change: Change): Promise<void>
   /** How many subscribers there are. */
@@ -94,8 +94,8 @@ export interface Notes {
 /** What a method returning `Err(CalendarError)` throws. */
 export type CalendarErrorThrown = RustError<"CalendarError", "NotFound" | "Invalid" | "Full", CalendarError>
 
-/** What a method returning `Err(CordisError)` throws. */
-export type CordisErrorThrown = RustError<"CordisError", string, undefined>
+/** What a method returning `Err(Error)` throws. */
+export type ErrorThrown = RustError<"Error", string, undefined>
 
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {

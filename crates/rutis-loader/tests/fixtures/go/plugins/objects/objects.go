@@ -2,7 +2,7 @@
 // (crates/rutis-loader/tests/objects_cross.rs, #687): the same as the
 // JavaScript and Python ones there. The owner hands its counter (by
 // reference: rutis.Ref) to the holder's service in another runtime; the
-// holder keeps what it is given as a *rutis.Service and calls it.
+// holder keeps what it is given as a *advanced.Service and calls it.
 package objects
 
 import (
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 // Counter is the owner's object.
@@ -111,13 +112,13 @@ func said(err error) string {
 	return err.Error()
 }
 
-// Holder is the `holder` service: what it is given is a *rutis.Service.
+// Holder is the `holder` service: what it is given is a *advanced.Service.
 type Holder struct {
 	ctx  *rutis.Ctx
-	kept *rutis.Service
+	kept *advanced.Service
 }
 
-func (h *Holder) Take(ctx context.Context, counter *rutis.Service) string {
+func (h *Holder) Take(ctx context.Context, counter *advanced.Service) string {
 	h.kept = counter
 	return "taken"
 }
@@ -133,11 +134,11 @@ func (h *Holder) Listed(ctx context.Context, items []any) string {
 	return fmt.Sprintf("%s %t", data, items[1] == any(h.kept))
 }
 
-func (h *Holder) Back(ctx context.Context) *rutis.Service { return h.kept }
+func (h *Holder) Back(ctx context.Context) *advanced.Service { return h.kept }
 
 func (h *Holder) Rust(ctx context.Context) (int, error) {
 	var poker struct {
-		Poke func(ctx context.Context, object *rutis.Service) (int, error)
+		Poke func(ctx context.Context, object *advanced.Service) (int, error)
 	}
 	if err := h.ctx.Use("poker", &poker); err != nil {
 		return 0, err
@@ -194,7 +195,7 @@ var GoHolder = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 			return err
 		}
 		ctx.On("counter", func(c context.Context, args ...any) (any, error) {
-			counter, _ := args[0].(*rutis.Service)
+			counter, _ := args[0].(*advanced.Service)
 			var n int
 			if err := counter.Call(c, "value", &n); err != nil {
 				return nil, err

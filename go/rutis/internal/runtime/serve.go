@@ -31,8 +31,6 @@ const usage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [-
 var project string
 
 // Project is the project directory the host gave this runtime.
-//
-// Deprecated: moved in 0.19: use advanced.Project.
 func Project() string { return project }
 
 // Serve runs the plugins `defs` as a rutis runtime, as the command line
@@ -49,8 +47,6 @@ func Serve(defs ...*Definition) {
 
 // ServeArgs is Serve with the arguments given, returning instead of
 // exiting: for binaries with commands of their own.
-//
-// Deprecated: moved in 0.19: use advanced.ServeArgs.
 func ServeArgs(args []string, defs ...*Definition) error {
 	if err := checkDefinitions(defs); err != nil {
 		return err
@@ -86,8 +82,6 @@ func ServeArgs(args []string, defs ...*Definition) error {
 
 // ServeConn serves the plugins `defs` on `conn` (the compat protocol, one
 // message per line) until the session ends, then unloads them.
-//
-// Deprecated: moved in 0.19: use advanced.ServeConn.
 func ServeConn(conn net.Conn, defs ...*Definition) error {
 	if err := checkDefinitions(defs); err != nil {
 		return err
@@ -118,8 +112,6 @@ func checkDefinitions(defs []*Definition) error {
 
 // Manifest is what the plugins `defs` declare, as --rutis-manifest prints
 // it.
-//
-// Deprecated: moved in 0.19: use advanced.Manifest.
 func Manifest(defs ...*Definition) ([]byte, error) {
 	plugins := map[string]any{}
 	for _, def := range defs {

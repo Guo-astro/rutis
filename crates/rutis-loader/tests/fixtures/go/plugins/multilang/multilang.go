@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 type Probe struct {
@@ -114,7 +115,7 @@ var Local = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		if err != nil {
 			return err
 		}
-		var weather *rutis.Service
+		var weather *advanced.Service
 		if err := ctx.Use("go_weather", &weather); err != nil {
 			return err
 		}

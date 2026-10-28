@@ -53,7 +53,7 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 
 逐项说明：
 
-- **签名里出现的类型**：TypeScript、Python、Swift、Kotlin 的根上签名（包括 `ctx` 的方法）可以引用 advanced 里的类型（`Emitter`、`ListenerOptions`、`MethodKind`、`ServiceShape`、`Rutis.Shape` 等），作者不手写这些名字。Go 的 advanced 包以别名指向根上的类型，根包不能反过来引用 advanced（会成环），所以 `Plugin.Provides` 和 `Ctx` 方法签名里的 7 个类型留在根上。
+- **签名里出现的类型**：TypeScript、Python、Swift、Kotlin 的根上签名（包括 `ctx` 的方法）可以引用 advanced 里的类型（`Emitter`、`ListenerOptions`、`MethodKind`、`ServiceShape`、`Rutis.Shape` 等），作者不手写这些名字。Go 的实现在 `go/rutis/internal/runtime`，根包与 advanced 都以别名指向它（[平台清理](design-platform-cleanup-2026-10-28.md) §7.6 第 2 条）；`Plugin.Provides` 和 `Ctx` 方法签名里的 7 个类型留在根上。
 - **`provides` 的写法留在根上**：Go 的 `MethodsOf`、`Sync` 和 Kotlin 的 `service` 是声明提供的服务的写法，Go 模板（`crates/rutis-host/templates/go/plugin.go`）和 `plugin-api.md` 都直接写它们。Go 的 `Rename` 进 advanced。
 - **`on` 的可选参数不算名字**：`prepend`、`global` 选项留在 `on` 上。只有 Go 的构造函数 `rutis.Prepend()`、`rutis.Global()` 进 advanced。
 - **错误**：调用服务时会遇到的两种留在根上：对面抛出的（Python `RemoteError`、Go `RemoteError`）和平台产生、带 0.18 错误码的（Python `BindingError`、Go `ErrBinding`）。只在某种发出方式里出现的错误（`AggregateError`、`WaterfallNext`、`AsyncListener`、`ReservedEvent`）以及 `SyncWaitCycle`（它是 `RemoteError` 的子类，按 `RemoteError` 也能接住）进 advanced。Swift、Kotlin 只有一个错误类型，留在根上；TypeScript 按 `name` 匹配错误，没有错误类。
@@ -99,7 +99,7 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 | --- | --- | --- | --- | --- |
 | TypeScript / Bun | 手写的 `.d.ts` 本身（`src/index.d.ts`、`src/advanced.d.ts`、`src/testing.d.ts`） | `node/rutis/test/public-api.test.mjs`：`package.json` 的 `exports` 只有 `.`、`./advanced`、`./testing`；导入每个入口，运行时的导出名与对应 `.d.ts` 里 `export` 的名字相同（按行读，不用编译器） | `js-py`（`npm test`） | 改 `.d.ts` |
 | Python | `python/rutis/public-api.txt` | `python/rutis/tests/test_public_api.py`：`rutis`、`rutis.advanced`、`rutis.testing` 的 `__all__`，其中每个类的公开成员与 `inspect.signature`；`dir()` 里的公开名字都在 `__all__` 里或是子模块 | `js-py` | `RUTIS_PUBLIC_API_WRITE=1` 跑这个测试 |
-| Go | `go/rutis/public-api.txt` | `go/rutis/public_api_test.go`：标准库 `go/parser`、`go/doc` 列出 `rutis`、`rutis/advanced`、`rutis/rutistest` 的导出声明、方法与签名、Deprecated 标记（golden 文件） | `runtimes-go` | `go test -run TestPublicAPI -update` |
+| Go | `go/rutis/public-api.txt` | `go/rutis/public_api_test.go`：标准库 `go/parser`、`go/doc` 列出 `rutis`、`rutis/advanced`、`rutis/rutistest` 的导出声明、方法与签名，指向 `internal/runtime` 的别名按所指的类型列出字段与方法（golden 文件） | `runtimes-go` | `go test -run TestPublicAPI -update` |
 | Swift | `swift/rutis/public-api.txt` | `tools/public-api-swift.sh`：`swift package dump-symbol-graph --minimum-access-level public`，用 `jq`（macOS 15 起系统自带）把 `Rutis`、`RutisTest` 的符号写成排好序的一行一个：路径（含参数标签）和种类。不记声明原文，因为不同版本的编译器写法不同（Swift 6.3 写 `any Encoder`，6.4 写 `Encoder`） | `runtimes-swift` | `tools/public-api-swift.sh --write` |
 | Kotlin | `kotlin/rutis/rutis/api/` | Kotlin 官方的 Binary Compatibility Validator，`apiCheck` 挂在 `check` 上（Kotlin Gradle 插件 2.2 自带的 ABI 校验还是实验性的，不用） | `runtimes-kotlin` | `./gradlew apiDump` |
 | Rust | `crates/rutis/public-api.txt` | 不变（`tools/public-api.sh`） | `public-api` | 不变 |
@@ -151,7 +151,7 @@ day := advanced.DateOf(time.Now())
 | --- | --- | --- |
 | TypeScript | `import { datetime } from '@arcships/rutis'` | `tsc`：`error TS2305: Module '"@arcships/rutis"' has no exported member 'datetime'.`；直接运行：`SyntaxError: The requested module '@arcships/rutis' does not provide an export named 'datetime'` |
 | Python | `from rutis import AggregateError`，在 pytest 里跑 | `DeprecationWarning: AggregateError moved in 0.19: import it from rutis.advanced. The old name is removed when the plugin API version changes.` |
-| Go | `rutis.DateOf(t)`，跑 `staticcheck` | `SA1019: rutis.DateOf is deprecated: moved in 0.19: use advanced.DateOf.` |
+| Go | `rutis.DateOf(t)` | `go build`：`undefined: rutis.DateOf` |
 | Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`，附修改建议 |
 | Kotlin | `RutisFormat.encode(…)` | `w: 'RutisFormat' is deprecated. Moved in 0.19: use arcships.rutis.advanced.RutisFormat.`；IDE 一键替换并补上导入 |
 

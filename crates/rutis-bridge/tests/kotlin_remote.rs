@@ -6,7 +6,7 @@
 //! controller taking over, TLS on both ends (`RUTIS_CERT` / `RUTIS_KEY`
 //! listening, `RUTIS_CA` dialing), and the addresses refused before
 //! anything is opened. The same rules as Go's runtime
-//! (`go/rutis/listen_test.go`, `dial_test.go`), checked from outside, on
+//! (`go/rutis/internal/runtime/listen_test.go`, `dial_test.go`), checked from outside, on
 //! the conformance jar.
 #![cfg(all(feature = "kotlin", feature = "websocket", feature = "testing"))]
 
