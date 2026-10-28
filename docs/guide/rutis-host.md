@@ -293,6 +293,8 @@ a running host keeps the old versions until it restarts
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
+每个命令后加 `--help` 或 `-h` 打印它的用法（只有这个命令的那几行），以 0 退出，不做别的事；`rutis-host --help` 打印全部。
+
 ## run 打印什么
 
 `run` 和 `dev` 的输出是给人看、也给脚本和测试读的，格式如下，改动按不兼容的变化处理。
