@@ -7,11 +7,10 @@ An application whose TypeScript and Python rows call its Rust `Calendar` by name
 | File | What it shows |
 | --- | --- |
 | [src/lib.rs](src/lib.rs) | The marked `Calendar`: serde parameters and results, async methods, `Result` errors, a function passed by reference; the parameters of `plan` and `addSource` take one of each kind of value (string, boolean, float, integer, optional, list, tuple, map, struct, enum, plugin definition) |
-| [rows/services.d.ts](rows/services.d.ts) | The declarations `rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --contract examples/marked-services/rows/services.contract.json` writes (commit it) |
-| [rows/services.contract.json](rows/services.contract.json) | The contract description the same command writes, which the testing tools check calls against (commit it) |
+| [rows/services.d.ts](rows/services.d.ts) | The declarations `rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts` writes (commit it) |
 | [rows/calendar.ts](rows/calendar.ts) | A Node row using `calendar` through the declarations |
 | [rows/calendar_row.py](rows/calendar_row.py) | A Python row calling the same service |
-| [tests/rows.rs](tests/rows.rs) | The host and the checks: both rows, the declarations and the contract description are current, `tsc --strict` |
+| [tests/rows.rs](tests/rows.rs) | The host and the checks: both rows, the declarations are current, `tsc --strict` |
 
 From the repository root:
 

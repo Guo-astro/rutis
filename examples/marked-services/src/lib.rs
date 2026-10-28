@@ -106,8 +106,8 @@ impl Calendar {
     }
 
     /// Plan an entry; its number. Its parameters take one of each kind of
-    /// value a service is given, so that the testing tools' contract
-    /// checks can be compared with this service's own.
+    /// value a service is given, so that the generated declarations show
+    /// each.
     #[allow(clippy::too_many_arguments)]
     pub fn plan(
         &self,
