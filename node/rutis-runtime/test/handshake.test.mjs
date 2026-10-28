@@ -22,7 +22,7 @@ test('a dialer greets first even when the far end greets at once', async () => {
     } finally {
       // The far end goes; the session ends with it.
       for (const client of server.clients) client.terminate()
-      await peer?.dispose().catch(() => {})
+      await peer?.closed()
       await new Promise(resolve => server.close(resolve))
     }
   }

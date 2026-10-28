@@ -222,9 +222,6 @@ use std::sync::Mutex;
 struct Service(Mutex<Option<Reference>>);
 impl Dispatch for Service {
     fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
-        if method == "dispose" {
-            return Ok(Value::Undefined);
-        }
         let mut args = args.list()?;
         match method {
             "apply" => args.remove(0).reference()?.call(Value::List(args)),
@@ -266,7 +263,6 @@ impl Dispatch for Service {
                 .call(json!([]).into())?
                 .reference()?
                 .wait(),
-            "dispose" => Ok(Value::Undefined),
             _ => Err(Error::Value(method.into())),
         }
     }
@@ -277,37 +273,27 @@ fn rpc_client() -> std::path::PathBuf {
         .join("../../node/rutis-runtime/test/fixtures/rpc-client.mjs")
 }
 
-/// Run the fixture's session on `channel` and wait for it to pass.
-async fn fixture_passes(peer: Connection, mut child: tokio::process::Child) {
-    peer.ready().await.unwrap();
-    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(status.success());
-    peer.closed().await;
-}
-
-/// The fixture dials back a Unix socket.
-#[cfg(unix)]
+/// The fixture started by the local transport, on the channel it hands
+/// over (fd 3, or a loopback address); the channel's end says how it exited.
 #[tokio::test(flavor = "current_thread")]
 async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("rpc.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let child = tokio::process::Command::new("node")
-        .arg(rpc_client())
-        .arg(socket)
-        .kill_on_drop(true)
-        .spawn()
+    use rutis_bridge::channel::PeerId;
+    use rutis_bridge::transport::local::{LocalTransport, Spawn};
+    use rutis_bridge::{Dial, Transport};
+
+    let transport = LocalTransport::default();
+    let mut spawn = Spawn::new("node", PeerId::new("node").unwrap());
+    spawn.args = vec![rpc_client().into()];
+    transport.spawner("rpc-client", spawn);
+    let channel = transport
+        .dial(&Dial::address("spawn:rpc-client"))
+        .await
         .unwrap();
-    let (stream, _) = listener.accept().await.unwrap();
-    let peer = Connection::connect(
-        stream.into_std().unwrap(),
-        Arc::new(Service(Mutex::new(None))),
-    )
-    .unwrap();
-    fixture_passes(peer, child).await;
+    let peer = Connection::open(channel, Arc::new(Service(Mutex::new(None)))).unwrap();
+    peer.ready().await.unwrap();
+    within("the fixture to end its session", peer.closed()).await;
+    let ended = peer.close_reason().unwrap().to_string();
+    assert!(ended.contains("exited normally"), "{ended}");
 }
 
 #[cfg(feature = "websocket")]
@@ -328,6 +314,17 @@ mod websocket {
 
     fn id(s: &str) -> PeerId {
         PeerId::new(s).unwrap()
+    }
+
+    /// Run the fixture's session on `channel` and wait for it to pass.
+    async fn fixture_passes(peer: Connection, mut child: tokio::process::Child) {
+        peer.ready().await.unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(status.success());
+        peer.closed().await;
     }
 
     /// The same session, Node dialing a Rust listener over WebSocket.

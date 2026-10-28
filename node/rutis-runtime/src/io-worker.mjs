@@ -1,14 +1,8 @@
 import { workerData } from 'node:worker_threads'
-import { createServer } from 'node:net'
-import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
 import { open } from './channel/index.mjs'
-import { frame } from './channel/unix.mjs'
 import { decode } from './codec.mjs'
 
-const { executable, channel: spec, port, signal, ended: endedFlag } = workerData
+const { channel: spec, port, signal, ended: endedFlag } = workerData
 function send(message) {
   port.postMessage(message)
   Atomics.add(signal, 0, 1)
@@ -24,15 +18,12 @@ function channelEnded() {
 // an uncaught worker failure before Node terminates the communication thread.
 process.on('uncaughtExceptionMonitor', error => send({ closed: error.message }))
 
-let directory, server, child, channel, exited
+let channel
 // What ends the channel when nothing failed: the far end went (client.mjs
-// knows this text). A process this side started is named as the developer
-// named it.
-let failure = spec ? 'the host disconnected' : `${basename(executable)} disconnected`
-let disposing = false
+// knows this text).
+let failure = 'the host disconnected'
 port.on('message', message => {
-  if (message.abort) { child?.kill(); channel?.close(); return }
-  if (message.dispose) disposing = true
+  if (message.abort) { channel?.close(); return }
   if (message.end) { channel?.end(); return }
   if (message.frame) channel?.send(message.frame)
 })
@@ -51,41 +42,16 @@ try {
     message: text => { if (early) early.push(text); else forward(text) },
     closed: reason => { if (reason) failure = reason; channelEnded(); ended() },
   }
-  if (spec) {
-    channel = await open(spec, handlers)
-  } else {
-    // The frozen reverse direction: listen, then start the Rust process,
-    // which dials back.
-    directory = await mkdtemp(join(tmpdir(), 'rutis-mount-'))
-    const socket = join(directory, 'peer.sock')
-    server = createServer()
-    const connected = new Promise(resolve => server.once('connection', resolve))
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve) })
-    child = spawn(executable, [socket], { stdio: ['ignore', 'inherit', 'inherit'] })
-    exited = new Promise((resolve, reject) => {
-      child.once('error', reject)
-      child.once('close', (code, signal) => resolve({ code, signal }))
-    })
-    const stream = await Promise.race([connected, exited.then(status => { throw new Error(`${basename(executable)} exited before connecting (${status.code ?? status.signal})`) })])
-    server.close()
-    channel = frame(stream, handlers)
-  }
-  send({ ready: true, pid: child?.pid })
+  channel = await open(spec, handlers)
+  send({ ready: true })
   for (const text of early) forward(text)
   early = undefined
   await done
-  if (child && !disposing && child.exitCode === null && child.signalCode === null) child.kill()
-  const status = await exited
-  if (status && status.code !== 0) failure = `${basename(executable)} exited (${status.code ?? status.signal})`
 } catch (error) {
   failure = error.message
 } finally {
   channelEnded()
   channel?.close()
-  server?.close()
-  if (child && child.exitCode === null && child.signalCode === null) child.kill()
-  await exited?.catch(() => {})
-  if (directory) await rm(directory, { recursive: true, force: true })
   send({ closed: failure })
   port.close()
 }

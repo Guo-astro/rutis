@@ -158,10 +158,6 @@ impl Value {
         }
         value
     }
-    #[cfg(all(unix, feature = "cordis"))]
-    pub(crate) fn control_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
-        Self::future_inner(future, false)
-    }
     fn future_inner(future: impl Future<Output = Reply> + Send + 'static, business: bool) -> Self {
         // Made while a session's call is dispatched: what it calls in other
         // sessions, however long after, is on that session's behalf, with
