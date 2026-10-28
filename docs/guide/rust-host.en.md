@@ -31,13 +31,24 @@ use rutis::host::*;
 use rutis::Ctx;
 use rutis_loader::Builtins;
 
+/// Builds Weather from its config; `update(config)` rebuilds with it too.
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // on the current tokio runtime
     root.plugin(Greeter { lang: "Rust".into() }).await?; // provides Greeting
     root.plugin(Printer).await?;                   // its Deps (Greeting) are there: prints "hello from Rust"
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with Weather::new
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with WeatherFactory
 
     let mut builtins = Builtins::new();            // rutis-loader rows find it by name
     builtins.register("weather", Weather::new);
@@ -86,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Make the root | `Ctx::root()` (the current tokio runtime; an error without one), `Ctx::root_with(handle)`, `Ctx::root_with_sink(handle, sink)` (your own error sink) |
 | Mount a plugin | `root.plugin(p)`: any `Plugin`, or a `host::DynPlugin`; a `Box<dyn DynPlugin>` is one too, for a list of plugins chosen at run time |
-| Mount from configuration | `root.plugin_from(build, config)`: `build` is a `Fn(&C) -> Result<P>`, the dependencies come from `P::Deps`; the returned `FiberView` can `update(config)`, and its name in diagnostics is the plugin's type name. When the dependencies are known only at run time, implement `host::PluginFactory<C>` and use `plugin_with(factory, config)` |
+| Mount from configuration | Implement `host::PluginFactory<C>` and use `root.plugin_with(factory, config)`: each load builds the plugin from the current config with `build`, and the returned `FiberView` can `update(config)`; the dependencies are listed in `injects()`, and its name in diagnostics is `name()` |
 | rutis-loader rows | `Builtins::register(name, build)`: the config is decoded as `C`, its schema generated from `C` (none for `serde_json::Value`); `register_with(name, \|build, config\| …)`: one copy built per instance; `register_raw(name, factory, schema)`: a `PluginFactory<serde_json::Value>` |
 | Read services | `get::<T>()`; by key `get_at(&key)`, provide with `provide_at(key, arc)`, the key a `host::Key<T>` (see [depend on services by name](#depend-on-services-by-name)); `require` / `require_at` are strict reads, of declared dependencies in a `DynPlugin`'s `apply` |
 | Stop | `root.shutdown().await` unloads everything and waits for the cleanups, with no time limit (how long is the host's choice); `shutdown_with_timeout(limit)` bounds the wait, its error naming the plugins and cleanups not finished ([default output](#default-output)); one plugin: `view.dispose()`, `view.restart()`, `view.dispose_with_timeout(limit)` |

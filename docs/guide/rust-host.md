@@ -31,13 +31,24 @@ use rutis::host::*;
 use rutis::Ctx;
 use rutis_loader::Builtins;
 
+/// 从配置构造 Weather；`update(config)` 也用它重建。
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // 用当前的 tokio 运行时
     root.plugin(Greeter { lang: "Rust".into() }).await?; // 提供 Greeting
     root.plugin(Printer).await?;                   // 它的 Deps（Greeting）已经在：打印 "hello from Rust"
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 Weather::new 重建
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 WeatherFactory 重建
 
     let mut builtins = Builtins::new();            // rutis-loader 的行按名字找到它
     builtins.register("weather", Weather::new);
@@ -86,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | 建根 | `Ctx::root()`（当前的 tokio 运行时，没有时返回错误）、`Ctx::root_with(handle)`、`Ctx::root_with_sink(handle, sink)`（自己的错误汇集） |
 | 装插件 | `root.plugin(p)`：任何 `Plugin`，或者 `host::DynPlugin`；`Box<dyn DynPlugin>` 也是，运行时才选定的插件列表用它 |
-| 按配置装 | `root.plugin_from(build, config)`：`build` 是 `Fn(&C) -> Result<P>`，依赖取自 `P::Deps`；返回的 `FiberView` 可以 `update(config)`，诊断里的名字是插件的类型名。依赖要到运行时才知道的，实现 `host::PluginFactory<C>`，用 `plugin_with(factory, config)` |
+| 按配置装 | 实现 `host::PluginFactory<C>`，`root.plugin_with(factory, config)`：每次装载用 `build` 从当前配置构造插件，返回的 `FiberView` 可以 `update(config)`；依赖写在 `injects()` 里，诊断里的名字是 `name()` |
 | rutis-loader 的行 | `Builtins::register(name, build)`：配置按 `C` 解码，Schema 从 `C` 生成（`C` 是 `serde_json::Value` 时没有）；`register_with(name, \|build, config\| …)`：每个实例各构造一份；`register_raw(name, factory, schema)`：`PluginFactory<serde_json::Value>` |
 | 读服务 | `get::<T>()`；按键 `get_at(&key)`、提供 `provide_at(key, arc)`，键是 `host::Key<T>`（见[按名字依赖](#按名字依赖)）；`require` / `require_at` 是严格读取，在 `DynPlugin` 的 `apply` 里读声明过的依赖 |
 | 停下 | `root.shutdown().await` 卸载全部并等清理，不限时（等多久由宿主决定）；`shutdown_with_timeout(limit)` 限制等待，到时的错误写明还没结束的插件和清理（[默认输出](#默认输出)）；单个插件 `view.dispose()`、`view.restart()`、`view.dispose_with_timeout(limit)` |

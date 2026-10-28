@@ -370,10 +370,11 @@ impl Plugin for Offset {
 async fn a_typed_factory_declares_from_the_same_description() {
     let ctx = Ctx::root().unwrap();
     let seen = Seen::default();
-    // Builds `Offset` plugins from a configured offset.
+    // Builds `Offset` plugins from a configured offset, as rutis-loader's
+    // `Builtins::register` mounts a typed build function.
     let build_seen = seen.clone();
-    let view = ctx.plugin_from(
-        move |offset: &u32| Ok(Offset(*offset, build_seen.clone())),
+    let view = ctx.plugin_with(
+        rutis::internal::build_fn(move |offset: &u32| Ok(Offset(*offset, build_seen.clone()))),
         10u32,
     );
     ctx.provide(Llm(1)).unwrap();
