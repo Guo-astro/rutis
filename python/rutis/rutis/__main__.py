@@ -11,8 +11,9 @@ listener certificate and key in RUTIS_CERT and RUTIS_KEY); or
 `dial:ws://…` / `dial:wss://…`, a rutis access point to dial and to dial
 again (`dialing`), presenting the token in RUTIS_TOKEN and trusting the CA
 in RUTIS_CA besides the system's.
-Local channels speak the compat protocol; network channels the endpoint
-format, as `--id`, expecting `--peer` as the controller when given.
+A channel speaks the endpoint format, as `--id`, expecting `--peer` as the
+controller when given: network channels always, local ones when given
+`--id`; a local channel without `--id` speaks the compat protocol.
 """
 
 import asyncio
@@ -53,7 +54,7 @@ def open_channel(spec: str):
 
 
 def parse(argv: list[str]) -> tuple[str, dict | None, str]:
-    """The channel, the endpoint (network channels), and the project."""
+    """The channel, the endpoint (given `--id`), and the project."""
     if not argv:
         raise ValueError("usage: python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>")
     channel, rest, flags = argv[0], list(argv[1:]), {}
@@ -64,12 +65,10 @@ def parse(argv: list[str]) -> tuple[str, dict | None, str]:
         flags[flag] = rest.pop(0)
     if len(rest) != 1:
         raise ValueError("usage: python3 -m rutis <channel> [--id <endpoint>] [--peer <endpoint>] <project>")
-    endpoint = None
-    if channel.startswith(("listen:", "dial:")):
-        if "id" not in flags:
-            raise ValueError(f"a network channel needs --id <endpoint>: {channel}")
-        # A runner is a runtime: the controller manages its rows.
-        endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]}
+    if channel.startswith(("listen:", "dial:")) and "id" not in flags:
+        raise ValueError(f"a network channel needs --id <endpoint>: {channel}")
+    # A runner is a runtime: the controller manages its rows.
+    endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]} if "id" in flags else None
     if channel.startswith("dial:"):
         # What retrying cannot fix fails here, before any dial.
         from . import websocket
