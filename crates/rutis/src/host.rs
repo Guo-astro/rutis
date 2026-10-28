@@ -29,7 +29,7 @@ pub use crate::service::CallError;
 use crate::diagnostics::RuntimeDiagnostics;
 use crate::effect::Disposer;
 use crate::error::Error;
-use crate::{Ctx, Event};
+use crate::Ctx;
 
 /// The diagnostics snapshot [`CtxHost::diagnostics`] returns.
 pub mod diagnostics {
@@ -223,18 +223,6 @@ pub trait CtxHost: sealed::Sealed {
         &self,
         key: &Key<T>,
     ) -> Result<Arc<T>, ServiceReadError>;
-
-    /// `waterfall`, synchronously: every listener on the chain must be
-    /// synchronous (`on_sync`); `terminal` is what the last one's `next`
-    /// returns.
-    fn waterfall_sync<E, F>(
-        &self,
-        event: impl crate::events::IntoEvent<E>,
-        terminal: F,
-    ) -> Result<Option<E::Value>, Error>
-    where
-        E: Event,
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>;
 
     /// The current registrations of the root's event bus, in registration
     /// order.

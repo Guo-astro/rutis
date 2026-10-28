@@ -31,7 +31,6 @@
 | --- | --- |
 | `"dial": "<地址>"` | `"dial": "<地址>"` |
 | `"listen": "<监听器>"` | `"listen": "<监听器>"`（不带 `instances`：一台，对方的 `--id` 是运行时名） |
-| `"transport": "<kind>"` | `"transport": "<kind>"`（默认 `websocket`） |
 
 - 多台（`listen` + `instances`）的写法不变。
 - **旧写法照常可用，不用改，也不会被转换。** 同一个运行时不要两种都写：`runtimes.remote` 有 `dial` 或 `listen`，又有一条 `"runtime"` 指向它的节点行时，宿主启动报错：
@@ -42,7 +41,6 @@
 
 - 旧写法里节点行的 `export`、`import`、`host`、`rows` 等字段，新写法没有：连接只用来运行这个运行时的行。还要这些字段的，继续用节点行。
 - token 是 `RUTIS_TOKEN_<名字>`（见[宿主一侧的 token](#宿主一侧的-token695)）。新写法的一台 `listen` 没有 token 时启动报错。
-- 自建的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 新增的 `transports`），`transport` 写它的名字；一台、多台都用它。
 
 ### 行为变化
 
@@ -74,9 +72,19 @@
 
 ### Rust 嵌入
 
-- `rutis_host::host::Embedding` 新增字段 `transports`。用结构体字面量写全所有字段的代码要加上 `transports: Vec::new()`，或改用 `..Embedding::default()`。
 - `rutis_host::control::serve` 在 `Loader` 之后多了一个参数 `Report`（一个返回状态文字的函数，`status` 用它回答）；用 `Host::status_report()` 得到它。
-- 运行时一侧、会话协议与 rutis、rutis-loader、rutis-bridge 的 Rust API 都不变。
+- 运行时一侧、会话协议与 rutis、rutis-loader 的 Rust API 不变。rutis-bridge 的连接部分改了（#695，[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三、§十一）：
+
+  | 0.18 | 0.19 |
+  | --- | --- |
+  | `rutis_bridge::transport::{local, memory, websocket}` | `rutis_bridge::{pipe, memory, websocket}` |
+  | `Transport`、`Dial`、`transport_key`；`LocalPlugin`、`MemoryPlugin`、`WebSocketPlugin` 与它们的 `*Transport`；`websocket::Config` | `websocket::dial`、`websocket::listen`、`pipe::spawn`、`memory::pair` 直接给出 `Channel` |
+  | `ListenerConfig::new(名字, 地址, 本端 id)` | `ListenerConfig::new(名字, 地址)` |
+  | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
+  | `Channel` 的 `info`（`ChannelInfo`）、`Spawn::new(程序, peer)` | 删；对方 id 只来自会话握手；`Spawn::new(程序)` |
+  | `rutis_host::host::Embedding` 的 `transports` | 删；自己的连接方式写成连接插件（远程连接的重做落地后） |
+
+- `rutis-bridge/peer` 行的 `transport` 字段与 `runtimes.remote` 的 `transport` 字段删除：写了它们的 rutis.json 在启动时报不认识的字段。
 
 ## 宿主一侧的 token（#695）
 
@@ -152,6 +160,9 @@ Kotlin 另有两点：
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
 | feature `anyhow`、`Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
+| `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |
+| `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代 |
+| `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 

@@ -141,7 +141,6 @@
           "stock/changed"
         ],
         "runtime": "office-node",
-        "transport": "websocket",
         "identity": "host"
       }
     },
@@ -151,7 +150,6 @@
       "config": {
         "peer": "branch",
         "listen": "public",
-        "transport": "websocket",
         "identity": "edge"
       }
     },
@@ -162,7 +160,6 @@
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
         "runtime": "gpu",
-        "transport": "websocket",
         "identity": "host"
       }
     },
@@ -181,7 +178,6 @@
         "peer": "edge-bun",
         "dial": "wss://edge.example.com/rutis",
         "runtime": "edge-bun",
-        "transport": "websocket",
         "identity": "host"
       }
     },

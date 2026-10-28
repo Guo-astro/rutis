@@ -57,16 +57,36 @@ struct Directory {
     links: Mutex<HashMap<InstanceId, (u64, rutis_bridge::PeerHandle)>>,
 }
 
+/// Where a `rutis-bridge/peer` row reaches its peer: the address it dials,
+/// or the listener it is accepted on.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub enum Address<'a> {
+    Dial(&'a str),
+    Listen(&'a str),
+}
+
+/// How the host reaches a `rutis-bridge/peer` row's peer: the link's
+/// [`rutis_bridge::Connect`] for an [`Address`], or why it cannot.
+/// Transitional (#695 S2): goes with the `rutis-bridge/peer` row.
+#[doc(hidden)]
+pub type Reach =
+    Arc<dyn Fn(&PeerId, Address<'_>) -> Result<rutis_bridge::Connect, String> + Send + Sync>;
+
 /// Resolves `peer:<id>/<plugin>` rows. Share one between the loader's
 /// chain (`Chain::with_shared`) and the [`PeerRowsPlugin`]s.
-#[derive(Default)]
 pub struct PeerResolver {
     directory: Arc<Directory>,
+    reach: Reach,
 }
 
 impl PeerResolver {
-    pub fn new() -> Self {
-        Self::default()
+    /// The `rutis-bridge/peer` rows' links reach their peers with `reach`.
+    pub fn new(reach: Reach) -> Self {
+        Self {
+            directory: Arc::default(),
+            reach,
+        }
     }
 
     fn split(name: &str) -> Option<(PeerId, &str)> {
@@ -436,7 +456,6 @@ impl rutis_bridge::PluginCatalog for LoaderCatalog {
 #[serde(deny_unknown_fields)]
 struct NodeConfig {
     peer: String,
-    transport: String,
     identity: String,
     #[serde(default)]
     dial: Option<String>,
@@ -499,20 +518,25 @@ impl NodeConfig {
         Ok(config)
     }
 
-    fn link(&self) -> rutis_bridge::LinkConfig {
+    fn link(&self, reach: &Reach) -> Result<rutis_bridge::LinkConfig, Error> {
         let peer = PeerId::new(&self.peer).expect("validated");
-        let mut link = match (&self.dial, &self.listen) {
-            (Some(address), _) => {
-                rutis_bridge::LinkConfig::dial(peer, &self.transport, &self.identity, address)
-            }
-            (_, Some(listener)) => {
-                rutis_bridge::LinkConfig::listen(peer, &self.transport, &self.identity, listener)
-            }
+        let address = match (&self.dial, &self.listen) {
+            (Some(address), _) => Address::Dial(address),
+            (_, Some(listener)) => Address::Listen(listener),
             _ => unreachable!("validated"),
+        };
+        let connect = reach(&peer, address).map_err(refused)?;
+        let mut link = match connect {
+            rutis_bridge::Connect::Dial(dialer) => {
+                rutis_bridge::LinkConfig::dial(peer, &self.identity, dialer)
+            }
+            rutis_bridge::Connect::Listen(accepting) => {
+                rutis_bridge::LinkConfig::listen(peer, &self.identity, accepting)
+            }
         };
         link.require = self.require.clone();
         link.declare = self.declare.clone();
-        link
+        Ok(link)
     }
 
     /// The features, for a link running in `build`'s instances: names
@@ -585,10 +609,9 @@ pub fn node_schema() -> Value {
     let names = json!({ "type": "array", "items": { "type": "string" }, "x-volatile": true });
     json!({
         "type": "object",
-        "required": ["peer", "transport", "identity"],
+        "required": ["peer", "identity"],
         "properties": {
             "peer": { "type": "string", "description": "the far end's endpoint id" },
-            "transport": { "type": "string", "description": "Transport#<kind>" },
             "identity": { "type": "string", "description": "Identity#<name>" },
             "dial": { "type": "string" },
             "listen": { "type": "string" },
@@ -713,7 +736,7 @@ impl DynPlugin for Node {
             let loader = ctx.get::<Loader>().map(|loader| (*loader).clone());
             self.config.check(loader.as_ref(), &self.build)?;
             let composed = rutis_bridge::PeerPlugin::new(
-                self.config.link(),
+                self.config.link(&self.resolver.reach)?,
                 self.config.features(loader.as_ref(), &self.build),
             )
             .map_err(failed)?;
@@ -772,10 +795,9 @@ mod tests {
     use std::time::Duration;
 
     use rutis::host::FiberState;
-    use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
     use rutis_bridge::{
-        Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Retry,
-        StaticCatalog, StaticIdentity,
+        Accepting, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin,
+        Registrations, Retry, StaticCatalog, StaticIdentity,
     };
     use rutis_test_support::eventually;
 
@@ -883,8 +905,7 @@ mod tests {
     /// guarantee: core/typed.untyped-require
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_row_whose_peer_rows_go_before_its_apply_waits_and_loads_when_back() {
-        let transport = Arc::new(MemoryTransport::default());
-        transport.endpoint("main-in", id("main"));
+        let registrations = Registrations::new();
         let quick = Retry {
             initial: Duration::from_millis(20),
             max: Duration::from_millis(200),
@@ -892,27 +913,35 @@ mod tests {
             ..Retry::default()
         };
         let main = Ctx::root().unwrap();
-        (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-            .await
-            .unwrap();
         main.plugin(IdentityPlugin::new(
             "main",
             StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
         ));
         main.plugin(LinkPlugin::new(
-            LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick.clone()),
+            LinkConfig::listen(
+                id("mac"),
+                "main",
+                Accepting {
+                    registrations: registrations.clone(),
+                    listener: "main-in".into(),
+                    local: id("main"),
+                },
+            )
+            .retry(quick.clone()),
         ));
         let mac = Ctx::root().unwrap();
-        (&mac.plugin(MemoryPlugin::with_transport(transport)))
-            .await
-            .unwrap();
         mac.plugin(IdentityPlugin::new(
             "mac",
             StaticIdentity::new(id("mac"))
                 .present(id("main"), Credential::Bearer("mac-token".into())),
         ));
         mac.plugin(LinkPlugin::new(
-            LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick),
+            LinkConfig::dial(
+                id("main"),
+                "mac",
+                rutis_bridge::memory::dialer(registrations, "main-in"),
+            )
+            .retry(quick),
         ));
         let catalog = StaticCatalog::new().with("greeter", Described::default(), Greeter);
         mac.plugin(HostPlugin::new(id("main"), Arc::new(catalog)));
@@ -978,7 +1007,7 @@ mod tests {
     /// prefixes, which select events only, and nothing else with a `*`.
     #[test]
     fn link_config_shares_events_through_export_and_import() {
-        let base = json!({ "peer": "mac", "transport": "memory", "identity": "main", "dial": "x" });
+        let base = json!({ "peer": "mac", "identity": "main", "dial": "x" });
         let with = |field: &str, value: Value| {
             let mut config = base.clone();
             config[field] = value;
@@ -986,6 +1015,13 @@ mod tests {
         };
         let refused = with("events", json!({ "out": ["tick"] })).err().unwrap();
         assert!(refused.to_string().contains(REMOVED_EVENTS), "{refused}");
+        // 0.19 removed `transport` (#695): a 0.18 row naming one is an
+        // unknown field.
+        let refused = with("transport", json!("websocket")).err().unwrap();
+        assert!(
+            refused.to_string().contains("unknown field `transport`"),
+            "{refused}"
+        );
         let config = with("export", json!(["clock", "session/*", "*"])).unwrap();
         let features = config.features(None, &Build::default());
         assert_eq!(features.export, ["clock", "session/*", "*"]);

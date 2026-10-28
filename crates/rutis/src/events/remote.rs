@@ -9,16 +9,15 @@
 //! skips custom filters when `global`, and is withdrawn by its
 //! [`Disposer`](crate::Disposer).
 //!
-//! Synchronous modes (`bail`, `waterfall-sync`) call
+//! The synchronous mode (`bail`) calls
 //! [`RemoteListener::call_sync`] inline on the dispatching thread with no
 //! kernel lock held, so a bridge's thread-local sync-wait path (cycle
 //! detection, `SyncWaitCycle`) applies to it as to any synchronous call. A
-//! remote entry of kind [`ListenerKind::Async`] is never called by them:
+//! remote entry of kind [`ListenerKind::Async`] is never called by it:
 //! the dispatch fails with `AsyncListener`.
 
 use crate::error::ErrorKind;
-use std::sync::{Arc, Mutex};
-use std::thread::ThreadId;
+use std::sync::Arc;
 
 use super::{EventOptions, ListenerInfo, ListenerKind, Mode, PayloadRef, Value};
 use crate::bus::run::Inv;
@@ -27,7 +26,7 @@ use crate::{BoxFuture, Ctx, Error};
 
 /// A listener whose calls go to an external dispatcher.
 pub trait RemoteListener: Send + Sync + 'static {
-    /// `Async` entries are never called by `bail` / `waterfall-sync`.
+    /// `Async` entries are never called by `bail`.
     fn kind(&self) -> ListenerKind;
 
     /// One call by `emit`, `parallel`, `serial` or `waterfall`.
@@ -39,7 +38,7 @@ pub trait RemoteListener: Send + Sync + 'static {
     /// is reported to the error sink.
     fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, Error>>;
 
-    /// One call by `bail` or `waterfall-sync`, on the dispatching thread.
+    /// One call by `bail`, on the dispatching thread.
     fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, Error>;
 
     /// The id its session knows it by (a runtime's `events.on` id), which a
@@ -87,7 +86,6 @@ impl<'a> RemoteCall<'a> {
 /// One synchronous call of a remote entry.
 pub struct RemoteSyncCall<'a> {
     pub(crate) inv: &'a Inv<'a>,
-    pub(crate) next: Option<RemoteSyncNext>,
 }
 
 impl<'a> RemoteSyncCall<'a> {
@@ -108,10 +106,6 @@ impl<'a> RemoteSyncCall<'a> {
     }
     pub fn event(&self) -> PayloadRef<'a> {
         self.inv.event
-    }
-    /// The rest of the chain: `waterfall-sync` only.
-    pub fn next(&self) -> Option<RemoteSyncNext> {
-        self.next.clone()
     }
 }
 
@@ -145,56 +139,6 @@ impl RemoteNext {
         }
         let ended = misuse(NextMisuse::Ended);
         Box::pin(async move { answer.await.unwrap_or(Err(ended)) })
-    }
-}
-
-pub(crate) type SyncNextFn = dyn Fn() -> Result<Option<Value>, Error>;
-
-pub(crate) struct SyncNextState {
-    /// The rest of the chain on the dispatching thread's stack; `None` once
-    /// the entry's call returned.
-    pub(crate) run: Option<*const SyncNextFn>,
-    pub(crate) thread: ThreadId,
-    pub(crate) called: bool,
-}
-
-// SAFETY: `run` is only dereferenced on `thread`, while the call that set it
-// is still on that thread's stack (it clears `run` before returning).
-unsafe impl Send for SyncNextState {}
-
-/// The rest of a synchronous waterfall, for a remote entry. `'static`, but
-/// it runs only on the dispatching thread while the entry's `call_sync` is
-/// running (a nested call, as a sync-wait pump makes); otherwise it fails
-/// with `WaterfallNext`. Called at most once.
-#[derive(Clone)]
-pub struct RemoteSyncNext {
-    pub(crate) name: Arc<str>,
-    pub(crate) state: Arc<Mutex<SyncNextState>>,
-}
-
-impl RemoteSyncNext {
-    pub fn call(&self) -> Result<Option<Value>, Error> {
-        let misuse = |misuse| ErrorKind::WaterfallNext {
-            name: self.name.to_string(),
-            misuse,
-        };
-        let run = {
-            let mut state = self.state.lock().unwrap();
-            if state.called {
-                return Err(misuse(NextMisuse::AlreadyCalled).into());
-            }
-            match state.run {
-                Some(run) if state.thread == std::thread::current().id() => {
-                    state.called = true;
-                    run
-                }
-                Some(_) => return Err(misuse(NextMisuse::OtherThread).into()),
-                None => return Err(misuse(NextMisuse::Ended).into()),
-            }
-        };
-        // SAFETY: see `SyncNextState`: same thread, and `run` is still set,
-        // so the frame holding the closure has not returned.
-        unsafe { (*run)() }
     }
 }
 
@@ -242,7 +186,7 @@ pub enum TableChange {
 /// What a batch filter answers: one `bool` per listener, `true` = deliver.
 pub enum FilterAnswer {
     Ready(Result<Vec<bool>, Error>),
-    /// Not allowed in `bail` / `waterfall-sync`.
+    /// Not allowed in `bail`.
     Pending(BoxFuture<'static, Result<Vec<bool>, Error>>),
 }
 
@@ -282,7 +226,7 @@ pub struct Dispatch {
     pub mode: Mode,
     pub payload: super::Payload,
     pub filter: Option<BatchFilter>,
-    /// `waterfall` / `waterfall-sync` only.
+    /// `waterfall` only.
     pub terminal: Option<RawTerminal>,
     /// Reported to remote entries by [`RemoteCall::origin`].
     pub origin: Option<u64>,
@@ -310,7 +254,7 @@ pub struct EntryCall {
     pub name: String,
     pub mode: Mode,
     pub payload: super::Payload,
-    /// `waterfall` / `waterfall-sync`: the rest of the far end's chain.
+    /// `waterfall`: the rest of the far end's chain.
     pub next: Option<RawTerminal>,
     pub dispatch: u64,
     pub origin: Option<u64>,

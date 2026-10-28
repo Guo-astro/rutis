@@ -12,11 +12,8 @@
 
 mod kotlin;
 
-use std::sync::Arc;
-
-use rutis_bridge::channel::PeerId;
-use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketTransport};
-use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig, ServerTls, Trust};
+use rutis_bridge::{Credential, Registrations};
 use rutis_test_support::within;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -372,20 +369,14 @@ async fn a_listener_serves_tls() {
     .await;
     assert!(address.starts_with("wss://127.0.0.1:"), "{address}");
     let address = address.replace("127.0.0.1", "localhost");
-    let transport =
-        WebSocketTransport::start(Config::new().trust(Trust::only(ca.into_bytes()))).unwrap();
-    let runtime = PeerId::new("runtime").unwrap();
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(PeerId::new("main").unwrap())
-            .present(runtime.clone(), Credential::Bearer(TOKEN.into())),
-    );
     let mut channel = within(
         "the TLS connection",
-        transport.dial(
-            &Dial::address(address)
-                .peer(runtime)
-                .identity(identity)
-                .protocol("rutis.3"),
+        websocket::dial(
+            &address,
+            "rutis.3",
+            Some(&Credential::Bearer(TOKEN.into())),
+            &Trust::only(ca.into_bytes()),
+            &Limits::default(),
         ),
     )
     .await
@@ -395,7 +386,6 @@ async fn a_listener_serves_tls() {
         .unwrap()
         .unwrap();
     assert!(String::from_utf8_lossy(&hello).contains("\"op\":\"hello\""));
-    std::mem::forget(transport);
 }
 
 /// `dial:wss://`: a certificate this side does not trust is an
@@ -403,25 +393,18 @@ async fn a_listener_serves_tls() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dialer_trusts_rutis_ca() {
     let (ca, certificate, key) = pki();
-    let server = WebSocketTransport::start(
-        Config::new().listener(
-            ListenerConfig::new(
-                "public",
-                "127.0.0.1:0".parse().unwrap(),
-                PeerId::new("main").unwrap(),
-            )
-            .tls(ServerTls {
-                certificate_pem: certificate.into_bytes(),
-                key_pem: key.into_bytes(),
-                client_ca_pem: None,
-            }),
-        ),
+    // Nothing registered: every upgrade past TLS is refused with 503.
+    let server = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()).tls(ServerTls {
+            certificate_pem: certificate.into_bytes(),
+            key_pem: key.into_bytes(),
+            client_ca_pem: None,
+        }),
+        &Limits::default(),
+        websocket::admit_registered(Registrations::new(), "public"),
     )
     .unwrap();
-    let address = format!(
-        "wss://localhost:{}/rutis",
-        server.local_addr("public").unwrap().port()
-    );
+    let address = format!("wss://localhost:{}/rutis", server.local_addr().port());
     let channel = format!("dial:{address}");
     let mut untrusting = Runtime::start(
         &channel,

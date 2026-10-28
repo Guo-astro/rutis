@@ -1031,8 +1031,11 @@ mod kotlin {
 mod dialed_in {
     use super::*;
     use common::runtimes::id;
-    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
-    use rutis_bridge::{AccessPointConfig, AccessPointPlugin, AdmissionPlugin, SharedToken};
+    use rutis_bridge::websocket::{Limits, ListenerConfig};
+    use rutis_bridge::{
+        Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Registrations,
+        SharedToken,
+    };
     use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
     use rutis_test_support::{scaled, HANG_GUARD};
     use tokio::io::AsyncBufReadExt;
@@ -1125,20 +1128,14 @@ mod dialed_in {
         root.provide(Parts::default()).unwrap();
         let parts = root.get::<Parts>().unwrap();
 
-        let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-            "public",
-            ([127, 0, 0, 1], 0).into(),
-            id("main"),
-        )))
+        let registrations = Registrations::new();
+        let listener = rutis_bridge::websocket::listen(
+            &ListenerConfig::new("public", ([127, 0, 0, 1], 0).into()),
+            &Limits::default(),
+            rutis_bridge::websocket::admit_registered(registrations.clone(), "public"),
+        )
         .unwrap();
-        let transport = websocket.clone();
-        (&root.plugin(websocket)).await.unwrap();
-        let port = transport
-            .transport()
-            .unwrap()
-            .local_addr("public")
-            .unwrap()
-            .port();
+        let port = listener.local_addr().port();
         (&root.plugin(AdmissionPlugin::new(
             "phone",
             SharedToken::new(id("main"), "shared"),
@@ -1182,9 +1179,17 @@ mod dialed_in {
         let report = loader.reconcile(rows(&[]), None).await.unwrap();
         assert!(report.failures.is_empty(), "{report:?}");
         let access = AccessPointPlugin::new(
-            AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
-                .require("runtime")
-                .handshake(scaled(HANG_GUARD)),
+            AccessPointConfig::new(
+                id("phone"),
+                "phone",
+                Accepting {
+                    registrations,
+                    listener: "public".into(),
+                    local: id("main"),
+                },
+            )
+            .require("runtime")
+            .handshake(scaled(HANG_GUARD)),
         )
         .accept(instances.accept(loader.clone(), root.clone()));
         (&root.plugin(access)).await.unwrap();
