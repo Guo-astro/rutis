@@ -203,8 +203,7 @@ impl Host {
         for listener in &listeners {
             let admit =
                 rutis_bridge::websocket::admit_registered(registrations.clone(), &listener.name);
-            let started = rutis_bridge::websocket::listen(listener, &Limits::default(), admit)
-                .map_err(|error| format!("the WebSocket listeners: {error}"))?;
+            let started = rutis_bridge::websocket::listen(listener, &Limits::default(), admit)?;
             listening.push((listener.name.clone(), started.local_addr()));
             bound.push(started);
         }
