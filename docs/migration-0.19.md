@@ -163,8 +163,14 @@ Kotlin 另有两点：
 | `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |
 | `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代 |
 | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
+| `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
+| `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 
 ### 工具
 
 - `rutis-dev`（dev 通道）删除；开发时用 `rutis-host dev`。
 - `rutis-migrate` 不再随 0.19 发布。0.17 的迁移仍可用 `cargo install rutis-migrate --version 0.18.0`。
+
+### Go 插件
+
+用 0.18 及以后的 SDK 重新构建（0.18 前构建的二进制的 `required` 例外删除）。

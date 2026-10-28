@@ -42,7 +42,6 @@ pub use config_step::ConfigWarnings;
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
-pub(crate) use waits::closest;
 
 /// A [`Loader`] that does not keep it alive.
 #[derive(Clone)]
@@ -52,9 +51,8 @@ pub(crate) struct WeakLoader(std::sync::Weak<Inner>);
 #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
 impl WeakLoader {
     /// The config step for a copy of row `row` in `instance` of a runtime
-    /// that dialed in, its plugin described there with `schema`: extra keys
-    /// warned about once per row, instance and value; the config as it is
-    /// (the runtime's SDK fills and validates).
+    /// that dialed in, its plugin described there with `schema`: the filled
+    /// copy, extra keys warned about once per row, instance and value.
     pub(crate) fn connection_step(
         &self,
         row: &str,
