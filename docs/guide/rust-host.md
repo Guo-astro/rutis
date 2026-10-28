@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## 装 Rust 插件
 
-Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 就是那里的例子。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
+Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 是几个示意的插件。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
 
 ```rust
 use rutis::host::*;
@@ -592,7 +592,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 事件
 
-宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#事件)；宿主在根 `Ctx` 上用同样的方法。
+宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)；宿主在根 `Ctx` 上用同样的方法。
 
 事件类型以 `Event::NAME` 作为跨语言的名字，参数按 serde 编解码，所以它和它的 `Value` 都派生 `Serialize` / `Deserialize`。两个及以上字段的元组结构体对应同样多个参数，所以下面的 `Created` 就是别的语言里的 `emit("session/created", id, size)`：
 
@@ -649,7 +649,7 @@ off.dispose().await?;
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `ctx.on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
 | 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
 
-测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#3-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
+测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
 
 ## 导出服务：参考
 
