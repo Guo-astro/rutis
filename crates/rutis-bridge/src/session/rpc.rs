@@ -183,6 +183,7 @@ impl Value {
             executor,
             business,
             origin: current_path(),
+            chain: caller().map(|source| source.tag().to_owned()),
             body: Body::Future(AsyncResult {
                 future: Mutex::new(FutureState {
                     pending: Some(Box::pin(future)),
@@ -202,6 +203,7 @@ impl Value {
             executor: Executor::current(),
             business: true,
             origin: current_path(),
+            chain: caller().map(|source| source.tag().to_owned()),
             body: Body::Function(Arc::new(callback)),
         }))))
     }
@@ -369,7 +371,7 @@ impl Reference {
     }
     pub async fn wait_async(&self) -> Reply {
         match &self.0 {
-            ReferenceInner::Local(object) => object.wait(false, current_path()).await,
+            ReferenceInner::Local(object) => object.wait(false, current_path(), caller()).await,
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
                 forwarded_async(
@@ -474,6 +476,10 @@ struct Object {
     body: Body,
     business: bool,
     origin: Vec<String>,
+    /// The session whose terms `origin` is in (its [`Connection::tag`]):
+    /// the one whose call was handled when this was made. Sent to another
+    /// session, the origin is rebased to that one's terms.
+    chain: Option<String>,
 }
 enum Body {
     Function(Arc<Callback>),
@@ -563,12 +569,16 @@ impl Object {
                 }
                 Poll::Pending => {
                     let result = state.result.clone();
+                    let source = caller();
                     let task =
                         self.executor
                             .handle
                             .spawn(ASYNC_PATH.scope(current_path(), async move {
-                                let reply =
-                                    std::future::poll_fn(|cx| poll_future(&mut future, cx)).await;
+                                let reply = calling(
+                                    source,
+                                    std::future::poll_fn(|cx| poll_future(&mut future, cx)),
+                                )
+                                .await;
                                 result.send_replace(Some(reply));
                             }));
                     state.future.lock().unwrap().task = Some(task.abort_handle());
@@ -581,7 +591,15 @@ impl Object {
                 .into(),
         ))
     }
-    async fn wait(self: &Arc<Self>, _sync: bool, path: Vec<String>) -> Reply {
+    /// Wait for this future, run (if it is not yet) with `path` as its
+    /// chain and `source` as its [`caller`]: the session that awaits it
+    /// first, on whose behalf it calls other sessions.
+    async fn wait(
+        self: &Arc<Self>,
+        _sync: bool,
+        path: Vec<String>,
+        source: Option<Connection>,
+    ) -> Reply {
         let Body::Future(state) = &self.body else {
             return Err(Error::Value("reference is not awaitable".into()));
         };
@@ -593,7 +611,11 @@ impl Object {
                     .executor
                     .handle
                     .spawn(ASYNC_PATH.scope(path, async move {
-                        let reply = std::future::poll_fn(|cx| poll_future(&mut future, cx)).await;
+                        let reply = calling(
+                            source,
+                            std::future::poll_fn(|cx| poll_future(&mut future, cx)),
+                        )
+                        .await;
                         result.send_replace(Some(reply));
                     }));
                 pending.task = Some(task.abort_handle());
@@ -715,6 +737,17 @@ pub(crate) fn with_caller<F: Future>(
         )
         .await
     }
+}
+/// Poll `future` with `source`, when there is one, as the [`caller`]. The
+/// chain is left as it is (the surrounding `ASYNC_PATH`): unlike
+/// [`with_caller`], which also fixes it.
+async fn calling<F: Future>(source: Option<Connection>, future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let _caller = source.clone().map(CallerGuard::enter);
+        future.as_mut().poll(cx)
+    })
+    .await
 }
 thread_local! { static UNCHAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static PUMPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -1865,7 +1898,7 @@ impl Connection {
                         && awaiting.object.executor.blocked_here()
                         && origins.iter().any(|origin| awaiting.path.contains(origin))
                     {
-                        blocked.push((id.clone(), awaiting.object.clone()));
+                        blocked.push((id.clone(), awaiting.object.clone(), awaiting.path.clone()));
                     }
                 }
                 // Claim queued work atomically with registering this waiter.
@@ -1895,8 +1928,14 @@ impl Connection {
             return Err(error);
         }
         unsent.sent();
-        for (id, object) in blocked {
-            self.finish_await(id, object.ready_on_blocked_executor());
+        for (id, object, path) in blocked {
+            // Awaited by this session: run on its behalf, with its chain.
+            let result = {
+                let _path = PathGuard::enter(path);
+                let _caller = CallerGuard::enter(self.clone());
+                object.ready_on_blocked_executor()
+            };
+            self.finish_await(id, result);
         }
         Ok(id)
     }
@@ -2159,6 +2198,13 @@ impl Connection {
             }
         };
         let mut wire = grant(&mut exports, id, grants)?;
+        // Made while another session's call was handled: its origin is in
+        // that session's terms, rebased to this one's.
+        if let (Some(chain), WireValue::Reference { origin, .. }) = (&object.chain, &mut wire) {
+            if chain != self.tag() {
+                *origin = rebase(origin, chain, self.tag());
+            }
+        }
         // Runtimes before #225 accept only their own ids in a compat-format
         // origin, as for relays; the object keeps its whole chain here.
         if let (Format::Compat, WireValue::Reference { origin, .. }) = (&self.0.format, &mut wire) {
@@ -2864,7 +2910,12 @@ impl Connection {
                 // to the executor that might itself be blocked by this stack.
                 if sync && object.executor.blocked_here() {
                     let call = object.result_of();
-                    self.respond_to(id, object.ready_on_blocked_executor(), call.as_deref());
+                    // Awaited by this session: run on its behalf.
+                    let result = {
+                        let _caller = CallerGuard::enter(self.clone());
+                        object.ready_on_blocked_executor()
+                    };
+                    self.respond_to(id, result, call.as_deref());
                     drop(_flight);
                     return;
                 }
@@ -2890,7 +2941,7 @@ impl Connection {
                     .clone()
                     .spawn(ASYNC_PATH.scope(path.clone(), async move {
                         tokio::select! {
-                            result = object.wait(false, path) => peer.finish_await(id, result),
+                            result = object.wait(false, path, Some(peer.clone())) => peer.finish_await(id, result),
                             _ = cancelled => {},
                         }
                         drop(_flight);

@@ -2,11 +2,13 @@
 import Rutis
 
 /// The plugin's configuration: a plain Decodable type. `@RutisConfig`
-/// derives its JSON Schema, which `rutis-host check` validates rows with.
+/// derives its JSON Schema, which rutis validates rows with; a `var` with a
+/// literal initial value is its default, filled in when the row leaves it
+/// out.
 @RutisConfig
 public struct Config: Decodable {
     /// how to greet
-    public var greeting: String?
+    public var greeting = "Hello"
 }
 
 /// A service other plugins provide, in any language: `@RutisClient` makes
@@ -38,7 +40,7 @@ public let plugin = Rutis.define(Plugin(
     provides: ["greeter": .of(Greeter.self)],
     config: Config.self,
     apply: { ctx, config in
-        ctx.provide("greeter", Greeter(greeting: config.greeting ?? "Hello"))
+        ctx.provide("greeter", Greeter(greeting: config.greeting))
         // Cleanups run when the plugin unloads, latest first.
         ctx.effect {}
     }

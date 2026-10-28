@@ -356,6 +356,18 @@ fn npm_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
     }
 }
 
+/// Point every `@arcships/*` package Bun resolves, the ones other packages
+/// depend on too (rutis-host on rutis-runtime), at this build's tarballs.
+/// Without it Bun may resolve such a dependency from the registry, which has
+/// no package of an unreleased version.
+fn bun_overrides(s: &Scenario, project: &str, packages: &[&str]) {
+    let file = format!("{project}/package.json");
+    let mut manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(s.path(&file)).unwrap()).unwrap();
+    manifest["overrides"] = Value::Object(npm_files(packages));
+    s.write_json(&file, &manifest);
+}
+
 /// The same for what Bun installed: `bun.lock` names the tarball among
 /// the artifacts (a registry's package is `<name>@<version>`, its URL
 /// left out for the default registry).
@@ -449,6 +461,7 @@ fn a_bun_plugin_is_written_tested_reloaded_and_packed() {
         "rutis-bun",
     ];
     from_artifacts(&s, &project, &ours[1..]);
+    bun_overrides(&s, &project, &ours);
     // Bun's own temporary files (the tarballs it unpacks, which it may
     // remove only later) in a directory of their own: the residue checks
     // look for this scenario's processes' leftovers in its tmp/.

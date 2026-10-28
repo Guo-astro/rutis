@@ -140,7 +140,7 @@ fn running(loader: &rutis_loader::Loader, id: &str) -> bool {
 
 /// A wrong config fails its row with `config: …` (the schema catches the
 /// type error before serde does); a right one gets the schema's defaults.
-/// guarantee: loader/config-schema
+/// guarantee: sdk/config-schema
 #[tokio::test]
 async fn a_rust_row_is_filled_and_validated() {
     let h = harness().await;

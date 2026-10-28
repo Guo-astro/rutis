@@ -280,6 +280,8 @@ fn services_no_declaration_describes_cross_languages() {
 
     let mut check = s.host(["check", "rutis.json"]);
     let status = check.wait_exit();
+    // Its exit can come before the last of its output is read.
+    check.wait_output_end();
     let printed: Vec<String> = check.lines().into_iter().map(|line| line.text).collect();
     let printed = printed.join("\n");
     assert!(status.success(), "check: {status}\n{printed}");
