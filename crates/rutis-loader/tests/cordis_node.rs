@@ -15,7 +15,7 @@ use rutis::Ctx;
 use rutis_bridge::events::{Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
 };

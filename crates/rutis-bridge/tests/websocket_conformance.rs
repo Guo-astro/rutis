@@ -9,7 +9,7 @@ use std::path::Path;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
 
 fn id(s: &str) -> PeerId {

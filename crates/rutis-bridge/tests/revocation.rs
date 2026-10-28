@@ -25,7 +25,7 @@ use rutis::host::{BoxFuture, CtxHost, TypeKey};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     peer_key, protocol, Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin,
     AdmissionPlugin, Credential, Dial, Identity, IdentityPlugin, LinkConfig, LinkPlugin, LinkState,

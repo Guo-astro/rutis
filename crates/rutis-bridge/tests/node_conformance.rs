@@ -7,7 +7,7 @@ use std::time::Duration;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, Retry, StaticIdentity};
 
 fn id(s: &str) -> PeerId {

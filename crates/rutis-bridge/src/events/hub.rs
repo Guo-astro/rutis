@@ -1311,7 +1311,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_emit_that_panics_does_not_stop_the_next() {
         let root = Ctx::root().unwrap();
-        let (near, _far) = crate::transport::memory::pair();
+        let (near, _far) = crate::memory::pair();
         let near = Connection::open(near, Arc::new(Quiet)).unwrap();
         let session = SessionEvents::join(Some(&root), near, "rt".into(), Vec::new()).unwrap();
         let ran = Arc::new(AtomicBool::new(false));
@@ -1352,7 +1352,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_row_unloading_while_a_listener_registers_withdraws_it() {
         let root = Ctx::root().unwrap();
-        let (near, far) = crate::transport::memory::pair();
+        let (near, far) = crate::memory::pair();
         // The far end says nothing: the session stays open, and what the
         // hub tells it waits.
         let near = Connection::open(near, Arc::new(Quiet)).unwrap();

@@ -2,7 +2,7 @@
 //! while mounted, and unloading withdraws it and closes its channels.
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::transport::memory::MemoryPlugin;
+use rutis_bridge::memory::MemoryPlugin;
 use rutis_bridge::{transport_key, Transport};
 
 #[tokio::test]

@@ -53,7 +53,7 @@ fn faults_delay_go_half_open_and_drop() {
     // "swallowed" nor anything else got through while half-open.
     assert_eq!(message.unwrap().unwrap(), b"after");
 
-    faults.drop_and_close("gone");
+    faults.drop_and_close();
     assert!(a.sender.send(b"x").is_err());
     // "lost", sent while half-open, never arrives: the end does.
     assert!(matches!(b.receiver.recv(), Ok(None)));
@@ -110,19 +110,19 @@ fn close_is_idempotent_and_wakes_blocked_send_and_receive() {
         || (a_sends_into.waiting() == 1 && c_receives_from.waiting() == 1).then_some(()),
         "the blocked send and receive",
     );
-    closer.close("first");
-    closer.close("second");
-    closer_c.close("done");
+    closer.close(Close::Done);
+    closer.close(Close::Replaced);
+    closer_c.close(Close::Done);
     assert_eq!(
         blocked_send.join().unwrap(),
         Err(ChannelError::Closed {
-            reason: "first".into()
+            reason: "the channel is closed".into()
         })
     );
     assert_eq!(
         blocked_recv.join().unwrap(),
         Err(ChannelError::Closed {
-            reason: "done".into()
+            reason: "closed here".into()
         })
     );
     drop(b);
@@ -132,10 +132,35 @@ fn close_is_idempotent_and_wakes_blocked_send_and_receive() {
 fn the_far_end_sees_a_close_as_the_end_after_draining() {
     let (mut a, mut b) = pair();
     a.sender.send(b"before").unwrap();
-    a.closer.close("bye");
+    a.closer.close(Close::Done);
     assert_eq!(b.receiver.recv().unwrap().unwrap(), b"before");
     assert_eq!(b.receiver.recv().unwrap(), None);
     assert!(b.sender.send(b"after").is_err());
+}
+
+#[test]
+fn the_far_end_learns_why_a_channel_closed() {
+    let (a, mut b) = pair();
+    a.closer.close(Close::Done);
+    assert_eq!(b.receiver.recv(), Ok(None));
+
+    let (a, mut b) = pair();
+    a.closer.close(Close::Replaced);
+    assert_eq!(
+        b.receiver.recv(),
+        Err(ChannelError::Closed {
+            reason: "replaced by a new connection".into()
+        })
+    );
+
+    let (a, mut b) = pair();
+    a.closer.close(Close::Rejected("not accepted here".into()));
+    assert_eq!(
+        b.receiver.recv(),
+        Err(ChannelError::Rejected {
+            reason: "rejected: not accepted here".into()
+        })
+    );
 }
 
 #[tokio::test]

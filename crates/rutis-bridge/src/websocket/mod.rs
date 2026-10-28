@@ -1,6 +1,11 @@
-//! The WebSocket transport of rutis bridges
+//! Channels between machines over WebSocket
 //! (`docs/design-protocol-channel-decoupling-2026-10-03.md`, WebSocket
 //! binding).
+//!
+//! [`dial`] connects to a listener; [`listen`] accepts connections, each
+//! upgrade let through as its [`Admit`] decides. Their connections run on
+//! threads of their own, so channels progress whatever the caller's
+//! executor is doing.
 //!
 //! [`WebSocketPlugin`] provides `Transport#websocket`. It dials
 //! `ws://` (loopback only) and `wss://` addresses once per call, and holds
@@ -14,11 +19,12 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::channel::{Channel, Closer, ConnectError};
+use crate::channel::{Channel, Close, ConnectError};
 use crate::{
-    transport_key, Dial, Registered, Registration, RegistrationError, Registrations, Transport,
+    transport_key, Credential, Dial, Presented, Refusal, Registered, Registration,
+    RegistrationError, Registrations, Transport,
 };
 use rustls::RootCertStore;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
@@ -33,6 +39,71 @@ mod pipe;
 mod tls;
 
 pub use config::{Config, Limits, ListenerConfig, ServerTls, Trust};
+pub use listen::{Admit, Admitted, Listener, Refused, Upgrade};
+
+/// The threads the connections of [`dial`] and [`listen`] run on, started
+/// on first use.
+fn threads() -> &'static tokio::runtime::Handle {
+    static THREADS: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    THREADS
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("rutis-websocket")
+                .enable_all()
+                .build()
+                .expect("the WebSocket threads start")
+        })
+        .handle()
+}
+
+/// Dial `address` (`wss://`, or `ws://` to a loopback address), offering
+/// session protocol `protocol` (none when empty) and presenting
+/// `credential`. The error's category says whether to retry
+/// (`bridge/dial-out-rules`): from the failure's type or the listener's
+/// status, never from text.
+pub async fn dial(
+    address: &str,
+    protocol: &str,
+    credential: Option<&Credential>,
+    trust: &Trust,
+    limits: &Limits,
+) -> Result<Channel, ConnectError> {
+    let roots = tls::roots(trust).map_err(|reason| ConnectError::Incompatible { reason })?;
+    let (address, protocol, credential, limits) = (
+        address.to_owned(),
+        protocol.to_owned(),
+        credential.cloned(),
+        limits.clone(),
+    );
+    let task = threads().spawn(async move {
+        dial::dial(
+            &address,
+            &protocol,
+            credential.as_ref(),
+            roots,
+            &limits,
+            threads(),
+            None,
+        )
+        .await
+        .map(|(channel, _)| channel)
+    });
+    AbortOnDrop(task).finish().await
+}
+
+/// Listen as `config` says (its `local` is not used here), letting through
+/// the upgrades `admit` accepts. Fails if the address cannot be bound or
+/// the TLS configuration is invalid.
+pub fn listen(config: &ListenerConfig, limits: &Limits, admit: Admit) -> Result<Listener, String> {
+    let hooks = Arc::new(listen::Hooks {
+        admit,
+        limits: limits.clone(),
+        live: None,
+        track: None,
+    });
+    listen::start(config, hooks, threads())
+}
 
 /// Provides `Transport#websocket`, configured with listeners, trust and
 /// limits. Unloading closes its listeners, registrations and channels.
@@ -92,17 +163,17 @@ impl DynPlugin for WebSocketPlugin {
 pub(crate) struct Shared {
     pub registrations: Registrations,
     pub limits: Limits,
-    open: Mutex<Vec<Weak<dyn Closer>>>,
+    open: Mutex<Vec<Weak<connection::Shared>>>,
     /// Connection tasks still running.
     pub live: std::sync::atomic::AtomicUsize,
     pub ended: tokio::sync::Notify,
 }
 
 impl Shared {
-    pub(crate) fn track(&self, channel: &Channel) {
+    pub(crate) fn track(&self, connection: Weak<connection::Shared>) {
         let mut open = self.open.lock().unwrap();
-        open.retain(|closer| closer.strong_count() > 0);
-        open.push(Arc::downgrade(&channel.closer));
+        open.retain(|connection| connection.strong_count() > 0);
+        open.push(connection);
     }
 }
 
@@ -118,7 +189,7 @@ pub struct WebSocketTransport {
     handle: tokio::runtime::Handle,
     shared: Arc<Shared>,
     roots: Arc<RootCertStore>,
-    listeners: Mutex<HashMap<String, listen::Listening>>,
+    listeners: Mutex<HashMap<String, (crate::channel::PeerId, Listener)>>,
 }
 
 impl WebSocketTransport {
@@ -144,10 +215,10 @@ impl WebSocketTransport {
         });
         let mut listeners = HashMap::new();
         for listener in &config.listeners {
-            let listening = listen::start(listener, shared.clone(), &handle);
+            let listening = listen::start(listener, Self::hooks(&shared, listener), &handle);
             match listening {
                 Ok(listening) => {
-                    listeners.insert(listener.name.clone(), listening);
+                    listeners.insert(listener.name.clone(), (listener.local.clone(), listening));
                 }
                 Err(error) => {
                     drop(listeners);
@@ -165,13 +236,59 @@ impl WebSocketTransport {
         }))
     }
 
+    /// How a listener of the transport lets upgrades through: to the
+    /// registration of the far end the credentials verify, handed over if
+    /// it is still the same one.
+    fn hooks(shared: &Arc<Shared>, listener: &ListenerConfig) -> Arc<listen::Hooks> {
+        let name = listener.name.clone();
+        let registrations = shared.registrations.clone();
+        let admit: Admit = Arc::new(move |upgrade: Upgrade<'_>| {
+            let presented = match (upgrade.bearer, upgrade.certificate) {
+                (Some(token), _) => Presented::Bearer(token),
+                (None, Some(der)) => Presented::Certificate(der),
+                (None, None) => return Err(Refused::Forbidden("not accepted here".into())),
+            };
+            let ticket = match registrations.route(&name, presented) {
+                Ok(ticket) => ticket,
+                Err(Refusal::Unauthenticated) => {
+                    return Err(Refused::Forbidden("not accepted here".into()))
+                }
+                // Good credentials, nobody listening for them yet: retry.
+                Err(Refusal::NotListening) => {
+                    return Err(Refused::Unavailable(
+                        "not listening for this peer yet".into(),
+                    ))
+                }
+                Err(Refusal::Ambiguous) => {
+                    return Err(Refused::Forbidden("ambiguous credentials".into()))
+                }
+            };
+            let registrations = registrations.clone();
+            Ok(Admitted {
+                protocol: ticket.protocol.clone(),
+                deliver: Box::new(move |channel| {
+                    if let Err(channel) = registrations.hand_over(&ticket, channel) {
+                        channel.closer.close(Close::Done);
+                    }
+                }),
+            })
+        });
+        let tracked = shared.clone();
+        Arc::new(listen::Hooks {
+            admit,
+            limits: shared.limits.clone(),
+            live: Some(shared.clone()),
+            track: Some(Arc::new(move |connection| tracked.track(connection))),
+        })
+    }
+
     /// The address listener `name` is bound to (to learn a picked port).
     pub fn local_addr(&self, name: &str) -> Option<SocketAddr> {
         self.listeners
             .lock()
             .unwrap()
             .get(name)
-            .map(|listening| listening.addr)
+            .map(|(_, listener)| listener.local_addr())
     }
 
     /// Wait until every connection task has finished, at most `limit`.
@@ -192,10 +309,8 @@ impl WebSocketTransport {
     pub fn stop(&self) {
         self.listeners.lock().unwrap().clear();
         self.shared.registrations.clear();
-        for closer in std::mem::take(&mut *self.shared.open.lock().unwrap()) {
-            if let Some(closer) = closer.upgrade() {
-                closer.close("transport unloaded");
-            }
+        for connection in std::mem::take(&mut *self.shared.open.lock().unwrap()) {
+            connection::going_away(&connection);
         }
     }
 }
@@ -217,6 +332,17 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+impl<T> AbortOnDrop<Result<T, ConnectError>> {
+    /// The dial's result.
+    async fn finish(mut self) -> Result<T, ConnectError> {
+        (&mut self.0)
+            .await
+            .map_err(|error| ConnectError::Retryable {
+                reason: format!("dial stopped: {error}"),
+            })?
+    }
+}
+
 impl Transport for WebSocketTransport {
     fn kind(&self) -> &str {
         "websocket"
@@ -228,18 +354,26 @@ impl Transport for WebSocketTransport {
         let limits = self.shared.limits.clone();
         let handle = self.handle.clone();
         let live = connection::Live::new(self.shared.clone());
-        let task = self
-            .handle
-            .spawn(async move { dial::dial(&request, roots, &limits, &handle, live).await });
+        let task = self.handle.spawn(async move {
+            let credential = match (&request.identity, &request.peer) {
+                (Some(identity), Some(peer)) => identity.credential(peer),
+                _ => None,
+            };
+            dial::dial(
+                &request.address,
+                &request.protocol,
+                credential.as_ref(),
+                roots,
+                &limits,
+                &handle,
+                Some(live),
+            )
+            .await
+        });
         let task = AbortOnDrop(task);
         Box::pin(async move {
-            let mut task = task;
-            let channel = (&mut task.0)
-                .await
-                .map_err(|error| ConnectError::Retryable {
-                    reason: format!("dial stopped: {error}"),
-                })??;
-            self.shared.track(&channel);
+            let (channel, connection) = task.finish().await?;
+            self.shared.track(connection);
             Ok(channel)
         })
     }
@@ -250,7 +384,7 @@ impl Transport for WebSocketTransport {
             .lock()
             .unwrap()
             .get(&registration.listener)
-            .map(|listening| listening.local.clone())
+            .map(|(local, _)| local.clone())
             .ok_or_else(|| {
                 RegistrationError::NoListener(format!(
                     "no listener named {}",

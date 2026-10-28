@@ -41,7 +41,7 @@ fn send(far: &mut Far, frame: Frame) {
     far.sender.lock().unwrap().send(&message).unwrap();
 }
 fn far_pair() -> (Channel, Far) {
-    let (local, far) = crate::transport::memory::pair();
+    let (local, far) = crate::memory::pair();
     let far = Far {
         sender: Arc::new(Mutex::new(far.sender)),
         receiver: Arc::new(Mutex::new(far.receiver)),
@@ -1011,10 +1011,7 @@ mod endpoint_format {
     }
 
     fn pair_as(left: Endpoint, right: Endpoint) -> (Connection, Connection) {
-        let (a, mut b) = crate::transport::memory::pair();
-        let mut a = a;
-        a.info.peer = Some(right.local.clone());
-        b.info.peer = Some(left.local.clone());
+        let (a, b) = crate::memory::pair();
         (
             Connection::open_with(a, Arc::new(Echo("left")), Format::Endpoint(left)).unwrap(),
             Connection::open_with(b, Arc::new(Echo("right")), Format::Endpoint(right)).unwrap(),
@@ -1077,7 +1074,7 @@ mod endpoint_format {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_compat_far_end_is_incompatible_with_the_endpoint_format() {
-        let (a, b) = crate::transport::memory::pair();
+        let (a, b) = crate::memory::pair();
         let endpoint = Connection::open_with(
             a,
             Arc::new(NoExports),
@@ -1138,14 +1135,12 @@ mod endpoint_format {
             sender,
             receiver,
             closer,
-            info,
         } = channel;
         (
             Channel {
                 sender: Box::new(Sending(sender, order.clone())),
                 receiver: Box::new(Reading(receiver, order.clone(), greet_first)),
                 closer,
-                info,
             },
             order,
         )
@@ -1158,7 +1153,7 @@ mod endpoint_format {
     // writing to the channel it closed itself.
     #[tokio::test(flavor = "multi_thread")]
     async fn issue_239_an_incompatible_side_greets_before_it_reads_the_far_greeting() {
-        let (a, b) = crate::transport::memory::pair();
+        let (a, b) = crate::memory::pair();
         let endpoint = Connection::open_with(
             a,
             Arc::new(NoExports),
@@ -1192,7 +1187,7 @@ mod endpoint_format {
     async fn issue_239_a_greeting_followed_by_the_channel_end_is_incompatible() {
         let (local, mut far) = far_pair();
         send(&mut far, hello(VERSION));
-        far._closer.close("incompatible");
+        far._closer.close(crate::channel::Close::Done);
         // This side tries to greet (and fails: the channel ended) before it
         // reads the far end's greeting.
         let (local, _) = ordered(local, true);
@@ -1213,7 +1208,7 @@ mod endpoint_format {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_channel_end_before_any_greeting_is_a_transport_error() {
         let (local, far) = far_pair();
-        far._closer.close("gone");
+        far._closer.close(crate::channel::Close::Done);
         let endpoint = Connection::open_with(
             local,
             Arc::new(NoExports),

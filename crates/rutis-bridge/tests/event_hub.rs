@@ -90,7 +90,7 @@ struct Rig {
 }
 
 async fn rig_with(root: Ctx, endpoint: Endpoint) -> Result<Rig, Error> {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let fake = Arc::new(Fake::default());
     let far = Connection::open_with(b, fake.clone(), Format::Endpoint(endpoint)).unwrap();
     let process = Process::attach(

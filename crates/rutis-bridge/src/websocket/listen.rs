@@ -1,21 +1,53 @@
-//! A listener: accepts connections, authenticates them, routes each to
-//! the registration of the far end it proves to be, and hands it over only
-//! if that registration is still the same one.
+//! A listener: accepts connections and lets through the upgrades its
+//! admission accepts, each as a channel handed to where the admission said.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use crate::channel::{ChannelInfo, PeerId};
-use crate::{Presented, Refusal, Ticket};
+use crate::channel::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 
-use crate::transport::websocket::connection::{self, Io};
-use crate::transport::websocket::{ListenerConfig, Shared};
+use crate::websocket::connection::{self, Io};
+use crate::websocket::{Limits, ListenerConfig};
+
+/// What a dialer presents with its upgrade: a bearer token
+/// (`Authorization: Bearer <token>`), or a TLS client certificate (DER),
+/// at least one of them. An upgrade with neither is refused with 401
+/// before any admission sees it.
+#[derive(Debug, Clone, Copy)]
+pub struct Upgrade<'a> {
+    pub bearer: Option<&'a str>,
+    pub certificate: Option<&'a [u8]>,
+}
+
+/// An upgrade let through: the session protocol it must have offered,
+/// and where its channel goes once the upgrade completes.
+pub struct Admitted {
+    pub protocol: String,
+    pub deliver: Box<dyn FnOnce(Channel) + Send>,
+}
+
+/// Why an upgrade is refused, as the dialer reads it: 403 (credentials
+/// that are not accepted here; dialers retry slowly) or 503 (nothing takes
+/// these credentials yet; dialers retry). The text goes into the response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Forbidden(String),
+    Unavailable(String),
+}
+
+/// Decides, for each upgrade, whether it is let through and where its
+/// channel goes. Called on the listener's threads: it must not block.
+pub type Admit = Arc<dyn Fn(Upgrade<'_>) -> Result<Admitted, Refused> + Send + Sync>;
+
+/// What a listener does with each connection's channel besides delivering
+/// it: the transport tracks them to close them when it stops.
+pub(crate) type Track = Arc<dyn Fn(Weak<connection::Shared>) + Send + Sync>;
 
 /// Why a dialer that offered none of this endpoint's session protocol is
 /// refused, saying which end to upgrade (standard Q6.2.4) when the
@@ -41,24 +73,40 @@ fn protocol_refusal(ours: &str, offered: &[&str]) -> String {
     reason
 }
 
-/// A running listener.
-pub(crate) struct Listening {
-    pub local: PeerId,
-    pub addr: SocketAddr,
+/// A running listener; dropping it stops listening (the channels it handed
+/// over stay open).
+pub struct Listener {
+    addr: SocketAddr,
     task: tokio::task::AbortHandle,
 }
 
-impl Drop for Listening {
+impl Listener {
+    /// The address it is bound to (to learn a picked port).
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+}
+
+impl Drop for Listener {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
 
+/// What the connections of one listener share.
+pub(crate) struct Hooks {
+    pub admit: Admit,
+    pub limits: Limits,
+    /// Counts each connection task while it runs (the transport's).
+    pub live: Option<Arc<crate::websocket::Shared>>,
+    pub track: Option<Track>,
+}
+
 pub(crate) fn start(
     config: &ListenerConfig,
-    shared: Arc<Shared>,
+    hooks: Arc<Hooks>,
     runtime: &tokio::runtime::Handle,
-) -> Result<Listening, String> {
+) -> Result<Listener, String> {
     let std_listener = std::net::TcpListener::bind(config.bind).map_err(|error| {
         let hint = match error.kind() {
             std::io::ErrorKind::AddrInUse => {
@@ -79,7 +127,7 @@ pub(crate) fn start(
         .map_err(|error| error.to_string())?;
     let acceptor = match &config.tls {
         Some(tls) => Some(TlsAcceptor::from(
-            crate::transport::websocket::tls::server(tls)
+            crate::websocket::tls::server(tls)
                 .map_err(|error| format!("listener {}: {error}", config.name))?,
         )),
         None => None,
@@ -88,7 +136,6 @@ pub(crate) fn start(
         let _entered = runtime.enter();
         TcpListener::from_std(std_listener).map_err(|error| error.to_string())?
     };
-    let name: Arc<str> = config.name.as_str().into();
     let path: Arc<str> = config.path.as_str().into();
     let handle = runtime.clone();
     let task = runtime.spawn(async move {
@@ -97,31 +144,28 @@ pub(crate) fn start(
                 continue;
             };
             let _ = tcp.set_nodelay(true);
-            crate::transport::websocket::dial::keepalive(&tcp);
-            let (shared, acceptor, name, path, handle2) = (
-                shared.clone(),
+            crate::websocket::dial::keepalive(&tcp);
+            let (hooks, acceptor, path, handle2) = (
+                hooks.clone(),
                 acceptor.clone(),
-                name.clone(),
                 path.clone(),
                 handle.clone(),
             );
             handle.spawn(async move {
-                let limit = shared.limits.handshake;
+                let limit = hooks.limits.handshake;
                 let _ =
-                    tokio::time::timeout(limit, accept(tcp, acceptor, shared, name, path, handle2))
-                        .await;
+                    tokio::time::timeout(limit, accept(tcp, acceptor, hooks, path, handle2)).await;
             });
         }
     });
-    Ok(Listening {
-        local: config.local.clone(),
+    Ok(Listener {
         addr,
         task: task.abort_handle(),
     })
 }
 
 /// What a dialer's upgrade request presents, read from its headers.
-pub(crate) struct Upgrade<'a> {
+pub(crate) struct UpgradeRequest<'a> {
     /// The token of an `Authorization: Bearer <token>` header.
     pub bearer: Option<&'a str>,
     /// The session protocols offered: every `Sec-WebSocket-Protocol`
@@ -134,7 +178,7 @@ pub(crate) struct Upgrade<'a> {
 pub(crate) fn read_upgrade<'a>(
     request: &'a Request,
     path: &str,
-) -> Result<Upgrade<'a>, ErrorResponse> {
+) -> Result<UpgradeRequest<'a>, ErrorResponse> {
     if request.uri().path() != path {
         return Err(refuse(StatusCode::NOT_FOUND, "no rutis endpoint here"));
     }
@@ -151,7 +195,7 @@ pub(crate) fn read_upgrade<'a>(
         .flat_map(|value| value.split(','))
         .map(str::trim)
         .collect();
-    Ok(Upgrade { bearer, offered })
+    Ok(UpgradeRequest { bearer, offered })
 }
 
 /// The `Sec-WebSocket-Protocol` response header for this endpoint's session
@@ -208,8 +252,7 @@ async fn linger(mut tcp: TcpStream) {
 async fn accept(
     tcp: TcpStream,
     acceptor: Option<TlsAcceptor>,
-    shared: Arc<Shared>,
-    name: Arc<str>,
+    hooks: Arc<Hooks>,
     path: Arc<str>,
     runtime: tokio::runtime::Handle,
 ) {
@@ -228,68 +271,48 @@ async fn accept(
         },
         None => (Box::new(tcp), None),
     };
-    let routed: Arc<Mutex<Option<Ticket>>> = Arc::default();
-    let route = routed.clone();
-    let registrations = shared.registrations.clone();
+    type Deliver = Box<dyn FnOnce(Channel) + Send>;
+    let admitted: Arc<Mutex<Option<Deliver>>> = Arc::default();
+    let route = admitted.clone();
+    let admit = hooks.admit.clone();
     // tungstenite fixes this callback's signature, error response included.
     #[allow(clippy::result_large_err)]
     let check = move |request: &Request, mut response: Response| {
         let upgrade = read_upgrade(request, &path)?;
-        let presented = match (upgrade.bearer, &certificate) {
-            (Some(token), _) => Presented::Bearer(token),
-            (None, Some(der)) => Presented::Certificate(der),
-            (None, None) => {
-                return Err(refuse(StatusCode::UNAUTHORIZED, "credentials required"));
-            }
+        if upgrade.bearer.is_none() && certificate.is_none() {
+            return Err(refuse(StatusCode::UNAUTHORIZED, "credentials required"));
+        }
+        let presented = Upgrade {
+            bearer: upgrade.bearer,
+            certificate: certificate.as_deref(),
         };
-        let ticket = match registrations.route(&name, presented) {
-            Ok(ticket) => ticket,
-            Err(Refusal::Unauthenticated) => {
-                return Err(refuse(StatusCode::FORBIDDEN, "not accepted here"));
-            }
-            // Good credentials, nobody listening for them yet: retry.
-            Err(Refusal::NotListening) => {
-                return Err(refuse(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "not listening for this peer yet",
-                ));
-            }
-            Err(Refusal::Ambiguous) => {
-                return Err(refuse(StatusCode::FORBIDDEN, "ambiguous credentials"));
-            }
-        };
-        let protocol = agree_protocol(&ticket.protocol, &upgrade.offered)?;
+        let Admitted { protocol, deliver } = admit(presented).map_err(|refused| match refused {
+            Refused::Forbidden(reason) => refuse(StatusCode::FORBIDDEN, &reason),
+            Refused::Unavailable(reason) => refuse(StatusCode::SERVICE_UNAVAILABLE, &reason),
+        })?;
+        let protocol = agree_protocol(&protocol, &upgrade.offered)?;
         response
             .headers_mut()
             .insert("Sec-WebSocket-Protocol", protocol);
-        *route.lock().unwrap() = Some(ticket);
+        *route.lock().unwrap() = Some(deliver);
         Ok(response)
     };
     let Ok(socket) = tokio_tungstenite::accept_hdr_async_with_config(
         io,
         check,
-        Some(crate::transport::websocket::ws_config(&shared.limits)),
+        Some(crate::websocket::ws_config(&hooks.limits)),
     )
     .await
     else {
         return;
     };
-    let Some(ticket) = routed.lock().unwrap().take() else {
+    let Some(deliver) = admitted.lock().unwrap().take() else {
         return;
     };
-    let channel = connection::channel(
-        socket,
-        ChannelInfo {
-            transport: "websocket",
-            peer: Some(ticket.peer.clone()),
-            label: ticket.listener.clone(),
-        },
-        &shared.limits,
-        &runtime,
-        connection::Live::new(shared.clone()),
-    );
-    shared.track(&channel);
-    if let Err(channel) = shared.registrations.hand_over(&ticket, channel) {
-        channel.closer.close("registration revoked");
+    let live = hooks.live.clone().map(connection::Live::new);
+    let (channel, connection) = connection::channel(socket, &hooks.limits, &runtime, live);
+    if let Some(track) = &hooks.track {
+        track(connection);
     }
+    deliver(channel);
 }

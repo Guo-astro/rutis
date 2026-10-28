@@ -1,4 +1,5 @@
-//! The local transport: channels to processes on the same machine.
+//! Channels to processes on the same machine: [`spawn`] starts a process
+//! on a channel it owns; Unix sockets (Unix) are framed the same way.
 //!
 //! [`LocalPlugin`] provides `Transport#local`. It dials Unix sockets
 //! (`unix:<path>`, or a bare path; Unix), framing messages by newline, and
@@ -14,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::channel::{Channel, ConnectError};
+use crate::channel::{Channel, Close, ConnectError};
 use crate::{transport_key, Dial, Transport};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
 use rutis::{Ctx, Error};
@@ -31,16 +32,7 @@ pub fn framed(
     write: impl std::io::Write + Send + 'static,
     closer: Arc<dyn crate::channel::Closer>,
 ) -> Channel {
-    lines::channel(
-        read,
-        write,
-        closer,
-        crate::channel::ChannelInfo {
-            transport: "unix",
-            peer: None,
-            label: String::new(),
-        },
-    )
+    lines::channel(read, write, closer)
 }
 mod output;
 pub(crate) mod spawn;
@@ -48,6 +40,13 @@ pub(crate) mod spawn;
 pub(crate) mod unix;
 
 pub use output::{output_ended, write_line, OutputStream, MAX_LINE};
+/// Start `spawn` on a channel that owns the process: closing the channel,
+/// or dropping all of it, ends the process, and its end says how the
+/// process ended. The process is recorded in `processes`.
+pub async fn spawn(spawn: &Spawn, processes: &Processes) -> Result<Channel, ConnectError> {
+    spawn::start(spawn, spawn::TOKEN_WAIT, processes).await
+}
+
 pub use spawn::{
     isolate_manifest_command, kill_processes, processes_ended, running_processes, Handover,
     ManifestChild, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
@@ -140,7 +139,7 @@ impl LocalTransport {
     pub fn close_all(&self) {
         for closer in std::mem::take(&mut *self.open.lock().unwrap()) {
             if let Some(closer) = closer.upgrade() {
-                closer.close("transport unloaded");
+                closer.close(Close::Done);
             }
         }
     }
@@ -159,7 +158,7 @@ impl Transport for LocalTransport {
                 None => connect(address).await?,
             };
             let channel = match self.trace.lock().unwrap().clone() {
-                Some(sink) => crate::channel::trace::trace(channel, sink),
+                Some(sink) => crate::channel::trace::trace(channel, address, sink),
                 None => channel,
             };
             self.track(&channel);

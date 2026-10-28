@@ -135,14 +135,14 @@ enum Role {
 /// A TCP connection as a channel.
 struct Tcp(TcpStream);
 impl Closer for Tcp {
-    fn close(&self, _: &str) {
+    fn close(&self, _: rutis_bridge::Close) {
         let _ = self.0.shutdown(Shutdown::Both);
     }
 }
 fn channel(stream: TcpStream) -> Channel {
     stream.set_nodelay(true).unwrap();
     let closer = Arc::new(Tcp(stream.try_clone().unwrap()));
-    rutis_bridge::transport::local::framed(stream.try_clone().unwrap(), stream, closer)
+    rutis_bridge::pipe::framed(stream.try_clone().unwrap(), stream, closer)
 }
 
 fn endpoint(name: &str) -> Format {
@@ -159,7 +159,7 @@ fn role(role: Role) {
     // The runtime session first, the link second: both processes tag
     // their sessions in the same order.
     let link = Arc::new(std::sync::OnceLock::<Connection>::new());
-    let (host_end, rt_end) = rutis_bridge::transport::memory::pair();
+    let (host_end, rt_end) = rutis_bridge::memory::pair();
     let host = Connection::open_with(
         host_end,
         Arc::new(Host { link: link.clone() }),
