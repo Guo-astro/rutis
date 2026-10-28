@@ -2,6 +2,8 @@
 
 Use the crates directly when your application needs to provide its own Rust services to plugins or when you want to embed rutis in an existing Rust program. If you do not need this, use [rutis-host](rutis-host.en.md); both use the same row configuration format.
 
+This is the API reference. To build a host open to plugins from the start, follow [Build a host open to plugins](open-host.en.md) step by step.
+
 ## Dependencies
 
 ```toml
