@@ -24,6 +24,7 @@ plugins {
     id("com.google.devtools.ksp")
     id("com.android.library") apply false
     id("com.vanniktech.maven.publish")
+    id("org.jetbrains.kotlinx.binary-compatibility-validator")
 }
 
 if (androidSdk) {
@@ -119,6 +120,15 @@ if (androidSdk) {
             targetCompatibility = JavaVersion.VERSION_17
         }
     }
+}
+
+// The public API (SDK entry design §6, #692): `apiCheck` (part of `check`)
+// compares it with api/, `apiDump` rewrites it. The jvm target's dump is
+// api/jvm/rutis.api whether or not an Android SDK is installed (with one,
+// the android target's is api/android/rutis.api), so a build without the
+// android target checks the same file.
+apiValidation {
+    if (!androidSdk) apiDumpDirectory = "api/jvm"
 }
 
 // Maven Central (release.yml `maven`): io.github.arcships:rutis, with the

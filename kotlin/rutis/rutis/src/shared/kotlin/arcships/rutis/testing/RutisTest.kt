@@ -1,16 +1,16 @@
 package arcships.rutis.testing
 
-import arcships.rutis.ClientFactory
+import arcships.rutis.generated.ClientFactory
 import arcships.rutis.EventArgs
-import arcships.rutis.Listener
-import arcships.rutis.Next
+import arcships.rutis.advanced.Listener
+import arcships.rutis.advanced.Next
 import arcships.rutis.Plugin
-import arcships.rutis.RemoteFunction
+import arcships.rutis.advanced.RemoteFunction
 import arcships.rutis.RutisException
-import arcships.rutis.Scope
-import arcships.rutis.ServiceHandle
-import arcships.rutis.ServiceTable
-import arcships.rutis.Tables
+import arcships.rutis.advanced.Scope
+import arcships.rutis.generated.ServiceHandle
+import arcships.rutis.generated.ServiceTable
+import arcships.rutis.generated.Tables
 import arcships.rutis.noMethod
 import arcships.rutis.serve
 import arcships.rutis.internal.Call
@@ -35,6 +35,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonNull
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+import arcships.rutis.advanced.Emitter
 
 /**
  * Tests a plugin without a host (design K16): it gives the plugin the
@@ -545,7 +546,7 @@ private class Invocation(val entry: BusEntry, val dispatch: String, val own: Boo
 }
 
 /** A row of a plugin loaded for a test. Close it (or the first row) to unload. */
-class Loaded internal constructor(private val h: Harness, val row: String, val scope: List<Scope>) : AutoCloseable, arcships.rutis.Emitter {
+class Loaded internal constructor(private val h: Harness, val row: String, val scope: List<Scope>) : AutoCloseable, arcships.rutis.advanced.Emitter {
     @Volatile
     private var unloaded = false
 
@@ -579,7 +580,7 @@ class Loaded internal constructor(private val h: Harness, val row: String, val s
         h.listen(name, prepend, global, listener)
 
     /** Dispatches only to the listeners `keep` accepts. */
-    fun filter(keep: suspend (Listener) -> Boolean): arcships.rutis.Emitter = Filtered(keep)
+    fun filter(keep: suspend (Listener) -> Boolean): arcships.rutis.advanced.Emitter = Filtered(keep)
 
     override fun emit(name: String, vararg args: Any?) {
         runBlocking { dispatch(name, Mode.Emit, args.toList(), null, null) }
@@ -596,7 +597,7 @@ class Loaded internal constructor(private val h: Harness, val row: String, val s
 
     override fun bail(name: String, vararg args: Any?): Any? = runBlocking { dispatch(name, Mode.Bail, args.toList(), null, null) }
 
-    private inner class Filtered(private val keep: suspend (Listener) -> Boolean) : arcships.rutis.Emitter {
+    private inner class Filtered(private val keep: suspend (Listener) -> Boolean) : arcships.rutis.advanced.Emitter {
         override fun emit(name: String, vararg args: Any?) {
             runBlocking { dispatch(name, Mode.Emit, args.toList(), null, keep) }
         }

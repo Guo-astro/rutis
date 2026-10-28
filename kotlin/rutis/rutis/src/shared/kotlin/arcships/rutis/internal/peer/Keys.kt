@@ -12,6 +12,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.util.UUID
+import arcships.rutis.advanced.RemoteFunction
 
 /** What a session value is, for errors: "null", "a string", "an instant", ... */
 fun describe(value: Any?): String = when (value) {
@@ -32,7 +33,7 @@ fun describe(value: Any?): String = when (value) {
     is Signal -> "a signal"
     is ByteArray -> "bytes"
     is Instant -> "an instant"
-    is Exported, is ExportedObject, is arcships.rutis.RemoteFunction, is RemoteFuture -> "a reference"
+    is Exported, is ExportedObject, is arcships.rutis.advanced.RemoteFunction, is RemoteFuture -> "a reference"
     is arcships.rutis.Plugin, is RemotePlugin -> "a plugin definition"
     else -> when (val tag = tagOf(value)) {
         null -> "a ${value.javaClass.name}"

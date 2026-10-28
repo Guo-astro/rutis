@@ -1,9 +1,9 @@
 package arcships.rutis.internal
 
-import arcships.rutis.Listener
-import arcships.rutis.Next
+import arcships.rutis.advanced.Listener
+import arcships.rutis.advanced.Next
 import arcships.rutis.RutisException
-import arcships.rutis.Scope
+import arcships.rutis.advanced.Scope
 import arcships.rutis.internal.peer.Undefined
 import arcships.rutis.internal.peer.errorMessage
 import arcships.rutis.internal.peer.errorName
