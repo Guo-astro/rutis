@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, PeerId};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, protocol, Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin,
     AdmissionPlugin, ConnectError, Credential, Dial, Identity, IdentityPlugin, LinkConfig,
@@ -530,7 +530,7 @@ impl rutis_bridge::Admission for Nobody {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dialer_whose_id_is_rejected_waits_as_rejected() {
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
     use rutis_bridge::Failure;
 
     let main = Ctx::root().unwrap();

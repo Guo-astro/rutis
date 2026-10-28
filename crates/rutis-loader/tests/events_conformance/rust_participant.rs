@@ -573,7 +573,7 @@ pub fn register(builtins: &mut Builtins, log: Arc<EventsLog>, tap: Tap) -> Hooks
 pub struct Node {
     host: Ctx,
     node: std::sync::Mutex<Option<Ctx>>,
-    transport: Arc<rutis_bridge::transport::memory::MemoryTransport>,
+    transport: Arc<rutis_bridge::memory::MemoryTransport>,
     /// Whether the node's process is alive: a killed one logs nothing more.
     alive: std::sync::Mutex<Arc<AtomicBool>>,
     log: Arc<EventsLog>,
@@ -607,8 +607,8 @@ impl Node {
     }
 
     /// The host's end, once: its transport, identity and listening link.
-    async fn host_side(host: &Ctx) -> Arc<rutis_bridge::transport::memory::MemoryTransport> {
-        use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+    async fn host_side(host: &Ctx) -> Arc<rutis_bridge::memory::MemoryTransport> {
+        use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
         use rutis_bridge::{Features, IdentityPlugin, LinkConfig, PeerPlugin, StaticIdentity};
         let transport = Arc::new(MemoryTransport::default());
         transport.endpoint("host-in", peer_id("host"));

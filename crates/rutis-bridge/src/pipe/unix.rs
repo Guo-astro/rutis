@@ -3,9 +3,9 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::channel::{Channel, ChannelInfo, Closer, ConnectError};
+use crate::channel::{Channel, Close, Closer, ConnectError};
 
-use crate::transport::local::lines;
+use crate::pipe::lines;
 
 /// Shuts a Unix socket down, then lets go of its handle of it: the
 /// channel's last handle closing is what always tells the far end
@@ -19,7 +19,7 @@ impl Shut {
 }
 
 impl Closer for Shut {
-    fn close(&self, _reason: &str) {
+    fn close(&self, _why: Close) {
         let stream = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
         if let Some(stream) = stream {
             let _ = stream.shutdown(Shutdown::Both);
@@ -38,16 +38,7 @@ pub(crate) async fn dial(path: &str) -> Result<Channel, ConnectError> {
         .map_err(|error| classify(path, error))?;
     let split = || -> std::io::Result<_> { Ok((stream.try_clone()?, stream.try_clone()?)) };
     let (reader, closer) = split().map_err(|error| classify(path, error))?;
-    Ok(lines::channel(
-        reader,
-        stream,
-        Arc::new(Shut::new(closer)),
-        ChannelInfo {
-            transport: "unix",
-            peer: None,
-            label: path.to_owned(),
-        },
-    ))
+    Ok(lines::channel(reader, stream, Arc::new(Shut::new(closer))))
 }
 
 /// The category comes from the error kind, never from its text.
@@ -66,7 +57,7 @@ mod tests {
     fn end(stream: UnixStream) -> Channel {
         let reader = stream.try_clone().unwrap();
         let closer = Arc::new(Shut::new(stream.try_clone().unwrap()));
-        lines::channel(reader, stream, closer, ChannelInfo::default())
+        lines::channel(reader, stream, closer)
     }
 
     #[test]
@@ -84,7 +75,7 @@ mod tests {
         let limited = |stream: UnixStream| {
             let reader = stream.try_clone().unwrap();
             let closer = Arc::new(Shut::new(stream.try_clone().unwrap()));
-            lines::limited(reader, stream, closer, ChannelInfo::default(), 1024)
+            lines::limited(reader, stream, closer, 1024)
         };
         let (a, b) = UnixStream::pair().unwrap();
         crate::channel::testing::size_limit((limited(a), limited(b)), 1024);

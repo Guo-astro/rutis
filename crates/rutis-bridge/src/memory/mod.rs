@@ -1,5 +1,5 @@
-//! The in-memory transport: bounded channels within one process, for tests
-//! and in-process links. Applications use it only when configured to.
+//! Channels within one process, for tests and in-process links:
+//! bounded, [`CAPACITY`] messages per direction.
 //!
 //! [`pair`] makes two connected channels. [`MemoryPlugin`] provides
 //! `Transport#memory`, whose `dial(name)` reaches a [`Listener`] opened
@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
 
-use crate::channel::{Channel, ChannelError, ChannelInfo, Closer, ConnectError, Receiver, Sender};
+use crate::channel::{Channel, ChannelError, Close, Closer, ConnectError, Receiver, Sender};
 use crate::{
     transport_key, Credential, Dial, Presented, Refusal, Registered, Registration,
     RegistrationError, Registrations, Transport,
@@ -25,8 +25,8 @@ struct State {
     queue: VecDeque<Vec<u8>>,
     /// The sending end finished; the receiver drains, then sees the end.
     finished: bool,
-    /// Closed by either end: no more sends, receivers stop.
-    closed: Option<String>,
+    /// Closed by either end, and why: no more sends, receivers stop.
+    closed: Option<Close>,
     /// Threads waiting on this direction, for tests that need "it blocks"
     /// as a state to wait for rather than a pause (#231).
     #[cfg(test)]
@@ -77,10 +77,8 @@ impl Sender for MemorySender {
     fn send(&mut self, message: &[u8]) -> Result<(), ChannelError> {
         let mut state = self.0.state.lock().unwrap();
         loop {
-            if let Some(reason) = &state.closed {
-                return Err(ChannelError::Closed {
-                    reason: reason.clone(),
-                });
+            if let Some(why) = &state.closed {
+                return Err(ended(why));
             }
             if state.queue.len() < CAPACITY {
                 state.queue.push_back(message.to_vec());
@@ -97,24 +95,44 @@ impl Drop for MemorySender {
     }
 }
 
+/// What a send or receive on a closed channel reports, `why` it closed.
+fn ended(why: &Close) -> ChannelError {
+    match why {
+        Close::Done => ChannelError::Closed {
+            reason: "the channel is closed".into(),
+        },
+        Close::Replaced => ChannelError::Closed {
+            reason: "replaced by a new connection".into(),
+        },
+        Close::Rejected(reason) => ChannelError::Rejected {
+            reason: format!("rejected: {reason}"),
+        },
+    }
+}
+
 struct MemoryReceiver {
     incoming: Arc<Direction>,
     /// Set when this end closed itself: its own receive reports the close.
-    own: Arc<Mutex<Option<String>>>,
+    own: Arc<Mutex<bool>>,
 }
 impl Receiver for MemoryReceiver {
     fn recv(&mut self) -> Result<Option<Vec<u8>>, ChannelError> {
         let mut state = self.incoming.state.lock().unwrap();
         loop {
-            if let Some(reason) = self.own.lock().unwrap().clone() {
-                return Err(ChannelError::Closed { reason });
+            if *self.own.lock().unwrap() {
+                return Err(ChannelError::Closed {
+                    reason: "closed here".into(),
+                });
             }
             if let Some(message) = state.queue.pop_front() {
                 self.incoming.changed.notify_all();
                 return Ok(Some(message));
             }
-            if state.finished || state.closed.is_some() {
-                return Ok(None);
+            match &state.closed {
+                Some(Close::Done) => return Ok(None),
+                Some(why) => return Err(ended(why)),
+                None if state.finished => return Ok(None),
+                None => {}
             }
             state = self.incoming.wait(state);
         }
@@ -122,32 +140,30 @@ impl Receiver for MemoryReceiver {
 }
 impl Drop for MemoryReceiver {
     fn drop(&mut self) {
-        self.incoming
-            .update(|state| state.closed = Some("receiver dropped".into()));
+        self.incoming.update(|state| {
+            state.closed.get_or_insert(Close::Done);
+        });
     }
 }
 
 struct MemoryCloser {
     incoming: Arc<Direction>,
     outgoing: Arc<Direction>,
-    own: Arc<Mutex<Option<String>>>,
+    own: Arc<Mutex<bool>>,
 }
 impl Closer for MemoryCloser {
-    fn close(&self, reason: &str) {
-        self.own
-            .lock()
-            .unwrap()
-            .get_or_insert_with(|| reason.to_owned());
+    fn close(&self, why: Close) {
+        *self.own.lock().unwrap() = true;
         for direction in [&self.incoming, &self.outgoing] {
             direction.update(|state| {
-                state.closed.get_or_insert_with(|| reason.to_owned());
+                state.closed.get_or_insert_with(|| why.clone());
             });
         }
     }
 }
 
-fn end(incoming: &Arc<Direction>, outgoing: &Arc<Direction>, label: &str) -> Channel {
-    let own = Arc::new(Mutex::new(None));
+fn end(incoming: &Arc<Direction>, outgoing: &Arc<Direction>) -> Channel {
+    let own = Arc::new(Mutex::new(false));
     Channel {
         sender: Box::new(MemorySender(outgoing.clone())),
         receiver: Box::new(MemoryReceiver {
@@ -159,18 +175,13 @@ fn end(incoming: &Arc<Direction>, outgoing: &Arc<Direction>, label: &str) -> Cha
             outgoing: outgoing.clone(),
             own,
         }),
-        info: ChannelInfo {
-            transport: "memory",
-            peer: None,
-            label: label.to_owned(),
-        },
     }
 }
 
 /// Two channels joined end to end: what one sends, the other receives.
 pub fn pair() -> (Channel, Channel) {
     let (a, b) = (Arc::default(), Arc::default());
-    (end(&a, &b, ""), end(&b, &a, ""))
+    (end(&a, &b), end(&b, &a))
 }
 
 /// [`pair`], with what the first channel sends into and what it receives
@@ -178,7 +189,7 @@ pub fn pair() -> (Channel, Channel) {
 #[cfg(test)]
 fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
     let (a, b): (Arc<Direction>, Arc<Direction>) = (Arc::default(), Arc::default());
-    (end(&a, &b, ""), end(&b, &a, ""), b, a)
+    (end(&a, &b), end(&b, &a), b, a)
 }
 
 /// Provides `Transport#memory`. Clones share one transport, so a test can
@@ -304,7 +315,7 @@ impl MemoryTransport {
         self.registrations.clear();
         for closer in std::mem::take(&mut *self.open.lock().unwrap()) {
             if let Some(closer) = closer.upgrade() {
-                closer.close("transport unloaded");
+                closer.close(Close::Done);
             }
         }
     }
@@ -345,9 +356,7 @@ impl MemoryTransport {
             });
         }
         let (a, b) = (Arc::default(), Arc::default());
-        let (mut dialed, mut accepted) = (end(&a, &b, address), end(&b, &a, address));
-        dialed.info.peer = dial.peer.clone();
-        accepted.info.peer = Some(ticket.peer.clone());
+        let (dialed, accepted) = (end(&a, &b), end(&b, &a));
         self.track([&dialed, &accepted]);
         match self.registrations.hand_over(&ticket, accepted) {
             Ok(()) => Ok(dialed),
@@ -376,8 +385,7 @@ impl Transport for MemoryTransport {
                 reason: format!("nothing listens on memory:{address}"),
             })?;
             let (a, b) = (Arc::default(), Arc::default());
-            let (mut dialed, accepted) = (end(&a, &b, address), end(&b, &a, address));
-            dialed.info.peer = dial.peer.clone();
+            let (dialed, accepted) = (end(&a, &b), end(&b, &a));
             self.track([&dialed, &accepted]);
             listener
                 .send(accepted)

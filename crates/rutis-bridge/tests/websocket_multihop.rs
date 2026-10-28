@@ -12,10 +12,10 @@ use std::time::Duration;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
 };
@@ -149,7 +149,7 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn node_answers_heartbeats_while_its_main_thread_waits() {
     use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format};
-    use rutis_bridge::transport::websocket::{Limits, WebSocketTransport};
+    use rutis_bridge::websocket::{Limits, WebSocketTransport};
     use rutis_bridge::{Registration, Transport};
 
     struct Sleeper;

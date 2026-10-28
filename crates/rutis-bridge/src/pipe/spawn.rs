@@ -14,13 +14,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::channel::{
-    Channel, ChannelError, ChannelInfo, Closer, ConnectError, PeerId, Receiver, Sender,
-};
+use crate::channel::{Channel, ChannelError, Close, Closer, ConnectError, Receiver, Sender};
 use std::collections::BTreeSet;
 use tokio::sync::{oneshot, watch};
 
-use crate::transport::local::lines;
+use crate::pipe::lines;
 
 /// The fd a process finds its channel on (`fd:3`).
 pub const CHANNEL_FD: i32 = 3;
@@ -96,8 +94,6 @@ pub struct Spawn {
     pub stderr: Stdio,
     /// Arguments after the channel.
     pub trailing: Vec<OsString>,
-    /// The endpoint the process is: whoever starts a process names it.
-    pub peer: PeerId,
     /// What each line of its output passed on as [`Stdio::Lines`] starts
     /// with (`[go-weather] `, say): none by default.
     pub output_prefix: Option<String>,
@@ -120,7 +116,7 @@ pub enum Handover {
 }
 
 impl Spawn {
-    pub fn new(program: impl Into<OsString>, peer: PeerId) -> Self {
+    pub fn new(program: impl Into<OsString>) -> Self {
         Self {
             program: program.into(),
             args: Vec::new(),
@@ -131,7 +127,6 @@ impl Spawn {
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
             trailing: Vec::new(),
-            peer,
             output_prefix: None,
         }
     }
@@ -205,9 +200,7 @@ pub(crate) async fn start(
         sender,
         receiver,
         closer,
-        mut info,
     } = channel;
-    info.peer = Some(spawn.peer.clone());
     processes.add(child.ended.clone());
     Ok(Channel {
         sender: Box::new(EndedSender {
@@ -223,7 +216,6 @@ pub(crate) async fn start(
             child,
             _directory: directory,
         }),
-        info,
     })
 }
 
@@ -593,7 +585,7 @@ fn inherit(spawn: &Spawn) -> Result<Started, ConnectError> {
         .map_err(|error| cannot_start(spawn, error))?;
     // The child has its copy; ours would keep the channel open after it exits.
     drop(theirs);
-    Ok((socket(ours, "fd")?, Child::watch(child), None))
+    Ok((socket(ours)?, Child::watch(child), None))
 }
 
 #[cfg(unix)]
@@ -618,11 +610,7 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
         }),
     };
     let stream = stream.into_std().map_err(retryable)?;
-    Ok((
-        socket(stream, "unix")?,
-        Child::watch(child),
-        Some(directory),
-    ))
+    Ok((socket(stream)?, Child::watch(child), Some(directory)))
 }
 
 /// How long a connection to the loopback listener may take to present its
@@ -725,16 +713,7 @@ impl Loopback {
         let _ = stream.set_nodelay(true);
         let reader = stream.try_clone()?;
         let closer = Arc::new(ShutTcp(Mutex::new(Some(stream.try_clone()?))));
-        Ok(lines::channel(
-            reader,
-            stream,
-            closer,
-            ChannelInfo {
-                transport: "tcp",
-                peer: None,
-                label: String::new(),
-            },
-        ))
+        Ok(lines::channel(reader, stream, closer))
     }
 }
 
@@ -766,7 +745,7 @@ async fn read_line(stream: &mut tokio::net::TcpStream) -> std::io::Result<String
 struct ShutTcp(Mutex<Option<std::net::TcpStream>>);
 
 impl Closer for ShutTcp {
-    fn close(&self, _reason: &str) {
+    fn close(&self, _why: Close) {
         let stream = self
             .0
             .lock()
@@ -790,22 +769,13 @@ fn cannot_start(spawn: &Spawn, error: std::io::Error) -> ConnectError {
 }
 
 #[cfg(unix)]
-fn socket(stream: UnixStream, transport: &'static str) -> Result<Channel, ConnectError> {
+fn socket(stream: UnixStream) -> Result<Channel, ConnectError> {
     stream.set_nonblocking(false).map_err(retryable)?;
     let reader = stream.try_clone().map_err(retryable)?;
-    let closer = Arc::new(crate::transport::local::unix::Shut::new(
+    let closer = Arc::new(crate::pipe::unix::Shut::new(
         stream.try_clone().map_err(retryable)?,
     ));
-    Ok(lines::channel(
-        reader,
-        stream,
-        closer,
-        ChannelInfo {
-            transport,
-            peer: None,
-            label: String::new(),
-        },
-    ))
+    Ok(lines::channel(reader, stream, closer))
 }
 
 /// A closer that owns its process: dropped, it ends the process.
@@ -816,9 +786,9 @@ struct Owning {
 }
 
 impl Closer for Owning {
-    fn close(&self, reason: &str) {
+    fn close(&self, why: Close) {
         self.child.ended.closed_here();
-        self.closer.close(reason);
+        self.closer.close(why);
         self.child.end();
     }
 }

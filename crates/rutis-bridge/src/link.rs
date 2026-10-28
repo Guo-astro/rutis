@@ -524,7 +524,7 @@ impl Link {
             protocol: protocol(),
             deliver: Box::new(move |channel| {
                 if let Err(refused) = sender.send(channel) {
-                    refused.0.closer.close("the link stopped");
+                    refused.0.closer.close(crate::channel::Close::Done);
                 }
             }),
         });
@@ -568,7 +568,7 @@ impl Link {
                     // A newer connection of the far end takes over: the old
                     // session ends, and its peer is withdrawn, first.
                     if let Some(old) = current.take() {
-                        old.closer.replaced();
+                        old.closer.close(crate::channel::Close::Replaced);
                         old.end("replaced by a new connection").await;
                     }
                     match self.start(channel).await {

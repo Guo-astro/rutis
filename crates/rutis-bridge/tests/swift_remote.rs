@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketTransport,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketTransport};
 use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
 use rutis_test_support::within;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};

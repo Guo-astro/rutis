@@ -12,7 +12,7 @@ use std::sync::Arc;
 use common::runtimes::id;
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
 use rutis_loader::peer::{register_peer_node, PeerResolver};
 use rutis_loader::{Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch};

@@ -15,7 +15,7 @@ use std::time::Duration;
 use rutis::host::{BoxFuture, CtxHost};
 use rutis::Ctx;
 use rutis_bridge::channel::{
-    Channel, ChannelError, ChannelInfo, Closer, ConnectError, PeerId, Receiver, Sender,
+    Channel, ChannelError, Close, Closer, ConnectError, PeerId, Receiver, Sender,
 };
 use rutis_bridge::{
     peer_key, transport_key, Credential, Dial, Failure, IdentityPlugin, LinkConfig, LinkPlugin,
@@ -217,7 +217,7 @@ impl Physical {
         }
     }
 
-    fn logical(self: &Arc<Self>, id: u32, peer: Option<PeerId>) -> Channel {
+    fn logical(self: &Arc<Self>, id: u32) -> Channel {
         let logical = Arc::new(Logical::default());
         logical.state.lock().unwrap().credits = WINDOW;
         self.channels.lock().unwrap().insert(id, logical.clone());
@@ -237,11 +237,6 @@ impl Physical {
                 logical,
                 physical: Arc::downgrade(self),
             }),
-            info: ChannelInfo {
-                transport: "mux",
-                peer,
-                label: format!("mux #{id}"),
-            },
         }
     }
 }
@@ -314,8 +309,8 @@ struct LogicalCloser {
     physical: Weak<Physical>,
 }
 impl Closer for LogicalCloser {
-    fn close(&self, reason: &str) {
-        self.logical.end(Err(reason.to_owned()));
+    fn close(&self, _why: Close) {
+        self.logical.end(Err("closed".into()));
         // Only this logical channel: the physical connection stays.
         if let Some(physical) = self.physical.upgrade() {
             physical.channels.lock().unwrap().remove(&self.id);
@@ -352,7 +347,7 @@ impl Mux {
             return live.clone();
         }
         let far = self.far.lock().unwrap().upgrade().expect("the far end");
-        let (ours, theirs) = rutis_bridge::transport::memory::pair();
+        let (ours, theirs) = rutis_bridge::memory::pair();
         self.physicals_made.fetch_add(1, Ordering::SeqCst);
         let made = Self::run(ours, None);
         Self::run(theirs, Some(far));
@@ -430,7 +425,7 @@ impl Mux {
                             .route(&listener, Presented::Bearer(&token));
                         match ticket {
                             Ok(ticket) if ticket.protocol == protocol => {
-                                let logical = reading.logical(channel, Some(ticket.peer.clone()));
+                                let logical = reading.logical(channel);
                                 let _ = reading.send(Frame::Accepted {
                                     channel,
                                     peer: ticket.peer.to_string(),
@@ -438,7 +433,7 @@ impl Mux {
                                 if let Err(logical) =
                                     router.registrations.hand_over(&ticket, logical)
                                 {
-                                    logical.closer.close("registration revoked");
+                                    logical.closer.close(Close::Done);
                                 }
                             }
                             Ok(_) => {
@@ -501,7 +496,7 @@ impl Transport for Mux {
             physical.pending.lock().unwrap().insert(id, answered);
             // The logical channel exists before the answer, so no data
             // sent right after acceptance is lost.
-            let channel = physical.logical(id, dial.peer.clone());
+            let channel = physical.logical(id);
             physical
                 .send(Frame::Open {
                     channel: id,
@@ -695,7 +690,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     // comes back to life; the links redial and the adapter makes a new
     // physical connection for them.
     let physical = mac_side.physical.lock().unwrap().clone().unwrap();
-    physical.closer.close("cable cut");
+    physical.closer.close(Close::Done);
     let (pi_before, mac_before) = (pi.generation(), mac.generation());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

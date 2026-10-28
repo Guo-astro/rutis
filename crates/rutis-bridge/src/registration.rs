@@ -263,13 +263,12 @@ mod tests {
             }
         }
         impl crate::channel::Closer for Nothing {
-            fn close(&self, _: &str) {}
+            fn close(&self, _: crate::channel::Close) {}
         }
         Channel {
             sender: Box::new(Nothing),
             receiver: Box::new(Nothing),
             closer: Arc::new(Nothing),
-            info: Default::default(),
         }
     }
 

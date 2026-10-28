@@ -5,10 +5,10 @@
 //! One physical connection carries one logical channel, so close codes and
 //! heartbeats act on the connection.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use crate::channel::{Channel, ChannelError, ChannelInfo, Closer, Receiver, Sender};
+use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
@@ -18,17 +18,18 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use crate::transport::websocket::pipe::{Ending, Pipe};
-use crate::transport::websocket::Limits;
+use crate::websocket::pipe::{Ending, Pipe};
+use crate::websocket::Limits;
 
-/// Orderly close.
+/// A normal close.
+pub(crate) const NORMAL: u16 = 1000;
+/// The host is stopping.
 pub(crate) const GOING_AWAY: u16 = 1001;
 /// A message over the size limit.
 pub(crate) const TOO_BIG: u16 = 1009;
 /// A newer connection of the same endpoint took over.
 pub(crate) const REPLACED: u16 = 4002;
-/// The far end's identity was rejected after the upgrade (an access point
-/// refusing the id it greeted with): an authentication failure.
+/// The far end was refused after the upgrade: an authentication failure.
 pub(crate) const REJECTED: u16 = 4003;
 /// Close frame reasons are at most 123 bytes.
 const REASON_LIMIT: usize = 123;
@@ -64,7 +65,7 @@ impl Control {
     }
 }
 
-struct Shared {
+pub(crate) struct Shared {
     outgoing: Pipe,
     incoming: Pipe,
     control: Control,
@@ -111,23 +112,27 @@ impl Receiver for WsReceiver {
 
 struct WsCloser(Arc<Shared>);
 impl Closer for WsCloser {
-    fn close(&self, reason: &str) {
-        self.0.close(GOING_AWAY, reason);
+    fn close(&self, why: Close) {
+        match why {
+            Close::Done => self.0.close(NORMAL, "closed here"),
+            Close::Replaced => self.0.close(REPLACED, "replaced by a new connection"),
+            Close::Rejected(reason) => self.0.close(REJECTED, &reason),
+        }
     }
+}
 
-    fn replaced(&self) {
-        self.0.close(REPLACED, "replaced by a new connection");
-    }
-
-    fn rejected(&self, reason: &str) {
-        self.0.close(REJECTED, reason);
+/// Close the connection of `shared`, if it is still open, because the
+/// host is stopping (close code 1001).
+pub(crate) fn going_away(shared: &Weak<Shared>) {
+    if let Some(shared) = shared.upgrade() {
+        shared.close(GOING_AWAY, "the host is stopping");
     }
 }
 
 /// Counts a running connection task for the transport's shutdown.
-pub(crate) struct Live(pub Arc<crate::transport::websocket::Shared>);
+pub(crate) struct Live(pub Arc<crate::websocket::Shared>);
 impl Live {
-    pub(crate) fn new(transport: Arc<crate::transport::websocket::Shared>) -> Self {
+    pub(crate) fn new(transport: Arc<crate::websocket::Shared>) -> Self {
         transport
             .live
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -143,14 +148,14 @@ impl Drop for Live {
     }
 }
 
-/// Run `socket` as a channel on `runtime`.
+/// Run `socket` as a channel on `runtime`; `live`, if given, counts the
+/// connection task while it runs. Also returns what [`going_away`] closes.
 pub(crate) fn channel<S: Io>(
     socket: WebSocketStream<S>,
-    info: ChannelInfo,
     limits: &Limits,
     runtime: &tokio::runtime::Handle,
-    live: Live,
-) -> Channel {
+    live: Option<Live>,
+) -> (Channel, Weak<Shared>) {
     let shared = Arc::new(Shared {
         outgoing: Pipe::new(limits.buffer),
         incoming: Pipe::new(limits.buffer),
@@ -162,12 +167,13 @@ pub(crate) fn channel<S: Io>(
         task.await;
         drop(live);
     });
-    Channel {
+    let weak = Arc::downgrade(&shared);
+    let channel = Channel {
         sender: Box::new(WsSender(shared.clone())),
         receiver: Box::new(WsReceiver(shared.clone())),
         closer: Arc::new(WsCloser(shared)),
-        info,
-    }
+    };
+    (channel, weak)
 }
 
 fn truncate(reason: &str) -> String {
@@ -190,7 +196,7 @@ fn far_close(frame: Option<CloseFrame>) -> Ending {
     match frame {
         None => Ending::Finished,
         Some(frame) => match u16::from(frame.code) {
-            1000 | GOING_AWAY => Ending::Finished,
+            NORMAL | GOING_AWAY => Ending::Finished,
             REPLACED => Ending::Failed("replaced by a new connection".into()),
             REJECTED => Ending::Rejected(format!("rejected: {}", frame.reason)),
             code => Ending::Failed(format!("closed by the far end ({code}): {}", frame.reason)),

@@ -3,10 +3,10 @@
 //! never from its text.
 
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use crate::channel::{Channel, ChannelInfo, ConnectError};
-use crate::{Credential, Dial};
+use crate::channel::{Channel, ConnectError};
+use crate::Credential;
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
 use tokio::net::TcpStream;
@@ -15,8 +15,8 @@ use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Uri};
 use tokio_tungstenite::tungstenite::Error as WsError;
 
-use crate::transport::websocket::connection::{self, Io};
-use crate::transport::websocket::Limits;
+use crate::websocket::connection::{self, Io};
+use crate::websocket::Limits;
 
 fn retryable(reason: impl std::fmt::Display) -> ConnectError {
     ConnectError::Retryable {
@@ -62,43 +62,40 @@ fn certificate_problem(error: &std::io::Error) -> bool {
     }
 }
 
+/// Dial `address` offering session protocol `protocol` (none when empty),
+/// presenting `credential`; connections run on `runtime`, counted by
+/// `live` if given.
 pub(crate) async fn dial(
-    dial: &Dial,
+    address: &str,
+    protocol: &str,
+    credential: Option<&Credential>,
     roots: Arc<RootCertStore>,
     limits: &Limits,
     runtime: &tokio::runtime::Handle,
-    live: connection::Live,
-) -> Result<Channel, ConnectError> {
-    let uri: Uri = dial
-        .address
+    live: Option<connection::Live>,
+) -> Result<(Channel, Weak<connection::Shared>), ConnectError> {
+    let uri: Uri = address
         .parse()
-        .map_err(|error| incompatible(format!("invalid address {}: {error}", dial.address)))?;
+        .map_err(|error| incompatible(format!("invalid address {address}: {error}")))?;
     let secure = match uri.scheme_str() {
         Some("wss") => true,
         Some("ws") => false,
         _ => {
             return Err(incompatible(format!(
-                "{} is not a ws:// or wss:// address",
-                dial.address
+                "{address} is not a ws:// or wss:// address"
             )))
         }
     };
     let host = uri
         .host()
-        .ok_or_else(|| incompatible(format!("{} names no host", dial.address)))?
+        .ok_or_else(|| incompatible(format!("{address} names no host")))?
         .to_owned();
     if !secure && !is_loopback(&host) {
         return Err(incompatible(format!(
-            "{}: a non-loopback address needs wss://",
-            dial.address
+            "{address}: a non-loopback address needs wss://"
         )));
     }
     let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
-    let credential = match (&dial.identity, &dial.peer) {
-        (Some(identity), Some(peer)) => identity.credential(peer),
-        _ => None,
-    };
-
     let connect = async {
         let tcp = TcpStream::connect((host.trim_start_matches('[').trim_end_matches(']'), port))
             .await
@@ -106,14 +103,13 @@ pub(crate) async fn dial(
         let _ = tcp.set_nodelay(true);
         keepalive(&tcp);
         let io: Box<dyn Io> = if secure {
-            let certificate = match &credential {
+            let certificate = match credential {
                 Some(Credential::ClientCertificate { chain_pem, key_pem }) => {
                     Some((chain_pem.as_slice(), key_pem.as_slice()))
                 }
                 _ => None,
             };
-            let config = crate::transport::websocket::tls::client(roots, certificate)
-                .map_err(incompatible)?;
+            let config = crate::websocket::tls::client(roots, certificate).map_err(incompatible)?;
             let name = ServerName::try_from(
                 host.trim_start_matches('[')
                     .trim_end_matches(']')
@@ -131,19 +127,17 @@ pub(crate) async fn dial(
         } else {
             Box::new(tcp)
         };
-        let mut request = dial
-            .address
-            .as_str()
+        let mut request = address
             .into_client_request()
-            .map_err(|error| incompatible(format!("{}: {error}", dial.address)))?;
-        if !dial.protocol.is_empty() {
+            .map_err(|error| incompatible(format!("{address}: {error}")))?;
+        if !protocol.is_empty() {
             request.headers_mut().insert(
                 "Sec-WebSocket-Protocol",
-                HeaderValue::from_str(&dial.protocol)
-                    .map_err(|_| incompatible(format!("invalid protocol {:?}", dial.protocol)))?,
+                HeaderValue::from_str(protocol)
+                    .map_err(|_| incompatible(format!("invalid protocol {protocol:?}")))?,
             );
         }
-        if let Some(Credential::Bearer(token)) = &credential {
+        if let Some(Credential::Bearer(token)) = credential {
             let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
                 .map_err(|_| incompatible("the bearer token is not a valid header value"))?;
             value.set_sensitive(true);
@@ -152,7 +146,7 @@ pub(crate) async fn dial(
         let (socket, _) = tokio_tungstenite::client_async_with_config(
             request,
             io,
-            Some(crate::transport::websocket::ws_config(limits)),
+            Some(crate::websocket::ws_config(limits)),
         )
         .await
         .map_err(|error| classify(&host, error))?;
@@ -161,17 +155,7 @@ pub(crate) async fn dial(
     let socket = tokio::time::timeout(limits.handshake, connect)
         .await
         .map_err(|_| retryable(format!("{host}:{port}: timed out connecting")))??;
-    Ok(connection::channel(
-        socket,
-        ChannelInfo {
-            transport: "websocket",
-            peer: dial.peer.clone(),
-            label: host,
-        },
-        limits,
-        runtime,
-        live,
-    ))
+    Ok(connection::channel(socket, limits, runtime, live))
 }
 
 fn classify(host: &str, error: WsError) -> ConnectError {
