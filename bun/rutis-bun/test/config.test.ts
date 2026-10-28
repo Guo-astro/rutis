@@ -10,6 +10,7 @@ import { Runtime } from '../src/runner.ts'
 
 const { cases } = JSON.parse(readFileSync(new URL('../../../specs/config-schema/cases.json', import.meta.url), 'utf8'))
 
+// guarantee: sdk/config-schema (the shared case list, Bun's column)
 test('this copy passes every case of the shared list', () => {
   for (const c of cases) {
     const checked = checkConfig(c.schema, Object.hasOwn(c, 'config') ? c.config : undefined)
