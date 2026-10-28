@@ -117,7 +117,7 @@ pub enum ChannelError {
     #[error("{reason}")]
     Closed { reason: String },
     /// The far end rejected this end's identity after the channel was
-    /// established (an access point refusing the id this end greeted
+    /// established (a listener refusing the id this end greeted
     /// with): an authentication failure, which a session ends with as an
     /// identity mismatch. Only a transport that can say so reports it.
     #[error("{reason}")]

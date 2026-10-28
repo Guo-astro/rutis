@@ -252,8 +252,8 @@ impl DynPlugin for LinkPlugin {
                 generation: 0,
             };
             // A listening link registers before its apply returns: once it
-            // is applied, its far end is routed to it, also on a listener an
-            // access point already registered on, where an unknown
+            // is applied, its far end is routed to it, also on a listener another
+            // entry already registered on, where an unknown
             // credential is refused, not retried (#411).
             let task = match self.config.connect.clone() {
                 Connect::Dial(dialer) => tokio::spawn(link.dialing(dialer)),
@@ -416,7 +416,7 @@ impl Link {
                         }
                         // Why it ended: for a local runtime, how its
                         // process ended; an identity the far end rejected
-                        // after the greeting (an access point refusing this
+                        // after the greeting (a listener refusing this
                         // end's id) is an authentication failure.
                         let ended = live.session.close_reason();
                         let reason = ended.as_ref().map_or_else(

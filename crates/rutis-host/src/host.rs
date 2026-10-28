@@ -904,7 +904,7 @@ impl Host {
 
 /// How links reach their far ends: by dialing a WebSocket address (or a
 /// Unix socket), or by being accepted on one of the host's listeners.
-/// Transitional (#695 S2): goes with links and access points.
+/// Transitional (#695 S2): goes with links.
 #[derive(Clone)]
 struct Reaching {
     local: PeerId,
