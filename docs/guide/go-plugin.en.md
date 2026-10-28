@@ -301,46 +301,56 @@ A plugin definition the plugin hands to a test double (the double's method takes
 rutis-host dev
 ```
 
-`dev` builds `cmd/weather` and runs each of its plugins as the runtime `go-weather`; a change to `.go` files, `go.mod` or `go.sum` rebuilds it and restarts only that runtime, and a failed build keeps the old one running.
+`dev` builds `cmd/weather` and runs each of its plugins as the runtime `go-weather`.
 
-In `rutis.dev.json`, the row with the plugin's id (here `weather`) has no `name`: it gives the plugin itself its configuration; the other rows are plugins that run with it. The other services the plugin needs are such rows, Python or TypeScript plugins, their languages under `runtimes`. For example a fake `llm` in Python, in the project's `dev/`:
+In `rutis.dev.json`, the row with the plugin's id (here `weather`) has no `name`: it gives the plugin itself its configuration; the other rows are plugins that run with it. The other services the plugin needs are such rows. Write a fake service in Go: an ordinary main package in the project, the row's `name` its directory:
+
+```text
+weather/
+  go.mod  plugin.go  plugin_test.go
+  cmd/weather/main.go        # the plugin
+  dev/fakellm/main.go        # the fake llm: an ordinary Go main package
+  rutis.dev.json
+```
+
+```go
+// dev/fakellm/main.go
+package main
+
+import (
+	"context"
+
+	"github.com/arcships/rutis/go/rutis"
+)
+
+type llm struct{}
+
+func (llm) Ask(ctx context.Context, question string) (string, error) { return "sunny", nil }
+
+var plugin = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:  "fakellm",
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error { ctx.Provide("llm", llm{}); return nil },
+})
+
+func main() { rutis.Serve(plugin) }
+```
 
 ```json
 {
   "format": 1,
-  "runtimes": { "py": { "project": "dev" } },
   "rows": [
     { "id": "weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "py:fake_llm" }
+    { "id": "llm", "name": "./dev/fakellm" }
   ]
 }
 ```
 
-```python
-# dev/fake_llm.py
-from rutis import define_plugin
+- A row whose `name` starts with `./` and is a directory of the project is a fake written in Go: that directory is a main package of the same `go.mod`, serving one plugin. `dev` builds it into `.rutis/go/fakellm-<n>` and runs it as its own runtime, `go-fakellm`. The runtime is named after the directory; one named as the project's (`./dev/weather`) is an error: rename the directory.
+- A change to `.go` files, `go.mod` or `go.sum` builds each of the project's binaries again (each says `<directory>: building` first) and restarts only the runtimes whose build changed: a change to `dev/fakellm/main.go` restarts only `go-fakellm` (and `weather`, which uses `llm`, with it); `weather`'s binary is the same, and stays. A failed build keeps that binary's last build running.
+- Only `dev` and `rutis-host check` in the project have such rows (`check` builds them too); `rutis.json` and `run` do not. `dev/fakellm` is an ordinary package of the module, which `go build ./...` and `go test ./...` compile; the release workflow builds only `cmd/<name>`.
+- Tests still put a Go value into `rutistest.Load`'s `services`. To share one type with `dev`, put it in an ordinary package (such as `internal/fake`) that `dev/fakellm/main.go` and the tests both import.
 
-
-class FakeLlm:
-    async def ask(self, question):
-        return "sunny"
-
-
-def apply(ctx, config):
-    ctx.provide("llm", FakeLlm())
-
-
-plugin = define_plugin(apply, provides={"llm": FakeLlm})
-```
-
-```bash
-uv venv dev/.venv                                  # the Python runtime's environment: <project>/.venv
-uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # the version of your rutis-host
-```
-
-The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project` (here `dev`), and that environment needs `rutis`; `dev/` holds no Go code, so `go build ./...` is not affected. In TypeScript it is the same: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row named `./dev/fake-llm.ts`.
-
-When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
+A fake can also be a Python or TypeScript plugin, its language under `runtimes` (`"runtimes": { "py": { "project": "dev" } }`, the row named `py:fake_llm`); when these rows' files change, only those rows reload, without a rebuild. A change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
 
 ### Calling a method
 
