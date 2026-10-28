@@ -85,7 +85,7 @@ pub fn category(failure: Failure) -> &'static str {
 
 /// A wait as printed: whole seconds as `30s`, otherwise to a tenth,
 /// `2.1s`.
-fn seconds(wait: Duration) -> String {
+pub(crate) fn seconds(wait: Duration) -> String {
     let tenths = (wait.as_millis() + 50) / 100;
     match tenths % 10 {
         0 => format!("{}s", tenths / 10),

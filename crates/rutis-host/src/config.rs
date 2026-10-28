@@ -732,6 +732,29 @@ impl HostConfig {
                 host,
             });
         }
+        // A `rutis-host/listen` row: its own token, `RUTIS_TOKEN_<row id>`,
+        // on its listener.
+        for row in &self.rows {
+            let (Some(id), Some(listener)) =
+                (row["id"].as_str(), row["config"]["listener"].as_str())
+            else {
+                continue;
+            };
+            if row["name"] != crate::connect::LISTEN {
+                continue;
+            }
+            let disabled = match row["disabled"] == true {
+                true => " (disabled)",
+                false => "",
+            };
+            entries.push(Accepting {
+                listener: listener.to_owned(),
+                entry: format!("row {id}{disabled}"),
+                name: id.to_owned(),
+                link: false,
+                host: true,
+            });
+        }
         for remote in &self.runtimes.remote {
             let entry = |listener: &str, link: bool| Accepting {
                 listener: listener.to_owned(),
@@ -1107,6 +1130,40 @@ mod tests {
                 ("gpu".to_owned(), true)
             ]
         );
+    }
+
+    /// Two `rutis-host/listen` rows on one listener with one token cannot
+    /// be told apart (#702); on two listeners they can.
+    #[test]
+    fn listen_rows_on_one_listener_need_their_own_tokens() {
+        let config: HostConfig = serde_json::from_value(json!({
+            "listen": [
+                { "name": "public", "address": "127.0.0.1:0" },
+                { "name": "private", "address": "127.0.0.1:0" }
+            ],
+            "rows": [
+                { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } },
+                { "id": "watch", "name": "rutis-host/listen", "config": { "listener": "public" }, "disabled": true },
+                { "id": "tablet", "name": "rutis-host/listen", "config": { "listener": "private" } }
+            ]
+        }))
+        .unwrap();
+        let entries = config.accepting();
+        let same = variables(&[
+            ("RUTIS_TOKEN_PHONE", "secret"),
+            ("RUTIS_TOKEN_WATCH", "secret"),
+        ]);
+        assert_eq!(
+            shared_tokens(&entries, &same).unwrap_err(),
+            "listener public: row phone accepts RUTIS_TOKEN_PHONE and row watch (disabled) \
+             accepts RUTIS_TOKEN_WATCH, the same token, so a connection presenting it cannot \
+             be told apart: give RUTIS_TOKEN_PHONE or RUTIS_TOKEN_WATCH another value"
+        );
+        let apart = variables(&[
+            ("RUTIS_TOKEN_PHONE", "secret"),
+            ("RUTIS_TOKEN_TABLET", "secret"),
+        ]);
+        assert!(shared_tokens(&entries, &apart).is_ok());
     }
 
     /// Two link rows on different listeners accepting one token: they share
