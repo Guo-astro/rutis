@@ -16,8 +16,8 @@ import { RECORD, Session } from '../../src/session.mjs'
 
 const isResult = value => value !== undefined && value !== null && value !== false
 
-// `command`: the runtime's argv (its channel, `--format endpoint --id rt
-// --peer host`, inserted after the program); `hello`: a raw hello to send
+// `command`: the runtime's argv (its channel, `--id rt --peer host`,
+// inserted after the program); `hello`: a raw hello to send
 // instead of the session's (to be refused).
 export async function fakeHost(command, { hello, env } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'rutis-fake-host-'))
@@ -25,7 +25,7 @@ export async function fakeHost(command, { hello, env } = {}) {
   const server = createServer()
   await new Promise(resolve => server.listen(path, resolve))
   const [program, script, ...rest] = command
-  const child = spawn(program, [script, path, '--format', 'endpoint', '--id', 'rt', '--peer', 'host', ...rest], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
+  const child = spawn(program, [script, path, '--id', 'rt', '--peer', 'host', ...rest], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
   let stderr = ''
   child.stderr.on('data', chunk => { stderr += chunk })
   // What the runtime writes to stdout, kept for the output tests (#678).
