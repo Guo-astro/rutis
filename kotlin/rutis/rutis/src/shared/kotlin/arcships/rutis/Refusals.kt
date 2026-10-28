@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.IOException
 
 // The errors this runtime makes when it refuses a call (#677,
 // docs/design-diagnostics-2026-10-26.md §4.3): a BindingError with a code
@@ -150,4 +151,23 @@ class UnavailableException internal constructor(service: String) : IllegalStateE
 
     /** `{service}`. */
     val data: Map<String, Any?> = mapOf("service" to service)
+}
+
+/**
+ * The host went (#677): what calls fail with then, `the host disconnected`
+ * (with why, when known), code peer-gone with `{reason}`. It crosses as a
+ * BindingError.
+ */
+class HostGoneException internal constructor(why: String?, cause: Throwable? = null, message: String? = null) :
+    IOException(message ?: if (why == null) "the host disconnected" else "the host disconnected ($why)", cause) {
+    /** `peer-gone`. */
+    val code: String = "peer-gone"
+
+    /** `{reason}`: `disconnected`, `closed`, or what failed. */
+    val data: Map<String, Any?> = mapOf("reason" to (why ?: "disconnected"))
+
+    internal companion object {
+        /** This side closed the connection. */
+        fun closed() = HostGoneException("closed", message = "the connection to the host is closed")
+    }
 }

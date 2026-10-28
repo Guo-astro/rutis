@@ -322,7 +322,7 @@ async fn a_swift_runtime_that_dials_in_is_an_instance() {
 /// The Swift template, built against this checkout's Swift package, its
 /// row configured as its `rutis.dev.json` says: `check --strict` passes,
 /// with no config error and no extra key (config schema design §11, 1c).
-/// guarantee: host/new
+/// guarantee: host/new, sdk/config-schema
 #[test]
 fn the_swift_template_passes_check_with_its_dev_config() {
     let dir = tempfile::tempdir().unwrap();

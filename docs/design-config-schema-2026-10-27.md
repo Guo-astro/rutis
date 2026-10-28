@@ -2,7 +2,7 @@
 
 [English](design-config-schema-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则，调用处只列在 §11 的清单里；第五次修订：配置错误由它自己的 `Display` 写成文字，写明外面包一层时的样子；第六次修订：加上现有配置不被误拒的 CI 检查与发布前在 Dim 上的验证）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
+状态：已实现（#727、#740、#742、#747、#748、#752、#750、#754）。日期：2026-10-27（同日修订：去掉"不检查的关键字"告警；解码器的错误改写成同样的句子；多出来的键由 loader 告警；写明 7 份实现要逐字一致的规则；再次修订：内核的 `Validation` 文字不变、去掉 `config_issues`，补上 dylib 行、应用运行时的行与 0.18 以前的二进制，简化解码器错误；第三次修订：写明 loader 里做这件事的位置、失败文字怎样写出，去掉旧 dylib 与旧 Swift 二进制的特例；第四次修订：loader 的两条原则，调用处只列在 §11 的清单里；第五次修订：配置错误由它自己的 `Display` 写成文字，写明外面包一层时的样子；第六次修订：加上现有配置不被误拒的 CI 检查与发布前在 Dim 上的验证）。基准：`main` `85678323`（0.17.2 之后）。排期：0.18（不兼容，写进《迁移到 0.18》）。
 Issue：[#669](https://github.com/arcships/rutis/issues/669)。与 [0.18 的诊断](design-diagnostics-2026-10-26.md) 一致：错误按它的 §4.3 带错误码，按 §4.7 记在配置写错的那一行，输出与它的 §8.1 故障 12 相同，不出现它 §4.5 的禁用词。
 
 范围外：`pattern`、`format`、字符串长度等更细的约束（§3.1 的清单之外）；类型转换（`"5"` 不会变成 `5`）；生成配置表单或类型（#684）；Cordis 行由 Cordis 自己校验（§2.3），不再校验一遍；Standard Schema 作为 `definePlugin` 的配置。
@@ -289,7 +289,7 @@ $ echo $?
 
 （沿用 `check` 现有的版式 `<行> (<插件>): cannot run: …`；一行有几个问题时每个问题一行。）
 
-测试工具（以 Node 为例）：`load(plugin, { units: 'kelvin' })` 失败，抛出的 `BindingError` 的 `code` 是 `bad-config`，消息是 `config: units should be "metric" or "imperial", got "kelvin"`；Go 的 `rutistest.Load` 返回同样的错误（`errors.As` 得到 `*rutis.BindingError`）。
+测试工具（以 Node 为例）：`load(plugin, { units: 'kelvin' })` 失败，抛出的 `BindingError` 的 `code` 是 `bad-config`，消息是 `config: units should be "metric" or "imperial", got "kelvin"`；Go 的 `rutistest.Load` 让测试失败，`rutistest.TryLoad` 交还同样的错误（`*rutis.RemoteError`，`Name` 为 `BindingError`，`Code` 为 `bad-config`）。
 
 ## 十、兼容与迁移
 

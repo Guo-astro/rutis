@@ -78,6 +78,7 @@ func decoded(t *testing.T, data []byte) any {
 // The shared case list (config schema design §8) through rutistest, which
 // runs the real runtime: what Apply gets, the error TryLoad gives back,
 // the warnings on standard error.
+// guarantee: sdk/config-schema (the shared case list)
 func TestEveryConfigCase(t *testing.T) {
 	for _, c := range configCases(t) {
 		t.Run(c.Name, func(t *testing.T) {
