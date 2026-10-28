@@ -337,9 +337,7 @@ async fn a_python_row_calls_the_same_service() {
 /// guarantee: bridge/marked-services
 #[test]
 fn the_declarations_pass_tsc_strict() {
-    let written = rutis_bridge::build::Exports::new()
-        .declarations(here())
-        .unwrap();
+    let written = rutis_types::Exports::new().declarations(here()).unwrap();
     assert_eq!(
         std::fs::read_to_string(here().join("rows/services.d.ts")).unwrap(),
         written,

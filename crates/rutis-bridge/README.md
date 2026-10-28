@@ -12,7 +12,7 @@ Connect a [rutis](https://github.com/arcships/rutis) application to other proces
 | `node` | local Node runtimes | yes |
 | `python` | local Python runtimes | |
 | `websocket` | the WebSocket transport (rustls) | |
-| `cordis` | Cordis mounts and binding generation (syn) | |
+| `cordis` | Cordis mounts and their binding generation | |
 | `testing` | channel contract tests and conformance suites | |
 
 ```toml

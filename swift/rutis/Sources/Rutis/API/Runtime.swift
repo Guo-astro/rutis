@@ -862,8 +862,8 @@ extension Rutis.Advanced {
             return client
         }
 
-        /// Calls `method` with `args` (encoded by `Rutis.encode` /
-        /// `Rutis.export`) and decodes its result into `R`. A method the
+        /// Calls `method` with `args` (encoded by `Rutis._Generated.encode` /
+        /// `Rutis._Generated.export`) and decodes its result into `R`. A method the
         /// service declares `sync` is a synchronous call (the far end hears
         /// so); the Task waits without holding a thread.
         public func call<R>(_ method: String, _ args: [Rutis._Generated.Encoded], as type: R.Type = R.self) async throws -> R {
@@ -909,7 +909,7 @@ public protocol RutisProxy {
 }
 
 /// How a parameter or result of type `T` takes an object of another
-/// process: nil, it takes none (and `Any` takes a `Rutis.Client`).
+/// process: nil, it takes none (and `Any` takes a `Rutis.Advanced.Client`).
 /// `@RutisClient` adds an overload for its protocol, which makes its proxy;
 /// the macros call this, and the overload wins (#687 §四).
 public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Advanced.Client) -> T)? { nil }

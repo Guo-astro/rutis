@@ -152,7 +152,7 @@ day := advanced.DateOf(time.Now())
 | TypeScript | `import { datetime } from '@arcships/rutis'` | `tsc`: `error TS2305: Module '"@arcships/rutis"' has no exported member 'datetime'.`; run directly: `SyntaxError: The requested module '@arcships/rutis' does not provide an export named 'datetime'` |
 | Python | `from rutis import AggregateError` | `ImportError: cannot import name 'AggregateError' from 'rutis' (…/rutis/__init__.py)` |
 | Go | `rutis.DateOf(t)` | `go build`: `undefined: rutis.DateOf` |
-| Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`, with a fix-it |
+| Swift | `let d: Rutis.DateTime` | `error: 'DateTime' is not a member type of enum 'Rutis.Rutis'` |
 | Kotlin | `RutisFormat.encode(…)` | `e: … Unresolved reference 'RutisFormat'.` |
 
 **A rutis contributor adds a public name without updating the snapshot**: CI fails and prints the difference and the fix, for example:

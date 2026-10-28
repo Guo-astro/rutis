@@ -69,7 +69,7 @@ extension Rutis {
         /// or the returned function is called. The listener's parameters
         /// are the event's arguments, decoded by their types (missing ones
         /// nil, extra ones ignored); in a waterfall its last parameter is a
-        /// `Rutis.Next`. Its result counts in `serial`, `bail` and
+        /// `Rutis.Advanced.Next`. Its result counts in `serial`, `bail` and
         /// `waterfall`: nil and false are no result.
         @discardableResult
         public func on<each A, R>(_ name: String, prepend: Bool = false, global: Bool = false,
@@ -261,7 +261,7 @@ extension Rutis.Advanced {
 /// waterfall, `next`.
 package typealias ListenerBody = (_ args: [Value], _ next: NextFunction?) async throws -> Value
 
-/// Whether a parameter type is `Rutis.Next<R>` or `Rutis.Next<R>?`.
+/// Whether a parameter type is `Rutis.Advanced.Next<R>` or `Rutis.Advanced.Next<R>?`.
 func nextType(_ type: Any.Type) -> (NextConstructible.Type, optional: Bool)? {
     if let next = type as? NextConstructible.Type { return (next, false) }
     if let optional = type as? OptionalProtocol.Type, let next = optional.wrappedType as? NextConstructible.Type { return (next, true) }
@@ -270,7 +270,7 @@ func nextType(_ type: Any.Type) -> (NextConstructible.Type, optional: Bool)? {
 
 /// A listener closure as the runtime calls it: its parameters decoded by
 /// their types from the event's arguments, `next` as its last parameter in a
-/// waterfall (when that parameter is a `Rutis.Next`).
+/// waterfall (when that parameter is a `Rutis.Advanced.Next`).
 package func listenerBody<each A, R>(_ name: String, _ listener: @escaping (repeat each A) async throws -> R) -> ListenerBody {
     var types: [Any.Type] = []
     repeat types.append((each A).self)
