@@ -4,7 +4,7 @@
 
 What the `rutis` core offers beyond plugins, fibers, services and events, and where its boundaries are. To get started, read the quick start in the [README](../README.md), [Write a Rust plugin](guide/rust-plugin.en.md) and the [application design guide](development-guide.en.md) first.
 
-The host methods below (`plugin_from`, `shutdown`, `diagnostics`, `require` and the like) come from `rutis::host::CtxHost`: write `use rutis::host::*;` first. What is marked as in `rutis::internal` is used between rutis's own crates (rutis-bridge, rutis-loader and the others), with no stability promise.
+The host methods below (`plugin_with`, `shutdown`, `diagnostics`, `require` and the like) come from `rutis::host::CtxHost`: write `use rutis::host::*;` first. What is marked as in `rutis::internal` is used between rutis's own crates (rutis-bridge, rutis-loader and the others), with no stability promise.
 
 ## Config hot update
 
@@ -13,18 +13,19 @@ change config at runtime, reusing the state machine's exactly-once cleanup; affe
 ```rust
 struct Weather { city: String }
 
-impl Weather {
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
     /// Construction only: the dry run and the real load both call it.
-    fn new(config: &WeatherConfig) -> rutis::Result<Self> {
-        Ok(Weather { city: config.city.clone() })
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather { city: config.city.clone() }))
     }
 }
 
-let view = ctx.plugin_from(Weather::new, cfg_v1);
+let view = ctx.plugin_with(WeatherFactory, cfg_v1);
 view.update(cfg_v2).await?;   // dry-run failure leaves everything untouched; success unloads + reloads
 ```
 
-`Weather` is an ordinary `Plugin`; its dependencies come from its `type Deps`. A plugin whose dependencies are known only at run time still implements `host::PluginFactory<C>` (`build` returns a `Box<dyn host::DynPlugin>`) and is mounted with `ctx.plugin_with(factory, config)`.
+`Weather` is an ordinary `Plugin`; the factory (`host::PluginFactory<C>`) builds it from the current config on each load, and lists its dependencies in the factory's `injects()`.
 
 ## Events: one listener table, five modes
 

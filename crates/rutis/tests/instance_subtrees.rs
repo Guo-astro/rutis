@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use rutis::events::{Call, Listener};
 use rutis::host::diagnostics::DependencyStatus;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, TypeKey};
+use rutis::host::{
+    BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, PluginFactory, TypeKey,
+};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error, Event, Plugin};
 use serde::{Deserialize, Serialize};
@@ -407,8 +409,13 @@ async fn fiber_instance_stays_stable_across_restart_update_and_dependency_reload
     );
 
     let slot = Arc::new(Mutex::new(None));
-    let factory_slot = slot.clone();
-    let factory = root.plugin_from(move |_config: &u32| Ok(Capture(factory_slot.clone())), 1u32);
+    struct CaptureFactory(Arc<Mutex<Option<Ctx>>>);
+    impl PluginFactory<u32> for CaptureFactory {
+        fn build(&self, _config: &u32) -> Result<Box<dyn DynPlugin>, Error> {
+            Ok(Box::new(Capture(self.0.clone())))
+        }
+    }
+    let factory = root.plugin_with(CaptureFactory(slot.clone()), 1u32);
     (&factory).await.unwrap();
     let factory_id = slot.lock().unwrap().as_ref().unwrap().instance();
     factory.update(2u32).await.unwrap();

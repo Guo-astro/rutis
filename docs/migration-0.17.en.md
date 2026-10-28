@@ -11,12 +11,12 @@ Where every old name went: the design's [appendix A](design-rust-api-convergence
 ## Step 1: run the migration tool
 
 ```bash
-cargo install rutis-migrate
+cargo install rutis-migrate --version 0.18.0
 rutis-migrate 0.17 path/to/crate            # shows the diff only
 rutis-migrate 0.17 path/to/crate --write    # writes the files, then runs cargo check
 ```
 
-In the rutis repository, `cargo run -p rutis-migrate -- 0.17 path/to/crate --write` works too.
+`rutis-migrate` is no longer released from 0.19 on; 0.18.0 is the last version.
 
 - It changes the `.rs` files under `PATH` that use rutis (skipping `target`, hidden directories and `node_modules`). The syntax tree only locates the edits; they are made on the original text, so comments and formatting stay.
 - Without `--write` it prints a diff and changes nothing. With `--write` it writes the files, then runs `cargo check --all-targets` in `PATH` and lists the errors left (`--no-check` skips it).
