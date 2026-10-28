@@ -622,7 +622,7 @@ shout: running
 - Call the `loader` methods once `apply` has returned (in service methods, in events): called in a row's own `apply`, one waits for that `apply` to end, and so hangs.
 - `create` and `remove` change the editable layer, as the Rust methods above do; without one they fail.
 - Any plugin can `inject` it; rutis adds no permission: to keep a plugin from managing plugins, do not install that plugin.
-- The methods' arguments, results and error texts are in [The host writes its own plugins](../design-host-writes-plugins-2026-10-27.en.md).
+- The methods' arguments, results and error texts are in [Plugin API: managing plugins with `loader`](plugin-api.en.md#managing-plugins-with-loader).
 
 ## 5. Serve plugin authors well
 

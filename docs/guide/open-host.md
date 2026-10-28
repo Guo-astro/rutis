@@ -622,7 +622,7 @@ shout: running
 - `loader` 的方法在 `apply` 返回之后调用（服务方法、事件里）：在一行自己的 `apply` 里调用会等到这个 `apply` 结束，所以会卡住。
 - `create` 与 `remove` 改的是可编辑层，和上面的 Rust 方法一样；没有可编辑层时失败。
 - 任何插件都能 `inject` 它，rutis 不加权限：不想让某个插件管理插件，就不装那个插件。
-- 各方法的参数、返回值与出错文字见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)。
+- 各方法的参数、返回值与出错文字见 [插件 API：用 `loader` 管理插件](plugin-api.md#用-loader-管理插件)。
 
 ## 5. 服务好插件作者
 
