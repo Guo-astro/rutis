@@ -216,26 +216,3 @@ fn thiserror_types_wrap_rutis_errors_and_convert_into_them() {
     assert!(error.kind().is_none());
     assert!(error.to_string().contains("quota exceeded"));
 }
-
-/// With the `anyhow` feature, a host returning `anyhow::Result` uses `?`,
-/// and plugin code turns an `anyhow::Error` into a rutis one.
-#[cfg(feature = "anyhow")]
-#[tokio::test]
-async fn anyhow_hosts_and_plugin_code() {
-    async fn host() -> anyhow::Result<()> {
-        let root = Ctx::root()?;
-        root.shutdown().await?;
-        Err(Error::msg("from rutis"))?;
-        Ok(())
-    }
-    assert!(host().await.unwrap_err().to_string().contains("from rutis"));
-
-    fn plugin_code() -> rutis::Result {
-        let failing: anyhow::Result<()> = Err(anyhow::anyhow!("from anyhow"));
-        failing.map_err(Error::from_anyhow)?;
-        Ok(())
-    }
-    let error = plugin_code().unwrap_err();
-    assert!(error.kind().is_none());
-    assert!(error.to_string().contains("from anyhow"));
-}

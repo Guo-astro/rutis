@@ -348,18 +348,37 @@ async fn dispatch_now(
             .map(|args| args.iter().map(rutis_bridge::runtime::testing::events::argument).collect())
             .unwrap_or_default()
     }));
-    let filter = spec.get("filter").cloned();
-    let log2 = log.clone();
-    let filtered = filter.map(|filter| {
-        ctx.try_filter_named(name.clone(), move |info| {
-            if let Some(spec) = filter.get("throws") {
-                return Err(thrown(spec));
-            }
-            log2.filter_description(serde_json::to_value(info).unwrap());
-            let row = info.row.clone().unwrap_or_default();
-            Ok(filter["keep"].as_array().into_iter().flatten().any(|k| k.as_str() == Some(&row)))
-        })
+    // A filter: once per dispatch with the candidates, in registration
+    // order (protocol spec §6), as the bridge dispatches for a runtime.
+    let filter = spec.get("filter").cloned().map(|filter| {
+        let log = log.clone();
+        Box::new(move |candidates: Vec<rutis::internal::events::Candidate>| {
+            rutis::internal::events::FilterAnswer::Ready(match filter.get("throws") {
+                Some(spec) => Err(thrown(spec)),
+                None => Ok(candidates
+                    .into_iter()
+                    .map(|candidate| {
+                        log.filter_description(serde_json::to_value(&candidate.info).unwrap());
+                        let row = candidate.info.row.unwrap_or_default();
+                        filter["keep"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|k| k.as_str() == Some(&row))
+                    })
+                    .collect()),
+            })
+        }) as rutis::internal::events::BatchFilter
     });
+    let erased = |mode, filter| {
+        let mut dispatch = rutis::internal::events::Dispatch::new(
+            name.clone(),
+            mode,
+            rutis::internal::events::Payload::new(Arc::new(args.clone())),
+        );
+        dispatch.filter = filter;
+        dispatch
+    };
     // A text the terminal returns, or `{echo: true}`: its first argument.
     let terminal = match &spec["terminal"] {
         Json::String(text) => Some(TerminalDoes::Text(text.clone())),
@@ -369,25 +388,31 @@ async fn dispatch_now(
         _ => None,
     };
     let value = |v: Option<ArgValue>| v.map(|v| v.0).unwrap_or(Value::Undefined);
-    let result: Result<Value, RutisError> = match (spec["mode"].as_str().unwrap_or_default(), &filtered) {
+    // An erased dispatch's result, as the typed dispatch returns it.
+    let decoded = |v: Option<rutis::internal::events::Value>| -> Result<Value, RutisError> {
+        let transcoder = ctx.events().transcoder();
+        Ok(value(v.map(|v| v.into_typed::<ArgValue>(&*transcoder)).transpose()?))
+    };
+    let result: Result<Value, RutisError> = match (spec["mode"].as_str().unwrap_or_default(), filter) {
         // As `emit` returns in the other languages: once every call started
         // (the erased dispatch says when; `EventBus::emit` returns before).
-        ("emit", None) => {
-            let dispatch = rutis::internal::events::Dispatch::new(
-                name,
-                rutis::events::Mode::Emit,
-                rutis::internal::events::Payload::new(Arc::new(args)),
-            );
-            ctx.events()
-                .dispatch(ctx, dispatch)
-                .await
-                .map(|_| Value::Undefined)
-        }
-        ("emit", Some(f)) => f.emit(args).map(|()| Value::Undefined),
+        ("emit", filter) => ctx
+            .events()
+            .dispatch(ctx, erased(rutis::events::Mode::Emit, filter))
+            .await
+            .map(|_| Value::Undefined),
         ("parallel", None) => ctx.named(name).parallel(args).await.map(|()| Value::Undefined),
-        ("parallel", Some(f)) => f.parallel(args).await.map(|()| Value::Undefined),
+        ("parallel", filter) => ctx
+            .events()
+            .dispatch(ctx, erased(rutis::events::Mode::Parallel, filter))
+            .await
+            .map(|_| Value::Undefined),
         ("serial", None) => ctx.named(name).serial(args).await.map(value),
-        ("serial", Some(f)) => f.serial(args).await.map(value),
+        ("serial", filter) => ctx
+            .events()
+            .dispatch(ctx, erased(rutis::events::Mode::Serial, filter))
+            .await
+            .and_then(decoded),
         ("waterfall", _) => {
             let log = log.clone();
             ctx.named(name)
@@ -403,7 +428,10 @@ async fn dispatch_now(
                 .map(value)
         }
         ("bail", None) => ctx.named(name).bail(args).map(value),
-        ("bail", Some(f)) => f.bail(args).map(value),
+        ("bail", filter) => ctx
+            .events()
+            .dispatch_sync(ctx, erased(rutis::events::Mode::Bail, filter))
+            .and_then(decoded),
         (mode, _) => return Err(Error::Value(format!("unknown mode {mode}"))),
     };
     result.map_err(|e| rutis_bridge::events::to_session_error(&e))

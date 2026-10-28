@@ -51,13 +51,9 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 - **生命周期**：监听器以登记它的 `Ctx` 被调用；它的 fiber 卸载时不再开始新的调用，并等正在运行的调用结束（它们的 `ctx.cancelled()` 已触发），最多到宿主的关闭截止时间。
 - `rutis/*` 是框架事件的保留名字：插件可以监听，发出则报 `ReservedEvent`。
 
-## 投递前观察
+## 清理的名字
 
-`ctx.events().observe_dispatch(&ctx, observer)`（`rutis::internal`）在选择业务监听器前同步调用观察器，零监听器时也会调用。观察器只看注册 fiber 子树内的投递，随该 fiber 清理；`DispatchAttempt` 包含事件名、分发方式、发射方和借用的事件。它记录投递尝试，不提供拒绝投递的返回值。
-
-## 清理树
-
-`FiberView::effects()` 返回这个 fiber 的只读清理树（`host::EffectMeta`）。复合 `host::Effect::Many` 保留真实嵌套，正在清理的记录显示为 `Draining`，完成后从树中移除。插件装载、服务注册和事件监听会自动生成标签，`ctx.effect` 登记的清理标为 `anonymous`；`rutis::internal` 的 `effect_named("cache watcher", || effect)` 为清理项命名。
+关闭超时时，Stuck 提示写出还在运行的清理：`ctx.effect` 登记的写登记它的位置，`rutis::internal` 的 `effect_named("cache watcher", || effect)` 登记的写这个名字。
 
 ## 服务读写拦截
 
@@ -79,7 +75,7 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 所有签名里的错误都是 `rutis::Error`，`?` 能接住任何 `std::error::Error`。宿主用 `err.kind()`（`Option<&host::ErrorKind>`，插件代码自己的错误是 `None`）区分 rutis 的失败；要共享的错误（错误汇集、`FiberView` 的结果）是 `Arc<ErrorKind>`。
 
-`apply` 的同步及异步 panic 会变成插件错误；`check()` panic 视为依赖未就绪；`waterfall` 回调 panic 向调用方传播。`settle` 仅是该 fiber 的 FIFO 栅栏，Pending 也可能是稳定结果。装载失败（构造、`validate` 或 `apply` 出错）的插件停在 Failed，只在依赖变化（提供者换代、摘除后恢复）时重新装载；同一组依赖的重复通知不会让它重试。root 的 `dispose()` 后仍可重启，`shutdown()` 是最终关闭；丢弃等待 future 不会停止已启动的清理。`update(config)` 重新装配插件，不替换进程中的代码。提前 `Disposer::dispose()` 的失败立即返回给调用方，不自动通知 ErrorSink；`Ctx::take_cleanup_errors()` 可取走并释放这些历史错误。未取走的错误在终态卸载时进入结果，在重载时交给 ErrorSink。
+`apply` 的同步及异步 panic 会变成插件错误；`check()` panic 视为依赖未就绪；`waterfall` 回调 panic 向调用方传播。`settle` 仅是该 fiber 的 FIFO 栅栏，Pending 也可能是稳定结果。装载失败（构造、`validate` 或 `apply` 出错）的插件停在 Failed，只在依赖变化（提供者换代、摘除后恢复）时重新装载；同一组依赖的重复通知不会让它重试。root 的 `dispose()` 后仍可重启，`shutdown()` 是最终关闭；丢弃等待 future 不会停止已启动的清理。`update(config)` 重新装配插件，不替换进程中的代码。提前 `Disposer::dispose()` 的失败立即返回给调用方，不自动通知 ErrorSink；这些错误在终态卸载时进入结果，在重载时交给 ErrorSink。
 
 ## 与 Cordis 的关系
 

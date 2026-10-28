@@ -113,18 +113,6 @@ async fn named_channels_and_dispatch_tails_prune() {
     listener.dispose().await.unwrap();
 }
 
-#[tokio::test]
-async fn dispatch_observers_prune_after_repeated_registration() {
-    let ctx = Ctx::root().unwrap();
-    let bus = ctx.events().clone();
-    for _ in 0..1000 {
-        let observer = bus.observe_dispatch(&ctx, |_| {}).unwrap();
-        assert_eq!(bus.observer_count(), 1);
-        observer.dispose().await.unwrap();
-        assert_eq!(bus.observer_count(), 0);
-    }
-}
-
 /// An emit on a runtime shutting down: `spawn` drops its task's future at
 /// once. What the emit recorded (its backlog entry, its name's chain) goes
 /// with it instead of staying forever.

@@ -574,25 +574,23 @@ async fn sync_patterns_expose_keys_and_share_order() {
 
 /// A synchronous listener may `bail` its own name again (as Cordis allows;
 /// `ReentrantEvent` is no error of events protocol §11): the inner
-/// dispatch runs on the same stack and is observed like any.
+/// dispatch runs on the same stack and calls the listener like any.
 #[tokio::test]
 async fn sync_listener_reentry_runs_in_bail() {
     let root = Ctx::root().unwrap();
     let key = "reentry";
     let observed = Arc::new(AtomicUsize::new(0));
     let count = observed.clone();
-    root.events()
-        .observe_dispatch(&root, move |_| {
-            count.fetch_add(1, Ordering::SeqCst);
-        })
-        .unwrap();
     // The outer call dispatches the same name once more, the inner one
     // answers.
     root.listen::<Ping>()
         .name(key)
-        .on_sync(move |event, call| match event.0 {
-            0 => Ok(call.ctx().named(key).bail(Ping(1))?.map(|inner| inner + 1)),
-            _ => Ok(Some(10)),
+        .on_sync(move |event, call| {
+            count.fetch_add(1, Ordering::SeqCst);
+            match event.0 {
+                0 => Ok(call.ctx().named(key).bail(Ping(1))?.map(|inner| inner + 1)),
+                _ => Ok(Some(10)),
+            }
         })
         .unwrap();
     for attempt in 1..=2 {
@@ -634,38 +632,13 @@ async fn same_sync_key_can_execute_on_two_threads_at_once() {
     root.shutdown().await.unwrap();
 }
 
-/// A synchronous dispatch of the same name from an observer and from a
-/// listener runs (as Cordis allows); other names and other buses too.
+/// A synchronous dispatch of the same name from a listener runs (as Cordis
+/// allows); other names and other buses too.
 #[tokio::test]
-async fn sync_reentry_covers_observers_listeners_and_bus_identity() {
+async fn sync_reentry_covers_listeners_and_bus_identity() {
     let root = Ctx::root().unwrap();
     let other = Ctx::root().unwrap();
     let key = "same";
-    fn value(event: &(dyn std::any::Any + Send + Sync)) -> Option<u64> {
-        event.downcast_ref::<Ping>().map(|event| event.0)
-    }
-    let checks = Arc::new(AtomicUsize::new(0));
-    let checked = checks.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::Bail && value(attempt.event) == Some(1) {
-                checked.fetch_add(1, Ordering::SeqCst);
-            }
-        })
-        .unwrap();
-    let observed_ctx = root.clone();
-    let guard_seen = Arc::new(AtomicUsize::new(0));
-    let guard_check = guard_seen.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            // Once per outer bail (`Ping(1)`): the inner bail is observed too.
-            if value(attempt.event) == Some(1)
-                && matches!(observed_ctx.named(key).bail(Ping(0)), Ok(None))
-            {
-                guard_check.fetch_add(1, Ordering::SeqCst);
-            }
-        })
-        .unwrap();
     other
         .listen::<Ping>()
         .name(key)
@@ -688,8 +661,6 @@ async fn sync_reentry_covers_observers_listeners_and_bus_identity() {
         })
         .unwrap();
     assert_eq!(root.named(key).bail(Ping(1)).unwrap(), Some(6));
-    assert_eq!(guard_seen.load(Ordering::SeqCst), 1);
-    assert_eq!(checks.load(Ordering::SeqCst), 1);
     root.shutdown().await.unwrap();
     other.shutdown().await.unwrap();
 }
@@ -941,50 +912,4 @@ async fn pattern_shutdown_drains_old_callback_and_excludes_new_named_dispatches(
         assert!(root.subscriptions().is_empty());
         root.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn sync_observer_can_register_before_snapshot_or_close_admission() {
-    let root = Ctx::root().unwrap();
-    let observed = root.clone();
-    let once = AtomicUsize::new(0);
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::Bail && once.fetch_add(1, Ordering::SeqCst) == 0 {
-                observed.on_sync::<Ping>(|_, _| Ok(Some(33))).unwrap();
-            }
-        })
-        .unwrap();
-    assert_eq!(root.bail(Ping(0)).unwrap(), Some(33));
-    let body_ctx = root.clone();
-    root.listen::<Ping>()
-        .name("body")
-        .on_sync(move |event, _| match event.0 {
-            // The body dispatches its own name once more.
-            0 => body_ctx
-                .named("body")
-                .bail(Ping(1))
-                .map(|inner| inner.map(|inner| inner + 1)),
-            _ => Ok(Some(40)),
-        })
-        .unwrap();
-    assert_eq!(root.named("body").bail(Ping(0)).unwrap(), Some(41));
-    let closing = root.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::Bail {
-                drop(closing.shutdown());
-            }
-        })
-        .unwrap();
-    // Admission is checked before the observers, which cannot veto the
-    // dispatch; the listener of the root that is now closing is skipped
-    // (liveness), so nothing answers. A dispatch started after that is
-    // rejected.
-    assert_eq!(root.bail(Ping(0)).unwrap(), None);
-    assert!(matches!(
-        &*root.bail(Ping(0)).unwrap_err(),
-        ErrorKind::Closed
-    ));
-    root.shutdown().await.unwrap();
 }

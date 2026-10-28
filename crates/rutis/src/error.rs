@@ -365,13 +365,6 @@ impl Error {
     pub fn msg(message: impl Into<String>) -> Self {
         Error::new(ErrorKind::PluginFailed(message.into().into()), true)
     }
-
-    /// An `anyhow::Error` as a rutis error. `anyhow::Error` does not
-    /// implement `std::error::Error`, so `?` cannot convert it.
-    #[cfg(feature = "anyhow")]
-    pub fn from_anyhow(error: anyhow::Error) -> Self {
-        Error::new(ErrorKind::PluginFailed(error.into()), true)
-    }
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
@@ -428,13 +421,6 @@ impl From<Error> for Box<dyn std::error::Error + Send + Sync + 'static> {
 impl From<Error> for Box<dyn std::error::Error + 'static> {
     fn from(error: Error) -> Self {
         error.kind
-    }
-}
-
-#[cfg(feature = "anyhow")]
-impl From<Error> for anyhow::Error {
-    fn from(error: Error) -> Self {
-        anyhow::Error::new(error.into_kind())
     }
 }
 

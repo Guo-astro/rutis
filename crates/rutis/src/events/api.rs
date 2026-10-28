@@ -414,17 +414,6 @@ impl<'c> Filtered<'c> {
         }
     }
 
-    /// Both: under `name`, to the listeners `keep` accepts.
-    pub(crate) fn filtered_named(ctx: &'c Ctx, name: Arc<str>, keep: Arc<Keep>) -> Self {
-        Self {
-            target: Target {
-                ctx,
-                keep: Some(keep),
-                named: Some(name),
-            },
-        }
-    }
-
     /// `emit`: returns at once; a listener's failure goes to the error sink.
     pub fn emit<E: Event>(&self, event: impl crate::events::IntoEvent<E>) -> Result<(), Error> {
         self.target.emit(event.into_event())

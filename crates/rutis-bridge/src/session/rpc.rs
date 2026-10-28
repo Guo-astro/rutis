@@ -1621,23 +1621,6 @@ impl Connection {
         drop(awaiting);
         self.0.background.lock().unwrap().take();
     }
-    /// Create an owned async result on this connection's shared executor.
-    ///
-    /// Adapter code must establish that the factory and Future can progress
-    /// independently of the caller's executor: `Send` alone is insufficient.
-    /// Create timers/tasks inside the factory, not on the caller's runtime.
-    /// Arbitrary captured runtime handles or lifecycle tasks are not migrated.
-    pub fn independent_future<F, Fut>(&self, factory: F) -> Result<Value, Error>
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Reply> + Send + 'static,
-    {
-        Ok(Value::future_on(
-            async move { factory().await },
-            true,
-            self.background()?,
-        ))
-    }
     fn background(&self) -> Result<Executor, Error> {
         let mut background = self.0.background.lock().unwrap();
         if let Some(error) = &self.0.calls.lock().unwrap().closed {

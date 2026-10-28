@@ -492,7 +492,7 @@ fn check_name(_: &str) -> std::result::Result<(), String> {
 | --- | --- |
 | An `io::Error`, a parse error or your own thiserror type in plugin code | `?` |
 | Just a message, or a library returning `Result<_, String>` | `Error::msg("…")`, `.map_err(Error::msg)?` |
-| An `anyhow::Error` in plugin code | With rutis's `anyhow` feature, `.map_err(Error::from_anyhow)?`. `anyhow::Error` does not implement `std::error::Error`, so `?` cannot convert it |
+| An `anyhow::Error` in plugin code | `.map_err(\|e\| Error::msg(format!("{e:#}")))?`. `anyhow::Error` does not implement `std::error::Error`, so `?` cannot convert it |
 | Your own thiserror type wrapping a rutis error | `#[error(transparent)] Rutis(#[from] rutis::Error)` or `#[source] cause: rutis::Error` |
 
 An error from plugin code reaches the host as a `PluginFailed`, with the original error as its source. How a host tells rutis's own failures apart: [embed rutis in a Rust application: errors a host sees](rust-host.en.md#errors-a-host-sees).

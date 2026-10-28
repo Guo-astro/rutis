@@ -826,32 +826,6 @@ async fn a_failing_emit_filter_is_reported() {
     assert!(entries(&order).is_empty());
 }
 
-/// A filter that can fail (`try_filter`): its error, as it is, fails the
-/// dispatch before any call.
-///
-/// guarantee: events/filter
-#[tokio::test]
-async fn a_try_filter_error_fails_the_dispatch_with_it() {
-    let root = Ctx::root().unwrap();
-    let order = log();
-    root.on::<Ping>(returns::<Ping>(&order, "a", None)).unwrap();
-    let error = root
-        .try_filter(|_| {
-            Err(ErrorKind::Validation {
-                issues: vec!["no".into()],
-            }
-            .into())
-        })
-        .serial(Ping(0))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&*error, ErrorKind::Validation { issues } if issues == &["no"]),
-        "{error:?}"
-    );
-    assert!(entries(&order).is_empty());
-}
-
 // ── lifecycle ───────────────────────────────────────────────────
 
 /// A listener is called with the context that registered it, and its
