@@ -11,9 +11,6 @@ pub enum ServiceReadFailure {
     OutOfScope,
     Inactive,
     TypeMismatch,
-    InterceptDenied,
-    InterceptPanicked,
-    InterceptReentrant,
 }
 
 impl std::fmt::Display for ServiceReadFailure {
@@ -24,9 +21,6 @@ impl std::fmt::Display for ServiceReadFailure {
             Self::OutOfScope => f.write_str("instance outside caller's fiber ancestry"),
             Self::Inactive => f.write_str("caller context inactive"),
             Self::TypeMismatch => f.write_str("service key has a different value type"),
-            Self::InterceptDenied => f.write_str("strict read denied by interceptor"),
-            Self::InterceptPanicked => f.write_str("strict read interceptor panicked"),
-            Self::InterceptReentrant => f.write_str("same-key strict read interceptor reentered"),
         }
     }
 }
@@ -49,9 +43,6 @@ pub struct ServiceReadError {
 pub enum ServiceWriteFailure {
     WrongOwner,
     Stale,
-    InterceptDenied,
-    InterceptPanicked,
-    InterceptReentrant,
 }
 
 impl std::fmt::Display for ServiceWriteFailure {
@@ -60,11 +51,6 @@ impl std::fmt::Display for ServiceWriteFailure {
             Self::WrongOwner => f.write_str("writer called outside its provider fiber"),
             Self::Stale => {
                 f.write_str("service binding or provider generation is no longer active")
-            }
-            Self::InterceptDenied => f.write_str("service update denied by interceptor"),
-            Self::InterceptPanicked => f.write_str("service update interceptor panicked"),
-            Self::InterceptReentrant => {
-                f.write_str("same-key service update interceptor reentered")
             }
         }
     }

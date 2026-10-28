@@ -176,7 +176,7 @@ flight 保证覆盖本次派发调用栈；返回后的业务提交不自动纳�
 
 ### 不能直接收敛 #29
 
-当前 [`intercept.rs`](../crates/rutis/src/intercept.rs) 的 `run` 按注册顺序把 replacement 交给下一个拦截器，是逐步变换：
+当前 [`intercept.rs`](https://github.com/arcships/rutis/blob/v0.18.0/crates/rutis/src/intercept.rs) 的 `run` 按注册顺序把 replacement 交给下一个拦截器，是逐步变换：
 
 ```text
 原值 1 → 第一项 +10 → 第二项 ×2 → 最终值 22

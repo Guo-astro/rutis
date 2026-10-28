@@ -53,13 +53,13 @@ pub mod events;
 mod fiber;
 mod future;
 pub mod host;
-mod intercept;
 pub mod internal;
 mod key;
 mod plugin;
 mod registry;
 mod service;
 mod sync;
+mod writer;
 
 pub use config::{ConfigError, ConfigIssue, PathSegment};
 pub use ctx::Ctx;

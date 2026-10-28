@@ -45,7 +45,7 @@ The complete program, with a provider being replaced at runtime, is in [examples
 
 - [Write a Rust plugin](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md): dependencies, services, events, cleanup, errors
 - [Application design guide](https://github.com/arcships/rutis/blob/main/docs/development-guide.en.md) and [development handbook](https://github.com/arcships/rutis/blob/main/docs/development-handbook.en.md)
-- [Core features](https://github.com/arcships/rutis/blob/main/docs/core-features.en.md): hot update, dynamic events, interception, diagnostics
+- [Core features](https://github.com/arcships/rutis/blob/main/docs/core-features.en.md): hot update, dynamic events, diagnostics
 - Plugins in TypeScript and Python, and links between machines: the [rutis repository](https://github.com/arcships/rutis)
 
 ## Recent changes
