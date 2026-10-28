@@ -99,7 +99,7 @@ fn passes(dir: &Path, provides: &str) {
 /// The TypeScript and Python templates, each with a row using what it
 /// provides: `check --strict` passes, the template's `provides` read
 /// without running the plugin.
-/// guarantee: host/new
+/// guarantee: host/new, sdk/config-schema
 #[test]
 fn the_templates_declare_what_they_provide() {
     let dir = tempfile::tempdir().unwrap();
@@ -156,7 +156,7 @@ fn the_templates_declare_what_they_provide() {
 
 /// The Go template, built against the checkout's Go SDK: its binary's
 /// manifest declares the service, and `check --strict` passes.
-/// guarantee: host/new
+/// guarantee: host/new, sdk/config-schema
 #[test]
 fn the_go_template_declares_what_it_provides() {
     let dir = tempfile::tempdir().unwrap();

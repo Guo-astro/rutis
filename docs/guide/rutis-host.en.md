@@ -91,6 +91,7 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | `rutis-host dev [directory]` | Runs a plugin project with its `rutis.dev.json` file and follows its changes: a changed file reloads the rows whose file it is, a changed `rutis.dev.json` is read again; a Go or Swift project is rebuilt (`go build`, `swift build`) when its sources change, restarting only its runtime (see [Developing a plugin with `dev`](#developing-a-plugin-with-dev)). |
 | `rutis-host check [rutis.json] [--strict]` | Without running any plugin, checks that each row can run (see [Checking a configuration](#checking-a-configuration)) and prints its version, dependencies, provided services, and configuration schema, and lists every Go and Swift binary (runtime name, platform, SDK, plugin API, plugins; a binary of an SDK older than rutis 0.13 cannot run). Exits with a nonzero status if a row or binary cannot run. A dependency no row declares, which another row may provide at runtime, is a warning; with `--strict`, an error. Without `rutis.json`, checks the plugin project in the current directory. |
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
+| `rutis-host call [--config <rutis.json \| directory>] <service>.<method> [arguments…]` | Calls a service in the `rutis-host` running that configuration (or that `dev` project), as the host, and prints the result as JSON; `dev` accepts it, `run` with `--allow-call` (see [Calling a service](#calling-a-service)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
 | `rutis-host types [directory] [-o file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; see [Embed in a Rust application](rust-host.en.md#mark-the-type-rutisservice). |
@@ -208,7 +209,26 @@ rutis-host: error: rows one, two all provide llm: only the first to start provid
 
 Rows using a language whose runtime `runtimes` does not declare enable that runtime with its defaults, with a warning (see [`runtimes`](#runtimes)).
 
-rutis-host does not yet check a plugin's config against its schema (it does from 0.18, [#669](https://github.com/arcships/rutis/issues/669)); `check` only prints the schema. Whether a config is checked depends on how the plugin's language reads it: a Rust plugin, for example, decodes it into its type `C`, and the row fails to load when it cannot.
+### The config of each row
+
+From 0.18 `check` fills each row's config with its plugin's defaults and validates it against the plugin's JSON Schema, by the rules every language's SDK applies when it loads the row (the keywords checked are in the [plugin API](plugin-api.en.md#configuration)). A config that does not match cannot run: one line per problem, sorted by path, exit status 1:
+
+```
+weather (weather): cannot run: config: units should be "metric" or "imperial", got "kelvin"
+weather (weather): cannot run: config: home.lat should be a number, got "north"
+```
+
+A key the schema does not name, where it allows extra keys (an object with `properties` and no `additionalProperties`), is a warning on stderr, with a close known key suggested; the row still runs and its plugin gets the key's value as it is. With `--strict` it is an error, and the row `cannot run with --strict`:
+
+```
+rutis-host: warning: weather: config: cty is not a config key (did you mean city?)
+```
+
+- Cordis rows (Cordis plugins exporting `Config`) are validated by Cordis with their own `Config` when they load; `check` prints their schema and does not check their config.
+- Rows whose schema is known only when they run (remote runtimes not connected, a `peer:` row whose peer is not there) say `config not checked: its schema is known only when it runs`, which is not a warning.
+- Go binaries built with an SDK older than 0.18 list every field without `omitempty` as `required` in their manifest; `check` ignores their `required` (the rest is checked).
+
+`run` and `dev` apply the same rules: a row whose config does not match fails (`weather: config: …`, a line per problem), and rows waiting for it say so (`chat: waiting for weather (row weather failed: config: …)`); extra keys are warned about once per row and config value. Runtimes built with an SDK older than 0.18 do not check configs when they load rows; `check` checks them all the same.
 
 ## Stopping and exit status
 
@@ -255,7 +275,14 @@ rutis-host: reloaded <file> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <reason>; nothing changed
 ```
 
-Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
+Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Refused because a row's config does not match its schema, a line per problem comes first, then the rejection:
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
 
 Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 
@@ -335,9 +362,45 @@ calls:
 - `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
-`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers one request, `status`, and changes nothing. It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
+`run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (`dev` accepts it, `run` with `--allow-call`; see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
 
 When stopping does not finish by the deadline (see [Stopping and exit status](#stopping-and-exit-status)), the calls not returned are listed too, after the plugins still stopping: `call not returned: caller → slow.wait  12s`.
+
+## Calling a service
+
+While `run` or `dev` runs, in another terminal, `rutis-host call` calls a method of a service, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call forecast.today '"Oslo"'
+"sunny in Oslo"
+$ rutis-host call forecast.week '{"days": 3}'
+{
+  "days": 3,
+  ...
+}
+```
+
+- `<service>.<method>` splits at the last `.` (a service's name may have dots). Each argument is a JSON value: `3`, `true`, `null`, `'"Oslo"'`, `'{"days": 3}'`, `'[1, 2]'`; a string needs its quotes, and an argument that is not JSON is an error, never taken for a string. Values JSON cannot write (dates, binary data, maps) cannot be passed from the command line: try such a method in a test.
+- It finds the host as `rutis-host status` does: the `rutis.json` here (in a plugin project, the project `dev` runs), or the one `--config <rutis.json | directory>` names. It only reaches a running host, and starts none.
+- It calls the service the root scope sees by that name, whichever language, runtime or node provides it, as [calling a service by name from Rust](rust-host.en.md#call-a-service-by-name-from-rust) does. The call comes from no row: `rutis-host status` shows it as `host → forecast.today (row weather)  3s`.
+- The result is printed as JSON indented by two spaces; no result is `null`. A value JSON does not have is written as its text: points in time, dates, big integers, decimals and UUIDs as strings (`"2026-10-27"`), binary data, maps, sets and references as what they are (`"<a map>"`); for people to read, not to pass back.
+- No time limit: it waits for the result; Ctrl-C ends `call` (exit status 130), and the host drops the call.
+- On an error it writes it on stderr and exits with 1:
+
+| Case | Output |
+| --- | --- |
+| An argument that is not JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
+| No method named | `rutis-host: name a method, as forecast.<method>` |
+| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| The row providing it is not running | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
+| No such method | `rutis-host: forecast has no method tomorow (methods: today, week)` |
+| An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then the row it failed in (`in weather:`) and its stack |
+| The method takes the calling row's `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
+| No host running | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+| `run` without `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call` |
+
+`call` runs any method of any service, so `dev` accepts it and `run` does not by default: to use it in production, add `--allow-call` to the command that starts it (on the command line only, never in `rutis.json`). Who can connect is as for `status`: only the user can use the socket. Not on Windows (`rutis-host call is not available on Windows`).
 
 ## Output
 
@@ -463,7 +526,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 
 - A runtime connecting presents the token `RUTIS_TOKEN_<NAME>` (the runtime's name in uppercase, `-` written as `_`; `RUTIS_TOKEN` when that is not set) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
 - Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
-- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
+- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`runtime <name>: this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
 - The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
 - No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
 - `<name>:` rows belong in that group; anywhere else the row fails.

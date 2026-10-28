@@ -1,5 +1,5 @@
 //! An access point: one listener registration that admits many runtime
-//! connections (`docs/design-remote-runtime-dial-2026-10-14.md` §四–§六).
+//! connections.
 //!
 //! Runtimes dial out to rutis. Each presents a credential and greets with
 //! an id of its own; the [`Admission`] decides whom the access point admits

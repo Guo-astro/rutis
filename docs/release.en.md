@@ -72,6 +72,14 @@ Expected behavior: the dialer prints `clock: <n>` every second. After a network 
 
 The nightly stress workflow also runs two soak tests (repeated link disconnect/reconnect and repeated process start/exit) and checks that file descriptor and thread counts do not grow and all processes are reaped.
 
+## 0.18.0
+
+The theme of 0.18.0 is "errors you can understand" (#694): #677, #678, #679, #669, the second half of #676, #687, #688, #690, #702, #726, and the dependency security update #755. All packages are at 0.18.0; see [the release notes](releases/0.18.0.en.md) and [migrating to 0.18](migration-0.18.en.md).
+
+A minor version change of 0.x allows breaking changes, so `cargo-semver-checks` accepts the Rust API changes when it compares with 0.17.2 (`session::Error::Binding`, the `stuck` field of `DisposeWaitError::TimedOut` and so on; see the migration guide). `format` of `rutis.json` stays 1 and the format does not change: the persisted sample is copied from 0.17.2 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. Checking configuration against the Schema (#669) only changes whether a configuration that does not pass can run; the samples' configuration passes. The protocol version is unchanged; it only adds the capability `objects` (objects with methods, used when both ends declare it), and error nodes gain two optional fields, `site` and `rethrown`. The release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.17.2: a 0.17.2 runtime cannot receive objects, and such a call fails with `bad-value`; under a 0.17.2 host, objects passed between 0.18 runtimes fail with 0.17.2's text. Either way only that call fails.
+
+The run on Dim before release that section 10 of the [configuration Schema design](design-config-schema-2026-10-27.en.md) describes is skipped for this release, by the maintainer's decision.
+
 ## 0.17.2
 
 0.17.2 is a patch release: it fixes the problems people using rutis run into that the developer-experience evaluation (#663) found: #665, #666, #667, #668, #672, #675, the first half of #676, #682 (its fourth item moved to 0.18) and #701 (#703–#707 and the fixes after acceptance). All packages are at 0.17.2; see [the release notes](releases/0.17.2.en.md). There is no migration guide: no API is removed or renamed.

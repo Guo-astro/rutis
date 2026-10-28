@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "services": {
+    "calendar": {
+      "methods": {
+        "add": {
+          "params": [
+            {
+              "kind": "ref",
+              "name": "Entry"
+            }
+          ]
+        },
+        "get": {
+          "params": [
+            {
+              "kind": "int",
+              "min": "0",
+              "max": "18446744073709551615"
+            }
+          ]
+        },
+        "each": {
+          "params": [
+            {
+              "kind": "function",
+              "params": [
+                {
+                  "kind": "ref",
+                  "name": "Entry"
+                }
+              ],
+              "result": {
+                "kind": "null"
+              }
+            }
+          ]
+        },
+        "plan": {
+          "params": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "bool"
+            },
+            {
+              "kind": "float"
+            },
+            {
+              "kind": "ref",
+              "name": "Repeat"
+            },
+            {
+              "kind": "list",
+              "of": {
+                "kind": "ref",
+                "name": "Reminder"
+              }
+            },
+            {
+              "kind": "option",
+              "of": {
+                "kind": "tuple",
+                "items": [
+                  {
+                    "kind": "int",
+                    "min": "0",
+                    "max": "255"
+                  },
+                  {
+                    "kind": "int",
+                    "min": "0",
+                    "max": "255"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "map",
+              "values": {
+                "kind": "string"
+              }
+            }
+          ]
+        },
+        "addSource": {
+          "params": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "plugin"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "types": {
+    "CalendarError": {
+      "kind": "any"
+    },
+    "Entry": {
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "title",
+          "type": {
+            "kind": "string"
+          },
+          "optional": false
+        },
+        {
+          "name": "startsAt",
+          "type": {
+            "kind": "int",
+            "min": "0",
+            "max": "18446744073709551615"
+          },
+          "optional": false
+        }
+      ],
+      "denyUnknown": false
+    },
+    "Reminder": {
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "minutesBefore",
+          "type": {
+            "kind": "int",
+            "min": "0",
+            "max": "65535"
+          },
+          "optional": false
+        },
+        {
+          "name": "sound",
+          "type": {
+            "kind": "bool"
+          },
+          "optional": true
+        },
+        {
+          "name": "note",
+          "type": {
+            "kind": "option",
+            "of": {
+              "kind": "string"
+            }
+          },
+          "optional": true
+        }
+      ],
+      "denyUnknown": true
+    },
+    "Repeat": {
+      "kind": "enum",
+      "names": [
+        "never",
+        "daily",
+        "weekly"
+      ]
+    }
+  }
+}

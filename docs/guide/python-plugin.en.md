@@ -39,7 +39,7 @@ class Weather:
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("llm"), config.get("city", "Oslo")))
+    ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
     return lambda: None                   # Cleanup may be async; returning nothing is also fine
 
 
@@ -47,9 +47,11 @@ plugin = define_plugin(
     apply,
     inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
     provides={"weather": Weather},        # What it provides: check knows before running
-    config={"type": "object", "properties": {"city": {"type": "string"}}},
+    config={"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}},
 )
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`Oslo` when the row has no `city`) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)). `load` and `update` in `rutis.testing` do the same, raising a `BindingError` with code `bad-config`; extra keys are written on stderr.
 
 You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
 
@@ -276,6 +278,17 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ uv run rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
@@ -318,7 +331,7 @@ Install the plugin in the Python environment used to run Python plugins (the int
 
 ```bash
 uv venv                                                         # creates .venv
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-weather   # the runtime (the host's version) and the plugin
+uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # the runtime (the host's version) and the plugin
 ```
 
 ```json

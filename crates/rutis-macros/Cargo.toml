@@ -2,7 +2,7 @@
 name = "rutis-macros"
 description = "The procedural macros of rutis: #[rutis::service], which serves a Rust type's methods to the plugins of other languages"
 edition.workspace = true
-version = "0.17.2"
+version = "0.18.0"
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

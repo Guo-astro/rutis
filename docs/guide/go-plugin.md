@@ -91,7 +91,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 | 方法名 | 导出方法的线上名字是首字母小写的形式（`Today` → `today`，`URLFor` → `urlFor`，`HTTPServer` → `httpServer`）；`rutis.Rename` 可以改 |
 | 同步还是异步 | 默认 `async`；`rutis.Sync("Unit")` 标出同步方法。同步方法会让 Node 调用方阻塞事件循环，做 I/O 的方法保持 `async` |
 | 方法签名 | `func (T) M([ctx context.Context,] 参数...) ([结果,] [error])` |
-| 配置 | JSON Schema 由配置类型生成（字段名按 `json` 标签，`doc` 标签是说明）；行的 `config` 里没写的字段是零值，默认值在 `Apply` 里给（上面的 `city`）；要分清「没写」和「写了空值」，用指针字段（`*string`）。`Schema` 字段可以换成手写的 JSON Schema，`rutis-host check` 打印它，但不会替你填默认值 |
+| 配置 | JSON Schema 由配置类型生成（字段名按 `json` 标签，`doc` 标签是说明），不写 `required`：行的 `config` 里没写的字段是零值，默认值在 `Apply` 里给（上面的 `city`）；要分清「没写」和「写了空值」，用指针字段（`*string`，也接受 `null`）。`Apply` 之前先按 Schema 校验再解码：配置不合格的行以 `config: …` 失败，不调用 `Apply`（[插件 API：配置](plugin-api.md#配置)）；Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。`Schema` 字段可以换成手写的 JSON Schema：它的 `default` 在解码前补上 |
 | 使用服务 | 函数字段的结构体可以只写用到的方法；或用 `*rutis.Service` 按名字调用：`svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` 是一个 `context.Context`，插件卸载时取消；插件自己起的 goroutine 用 `ctx.Go(...)` 或看 `ctx.Done()` |
 | 并发 | 每个进来的调用在自己的 goroutine 上执行：提供的对象要能被并发调用，调用别的服务时不要持有锁 |
@@ -263,6 +263,8 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
+`rutistest.Load` 和运行时一样先按 Schema 校验配置，不合格时测试失败，多余的键写到标准错误。要检查配置被拒绝，用 `rutistest.TryLoad(t, Plugin, config, services)`：它交还错误，是 `*rutis.RemoteError`，`Name` 为 `BindingError`，`Code` 为 `bad-config`。
+
 `Provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了就按声明（`Sync` 标出同步方法、`Rename` 改名）。不写也能运行：`ctx.Provide` 提供的服务照样自动对外，方法取值的导出方法，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
 测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
@@ -339,6 +341,17 @@ uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # 和你的 rutis
 Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找解释器，那个环境里要装 `rutis`；`dev/` 下没有 Go 代码，`go build ./...` 不受影响。用 TypeScript 写也一样：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行名写 `./dev/fake-llm.ts`。
 
 这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
+
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
 
 ### 调试
 

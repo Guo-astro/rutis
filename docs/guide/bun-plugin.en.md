@@ -119,6 +119,17 @@ A host's `rutis.json`:
 - Fields of `runtimes.bun`: `project` (default `.`), `runtime` (where `@arcships/rutis-bun` is; by default the project's), `program` (the Bun executable; by default `bun` on `PATH`).
 - It can be configured together with `runtimes.node` and `runtimes.py`; services are shared across runtimes by name.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ bunx --bun rutis-host call greeter.hello '"Ada"' '"en"'
+"Hello, Ada!"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` opens the Bun runtime process's own inspector, always at `ws://127.0.0.1:6499/rutis`:

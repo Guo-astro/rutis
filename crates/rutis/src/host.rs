@@ -55,9 +55,10 @@ pub trait CtxHost: sealed::Sealed {
 
     fn handle(&self) -> &Handle;
 
-    /// 错误路由:插件运行期(apply 之外)的异步错误经此上报,不崩 root。
-    /// 供外部插件在 turn 边界兜底(如 session 落盘失败),与框架内部
-    /// 路由同一 sink——可观测,不静默。
+    /// Where errors are reported: asynchronous errors of a plugin outside `apply`
+    /// go here and do not bring down the root. Plugins can report their own
+    /// failures through it (a session that fails to save, for example); it is the
+    /// same sink the framework uses, so nothing fails silently.
     fn error_sink(&self) -> ErrorSink;
 
     /// Take completed, early-disposed effect errors owned by this fiber.
@@ -68,23 +69,24 @@ pub trait CtxHost: sealed::Sealed {
     /// call or to the unload that owns their completion.
     fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>>;
 
-    /// 自动路径:`Handle::try_current()` 失败返回明确错误,绝不隐式建 runtime(D8)。
+    /// A root on the current tokio runtime (`Handle::try_current()`). Without one
+    /// it returns an error; it never creates a runtime.
     fn root() -> Result<Ctx, Error>
     where
         Self: Sized;
 
-    /// 注入构造(优先路径,D8)。
+    /// A root on the given runtime handle (the preferred way).
     fn root_with(handle: Handle) -> Ctx
     where
         Self: Sized;
 
-    /// 注入构造 + 自定义 ErrorSink。
+    /// Like [`root_with`](Self::root_with), with a custom [`ErrorSink`].
     fn root_with_sink(handle: Handle, sink: ErrorSink) -> Ctx
     where
         Self: Sized;
 
-    /// root fiber 句柄(root dispose 清子树 / root restart,§五 root_restart)。
-    /// 最终 shutdown 并释放所有 `FiberView` 后返回 None。
+    /// The root fiber's view, to dispose the whole tree or restart the root.
+    /// `None` once final shutdown has finished and every `FiberView` is dropped.
     fn root_view(&self) -> Option<FiberView>;
 
     /// The root fiber's context of this context's tree: what lives as long
@@ -136,18 +138,21 @@ pub trait CtxHost: sealed::Sealed {
     /// services; taking the snapshot does not.
     fn diagnostics(&self) -> RuntimeDiagnostics;
 
-    /// 最终关闭 root。重复或并发调用共享同一完成结果；现有 `dispose`
-    /// 仍可 `restart`。关闭会拒绝新注册并等待准入关闭前完成挂载的子树
-    /// 及其清理。创建已开始但挂载被关闭拒绝的子 fiber 不会进入 `apply`，
-    /// 会独立关闭；其返回的 `FiberView::shutdown()` 可等待该 driver 退出。
-    /// root 的完成结果不包含这种未挂载子 fiber。
-    /// 不协作的代码可能使等待无限延长，可用 `shutdown_with_timeout` 限制等待。
+    /// Shuts the root down for good. Repeated or concurrent calls share one
+    /// result; unlike `dispose`, there is no `restart` after it. Shutdown refuses
+    /// new registrations and waits for the subtrees mounted before admission
+    /// closed, and for their cleanup. A child fiber whose creation had started
+    /// but whose mount the shutdown refused never runs `apply` and closes on its
+    /// own; its `FiberView::shutdown()` waits for its driver to exit. The root's
+    /// result does not include such children. Code that does not cooperate can
+    /// make the wait unbounded; `shutdown_with_timeout` limits it.
     /// It has no time limit of its own: how long to wait is the host's
     /// choice (rutis-host waits 10 s).
     fn shutdown(&self) -> crate::BoxFuture<'static, Result<(), Arc<ErrorKind>>>;
 
-    /// 限制等待最终关闭的时间。超时后关闭仍在后台进行，重复调用
-    /// `shutdown()` 可继续 join 同一结果。
+    /// Limits how long to wait for the final shutdown. When the time runs out the
+    /// shutdown goes on in the background; calling `shutdown()` again joins the
+    /// same result.
     ///
     /// When the time runs out, [`DisposeWaitError::TimedOut`] names the
     /// plugins still busy and with what ([`Stuck`]): a cleanup registered
@@ -173,12 +178,16 @@ pub trait CtxHost: sealed::Sealed {
     /// (the label of its nearest [`CtxHost::isolate`] for it).
     fn isolate_label(&self, key: &TypeKey) -> Option<String>;
 
-    /// isolate 作用域(支柱 3):按 ServiceKey 隔离,同 label 合并(TS 语义,D21);
-    /// 返回的 Ctx 保留原 fiber 所有权(D28)。
+    /// A context in which services under `key` are read and provided in the
+    /// isolation scope `label`; isolating the same key with the same label gives
+    /// the same scope (as in Cordis). The returned `Ctx` keeps the original fiber
+    /// as its owner.
     fn isolate(&self, key: impl Into<TypeKey>, label: &str) -> Ctx;
 
-    /// 工厂模式装载(D32:配置热更新):依赖门控声明在注册时取自工厂并固定,
-    /// 每代装载用当前 config 构造实例;返回的 FiberView 可 `update(config)`。
+    /// Mounts a plugin built by `factory`. Its dependency declarations are taken
+    /// from the factory at registration and stay fixed; each load builds an
+    /// instance from the current config. The returned `FiberView` can
+    /// `update(config)`.
     fn plugin_with<C: Send + Sync + 'static>(
         &self,
         factory: impl PluginFactory<C>,
@@ -195,7 +204,9 @@ pub trait CtxHost: sealed::Sealed {
     /// [`ErrorKind::InactiveEffect`] and the new generation keeps running.
     fn dispose_self(&self) -> Result<(), Error>;
 
-    /// 当前 fiber 代的取消 token(D27:每代独立 token,卸载第②步取消)。
+    /// The cancellation token of the current fiber generation. Each generation
+    /// has its own token, cancelled when it starts to unload. Once the fiber is
+    /// gone the token returned is already cancelled.
     fn cancellation_token(&self) -> CancellationToken;
 
     /// Provides `value` under `key`: a name (`Key::named`), a name known at
