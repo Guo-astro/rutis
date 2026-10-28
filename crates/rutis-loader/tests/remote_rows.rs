@@ -403,7 +403,8 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
             .unwrap(),
         json!("node at 1")
     );
-    // A package the runtime does not have is unresolved, not a failure.
+    // A package the runtime does not have fails its row alone, unavailable
+    // there, as on a runtime that comes in many times.
     let missing = COLD
         .eventually(
             || {
@@ -417,8 +418,14 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
         )
         .await;
     assert!(
-        matches!(missing, rutis_loader::LoaderError::NotFound { .. }),
+        rutis_loader::report::Unavailable::is(&missing),
         "{missing:?}"
+    );
+    assert!(
+        missing
+            .to_string()
+            .contains("runtime node: this connection does not contain plugin not-installed-there"),
+        "{missing}"
     );
     drop(weather);
     child.start_kill().unwrap();
