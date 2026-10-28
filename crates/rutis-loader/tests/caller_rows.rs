@@ -15,7 +15,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{layer, COLD};
+use common::runtimes::{layer, rows_stage, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{caller_row, host_key, native_error, HostDispatch, Reply, Value};
@@ -212,7 +212,7 @@ export default definePlugin({{
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -240,7 +240,7 @@ async fn node_rows_are_callers() {
             Chain::new().with_shared(rows)
         })
         .await;
-        root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+        rows_stage(&root, resolver.unwrap()).await;
         let runtime = runtime.unwrap();
         rows_are_callers(&root, &loader, &ledger, &entry.to_string_lossy(), || {
             runtime.state().state == FiberState::Active
@@ -254,7 +254,7 @@ async fn node_rows_are_callers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -275,7 +275,7 @@ async fn python_rows_are_callers() {
         Chain::new().with_shared(rows)
     })
     .await;
-    root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+    rows_stage(&root, resolver.unwrap()).await;
     let runtime = runtime.unwrap();
     rows_are_callers(&root, &loader, &ledger, "py:registrant", || {
         runtime.state().state == FiberState::Active
@@ -354,7 +354,7 @@ async fn swift_rows_are_callers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
     use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+    use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -375,7 +375,7 @@ async fn bun_rows_are_callers() {
         Chain::new().with_shared(rows)
     })
     .await;
-    root.plugin(RuntimeRowsPlugin::new(resolver.unwrap()));
+    rows_stage(&root, resolver.unwrap()).await;
     rows_are_callers(&root, &loader, &ledger, "bun:./registrant.ts", || {
         runtime.state().state == FiberState::Active
     })
