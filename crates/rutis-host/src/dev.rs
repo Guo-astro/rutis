@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(400);
 
 pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
-    let (debug, args) = debug_flag(&args);
+    let (debug, args) = crate::take_flag(&args, "--debug");
     // Each line a plugin writes says which row wrote it, unless asked not
     // to (#678).
     let (prefix_output, args) = crate::prefix_flag(args, true);
@@ -240,16 +240,6 @@ fn services_line(loader: &rutis_loader::Loader) -> String {
         true => "rutis-host dev: services: none".to_owned(),
         false => format!("rutis-host dev: services: {}", services.join(", ")),
     }
-}
-
-/// `--debug` taken out of `args`: whether it was there, and the rest.
-fn debug_flag(args: &[String]) -> (bool, Vec<String>) {
-    let rest: Vec<String> = args
-        .iter()
-        .filter(|arg| *arg != "--debug")
-        .cloned()
-        .collect();
-    (rest.len() < args.len(), rest)
 }
 
 /// What `dev --debug` says of each local runtime `config` starts: where its

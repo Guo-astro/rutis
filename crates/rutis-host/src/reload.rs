@@ -12,8 +12,6 @@ use rutis_host::config::{read_text, HostConfig};
 use rutis_host::errln;
 use rutis_host::host::Host;
 
-const FLAG: &str = "--watch-config";
-
 /// How often `--watch-config` reads the file.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -21,12 +19,6 @@ const POLL: Duration = Duration::from_millis(100);
 /// as the configuration: an editor saving it, or a ConfigMap update, is
 /// over by then.
 pub const SETTLE: Duration = Duration::from_millis(500);
-
-/// Take `--watch-config` out of `args`: whether it was there.
-pub fn watch_flag(args: Vec<String>) -> (bool, Vec<String>) {
-    let watch = args.iter().any(|arg| arg == FLAG);
-    (watch, args.into_iter().filter(|arg| arg != FLAG).collect())
-}
 
 /// What asks for a reload.
 pub struct Triggers {
@@ -161,16 +153,6 @@ pub async fn reload(host: &mut Host, path: &Path, triggers: &mut Triggers) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_flag_is_taken_out() {
-        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            watch_flag(args(&["--watch-config", "a.json"])),
-            (true, args(&["a.json"]))
-        );
-        assert_eq!(watch_flag(args(&["a.json"])), (false, args(&["a.json"])));
-    }
 
     /// guarantee: host/reload-config
     #[tokio::test(start_paused = true)]
