@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use rutis::host::diagnostics::PluginDiagnostics;
-use rutis::host::{CtxHost, FiberState, PluginId};
+use rutis::host::{CtxHost, FiberState, PluginId, Snapshot};
 
 use super::waits::{key_name, own_runtime, row_of};
 use super::{EntryInfo, EntryStatus, Loader, Wait, WaitReason};
@@ -16,7 +16,7 @@ use super::{EntryInfo, EntryStatus, Loader, Wait, WaitReason};
 /// calls in progress ([`Loader::status`]). Its parts are read one after
 /// another, not at one instant. `Display` prints it for people, one item a
 /// line.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct Status {
     pub rows: Vec<Row>,
@@ -27,13 +27,15 @@ pub struct Status {
 
 /// A row ([`Status::rows`]); a row inside instanced groups once per
 /// instance it runs in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Row {
     pub id: String,
     /// The instance a copy runs in: `<group> #<number>`.
     pub instance: Option<String>,
-    pub state: RowState,
+    /// The row's status, as [`Loader::entries`] gives it, except that a
+    /// row waiting for its runtime is `Running` with a `Pending` snapshot.
+    pub state: EntryStatus,
     /// Why it failed (`failed in apply: …`, `failed: …`), or what it waits
     /// for (`waiting for …`), as one line says it; for a stopped row, why.
     pub reason: Option<String>,
@@ -43,7 +45,7 @@ impl Row {
     pub fn new(
         id: impl Into<String>,
         instance: Option<&str>,
-        state: RowState,
+        state: EntryStatus,
         reason: Option<&str>,
     ) -> Self {
         Self {
@@ -53,19 +55,6 @@ impl Row {
             reason: reason.map(str::to_owned),
         }
     }
-}
-
-/// A row's state in a [`Status`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RowState {
-    /// Waiting for a service, or for its runtime.
-    Pending,
-    Starting,
-    Running,
-    Failed,
-    Stopped,
-    Disabled,
 }
 
 /// A service by name ([`Status::services`]).
@@ -198,7 +187,7 @@ impl Loader {
                 .and_then(|instance| instances.get(&instance.plugin).cloned());
             let (state, reason) = match pending(entry) {
                 true => (
-                    RowState::Pending,
+                    entry.status.clone(),
                     Some(describe_waits(
                         &waits.next().unwrap_or_default(),
                         &runtime_of,
@@ -208,14 +197,22 @@ impl Loader {
             };
             // A row whose runtime is not running waits for it now, before
             // its plugin is told (#681).
-            let (state, reason) = match (state, runtime_name(entry.plugin)) {
-                (RowState::Running | RowState::Starting, Some(name)) => match runtime_of(&name) {
-                    Some((runtime @ (RuntimeState::Down | RuntimeState::Starting), why)) => (
-                        RowState::Pending,
-                        Some(own_runtime_line(&name, Some((runtime, why)))),
-                    ),
-                    _ => (state, reason),
-                },
+            let (state, reason) = match (&state, runtime_name(entry.plugin)) {
+                (EntryStatus::Running(snapshot), Some(name))
+                    if matches!(snapshot.state, FiberState::Active | FiberState::Loading) =>
+                {
+                    match runtime_of(&name) {
+                        Some((runtime @ (RuntimeState::Down | RuntimeState::Starting), why)) => (
+                            EntryStatus::Running(Snapshot {
+                                state: FiberState::Pending,
+                                error: None,
+                                ..snapshot.clone()
+                            }),
+                            Some(own_runtime_line(&name, Some((runtime, why)))),
+                        ),
+                        _ => (state, reason),
+                    }
+                }
                 _ => (state, reason),
             };
             rows.push(Row {
@@ -354,30 +351,36 @@ fn is_group(entry: &EntryInfo) -> bool {
     )
 }
 
-/// A row's state and reason from its status, when it does not wait.
-fn row_state(status: &EntryStatus) -> (RowState, Option<String>) {
+/// A row's reason from its status, when it does not wait.
+fn row_state(status: &EntryStatus) -> (EntryStatus, Option<String>) {
+    let reason = match status {
+        EntryStatus::Inactive => Some("a group around it is not running".into()),
+        EntryStatus::Unresolved(error) => {
+            Some(format!("unresolved: {}", first_line(&error.to_string())))
+        }
+        EntryStatus::Stopped => Some("stopped in its instance".into()),
+        EntryStatus::Running(snapshot) if snapshot.state == FiberState::Failed => {
+            snapshot.error.as_ref().map(|error| failure(error))
+        }
+        _ => None,
+    };
+    (status.clone(), reason)
+}
+
+/// The word a row's status prints as: `waiting`, `starting`, `running`,
+/// `failed`, `stopped` or `disabled`.
+fn state_word(status: &EntryStatus) -> &'static str {
     match status {
-        EntryStatus::Disabled => (RowState::Disabled, None),
-        EntryStatus::Inactive => (
-            RowState::Stopped,
-            Some("a group around it is not running".into()),
-        ),
-        EntryStatus::Unresolved(error) => (
-            RowState::Failed,
-            Some(format!("unresolved: {}", first_line(&error.to_string()))),
-        ),
-        EntryStatus::Stopped => (RowState::Stopped, Some("stopped in its instance".into())),
+        EntryStatus::Disabled => "disabled",
+        EntryStatus::Unresolved(_) => "failed",
         EntryStatus::Running(snapshot) => match snapshot.state {
-            FiberState::Pending => (RowState::Pending, None),
-            FiberState::Loading => (RowState::Starting, None),
-            FiberState::Active => (RowState::Running, None),
-            FiberState::Failed => (
-                RowState::Failed,
-                snapshot.error.as_ref().map(|error| failure(error)),
-            ),
-            FiberState::Disposed => (RowState::Stopped, None),
-            _ => (RowState::Stopped, None),
+            FiberState::Pending => "waiting",
+            FiberState::Loading => "starting",
+            FiberState::Active => "running",
+            FiberState::Failed => "failed",
+            _ => "stopped",
         },
+        _ => "stopped",
     }
 }
 
@@ -501,19 +504,6 @@ fn elapsed(duration: Duration) -> String {
     }
 }
 
-impl std::fmt::Display for RowState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            RowState::Pending => "waiting",
-            RowState::Starting => "starting",
-            RowState::Running => "running",
-            RowState::Failed => "failed",
-            RowState::Stopped => "stopped",
-            RowState::Disabled => "disabled",
-        })
-    }
-}
-
 impl std::fmt::Display for RuntimeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -551,11 +541,9 @@ impl std::fmt::Display for Status {
                 Some(instance) => format!("{} in {instance}", row.id),
                 None => row.id.clone(),
             };
-            match (&row.state, &row.reason) {
+            match (state_word(&row.state), &row.reason) {
                 // A waiting or failed row's reason says so itself.
-                (RowState::Pending | RowState::Failed, Some(reason)) => {
-                    writeln!(f, "  {name}: {reason}")?
-                }
+                ("waiting" | "failed", Some(reason)) => writeln!(f, "  {name}: {reason}")?,
                 (state, Some(reason)) => writeln!(f, "  {name}: {state} ({reason})")?,
                 (state, None) => writeln!(f, "  {name}: {state}")?,
             }
@@ -620,6 +608,14 @@ impl std::fmt::Display for Call {
 mod tests {
     use super::*;
 
+    fn running(state: FiberState) -> EntryStatus {
+        EntryStatus::Running(Snapshot {
+            generation: 1,
+            state,
+            error: None,
+        })
+    }
+
     /// One item a line under each heading; a waiting row's line is its
     /// reason; a call names the row called when it is not the service's
     /// name; empty parts say `none`.
@@ -630,19 +626,19 @@ mod tests {
                 Row {
                     id: "chat".into(),
                     instance: None,
-                    state: RowState::Running,
+                    state: running(FiberState::Active),
                     reason: None,
                 },
                 Row {
                     id: "weather".into(),
                     instance: None,
-                    state: RowState::Pending,
+                    state: running(FiberState::Pending),
                     reason: Some("waiting for runtime py (down: exited with status 1)".into()),
                 },
                 Row {
                     id: "contacts".into(),
                     instance: Some("phone #1".into()),
-                    state: RowState::Failed,
+                    state: running(FiberState::Failed),
                     reason: Some("failed in apply: KeyError: 'region'".into()),
                 },
             ],

@@ -6,7 +6,7 @@
 Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](https://github.com/arcships/rutis/issues/696) loader、[#698](https://github.com/arcships/rutis/issues/698) rutis-host）。决策记录：[远程运行时一致性](decision-remote-runtime-consistency-2026-10-26.md)。
 修订：[远程运行时：拨出与动态接入](design-remote-runtime-dial-2026-10-14.md) §四"`listen` 与 `instances` 同时出现即为动态接入"一条，见 §六。
 
-范围外：新的交接接口或"连接插件"一层、认证放开（自定义凭据、可等待的判断）、中继示例（理由见决策记录）；本机运行时；节点互联；会话协议与各语言运行时一侧。
+范围外：新的交接接口或"连接插件"一层、认证放开（自定义凭据、可等待的判断）、中继示例（理由见决策记录）；配置里可选的 `transport` 字段（2026-10-28 修订：现在没有任何自定义 `Transport`，宿主自建连接 [#699](https://github.com/arcships/rutis/issues/699) 已决定不做，这个字段没有用处；可替换的 `Transport` 接口留在代码里，以后真有需要再在配置里暴露）；本机运行时；节点互联；会话协议与各语言运行时一侧。
 
 ## 一、现状：已经分好的层
 
@@ -30,7 +30,7 @@ Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](htt
 | P1 | 一台要写两处配置 | `runtimes.remote` 一条 + 一条带 `runtime` 的 `rutis-bridge/peer` 行；两处之间不核对，少写一处行就一直等待 |
 | P2 | 远端缺插件，一台与多台报错不同 | 一台：解析时 `NotFound`，整行失败；多台：`Unavailable`，只在这条连接上不可用 |
 | P3 | 多台的连接没有输出 | 接入点有 `AccessEvent`，rutis-host 没有订阅 |
-| P4 | 多台写死 WebSocket | rutis-host 给接入点固定 `"websocket"`；宿主自建的传输只能用于一台的 link |
+| P4 | 多台写死 WebSocket | rutis-host 给接入点固定 `"websocket"`；宿主自建的传输只能用于一台的 link（不处理，见 M4） |
 | P5 | 发现与检查写了两份 | `RuntimePlugin` 与 `AcceptInstances` 各读一次 `mount` 回复、各查一次 `rows.v2` / `hosts`，离线占位也各有一份 |
 
 服务的可见范围不同（一台全局可见，多台只在实例内）不是问题：这正是一台与多台的区别，由 `instances` 决定。
@@ -42,7 +42,7 @@ Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](htt
 | M1 | 保持现有分层与两个交接点；不新增交接接口，不重写 link 与接入点 |
 | M2 | `runtimes.remote` 一条写全一个远程运行时；rutis-host 在内部生成现在的 link 与运行时接入；旧的 link 行写法照常可用 |
 | M3 | 一台还是多台由 `instances` 决定，谁主动连由 `dial` / `listen` 决定，二者独立 |
-| M4 | 可选 `transport`，一台、多台都用；自建连接 = 实现 `Transport` |
+| M4 | 传输用已有的 WebSocket；可替换的 `Transport` 接口保留在代码里，不在配置里暴露（2026-10-28 修订，原为可选的 `transport` 字段，理由见范围外） |
 | M5 | 一台与多台共用一份发现与检查；缺插件统一为 `Unavailable` |
 | M6 | 多台的连接打印上线、断开、被拒 |
 | M7 | 运行时侧、会话协议、Rust API 不变 |
@@ -57,7 +57,7 @@ Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](htt
 | — | — | — | 不起连接，等别处提供 `RuntimeSession#<名>` | 无（现状，供 Rust 嵌入） |
 
 - `dial` 与 `listen` 同时写、`dial` 与 `instances` 同时写：启动报错（rutis 去连的只能是一台）。
-- `transport`：可选，默认 `websocket`。指向宿主挂载的 `Transport#<kind>`；一台的 link 与多台的接入点都用它。
+- 连接走 WebSocket；没有 `transport` 字段（M4）。
 - token 规则不变：`RUTIS_TOKEN_<名字>`，没有时退回 `RUTIS_TOKEN`。
 
 ```json
@@ -113,6 +113,6 @@ Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](htt
 | Issue | 内容 | 验收 |
 | --- | --- | --- |
 | [#696](https://github.com/arcships/rutis/issues/696) loader | M5 | 同一组行测试经 link dial、link listen、接入点三种接法跑，缺插件报错一致；`ROW_FEATURES` 检查只剩一处；现有远程测试与 `websocket_conformance`、`dial_conformance` 不改用例通过 |
-| [#698](https://github.com/arcships/rutis/issues/698) rutis-host | M2、M3、M4、M6，文档与迁移指南 | `dial`、`listen`、`listen` + `instances`、旧 link 行四种写法端到端；测试用的自定义 `Transport` 经 `transport` 字段接入多台 |
+| [#698](https://github.com/arcships/rutis/issues/698) rutis-host | M2、M3、M4、M6，文档与迁移指南 | `dial`、`listen`、`listen` + `instances`、旧 link 行四种写法端到端（2026-10-28 修订：自定义 `Transport` 的验收随 `transport` 字段删去） |
 
 审阅中另发现两个独立的小问题，不在本稿：[#701](https://github.com/arcships/rutis/issues/701) 重连后连着时解析过的行不重新解析（0.17.2），[#702](https://github.com/arcships/rutis/issues/702) 同一监听器上 token 冲突改为启动报错（0.18）。

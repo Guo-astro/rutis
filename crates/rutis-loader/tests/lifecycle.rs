@@ -210,6 +210,85 @@ async fn loader_disposals_are_not_self_disposals() {
     assert!(self_disposed(&changes).is_none());
 }
 
+/// guarantee: loader/self-dispose
+///
+/// Restarting the loader's own fiber unloads its rows through the kernel's
+/// cascade; that is not a self-disposal. As in Cordis, the rows load again
+/// as they were: an enabled row runs again, a disabled one stays off, and
+/// no layer changes (#812).
+#[tokio::test]
+async fn a_restarted_loader_runs_its_rows_as_before() {
+    let store = MemStore::default();
+    let log = Log::default();
+    let mut builtins = Builtins::new();
+    let tunables = log.clone();
+    builtins.register("tunable", move |config: &Tunable| {
+        Ok(TunablePlugin {
+            name: config.name.clone(),
+            level: config.level,
+            quit: config.quit,
+            log: tunables.clone(),
+        })
+    });
+    let root = Ctx::root().unwrap();
+    let plugin = LoaderPlugin::new(
+        Tunables(builtins),
+        LoaderOptions {
+            persist: Arc::new(store.clone()),
+            ..LoaderOptions::default()
+        },
+    );
+    let loader = plugin.handle();
+    let view = root.plugin(plugin);
+    (&view).await.unwrap();
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let seen = changes.clone();
+    root.on::<LoaderChanged>(move |e, _| {
+        seen.lock().unwrap().push((*e).clone());
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
+    reconcile(
+        &loader,
+        patches(json!([{ "insert": [
+            { "id": "a", "name": "tunable", "config": { "name": "a" } },
+            { "id": "b", "name": "tunable", "config": { "name": "b" } },
+            { "id": "off", "name": "tunable", "disabled": true, "config": { "name": "off" } }
+        ] }])),
+        &store,
+    )
+    .await;
+    let running = |id: &str| state(&loader, id) == Some(FiberState::Active);
+    until(|| running("a") && running("b"), "a and b running").await;
+    let applies = |name: &str| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.as_str() == format!("apply {name} 0"))
+            .count()
+    };
+    assert_eq!((applies("a"), applies("b")), (1, 1));
+
+    view.restart().await.unwrap();
+    until(
+        || running("a") && running("b") && applies("a") == 2 && applies("b") == 2,
+        "a and b running again",
+    )
+    .await;
+    loader.settled().await;
+    assert!(
+        matches!(loader.get("off").unwrap().status, EntryStatus::Disabled),
+        "a disabled row stays disabled"
+    );
+    assert_eq!(applies("off"), 0);
+    assert!(
+        self_disposed(&changes).is_none(),
+        "{:?}",
+        changes.lock().unwrap()
+    );
+    assert!(store.patches().is_empty(), "{:?}", store.patches());
+}
+
 /// guarantee: loader/volatile-in-place
 #[tokio::test]
 async fn volatile_fields_change_in_place() {

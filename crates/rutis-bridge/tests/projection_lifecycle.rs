@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
-use rutis::internal::{CtxInternal, ServiceIntercept};
 use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, decode_value, Error};
@@ -24,7 +23,11 @@ fn package() -> PathBuf {
 struct Counter {
     process: Arc<Process>,
     handle: String,
+    /// Called once, by the first proxy dropped after it is set.
+    on_drop: OnDrop,
 }
+
+type OnDrop = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 impl Counter {
     fn call(&self, method: &str, args: Value) -> Result<Value, Error> {
         self.process.call(&self.handle, method, args)
@@ -35,6 +38,10 @@ impl Counter {
 }
 impl Drop for Counter {
     fn drop(&mut self) {
+        let hook = self.on_drop.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
         self.process.release(&self.handle);
     }
 }
@@ -58,6 +65,7 @@ type Shared = Arc<Mutex<Option<Arc<Process>>>>;
 struct Mount {
     plugin: PathBuf,
     process: Shared,
+    on_drop: OnDrop,
 }
 
 impl DynPlugin for Mount {
@@ -67,7 +75,18 @@ impl DynPlugin for Mount {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let projection = Projection::new();
-            projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
+            let on_drop = self.on_drop.clone();
+            projection.service_keyed(
+                "counter",
+                TypeKey::of::<Counter>(),
+                move |process, handle| {
+                    Arc::new(Counter {
+                        process,
+                        handle,
+                        on_drop: on_drop.clone(),
+                    })
+                },
+            );
             let process = Process::launch_observed(
                 &package(),
                 &self.plugin,
@@ -90,6 +109,12 @@ impl DynPlugin for Mount {
 }
 
 async fn mounted() -> (tempfile::NamedTempFile, Ctx, rutis::host::FiberView, Shared) {
+    mounted_with(OnDrop::default()).await
+}
+
+async fn mounted_with(
+    on_drop: OnDrop,
+) -> (tempfile::NamedTempFile, Ctx, rutis::host::FiberView, Shared) {
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(COUNTER.as_bytes()).unwrap();
     let ctx = Ctx::root().unwrap();
@@ -97,6 +122,7 @@ async fn mounted() -> (tempfile::NamedTempFile, Ctx, rutis::host::FiberView, Sha
     let view = ctx.plugin(Mount {
         plugin: file.path().to_owned(),
         process: shared.clone(),
+        on_drop,
     });
     (&view).await.unwrap();
     (file, ctx, view, shared)
@@ -123,27 +149,25 @@ async fn withdrawal_and_immediate_reregistration_keep_the_service() {
 }
 
 // Review #3: a handle whose proxy is being published is not released when a
-// reentrant change replaces it before publication finishes.
+// reentrant change replaces it before publication finishes. Publishing the
+// value-2 proxy drops the value-1 one inside the write; its Drop takes the
+// new proxy and replaces the service again before the publication returns.
 #[tokio::test(flavor = "current_thread")]
 async fn a_proxy_held_during_reentrant_replacement_stays_callable() {
-    let (_file, ctx, view, _shared) = mounted().await;
+    let on_drop = OnDrop::default();
+    let (_file, ctx, view, shared) = mounted_with(on_drop.clone()).await;
     let held: Arc<Mutex<Option<Arc<Counter>>>> = Arc::default();
-    let hook = held.clone();
-    ctx.intercept_set_as::<Counter>(TypeKey::of::<Counter>(), move |candidate| {
-        let mut held = hook.lock().unwrap();
-        if held.is_none() {
-            *held = Some(candidate.clone());
-            drop(held);
-            // Replace again while the candidate is still being published.
-            candidate.call("swap", json!([3])).unwrap();
-        }
-        ServiceIntercept::Continue
-    })
-    .unwrap();
-    ctx.get::<Counter>()
-        .unwrap()
-        .call("swap", json!([2]))
-        .unwrap();
+    let (into, reader) = (held.clone(), ctx.clone());
+    *on_drop.lock().unwrap() = Some(Box::new(move || {
+        let candidate = reader.get::<Counter>().unwrap();
+        *into.lock().unwrap() = Some(candidate.clone());
+        // Replace again while the candidate is still being published.
+        candidate.call("swap", json!([3])).unwrap();
+    }));
+    // The registry holds the only value-1 proxy: swap through the raw handle.
+    let process = shared.lock().unwrap().clone().unwrap();
+    let handle = process.service("counter").unwrap();
+    process.call(&handle, "swap", json!([2])).unwrap();
     until(
         || {
             held.lock().unwrap().is_some()
@@ -157,7 +181,7 @@ async fn a_proxy_held_during_reentrant_replacement_stays_callable() {
     let held = held.lock().unwrap().take().unwrap();
     assert_eq!(held.current().unwrap(), 2.0);
     assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 3.0);
-    drop(held);
+    drop((held, process));
     view.dispose().await.unwrap();
     ctx.shutdown().await.unwrap();
 }
@@ -286,7 +310,11 @@ impl DynPlugin for PairMount {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
         Box::pin(async move {
             let projection = Projection::new();
-            projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
+            projection.service::<Counter>("counter", |process, handle| Counter {
+                process,
+                handle,
+                on_drop: OnDrop::default(),
+            });
             projection.service::<Other>("other", |process, handle| Other { process, handle });
             let process = Process::launch_observed(
                 &package(),
@@ -326,55 +354,6 @@ async fn pair() -> (
     (&view).await.unwrap();
     let process = shared.lock().unwrap().clone().unwrap();
     (file, ctx, view, process)
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_retried_publication_keeps_its_handle() {
-    let (_file, ctx, view, process) = pair().await;
-    let denied = Arc::new(Mutex::new(false));
-    let first = denied.clone();
-    ctx.intercept_set_as::<Counter>(TypeKey::of::<Counter>(), move |_| {
-        let mut first = first.lock().unwrap();
-        if *first {
-            ServiceIntercept::Continue
-        } else {
-            *first = true;
-            ServiceIntercept::Deny
-        }
-    })
-    .unwrap();
-
-    // The first publication of the value-2 object is denied...
-    process.call("control", "swap", json!([2])).unwrap();
-    // Denied: the intercept has said so, and the slot keeps the old object.
-    until(|| *denied.lock().unwrap(), "the denied publication").await;
-    assert_eq!(ctx.get::<Counter>().unwrap().current().unwrap(), 1.0);
-    // ...and retried when another slot changes.
-    process.call("control", "bump", json!([5])).unwrap();
-    until(
-        || {
-            ctx.get::<Counter>()
-                .is_some_and(|counter| counter.current().ok() == Some(2.0))
-        },
-        "the counter at 2.0",
-    )
-    .await;
-    let kept = ctx.get::<Counter>().unwrap();
-    assert_eq!(kept.current().unwrap(), 2.0);
-    // Replacing it again must not invalidate the retried proxy's handle.
-    process.call("control", "swap", json!([3])).unwrap();
-    until(
-        || {
-            ctx.get::<Counter>()
-                .is_some_and(|counter| counter.current().ok() == Some(3.0))
-        },
-        "the counter at 3.0",
-    )
-    .await;
-    assert_eq!(kept.current().unwrap(), 2.0);
-    drop((kept, process));
-    view.dispose().await.unwrap();
-    ctx.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -446,6 +425,7 @@ export function apply(ctx) {
     let view = ctx.plugin(Mount {
         plugin: file.path().to_owned(),
         process: shared.clone(),
+        on_drop: OnDrop::default(),
     });
     (&view).await.unwrap();
     let stopped = Arc::new(Mutex::new(false));

@@ -105,15 +105,10 @@ struct Service {
 /// copies inside that connection's instance, the instance's own
 /// (`RuntimeInstances`, feature `runtimes`): `host_key_in(name, instance)`.
 ///
-/// Every name not registered otherwise is shared by name, as in rutis-host
-/// ([`ServiceCatalog::share_by_name`]); [`ServiceCatalog::share_registered_only`]
-/// shares only the names registered as shared.
-#[derive(Clone)]
+/// Every name not registered otherwise is shared by name.
+#[derive(Clone, Default)]
 pub struct ServiceCatalog {
     services: HashMap<String, Service>,
-    /// Every name not registered otherwise is shared by name.
-    #[cfg_attr(not(any(feature = "runtimes", feature = "peer")), allow(dead_code))]
-    by_name: bool,
 }
 
 fn probe<T: ?Sized + Send + Sync + 'static>() -> Probe {
@@ -127,17 +122,8 @@ fn reader<T: Serialize + Send + Sync + 'static>() -> Read {
     })
 }
 
-impl Default for ServiceCatalog {
-    fn default() -> Self {
-        Self {
-            services: HashMap::new(),
-            by_name: true,
-        }
-    }
-}
-
 impl ServiceCatalog {
-    /// A catalog sharing every name by name ([`ServiceCatalog::share_by_name`]).
+    /// A catalog sharing every name not registered otherwise by name.
     pub fn new() -> Self {
         Self::default()
     }
@@ -175,12 +161,12 @@ impl ServiceCatalog {
         name: impl Into<String>,
         group: impl Into<String>,
     ) -> &mut Self {
-        self.register_instance_keyed::<T>(name, group, TypeKey::of::<T>())
+        self.insert_instance::<T>(name, group, TypeKey::of::<T>())
     }
 
-    /// [`ServiceCatalog::register_instance`] with an explicit key (named or
-    /// dynamic), qualified with the instance.
-    pub fn register_instance_keyed<T: ?Sized + Send + Sync + 'static>(
+    /// Name the service `T` registered under `key`, qualified with the
+    /// instance, inside each instance of `group`.
+    fn insert_instance<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         name: impl Into<String>,
         group: impl Into<String>,
@@ -191,33 +177,6 @@ impl ServiceCatalog {
             base: key,
         };
         self.insert(name, key, probe::<T>(), None);
-        self
-    }
-
-    /// [`ServiceCatalog::register_instance`] for a service whose value
-    /// expressions may read, serialized to JSON: in a copy, the value of
-    /// its own instance's service.
-    pub fn readable_instance<T: Serialize + Send + Sync + 'static>(
-        &mut self,
-        name: impl Into<String>,
-        group: impl Into<String>,
-    ) -> &mut Self {
-        self.readable_instance_keyed::<T>(name, group, TypeKey::of::<T>())
-    }
-
-    /// [`ServiceCatalog::readable_instance`] with an explicit key, qualified
-    /// with the instance.
-    pub fn readable_instance_keyed<T: Serialize + Send + Sync + 'static>(
-        &mut self,
-        name: impl Into<String>,
-        group: impl Into<String>,
-        key: TypeKey,
-    ) -> &mut Self {
-        let key = NameKey::Instance {
-            group: group.into(),
-            base: key,
-        };
-        self.insert(name, key, probe::<T>(), Some(reader::<T>()));
         self
     }
 
@@ -246,10 +205,8 @@ impl ServiceCatalog {
 
     /// Name a service shared across languages: a `dyn HostDispatch` at
     /// `host_key(name)`, provided by Rust or by a row of any runtime. Rows
-    /// that inject a shared name wait for it in rutis. Every name is shared
-    /// by default; this matters after
-    /// [`ServiceCatalog::share_registered_only`], where the other names a
-    /// JavaScript row injects are left to Cordis.
+    /// that inject a shared name wait for it in rutis. Every name not
+    /// registered otherwise is shared already.
     #[cfg(feature = "runtimes")]
     pub fn register_shared(&mut self, name: impl Into<String>) -> &mut Self {
         let name = name.into();
@@ -269,35 +226,7 @@ impl ServiceCatalog {
     ) -> &mut Self {
         let name = name.into();
         let key = rutis_bridge::session::host_key(&name);
-        self.register_instance_keyed::<dyn rutis_bridge::session::HostDispatch>(
-            name,
-            group,
-            key.erase(),
-        )
-    }
-
-    /// Share every name not registered otherwise, as
-    /// [`ServiceCatalog::register_shared`] would: a host whose services all
-    /// cross between languages and nodes by name (rutis-host).
-    ///
-    /// The default: a catalog shares every name by name unless
-    /// [`ServiceCatalog::share_registered_only`] said otherwise. Rows gate in
-    /// rutis on the names rutis has a provider for (a Rust service, a marked
-    /// one, another row's); a name only a Cordis row of the same
-    /// runtime provides resolves in Cordis.
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
-    pub fn share_by_name(&mut self) -> &mut Self {
-        self.by_name = true;
-        self
-    }
-
-    /// Share only the names registered as shared (`register_shared`,
-    /// `register_shared_instance`): the other names a JavaScript
-    /// row injects are left to Cordis, and a leaf row cannot inject them.
-    /// What `ServiceCatalog::new()` did before 0.12.
-    pub fn share_registered_only(&mut self) -> &mut Self {
-        self.by_name = false;
-        self
+        self.insert_instance::<dyn rutis_bridge::session::HostDispatch>(name, group, key.erase())
     }
 
     /// Whether `name` is shared across languages by name, globally or
@@ -341,11 +270,12 @@ impl ServiceCatalog {
     /// cannot know.
     pub(crate) fn marked_by_host(&self, name: &str) -> Option<&'static str> {
         #[cfg(any(feature = "runtimes", feature = "peer"))]
-        if self.shared_key(name).is_some() {
-            return rutis::internal::service::exported_as(name);
+        return rutis::internal::service::exported_as(name);
+        #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+        {
+            let _ = name;
+            None
         }
-        let _ = name;
-        None
     }
 
     /// Every name registered (global or inside instances).
@@ -419,12 +349,10 @@ impl ServiceCatalog {
         }
     }
 
-    /// Every name is shared when sharing by name, and the names of marked
-    /// Rust services ([`rutis::service`]) always are.
+    /// Every name not registered otherwise is shared by name.
     #[cfg(any(feature = "runtimes", feature = "peer"))]
     fn shared_key(&self, name: &str) -> Option<TypeKey> {
-        (self.by_name || rutis::internal::service::is_exported(name))
-            .then(|| rutis_bridge::session::host_key(name).erase())
+        Some(rutis_bridge::session::host_key(name).erase())
     }
 
     #[cfg(not(any(feature = "runtimes", feature = "peer")))]

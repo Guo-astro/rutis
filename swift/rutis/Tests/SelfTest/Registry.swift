@@ -11,6 +11,8 @@ let registry: [(String, () async throws -> Void)] = [
     ("PeerTests.testAValueTooDeepFailsOnlyItsCall", { try await PeerTests().testAValueTooDeepFailsOnlyItsCall() }),
     ("PeerTests.testTheSessionEndsWhenTheFarEndGoes", { try await PeerTests().testTheSessionEndsWhenTheFarEndGoes() }),
     ("PeerTests.testAReadErrorClosesTheChannel", { try await PeerTests().testAReadErrorClosesTheChannel() }),
+    ("LocalEndpointTests.aLocalChannelWithAnIDGreetsAsThatEndpoint", { try await LocalEndpointTests().aLocalChannelWithAnIDGreetsAsThatEndpoint() }),
+    ("LocalEndpointTests.anInvalidIDIsRefusedBeforeTheChannelOpens", { try LocalEndpointTests().anInvalidIDIsRefusedBeforeTheChannelOpens() }),
     ("BadValueTests.testAMessageOverTheLimitFailsOnlyItsCall", { try await BadValueTests().testAMessageOverTheLimitFailsOnlyItsCall() }),
     ("BadValueTests.testAnObjectGoesOnlyToAFarEndThatTakesObjects", { try await BadValueTests().testAnObjectGoesOnlyToAFarEndThatTakesObjects() }),
     ("BadValueTests.testAReceivedObjectIsAProxyOfItsMethods", { try await BadValueTests().testAReceivedObjectIsAProxyOfItsMethods() }),

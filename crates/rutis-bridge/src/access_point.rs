@@ -17,10 +17,6 @@
 //! share a listener as long as no credential is accepted by two of them
 //! (such a connection is refused as ambiguous, 403) and no linked peer
 //! there has the access point's name (the second registration fails).
-//!
-//! An admission that revokes ([`Revocable`](crate::Revocable)) closes the
-//! connection of a revoked id, or all of them when everything is revoked;
-//! it then rejects the id (close code 4003), or the credential (403).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,8 +33,7 @@ use crate::link::{Greet, Live};
 use crate::runtime::RuntimeSession;
 use crate::session::Error;
 use crate::{
-    admission_key, transport_key, Admission, Credential, Identity, Peer, Presented, Registration,
-    Rejection, Retry, Transport,
+    admission_key, Accepting, Admission, Credential, Identity, Peer, Presented, Rejection, Retry,
 };
 
 /// Undoes what [`Accept::accept`] set up for a connection.
@@ -105,12 +100,10 @@ pub struct AccessPointConfig {
     /// The access point's name: what its registration on the listener is
     /// keyed by, as a link's is by its far end.
     pub name: PeerId,
-    /// The transport's kind (`Transport#<kind>`).
-    pub transport: String,
     /// The admission's name (`Admission#<name>`).
     pub admission: String,
-    /// The listener of the transport to register on.
-    pub listener: String,
+    /// The listener to register on.
+    pub accepting: Accepting,
     /// How long a runtime may take to greet.
     pub handshake: Duration,
     /// Capabilities each runtime must declare (`runtime`).
@@ -120,12 +113,11 @@ pub struct AccessPointConfig {
 }
 
 impl AccessPointConfig {
-    pub fn new(name: PeerId, transport: &str, admission: &str, listener: &str) -> Self {
+    pub fn new(name: PeerId, admission: &str, accepting: Accepting) -> Self {
         Self {
             name,
-            transport: transport.into(),
             admission: admission.into(),
-            listener: listener.into(),
+            accepting,
             handshake: Retry::default().handshake,
             require: Vec::new(),
             declare: Vec::new(),
@@ -150,13 +142,13 @@ impl AccessPointConfig {
     }
 }
 
-/// The access point plugin: depends on `Transport#<kind>` and
-/// `Admission#<name>`, registers on the listener while applied, and hands
-/// each admitted connection to its [`Accept`].
+/// The access point plugin: depends on `Admission#<name>`, registers on
+/// the listener while applied, and hands each admitted connection to its
+/// [`Accept`].
 pub struct AccessPointPlugin {
     label: String,
     config: AccessPointConfig,
-    injects: [TypeKey; 2],
+    injects: [TypeKey; 1],
     accept: Option<Arc<dyn Accept>>,
     events: broadcast::Sender<AccessEvent>,
 }
@@ -165,10 +157,7 @@ impl AccessPointPlugin {
     pub fn new(config: AccessPointConfig) -> Self {
         Self {
             label: format!("rutis-bridge/access-point#{}", config.name),
-            injects: [
-                transport_key(&config.transport).erase(),
-                admission_key(&config.admission).erase(),
-            ],
+            injects: [admission_key(&config.admission).erase()],
             accept: None,
             events: broadcast::channel(64).0,
             config,
@@ -208,28 +197,26 @@ impl DynPlugin for AccessPointPlugin {
                     format!("{}: {what}", self.label).into(),
                 ))
             };
-            let transport = ctx
-                .get_key::<dyn Transport>(self.injects[0].clone())
-                .ok_or_else(|| failed("the transport is not provided".into()))?;
             let admission = ctx
-                .get_key::<dyn Admission>(self.injects[1].clone())
+                .get_key::<dyn Admission>(self.injects[0].clone())
                 .ok_or_else(|| failed("the admission is not provided".into()))?;
             let (sender, mut delivered) = mpsc::unbounded_channel::<Channel>();
-            let registered = transport
-                .register(Registration {
-                    listener: self.config.listener.clone(),
-                    peer: self.config.name.clone(),
-                    identity: Arc::new(Routing {
+            let registered = self
+                .config
+                .accepting
+                .register(
+                    self.config.name.clone(),
+                    Arc::new(Routing {
                         admission: admission.clone(),
                         name: self.config.name.clone(),
                     }),
-                    protocol: crate::protocol(),
-                    deliver: Box::new(move |channel| {
+                    crate::protocol(),
+                    Box::new(move |channel| {
                         if let Err(refused) = sender.send(channel) {
-                            refused.0.closer.close("the access point stopped");
+                            refused.0.closer.close(crate::channel::Close::Done);
                         }
                     }),
-                })
+                )
                 .map_err(|error| failed(error.to_string()))?;
             let (stop, stopping) = watch::channel(false);
             let shared = Arc::new(Shared {
@@ -298,7 +285,6 @@ impl Identity for Routing {
 enum Ending {
     Closed,
     Stopped,
-    Revoked,
 }
 
 /// The current connection of one id.
@@ -339,10 +325,8 @@ impl Shared {
             sender,
             receiver,
             closer,
-            mut info,
         } = channel;
         // Routed by its credential alone: its id comes with its hello.
-        info.peer = None;
         let verdict = Arc::new(OnceLock::new());
         let channel = Channel {
             sender,
@@ -353,7 +337,6 @@ impl Shared {
                 verdict: Some(verdict.clone()),
             }),
             closer: closer.clone(),
-            info,
         };
         let greet = Greet {
             local: self.admission.local().clone(),
@@ -405,8 +388,8 @@ impl Shared {
         if let Some(reason) = superseded {
             drop(current);
             match stopped {
-                true => closer.close(&reason),
-                false => closer.replaced(),
+                true => closer.close(crate::channel::Close::Done),
+                false => closer.close(crate::channel::Close::Replaced),
             }
             session.close(Error::Transport(reason.clone()));
             operations.detach();
@@ -416,28 +399,11 @@ impl Shared {
         // A newer connection takes over: the old one is closed and
         // released before this one is accepted.
         if let Some(old) = current.take() {
-            old.live.closer.replaced();
+            old.live.closer.close(crate::channel::Close::Replaced);
             old.live.end("replaced by a new connection").await;
             self.emit(AccessEvent::Replaced {
                 id: id.clone(),
                 generation: old.generation,
-            });
-        }
-        // Revoked since its hello was admitted (while it waited for the
-        // slot or for the old connection's release): rejected before
-        // anything is set up for it (#210).
-        let revoked = self
-            .admission
-            .revocations()
-            .is_some_and(|revocations| revocations.is_revoked(&id));
-        if revoked {
-            drop(current);
-            closer.rejected(crate::identity::NOT_ACCEPTED);
-            session.close(Error::Transport(format!("{id}: identity revoked")));
-            operations.detach();
-            self.forget(&id, slot);
-            return self.emit(AccessEvent::Rejected {
-                reason: crate::identity::NOT_ACCEPTED.into(),
             });
         }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -472,17 +438,9 @@ impl Shared {
             generation,
         });
 
-        // Revoking the id (or everything the admission accepts) closes this
-        // connection alone (#273); its later connections are refused by
-        // the admission.
-        let revoked: BoxFuture<'static, ()> = match self.admission.revocations() {
-            Some(revocations) => Box::pin(revocations.revoked(&id)),
-            None => Box::pin(std::future::pending()),
-        };
         let ending = tokio::select! {
             _ = session.closed() => Ending::Closed,
             _ = stopping.wait_for(|stopped| *stopped) => Ending::Stopped,
-            () = revoked => Ending::Revoked,
         };
         let mut current = slot.lock().await;
         // Unless a newer connection took over, and released this one.
@@ -493,17 +451,11 @@ impl Shared {
             let ended = current.take().expect("checked");
             let reason = match ending {
                 Ending::Stopped => "the access point stopped".to_owned(),
-                Ending::Revoked => format!("{id}: identity revoked"),
                 Ending::Closed => session.close_reason().map_or_else(
                     || "the connection ended".to_owned(),
                     |error| error.to_string(),
                 ),
             };
-            if let Ending::Revoked = ending {
-                // Closed before the release: calls in flight fail at once,
-                // as when the network drops.
-                session.close(Error::Transport(reason.clone()));
-            }
             ended.live.end(&reason).await;
             self.emit(AccessEvent::Disconnected {
                 id: id.clone(),
@@ -562,7 +514,8 @@ impl Receiver for Admitting {
         let rejected = admitted.as_ref().err().cloned();
         let _ = verdict.set(admitted);
         if let Some(rejection) = rejected {
-            self.closer.rejected(&rejection.0);
+            self.closer
+                .close(crate::channel::Close::Rejected(rejection.0.clone()));
             return Err(ChannelError::Closed {
                 reason: format!("rejected: {rejection}"),
             });

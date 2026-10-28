@@ -492,7 +492,6 @@ impl Link {
             "serial" => Mode::Serial,
             "waterfall" => Mode::Waterfall,
             "bail" => Mode::Bail,
-            "waterfall-sync" => Mode::WaterfallSync,
             other => return Err(binding(format!("events.call: unknown mode {other}"))),
         };
         let args = match fields.remove("args") {
@@ -574,22 +573,16 @@ fn dispatch_id(origin: u64, dispatch: &str) -> u64 {
 
 /// The far end's `next` as the rest of the chain here.
 fn next_terminal(next: Reference, mode: Mode) -> RawTerminal {
-    match mode {
-        Mode::WaterfallSync => RawTerminal::Sync(Box::new(move |_| {
-            let value = next.call(Value::List(Vec::new())).map_err(to_cordis)?;
+    RawTerminal::Async(Box::new(move |_| {
+        Box::pin(async move {
+            let reply = next
+                .call_async(Value::List(Vec::new()))
+                .await
+                .map_err(to_cordis)?;
+            let value = settle(reply).await.map_err(to_cordis)?;
             Ok(result_from_wire(value, mode))
-        })),
-        _ => RawTerminal::Async(Box::new(move |_| {
-            Box::pin(async move {
-                let reply = next
-                    .call_async(Value::List(Vec::new()))
-                    .await
-                    .map_err(to_cordis)?;
-                let value = settle(reply).await.map_err(to_cordis)?;
-                Ok(result_from_wire(value, mode))
-            })
-        })),
-    }
+        })
+    }))
 }
 
 /// Serves `events.*` from the peer.

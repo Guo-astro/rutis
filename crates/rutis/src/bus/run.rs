@@ -2,7 +2,6 @@
 //! then the mode, the same for every entry wherever it lives.
 
 use crate::host::CtxHost;
-use std::cell::RefCell;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
@@ -13,11 +12,10 @@ use std::task::Poll;
 use super::table::{Body, CallFlight, Entry};
 use super::EventBus;
 use crate::ctx::Ctx;
-use crate::error::{join_panic_error, panic_error, Error, ErrorKind, NextMisuse};
-use crate::events::remote::{SyncNextFn, SyncNextState};
+use crate::error::{join_panic_error, panic_error, Error, ErrorKind};
 use crate::events::{
     Candidate, CatchUnwind, FilterAnswer, ListenerInfo, ListenerKind, Mode, Payload, PayloadRef,
-    RawTerminal, RemoteCall, RemoteNext, RemoteSyncCall, RemoteSyncNext, Value,
+    RawTerminal, RemoteCall, RemoteNext, RemoteSyncCall, Value,
 };
 use crate::BoxFuture;
 
@@ -209,12 +207,6 @@ impl ErasedTerminal for NoTerminal {
     }
 }
 
-impl ErasedSyncTerminal for NoTerminal {
-    fn call(&self, _: &Inv<'_>) -> Result<Option<Value>, Error> {
-        Ok(None)
-    }
-}
-
 /// A raw terminal (or a far end's `next`), called at most once.
 pub(crate) struct RawTerm(pub Mutex<Option<RawTerminal>>);
 
@@ -230,23 +222,6 @@ impl ErasedTerminal for RawTerm {
                     .unwrap_or_else(|panic| Err(panic_error(panic))),
             )),
             None => Box::pin(std::future::ready(Ok(None))),
-        }
-    }
-}
-
-impl ErasedSyncTerminal for RawTerm {
-    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
-        match self.0.lock().unwrap().take() {
-            Some(RawTerminal::Sync(f)) => catch_unwind(AssertUnwindSafe(|| f(inv.event)))
-                .unwrap_or_else(|panic| Err(panic_error(panic))),
-            Some(RawTerminal::Async(_)) => Err(ErrorKind::Validation {
-                issues: vec![format!(
-                    "the terminal of the synchronous waterfall of {} must be synchronous",
-                    inv.name
-                )],
-            }
-            .into()),
-            None => Ok(None),
         }
     }
 }
@@ -390,12 +365,7 @@ pub(crate) fn call_async<'a>(
             )
         }),
         Body::Sync(listener) => {
-            let arg = if next.is_some() {
-                SyncNextArg::InAsyncWaterfall
-            } else {
-                SyncNextArg::None
-            };
-            let out = catch_unwind(AssertUnwindSafe(|| listener.call(&entry.ctx, inv, arg)))
+            let out = catch_unwind(AssertUnwindSafe(|| listener.call(&entry.ctx, inv)))
                 .unwrap_or_else(|panic| Err(panic_error(panic)));
             Box::pin(std::future::ready(out))
         }
@@ -470,43 +440,6 @@ fn remote_waterfall<'a>(
 
 // ── sync calls ───────────────────────────────────────────────────
 
-pub(crate) trait ErasedSyncTerminal {
-    fn call(&self, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
-}
-
-pub(crate) enum SyncNextArg<'a> {
-    /// Not a waterfall.
-    None,
-    /// A synchronous listener in an async waterfall.
-    InAsyncWaterfall,
-    Next(SyncNext<'a>),
-}
-
-pub(crate) struct SyncNext<'a> {
-    pub inv: &'a Inv<'a>,
-    pub chain: &'a [Arc<Entry>],
-    pub terminal: &'a (dyn ErasedSyncTerminal + 'a),
-}
-
-impl SyncNext<'_> {
-    pub fn invoke(self) -> Result<Option<Value>, Error> {
-        for (index, entry) in self.chain.iter().enumerate() {
-            let Some(flight) = self.inv.bus.start(entry) else {
-                continue;
-            };
-            let next = SyncNext {
-                inv: self.inv,
-                chain: &self.chain[index + 1..],
-                terminal: self.terminal,
-            };
-            let out = call_sync(entry, self.inv, Some(next));
-            drop(flight);
-            return out;
-        }
-        user_call(self.inv.emitter, || self.terminal.call(self.inv))
-    }
-}
-
 pub(crate) fn user_call<T>(ctx: &Ctx, call: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     match catch_unwind(AssertUnwindSafe(call)) {
         Ok(result) => result,
@@ -527,87 +460,18 @@ fn async_listener(entry: &Entry, inv: &Inv<'_>) -> Error {
     .into()
 }
 
-/// Call one entry in a synchronous mode. `next` only in `waterfall-sync`.
-pub(crate) fn call_sync(
-    entry: &Entry,
-    inv: &Inv<'_>,
-    next: Option<SyncNext<'_>>,
-) -> Result<Option<Value>, Error> {
+/// Call one entry in the synchronous mode (`bail`).
+pub(crate) fn call_sync(entry: &Entry, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
     match &entry.body {
-        Body::Sync(listener) => {
-            let arg = next.map_or(SyncNextArg::None, SyncNextArg::Next);
-            user_call(&entry.ctx, || listener.call(&entry.ctx, inv, arg))
-        }
+        Body::Sync(listener) => user_call(&entry.ctx, || listener.call(&entry.ctx, inv)),
         Body::Async(_) => Err(async_listener(entry, inv)),
         Body::Remote(remote) => {
             if remote.kind() == ListenerKind::Async {
                 return Err(async_listener(entry, inv));
             }
-            match next {
-                None => user_call(&entry.ctx, || {
-                    remote.call_sync(RemoteSyncCall { inv, next: None })
-                }),
-                Some(next) => remote_sync_waterfall(entry, &**remote, inv, next),
-            }
+            user_call(&entry.ctx, || remote.call_sync(RemoteSyncCall { inv }))
         }
     }
-}
-
-struct ClearOnReturn(Arc<Mutex<SyncNextState>>);
-
-impl Drop for ClearOnReturn {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.0.lock() {
-            state.run = None;
-        }
-    }
-}
-
-fn remote_sync_waterfall(
-    entry: &Entry,
-    remote: &dyn crate::events::RemoteListener,
-    inv: &Inv<'_>,
-    next: SyncNext<'_>,
-) -> Result<Option<Value>, Error> {
-    let cell = RefCell::new(Some(next));
-    let name = inv.name;
-    let run = || -> Result<Option<Value>, Error> {
-        let next = cell.borrow_mut().take();
-        match next {
-            Some(next) => next.invoke(),
-            None => Err(ErrorKind::WaterfallNext {
-                name: name.to_string(),
-                misuse: NextMisuse::AlreadyCalled,
-            }
-            .into()),
-        }
-    };
-    let run: &(dyn Fn() -> Result<Option<Value>, Error> + '_) = &run;
-    // SAFETY: only the lifetime bound changes. `RemoteSyncNext::call`
-    // dereferences it only on this thread while `run` is set, and `_clear`
-    // unsets it before this frame (which owns the closure) returns.
-    let run: *const SyncNextFn = unsafe {
-        std::mem::transmute::<
-            *const (dyn Fn() -> Result<Option<Value>, Error> + '_),
-            *const SyncNextFn,
-        >(run)
-    };
-    let state = Arc::new(Mutex::new(SyncNextState {
-        run: Some(run),
-        thread: std::thread::current().id(),
-        called: false,
-    }));
-    let _clear = ClearOnReturn(state.clone());
-    let handle = RemoteSyncNext {
-        name: inv.name.clone(),
-        state,
-    };
-    user_call(&entry.ctx, || {
-        remote.call_sync(RemoteSyncCall {
-            inv,
-            next: Some(handle),
-        })
-    })
 }
 
 // ── modes ────────────────────────────────────────────────────────
@@ -682,7 +546,7 @@ pub(crate) fn run_bail(inv: &Inv<'_>, entries: &[Arc<Entry>]) -> Result<Option<V
         let Some(flight) = inv.bus.start(entry) else {
             continue;
         };
-        let out = call_sync(entry, inv, None);
+        let out = call_sync(entry, inv);
         drop(flight);
         match out? {
             Some(value) if !value.is_no_result() => return Ok(Some(value)),

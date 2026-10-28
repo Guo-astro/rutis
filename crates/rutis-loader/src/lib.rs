@@ -72,7 +72,7 @@ pub use resolver::{Builtins, Chain, Resolver};
 /// failures, change notices.
 pub mod report {
     pub use crate::error::{Failure, Unavailable};
-    pub use crate::framework::RowState;
+    pub use crate::framework::RowEventState;
     pub use crate::loader::{
         CheckReport, Clash, ConfigStatus, CycleLink, EntryInfo, EntryStatus, InstanceInfo, Isolate,
         LoaderChanged, PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck,
@@ -89,17 +89,18 @@ pub mod resolve {
 /// What rutis-host and the tests use. No stability promise.
 #[doc(hidden)]
 pub mod internal {
+    pub use crate::loader::followed_rows;
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};
     #[cfg(feature = "binary")]
     pub use crate::runtime::binary::read_binary_manifest;
     #[cfg(feature = "go")]
-    pub use crate::runtime::go::{read_go_manifest, GO_MARKER, PLUGIN_API};
+    pub use crate::runtime::go::PLUGIN_API;
     #[cfg(feature = "runtimes")]
     pub use crate::runtime::is_runtime_name;
     #[cfg(feature = "node")]
     pub use crate::runtime::resolve_entry;
     #[cfg(feature = "swift")]
-    pub use crate::runtime::swift::{read_swift_manifest, SWIFT_MARKER, SWIFT_PLUGIN_API};
+    pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

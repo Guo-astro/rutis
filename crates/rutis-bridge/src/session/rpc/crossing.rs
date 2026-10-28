@@ -134,13 +134,17 @@ fn largest(args: &WireValue) -> Option<usize> {
 }
 
 impl Connection {
-    /// The far end, for messages: the endpoint it greeted as, the one the
-    /// channel verified or whoever started it named, else `the far end`.
+    /// The far end, for messages: the endpoint it greeted as, the one this
+    /// side expects or whoever started it named, else `the far end`.
     pub(super) fn far_name(&self) -> String {
         if let Some(greeting) = self.greeting() {
             return greeting.endpoint.to_string();
         }
-        if let Some(peer) = &self.0.verified {
+        if let super::Format::Endpoint(super::Endpoint {
+            expected: Some(peer),
+            ..
+        }) = &self.0.format
+        {
             return peer.to_string();
         }
         if let Some(name) = self.0.named.get() {

@@ -1,7 +1,7 @@
+use crate::pipe::Stdio;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
 use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
-use crate::transport::local::Stdio;
 use rutis::host::CtxHost;
 use serde_json::{json, Value};
 use std::collections::HashMap;

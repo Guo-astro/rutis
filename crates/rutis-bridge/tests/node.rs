@@ -13,10 +13,10 @@ use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, Credential, Described, ExportPlugin, HostPlugin, IdentityPlugin, ImportPlugin,
-    LinkConfig, LinkPlugin, Peer, Retry, StaticCatalog, StaticIdentity,
+    peer_key, Accepting, Credential, Described, ExportPlugin, HostPlugin, IdentityPlugin,
+    ImportPlugin, LinkConfig, LinkPlugin, Peer, Registrations, Retry, StaticCatalog,
+    StaticIdentity,
 };
 use rutis_test_support::{eventually, within};
 use serde_json::{json, Value as Json};
@@ -38,29 +38,36 @@ fn quick() -> Retry {
 
 /// `main` listens for `mac`, `mac` dials it; both get their peer.
 async fn linked() -> (Ctx, Ctx, FiberView) {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let main = Ctx::root().unwrap();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick()),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        )
+        .retry(quick()),
     ));
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport)))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     let mac_link = mac.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick()),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        )
+        .retry(quick()),
     ));
     eventually(|| main.get_at::<Peer>(&peer_key(&id("mac"))), "main's peer").await;
     eventually(|| mac.get_at::<Peer>(&peer_key(&id("main"))), "mac's peer").await;
@@ -531,12 +538,8 @@ async fn a_link_inside_an_instance_shares_names_outside_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_composition_changes_one_feature_and_keeps_its_session() {
     use rutis_bridge::{Features, PeerPlugin};
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let main = Ctx::root().unwrap();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
@@ -544,7 +547,16 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
     main.provide_at(host_key("clock"), clock(0)).unwrap();
     main.provide_at(host_key("calendar"), clock(100)).unwrap();
     let composed = PeerPlugin::new(
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick()),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        )
+        .retry(quick()),
         Features {
             export: vec!["clock".into()],
             ..Features::default()
@@ -555,16 +567,18 @@ async fn a_composition_changes_one_feature_and_keeps_its_session() {
     main.plugin(composed);
 
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport)))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     mac.plugin(
         PeerPlugin::new(
-            LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick()),
+            LinkConfig::dial(
+                id("main"),
+                "mac",
+                rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+            )
+            .retry(quick()),
             Features {
                 import: vec!["clock".into(), "calendar".into()],
                 ..Features::default()

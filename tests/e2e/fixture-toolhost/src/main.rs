@@ -167,8 +167,7 @@ async fn start() -> Result<(Ctx, Arc<Tools>), String> {
     root.provide(Tools::default()).map_err(|e| e.to_string())?;
     let tools = root.get::<Tools>().ok_or("the tools service")?;
 
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     // Only this program writes to stdout: its answers are whole lines.
     let node = LocalRuntime::node(node_package, dir.join("package.json")).stdout(Stdio::Null);
     let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));

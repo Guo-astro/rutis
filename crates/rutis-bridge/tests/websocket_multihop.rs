@@ -14,10 +14,10 @@ use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig};
 use rutis_bridge::{
-    Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
+    Accepting, Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin,
+    Registration, Registrations, StaticIdentity,
 };
 use serde_json::{json, Value as Json};
 use tokio::io::AsyncBufReadExt;
@@ -55,25 +55,17 @@ impl HostDispatch for Clock {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
     // b and a talk in memory; c (Node) reaches a over WebSocket.
-    let memory = Arc::new(MemoryTransport::default());
-    memory.endpoint("a-in", id("a"));
+    let memory = Registrations::new();
 
     let a = Ctx::root().unwrap();
-    (&a.plugin(MemoryPlugin::with_transport(memory.clone())))
-        .await
-        .unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("a"),
-    )))
+    let public = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(public.clone(), "public"),
+    )
     .unwrap();
-    let handle = websocket.clone();
-    (&a.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     a.plugin(IdentityPlugin::new(
         "a",
         StaticIdentity::new(id("a"))
@@ -82,23 +74,26 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
     ));
     a.plugin(LinkPlugin::new(LinkConfig::listen(
         id("b"),
-        "memory",
         "a",
-        "a-in",
+        Accepting {
+            registrations: memory.clone(),
+            listener: "a-in".into(),
+            local: id("a"),
+        },
     )));
     a.plugin(LinkPlugin::new(LinkConfig::listen(
         id("c"),
-        "websocket",
         "a",
-        "public",
+        Accepting {
+            registrations: public,
+            listener: "public".into(),
+            local: id("a"),
+        },
     )));
     a.plugin(ImportPlugin::new(id("b"), ["clock"]));
     a.plugin(ExportPlugin::new(id("c"), ["clock"]));
 
     let b = Ctx::root().unwrap();
-    (&b.plugin(MemoryPlugin::with_transport(memory)))
-        .await
-        .unwrap();
     b.plugin(IdentityPlugin::new(
         "b",
         StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())),
@@ -107,9 +102,8 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
         .unwrap();
     b.plugin(LinkPlugin::new(LinkConfig::dial(
         id("a"),
-        "memory",
         "b",
-        "a-in",
+        rutis_bridge::memory::dialer(memory, "a-in"),
     )));
     b.plugin(ExportPlugin::new(id("a"), ["clock"]));
 
@@ -149,8 +143,6 @@ async fn a_reexported_service_calls_back_into_a_waiting_node_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn node_answers_heartbeats_while_its_main_thread_waits() {
     use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format};
-    use rutis_bridge::transport::websocket::{Limits, WebSocketTransport};
-    use rutis_bridge::{Registration, Transport};
 
     struct Sleeper;
     impl Dispatch for Sleeper {
@@ -167,32 +159,32 @@ async fn node_answers_heartbeats_while_its_main_thread_waits() {
         timeout: Duration::from_millis(1000),
         ..Limits::default()
     };
-    let transport = WebSocketTransport::start(
-        Config::new()
-            .listener(ListenerConfig::new(
-                "public",
-                "127.0.0.1:0".parse().unwrap(),
-                id("main"),
-            ))
-            .limits(quick),
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &quick,
+        websocket::admit_registered(registrations.clone(), "public"),
     )
     .unwrap();
     let (sender, accepted) = std::sync::mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
-    let _registered = transport
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("node"),
-            identity: Arc::new(
-                StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
-            ),
-            protocol: rutis_bridge::protocol(),
-            deliver: Box::new(move |channel| {
-                let _ = sender.lock().unwrap().send(channel);
-            }),
-        })
+    let _registered = registrations
+        .register(
+            &id("main"),
+            Registration {
+                listener: "public".into(),
+                peer: id("node"),
+                identity: Arc::new(
+                    StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
+                ),
+                protocol: rutis_bridge::protocol(),
+                deliver: Box::new(move |channel| {
+                    let _ = sender.lock().unwrap().send(channel);
+                }),
+            },
+        )
         .unwrap();
-    let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+    let address = format!("ws://{}/rutis", listener.local_addr());
     let node = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
     let mut child = tokio::process::Command::new("node")
         .args(["--import", "tsx"])

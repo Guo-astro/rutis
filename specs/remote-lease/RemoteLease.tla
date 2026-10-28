@@ -1,12 +1,12 @@
 ----------------------------- MODULE RemoteLease -----------------------------
 (***************************************************************************)
 (* A remote runtime that listens, and the controllers that dial it: the    *)
-(* lease of the runtime, takeover by a newer connection, reconnecting, a   *)
-(* link stopping, and a controller's identity revoking the runtime.        *)
+(* lease of the runtime, takeover by a newer connection, reconnecting and  *)
+(* a link stopping.                                                        *)
 (*                                                                         *)
 (* Design: docs/design-remote-plugins-2026-10-03.md §3.2 (retry, link       *)
-(* stop, revocation), §4.4 (lease, takeover order); docs/design-remote-     *)
-(* runtime-dial-2026-10-14.md §五 (revocation hook, #273), §六 (retry).     *)
+(* stop), §4.4 (lease, takeover order); docs/design-remote-runtime-dial-    *)
+(* 2026-10-14.md §六 (retry).                                               *)
 (* Implementation modelled: crates/rutis-bridge/src/link.rs `dialing`,      *)
 (* `start` (controller); python/rutis/rutis/__main__.py `serve`,            *)
 (* go/rutis/listen.go `listen`, node/rutis-runtime/src/serve.mjs `serve`    *)
@@ -23,13 +23,11 @@ CONSTANTS
     Controllers,  \* controller links dialing the runtime (model values)
     MaxConns,     \* connections each controller may dial (1 + reconnects)
     MaxLoads,     \* rows a controller loads on one session
-    Healthy,      \* TRUE: no revocation, stop, timeout or lost connection
-    RevokeCheck,  \* TRUE: the link refuses a revoked far end before it
-                  \* provides the peer (the fix); FALSE: link.rs before it
+    Healthy,      \* TRUE: no stop, timeout or lost connection
     Mutation      \* "none", or a deliberate bug (README, "Mutations")
 
 ASSUME MaxConns \in Nat \ {0} /\ MaxLoads \in Nat
-ASSUME Healthy \in BOOLEAN /\ RevokeCheck \in BOOLEAN
+ASSUME Healthy \in BOOLEAN
 ASSUME Mutation \in {"none", "startBeforeClean", "readOld", "stopKeepsRetry",
                      "lateHello", "waitForOld"}
 
@@ -38,7 +36,6 @@ VARIABLES
     cur,      \* cur[c]: number of c's current connection, 0 before the first
     ndial,    \* ndial[c]: connections c dialed
     sent,     \* sent[c]: rows c loaded on its current session
-    revoked,  \* revoked[c]: c's identity revoked the runtime (Revocations)
     stopped,  \* stopped[c]: c's link was disposed
     cs,       \* cs[k]: controller side of k: "none" | "open" | "closed"
     toR,      \* toR[k]: frames sent on k to the runtime, not read yet
@@ -51,9 +48,9 @@ VARIABLES
     rows,     \* rows loaded on the runtime: [lease, by]
     ghost     \* observations for the invariants
 
-vars == <<lst, cur, ndial, sent, revoked, stopped, cs, toR, toC, rs, accq,
+vars == <<lst, cur, ndial, sent, stopped, cs, toR, toC, rs, accq,
           rcur, rnew, rphase, rows, ghost>>
-ctl == <<lst, cur, ndial, sent, revoked, stopped>>
+ctl == <<lst, cur, ndial, sent, stopped>>
 rt == <<rs, accq, rcur, rnew, rphase, rows>>
 
 Conns == Controllers \X (1..MaxConns)
@@ -74,48 +71,41 @@ CloseC(k) ==
     /\ toR' = [toR EXCEPT ![k] = IF ReadsR(k) THEN Append(@, "close") ELSE @]
     /\ toC' = [toC EXCEPT ![k] = IF Mutation = "lateHello" THEN @ ELSE <<>>]
 
-\* Top of the dial loop. A revoked far end is not dialed: an authentication
-\* failure, waited out (link.rs `is_revoked`; `Revocable::credential` also
-\* presents nothing, so the runtime would answer 401).
+\* Top of the dial loop.
 Dial(c) ==
     /\ lst[c] = "connecting"
-    /\ IF revoked[c]
-       THEN /\ lst' = [lst EXCEPT ![c] = "waiting"]
-            /\ UNCHANGED <<cur, ndial, sent, cs, rs, accq, ghost>>
-       ELSE /\ ndial[c] < MaxConns
-            /\ LET n == ndial[c] + 1
-                   k == <<c, n>>
-               IN /\ ndial' = [ndial EXCEPT ![c] = n]
-                  /\ cur' = [cur EXCEPT ![c] = n]
-                  /\ sent' = [sent EXCEPT ![c] = 0]
-                  \* The upgrade succeeded (the runtime's token check): the
-                  \* runtime's listener queues the connection; the link
-                  \* opens its session (`Greet::open`; its own hello is
-                  \* read by whichever session the runtime starts on k, and
-                  \* is left out).
-                  /\ cs' = [cs EXCEPT ![k] = "open"]
-                  /\ rs' = [rs EXCEPT ![k] = "queued"]
-                  /\ accq' = Append(accq, k)
-                  /\ lst' = [lst EXCEPT ![c] = "greeting"]
-                  /\ ghost' = [ghost EXCEPT !.dialAfterStop = @ \/ stopped[c]]
-    /\ UNCHANGED <<revoked, stopped, toR, toC, rcur, rnew, rphase, rows>>
+    /\ ndial[c] < MaxConns
+    /\ LET n == ndial[c] + 1
+           k == <<c, n>>
+       IN /\ ndial' = [ndial EXCEPT ![c] = n]
+          /\ cur' = [cur EXCEPT ![c] = n]
+          /\ sent' = [sent EXCEPT ![c] = 0]
+          \* The upgrade succeeded (the runtime's token check): the
+          \* runtime's listener queues the connection; the link opens its
+          \* session (`Greet::open`; its own hello is read by whichever
+          \* session the runtime starts on k, and is left out).
+          /\ cs' = [cs EXCEPT ![k] = "open"]
+          /\ rs' = [rs EXCEPT ![k] = "queued"]
+          /\ accq' = Append(accq, k)
+          /\ lst' = [lst EXCEPT ![c] = "greeting"]
+          /\ ghost' = [ghost EXCEPT !.dialAfterStop = @ \/ stopped[c]]
+    /\ UNCHANGED <<stopped, toR, toC, rcur, rnew, rphase, rows>>
 
 \* The dial itself fails (connection refused, network down): retryable.
 DialFails(c) ==
     /\ ~Healthy
     /\ lst[c] = "connecting"
-    /\ ~revoked[c]
     /\ ndial[c] < MaxConns
     /\ ndial' = [ndial EXCEPT ![c] = @ + 1]
     /\ lst' = [lst EXCEPT ![c] = "waiting"]
     /\ ghost' = [ghost EXCEPT !.dialAfterStop = @ \/ stopped[c]]
-    /\ UNCHANGED <<cur, sent, revoked, stopped, cs, toR, toC, rt>>
+    /\ UNCHANGED <<cur, sent, stopped, cs, toR, toC, rt>>
 
 \* The wait (backoff, or 30 s after an authentication failure) is over.
 Retry(c) ==
     /\ lst[c] = "waiting"
     /\ lst' = [lst EXCEPT ![c] = "connecting"]
-    /\ UNCHANGED <<cur, ndial, sent, revoked, stopped, cs, toR, toC, rt, ghost>>
+    /\ UNCHANGED <<cur, ndial, sent, stopped, cs, toR, toC, rt, ghost>>
 
 \* Read the next frame of connection n. A closed session reads nothing: a
 \* handshake result arriving after the link gave up on it goes with the
@@ -128,14 +118,9 @@ CRecv(c, n) ==
     /\ ReadsC(k)
     /\ CASE f = "hello" /\ cs[k] = "open" /\ lst[c] = "greeting" /\ cur[c] = n ->
               \* `start`: the far end greeted; the peer is provided.
-              IF RevokeCheck /\ revoked[c]
-              THEN /\ CloseC(k)
-                   /\ lst' = [lst EXCEPT ![c] = "waiting"]
-                   /\ UNCHANGED <<cur, ghost>>
-              ELSE /\ toC' = [toC EXCEPT ![k] = Tail(@)]
-                   /\ lst' = [lst EXCEPT ![c] = "ready"]
-                   /\ ghost' = [ghost EXCEPT !.revokedReady = @ \/ revoked[c]]
-                   /\ UNCHANGED <<cs, toR, cur>>
+              /\ toC' = [toC EXCEPT ![k] = Tail(@)]
+              /\ lst' = [lst EXCEPT ![c] = "ready"]
+              /\ UNCHANGED <<cs, toR, cur, ghost>>
          [] f = "hello" /\ cs[k] = "closed" /\ lst[c] \in {"connecting", "waiting"} ->
               \* lateHello: a late greeting revives a session given up on.
               /\ toC' = [toC EXCEPT ![k] = Tail(@)]
@@ -152,7 +137,7 @@ CRecv(c, n) ==
          [] OTHER ->
               /\ toC' = [toC EXCEPT ![k] = Tail(@)]
               /\ UNCHANGED <<lst, cur, cs, toR, ghost>>
-    /\ UNCHANGED <<ndial, sent, revoked, stopped, rt>>
+    /\ UNCHANGED <<ndial, sent, stopped, rt>>
 
 \* The loader, through the peer, loads a row on the session.
 SendLoad(c) ==
@@ -162,7 +147,7 @@ SendLoad(c) ==
     /\ sent[c] < MaxLoads
     /\ sent' = [sent EXCEPT ![c] = @ + 1]
     /\ toR' = [toR EXCEPT ![k] = IF ReadsR(k) THEN Append(@, "load") ELSE @]
-    /\ UNCHANGED <<lst, cur, ndial, revoked, stopped, cs, toC, rt, ghost>>
+    /\ UNCHANGED <<lst, cur, ndial, stopped, cs, toC, rt, ghost>>
 
 \* The handshake times out, or the connection is lost: retryable.
 Lose(c) ==
@@ -171,24 +156,7 @@ Lose(c) ==
     /\ cs[Cur(c)] = "open"
     /\ CloseC(Cur(c))
     /\ lst' = [lst EXCEPT ![c] = "waiting"]
-    /\ UNCHANGED <<cur, ndial, sent, revoked, stopped, rt, ghost>>
-
-\* The identity of c revokes the runtime (`Revocations::revoke`).
-Revoke(c) ==
-    /\ ~Healthy
-    /\ ~revoked[c]
-    /\ revoked' = [revoked EXCEPT ![c] = TRUE]
-    /\ UNCHANGED <<lst, cur, ndial, sent, stopped, cs, toR, toC, rt, ghost>>
-
-\* The ready session sees the revocation (`select!` on `revoked()`): `cut`
-\* closes it, then the link waits as after an authentication failure.
-Cut(c) ==
-    /\ lst[c] = "ready"
-    /\ revoked[c]
-    /\ cs[Cur(c)] = "open"
-    /\ CloseC(Cur(c))
-    /\ lst' = [lst EXCEPT ![c] = "waiting"]
-    /\ UNCHANGED <<cur, ndial, sent, revoked, stopped, rt, ghost>>
+    /\ UNCHANGED <<cur, ndial, sent, stopped, rt, ghost>>
 
 \* The link is disposed: its task is aborted; dropping it closes the
 \* session and cancels the retry.
@@ -200,7 +168,7 @@ Stop(c) ==
        THEN CloseC(Cur(c)) ELSE UNCHANGED <<cs, toR, toC>>
     /\ lst' = [lst EXCEPT ![c] =
                  IF Mutation = "stopKeepsRetry" /\ @ = "waiting" THEN @ ELSE "stopped"]
-    /\ UNCHANGED <<cur, ndial, sent, revoked, rt, ghost>>
+    /\ UNCHANGED <<cur, ndial, sent, rt, ghost>>
 
 (***************************************************************************)
 (* Runtime: one controller at a time; a newer connection takes over        *)
@@ -304,7 +272,6 @@ Init ==
     /\ cur = [c \in Controllers |-> 0]
     /\ ndial = [c \in Controllers |-> 0]
     /\ sent = [c \in Controllers |-> 0]
-    /\ revoked = [c \in Controllers |-> FALSE]
     /\ stopped = [c \in Controllers |-> FALSE]
     /\ cs = [k \in Conns |-> "none"]
     /\ toR = [k \in Conns |-> <<>>]
@@ -315,11 +282,11 @@ Init ==
     /\ rnew = NoConn
     /\ rphase = "idle"
     /\ rows = {}
-    /\ ghost = [revokedReady |-> FALSE, dialAfterStop |-> FALSE]
+    /\ ghost = [dialAfterStop |-> FALSE]
 
 Controller(c) ==
     \/ Dial(c) \/ DialFails(c) \/ Retry(c) \/ SendLoad(c) \/ Lose(c)
-    \/ Revoke(c) \/ Cut(c) \/ Stop(c)
+    \/ Stop(c)
     \/ \E n \in 1..MaxConns : CRecv(c, n)
 
 Runtime ==
@@ -330,7 +297,7 @@ Runtime ==
 Next == Runtime \/ \E c \in Controllers : Controller(c)
 
 \* Liveness is checked only on Healthy runs, where the environment
-\* (revocation, stop, timeout, loss) does nothing and every behaviour is
+\* (stop, timeout, loss) does nothing and every behaviour is
 \* finite, so weak fairness of Next makes every enabled step happen.
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -360,10 +327,6 @@ StoppedStaysDown ==
 \* handshake result never revives a session the link gave up on.
 ReadyIsCurrent ==
     \A c \in Controllers : lst[c] = "ready" => cur[c] > 0 /\ cs[Cur(c)] = "open"
-
-\* Once c's identity revoked the runtime, c never becomes ready again (the
-\* peer is not provided, so nothing is mounted or loaded for it).
-RevokedStaysOut == ~ghost.revokedReady
 
 \* Liveness: some controller is ready on the session the runtime serves.
 Held == \E c \in Controllers : lst[c] = "ready" /\ rs[Cur(c)] = "serving"
