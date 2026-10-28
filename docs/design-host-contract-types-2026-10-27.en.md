@@ -38,7 +38,7 @@ Type checking finds the first four. TypeScript has declarations already; Python 
 
 | # | Decision | Section |
 | --- | --- | --- |
-| H1 | From the inference the TypeScript uses, the generator writes one more thing: a Python types module. `Exports` gains `.python(file)`; `rutis-host types` gains `--python <file>`. Without the new option the output is byte for byte as today | 4 |
+| H1 | From the inference the TypeScript uses, the generator writes one more thing: a Python types module. `Exports` (in `rutis-types` from 0.19, see [platform cleanup](design-platform-cleanup-2026-10-28.en.md) §8) gains `.python(file)`; `rutis-host types` gains `--python <file>`. Without the new option the output is byte for byte as today | 4 |
 | H2 | Python types: services are `Protocol`s, structs `TypedDict`s, enums of names only `Literal`s; Python 3.10 is supported; `.declared_python(path, py)` matches the existing `.declared` | 4.2 |
 | H4 | The test tool refuses a plugin's `provide` of a name already in `services`, as the real host and Cordis do | 5 |
 
@@ -52,7 +52,7 @@ Type checking finds the first four. TypeScript has declarations already; Python 
 rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
 ```
 
-In `build.rs` likewise: `Exports::new().typescript(…).python(…)`. `.generate()` needs at least one output.
+In `build.rs` likewise: `rutis_types::Exports::new().typescript(…).python(…)` (build dependency `rutis-types`; in 0.18 `rutis_bridge::build::Exports`). `.generate()` needs at least one output.
 
 ### 4.2 Python types
 

@@ -38,7 +38,7 @@ Issue：[#684](https://github.com/arcships/rutis/issues/684)（属于 [#663](htt
 
 | # | 决策 | 章节 |
 | --- | --- | --- |
-| H1 | 生成器从 TypeScript 用的同一份推导结果多写一样：Python 类型模块。`Exports` 加 `.python(file)`；`rutis-host types` 加 `--python <file>`。不给新选项时输出与现在逐字相同 | 四 |
+| H1 | 生成器从 TypeScript 用的同一份推导结果多写一样：Python 类型模块。`Exports`（0.19 起在 `rutis-types`，见[平台清理](design-platform-cleanup-2026-10-28.md) §八）加 `.python(file)`；`rutis-host types` 加 `--python <file>`。不给新选项时输出与现在逐字相同 | 四 |
 | H2 | Python 类型：服务是 `Protocol`，结构体是 `TypedDict`，只有名字的枚举是 `Literal`；支持 Python 3.10；`.declared_python(path, py)` 对应现有的 `.declared` | 4.2 |
 | H4 | 测试工具对 `services` 里已有的名字拒绝插件的 `provide`，与真实宿主和 Cordis 一致 | 五 |
 
@@ -52,7 +52,7 @@ Issue：[#684](https://github.com/arcships/rutis/issues/684)（属于 [#663](htt
 rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
 ```
 
-`build.rs` 里同样是 `Exports::new().typescript(…).python(…)`。`.generate()` 至少要有一种输出。
+`build.rs` 里同样是 `rutis_types::Exports::new().typescript(…).python(…)`（构建依赖 `rutis-types`；0.18 是 `rutis_bridge::build::Exports`）。`.generate()` 至少要有一种输出。
 
 ### 4.2 Python 类型
 

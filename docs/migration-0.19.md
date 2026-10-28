@@ -152,6 +152,7 @@ Kotlin 另有两点：
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
 | feature `anyhow`、`Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
+| `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
 
 ### 工具
 

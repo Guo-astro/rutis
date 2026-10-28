@@ -31,8 +31,6 @@ use std::sync::Arc;
 
 use rutis::host::BoxFuture;
 
-#[cfg(feature = "exports")]
-pub mod build;
 pub mod channel;
 #[cfg(feature = "cordis")]
 pub mod cordis;

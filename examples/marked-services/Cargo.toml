@@ -12,10 +12,11 @@ serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Only to check rows/services.d.ts is current; the service needs none of it.
-rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
+rutis-bridge = { path = "../../crates/rutis-bridge" }
 rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
 rutis-test-support = { path = "../../crates/rutis-test-support" }
+# Only to check rows/services.d.ts is current; the service needs none of it.
+rutis-types = { path = "../../crates/rutis-types" }
 serde_json = "1"
 tempfile = "3"
 tokio.workspace = true

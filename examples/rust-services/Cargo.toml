@@ -11,12 +11,13 @@ rust-services-calendar = { path = "calendar" }
 rutis = { path = "../../crates/rutis" }
 
 [build-dependencies]
-rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
+rutis-types = { path = "../../crates/rutis-types" }
 
 [dev-dependencies]
-rutis-bridge = { path = "../../crates/rutis-bridge", features = ["exports"] }
+rutis-bridge = { path = "../../crates/rutis-bridge" }
 rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
 rutis-test-support = { path = "../../crates/rutis-test-support" }
+rutis-types = { path = "../../crates/rutis-types" }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -2,7 +2,7 @@
 # (scripts/train.mjs checks it).
 #
 #   crates.io  rutis (the kernel) and its macros rutis-macros, rutis-bridge,
-#              rutis-loader, rutis-host,
+#              rutis-loader, rutis-host, the type generator rutis-types,
 #              and the dylib toolchain: rutis-sdk, rutis-dylib,
 #              rutis-dylib-meta, rutis-dylib-launcher
 #   npm        @arcships/rutis, @arcships/rutis-runtime, @arcships/rutis-bun,
