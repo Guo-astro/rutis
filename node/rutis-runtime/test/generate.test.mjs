@@ -374,20 +374,3 @@ test('callback parameters take Rust closures and returned functions stay remote'
   })
 })
 
-// #464: Cordis listeners register themselves on the logical bus; the
-// static forwarding options are refused, naming the replacement.
-test('the removed events and emits options are refused', async () => {
-  await fixture(`import type { Context } from '@deepseek-ai/cordis'
-    export function apply(ctx: Context) { ctx.provide('store', { ping(): number { return 1 } }) }
-  `, file => {
-    for (const field of ['events', 'emits']) {
-      assert.throws(() => generate(file, root, { [field]: ['store/changed'] }), {
-        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`,
-      })
-    }
-    const { rust } = generate(file, root)
-    assert.doesNotMatch(rust, /events|emits|EmitToCordis/)
-    // The mount's listeners join the mounting context's bus instead.
-    assert.match(rust, /ctx: Some\(ctx\.clone\(\)\),/)
-  })
-})

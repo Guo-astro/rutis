@@ -29,7 +29,7 @@
 import { realpathSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Client } from './client.ts'
-import { Bus, refuseRemoved, refuseReserved } from './events.mjs'
+import { Bus, refuseReserved } from './events.mjs'
 import { checkConfig, configError, schemaOf } from './config.mjs'
 import { definition, locate, Modules, versionOf, type Kind } from './plugin.ts'
 import { MANIFEST } from './session.ts'
@@ -50,7 +50,7 @@ function reserved(name: unknown): asserts name is string {
 }
 
 // rows.announce: services rows provide without declaring them are announced
-// with their methods, to a host whose mount says `announce`.
+// with their methods.
 // plugin-values: a plugin definition this runtime handed over comes back to
 // be described (`plugins.read`) and loaded as a row's entry
 // (docs/design-plugin-values-2026-10-25.md §5).
@@ -90,11 +90,6 @@ export function methodsOf(object: unknown): Set<string> {
 
 // How the service `name` is identified in the scope `label`. Neither may
 // contain NUL and a label may not be empty, so no two pairs share an id.
-// What a plugin providing the undeclared service `name` is told when the
-// host, older than 0.12, mounted without `announce`: such a host does not
-// take the service, which stays in this process.
-export const oldHost = (name: string) =>
-  `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
 
 // What a plugin using `name`, which neither its `inject` nor its row's
 // declares, is told when the service is not there for it: what to declare,
@@ -165,12 +160,6 @@ export class Runtime {
   #slots = new Map<string, Slot>()
   #handles = new Map<string, Handle>()
   #version = 0
-  // The host takes announced services (mount `announce`).
-  #announce = false
-  // Mounted by a host; one without `announce` is older than 0.12.
-  #mounted = false
-  // The undeclared names a plugin was told such a host does not take.
-  #told = new Set<string>()
 
   constructor(project: string) {
     this.#project = project
@@ -223,16 +212,10 @@ export class Runtime {
     if (current) throw new Error(`${name} is already provided by ${this.#bus.rowId(current.row)}`)
     this.#services.set(id, { row: row.key, value })
     row.provided.push(id)
-    // Not declared: announced, with the methods it has; a host older than
-    // 0.12 does not take it, and the plugin is told, once per name.
+    // Not declared: announced, with the methods it has.
     if (!this.#slots.has(id) && !name.includes('#')) {
-      if (this.#announce) {
-        this.#slots.set(id, { row: row.key, methods: new Set(), object: undefined, handle: null, generation: 0, announced: true })
-        row.announced.push(id)
-      } else if (this.#mounted && !this.#told.has(name)) {
-        this.#told.add(name)
-        say(`${oldHost(name)}\n`)
-      }
+      this.#slots.set(id, { row: row.key, methods: new Set(), object: undefined, handle: null, generation: 0, announced: true })
+      row.announced.push(id)
     }
     this.#refresh(id)
     return () => {
@@ -470,12 +453,8 @@ export class Runtime {
   #control(method: string, args: any): unknown {
     switch (method) {
       case 'mount':
-        // Listeners register themselves (#464): the static forwarding is gone.
-        refuseRemoved(args)
         // This runtime's name on the host, for descriptors, when it says.
         if (typeof args.runtime === 'string') this.#bus.runtime = args.runtime
-        this.#announce = args.announce === true
-        this.#mounted = true
         return {
           services: {},
           features: FEATURES,
