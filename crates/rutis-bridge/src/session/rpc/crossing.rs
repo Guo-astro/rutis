@@ -167,7 +167,7 @@ impl Connection {
 
     /// An object from `source` goes only to a far end that declared
     /// `objects`: any other (older than rutis 0.18) cannot call its methods,
-    /// and would end the session on it (#675, #687 §八).
+    /// and would end the session on it.
     pub(super) fn object_refused(&self, source: &str) -> Error {
         let far = self.far_name();
         Error::Value(format!(

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { definePlugin, isPlugin, PLUGIN_API } from '../src/index.mjs'
+import { definePlugin } from '../src/index.mjs'
+import { isPlugin, PLUGIN_API } from '../src/advanced.mjs'
 import { load, PluginTestError } from '../src/testing.mjs'
 
 class Weather {

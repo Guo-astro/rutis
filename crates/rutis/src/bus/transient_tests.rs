@@ -1,5 +1,6 @@
-//! 终态释放:摘除监听后删除空条目,派发尾链任务完成后自摘——随实例 churn
-//! 的名字与尾链不残留。
+//! Release of bus records: removing the last listener deletes the empty
+//! entry, and a dispatch tail removes itself when its task finishes, so
+//! names and tails do not accumulate as instances come and go.
 
 use super::*;
 use crate::ctx::Ctx;

@@ -97,22 +97,3 @@ pub mod internal {
     #[cfg(feature = "swift")]
     pub use crate::runtime::swift::{read_swift_manifest, SWIFT_MARKER, SWIFT_PLUGIN_API};
 }
-
-// The crate's own code reaches every item from the root, as before.
-#[cfg(feature = "peer")]
-#[allow(unused_imports)]
-pub(crate) use crate::peer::*;
-#[cfg(feature = "binary")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::binary::*;
-#[cfg(feature = "go")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::go::*;
-#[cfg(feature = "swift")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::swift::*;
-#[cfg(feature = "runtimes")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::*;
-#[allow(unused_imports)]
-pub(crate) use crate::{edit::*, internal::*, report::*, resolve::*};
