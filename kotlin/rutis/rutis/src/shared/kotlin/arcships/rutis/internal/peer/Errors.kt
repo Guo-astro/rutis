@@ -1,5 +1,6 @@
 package arcships.rutis.internal.peer
 
+import arcships.rutis.HostGoneException
 import arcships.rutis.RutisException
 import arcships.rutis.internal.Native
 import kotlinx.serialization.json.JsonArray

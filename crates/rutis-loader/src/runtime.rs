@@ -833,9 +833,15 @@ impl DynPlugin for JsRow {
                     // The runtime's process ended while the row loaded:
                     // not the row's failure, whichever row's code ended it.
                     // The row waits for its runtime, as the others in it do
-                    // (#682).
+                    // (#682). Only a named runtime's row: nothing ends the
+                    // wait of a row on a connection, which does not come
+                    // back (a runtime connection's instance waits for this
+                    // load before it can end with its connection), nor of
+                    // a copy of a definition. They fail at once.
                     if let Some(ended) = process.connection().close_reason() {
-                        return wait_for_the_runtime(ctx, ended).await;
+                        if matches!(self.runtime, RowRuntime::Named(_)) {
+                            return wait_for_the_runtime(ctx, ended).await;
+                        }
                     }
                     return Err(error);
                 }

@@ -482,6 +482,10 @@ impl App {
             Some(Err(error)) => return Err(error.to_string()),
             None => return Err(format!("no row cfg-{tenant}")),
         };
+        // The door opens in `caller`'s apply, while that row is still
+        // `Loading`: wait for the rows to settle before reading them.
+        let door = self.doors.wait(tenant).await?;
+        settled(&self.loader, plugin).await?;
         let mut rows = Vec::new();
         let mut plugins = BTreeMap::new();
         for entry in self.loader.entries() {
@@ -491,7 +495,6 @@ impl App {
             rows.push(json!([entry.id, status(&entry.status)]));
             plugins.insert(entry.id, json!(entry.plugin.map(|p| p.0)));
         }
-        let door = self.doors.wait(tenant).await?;
         let mut settings = serde_json::Map::new();
         for method in ["tenant", "greeting", "quota"] {
             settings.insert(
@@ -645,6 +648,35 @@ async fn started(loader: &Loader) -> Result<(), String> {
                     view.state().state
                 ))
             }
+        }
+    }
+    Ok(())
+}
+
+/// Wait until no row of the instance `plugin` is starting (`Pending` or
+/// `Loading`). A row is `Loading` until its apply returns, and what its
+/// apply did (a door opened) is seen before that.
+async fn settled(loader: &Loader, plugin: PluginId) -> Result<(), String> {
+    for entry in loader.entries() {
+        if entry.instance.as_ref().map(|i| i.plugin) != Some(plugin) {
+            continue;
+        }
+        let (EntryStatus::Running(_), Some(view)) = (&entry.status, entry.view) else {
+            continue;
+        };
+        let mut watch = view.watch();
+        let starting =
+            |state: &FiberState| matches!(state, FiberState::Pending | FiberState::Loading);
+        // A row that ended meanwhile is not starting either: its status says so.
+        let waited = tokio::time::timeout(DOOR, watch.wait_for(|s| !starting(&s.state)))
+            .await
+            .map(drop);
+        if waited.is_err() {
+            return Err(format!(
+                "row {} did not settle within {DOOR:?}: {:?}",
+                entry.id,
+                view.state().state
+            ));
         }
     }
     Ok(())
