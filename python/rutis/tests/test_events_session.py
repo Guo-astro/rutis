@@ -18,7 +18,8 @@ import unittest
 import background
 from support import HANG_GUARD, eventually, within
 
-from rutis import AggregateError, AsyncListener, BindingError
+from rutis import BindingError
+from rutis.advanced import AggregateError, AsyncListener
 from rutis.dialing import INCOMPATIBLE, session_failure
 from rutis.peer import CAPABILITIES, COMPAT_CAPABILITIES, EVENTS_REFUSAL, Incompatible, Peer
 from rutis.runner import Runtime

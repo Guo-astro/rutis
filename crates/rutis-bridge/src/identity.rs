@@ -174,8 +174,7 @@ impl Identity for StaticIdentity {
     }
 }
 
-/// The identity layer of an access point
-/// (`docs/design-remote-runtime-dial-2026-10-14.md` §五): which runtime
+/// The identity layer of an access point: which runtime
 /// connections it admits, and as which connection id. It takes over from
 /// [`Identity`] where the far end is not known in advance; a static link's
 /// per-peer identity is the other implementation of the same layer.
@@ -258,7 +257,7 @@ impl rutis::host::DynPlugin for AdmissionPlugin {
     }
 }
 
-/// The interim admission (design §五): one token shared by every runtime
+/// The interim admission: one token shared by every runtime
 /// of an access point, and the id each greets with as its connection id.
 /// The id is not verified: it only tells connections apart and names
 /// their instances, and proves nothing.

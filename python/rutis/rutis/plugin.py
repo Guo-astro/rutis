@@ -77,7 +77,7 @@ class Context:
 
     def parallel(self, name: str, *args: Any) -> Awaitable[None]:
         """`await ctx.parallel(name, *args)`: run every listener, wait for
-        all; failures raise `rutis.AggregateError` in registration order."""
+        all; failures raise `rutis.advanced.AggregateError` in registration order."""
         raise NotImplementedError
 
     def serial(self, name: str, *args: Any) -> Awaitable[Any]:
@@ -95,7 +95,7 @@ class Context:
 
     def bail(self, name: str, *args: Any) -> Any:
         """`serial`, synchronously. An asynchronous listener fails it with
-        `rutis.AsyncListener`."""
+        `rutis.advanced.AsyncListener`."""
         raise NotImplementedError
 
     def filter(self, predicate: Callable[[dict], Any]) -> Any:
