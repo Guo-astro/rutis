@@ -38,7 +38,7 @@ rutis 照这个做：同一个名字、同样的方法形状、同样默认谁�
 | --- | --- |
 | L1 | `LoaderPlugin` 再按名字提供一个服务 `loader`，走 0.17 起已有的路径：一个标了 `#[rutis::service(name = "loader")]` 的类型，`ctx.provide` 时自动对外。不另开通道 |
 | L2 | 方法只放 S1 用得到的 4 个，名字与参数贴近 Cordis 的 `ctx.loader`（下表） |
-| L3 | 默认任何插件都能 `inject: ["loader"]`，与 Cordis 相同；宿主要限制，用 #683 的 `allowed_services`。不另做权限 |
+| L3 | 默认任何插件都能 `inject: ["loader"]`，与 Cordis 相同；哪些插件能用它由宿主自己决定（#683 的 `allowed_services` 已在 [0.19 平台清理](design-platform-cleanup-2026-10-28.md) §5.5 删去）。不另做权限 |
 | L4 | 检查与替换只用 loader 已有的行为（§五）；补的只有 rutis-host 的可编辑层 |
 | L5 | 本地目录的插件直接写进行名就能加载，不需要安装；从包仓库安装归 #691，不进 `loader` 服务 |
 

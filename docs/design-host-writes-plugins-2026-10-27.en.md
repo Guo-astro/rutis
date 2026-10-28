@@ -38,7 +38,7 @@ rutis does the same: the same name, the same method shapes, usable by anyone by 
 | --- | --- |
 | L1 | `LoaderPlugin` also provides a service named `loader`, by the path that exists since 0.17: a type marked `#[rutis::service(name = "loader")]`, exposed by name automatically when `ctx.provide`d. No new channel |
 | L2 | Only the 4 methods S1 uses, named and shaped after Cordis's `ctx.loader` (table below) |
-| L3 | Any plugin may `inject: ["loader"]` by default, as in Cordis; a host that wants limits uses #683's `allowed_services`. No separate permissions |
+| L3 | Any plugin may `inject: ["loader"]` by default, as in Cordis; which plugins may use it is the host's own decision (#683's `allowed_services` was removed by the [0.19 platform cleanup](design-platform-cleanup-2026-10-28.en.md) §5.5). No separate permissions |
 | L4 | Checks and swaps use only the loader's existing behaviour (§5); the only addition is rutis-host's editable layer |
 | L5 | A plugin in a local directory loads by naming it in the row; no installation. Installing from registries is #691's and stays out of the `loader` service |
 
