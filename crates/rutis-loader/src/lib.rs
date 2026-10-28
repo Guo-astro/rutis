@@ -71,7 +71,7 @@ pub use resolver::{Builtins, Chain, Resolver};
 /// failures, change notices.
 pub mod report {
     pub use crate::error::{Failure, Unavailable};
-    pub use crate::framework::RowState;
+    pub use crate::framework::RowEventState;
     pub use crate::loader::{
         CheckReport, Clash, ConfigStatus, CycleLink, EntryInfo, EntryStatus, InstanceInfo, Isolate,
         LoaderChanged, PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck,
