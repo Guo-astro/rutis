@@ -93,6 +93,22 @@ fn seconds(wait: Duration) -> String {
     }
 }
 
+/// A link's state against what was shown of it before (`shown`: whether it
+/// was ready, and the line last printed): what to keep for next time, and
+/// the line to print when it says something new. Node rows and the remote
+/// runtimes `runtimes.remote` connects both print their links this way.
+fn link_change(
+    shown: Option<(bool, Option<String>)>,
+    state: &LinkState,
+) -> ((bool, Option<String>), Option<String>) {
+    let (was_ready, printed) = shown.unwrap_or_default();
+    let ready = matches!(state, LinkState::Ready { .. });
+    match describe_link(state, was_ready) {
+        Some(line) if printed.as_ref() != Some(&line) => ((ready, Some(line.clone())), Some(line)),
+        _ => ((ready, printed), None),
+    }
+}
+
 /// One line for a link's state, after `was_ready` (whether the state
 /// last seen was `Ready`); `None` for states not printed (not started,
 /// dialing, a listener waiting for its first connection). The detail in
@@ -396,16 +412,9 @@ impl Shown {
     fn connection_changes(&mut self, connections: &Connections) -> Vec<String> {
         let mut out = Vec::new();
         for (name, state) in connections.links() {
-            let (was_ready, printed) = self.remote_links.remove(&name).unwrap_or_default();
-            let printed = match describe_link(&state, was_ready) {
-                Some(line) if printed.as_ref() != Some(&line) => {
-                    out.push(format!("runtime {name}: {line}"));
-                    Some(line)
-                }
-                _ => printed,
-            };
-            let ready = matches!(state, LinkState::Ready { .. });
-            self.remote_links.insert(name, (ready, printed));
+            let (shown, line) = link_change(self.remote_links.remove(&name), &state);
+            out.extend(line.map(|line| format!("runtime {name}: {line}")));
+            self.remote_links.insert(name, shown);
         }
         out.extend(connections.take_lines());
         out
@@ -472,17 +481,9 @@ impl Shown {
             };
             if let Some(link) = link {
                 let state = link.borrow().clone();
-                let (was_ready, printed) = self.links.remove(&key).unwrap_or_default();
-                let line = describe_link(&state, was_ready);
-                let printed = match line {
-                    Some(line) if printed.as_ref() != Some(&line) => {
-                        lines.push((key.clone(), line.clone()));
-                        Some(line)
-                    }
-                    _ => printed,
-                };
-                let ready = matches!(state, LinkState::Ready { .. });
-                links.insert(key.clone(), (ready, printed));
+                let (shown, line) = link_change(self.links.remove(&key), &state);
+                lines.extend(line.map(|line| (key.clone(), line)));
+                links.insert(key.clone(), shown);
             }
             let line = match pending(entry) {
                 true => describe_waits(&waits.next().unwrap_or_default(), runtime),

@@ -8,15 +8,16 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
 use rutis::{Ctx, Error as RutisError};
-use rutis_bridge::runtime::{RuntimeAccessPlugin, RuntimeHandle, RuntimePlugin, RuntimeState};
+use rutis_bridge::runtime::{RuntimeHandle, RuntimePlugin, RuntimeState};
 use rutis_bridge::transport::local::LocalPlugin;
 use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
 };
 use rutis_bridge::{
     transport_key, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity,
-    IdentityPlugin, LinkConfig, LinkPlugin, PeerId, Presented, SharedToken, Transport,
+    IdentityPlugin, LinkConfig, PeerId, Presented, SharedToken, Transport,
 };
+use rutis_bridge::{Features, PeerPlugin};
 use rutis_loader::peer::{register_peer_node, PeerResolver};
 use rutis_loader::runtime::binary::RuntimeEnd;
 use rutis_loader::runtime::{RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
@@ -374,15 +375,22 @@ impl Host {
         }
         let connections = crate::status::Connections::default();
         // A link per runtime `runtimes.remote` connects one at a time,
-        // carrying its session, as a link row with `runtime` would.
+        // carrying its session: the composition a link row with `runtime`
+        // mounts.
         for (name, link, dials) in linked {
-            let link = LinkPlugin::new(link.require("runtime"));
-            connections.link(&name, link.state(), dials);
-            let id = link_peer(&name)?;
-            (&root.plugin(link))
+            let features = Features {
+                runtime: Some(name.clone()),
+                ..Features::default()
+            };
+            let peer = PeerPlugin::new(link.require("runtime"), features)?;
+            let handle = peer.handle();
+            (&root.plugin(peer))
                 .await
                 .map_err(|error| format!("remote runtime {name}: {error}"))?;
-            root.plugin(RuntimeAccessPlugin::new(id, &name));
+            let state = handle
+                .link_state()
+                .expect("an applied composition has its link");
+            connections.link(&name, state, dials);
         }
         // An access point per runtime that dials in: no link row, the
         // connections come and go with their instances.
