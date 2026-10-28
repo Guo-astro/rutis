@@ -1,7 +1,8 @@
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  greeting?: string
+  // Filled from the schema's default when the row leaves it out.
+  greeting: string
 }
 
 class Greeter {
@@ -20,10 +21,11 @@ export default definePlugin<Config>({
   // only the methods listed here: add each new one. 'sync' makes a method
   // synchronous for its callers.
   provides: { greeter: { hello: 'async' } },
-  // The JSON Schema of its config.
+  // The JSON Schema of its config: rutis fills its defaults and validates
+  // the row's config with it before apply.
   config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
   apply(ctx, config) {
-    ctx.provide('greeter', new Greeter(config.greeting ?? 'Hello'))
+    ctx.provide('greeter', new Greeter(config.greeting))
     // Return a cleanup, or use ctx.effect(cleanup), when the plugin holds
     // anything to release.
   },
