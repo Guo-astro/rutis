@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::{Ctx, Error};
 use rutis_bridge::channel::Closer;
 use rutis_bridge::websocket::{Admit, Admitted, Refused, Upgrade};
@@ -174,7 +174,12 @@ impl DynPlugin for ListenPlugin {
             let registered = self.router.register(&self.listener, token, deliver)?;
             self.connections.applied(&row, false);
             let listening = Listening {
-                ctx: ctx.clone(),
+                // Its many sessions leave the row's session key (how the
+                // loader finds a row's one session) to nobody.
+                ctx: ctx.isolate(
+                    rutis_bridge::session_key(&row),
+                    &format!("{row} connections"),
+                ),
                 row: row.clone(),
                 connections: self.connections.clone(),
                 print: self.print.clone(),
