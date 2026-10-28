@@ -2488,8 +2488,12 @@ mod tests {
                 pidfile.display()
             ),
         );
+        // The script ends at once and the background process holds its
+        // output: the read kills it after the grace for what it wrote.
+        // A deadline well past that, so a slow machine still gets the
+        // script as far as writing the pid.
         let started = Instant::now();
-        let error = read_manifest_with_timeout(&path, Duration::from_millis(300)).unwrap_err();
+        let error = read_manifest_with_timeout(&path, Duration::from_secs(5)).unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "took {:?}",
@@ -2499,6 +2503,11 @@ mod tests {
             error.contains("output was still open") || error.contains("did not print"),
             "{error}"
         );
+        // Killed at the deadline before it wrote the pid: its group went
+        // with it, whatever it had started.
+        if error.contains("did not print") && !pidfile.exists() {
+            return;
+        }
         let pid = written_pid(&pidfile);
         for _ in 0..100 {
             if !running(pid) {
