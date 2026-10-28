@@ -405,7 +405,7 @@ Besides the lines of [`run`](#what-run-prints), `dev` prints:
 | `<row id>: restarted (<other row> reloaded)` | The row uses a service of the other row, and restarted with it. The cause may also be `<row> updated`, `added` or `removed` (by `rutis.dev.json`), `<Go or Swift runtime> restarted`, or `<row> restarted`: a row it uses that restarted with the change (`caller: restarted (greeter restarted)` when `llm` reloaded and `greeter` uses it). The cause named is always a row the row uses; when that is not known (a dependency inside a runtime, between Cordis rows), no cause is named: `<row id>: restarted`. `started` or `stopped` instead of `restarted` when the row was not running before, or is not running now. |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | `rutis.dev.json` was read again; each row that changed follows: `<row id>: updated (its row in rutis.dev.json changed)`, `<row id>: added`, `<row id>: removed`. Refused: `rutis-host: reload rejected: <reason>; nothing changed`. |
 | `runtime <name>: starting again (<files> changed)` | A runtime that was down starts again for the change; `runtime <name>: running` follows when it runs, or `runtime <name>: down (<reason>)` again. When its `restart` starts it again: `runtime <name>: down; its restart starts it again, its rows with the code as it is then (…)`; when it is starting: `runtime <name>: starting; its rows start with the code as it is then (…)`. |
-| `rutis-host dev: services: forecast (weather), llm (llm)` | Once started (every row running or failed), and after each reload, rebuild or reading of `rutis.dev.json`, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host`; none as `rutis-host dev: services: none`. Printed every time, not compared with the last; besides, printed again whenever the services changed (a runtime can provide one after its row started). It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | Once started (every row running or failed), and after each reload, rebuild or reading of `rutis.dev.json`, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host` (`loader`, which rutis provides itself, say); when no row provides one, `rutis-host dev: services: none`, whatever the host provides. Printed every time, not compared with the last; besides, printed again whenever the services changed (a runtime can provide one after its row started). It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
 | `<project>: building`, `<project>: built in 1.2s`, `<runtime>: rebuilt and restarted` | A Go or Swift project was rebuilt and its runtime restarted on the build. When the build fails: `<project>: the build failed; the last build keeps running`, followed by the compiler's errors; when the new build does not run: `<runtime>: cannot restart: <reason>; the previous build is kept`. |
 
 ## When a runtime ends
@@ -444,6 +444,7 @@ rows:
   slow: running
   caller: starting
 services:
+  loader: host
   slow: slow
 runtimes:
   node: running (pid 4242)
@@ -491,7 +492,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | --- | --- |
 | An argument that is not JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
 | No method named | `rutis-host: name a method, as forecast.<method>` |
-| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)` |
 | The row providing it is not running | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | No such method | `rutis-host: forecast has no method tomorow (methods: today, week)` |
 | An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |

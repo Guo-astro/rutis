@@ -38,8 +38,7 @@ rutis::__on_load!(install);
 
 /// A marked service, served by name: the methods of all its blocks. Each
 /// call reads the native service through the providing context's strict
-/// read path ([`Entry::resolve`]), so `check()` applies as it does to Rust
-/// readers.
+/// read path ([`Entry::resolve`]), as a Rust reader does.
 struct Marked {
     ctx: Ctx,
     native: TypeKey,
@@ -191,7 +190,6 @@ impl Exposer for BridgeExposer {
             ctx,
             native,
             entries,
-            check,
             provision,
             ..
         } = exposure;
@@ -210,17 +208,12 @@ impl Exposer for BridgeExposer {
             entries,
             type_name,
         });
-        // The native binding's `check()` gates the name as well.
-        let served = match check {
-            Some(check) => {
-                serving.provide_checked::<dyn HostDispatch>(key.clone(), marked, move || check())
-            }
-            None => serving.provide_key::<dyn HostDispatch>(key.clone(), marked),
-        };
-        let served = served.map_err(|error| match &*error {
-            ErrorKind::ServiceExists(_) => place.taken(),
-            _ => error,
-        })?;
+        let served = serving
+            .provide_key::<dyn HostDispatch>(key.clone(), marked)
+            .map_err(|error| match &*error {
+                ErrorKind::ServiceExists(_) => place.taken(),
+                _ => error,
+            })?;
         let Some(instance) = instance else {
             return Ok(served);
         };

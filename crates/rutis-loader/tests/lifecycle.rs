@@ -166,7 +166,9 @@ async fn without_an_editable_layer_the_failure_is_reported() {
         .unwrap();
     until(|| self_disposed(&changes).is_some(), "SelfDisposed").await;
     let (_, error) = self_disposed(&changes).unwrap();
-    assert!(error.unwrap().contains("no editable layer"));
+    assert!(error
+        .unwrap()
+        .contains("this host keeps no editable configuration"));
 }
 
 // In-process only (the kernel, the loader and its monitors are tasks of

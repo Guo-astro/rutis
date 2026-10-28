@@ -15,6 +15,7 @@ mod desired;
 mod instances;
 mod plugins;
 mod reconcile;
+mod service;
 pub mod status;
 mod waits;
 
@@ -42,6 +43,8 @@ pub use config_step::ConfigWarnings;
 use desired::Desired;
 pub use instances::{CreateInstance, Instance, InstanceResult};
 pub use plugins::LoaderPlugin;
+pub use service::cannot_reload;
+pub(crate) use service::LoaderService;
 
 /// A [`Loader`] that does not keep it alive.
 #[derive(Clone)]
@@ -254,7 +257,8 @@ pub enum LoaderChanged {
     Edited(Edit),
     Reloaded(String),
     /// A row's plugin disposed itself; the row was disabled in the editable
-    /// layer (`error` when that edit failed, e.g. no editable layer).
+    /// layer (`error` when that edit failed, e.g. the host keeps no editable
+    /// configuration).
     SelfDisposed {
         id: String,
         error: Option<String>,

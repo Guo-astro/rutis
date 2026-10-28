@@ -2,9 +2,11 @@
 //! there must reach the generation that starts (#619), and a dependency
 //! withdrawn or replaced there must stop the consumer (#620).
 //!
-//! The gate tests block a plugin callback (`check`, `validate`) on a worker
-//! thread, so they run on the multi-thread runtime only: on a single thread
-//! nothing else runs between the gate and the recording of dependencies.
+//! The gate tests block a plugin callback (`validate`) on a worker thread,
+//! so they run on the multi-thread runtime only. The window between the
+//! gate and the recording of dependencies runs no plugin code, so no test
+//! stops a load there: the second gate check covers it (`load` in
+//! `fiber.rs`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,7 +15,6 @@ use std::time::Duration;
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, PluginFactory, TypeKey,
 };
-use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use tokio::sync::Notify;
 
@@ -375,39 +376,7 @@ impl DynPlugin for RetryConsumer {
     }
 }
 
-// ── Replaced or withdrawn at the gate, seen by the second check ────────
-
 type Slot = Arc<Mutex<Option<rutis::Disposer>>>;
-
-/// A `check` that blocks its first call until released.
-fn blocking_check(gate: Arc<Gate>) -> impl Fn() -> bool + Send + Sync + 'static {
-    move || {
-        gate.pass();
-        true
-    }
-}
-
-/// Provides `Svc` with a `check` and hands the disposer of that one
-/// service out.
-struct CheckedProvider {
-    gate: Arc<Gate>,
-    disposer: Slot,
-}
-
-impl DynPlugin for CheckedProvider {
-    fn name(&self) -> &str {
-        "load-window-checked-provider"
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async move {
-            let check = blocking_check(self.gate.clone());
-            let disposer = ctx.provide_checked(TypeKey::of::<Svc>(), Arc::new(Svc), check)?;
-            *self.disposer.lock().unwrap() = Some(disposer);
-            Ok(Effect::Done)
-        })
-    }
-}
 
 /// Mounts a provider and returns the disposer of its service.
 async fn mounted<P: DynPlugin>(root: &Ctx, plugin: impl FnOnce(Slot) -> P) -> rutis::Disposer {
@@ -416,94 +385,6 @@ async fn mounted<P: DynPlugin>(root: &Ctx, plugin: impl FnOnce(Slot) -> P) -> ru
     tokio::time::timeout(LIMIT, &view).await.unwrap().unwrap();
     let taken = disposer.lock().unwrap().take();
     taken.expect("provided")
-}
-
-/// Requires `Svc`, records its generations, waits for `ctx.cancelled()`.
-struct Waiter(Arc<AtomicUsize>);
-
-impl DynPlugin for Waiter {
-    fn name(&self) -> &str {
-        "load-window-waiter"
-    }
-
-    fn injects(&self) -> Vec<TypeKey> {
-        vec![TypeKey::of::<Svc>()]
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async move {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            ctx.cancelled().await;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-async fn recv(rx: std::sync::mpsc::Receiver<()>) {
-    tokio::task::spawn_blocking(move || rx.recv_timeout(LIMIT))
-        .await
-        .unwrap()
-        .expect("the check is reached");
-}
-
-/// The binding a consumer passed the gate with is withdrawn and replaced
-/// before its dependencies are recorded: the generation does not run on
-/// the stale set, so a withdrawal of the new binding finds the consumer
-/// and stops it.
-///
-/// guarantee: core/D14
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dependency_replaced_at_the_gate_is_not_used_on_the_old_record() {
-    let root = Ctx::root().unwrap();
-    let (gate, entered, release) = Gate::new();
-    let first = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
-    let applies = Arc::new(AtomicUsize::new(0));
-    let view = root.plugin(Waiter(applies.clone()));
-    recv(entered).await;
-    // Not bound yet: the withdrawal does not wait for the consumer.
-    tokio::time::timeout(LIMIT, first.dispose())
-        .await
-        .expect("first withdrawal returns")
-        .unwrap();
-    let second = mounted(&root, |disposer| Provider { disposer }).await;
-    release.send(()).unwrap();
-    // The consumer runs, bound to the second binding.
-    tokio::time::timeout(LIMIT, async {
-        while applies.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the consumer runs");
-    tokio::time::timeout(LIMIT, second.dispose())
-        .await
-        .expect("second withdrawal returns")
-        .unwrap();
-    assert_eq!(view.state().state, FiberState::Pending);
-    assert_eq!(applies.load(Ordering::SeqCst), 1);
-}
-
-/// The binding a consumer passed the gate with is withdrawn before its
-/// dependencies are recorded: the generation does not run.
-///
-/// guarantee: core/D14
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dependency_withdrawn_before_it_is_recorded_does_not_run_the_generation() {
-    let root = Ctx::root().unwrap();
-    let (gate, entered, release) = Gate::new();
-    let only = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
-    let applies = Arc::new(AtomicUsize::new(0));
-    let view = root.plugin(Waiter(applies.clone()));
-    recv(entered).await;
-    tokio::time::timeout(LIMIT, only.dispose())
-        .await
-        .expect("withdrawal returns")
-        .unwrap();
-    release.send(()).unwrap();
-    tokio::time::timeout(LIMIT, &view).await.unwrap().unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(applies.load(Ordering::SeqCst), 0);
-    assert_eq!(view.state().state, FiberState::Pending);
 }
 
 // ── Restart and update called before the first load ────────────────────
@@ -565,12 +446,6 @@ async fn a_restart_right_after_mounting_is_taken_up_on_current_thread() {
     restart_right_after_mounting().await;
 }
 
-/// guarantee: core/D7
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_restart_right_after_mounting_is_taken_up_on_multi_thread() {
-    called_before_the_first_load(false).await;
-}
-
 /// Builds a [`Probe`] for any config.
 struct ProbeFactory(Arc<ProbeState>, Vec<TypeKey>);
 
@@ -616,47 +491,6 @@ async fn update_right_after_mounting() {
 #[tokio::test]
 async fn an_update_right_after_mounting_is_taken_up_on_current_thread() {
     update_right_after_mounting().await;
-}
-
-/// guarantee: core/D7
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_update_right_after_mounting_is_taken_up_on_multi_thread() {
-    called_before_the_first_load(true).await;
-}
-
-/// A restart or update called while the first load waits in its gate (a
-/// blocking `check`), so it is registered before that load starts on any
-/// runtime: the first generation starts cancelled and the call is taken
-/// up.
-async fn called_before_the_first_load(update: bool) {
-    let root = Ctx::root().unwrap();
-    let (gate, entered, release) = Gate::new();
-    let _service = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
-    let state = Arc::new(ProbeState::default());
-    let view = root.plugin_with(
-        ProbeFactory(state.clone(), vec![TypeKey::of::<Svc>()]),
-        1u32,
-    );
-    recv(entered).await;
-    let call = if update {
-        view.update(2u32)
-    } else {
-        view.restart()
-    };
-    let call = tokio::spawn(polled_once(call).await);
-    release.send(()).unwrap();
-    started(&state, 2).await;
-    assert_eq!(state.applies.load(Ordering::SeqCst), 2);
-    assert_eq!(state.cancelled.load(Ordering::SeqCst), 1);
-    tokio::time::timeout(LIMIT, view.dispose())
-        .await
-        .expect("dispose returns")
-        .unwrap();
-    tokio::time::timeout(LIMIT, call)
-        .await
-        .expect("the call returns")
-        .unwrap()
-        .unwrap();
 }
 
 // ── A dispose registered behind a queued restart or refresh ────────────
@@ -827,29 +661,6 @@ async fn a_refresh_queued_before_a_dispose_leaves_the_cleanup_to_it_on_multi_thr
 }
 
 // ── More than one thing queued ahead of the dispose ────────────────────
-
-/// A dispose registered while the consumer's gate runs (in its `check`),
-/// after the refresh's own check for a registered dispose: the load that
-/// follows starts no generation, so the dispose ends.
-///
-/// guarantee: core/D6, core/D7
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dispose_registered_in_the_gate_starts_no_generation() {
-    let root = Ctx::root().unwrap();
-    let (gate, entered, release) = Gate::new();
-    let _service = mounted(&root, |disposer| CheckedProvider { gate, disposer }).await;
-    let applies = Arc::new(AtomicUsize::new(0));
-    let view = root.plugin(Waiter(applies.clone()));
-    recv(entered).await;
-    let dispose = view.dispose();
-    release.send(()).unwrap();
-    tokio::time::timeout(LIMIT, dispose)
-        .await
-        .expect("dispose returns")
-        .unwrap();
-    assert_eq!(applies.load(Ordering::SeqCst), 0);
-    assert_eq!(view.state().state, FiberState::Disposed);
-}
 
 /// Two restarts queued behind the running load, then a dispose: neither
 /// restart happens, both report `InactiveEffect` (the second finds the

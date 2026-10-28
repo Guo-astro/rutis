@@ -245,7 +245,7 @@ rutis-host dev
 
 ### Calling a method
 
-After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: llm (llm), loader (host), weather (weather)`.
 
 While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
 

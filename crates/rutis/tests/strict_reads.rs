@@ -1,12 +1,10 @@
 use std::future::IntoFuture;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rutis::host::diagnostics::DependencyStatus;
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, ServiceReadFailure, TypeKey,
 };
-use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error, Event};
 
 struct Capture {
@@ -210,15 +208,9 @@ async fn instance_boundaries_hide_provider_and_old_ids() {
 }
 
 #[tokio::test]
-async fn denied_reads_do_not_run_checks_or_change_bindings_and_callbacks_are_checked() {
+async fn denied_reads_do_not_change_bindings_and_callbacks_are_checked() {
     let root = Ctx::root().unwrap();
-    let checks = Arc::new(AtomicUsize::new(0));
-    let count = checks.clone();
-    root.provide_checked(TypeKey::of::<u64>(), Arc::new(5u64), move || {
-        count.fetch_add(1, Ordering::SeqCst);
-        true
-    })
-    .unwrap();
+    root.provide(5u64).unwrap();
     let (view, ctx) = child(&root, vec![]).await;
     let before = root.diagnostics().bindings;
     assert_eq!(
@@ -226,7 +218,6 @@ async fn denied_reads_do_not_run_checks_or_change_bindings_and_callbacks_are_che
         ServiceReadFailure::Undeclared
     );
     assert_eq!(*ctx.get::<u64>().unwrap(), 5);
-    assert_eq!(checks.load(Ordering::SeqCst), 0);
     assert_eq!(root.diagnostics().bindings.len(), before.len());
     assert_eq!(
         root.diagnostics().bindings[0].generation,
@@ -250,7 +241,6 @@ async fn denied_reads_do_not_run_checks_or_change_bindings_and_callbacks_are_che
         *reasons.lock().unwrap(),
         vec![ServiceReadFailure::Undeclared]
     );
-    assert_eq!(checks.load(Ordering::SeqCst), 0);
     assert!(root
         .diagnostics()
         .plugins
