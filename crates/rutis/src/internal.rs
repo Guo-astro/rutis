@@ -5,10 +5,9 @@
 //! [`crate::host`].
 #![doc(hidden)]
 
-use crate::Ctx;
 use std::sync::Arc;
 
-pub use crate::bus::{DispatchAttempt, EventBus};
+pub use crate::bus::EventBus;
 /// How config problems are written (config schema design §6.2).
 pub mod config {
     pub use crate::config::{
@@ -17,9 +16,9 @@ pub mod config {
 }
 pub use crate::error::{ServiceWriteError, ServiceWriteFailure};
 pub use crate::events::kinds::{EventOptions, RESERVED_PREFIX};
-pub use crate::intercept::{ServiceIntercept, ServiceWriter};
-pub use crate::key::{EventKey, EventPattern};
+pub use crate::key::EventKey;
 pub use crate::plugin::build_fn;
+pub use crate::writer::ServiceWriter;
 /// What `#[rutis::service]` blocks and the bridge exchange.
 pub mod service {
     pub use crate::service::*;
@@ -64,8 +63,7 @@ use crate::key::TypeKey;
 pub mod events {
     pub use crate::events::remote::{
         BatchFilter, Candidate, Dispatch, EntryCall, FilterAnswer, RawTerminal, RemoteCall,
-        RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
-        TableEntry,
+        RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
     };
     pub use crate::events::wire::{Codec, JsonTranscoder, Payload, PayloadRef, Transcoder, Value};
 }
@@ -108,14 +106,11 @@ pub trait CtxInternal: sealed::Sealed {
 
     /// The strict read a marked service's entry by name makes on every call
     /// ([`crate::service::Entry::resolve`]): [`CtxHost::require_at`](crate::host::CtxHost::require_at) by the
-    /// providing context, of the binding `provision` provided only, with
-    /// read interceptors selected for `actor` (the calling row; this
-    /// context when there is none), as for a Rust reader in its place.
+    /// providing context, of the binding `provision` provided only.
     fn require_provided_as<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,
         provision: &crate::service::Provision,
-        actor: Option<&Ctx>,
     ) -> Result<Arc<T>, ServiceReadError>;
 
     /// Registers `value` under an explicit key (trait objects, shared instances).
@@ -150,7 +145,8 @@ pub trait CtxInternal: sealed::Sealed {
     /// is unloading or disposed.
     fn effect_raw(&self, f: impl FnOnce() -> Effect) -> Result<Disposer, Error>;
 
-    /// Register a cleanup with a label visible through [`FiberView::effects`](crate::host::FiberView::effects).
+    /// Register a cleanup with a label: a shutdown that runs out of time
+    /// names it in its Stuck hint.
     fn effect_named(
         &self,
         label: impl Into<String>,
@@ -161,42 +157,8 @@ pub trait CtxInternal: sealed::Sealed {
     /// result of a `check()` predicate changes).
     fn refresh(&self);
 
-    /// `ctx.filter` with a predicate that can fail: its error fails the
-    /// dispatch before any call (in `emit`: reported, nothing delivered).
-    fn try_filter(
-        &self,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_>;
-
     /// The five ways to send under `name` instead of the event's own:
     /// what a typed event dispatched under a name chosen at run time needs
     /// (plugin code uses a type that overrides `Event::name`).
     fn named(&self, name: impl Into<std::sync::Arc<str>>) -> crate::events::Filtered<'_>;
-
-    /// Intercept only strict reads under `key`, after the existing
-    /// declaration, visibility and readiness checks. `get_key` stays an
-    /// unhooked locator.
-    fn intercept_require_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error>;
-
-    /// Intercept a provider's update of a binding made with
-    /// [`provide_mut_at`](Self::provide_mut_at).
-    fn intercept_set_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error>;
-
-    /// [`try_filter`](Self::try_filter) and [`named`](Self::named)
-    /// together: under `name`, to the listeners `keep` accepts (a filtered
-    /// dispatch of an event with no name of its own, such as rutis-bridge's
-    /// `Args`).
-    fn try_filter_named(
-        &self,
-        name: impl Into<std::sync::Arc<str>>,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_>;
 }

@@ -164,7 +164,7 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
 }
 
 /// `rutis-host types [dir] [-o file] [--python file]`: the declarations of
-/// the marked Rust services and their Python types, as `build::Exports`
+/// the marked Rust services and their Python types, as `rutis_types::Exports`
 /// writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
@@ -186,7 +186,7 @@ fn types(args: &[String]) -> Result<(), String> {
             dir.display()
         ));
     }
-    let mut exports = rutis_bridge::build::Exports::new();
+    let mut exports = rutis_types::Exports::new();
     if let Some(file) = &output {
         exports = exports.typescript(file);
     }

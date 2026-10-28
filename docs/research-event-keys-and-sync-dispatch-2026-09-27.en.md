@@ -176,7 +176,7 @@ The flight protects the current dispatch call stack; business commits after retu
 
 ### #29 cannot be consolidated directly
 
-The current [`intercept.rs`](../crates/rutis/src/intercept.rs) `run` passes each replacement to the next interceptor in registration order, performing successive transformations:
+The current [`intercept.rs`](https://github.com/arcships/rutis/blob/v0.18.0/crates/rutis/src/intercept.rs) `run` passes each replacement to the next interceptor in registration order, performing successive transformations:
 
 ```text
 original value 1 → first item +10 → second item ×2 → final value 22

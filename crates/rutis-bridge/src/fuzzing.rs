@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value as Json;
 
-use crate::channel::{ChannelError, ChannelInfo, Closer};
+use crate::channel::{ChannelError, Closer};
+use crate::pipe::lines;
 use crate::session::protocol::{Frame, WireValue};
 use crate::session::rpc::{decode_text, deeper_than, parse_frame, MAX_FRAME_DEPTH};
 use crate::session::values::{base64_encode, check_keys};
 use crate::session::Value;
-use crate::transport::local::lines;
 
 /// An error graph from the far end, as a host reads and prints it
 /// (`crate::thrown`, `Error::site`, `Error::stack`, `Error::code`,
@@ -220,7 +220,6 @@ pub fn local_lines(data: &[u8]) {
         },
         Shared(written.clone()),
         Arc::new(Nothing),
-        ChannelInfo::default(),
         max,
     );
     let mut expected = expected_lines(stream, max).into_iter();
@@ -324,7 +323,7 @@ impl Write for Shared {
 struct Nothing;
 
 impl Closer for Nothing {
-    fn close(&self, _: &str) {}
+    fn close(&self, _: crate::channel::Close) {}
 }
 
 /// A WebSocket upgrade request as the listener reads it
@@ -335,8 +334,8 @@ impl Closer for Nothing {
 /// the registrations' job. Must not panic, whatever the bytes.
 #[cfg(feature = "websocket")]
 pub fn websocket_upgrade(data: &[u8]) {
-    use crate::transport::websocket::listen::{agree_protocol, read_upgrade};
-    use crate::transport::websocket::{ws_config, Limits};
+    use crate::websocket::listen::{agree_protocol, read_upgrade};
+    use crate::websocket::{ws_config, Limits};
     use tokio_tungstenite::tungstenite;
     use tungstenite::handshake::server::{Request, Response};
 

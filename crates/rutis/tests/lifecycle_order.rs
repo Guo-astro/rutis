@@ -7,7 +7,7 @@ use std::future::IntoFuture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::{Ctx, Error, Plugin};
 use rutis_test_support::within;
 use tokio::sync::Notify;
@@ -269,18 +269,21 @@ impl Plugin for Held {
     }
 }
 
+/// Builds `Held` plugins from their config (`u32`).
+struct HeldFactory(Held);
+
+impl PluginFactory<u32> for HeldFactory {
+    fn build(&self, config: &u32) -> Result<Box<dyn DynPlugin>, Error> {
+        let mut plugin = self.0.clone();
+        plugin.config = *config;
+        Ok(Box::new(plugin))
+    }
+}
+
 /// Mounts `plugin` as a factory plugin (config `u32`) and waits until it
 /// is active.
 async fn mount_factory(ctx: &Ctx, plugin: &Held) -> FiberView {
-    let template = plugin.clone();
-    let view = ctx.plugin_from(
-        move |config: &u32| {
-            let mut plugin = template.clone();
-            plugin.config = *config;
-            Ok(plugin)
-        },
-        1u32,
-    );
+    let view = ctx.plugin_with(HeldFactory(plugin.clone()), 1u32);
     within("load", (&view).into_future()).await.unwrap();
     view
 }

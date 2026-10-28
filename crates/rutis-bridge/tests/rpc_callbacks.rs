@@ -222,9 +222,6 @@ use std::sync::Mutex;
 struct Service(Mutex<Option<Reference>>);
 impl Dispatch for Service {
     fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
-        if method == "dispose" {
-            return Ok(Value::Undefined);
-        }
         let mut args = args.list()?;
         match method {
             "apply" => args.remove(0).reference()?.call(Value::List(args)),
@@ -266,7 +263,6 @@ impl Dispatch for Service {
                 .call(json!([]).into())?
                 .reference()?
                 .wait(),
-            "dispose" => Ok(Value::Undefined),
             _ => Err(Error::Value(method.into())),
         }
     }
@@ -277,45 +273,30 @@ fn rpc_client() -> std::path::PathBuf {
         .join("../../node/rutis-runtime/test/fixtures/rpc-client.mjs")
 }
 
-/// Run the fixture's session on `channel` and wait for it to pass.
-async fn fixture_passes(peer: Connection, mut child: tokio::process::Child) {
-    peer.ready().await.unwrap();
-    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(status.success());
-    peer.closed().await;
-}
-
-/// The fixture dials back a Unix socket.
-#[cfg(unix)]
+/// The fixture started on a local pipe, on the channel it is handed (fd 3,
+/// or a loopback address); the channel's end says how it exited.
 #[tokio::test(flavor = "current_thread")]
 async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("rpc.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let child = tokio::process::Command::new("node")
-        .arg(rpc_client())
-        .arg(socket)
-        .kill_on_drop(true)
-        .spawn()
+    use rutis_bridge::pipe::{Processes, Spawn};
+
+    let mut spawn = Spawn::new("node");
+    spawn.args = vec![rpc_client().into()];
+    let channel = rutis_bridge::pipe::spawn(&spawn, &Processes::default())
+        .await
         .unwrap();
-    let (stream, _) = listener.accept().await.unwrap();
-    let peer = Connection::connect(
-        stream.into_std().unwrap(),
-        Arc::new(Service(Mutex::new(None))),
-    )
-    .unwrap();
-    fixture_passes(peer, child).await;
+    let peer = Connection::open(channel, Arc::new(Service(Mutex::new(None)))).unwrap();
+    peer.ready().await.unwrap();
+    within("the fixture to end its session", peer.closed()).await;
+    let ended = peer.close_reason().unwrap().to_string();
+    assert!(ended.contains("exited normally"), "{ended}");
 }
 
 #[cfg(feature = "websocket")]
 mod websocket {
     use super::*;
     use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketTransport};
-    use rutis_bridge::{Credential, Dial, Identity, Registration, StaticIdentity, Transport};
+    use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
+    use rutis_bridge::{Credential, Registration, Registrations, StaticIdentity};
     use tokio::io::AsyncBufReadExt;
 
     const PROTOCOL: &str = "rutis.3";
@@ -330,31 +311,46 @@ mod websocket {
         PeerId::new(s).unwrap()
     }
 
+    /// Run the fixture's session on `channel` and wait for it to pass.
+    async fn fixture_passes(peer: Connection, mut child: tokio::process::Child) {
+        peer.ready().await.unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(status.success());
+        peer.closed().await;
+    }
+
     /// The same session, Node dialing a Rust listener over WebSocket.
     #[tokio::test(flavor = "current_thread")]
     async fn node_dialing_a_rust_listener() {
-        let transport = WebSocketTransport::start(Config::new().listener(ListenerConfig::new(
-            "public",
-            "127.0.0.1:0".parse().unwrap(),
-            id("main"),
-        )))
+        let registrations = Registrations::new();
+        let listener = websocket::listen(
+            &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+            &Limits::default(),
+            websocket::admit_registered(registrations.clone(), "public"),
+        )
         .unwrap();
         let (sender, accepted) = std::sync::mpsc::channel();
         let sender = Mutex::new(sender);
-        let _registered = transport
-            .register(Registration {
-                listener: "public".into(),
-                peer: id("node"),
-                identity: Arc::new(
-                    StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
-                ),
-                protocol: PROTOCOL.into(),
-                deliver: Box::new(move |channel| {
-                    let _ = sender.lock().unwrap().send(channel);
-                }),
-            })
+        let _registered = registrations
+            .register(
+                &id("main"),
+                Registration {
+                    listener: "public".into(),
+                    peer: id("node"),
+                    identity: Arc::new(
+                        StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
+                    ),
+                    protocol: PROTOCOL.into(),
+                    deliver: Box::new(move |channel| {
+                        let _ = sender.lock().unwrap().send(channel);
+                    }),
+                },
+            )
             .unwrap();
-        let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+        let address = format!("ws://{}/rutis", listener.local_addr());
         let child = tokio::process::Command::new("node")
             .arg(rpc_client())
             .arg(address)
@@ -368,7 +364,6 @@ mod websocket {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(channel.info.peer, Some(id("node")));
         let peer = Connection::open_with(
             channel,
             Arc::new(Service(Mutex::new(None))),
@@ -402,20 +397,15 @@ mod websocket {
                 break address.to_owned();
             }
         };
-        let transport = WebSocketTransport::start(Config::new()).unwrap();
-        let identity: Arc<dyn Identity> = Arc::new(
-            StaticIdentity::new(id("main"))
-                .present(id("node"), Credential::Bearer("main-token".into())),
-        );
-        let channel = transport
-            .dial(
-                &Dial::address(address)
-                    .peer(id("node"))
-                    .identity(identity)
-                    .protocol(PROTOCOL),
-            )
-            .await
-            .unwrap();
+        let channel = websocket::dial(
+            &address,
+            PROTOCOL,
+            Some(&Credential::Bearer("main-token".into())),
+            &Trust::default(),
+            &Limits::default(),
+        )
+        .await
+        .unwrap();
         let peer = Connection::open_with(
             channel,
             Arc::new(Service(Mutex::new(None))),
@@ -434,29 +424,6 @@ mod websocket {
         );
         fixture_passes(peer, child).await;
     }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn independent_callback_progresses_while_original_runtime_is_blocked() {
-    let (_file, peer) = launch().await;
-    let owner = std::thread::current().id();
-    let connection = peer.connection().clone();
-    let callback = Value::callback(move |_| {
-        connection.independent_future(move || async move {
-            assert_ne!(std::thread::current().id(), owner);
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            let value = tokio::spawn(async { 42 }).await.unwrap();
-            Ok(json!(value).into())
-        })
-    });
-    let future = peer
-        .connection()
-        .invoke("callbacks", "awaitCallback", args(vec![callback]))
-        .unwrap()
-        .reference()
-        .unwrap();
-    assert_eq!(number(future.wait().unwrap()), 42.0);
-    peer.dispose().await.unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -480,40 +447,6 @@ async fn sync_wait_detects_an_async_callback_already_running_on_its_runtime() {
     observed.recv().await.unwrap();
     assert!(matches!(future.wait(), Err(Error::Remote { name, .. }) if name == "SyncWaitCycle"));
     peer.dispose().await.unwrap();
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn close_cancels_shared_executor_even_with_a_retained_reference() {
-    let (_file, peer) = launch().await;
-    let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
-    let (dropped, mut completed) = tokio::sync::mpsc::unbounded_channel();
-    struct OnDrop(tokio::sync::mpsc::UnboundedSender<()>);
-    impl Drop for OnDrop {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-    let connection = peer.connection().clone();
-    let callback = Value::callback(move |_| {
-        let (started, dropped) = (started.clone(), dropped.clone());
-        connection.independent_future(move || async move {
-            let _guard = OnDrop(dropped);
-            started.send(()).unwrap();
-            std::future::pending().await
-        })
-    });
-    let future = peer
-        .connection()
-        .invoke_async("callbacks", "awaitCallback", args(vec![callback]))
-        .await
-        .unwrap()
-        .reference()
-        .unwrap();
-    observed.recv().await.unwrap();
-    peer.connection()
-        .close(Error::Transport("explicit close".into()));
-    within("the completion", completed.recv()).await.unwrap();
-    assert!(future.wait_async().await.is_err());
 }
 
 /// Two Node runtimes. A calls the host service `bridge` synchronously with a

@@ -77,7 +77,7 @@ public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("de
 
 ### 带方法的对象
 
-和 [Swift 插件](swift-plugin.md#带方法的对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`，不是可选类型）拿到它的代理，写 `Any` 拿到 `Rutis.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
+和 [Swift 插件](swift-plugin.md#带方法的对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`，不是可选类型）拿到它的代理，写 `Any` 拿到 `Rutis.Advanced.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
 
 ```swift
 @RutisClient
@@ -96,7 +96,7 @@ public final class Warmer: @unchecked Sendable {
 ```
 
 - 方法都是 async 的跨进程调用，没有数据字段；对象没有的方法以 `no-method` 失败。
-- 嵌在别的类型里的 `@RutisClient` 协议、数据类型的参数收不了对象：这次调用以 `bad-argument` 失败（`argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`）。`[any Cache]` 在 0.18 不支持，数组、字典里的对象经 `Any` 拿到 `Rutis.Client`。
+- 嵌在别的类型里的 `@RutisClient` 协议、数据类型的参数收不了对象：这次调用以 `bad-argument` 失败（`argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`）。`[any Cache]` 在 0.18 不支持，数组、字典里的对象经 `Any` 拿到 `Rutis.Advanced.Client`。
 - 收到的代理再交出去，发出的是原来那个对象；交回原来的进程，那边拿到的是原对象。
 - 应用交出的对象在应用的进程里：应用 `stop()` 或断开后，别处对它的调用以 `peer-gone` 失败。
 - 对象不能交给 0.18 之前的 rutis：这次调用以 `bad-value` 失败，错误提示升级。

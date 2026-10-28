@@ -44,39 +44,3 @@ export interface Plugin<C = any> extends Readonly<Required<Pick<PluginSpec<C>, '
 }
 
 export declare function definePlugin<C = any>(spec: PluginSpec<C>): Plugin<C>
-
-// Moved to `@arcships/rutis/advanced` in 0.19 (#692); removed when the plugin
-// API version changes.
-
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type MethodKind = advanced.MethodKind
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type ListenerDescriptor = advanced.ListenerDescriptor
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type ListenerOptions = advanced.ListenerOptions
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type Listener = advanced.Listener
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type Emitter = advanced.Emitter
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type Waterfall = advanced.Waterfall
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export type TaggedValue<Tag extends 'datetime' | 'date' | 'time' | 'decimal' | 'uuid'> = advanced.TaggedValue<Tag>
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const PLUGIN_API: typeof advanced.PLUGIN_API
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const PLUGIN: typeof advanced.PLUGIN
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const isPlugin: typeof advanced.isPlugin
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const VALUE: typeof advanced.VALUE
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const datetime: typeof advanced.datetime
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const date: typeof advanced.date
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const time: typeof advanced.time
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const decimal: typeof advanced.decimal
-/** @deprecated Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes. */
-export declare const uuid: typeof advanced.uuid

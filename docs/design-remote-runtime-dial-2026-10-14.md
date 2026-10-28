@@ -85,11 +85,7 @@
 - 过渡实现：凭据等于共享 token（环境变量 `RUTIS_TOKEN_<运行时名>`，与现有命名一致）即接受，连接 id = 自报 id；自报 id 须非空、只含 `[a-z0-9-]`。自报 id 只用于区分连接、命名实例，不作为身份凭据。
 - 将来实现：管理服务核实凭据并给出 id；接入点、实例、配置不变。
 - 现有每对端 token 的静态 link（R6）是这一层的另一种实现，保留。
-- 吊销钩子（#273，已实现）：rutis 只提供机制，吊销谁、何时吊销、是否持久由将来的管理服务决定。
-  - 接口（`rutis-bridge`）：`Revocations`（克隆共享）有 `revoke(&id)`、`revoke_all()`、`is_revoked(&id)`、`revoked(&id)`（等到被吊销）；`Revocable::new(内层, revocations)` 包住任一 `Identity`（静态 link）或 `Admission`（接入点），`Identity` / `Admission` 各加一个带默认实现的 `revocations()`（默认 `None`，不能吊销），现有实现不用改。
-  - "身份"是这一层给出的 id：静态 link 是对端的端点 id；接入点是连接 id。共享 token + 自报 id 时，吊销一个 id 只关闭这条连接，之后以这个 id 打招呼的连接在 hello 之后以 4003 拒绝；`revoke_all()` 等于收回共享 token，关闭全部连接，之后的连接升级时 403。自报 id 不由 rutis 核实，换一个 id 仍能用同一 token 连进来：要切断持有共享 token 的一方，只能 `revoke_all()`。
-  - 吊销后：只关闭以这个身份接受的连接（link 的会话、接入点的实例），先关会话再撤销 `Peer` / 释放实例，进行中的调用以传输错误失败一次（与断网相同）；吊销前已路由、还没移交的握手在 `Registrations::hand_over` 里复核被拒（4003）；之后的连接与 token 错误对外相同（403 "not accepted here"，或 4003），拨号方归为 `AuthRejected`，每 30 秒重试。同一监听器上的其他 link、其他注册、本机运行时不受影响。监听的 link 吊销后保留注册，状态为 `Waiting { AuthRejected, "<id>: identity revoked" }`；拨号的 link 关闭会话后不再拨号，每 30 秒按认证失败等待。
-  - 吊销只在内存里，不撤回；进程重启即恢复。rutis-host 的过渡实现（环境变量 token）不能运行中吊销，靠换 token 重启或将来的管理服务。
+- 吊销钩子（#273）：0.19 删除（`Revocations` / `Revocable` 没有生产调用方，见[会话设计](design-remote-session-2026-10-28.md) §八）；断开现有连接靠停掉那一行。
 
 ## 六、拨出与重连规范
 

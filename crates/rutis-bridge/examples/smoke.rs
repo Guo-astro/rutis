@@ -26,12 +26,10 @@ use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
-};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig, ServerTls, Trust};
 use rutis_bridge::{
-    Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState,
-    StaticIdentity,
+    Accepting, Credential, Dialer, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig,
+    LinkPlugin, LinkState, Registrations, StaticIdentity,
 };
 use serde_json::{json, Value as Json};
 
@@ -116,26 +114,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.mode.as_str() {
         "listen" => {
-            let mut listener =
-                ListenerConfig::new("public", args.address.parse()?, main_id.clone());
+            let mut config = ListenerConfig::new("public", args.address.parse()?);
             if let (Some(cert), Some(key)) = (&args.cert, &args.key) {
-                listener = listener.tls(ServerTls {
+                config = config.tls(ServerTls {
                     certificate_pem: read(cert),
                     key_pem: read(key),
                     client_ca_pem: None,
                 });
             }
-            (&root.plugin(WebSocketPlugin::new(Config::new().listener(listener))?)).await?;
+            let registrations = Registrations::new();
+            let _listener = websocket::listen(
+                &config,
+                &Limits::default(),
+                websocket::admit_registered(registrations.clone(), "public"),
+            )?;
             root.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))?;
             root.plugin(IdentityPlugin::new(
                 "main",
-                StaticIdentity::new(main_id).accept_token(args.token.as_str(), mac_id.clone()),
+                StaticIdentity::new(main_id.clone())
+                    .accept_token(args.token.as_str(), mac_id.clone()),
             ));
             let link = LinkPlugin::new(LinkConfig::listen(
                 mac_id.clone(),
-                "websocket",
                 "main",
-                "public",
+                Accepting {
+                    registrations,
+                    listener: "public".into(),
+                    local: main_id,
+                },
             ));
             report(&link, started);
             root.plugin(link);
@@ -147,22 +153,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::future::pending::<()>().await;
         }
         "dial" => {
-            let mut config = Config::new();
-            if let Some(ca) = &args.ca {
-                config = config.trust(Trust::only(read(ca)));
-            }
-            (&root.plugin(WebSocketPlugin::new(config)?)).await?;
+            let trust = match &args.ca {
+                Some(ca) => Trust::only(read(ca)),
+                None => Trust::default(),
+            };
+            let address = args.address.clone();
+            let dialer: Dialer = Arc::new(move |credential: Option<Credential>| {
+                let (address, trust) = (address.clone(), trust.clone());
+                Box::pin(async move {
+                    websocket::dial(
+                        &address,
+                        &rutis_bridge::protocol(),
+                        credential.as_ref(),
+                        &trust,
+                        &Limits::default(),
+                    )
+                    .await
+                })
+            });
             root.plugin(IdentityPlugin::new(
                 "mac",
                 StaticIdentity::new(mac_id)
                     .present(main_id.clone(), Credential::Bearer(args.token.clone())),
             ));
-            let link = LinkPlugin::new(LinkConfig::dial(
-                main_id.clone(),
-                "websocket",
-                "mac",
-                &args.address,
-            ));
+            let link = LinkPlugin::new(LinkConfig::dial(main_id.clone(), "mac", dialer));
             report(&link, started);
             root.plugin(link);
             root.plugin(ImportPlugin::new(main_id, ["clock"]));

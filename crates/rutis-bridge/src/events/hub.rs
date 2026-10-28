@@ -15,8 +15,7 @@ use rutis::host::BoxFuture;
 use rutis::host::{CtxHost, ErrorKind, ListenerKind};
 use rutis::internal::events::{
     BatchFilter, Candidate, Dispatch, FilterAnswer, PayloadRef, RawTerminal, RemoteCall,
-    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
-    TableEntry,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
 };
 use rutis::internal::{CtxInternal, EventOptions};
 use rutis::{Ctx, Disposer, Error as RutisError};
@@ -1156,14 +1155,6 @@ pub(crate) fn next_function(next: RemoteNext) -> Value {
     })
 }
 
-/// `next` of a synchronous waterfall as the far end gets it.
-pub(crate) fn sync_next_function(next: RemoteSyncNext) -> Value {
-    Value::callback(move |_| {
-        let rest = next.call().map_err(|error| to_session(&error))?;
-        result_to_wire(rest)
-    })
-}
-
 impl RemoteListener for WireEntry {
     fn kind(&self) -> ListenerKind {
         self.kind
@@ -1251,7 +1242,7 @@ impl RemoteListener for WireEntry {
                 dispatch: call.dispatch(),
                 own,
                 event: call.event(),
-                next: call.next().map(sync_next_function),
+                next: None,
             })?;
             connection
                 .invoke("", "events.call", request)
@@ -1311,7 +1302,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_emit_that_panics_does_not_stop_the_next() {
         let root = Ctx::root().unwrap();
-        let (near, _far) = crate::transport::memory::pair();
+        let (near, _far) = crate::memory::pair();
         let near = Connection::open(near, Arc::new(Quiet)).unwrap();
         let session = SessionEvents::join(Some(&root), near, "rt".into(), Vec::new()).unwrap();
         let ran = Arc::new(AtomicBool::new(false));
@@ -1352,7 +1343,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_row_unloading_while_a_listener_registers_withdraws_it() {
         let root = Ctx::root().unwrap();
-        let (near, far) = crate::transport::memory::pair();
+        let (near, far) = crate::memory::pair();
         // The far end says nothing: the session stays open, and what the
         // hub tells it waits.
         let near = Connection::open(near, Arc::new(Quiet)).unwrap();

@@ -18,9 +18,8 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use rutis_bridge::channel::{ChannelError, PeerId};
-use rutis_bridge::transport::local::{LocalTransport, Spawn};
-use rutis_bridge::{Dial, Transport};
+use rutis_bridge::channel::ChannelError;
+use rutis_bridge::pipe::{self, Processes, Spawn};
 
 const THREADS: usize = 16;
 const ROUNDS: usize = 5;
@@ -138,8 +137,7 @@ fn rounds(round: impl Fn(usize, usize, &Lineup) + Send + Sync + 'static) {
 /// (`RUTIS_LOCAL_HANDOVER=loopback`): their channel is then a TCP socket
 /// on any fd.
 fn loopback() -> bool {
-    std::env::var_os(rutis_bridge::transport::local::HANDOVER_VARIABLE)
-        .is_some_and(|value| value == "loopback")
+    std::env::var_os(rutis_bridge::pipe::HANDOVER_VARIABLE).is_some_and(|value| value == "loopback")
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -213,7 +211,7 @@ impl Failures {
 }
 
 /// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
-/// Q6.5.2): the local transport's `spawn:` processes started at once each
+/// Q6.5.2): `pipe::spawn` processes started at once each
 /// hold their own channel only.
 #[test]
 fn spawned_processes_started_at_once_hold_only_their_own_channel() {
@@ -226,18 +224,17 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
     // standard input and output move to the channel for good: a shell
     // keeps a copy of a descriptor it redirects for one command only (on
     // fd 10, say) until the command is done, which would look like a stray.
-    let mut spawn = Spawn::new("sh", PeerId::new("child").unwrap());
+    let mut spawn = Spawn::new("sh");
     spawn.args = vec![
         "-c".into(),
         r#"exec <&3 >&3; echo "$$"; read line; exit 0"#.into(),
     ];
     rounds(move |number, thread, barrier| {
-        let transport = LocalTransport::default();
-        transport.spawner("probe", spawn.clone());
+        let processes = Processes::default();
         let runtime = runtime();
         let mut failures = Failures(Vec::new());
         failures.check("line up", barrier.wait());
-        let channel = runtime.block_on(transport.dial(&Dial::address("spawn:probe")));
+        let channel = runtime.block_on(pipe::spawn(&spawn, &processes));
         let mut channel = match channel {
             Ok(channel) => Some(channel),
             Err(error) => {

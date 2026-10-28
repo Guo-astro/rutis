@@ -71,7 +71,6 @@ async fn run(path: &Path) -> i32 {
             builtins.register::<serde_json::Value, _, _>("fixture/calendar", |_| Ok(RustCalendar));
         })),
         identity: None,
-        transports: Vec::new(),
     };
     let mut host = match Host::start_with(&config, embedding).await {
         Ok(host) => host,

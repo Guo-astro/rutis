@@ -178,9 +178,7 @@ const TYPES: &str = "rutis-host types examples/marked-services -o examples/marke
 /// and the rows written against it pass `tsc --strict`.
 #[test]
 fn the_declarations_are_current_and_pass_tsc_strict() {
-    let written = rutis_bridge::build::Exports::new()
-        .declarations(here())
-        .unwrap();
+    let written = rutis_types::Exports::new().declarations(here()).unwrap();
     assert_eq!(
         std::fs::read_to_string(here().join("rows/services.d.ts")).unwrap(),
         written,
@@ -227,7 +225,7 @@ fn the_declarations_are_current_and_pass_tsc_strict() {
 fn the_python_types_are_current_and_pass_pyright_strict() {
     let dir = rows();
     let file = dir.path().join("written.py");
-    rutis_bridge::build::Exports::new()
+    rutis_types::Exports::new()
         .python(&file)
         .write(here())
         .unwrap();

@@ -12,15 +12,15 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::{
-    Channel, ChannelError, ChannelInfo, Closer, ConnectError, PeerId, Receiver, Sender,
+    Channel, ChannelError, Close, Closer, ConnectError, PeerId, Receiver, Sender,
 };
 use rutis_bridge::{
-    peer_key, transport_key, Credential, Dial, Failure, IdentityPlugin, LinkConfig, LinkPlugin,
-    Peer, Presented, Refusal, Registered, Registration, RegistrationError, Registrations, Retry,
-    StaticIdentity, Transport,
+    peer_key, Accepting, Credential, Dialer, Failure, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
+    Presented, Refusal, Registered, Registration, RegistrationError, Registrations, Retry,
+    StaticIdentity,
 };
 use rutis_test_support::{recv_within, scaled, HANG_GUARD};
 
@@ -217,7 +217,7 @@ impl Physical {
         }
     }
 
-    fn logical(self: &Arc<Self>, id: u32, peer: Option<PeerId>) -> Channel {
+    fn logical(self: &Arc<Self>, id: u32) -> Channel {
         let logical = Arc::new(Logical::default());
         logical.state.lock().unwrap().credits = WINDOW;
         self.channels.lock().unwrap().insert(id, logical.clone());
@@ -237,11 +237,6 @@ impl Physical {
                 logical,
                 physical: Arc::downgrade(self),
             }),
-            info: ChannelInfo {
-                transport: "mux",
-                peer,
-                label: format!("mux #{id}"),
-            },
         }
     }
 }
@@ -314,8 +309,8 @@ struct LogicalCloser {
     physical: Weak<Physical>,
 }
 impl Closer for LogicalCloser {
-    fn close(&self, reason: &str) {
-        self.logical.end(Err(reason.to_owned()));
+    fn close(&self, _why: Close) {
+        self.logical.end(Err("closed".into()));
         // Only this logical channel: the physical connection stays.
         if let Some(physical) = self.physical.upgrade() {
             physical.channels.lock().unwrap().remove(&self.id);
@@ -352,7 +347,7 @@ impl Mux {
             return live.clone();
         }
         let far = self.far.lock().unwrap().upgrade().expect("the far end");
-        let (ours, theirs) = rutis_bridge::transport::memory::pair();
+        let (ours, theirs) = rutis_bridge::memory::pair();
         self.physicals_made.fetch_add(1, Ordering::SeqCst);
         let made = Self::run(ours, None);
         Self::run(theirs, Some(far));
@@ -430,7 +425,7 @@ impl Mux {
                             .route(&listener, Presented::Bearer(&token));
                         match ticket {
                             Ok(ticket) if ticket.protocol == protocol => {
-                                let logical = reading.logical(channel, Some(ticket.peer.clone()));
+                                let logical = reading.logical(channel);
                                 let _ = reading.send(Frame::Accepted {
                                     channel,
                                     peer: ticket.peer.to_string(),
@@ -438,7 +433,7 @@ impl Mux {
                                 if let Err(logical) =
                                     router.registrations.hand_over(&ticket, logical)
                                 {
-                                    logical.closer.close("registration revoked");
+                                    logical.closer.close(Close::Done);
                                 }
                             }
                             Ok(_) => {
@@ -474,63 +469,69 @@ impl Mux {
     }
 }
 
-impl Transport for Mux {
-    fn kind(&self) -> &str {
-        "mux"
+impl Mux {
+    /// Dial `listener` at the far end, speaking `protocol`.
+    fn dialer(self: &Arc<Self>, listener: &str, protocol: &str) -> Dialer {
+        let (this, listener, protocol) = (self.clone(), listener.to_owned(), protocol.to_owned());
+        Arc::new(move |credential| {
+            let (this, listener, protocol) = (this.clone(), listener.clone(), protocol.clone());
+            Box::pin(async move { this.dial(listener, protocol, credential).await })
+        })
     }
 
-    fn dial<'a>(&'a self, dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
-        Box::pin(async move {
-            let this = self
-                .far
-                .lock()
-                .unwrap()
-                .upgrade()
-                .and_then(|far| far.far.lock().unwrap().upgrade());
-            let this = this.expect("joined");
-            let physical = this.connection();
-            let token = match (&dial.identity, &dial.peer) {
-                (Some(identity), Some(peer)) => match identity.credential(peer) {
-                    Some(Credential::Bearer(token)) => token,
-                    _ => String::new(),
-                },
-                _ => String::new(),
-            };
-            let id = physical.next.fetch_add(1, Ordering::SeqCst);
-            let (answered, answer) = std::sync::mpsc::channel();
-            physical.pending.lock().unwrap().insert(id, answered);
-            // The logical channel exists before the answer, so no data
-            // sent right after acceptance is lost.
-            let channel = physical.logical(id, dial.peer.clone());
-            physical
-                .send(Frame::Open {
-                    channel: id,
-                    listener: dial.address.clone(),
-                    token,
-                    protocol: dial.protocol.clone(),
+    /// Accept on `listener` at this (listening) end.
+    fn accepting(&self, listener: &str) -> Accepting {
+        Accepting {
+            registrations: self.registrations.clone(),
+            listener: listener.into(),
+            local: self.local.lock().unwrap().clone().expect("a listening end"),
+        }
+    }
+
+    async fn dial(
+        self: Arc<Self>,
+        listener: String,
+        protocol: String,
+        credential: Option<Credential>,
+    ) -> Result<Channel, ConnectError> {
+        let physical = self.connection();
+        let token = match credential {
+            Some(Credential::Bearer(token)) => token,
+            _ => String::new(),
+        };
+        let id = physical.next.fetch_add(1, Ordering::SeqCst);
+        let (answered, answer) = std::sync::mpsc::channel();
+        physical.pending.lock().unwrap().insert(id, answered);
+        // The logical channel exists before the answer, so no data
+        // sent right after acceptance is lost.
+        let channel = physical.logical(id);
+        physical
+            .send(Frame::Open {
+                channel: id,
+                listener,
+                token,
+                protocol,
+            })
+            .map_err(|error| ConnectError::Retryable {
+                reason: error.to_string(),
+            })?;
+        let answer = tokio::task::spawn_blocking(move || answer.recv_timeout(scaled(HANG_GUARD)))
+            .await
+            .unwrap();
+        match answer {
+            Ok(Ok(_peer)) => Ok(channel),
+            Ok(Err((failure, reason))) => {
+                physical.channels.lock().unwrap().remove(&id);
+                Err(match failure {
+                    Failure::Retryable => ConnectError::Retryable { reason },
+                    Failure::AuthRejected => ConnectError::AuthRejected { reason },
+                    Failure::Incompatible => ConnectError::Incompatible { reason },
                 })
-                .map_err(|error| ConnectError::Retryable {
-                    reason: error.to_string(),
-                })?;
-            let answer =
-                tokio::task::spawn_blocking(move || answer.recv_timeout(scaled(HANG_GUARD)))
-                    .await
-                    .unwrap();
-            match answer {
-                Ok(Ok(_peer)) => Ok(channel),
-                Ok(Err((failure, reason))) => {
-                    physical.channels.lock().unwrap().remove(&id);
-                    Err(match failure {
-                        Failure::Retryable => ConnectError::Retryable { reason },
-                        Failure::AuthRejected => ConnectError::AuthRejected { reason },
-                        Failure::Incompatible => ConnectError::Incompatible { reason },
-                    })
-                }
-                Err(_) => Err(ConnectError::Retryable {
-                    reason: "no answer".into(),
-                }),
             }
-        })
+            Err(_) => Err(ConnectError::Retryable {
+                reason: "no answer".into(),
+            }),
+        }
     }
 
     fn register(&self, registration: Registration) -> Result<Registered, RegistrationError> {
@@ -575,21 +576,13 @@ fn logical_channels_meet_the_channel_contract() {
                 })
                 .unwrap(),
         );
-        let identity: Arc<dyn rutis_bridge::Identity> = Arc::new(
-            StaticIdentity::new(id(&peer)).present(id("main"), Credential::Bearer(peer.clone())),
-        );
         let dialed = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(
-                dialer.dial(
-                    &Dial::address("in")
-                        .peer(id("main"))
-                        .identity(identity)
-                        .protocol("p"),
-                ),
-            )
+            .block_on(dialer.dialer("in", "p")(Some(Credential::Bearer(
+                peer.clone(),
+            ))))
             .unwrap();
         (dialed, recv_within("the delivered message", &delivered))
     });
@@ -607,8 +600,6 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     };
     // main: one listener, two far ends.
     let main = Ctx::root().unwrap();
-    main.provide_at(transport_key("mux"), main_side.clone())
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main"))
@@ -616,24 +607,27 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
             .accept_token("pi-token", id("pi")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "mux", "main", "in").retry(quick.clone()),
+        LinkConfig::listen(id("mac"), "main", main_side.accepting("in")).retry(quick.clone()),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("pi"), "mux", "main", "in").retry(quick.clone()),
+        LinkConfig::listen(id("pi"), "main", main_side.accepting("in")).retry(quick.clone()),
     ));
     // mac and pi: two applications on the other end, sharing its adapter,
     // so their links go over the same physical connection.
     let mut far = Vec::new();
     for (name, token) in [("mac", "mac-token"), ("pi", "pi-token")] {
         let root = Ctx::root().unwrap();
-        root.provide_at(transport_key("mux"), mac_side.clone())
-            .unwrap();
         root.plugin(IdentityPlugin::new(
             name,
             StaticIdentity::new(id(name)).present(id("main"), Credential::Bearer(token.into())),
         ));
         root.plugin(LinkPlugin::new(
-            LinkConfig::dial(id("main"), "mux", name, "in").retry(quick.clone()),
+            LinkConfig::dial(
+                id("main"),
+                name,
+                mac_side.dialer("in", &rutis_bridge::protocol()),
+            )
+            .retry(quick.clone()),
         ));
         far.push(root);
     }
@@ -695,7 +689,7 @@ async fn links_share_a_connection_but_not_their_sessions_or_rights() {
     // comes back to life; the links redial and the adapter makes a new
     // physical connection for them.
     let physical = mac_side.physical.lock().unwrap().clone().unwrap();
-    physical.closer.close("cable cut");
+    physical.closer.close(Close::Done);
     let (pi_before, mac_before) = (pi.generation(), mac.generation());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

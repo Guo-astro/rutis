@@ -113,7 +113,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 | `listen` + `instances: <分组>` | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
 | 都不写 | 不起连接，由一条带 `runtime` 的节点行或嵌入的程序提供会话 |
 
-`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。可选的 `transport` 选传输，默认 `websocket`；宿主自己的连接方式（中继、QUIC 等）实现一个 `Transport`，由嵌入 rutis-host 的程序挂上，`transport` 写它的名字（[rutis-host](rutis-host.md#runtimes)）。
+`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。连接走 WebSocket。
 
 0.19 之前的写法——`runtimes.remote` 只写 `name` 与 `language`，另写一条带 `"runtime": "gpu"` 的 `rutis-bridge/peer` 行——照常可用（见[迁移到 0.19](../migration-0.19.md)）。
 
@@ -197,6 +197,6 @@ Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android �
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
 - Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。拨出（`dial:wss://`）由一个线程完成连接的全部读写，不受影响。
 - 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
-- `rutis-host` 的 token 来自环境变量，运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`（重启会断开所有连接）。运行中只切断一个身份是身份层的吊销钩子（rutis-bridge 的 `Revocations`，[设计](../design-remote-runtime-dial-2026-10-14.md#五身份层)），给将来的管理服务和嵌入 rutis 的 Rust 程序用：只断开以这个身份接受的连接，进行中的调用以传输错误失败，之后的连接与 token 不对时一样被拒（403，或关闭码 4003），每 30 秒重试。
+- `rutis-host` 的 token 来自环境变量，运行中不能换：换 token 要重启 `rutis-host`（重启会断开所有连接）。断开现有连接靠停掉那一行：连接这个对端或接受这些运行时的那一行停掉，它的连接随之关闭，进行中的调用以传输错误失败。
 - `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
 - 节点只按名字共享 `export` 里列出的服务和事件；事件还要对端在 `import` 里列出。

@@ -18,16 +18,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
-use rutis_bridge::channel::{Channel, ConnectError, PeerId};
+use rutis_bridge::channel::{ConnectError, PeerId};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, transport_key, Credential, Dial, ExportPlugin, Identity, IdentityPlugin,
-    ImportPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
+    peer_key, Accepting, Credential, Dialer, ExportPlugin, Identity, IdentityPlugin, ImportPlugin,
+    LinkConfig, LinkPlugin, LinkState, Peer, Registrations, Retry, StaticIdentity,
 };
 use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::{json, Value as Json};
@@ -49,11 +48,11 @@ fn quick() -> Retry {
     }
 }
 
-/// The memory transport, with every channel it dials wrapped by `fault`.
+/// A memory dialer, with every channel it dials wrapped by `fault`.
 /// While `down`, dials are refused as retryable, as a far end that cannot
 /// be reached: a test holds a link in its reconnecting state that way.
 struct Faulty {
-    inner: Arc<MemoryTransport>,
+    inner: Dialer,
     dialed: Mutex<Vec<Faults>>,
     down: AtomicBool,
 }
@@ -63,23 +62,21 @@ impl Faulty {
     fn dialed(&self, n: usize) -> Faults {
         self.dialed.lock().unwrap()[n].clone()
     }
-}
 
-impl Transport for Faulty {
-    fn kind(&self) -> &str {
-        "faulty"
-    }
-
-    fn dial<'a>(&'a self, dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
-        Box::pin(async move {
-            if self.down.load(Ordering::SeqCst) {
-                return Err(ConnectError::Retryable {
-                    reason: "faulty: down".into(),
-                });
-            }
-            let (channel, faults) = fault(self.inner.dial(dial).await?);
-            self.dialed.lock().unwrap().push(faults);
-            Ok(channel)
+    fn dialer(self: &Arc<Self>) -> Dialer {
+        let faulty = self.clone();
+        Arc::new(move |credential| {
+            let faulty = faulty.clone();
+            Box::pin(async move {
+                if faulty.down.load(Ordering::SeqCst) {
+                    return Err(ConnectError::Retryable {
+                        reason: "faulty: down".into(),
+                    });
+                }
+                let (channel, faults) = fault((faulty.inner)(credential).await?);
+                faulty.dialed.lock().unwrap().push(faults);
+                Ok(channel)
+            })
         })
     }
 }
@@ -91,39 +88,39 @@ struct Linked {
     mac: Ctx,
     mac_states: watch::Receiver<LinkState>,
     faulty: Arc<Faulty>,
-    _provided: rutis::Disposer,
 }
 
 async fn linked() -> Linked {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let main = Ctx::root().unwrap();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick()),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        )
+        .retry(quick()),
     ));
 
     let mac = Ctx::root().unwrap();
     let faulty = Arc::new(Faulty {
-        inner: transport,
+        inner: rutis_bridge::memory::dialer(transport, "main-in"),
         dialed: Mutex::default(),
         down: AtomicBool::new(false),
     });
-    let provided = mac
-        .provide_at(transport_key("faulty"), faulty.clone())
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
-    let link =
-        LinkPlugin::new(LinkConfig::dial(id("main"), "faulty", "mac", "main-in").retry(quick()));
+    let link = LinkPlugin::new(LinkConfig::dial(id("main"), "mac", faulty.dialer()).retry(quick()));
     let mac_states = link.state();
     mac.plugin(link);
     Linked {
@@ -131,7 +128,6 @@ async fn linked() -> Linked {
         mac,
         mac_states,
         faulty,
-        _provided: provided,
     }
 }
 
@@ -167,7 +163,7 @@ fn nothing() -> Arc<dyn Dispatch> {
 
 /// Two Rust sessions on a memory pair, the caller's end wrapped by `fault`.
 async fn sessions(callee: Arc<dyn Dispatch>) -> (Connection, Connection, Faults) {
-    let (near, far) = rutis_bridge::transport::memory::pair();
+    let (near, far) = rutis_bridge::memory::pair();
     let (near, faults) = fault(near);
     let caller = Connection::open_with(
         near,
@@ -290,7 +286,7 @@ async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
     within("main to run the call", running.recv())
         .await
         .unwrap();
-    linked.faulty.dialed(0).drop_and_close("cut by the test");
+    linked.faulty.dialed(0).drop_and_close();
 
     let failed = within("the call in flight to end", call).await.unwrap();
     assert!(
@@ -433,7 +429,7 @@ async fn calls_while_a_link_reconnects_fail_or_reach_the_new_session() {
     assert_eq!(reply.json().unwrap(), json!(old_tag));
 
     linked.faulty.down.store(true, Ordering::SeqCst);
-    linked.faulty.dialed(0).drop_and_close("cut by the test");
+    linked.faulty.dialed(0).drop_and_close();
     eventually(
         || matches!(*linked.mac_states.borrow(), LinkState::Waiting { .. }).then_some(()),
         "mac's link to fail to redial",
@@ -528,11 +524,8 @@ impl HostDispatch for Clock {
     }
 }
 
-async fn node(transport: &Arc<MemoryTransport>, identity: StaticIdentity) -> Ctx {
+async fn node(identity: StaticIdentity) -> Ctx {
     let root = Ctx::root().unwrap();
-    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     let name = identity.local().to_string();
     root.plugin(IdentityPlugin::new(&name, identity));
     root
@@ -550,31 +543,45 @@ async fn node(transport: &Arc<MemoryTransport>, identity: StaticIdentity) -> Ctx
 /// release to have passed both hops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancellation_and_release_pass_hop_by_hop() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("a-in", id("a"));
+    let transport = Registrations::new();
     let a = node(
-        &transport,
         StaticIdentity::new(id("a"))
             .accept_token("b-token", id("b"))
             .accept_token("c-token", id("c")),
     )
     .await;
     a.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("b"), "memory", "a", "a-in").retry(quick()),
+        LinkConfig::listen(
+            id("b"),
+            "a",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "a-in".into(),
+                local: id("a"),
+            },
+        )
+        .retry(quick()),
     ));
     a.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("c"), "memory", "a", "a-in").retry(quick()),
+        LinkConfig::listen(
+            id("c"),
+            "a",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "a-in".into(),
+                local: id("a"),
+            },
+        )
+        .retry(quick()),
     ));
     a.plugin(ImportPlugin::new(id("b"), ["clock"]));
     a.plugin(ExportPlugin::new(id("c"), ["clock"]));
 
     let (started, mut running) = mpsc::unbounded_channel();
     let (dropped, mut gone) = oneshot::channel();
-    let b = node(
-        &transport,
-        StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())),
-    )
-    .await;
+    let b =
+        node(StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())))
+            .await;
     let _provided = b
         .provide_at(
             host_key("clock"),
@@ -585,17 +592,25 @@ async fn cancellation_and_release_pass_hop_by_hop() {
         )
         .unwrap();
     b.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("a"), "memory", "b", "a-in").retry(quick()),
+        LinkConfig::dial(
+            id("a"),
+            "b",
+            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
+        )
+        .retry(quick()),
     ));
     b.plugin(ExportPlugin::new(id("a"), ["clock"]));
 
-    let c = node(
-        &transport,
-        StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())),
-    )
-    .await;
+    let c =
+        node(StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())))
+            .await;
     c.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("a"), "memory", "c", "a-in").retry(quick()),
+        LinkConfig::dial(
+            id("a"),
+            "c",
+            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
+        )
+        .retry(quick()),
     ));
     c.plugin(ImportPlugin::new(id("a"), ["clock"]));
 
@@ -845,7 +860,7 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
-    use rutis_bridge::transport::websocket::{Config, Limits, ListenerConfig, WebSocketTransport};
+    use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
     use rutis_bridge::Registration;
 
     const LIMIT: usize = 64 * 1024;
@@ -853,41 +868,45 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
         max_message: LIMIT,
         ..Limits::default()
     };
-    let server = WebSocketTransport::start(
-        Config::new()
-            .listener(ListenerConfig::new(
-                "public",
-                "127.0.0.1:0".parse().unwrap(),
-                id("callee"),
-            ))
-            .limits(limits.clone()),
+    let registrations = Registrations::new();
+    let server = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &limits,
+        websocket::admit_registered(registrations.clone(), "public"),
     )
     .unwrap();
-    let client = WebSocketTransport::start(Config::new().limits(limits)).unwrap();
     let (deliver, mut accepted) = mpsc::unbounded_channel();
-    let _registered = server
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("caller"),
-            identity: Arc::new(
-                StaticIdentity::new(id("callee")).accept_token("caller-token", id("caller")),
-            ),
-            protocol: rutis_bridge::protocol(),
-            deliver: Box::new(move |channel| {
-                let _ = deliver.send(channel);
-            }),
-        })
+    let _registered = registrations
+        .register(
+            &id("callee"),
+            Registration {
+                listener: "public".into(),
+                peer: id("caller"),
+                identity: Arc::new(
+                    StaticIdentity::new(id("callee")).accept_token("caller-token", id("caller")),
+                ),
+                protocol: rutis_bridge::protocol(),
+                deliver: Box::new(move |channel| {
+                    let _ = deliver.send(channel);
+                }),
+            },
+        )
         .unwrap();
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("caller"))
-            .present(id("callee"), Credential::Bearer("caller-token".into())),
-    );
-    let address = format!("ws://{}/rutis", server.local_addr("public").unwrap());
-    let dial = Dial::address(address)
-        .peer(id("callee"))
-        .identity(identity)
-        .protocol(rutis_bridge::protocol());
-    let dialed = within("the dial", client.dial(&dial)).await.unwrap();
+    let identity = StaticIdentity::new(id("caller"))
+        .present(id("callee"), Credential::Bearer("caller-token".into()));
+    let address = format!("ws://{}/rutis", server.local_addr());
+    let dialed = within(
+        "the dial",
+        websocket::dial(
+            &address,
+            &rutis_bridge::protocol(),
+            identity.credential(&id("callee")).as_ref(),
+            &Trust::default(),
+            &limits,
+        ),
+    )
+    .await
+    .unwrap();
     let accepted = within("the accepted connection", accepted.recv())
         .await
         .unwrap();

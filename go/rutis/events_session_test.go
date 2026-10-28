@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 	"github.com/arcships/rutis/go/rutis/rutistest"
@@ -67,7 +68,7 @@ func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
 		t.Fatalf("local listener chain: %v", chain)
 	}
 	err := loaded.Parallel(ctx, "failed")
-	var aggregate *rutis.AggregateError
+	var aggregate *advanced.AggregateError
 	if !errors.As(err, &aggregate) || len(aggregate.Errors) != 2 || aggregate.Message != "2 listeners of failed failed" {
 		t.Fatalf("aggregate: %v", err)
 	}
@@ -140,7 +141,7 @@ func (e *emitting) EmitN(ctx context.Context, name string, n int) error {
 
 func linking(text string) func(context.Context, ...any) (any, error) {
 	return func(ctx context.Context, args ...any) (any, error) {
-		rest, err := args[len(args)-1].(rutis.Next)(ctx)
+		rest, err := args[len(args)-1].(advanced.Next)(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +254,7 @@ type aggregating struct{ c *rutis.Ctx }
 // then each failure's name.
 func (a *aggregating) Names(ctx context.Context) ([]string, error) {
 	err := a.c.Parallel(ctx, "t/par")
-	var aggregate *rutis.AggregateError
+	var aggregate *advanced.AggregateError
 	if !errors.As(err, &aggregate) {
 		return nil, fmt.Errorf("not an aggregate: %v", err)
 	}
@@ -457,7 +458,7 @@ func TestAHostOlderThanTheEventProtocolIsRefused(t *testing.T) {
 	defer hostSide.Close()
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
 	done := make(chan error, 1)
-	go func() { done <- rutis.ServeConn(runtimeSide, plugin) }()
+	go func() { done <- advanced.ServeConn(runtimeSide, plugin) }()
 	hello, _ := json.Marshal(map[string]any{"op": "hello", "version": 2, "capabilities": []string{"sync-wait"}})
 	go func() {
 		buffer := make([]byte, 4096)

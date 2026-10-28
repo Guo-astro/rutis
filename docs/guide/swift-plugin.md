@@ -83,7 +83,7 @@ public let plugin = Rutis.define(Plugin(
 | 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消；卸载至多等它们到关闭时限（和监听器共用），不响应取消的 Task 不会拖住卸载 |
 | 并发 | 每个进来的调用在自己的 Task 里运行：提供的对象要能并发使用 |
 | 取消 | 调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消 |
-| 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递（见[带方法的对象](#带方法的对象)）；类型为 `Any` 的参数收到原生值，别的进程的对象是 `Rutis.Client` |
+| 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`、`Rutis.Advanced.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递（见[带方法的对象](#带方法的对象)）；类型为 `Any` 的参数收到原生值，别的进程的对象是 `Rutis.Advanced.Client` |
 | 错误 | 抛出的错误带着类型名（`QuotaError`）、消息（`LocalizedError` 的 `errorDescription`，否则它的描述），以及存储属性 `code`、`data`（有的话）跨过去，调用方读到的错误带同样的 `code`、`data`。收到的错误是 `RutisError`（`name`、`message`、`code`、`data`、`errors`、`cause`），按 `name` 匹配 |
 | `fatalError`、`try!`、强制解包 | Swift 里不可捕获：运行时进程结束、它的行停止，宿主按 `restart` 处理（[运行时结束时](rutis-host.md#运行时结束时)） |
 
@@ -92,11 +92,11 @@ Swift 的值怎样跨过去（[传递值](plugin-api.md#传递值)）：
 | 值 | Swift |
 | --- | --- |
 | 时间点 | `Date`，截断到微秒 |
-| 本地日期时间、日期、一天中的时间 | `Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`（Swift 没有这些类型） |
+| 本地日期时间、日期、一天中的时间 | `Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`（Swift 没有这些类型） |
 | 二进制数据 | `Data` |
 | 映射 | 键不是 `String` 的 `Dictionary`；发出时按键排序，同一个值总是同样发出 |
 | 集合 | `Set`，发出时排序 |
-| 大整数 | `Rutis.BigInt`，或装得下它的整数类型 |
+| 大整数 | `Rutis.Advanced.BigInt`，或装得下它的整数类型 |
 | 十进制数 | `Decimal`：至多 38 位，不保留末尾的零（`1.10` 收到是 `1.1`）；要原样保留文本时把参数声明为 `String` |
 | UUID | `UUID` |
 
@@ -144,26 +144,26 @@ final class Warmer: @unchecked Sendable {
         return try await cache.get("a")
     }
 
-    /// 不知道是什么时写 Any：对象是 Rutis.Client，按名字调用。
+    /// 不知道是什么时写 Any：对象是 Rutis.Advanced.Client，按名字调用。
     func peek(_ value: Any) async throws -> Int? {
-        guard let cache = value as? Rutis.Client else { return nil }
+        guard let cache = value as? Rutis.Advanced.Client else { return nil }
         return try await cache.call("get", values: ["a"], as: Int?.self)
     }
 }
 ```
 
-- 参数类型写 `@RutisClient` 协议（`any Cache`）时拿到这个协议的代理，和 `ctx.use("cache", CacheProxy.self)` 是同一种代理；`@RutisClient` 方法的返回值也一样。参数写 `Any` 时拿到 `Rutis.Client`：`try await client.call("get", [Rutis.encode("a")], as: Int?.self)` 或 `call("get", values: ["a"], as: Int?.self)`。数组、字典里的对象和事件参数里的对象，经 `Any` 拿到 `Rutis.Client`；`[any Cache]` 在 0.18 不支持。
+- 参数类型写 `@RutisClient` 协议（`any Cache`）时拿到这个协议的代理，和 `ctx.use("cache", CacheProxy.self)` 是同一种代理；`@RutisClient` 方法的返回值也一样。参数写 `Any` 时拿到 `Rutis.Advanced.Client`：`try await client.call("get", [Rutis._Generated.encode("a")], as: Int?.self)` 或 `call("get", values: ["a"], as: Int?.self)`。数组、字典里的对象和事件参数里的对象，经 `Any` 拿到 `Rutis.Advanced.Client`；`[any Cache]` 在 0.18 不支持。
 - 只有写在文件顶层的 `@RutisClient` 协议能收对象：宏为它生成的 `rutisObjectProxy` 重载只在文件顶层对 Swift 可见。嵌在别的类型里的 `@RutisClient` 协议照常可以 `ctx.use`，但用它做参数类型时收不了对象（`bad-argument`）。可选类型（`(any Cache)?`）的参数和返回值在 0.18 里也收不了对象，写 `any Cache`。
 - 参数类型是数据（`Codable` 类型、`String` 等）时，这次调用以 `bad-argument` 失败：`warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`。
 - 代理上没有数据字段：要数据，让方法返回它。调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`。
-- 同一个对象交出几次，这里拿到同一个代理；把收到的代理或 `Rutis.Client` 再交出去，发出的是原来那个对象，交回原来的进程，那边拿到的是原对象。
+- 同一个对象交出几次，这里拿到同一个代理；把收到的代理或 `Rutis.Advanced.Client` 再交出去，发出的是原来那个对象，交回原来的进程，那边拿到的是原对象。
 - 对象不跟行走：交出它的行卸载后照常可以调用。按需启动的 Swift 运行时在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行；之后的调用以 `peer-gone` 失败：`a call on an object from swift-plugin-binary failed: runtime swift-plugin-binary stopped because it was idle`。要一直可用，让交出它的行保持加载，或者把运行时设成 `eager`。对方的运行时退出后，调用同样以 `peer-gone` 失败。
 - 对象不能交给 0.18 之前的一端：直接连着这样的一端时，这次调用以 `bad-value` 失败（`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`），会话继续。
 - 同一个运行时里的行拿到的是对象本身。`RutisTest` 按跨进程的样子给代理。规则见 [插件 API](plugin-api.md#带方法的对象)。
 
 ### 事件
 
-一个宿主上所有语言、所有进程的监听器都在同一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。监听器的参数就是事件的参数，按声明的类型解码（缺的为 `nil`，多的忽略）；waterfall 里最后一个参数是 `Rutis.Next<R>`。
+一个宿主上所有语言、所有进程的监听器都在同一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。监听器的参数就是事件的参数，按声明的类型解码（缺的为 `nil`，多的忽略）；waterfall 里最后一个参数是 `Rutis.Advanced.Next<R>`。
 
 ```swift
 let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }   // 选项：prepend:、global:
@@ -196,7 +196,7 @@ public final class Greeter: @unchecked Sendable {
 
 public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
     ctx.on("greeting/pick") { (lang: String) -> String? in lang == "sv" ? "Hej" : nil }   // nil：交给下一个监听器
-    ctx.on("greeting/format") { (text: String, next: Rutis.Next<String>) in
+    ctx.on("greeting/format") { (text: String, next: Rutis.Advanced.Next<String>) in
         (try await next() ?? text) + "!"                                                // next 运行链的其余部分
     }
     ctx.provide("greeter", Greeter(ctx: ctx))
@@ -304,7 +304,7 @@ public final class Calendar: @unchecked Sendable {
 }
 ```
 
-从 Release 下载二进制放进这个目录（下载的二进制带隔离属性：`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除）。宿主在所有二进制里找 `swift:<插件>`；两个二进制有同名插件时写 `swift-<二进制名>:<插件>`。设置与 `runtimes.go` 相同：二进制在第一次有行用到时启动，空闲 `idle` 秒（60）后停下，`"start": "eager"` 全部启动并一直运行，`restart`（默认 `no`、`on-failure`、`exit`）对每个运行时各自生效，换了二进制在它的运行时重启后生效。运行 Swift 二进制不需要 Swift 工具链。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（rutis-loader 的 `SwiftResolver`、`SwiftRuntimes`）。
+从 Release 下载二进制放进这个目录（下载的二进制带隔离属性：`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除）。宿主在所有二进制里找 `swift:<插件>`；两个二进制有同名插件时写 `swift-<二进制名>:<插件>`。设置与 `runtimes.go` 相同：二进制在第一次有行用到时启动，空闲 `idle` 秒（60）后停下，`"start": "eager"` 全部启动并一直运行，`restart`（默认 `no`、`on-failure`、`exit`）对每个运行时各自生效，换了二进制在它的运行时重启后生效。运行 Swift 二进制不需要 Swift 工具链。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（rutis-loader 的 `BinaryResolver<Swift>`、`BinaryRuntimes<Swift>`）。
 
 ## 8. 在另一台机器上运行
 

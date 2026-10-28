@@ -134,7 +134,7 @@ async fn busy_runtime(root: &Ctx, language: Language, dir: &Path) -> (i32, Local
 
 /// What a test keeps of a runtime it started.
 struct LocalRuntimeParts {
-    processes: rutis_bridge::transport::local::Processes,
+    processes: rutis_bridge::pipe::Processes,
 }
 
 /// Whether the process `pid` still runs (not gone, not a zombie).

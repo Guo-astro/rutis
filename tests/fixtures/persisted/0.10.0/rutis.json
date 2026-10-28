@@ -31,7 +31,7 @@
       { "id": "session-state", "name": "session-state-plugin" }
     ] },
     { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "runtime": "office-node" } },
-    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "transport": "websocket", "identity": "edge" } },
+    { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "identity": "edge" } },
     { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder" },
     { "id": "clock", "name": "peer:office/clock" }

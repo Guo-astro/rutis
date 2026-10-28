@@ -8,7 +8,7 @@ The other sections of this guide are being written (#671); the full API referenc
 
 ## 3. Keep plugins in check
 
-Third-party plugins are not yours: one may crash, hang, or call a service you did not mean to give it. What follows are options of `LocalRuntime`, all off by default; unset, things are as without them.
+Third-party plugins are not yours: one may crash or hang. What rutis gives you is putting plugins in processes of their own, and a greeting limit for local runtimes; limiting calls and which services a plugin may use are yours to decide (see the end of this section).
 
 ### A process per plugin
 
@@ -16,7 +16,6 @@ Plugins in one runtime share its process: one that crashes or hangs stops the ot
 
 ```rust,no_run
 # use std::sync::Arc;
-# use std::time::Duration;
 # use rutis::host::*;
 # #[tokio::main]
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,10 +34,7 @@ let mut resolvers = Vec::new();
 let mut fibers = Vec::new();
 for command in &commands {                                // a process per third-party command
     let runtime = LocalRuntime::node(&runtime_package, command.dir.join("package.json"))
-        .named(&command.id)                               // runtime name: two or more of a-z, 0-9, -
-        .call_limit(Duration::from_secs(30))
-        .kill_on_timeout()
-        .allowed_services(["notes"]);
+        .named(&command.id);                              // runtime name: two or more of a-z, 0-9, -
     let rows = Arc::new(RuntimeResolver::modules(runtime.handle()).with_catalog(&catalog));
     fibers.push(root.plugin(runtime));
     chain = chain.with_shared(rows.clone());
@@ -57,47 +53,6 @@ for rows in resolvers {
 - Several plugins share a process when their rows have the same prefix.
 - `RuntimeResolver::node` is unchanged, still the default Node runtime's (rows without a prefix); it does not take a row name with a runtime prefix, so it takes no other runtime's rows.
 - `modules` asks the runtime at every resolution rather than caching by the package's `version`.
-
-### Call limit
-
-`call_limit(limit)` limits each call into the runtime's plugin code: a call by name of a service its rows provide, and a call of a function it handed over (a command handler a plugin registered with `jot`, say). It is the same whether the caller is the host, a plugin of another runtime or a Rust plugin; it is counted from the call being sent to its end, a returned promise included. Calls between plugins of the same runtime do not go through the host and are not limited.
-
-Over the limit, the call is cancelled (the far end is told, as when the caller gives up) and its caller gets an error with code `timeout` and `data` `{runtime, limit, service?, method?}` (`limit` in milliseconds):
-
-```text
-chat: call to weather.tomorrow did not finish within 30s (the host's limit for runtime agent); the call was cancelled
-a function of wordcount did not finish within 30s (the host's limit for runtime wordcount); the call was cancelled
-```
-
-Cancelling does not stop every plugin: a TypeScript promise cannot be cancelled, and a Python `def` method or a JavaScript busy loop holds the whole process. Add `kill_on_timeout()` to end the runtime's process after a call over the limit:
-
-```text
-a function of wordcount did not finish within 30s (the host's limit for runtime wordcount); the call was cancelled; runtime wordcount was ended
-```
-
-The runtime's state (`Loader::status()`) is `wordcount: down (ended by the host: a function of wordcount did not finish within 30s)`; its rows wait for it, and the other calls in progress in that process fail with `peer-gone`. Whether to restart it is your decision: call `restart()` on the fiber `root.plugin(runtime)` returned:
-
-```rust,no_run
-# use rutis::host::*;
-# async fn restart(fiber: FiberView) -> Result<(), Box<dyn std::error::Error>> {
-fiber.restart().await?;   // a new process with the same options; its rows load again
-# Ok(())
-# }
-```
-
-A caller's own limit (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on) still works; whichever comes first applies.
-
-### Services a plugin may use
-
-`allowed_services([...])` lists the services from outside the runtime its plugins may use: yours, Rust plugins', those rows of other runtimes provide. Services rows of the same runtime provide each other are not limited, and neither are your own calls into plugins (`call_service`).
-
-A row whose plugin's `inject` holds a service not on the list fails to start, saying why, with code `unavailable`:
-
-```text
-wordcount: uses llm, which the host does not let runtime wordcount use (allowed: tools, notes)
-```
-
-When plugins use the loader as a service (#185), leave it off the list of the runtimes whose plugins should not.
 
 ### Greeting limit
 
@@ -126,8 +81,10 @@ On Windows a process has an id here only once it has connected to the host, so t
 
 ### What is not a limit
 
-- `ServiceCatalog::share_registered_only` and read interception decide the names services are shared by; they are not permissions. Whether a plugin may use a service is `allowed_services`.
-- Plugins in one process can reach each other through the language itself (globals, the module cache), so the list covers only services from outside the process; to keep plugins apart, put them in different runtimes.
+- rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `LocalRuntime::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
+- rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
+- Services are shared by name; that is not a permission.
+- Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.
 - A plugin process has all the rights of the host's user (files, network, child processes). rutis has no sandbox and no memory or CPU limits.
 
 The options are listed in [Rust host: local runtime options](rust-host.en.md#local-runtime-options).

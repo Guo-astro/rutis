@@ -30,18 +30,6 @@ import arcships.rutis.generated.Tables
  * is there, and the plugin is unloaded when one goes away.
  */
 object Rutis {
-    /** This SDK's version: the runtime's implementation version (the release train checks it). */
-    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.VERSION.", ReplaceWith("VERSION", "arcships.rutis.advanced.VERSION"))
-    const val VERSION: String = "0.18.0"
-
-    /** The plugin API this SDK writes plugins against and its runtime supports. */
-    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.PLUGIN_API.", ReplaceWith("PLUGIN_API", "arcships.rutis.advanced.PLUGIN_API"))
-    const val PLUGIN_API: Int = 3
-
-    /** The name the runtime reports itself by: the Maven coordinates it is published as. */
-    @Deprecated("Moved in 0.19: use arcships.rutis.advanced.IMPLEMENTATION.", ReplaceWith("IMPLEMENTATION", "arcships.rutis.advanced.IMPLEMENTATION"))
-    const val IMPLEMENTATION: String = "io.github.arcships:rutis"
-
     /** The configuration of a plugin that takes none. */
     @Serializable
     object NoConfig

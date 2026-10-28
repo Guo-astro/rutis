@@ -15,7 +15,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | [`cross-runtime-sync/`](cross-runtime-sync/README.md) | 跨运行时同步调用与死锁策略（多语言设计 §五、§九） |
-| [`remote-lease/`](remote-lease/README.md) | 远端租约接管、link 重连、注册撤销与身份吊销，含接入点（远程插件 §3.2、§4.4；拨出稿 §五、§六） |
+| [`remote-lease/`](remote-lease/README.md) | 远端租约接管、link 重连与注册撤销，含接入点（远程插件 §3.2、§4.4；拨出稿 §五、§六） |
 | [`config-schema/`](config-schema/README.md) | 不是模型：配置 Schema 的共用用例表，各语言的实现逐字比较（配置 Schema 设计 §8），由各实现的测试跑 |
 
 ---
@@ -29,5 +29,5 @@ One model per directory, each with the `.tla` model, `.cfg` configurations (one 
 | Directory | Subject |
 | --- | --- |
 | [`cross-runtime-sync/`](cross-runtime-sync/README.en.md) | Cross-runtime synchronous calls and the deadlock policy (multi-language design §5, §9) |
-| [`remote-lease/`](remote-lease/README.en.md) | Remote lease takeover, link reconnection, registration and identity revocation, the access point included (remote plugins §3.2, §4.4; dial-out §5, §6) |
+| [`remote-lease/`](remote-lease/README.en.md) | Remote lease takeover, link reconnection and registration revocation, the access point included (remote plugins §3.2, §4.4; dial-out §5, §6) |
 | [`config-schema/`](config-schema/README.en.md) | Not a model: the shared case list for config schemas, compared word for word by every implementation (config schema design §8), run by their own tests |

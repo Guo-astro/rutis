@@ -10,44 +10,25 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use run::{
     filter_any, filter_each, filter_sync, first_poll, report_listener, run_bail, run_parallel,
-    run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
-    OwnedInv, RawTerm, Started, SyncNext,
+    run_serial, AsyncNext, ErasedTerminal, FilterSpec, Inv, NoTerminal, OwnedInv, RawTerm, Started,
 };
 use table::{Body, Entry, Table};
 
 use crate::ctx::Ctx;
-use crate::error::{panic_error, Error, ErrorKind};
+use crate::error::{Error, ErrorKind};
 use crate::events::{
     Dispatch, EntryCall, Event, EventOptions, JsonTranscoder, ListenerInfo, ListenerKind, Mode,
     Payload, PayloadRef, RemoteEntry, RemoteListener, TableChange, TableEntry, Transcoder, Value,
     RESERVED_PREFIX,
 };
-use crate::fiber::{FiberInner, PluginId};
-use crate::key::{EventKey, InstanceId};
+use crate::fiber::PluginId;
+use crate::key::EventKey;
 use crate::{BoxFuture, Disposer, Effect};
-
-/// A dispatch before its listener snapshot is selected. Observers see it
-/// synchronously and cannot veto it.
-#[non_exhaustive]
-pub struct DispatchAttempt<'a> {
-    pub name: &'a str,
-    pub mode: Mode,
-    pub emitter: PluginId,
-    pub emitter_instance: InstanceId,
-    pub event: &'a (dyn std::any::Any + Send + Sync),
-}
-
-type ObserverCall = dyn for<'a> Fn(&DispatchAttempt<'a>) + Send + Sync;
-
-struct DispatchObserver {
-    call: Arc<ObserverCall>,
-    owner: Weak<FiberInner>,
-}
 
 type Watcher = Arc<dyn Fn(&TableChange) + Send + Sync>;
 
@@ -85,7 +66,6 @@ struct Tail {
 #[derive(Default)]
 struct BusState {
     table: Table,
-    observers: Vec<Arc<DispatchObserver>>,
     #[cfg(feature = "testing")]
     selected: Vec<SelectedHook>,
     watchers: Vec<(u64, Watcher)>,
@@ -500,11 +480,6 @@ impl EventBus {
         self.core.state.lock().unwrap().table.max_list_capacity()
     }
 
-    #[cfg(test)]
-    pub(crate) fn observer_count(&self) -> usize {
-        self.core.state.lock().unwrap().observers.len()
-    }
-
     /// Accepted `emit`s whose calls have not all finished, per name.
     pub(crate) fn backlogs(&self) -> Vec<crate::EventBacklog> {
         let now = Instant::now();
@@ -525,117 +500,14 @@ impl EventBus {
         backlogs
     }
 
-    /// Observe each dispatch before its listeners are selected. Observers
-    /// are trusted code: they see the event. Only dispatches from the
-    /// owner's subtree are observed.
-    pub fn observe_dispatch(
-        &self,
-        owner: &Ctx,
-        observer: impl for<'a> Fn(&DispatchAttempt<'a>) + Send + Sync + 'static,
-    ) -> Result<Disposer, Error> {
-        owner.registration_preflight()?;
-        if !Arc::ptr_eq(&self.core, &owner.events().core) {
-            return Err(ErrorKind::Validation {
-                issues: vec!["dispatch observer belongs to another event bus".into()],
-            }
-            .into());
-        }
-        let hook = Arc::new(DispatchObserver {
-            call: Arc::new(observer),
-            owner: owner.weak_fiber(),
-        });
-        let bus = self.clone();
-        owner.register_internal_effect_named("dispatch observer".into(), move |_, _, _| {
-            bus.core.state.lock().unwrap().observers.push(hook.clone());
-            Ok(Effect::AsyncDisposer(Box::new(move || {
-                {
-                    let mut state = bus.core.state.lock().unwrap();
-                    state.observers.retain(|entry| !Arc::ptr_eq(entry, &hook));
-                    if state.observers.capacity() > 64
-                        && state.observers.len() * 4 < state.observers.capacity()
-                    {
-                        state.observers.shrink_to_fit();
-                    }
-                }
-                Box::pin(async move {
-                    // A call that selected it before the removal finishes first.
-                    if let Some(owner) = hook.owner.upgrade() {
-                        owner.wait_events().await;
-                    }
-                    Ok(())
-                })
-            })))
-        })
-    }
-
-    fn observe(
-        &self,
-        ctx: &Ctx,
-        name: &str,
-        mode: Mode,
-        event: &(dyn std::any::Any + Send + Sync),
-    ) {
-        let observers: Vec<Arc<DispatchObserver>> = {
-            let state = self.core.state.lock().unwrap();
-            if state.observers.is_empty() {
-                return;
-            }
-            state.observers.clone()
-        };
-        if ctx.dispatch_preflight().is_err() {
-            return;
-        }
-        let mut ancestry = Vec::new();
-        let mut current = ctx.weak_fiber().upgrade();
-        while let Some(fiber) = current {
-            current = fiber.parent_fiber.as_ref().and_then(Weak::upgrade);
-            ancestry.push(fiber);
-        }
-        let attempt = DispatchAttempt {
-            name,
-            mode,
-            emitter: ctx.plugin_id(),
-            emitter_instance: ctx.instance(),
-            event,
-        };
-        let sink = ctx.error_sink();
-        for observer in observers {
-            let Some(owner) = observer.owner.upgrade() else {
-                continue;
-            };
-            // Counted first: the owner's unload, and the observer's own
-            // disposal, wait for this call.
-            let _flight = table::CallFlight::begin(owner.clone());
-            let registered = self
-                .core
-                .state
-                .lock()
-                .unwrap()
-                .observers
-                .iter()
-                .any(|entry| Arc::ptr_eq(entry, &observer));
-            if !registered
-                || !owner.alive.load(Ordering::SeqCst)
-                || owner.closing.load(Ordering::SeqCst)
-                || !ancestry.iter().any(|fiber| Arc::ptr_eq(fiber, &owner))
-            {
-                continue;
-            }
-            if let Err(panic) = catch_unwind(AssertUnwindSafe(|| (observer.call)(&attempt))) {
-                let error = panic_error(panic).shared();
-                let _ = catch_unwind(AssertUnwindSafe(|| sink(error)));
-            }
-        }
-    }
-
     // ── dispatch ─────────────────────────────────────────────────
 
-    /// §5.1 step 1, after the reserved-name check and the observers.
+    /// §5.1 step 1, after the reserved-name check.
+    #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
     fn snapshot(
         &self,
         ctx: &Ctx,
         name: &str,
-        mode: Mode,
         event: &(dyn std::any::Any + Send + Sync),
         opts: &mut Opts,
     ) -> Result<Vec<Arc<Entry>>, Error> {
@@ -646,7 +518,6 @@ impl EventBus {
             }
             .into());
         }
-        self.observe(ctx, name, mode, event);
         let state = self.core.state.lock().unwrap();
         let entries = state.table.select(name);
         #[cfg(feature = "testing")]
@@ -715,7 +586,7 @@ impl EventBus {
         mut opts: Opts,
     ) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
         let (started, receiver) = tokio::sync::oneshot::channel();
-        let mut entries = self.snapshot(ctx, &name, Mode::Emit, &**payload.arc(), &mut opts)?;
+        let mut entries = self.snapshot(ctx, &name, &**payload.arc(), &mut opts)?;
         let mut batch = None;
         match opts.filter.take() {
             Some(FilterSpec::Each(keep)) => match filter_each(entries, &*keep) {
@@ -821,7 +692,7 @@ impl EventBus {
     ) -> BoxFuture<'a, Result<(), Error>> {
         let bus = self.clone();
         Box::pin(async move {
-            let entries = bus.snapshot(ctx, &name, Mode::Parallel, &**payload.arc(), &mut opts)?;
+            let entries = bus.snapshot(ctx, &name, &**payload.arc(), &mut opts)?;
             let entries = filter_any(&name, entries, opts.filter.take()).await?;
             if entries.is_empty() {
                 return Ok(());
@@ -848,7 +719,7 @@ impl EventBus {
     ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
-            let entries = bus.snapshot(ctx, &name, Mode::Serial, &**payload.arc(), &mut opts)?;
+            let entries = bus.snapshot(ctx, &name, &**payload.arc(), &mut opts)?;
             let entries = filter_any(&name, entries, opts.filter.take()).await?;
             let inv = Inv {
                 bus: &bus,
@@ -873,13 +744,7 @@ impl EventBus {
     ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
         let bus = self.clone();
         Box::pin(async move {
-            let entries = bus.snapshot(
-                ctx,
-                &name,
-                Mode::Waterfall,
-                payload.as_ref().as_any(),
-                &mut opts,
-            )?;
+            let entries = bus.snapshot(ctx, &name, payload.as_ref().as_any(), &mut opts)?;
             let entries = filter_any(&name, entries, opts.filter.take()).await?;
             let dispatch = bus.dispatch_id();
             if entries.is_empty() {
@@ -916,7 +781,7 @@ impl EventBus {
         mut opts: Opts,
     ) -> Result<Option<Value>, Error> {
         ctx.registration_preflight()?;
-        let entries = self.snapshot(ctx, &name, Mode::Bail, event.as_any(), &mut opts)?;
+        let entries = self.snapshot(ctx, &name, event.as_any(), &mut opts)?;
         let entries = filter_sync(&name, entries, opts.filter.take())?;
         let inv = Inv {
             bus: self,
@@ -928,34 +793,6 @@ impl EventBus {
             origin: opts.origin,
         };
         run_bail(&inv, &entries)
-    }
-
-    pub(crate) fn waterfall_sync_erased(
-        &self,
-        ctx: &Ctx,
-        name: Arc<str>,
-        event: PayloadRef<'_>,
-        terminal: &dyn ErasedSyncTerminal,
-        mut opts: Opts,
-    ) -> Result<Option<Value>, Error> {
-        ctx.registration_preflight()?;
-        let entries = self.snapshot(ctx, &name, Mode::WaterfallSync, event.as_any(), &mut opts)?;
-        let entries = filter_sync(&name, entries, opts.filter.take())?;
-        let inv = Inv {
-            bus: self,
-            emitter: ctx,
-            name: &name,
-            mode: Mode::WaterfallSync,
-            event,
-            dispatch: self.dispatch_id(),
-            origin: opts.origin,
-        };
-        SyncNext {
-            inv: &inv,
-            chain: &entries,
-            terminal,
-        }
-        .invoke()
     }
 
     // ── typed dispatch ───────────────────────────────────────────
@@ -1021,32 +858,20 @@ impl EventBus {
                         .await
                 })
             }
-            Mode::Bail | Mode::WaterfallSync => Box::pin(std::future::ready(Err(Error::from(
+            Mode::Bail => Box::pin(std::future::ready(Err(Error::from(
                 ErrorKind::Validation {
-                    issues: vec![format!("{} is synchronous: use dispatch_sync", d.mode)],
+                    issues: vec!["bail is synchronous: use dispatch_sync".to_owned()],
                 },
             )))),
         }
     }
 
-    /// Dispatch an erased event synchronously (`bail`, `waterfall-sync`).
+    /// Dispatch an erased event synchronously (`bail`).
     pub fn dispatch_sync(&self, ctx: &Ctx, mut d: Dispatch) -> Result<Option<Value>, Error> {
         let opts = Self::raw_opts(&mut d);
         let name: Arc<str> = Arc::from(d.name.as_str());
         match d.mode {
             Mode::Bail => self.bail_erased(ctx, name, d.payload.as_ref(), opts),
-            Mode::WaterfallSync => {
-                let terminal = d.terminal.take();
-                match terminal {
-                    Some(terminal) => {
-                        let terminal = RawTerm(Mutex::new(Some(terminal)));
-                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &terminal, opts)
-                    }
-                    None => {
-                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &NoTerminal, opts)
-                    }
-                }
-            }
             mode => Err(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use dispatch")],
             }
@@ -1119,11 +944,8 @@ impl EventBus {
                     let next = AsyncNext::start(rest, Vec::new(), terminal);
                     run::call_async(&entry, &inv, Some(next)).await
                 }
-                Mode::Bail | Mode::WaterfallSync => Err(Error::from(ErrorKind::Validation {
-                    issues: vec![format!(
-                        "{} is synchronous: use invoke_entry_sync",
-                        call.mode
-                    )],
+                Mode::Bail => Err(Error::from(ErrorKind::Validation {
+                    issues: vec!["bail is synchronous: use invoke_entry_sync".to_owned()],
                 })),
                 _ => run::call_async(&entry, &inv, None).await,
             };
@@ -1138,7 +960,7 @@ impl EventBus {
         })
     }
 
-    /// [`EventBus::invoke_entry`] for `bail` and `waterfall-sync`.
+    /// [`EventBus::invoke_entry`] for `bail`.
     pub fn invoke_entry_sync(
         &self,
         ctx: &Ctx,
@@ -1164,16 +986,7 @@ impl EventBus {
             origin: call.origin,
         };
         let out = match call.mode {
-            Mode::Bail => run::call_sync(&entry, &inv, None),
-            Mode::WaterfallSync => {
-                let terminal = RawTerm(Mutex::new(call.next));
-                let next = SyncNext {
-                    inv: &inv,
-                    chain: &[],
-                    terminal: &terminal,
-                };
-                run::call_sync(&entry, &inv, Some(next))
-            }
+            Mode::Bail => run::call_sync(&entry, &inv),
             mode => Err(Error::from(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use invoke_entry")],
             })),

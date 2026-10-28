@@ -4,7 +4,7 @@
 
 What the `rutis` core offers beyond plugins, fibers, services and events, and where its boundaries are. To get started, read the quick start in the [README](../README.md), [Write a Rust plugin](guide/rust-plugin.en.md) and the [application design guide](development-guide.en.md) first.
 
-The host methods below (`plugin_from`, `shutdown`, `diagnostics`, `require` and the like) come from `rutis::host::CtxHost`: write `use rutis::host::*;` first. What is marked as in `rutis::internal` is used between rutis's own crates (rutis-bridge, rutis-loader and the others), with no stability promise.
+The host methods below (`plugin_with`, `shutdown`, `diagnostics`, `require` and the like) come from `rutis::host::CtxHost`: write `use rutis::host::*;` first. What is marked as in `rutis::internal` is used between rutis's own crates (rutis-bridge, rutis-loader and the others), with no stability promise.
 
 ## Config hot update
 
@@ -13,18 +13,19 @@ change config at runtime, reusing the state machine's exactly-once cleanup; affe
 ```rust
 struct Weather { city: String }
 
-impl Weather {
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
     /// Construction only: the dry run and the real load both call it.
-    fn new(config: &WeatherConfig) -> rutis::Result<Self> {
-        Ok(Weather { city: config.city.clone() })
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather { city: config.city.clone() }))
     }
 }
 
-let view = ctx.plugin_from(Weather::new, cfg_v1);
+let view = ctx.plugin_with(WeatherFactory, cfg_v1);
 view.update(cfg_v2).await?;   // dry-run failure leaves everything untouched; success unloads + reloads
 ```
 
-`Weather` is an ordinary `Plugin`; its dependencies come from its `type Deps`. A plugin whose dependencies are known only at run time still implements `host::PluginFactory<C>` (`build` returns a `Box<dyn host::DynPlugin>`) and is mounted with `ctx.plugin_with(factory, config)`.
+`Weather` is an ordinary `Plugin`; the factory (`host::PluginFactory<C>`) builds it from the current config on each load, and lists its dependencies in the factory's `injects()`.
 
 ## Events: one listener table, five modes
 
@@ -42,25 +43,21 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 - `emit` returns at once and starts every listener in registration order without waiting for any; one name's emits start in emit order; a listener's failure goes to the ErrorSink (`ListenerFailed`) and never affects the other listeners.
 - `parallel` starts in registration order and waits for all; failures are always `ListenersFailed` (AggregateError), in registration order.
-- `serial` / `bail` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail` / `waterfall_sync` meeting an async listener fail with `AsyncListener`.
-- `waterfall` / `waterfall_sync` run outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`ctx.waterfall(e).terminal(…)`, none when left out; `waterfall_sync(e, terminal)` is a host method); the outermost value is returned.
+- `serial` / `bail` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail` meeting an async listener fails with `AsyncListener`.
+- `waterfall` runs outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`ctx.waterfall(e).terminal(…)`, none when left out); the outermost value is returned.
 - Synchronous listeners register with `on_sync`; every mode can call them. `ctx.listen::<E>().prefix("room/")` registers a prefix listener, which reads the actual name from `call.name()`; `listen()` also has `.once()`, `.prepend()` and `.global()`.
 - **Scope**: the loader marks each group instance as a scope (`mark_scope`, in `rutis::internal`); `ctx.scope()` is the scope chain from the root. Events are delivered by name on one root's bus, and every listener receives them; a scope is only a descriptor in `ListenerInfo` for filters.
 - **Filter**: `ctx.filter(|info: &ListenerInfo| ..)` gives the same five emitting methods; the filter sees each non-`global` listener's descriptor (plugin, row, runtime, node, scope) in the emitter's process, before any call.
 - **Lifecycle**: a listener is called with the `Ctx` that registered it; once its fiber unloads no new call starts, and the unload waits for running calls (their `ctx.cancelled()` has fired), at most until the host's shutdown deadline.
 - `rutis/*` is reserved for framework events: plugins listen to them; emitting one fails with `ReservedEvent`.
 
-## Observing dispatch
+## Cleanup names
 
-`ctx.events().observe_dispatch(&ctx, observer)` (in `rutis::internal`) calls the observer synchronously before business listeners are selected, even when there are none. An observer sees only dispatches within the subtree of the fiber that registered it and is cleaned up with that fiber; a `DispatchAttempt` carries the event name, the dispatch mode, the emitter and the borrowed event. It records attempts; it cannot veto a dispatch.
+A shutdown that runs out of time names the cleanups still running in its Stuck hint: one registered with `ctx.effect` by where it was registered, one registered with `effect_named("cache watcher", || effect)` (in `rutis::internal`) by that name.
 
-## Cleanup tree
+## Writable services
 
-`FiberView::effects()` returns the fiber's read-only cleanup tree (`host::EffectMeta`). A composite `host::Effect::Many` keeps its real nesting, an entry being cleaned up shows as `Draining`, and it leaves the tree once done. Plugin loads, service registrations and event listeners are labelled automatically, and a cleanup registered with `ctx.effect` is labelled `anonymous`; `effect_named("cache watcher", || effect)`, in `rutis::internal`, names an entry.
-
-## Intercepting service reads and writes
-
-`ctx.intercept_require_as::<T>(key, hook)` applies only to strict reads that passed the declaration, instance and readiness checks; the optional reads `get` / `get_at` still locate the service directly. `ctx.intercept_set_as::<T>(key, hook)` handles updates to writable services. `hook` returns a `ServiceIntercept<T>`; it and writable bindings are in `rutis::internal`: `provide_mut_at(key, value)` returns a `ServiceWriter<T>` bound to the registration's generation, which the provider updates with `writer.set(&ctx, Arc::new(value))`; earlier `Arc<T>` snapshots keep their old value, and a write does not reload consumers. An interceptor can substitute a value of the same type or refuse the operation, so register trusted code only.
+Writable bindings are in `rutis::internal`: `provide_mut_at(key, value)` returns a `ServiceWriter<T>` bound to the registration's generation, which the provider updates with `writer.set(&ctx, Arc::new(value))`; earlier `Arc<T>` snapshots keep their old value, and a write does not reload consumers.
 
 ## API boundaries
 
@@ -68,7 +65,7 @@ The services a plugin needs go in its `type Deps`, and what `apply` receives is 
 
 ## Dependency diagnostics
 
-`ctx.diagnostics()` lists live fibers with their identity, state, declared and bound dependencies, and service bindings. `injects[].status` distinguishes missing, out-of-scope instance, provider not ready, being removed, rejected by `check`, and `check` panicked; `TypeKey::describe()` gives the type name, qualifier and instance id. A read uses only registered metadata and the latest gate result: it calls no plugin or `check` and triggers no lifecycle transition. It reads fibers and bindings one by one and is **not an atomic snapshot of the tree**: under concurrent lifecycle changes, the states, dependencies and bindings in one result may come from different moments. A `check` status (a `check()` predicate is registered with `provide_checked`, in `rutis::internal`) may lag at the last gate result; after `refresh()`, wait for the affected fibers to settle and read again. Differences from Cordis in dispatch observation, cleanup trees and service interception are covered in the [design draft](design-cordis-observation.en.md).
+`ctx.diagnostics()` lists live fibers with their identity, state, declared and bound dependencies, and service bindings. `injects[].status` distinguishes missing, out-of-scope instance, provider not ready, being removed, rejected by `check`, and `check` panicked; `TypeKey::describe()` gives the type name, qualifier and instance id. A read uses only registered metadata and the latest gate result: it calls no plugin or `check` and triggers no lifecycle transition. It reads fibers and bindings one by one and is **not an atomic snapshot of the tree**: under concurrent lifecycle changes, the states, dependencies and bindings in one result may come from different moments. A `check` status (a `check()` predicate is registered with `provide_checked`, in `rutis::internal`) may lag at the last gate result; after `refresh()`, wait for the affected fibers to settle and read again.
 
 A plugin whose services (its `Deps` or `injects`) never get a provider stays Pending, which by itself is no error. Still missing them after 10 seconds, the ErrorSink gets one `ErrorKind::StillWaiting` naming the plugin and the missing types (the default sink prints `printer: still waiting after 10s for app::Greeting: it starts once that is provided`); the plugin goes on waiting, and is reported at most once each time it starts waiting. rutis's own plugins (a link waiting for its peer, a runtime's rows waiting for the runtime) are not reported: their own state says what they wait for (from 0.18, #678). `ctx.report_waiting_after(Some(duration))` changes the delay, `None` reports nothing, for the whole tree (from 0.17.2, #676). Missing keys are written as `TypeKey::describe()` gives them; `ctx.name_keys_with(&namer)` adds a function naming keys, and rutis-loader adds one when it is mounted: a service by its name (`llm`), a row's runtime as `runtime py`. rutis-host turns it off: its row states already say what each row waits for.
 
@@ -78,7 +75,7 @@ A plugin whose services (its `Deps` or `injects`) never get a provider stays Pen
 
 Every signature's error is `rutis::Error`, and `?` accepts any `std::error::Error`. A host tells rutis's failures apart with `err.kind()` (an `Option<&host::ErrorKind>`, `None` for plugin code's own errors); errors that are shared (the error sink, a `FiberView`'s result) are `Arc<ErrorKind>`.
 
-Synchronous and asynchronous `apply` panics become plugin errors; a `check()` panic leaves a dependency unready; a `waterfall` callback panic propagates to its caller. `settle` is a FIFO barrier for one fiber, and Pending can be a stable result. A plugin whose load failed (in construction, `validate` or `apply`) stays Failed and loads again only when its dependencies change (a new provider generation, or one removed and back); repeated notifications of the same dependencies do not retry it. Root `dispose()` remains restartable, while `shutdown()` closes it permanently; dropping a waiting future does not stop cleanup already in progress. `update(config)` reassembles a plugin without replacing process code. An early `Disposer::dispose()` failure returns to its caller without notifying the error sink; `Ctx::take_cleanup_errors()` consumes and releases these retained errors. Unconsumed errors join a terminal unload result or reach the error sink on reload.
+Synchronous and asynchronous `apply` panics become plugin errors; a `check()` panic leaves a dependency unready; a `waterfall` callback panic propagates to its caller. `settle` is a FIFO barrier for one fiber, and Pending can be a stable result. A plugin whose load failed (in construction, `validate` or `apply`) stays Failed and loads again only when its dependencies change (a new provider generation, or one removed and back); repeated notifications of the same dependencies do not retry it. Root `dispose()` remains restartable, while `shutdown()` closes it permanently; dropping a waiting future does not stop cleanup already in progress. `update(config)` reassembles a plugin without replacing process code. An early `Disposer::dispose()` failure returns to its caller without notifying the error sink; these errors join a terminal unload result or reach the error sink on reload.
 
 ## Relation to Cordis
 
