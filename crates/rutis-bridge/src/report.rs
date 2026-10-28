@@ -124,6 +124,9 @@ pub fn headline(error: &ErrorKind) -> Option<String> {
         &site.method,
         &site.event,
     ) {
+        // A call that ran out of the host's time names it itself (`call
+        // to weather.tomorrow did not finish within 30s …`).
+        ("call", ..) if thrown.code() == Some(crate::session::code::TIMEOUT) => text,
         // A text that names the call already (`weather has no method
         // tomorow …`, `weather.tomorrow: argument 1 …`) is not wrapped.
         ("call", Some(service), Some(method), _)
