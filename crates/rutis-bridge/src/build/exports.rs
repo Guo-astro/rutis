@@ -340,6 +340,9 @@ enum Ty {
     Int(String),
     Float,
     Str,
+    /// A string in TypeScript and in the contract, with its Python type
+    /// given: a tagged value that crosses as text (`rutis_bridge::DateTime`).
+    Text(String),
     Json,
     Option(Box<Ty>),
     Array(Box<Ty>),
@@ -363,7 +366,7 @@ impl Ty {
             Ty::Bool => "boolean".into(),
             Ty::Int(_) if self.big() => "number | bigint".into(),
             Ty::Int(_) | Ty::Float => "number".into(),
-            Ty::Str => "string".into(),
+            Ty::Str | Ty::Text(_) => "string".into(),
             Ty::Json => "unknown".into(),
             Ty::Option(inner) => format!("{} | null", inner.ts()),
             Ty::Array(inner) => match inner.as_ref() {
@@ -407,6 +410,7 @@ impl Ty {
             Ty::Int(_) => "int".into(),
             Ty::Float => "float".into(),
             Ty::Str => "str".into(),
+            Ty::Text(py) => py.clone(),
             Ty::Json | Ty::Param(_) => "typing.Any".into(),
             Ty::Option(inner) => match inner.as_ref() {
                 Ty::Unit | Ty::Option(_) => inner.py(),
@@ -452,7 +456,7 @@ impl Ty {
                 json!({ "kind": "int", "min": min, "max": max })
             }
             Ty::Float => json!({ "kind": "float" }),
-            Ty::Str => json!({ "kind": "string" }),
+            Ty::Str | Ty::Text(_) => json!({ "kind": "string" }),
             Ty::Option(inner) => json!({ "kind": "option", "of": inner.contract() }),
             Ty::Array(inner) => json!({ "kind": "list", "of": inner.contract() }),
             Ty::Tuple(items) => {
@@ -853,11 +857,11 @@ impl Generator<'_> {
                 "Instant" => Ok(Ty::Ts("Date".into(), "datetime.datetime".into())),
                 "BigInt" => Ok(Ty::Ts("bigint".into(), "int".into())),
                 "Bytes" => Ok(Ty::Ts("Uint8Array".into(), "bytes".into())),
-                "DateTime" => Ok(Ty::Ts("string".into(), "datetime.datetime".into())),
-                "Date" => Ok(Ty::Ts("string".into(), "datetime.date".into())),
-                "TimeOfDay" => Ok(Ty::Ts("string".into(), "datetime.time".into())),
-                "Decimal" => Ok(Ty::Ts("string".into(), "decimal.Decimal".into())),
-                "Uuid" => Ok(Ty::Ts("string".into(), "uuid.UUID".into())),
+                "DateTime" => Ok(Ty::Text("datetime.datetime".into())),
+                "Date" => Ok(Ty::Text("datetime.date".into())),
+                "TimeOfDay" => Ok(Ty::Text("datetime.time".into())),
+                "Decimal" => Ok(Ty::Text("decimal.Decimal".into())),
+                "Uuid" => Ok(Ty::Text("uuid.UUID".into())),
                 "ValueMap" => {
                     let (key, value) =
                         (self.arg(scope, args, 0, ty)?, self.arg(scope, args, 1, ty)?);
@@ -2364,11 +2368,14 @@ const PY_KEYWORDS: [&str; 35] = [
 
 /// A Python identifier that is not a keyword.
 fn py_identifier(name: &str) -> bool {
-    name.chars()
-        .next()
-        .is_some_and(|c| c.is_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && !PY_KEYWORDS.contains(&name)
+    identifier(name, "") && !PY_KEYWORDS.contains(&name)
+}
+
+/// A letter or `_` (or one of `extra`), then letters, digits and those: the
+/// identifier rule TypeScript (with `$`) and Python share.
+fn identifier(name: &str, extra: &str) -> bool {
+    let first = |c: char| c.is_alphabetic() || c == '_' || extra.contains(c);
+    name.chars().next().is_some_and(first) && name.chars().all(|c| first(c) || c.is_alphanumeric())
 }
 
 /// A Python parameter name for the Rust one.
@@ -2912,14 +2919,7 @@ fn camel(name: &str) -> String {
 
 /// A property key in TypeScript: quoted unless it is an identifier.
 fn ts_key(key: &str) -> String {
-    let identifier = key
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
-        && key
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '$');
-    if identifier {
+    if identifier(key, "$") {
         key.to_owned()
     } else {
         format!("{key:?}")
@@ -3035,11 +3035,12 @@ mod tests {
                 lib("dep", "dep_crate", dir.path().join("dep/lib.rs")),
                 lib("rutis", "rutis", dir.path().join("none.rs")),
                 lib("serde", "serde", dir.path().join("none.rs")),
+                lib("bridge", "rutis_bridge", dir.path().join("none.rs")),
                 lib("other", "other_crate", dir.path().join("other/lib.rs")),
             ],
             "resolve": { "root": "host", "nodes": [
                 { "id": "host", "deps": [{ "name": "dep_crate", "pkg": "dep" }, { "name": "rutis", "pkg": "rutis" }], "features": [] },
-                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }], "features": ["extra"] },
+                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }, { "name": "rutis_bridge", "pkg": "bridge" }], "features": ["extra"] },
                 { "id": "other", "deps": [{ "name": "rutis", "pkg": "rutis" }], "features": [] },
             ] },
         });
@@ -3184,6 +3185,34 @@ mod tests {
 
     /// The contract description names each service's methods and what
     /// each parameter takes; what it cannot be sure of is `any`.
+    #[test]
+    fn tagged_text_values_are_strings_in_the_contract() {
+        let source = r#"
+use rutis_bridge::session::{self as s, DateTime};
+
+pub struct Clock;
+
+#[rutis::service]
+impl Clock {
+    pub fn set(&self, at: DateTime, day: s::Date, time: s::TimeOfDay, price: s::Decimal, id: s::Uuid) {}
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+        let contract: serde_json::Value = serde_json::from_str(&generated.contract).unwrap();
+        let string = serde_json::json!({ "kind": "string" });
+        assert_eq!(
+            contract["services"]["clock"]["methods"]["set"]["params"],
+            serde_json::json!([string, string, string, string, string])
+        );
+        assert!(generated.typescript.contains(
+            "set(at: string, day: string, time: string, price: string, id: string): Promise<void>"
+        ), "{}", generated.typescript);
+        assert!(generated.python.contains(
+            "at: datetime.datetime, day: datetime.date, time: datetime.time, price: decimal.Decimal, id: uuid.UUID"
+        ), "{}", generated.python);
+    }
+
     #[test]
     fn the_contract_describes_what_each_parameter_takes() {
         let source = r#"
