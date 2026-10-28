@@ -271,6 +271,79 @@ async fn add_writes_the_file_back_in_its_own_order() {
     assert_eq!(written["rows"].as_array().unwrap().len(), 1);
 }
 
+/// A host running the file holds its listeners' ports and its remote
+/// runtimes' links: `add` checks the new rows without binding or dialing,
+/// and writes the file (I10).
+/// guarantee: host/plugin-install
+#[tokio::test(flavor = "multi_thread")]
+async fn add_beside_a_running_host_does_not_bind_its_ports() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    let source = dir.path().join("source");
+    write(
+        &source,
+        &[
+            (
+                "package.json",
+                r#"{ "name": "@ana/wordcount", "version": "1.2.0", "type": "module", "main": "index.mjs" }"#,
+            ),
+            ("index.mjs", WORDCOUNT),
+        ],
+    );
+    // The running host's port, and what its remote runtime `far` dials.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = taken.local_addr().unwrap();
+    write(
+        &app,
+        &[
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+            (
+                "rutis.json",
+                &serde_json::json!({
+                    "listen": [{ "name": "public", "address": address.to_string() }],
+                    "runtimes": { "remote": [
+                        { "name": "gpu", "language": "python", "listen": "public" },
+                        { "name": "far", "language": "python", "dial": format!("ws://{address}/rutis") }
+                    ] },
+                    "rows": []
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    let bin = dir.path().join("bin");
+    program(
+        &bin,
+        "npm",
+        &format!(
+            "case \"$1\" in\nview) echo '{{}}';;\ninstall) mkdir -p node_modules/@ana/wordcount && cp '{source}'/* node_modules/@ana/wordcount/;;\nesac",
+            source = source.display()
+        ),
+    );
+    let node = repo().join("node/rutis-runtime");
+    let ran = host(
+        &app,
+        &["add", "npm:@ana/wordcount"],
+        Some(&path_with(&bin)),
+        &[("RUTIS_NODE_RUNTIME", node.as_path())],
+    )
+    .await;
+    assert_eq!(ran.stderr, "");
+    assert!(
+        ran.stdout
+            .ends_with("rutis.json: added row wordcount, runtimes.node\n"),
+        "{}",
+        ran.stdout
+    );
+    assert_eq!(ran.status, 0);
+    // `far` was not dialed.
+    taken.set_nonblocking(true).unwrap();
+    assert_eq!(
+        taken.accept().map_err(|error| error.kind()).err(),
+        Some(std::io::ErrorKind::WouldBlock)
+    );
+}
+
 /// The environment `uv venv` makes: an interpreter that has the rutis
 /// package and answers the distribution query with `$ANSWER`.
 fn uv(answer: &str) -> String {

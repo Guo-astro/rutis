@@ -39,8 +39,13 @@ pub struct Places {
     /// The Node project: its `package.json` (made with `npm init -y` when
     /// missing) and `node_modules`.
     pub node: PathBuf,
+    /// The Node runtime package the configuration names
+    /// (`runtimes.node.runtime`): when there, none is installed.
+    pub node_runtime: Option<PathBuf>,
     /// The Bun project.
     pub bun: PathBuf,
+    /// The Bun runtime package the configuration names, as for Node.
+    pub bun_runtime: Option<PathBuf>,
     /// The Python environment, created (with the `rutis` package) when
     /// missing; or an interpreter, used as it is.
     pub python: PathBuf,
@@ -489,16 +494,22 @@ impl Core {
             Source::Local(path) => path.display().to_string(),
             _ => unreachable!("only npm packages and local paths are Node or Bun"),
         };
+        let places = &self.places;
         let (runtime_package, runtime_there) = match lang {
             Lang::Node => (
                 "@arcships/rutis-runtime",
-                crate::languages::node::runtime_package(None, project).is_some(),
+                crate::languages::node::runtime_package(places.node_runtime.as_deref(), project)
+                    .is_some(),
             ),
             _ => (
                 "@arcships/rutis-bun",
-                project
-                    .join("node_modules/@arcships/rutis-bun/package.json")
-                    .exists(),
+                [
+                    places.bun_runtime.clone(),
+                    Some(project.join("node_modules/@arcships/rutis-bun")),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|package| package.join("package.json").exists()),
             ),
         };
         let runtime = format!("{runtime_package}@{VERSION}");

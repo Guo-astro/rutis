@@ -48,14 +48,7 @@ impl Target {
             Ok(Value::Object(raw)) => raw,
             _ => return Err(format!("{}: not a JSON object", path.display())),
         };
-        let installed = config
-            .installed
-            .iter()
-            .filter_map(|(row, record)| {
-                let plugin = Installed::of_row(row, record.from.clone())?;
-                Some((row.clone(), plugin))
-            })
-            .collect();
+        let installed = config.installed.clone();
         Ok(Self {
             path,
             raw,
@@ -118,7 +111,9 @@ impl Target {
         Places {
             base: base.clone(),
             node: project(runtimes.node.as_ref().map(|node| node.project.as_path())),
+            node_runtime: runtimes.node.as_ref().and_then(|node| node.runtime.clone()),
             bun: project(runtimes.bun.as_ref().map(|bun| bun.project.as_path())),
+            bun_runtime: runtimes.bun.as_ref().and_then(|bun| bun.runtime.clone()),
             python,
             go: binaries("go", runtimes.go.as_ref()),
             swift: binaries("swift", runtimes.swift.as_ref()),
@@ -376,10 +371,21 @@ async fn check_rows(
     print_row: &impl Fn(&HostConfig, &CheckReport, &RowCheck),
 ) -> Result<(), String> {
     let text = target.text()?;
-    let config = match target.name() == "rutis.dev.json" {
+    let mut config = match target.name() == "rutis.dev.json" {
         true => crate::project::dev_config_of(&target.base(), &text)?.0,
         false => HostConfig::parse(&text, &target.path)?,
     };
+    // The new rows run in local runtimes: the check binds no listener and
+    // connects no remote runtime, so a host running this file keeps its
+    // ports and links (§十 I10). Remote rows say their runtime is not
+    // running, as `check` does when it is not connected.
+    config.listen.clear();
+    for remote in &mut config.runtimes.remote {
+        remote.dial = None;
+        remote.listen = None;
+        remote.instances = None;
+        remote.transport = None;
+    }
     let host = crate::host::Host::start(&config).await?;
     host.runtimes_ready().await?;
     let report = host.check(config.rows()).await?;

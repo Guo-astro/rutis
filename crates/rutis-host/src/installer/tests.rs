@@ -118,7 +118,9 @@ impl Bench {
         Installer::new(Places {
             base: self.app(),
             node: self.app(),
+            node_runtime: None,
             bun: self.app(),
+            bun_runtime: None,
             python: self.app().join(".venv"),
             go: Ok(self.app().join("plugins/go")),
             swift: Ok(self.app().join("plugins/swift")),
@@ -199,6 +201,41 @@ fn a_node_project_with_its_runtime_gets_the_package_only() {
         [
             "npm [rutis-host] view wordcount --json",
             "npm [app] install wordcount"
+        ]
+    );
+}
+
+/// The runtime the configuration names (`runtimes.node.runtime`,
+/// `runtimes.bun.runtime`) and none in the project: only the package is
+/// installed.
+#[test]
+fn a_configured_runtime_is_not_installed_again() {
+    let bench = Bench::new();
+    let runtime = bench.dir.path().join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::write(runtime.join("package.json"), "{}").unwrap();
+    std::fs::write(bench.app().join("package.json"), "{}").unwrap();
+    let installer = Installer::new(Places {
+        node_runtime: Some(runtime.clone()),
+        bun_runtime: Some(runtime),
+        ..bench.installer().core.places.clone()
+    })
+    .with_path(format!("{}:/usr/bin:/bin", bench.bin().display()));
+    bench.program("npm", r#"case "$1" in view) echo '{}';; esac"#);
+    bench.install(&installer, "npm:wordcount").unwrap();
+    bench.program(
+        "npm",
+        r#"case "$1" in view) echo '{"devDependencies":{"@arcships/rutis-bun":"^0.19.0"}}';; esac"#,
+    );
+    bench.program("bun", "");
+    bench.install(&installer, "npm:clock").unwrap();
+    assert_eq!(
+        bench.asked(),
+        [
+            "npm [rutis-host] view wordcount --json",
+            "npm [app] install wordcount",
+            "npm [rutis-host] view clock --json",
+            "bun [app] add clock",
         ]
     );
 }
