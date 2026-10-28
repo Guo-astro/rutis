@@ -43,8 +43,8 @@ export interface Calendar {
   each(visit: (arg0: Entry) => void | Promise<void>): Promise<number | bigint>
   /**
    * Plan an entry; its number. Its parameters take one of each kind of
-   * value a service is given, so that the testing tools' contract
-   * checks can be compared with this service's own.
+   * value a service is given, so that the generated declarations show
+   * each.
    */
   plan(title: string, allDay: boolean, hours: number, repeat: Repeat, reminders: Reminder[], window: [number, number] | null, labels: Record<string, string>): Promise<number | bigint>
   /**
