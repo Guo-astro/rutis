@@ -159,7 +159,7 @@ rutis-host
 - 对面本来就在运行的插件，配置在对面。
 - 本端决定对面跑什么、用什么配置时，写行 `<连接行>:<插件>` 带 `config`，loader 调 `run`。
 - 现在应用怎样拿配置（[应用接入](design-app-integration-2026-10-14.md) D2、D6，Kotlin 与 Swift 的 `RutisApp`）：应用只报带了哪些插件（`mount` 回复的 `plugins`），装哪个、用什么配置都由 rutis 配置里 `instanced` 分组的行给出，SDK 收到 `rows.v2` 的开始请求才 `apply`。宿主不再为每条连接建实例（决定 3），这条路对多台设备不再成立。
-- 改为：设备上的应用自己装它带的插件，配置写在应用里（`RutisApp` 的每个插件可带配置，不带时用 Schema 的默认值）；连上后经现有的 `services.announce` 帧（节点之间已经用它）报出它们提供的服务，宿主注册为 `<id>:<插件>`。这是 Kotlin、Swift SDK 在 0.19 的改动（§十三 A1、A2）；应用接入设计的 D2、D6 随之改写。
+- 改为：设备上的应用自己装它带的插件，配置写在应用里（`RutisApp` 的每个插件可带配置，不带时用 Schema 的默认值）；连上后经现有的 `services.announce` 帧（节点之间已经用它）报出它们提供的服务，宿主注册为 `<id>:<插件>`。这是 Kotlin、Swift SDK 在 0.19 的改动（§十三 S4）；应用接入设计的 D2、D6 随之改写。
 - 一台、宿主自己连的运行时（`rutis-host/spawn`、`dial`、单台 `listen` 后面的语言运行时）照旧由宿主写 `<连接行>:<插件>` 行、走 `run`。
 
 **决定 3：按设备区分是设备上插件自己的事。**
@@ -457,7 +457,7 @@ connections:
 - rutis-bridge 根上导出的名字：现在 59 个，改后约 7 个（`Channel`、`Close`、`PeerId`、`Session`、`SessionHandle`、`RowHandle`、`thrown`），估计。
 - session 的公开 API：`Session::new`、`SessionHandle::id`、`SessionHandle::run`、`sessions.open` 四个。
 - 生命周期路径从 4 条变 1 条，交接形状从 2 种变 1 种，准入、顶替、状态各从 3 份变 1 份（顶替只在 listen 里）；节点与远程运行时没有专门的代码。
-- 各语言运行时的入口（删 compat 后，估计）：Node `runner.mjs` 1162 → 1140、`session.mjs` 810 → 740；Bun `main.ts` 203 → 195；Python `__main__.py` 352 → 340、`peer.py` 1903 → 1820；Go `serve.go` 295 → 270；Swift `Serve.swift` 263 → 240；Kotlin `Peer.kt` 1438 → 1360、jvm `Serve.kt` 217 → 205。Kotlin、Swift SDK 加上应用自己装插件与 `services.announce`（A1、A2），各约多 150 行。
+- 各语言运行时的入口（删 compat 后，估计）：Node `runner.mjs` 1162 → 1140、`session.mjs` 810 → 740；Bun `main.ts` 203 → 195；Python `__main__.py` 352 → 340、`peer.py` 1903 → 1820；Go `serve.go` 295 → 270；Swift `Serve.swift` 263 → 240；Kotlin `Peer.kt` 1438 → 1360、jvm `Serve.kt` 217 → 205。Kotlin、Swift SDK 加上应用自己装插件与 `services.announce`（S4），各约多 150 行。
 - 测试：只测被删接口的文件删掉或改写，约 5500 行（`access_point.rs` 584、`revocation.rs` 798、`link.rs` 547、`fault_links.rs` 959、`memory_mux.rs` 730、`runtime_instances.rs` 703、`peer_rows.rs` 556、`node.rs` 1011 的大部分、`remote_runtimes.rs` 的 `runtimes.remote` 部分等），估计。
 
 ## 十、已合并的 PR 怎么处理
@@ -472,7 +472,7 @@ connections:
 | #768（R1 loader） | `discover.rs`（`mount` 回复的 `plugins` 与 `rows.schema` 兜底）；`Process::check_rows`（错误文字去掉版本号）；缺插件 `Unavailable` 与它的文字；`remote_modes.rs` 的用例（改为经 spawn / dial / listen 跑） | 两个调用点合成一个按 session 找的解析器 |
 | #791（R2 rutis-host） | 一台 listen 与同一监听器的 token 检查（#702）；`status` 的 `connections:` 一节与 0.18 的 status 通道；`control::serve` 的 `Report` 参数；《迁移到 0.19》这份文件（内容按 §十一 重写） | `runtimes.remote` 的写法（`dial` / `listen` / `instances` / `transport` / `language`）与它的校验；`Embedding.transports`；`host.rs` 里的连接搭法；`runtime <名>: link …` 的输出（改为 §七）；`remote_runtimes.rs` 按新写法重写 |
 | #799 | — | 已关闭，不重开。它带的 guarantees §15 计数重算（`2d817aa3`）在改 guarantees 的实施 PR 里重做 |
-| 分支 `claude/remote-drop-transport`（未推送，`9a5543cc`） | 去掉 `transport` 字段、`Embedding.transports` 的改动 | 并入 §十三 的 S4（`runtimes.remote` 整个删掉，它的改动只用到一部分），不单独推送 |
+| 分支 `claude/remote-drop-transport`（未推送，`9a5543cc`） | 去掉 `transport` 字段、`Embedding.transports` 的改动 | 并入 §十三 的 S2（删 `Transport`），不单独推送 |
 
 ## 十一、兼容与《迁移到 0.19》
 
@@ -534,16 +534,64 @@ connections:
 
 ## 十三、实施
 
-先加后删，每个 PR 合并后 main 可用、CI 通过。
+### 13.1 规则
 
-| PR | 内容 | 完成条件 | 依赖 |
-| --- | --- | --- | --- |
-| S1 rutis-bridge：Channel 与底层函数 | `Close`、`close(Close)`；删 `ChannelInfo`；新增 `websocket::dial`、`websocket::listen`、`pipe::spawn`、`memory::pair`（现有 `Transport` 实现改为调用它们） | 现有测试不改用例通过（只改到 `close` 的调用）；新单元测试：三种 `Close` 在三种底层上的表现（4002、4003、stdin 关闭） | — |
-| S2 rutis-bridge：session 插件 | `Session::new`、`SessionHandle::{id, run}`；远程插件 `<id>:<插件>`；两边的服务全局可见（借与提供）、对面的监听器在本端总线上（运行时已有的那份，推广到对面是 rutis 节点）；服务 `sessions` 与 `open(far)`；旧的 link / 接入点不动 | 测试：四种结束；两个 rutis 内核经内存 Channel 互相使用服务、同名按内核规则被拒、事件互达；Node 与 Python 测试插件经 `sessions.open` 跑通 `run` | S1 |
-| R1–R6 各语言运行时：本机用 endpoint 格式 | 每种语言一个 PR（Node、Bun、Python、Go、Swift、Kotlin），按 §三 的表：本机通道也按 `--id` 建 endpoint；compat 暂时保留，宿主未改时照常运行 | 每种语言的现有测试通过；新测试：本机通道以 `--id` 握手报出名字 | — |
-| A1、A2 Kotlin、Swift SDK：应用自己装插件 | `RutisApp` 的插件可带配置；连上后自己装插件并经 `services.announce` 报出服务；不再等 `rows.v2` | 每个 SDK 的现有测试按新行为改写；新测试：两台设备连到同一个 listen，各自的插件注册为 `<id>:<插件>`，同名服务后来的被拒并说明原因 | — |
-| S2b 本机运行时改走 endpoint，删 compat | 宿主起本机运行时的代码改为传 `--id`、用 endpoint 格式；删 `Format::Compat`、`COMPAT_CAPABILITIES`、`rust:` / `node:` 前缀、`PROTOCOL = 2`、`link.rs` 的 `compat`；各语言删掉 compat 路径与 `--format` | 全部运行时测试与 `runtime_conformance` 在 endpoint 格式上通过；fuzz 目标改为 endpoint；`grep -i compat` 在 `crates/rutis-bridge/src/session` 与各语言运行时的会话代码下无结果 | R1–R6、S1 |
-| S3 rutis-loader：统一解析器 | 行 `<名>:<插件>` 按连接行找 session 调 `run`；旧路径并存 | `remote_modes.rs` 的用例在 session 上跑：spawn、dial、单台 listen 三种接法缺插件文字逐字相同 | S2 |
-| S4 rutis-host：三个连接插件 | `rutis-host/spawn`、`dial`、`listen`（Schema `additionalProperties: false`；listen 的 token 分发、同 id 顶替）；`runtimes.*` 展开成 spawn；删 `runtimes.remote`、`Embedding.transports`、`Embedding.identity`（并入 drop-transport 分支）与宿主一侧的 `RUTIS_TOKEN` 兜底；状态合成两项，§七的输出；持久化样本与 `rejected/` 用例 | `remote_runtimes.rs`、`dial_in.rs`、`kotlin.rs` 按新写法端到端通过（多台设备按决定 3 改写）；节点端到端（两个 rutis-host 互相使用服务、事件、`office:scanner`）；`dial_conformance` 各语言对 `rutis-host/listen` 通过（4002、4003 照旧）；`persisted` 测试通过；e2e `fixture-host` 编译；#702 的 token 检查用例通过 | S3、S2b、A1、A2 |
-| S5 删除 | 删 §八 全部条目（含 `share_registered_only`）与只测它们的测试；cross_version e2e 里与 0.18 相遇的场景删掉（0.19 与 0.18 不保证相遇）；删 TLA 模型里吊销与 Registration 的部分及 §十二 列出的配置；按 S4 的 listen 代码建最小模型 | `grep` §八 的名字在 `crates/` 下无结果；`cargo test --workspace` 与 clippy 通过；新模型与 `access-mut-accept-before-release` 跑通，`expected.txt` 更新 | S4 |
-| S6 文档 | §十二 全部条目；《迁移到 0.19》§十一 | 两种语言内容一致；文档里不再出现 `Transport`、`Embedding.transports`、`Revocations`、`export` / `import`、`rutis-bridge/peer`、`runtimes.remote` 的承诺；guarantees 每行的测试名都存在 | S5（与 S4 同时可见的行为可以随 S4 先改指南） |
+- **按闭环划范围**：一个 PR 删一样东西，就在同一个 PR 里把它在所有 crate、各语言 SDK、测试、文档（指南、`.agents/skills`、guarantees、《迁移到 0.19》、设计稿的引用）、示例（`examples/`、`swift/examples`、`kotlin/rutis/android-sample`）、模板（`rutis-host new` 的模板）、持久化样本、`specs/` 里的用处全部改完。每个 PR 的描述里列出它的闭环清单，合并前逐项核对；`grep` 被删的名字在整个仓库里无结果（历史设计稿与发布说明除外）。
+- **不加兼容**：不得为了让测试或 CI 通过而加转发、兜底分支、旧名、feature 开关，或"暂时保留旧格式"。因删掉的行为而失败的测试，在同一个 PR 里改写或删除；改不了就停下来报告，不绕过。
+- **先加后删**只用于新东西：新增的部分（新插件、新函数、新的 SDK 能力）可以先合并、暂时没有调用方；被替换的旧东西在替换它的那个 PR 里删完，不留两条路径。
+- 每个 PR 合并后 main 可用、CI 通过。
+- 与 [平台清理设计稿](https://github.com/arcships/rutis/tree/claude/design-platform-cleanup)（分支 `claude/design-platform-cleanup`）碰同一处（内核、rutis-bridge、rutis-loader、各语言 SDK）的，以闭环为单位决定合并先后，见那份稿子。
+
+### 13.2 PR
+
+**C1 删 `Revocations` / `Revocable`**（独立，可随时合并）
+- 闭环清单：`identity.rs` 里的两个类型与 `Revocable` 的包装；`tests/revocation.rs`；`registration.rs` 与 `identity.rs` 里只测吊销的单元测试；guarantees 的 `bridge/revocation-closes-only-its-connections`、`bridge/revocation-refuses-reconnects`、`host/env-tokens-not-revocable`；`specs/remote-lease` 的吊销动作、`RevokedStaysOut`、`RevocationScoped`、`access-revoke-same`、`access-revoke-distinct`、`access-mut-revoke-cuts-all`、`RemoteLease.tla` 的吊销远端与 `expected.txt`；`guide/nodes.md` "安全"一节的吊销钩子（两种语言）；`design-remote-runtime-dial` 等设计稿里指向它的链接改为说明已删除。
+- 完成：`grep -rn "Revocations\|Revocable"` 只剩历史设计稿；TLA `run.sh` 通过。
+
+**C2 删 `ServiceCatalog::share_registered_only`**（独立）
+- 闭环清单：`catalog.rs` 的方法与 `by_name` 开关；`rutis-loader/tests` 的 `check.rs`、`scope.rs`、`marked_services.rs`；`runtime.rs` 的文档注释；`guide/open-host.md`、`guide/rust-host.md`（两种语言）；`design-host-writes-plugins-2026-10-27.md` §九（两种语言）；《迁移到 0.19》§十一 第 7 条。
+- 完成：`grep` 无结果；loader 全部测试通过。
+
+**C3 宿主一侧只认 `RUTIS_TOKEN_<名字>`**（独立）
+- 闭环清单：`rutis-host/src/config.rs` 的兜底（约 912 行）与"谁在共用 `RUTIS_TOKEN`"的检查（约 969 行起）及其单元测试；`rutis-host/tests` 里只设 `RUTIS_TOKEN` 的用例改为按名字设；e2e 与 CI 脚本里给宿主设的 `RUTIS_TOKEN`；`guide/nodes.md`、`guide/rutis-host.md`、Swift / Kotlin 应用指南、`.agents/skills/rutis-remote-plugin`；guarantees 里提到兜底的行；《迁移到 0.19》§十一 第 6 条。运行时一侧的 `RUTIS_TOKEN` 不动。
+- 完成：`rutis-host` 全部测试通过；文档里宿主一侧不再出现单独的 `RUTIS_TOKEN`。
+
+**S1 Channel：`Close` 与底层函数**
+- 加：`websocket::dial`、`websocket::listen`、`pipe::spawn`、`memory::pair`（现有的传输实现改为调用它们）。
+- 删并闭环：`Closer::replaced`、`Closer::rejected`、`close(&str)` 换成 `close(Close)`，`ChannelInfo` 删掉——所有实现与调用方（`transport/*`、`link.rs`、`access_point.rs`、`registration.rs`、`session/rpc.rs`、测试替身 `channel/testing`、`memory_mux.rs` 等全部测试、fuzz 目标）同一个 PR 改完。
+- 完成：三种 `Close` 在三种底层上的单元测试（4002、4003、stdin 关闭）；`grep "ChannelInfo\|fn replaced\|fn rejected"` 无结果；全部测试通过。
+- 依赖：—
+
+**S2 删 `Transport`**
+- 删并闭环：`Transport`、`Dial`、`transport_key`、`MemoryPlugin`、`MemoryTransport`、`LocalPlugin`、`WebSocketPlugin`、`WebSocketTransport`；`link.rs`、`access_point.rs`、`LocalRuntime` 改为直接调用 S1 的函数；rutis-host 的 `transport` 字段与 `Embedding.transports`（并入分支 `claude/remote-drop-transport`）；节点行的 `transport` 字段与持久化样本里的它（去掉并加 `rejected/` 用例，guarantees 写明 0.19 例外）；e2e `fixture-host`；全部用到它们的测试（bridge、loader、host）；`guide/rutis-host.md`、`guide/nodes.md`、`.agents/skills/rutis-remote-plugin` 两份 references 里"实现 Transport 挂到 Embedding.transports"的承诺改为"交出一条 Channel"；《迁移到 0.19》里 `transport` 一条删掉；guarantees `host/remote-runtimes` 去掉 `transport`。
+- 完成：`grep "Transport\b\|transport_key\|Embedding.transports"` 无结果；全部测试通过。
+- 依赖：S1
+
+**R1–R6 各语言运行时：加 endpoint 的本机模式**（每种语言一个 PR：Node、Bun、Python、Go、Swift、Kotlin）
+- 只加：本机通道按 `--id` 建 endpoint（§三 的表）。不碰 compat 的删除，所以合并后各运行时两种格式都能说，宿主仍用 compat；这不是兼容层，是 S2b 要用的新能力。
+- 完成：每种语言的现有测试通过；新测试：本机通道以 `--id` 用 endpoint 握手并报出这个名字。
+- 依赖：—
+
+**S2b 删 compat 格式**（一个 PR，闭环）
+- 宿主切到 endpoint：起本机运行时的代码传 `--id`、用 endpoint 格式。
+- 删并闭环：`Format::Compat`、`COMPAT_CAPABILITIES`、`rust:` / `node:` 前缀、`PROTOCOL = 2`、`link.rs` 的 `compat` 与 `name_far_end`、`runtime/process.rs:919` 的 compat；六种 SDK 里的 compat 路径（Node `session.mjs` 与 `runner.mjs` 的 `--format`、Bun `main.ts` 的 `--format`、Python `peer.py` 与 `__main__.py`、Go `peer` 包与 `serve.go`、Swift `Serve.swift`、Kotlin `Peer.kt` 的 compat 与 `compatOrigin`、`Sessions.kt`），各自的测试；fuzz 目标；`runtime_conformance`；cross_version e2e 里与 0.18 相遇的场景（0.19 与 0.18 不保证相遇）；guarantees `bridge/cross-version-meetings` 收窄、`events/old-peer-refused` 同步；各语言运行时指南与 `rutis-new-runtime` 的 `runtime-contract.md`；《迁移到 0.19》§十一 第 5 条。
+- 完成：`grep -i compat` 在 `crates/rutis-bridge/src/session` 与六种 SDK 的会话代码下无结果；全部运行时测试在 endpoint 格式上通过。
+- 依赖：R1–R6 全部合并。
+
+**S3 session 插件与统一解析器**（新增，先加）
+- 加：`rutis-bridge/session`（`Session::new`、`SessionHandle::{id, run}`、服务 `sessions` 与 `open(far)`、两边的服务与监听器）；loader 里 `<名>:<插件>` 按连接行找 session 调 `run` 的解析器（只对 session 生效，现有的远程路径在 S4 删）；`guide/plugin-api.md` 与 `.agents/skills/rutis-remote-plugin` 加 `sessions.open` 一节。
+- 完成：四种结束；两个 rutis 内核经内存 Channel 互相使用服务、同名按内核规则被拒、事件互达；Node 与 Python 测试插件经 `sessions.open` 跑通 `run`。
+- 依赖：S1、S2b
+
+**S4 远程运行时与设备改用连接插件**（闭环）
+- 加：`rutis-host/spawn`、`rutis-host/dial`、`rutis-host/listen`（§六）；Kotlin、Swift SDK 的应用自己装插件、经 `services.announce` 报服务（决定 2，原 A1、A2，与宿主停止驱动应用插件必须在同一个 PR，否则同一个插件会被装两次）。
+- 删并闭环：`runtimes.remote` 与 `connect()` 的校验；`AccessPointPlugin` 一族与 `Accept` / `Accepted` / `Release`；`Admission`、`AdmissionPlugin`、`SharedToken`；`RuntimeSession`、`runtime_session_key`、`RuntimeAccessPlugin`、`RuntimePlugin::remote`、`LocalRuntime`；loader 的 `RuntimeInstances`、`AcceptInstances`、`RuntimeConnection` 与 rutis-migrate 的名字表；`AccessEvent` 与 `RuntimeState` 的远程部分，§七 的输出；SDK 里等 `rows.v2` 装应用插件的路径；测试 `access_point.rs`、`runtime_instances.rs`、`remote_rows.rs`、`remote_modes.rs`、`leases.rs`、`dial_in.rs`、`kotlin.rs`、`remote_runtimes.rs`、`dial_conformance.rs`、Swift / Kotlin SDK 的应用测试按新写法改写或删除；示例 `swift/examples/HealthApp`、`kotlin/rutis/android-sample`；持久化样本去掉 `runtimes.remote`，加 `rejected/` 用例，guarantees 写明 0.19 例外；guarantees `host/remote-runtimes`、`loader/runtime-connection-instances`、`loader/remote-runtime-rows`、`bridge/dial-out-rules`；`specs/remote-lease` 的 `AccessPoint.tla` 换成按 listen 代码建的最小模型，删 `access-mut-route-by-id`、`access-mut-no-gen-check`、`access-registration`，保留 `access-mut-accept-before-release`；指南 `rutis-host.md`、`nodes.md` 里远程运行时的部分、Swift / Kotlin 应用指南、`design-app-integration` 的 D2、D6、`.agents/skills`；《迁移到 0.19》§十一 第 1（远程运行时部分）、3、4、8、9 条；模板里的 `runtimes.remote`。
+- 完成：上列名字 `grep` 无结果；端到端：spawn、dial、单台 listen、多台设备（两台连同一个 listen，同名服务后来的被拒并说明原因）；`dial_conformance` 各语言对 `rutis-host/listen` 通过（4002、4003 照旧）；`persisted` 测试通过；TLA 新模型与 `access-mut-accept-before-release` 通过。
+- 依赖：S2、S3
+
+**S5 节点改用连接插件**（闭环）
+- 删并闭环：`rutis-bridge/peer` 行名与 `peer:<对端>/<插件>` 行（改为 `rutis-host/dial` / `listen` 行与 `<连接行>:<插件>`）；`export`、`import`、`host`、`rows`、`runtime`、`identity` 字段；`PeerPlugin`、`PeerHandle`、`Features`；`LinkPlugin` 一族（`ConnectError` 移进 `rutis-host/dial`）；`Peer`、`peer_key`、`Handler`、`Offered`、`Offers`、`family()`；`ExportPlugin`、`ImportPlugin`、`events/link.rs` 的名单部分；`HostPlugin` 与目录类型；`Identity` 一族、`Registration` 一族、`Embedding.identity`；loader 的 `peer.rs`；`LinkState` 与 link 的状态行；测试 `link.rs`、`fault_links.rs`、`memory_mux.rs`、`node.rs`、`node_conformance.rs`、`multihop.rs`、`websocket_*.rs`、`peer_rows.rs`、`instance_peers.rs`、`cordis_node.rs`、`events_nodes.rs`、`events_conformance` 的节点部分、`examples/smoke.rs`、`check.rs` 的 `import` 提示；Cordis 节点（`@arcships/rutis-runtime/bridge`）里对应的写法；持久化样本去掉 `rutis-bridge/peer` 与 `peer:` 行，加 `rejected/` 用例；guarantees `events/node-links`、`events/link-export-import`、`events/node-config`、`events/no-multi-hop`、`loader/peer-rows`；`specs/remote-lease` 里注册代次的剩余部分与 `NoStaleHandOver`；指南 `nodes.md`、`rust-host.md`、`cordis.md` 与其余提到节点的指南、`.agents/skills`；《迁移到 0.19》§十一 第 1（节点部分）、2 条。
+- 完成：上列名字 `grep` 无结果；两个 rutis-host 的节点端到端（互相使用服务、同名被拒、事件、`office:scanner`）；`cargo test --workspace` 与 clippy 通过。
+- 依赖：S4
+
+合并顺序：C1、C2、C3、R1–R6 随时；S1 → S2；R1–R6 全部 → S2b；S1、S2b → S3；S2、S3 → S4 → S5。没有单独的"删除"或"文档"PR：每样东西在替换它的 PR 里删完、文档改完。
