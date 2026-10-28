@@ -254,7 +254,6 @@ type LLM struct {
 | 等待环检测 | 同步调用的调用帧带 `sync: true`（只发给声明了 `sync-wait` 的对端），声明 `sync-wait`；不声明 `sync-stack`（#385） |
 | 插件要求 | 服务对象并发安全；调用其他服务时不持锁 |
 | 调用链 | 进来的调用：`path + [id]` 放入方法 ctx；发出的调用：从传入 ctx 取 `path`；`Apply` / 清理的 ctx 带 `rows.load` / `rows.unload` 的链 |
-| ctx 检查 | `nil` ctx → panic；开发模式（`RUTIS_DEV=1`）下，无链 ctx 且进程内有进来的同步调用 → 警告一次并指出位置 |
 | 进来的取消 | `cancel` 帧 → 方法 ctx 取消 |
 | 发出的取消 | `async`：发 `cancel`，立即返回 `ctx.Err()`，丢弃迟到结果；`sync`：立即返回 `ctx.Err()`，丢弃迟到结果，对端照常执行 |
 | 行卸载 | 取消该行 `*rutis.Ctx` |

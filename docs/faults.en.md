@@ -30,7 +30,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 | 3 | No such method, wrong number or type of arguments | 2 tests | 2 tests | 3 tests | 2 tests | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
 | 4 | An error in `apply` | 3 tests | 2 tests | 1 test | 1 test | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
 | 5 | A syntax, import or compile error | 2 tests | 3 tests | 3 tests | 1 test | 1 test | [#677](https://github.com/arcships/rutis/issues/677) |
-| 6 | A value passed across languages that the other side cannot take | 3 tests | 3 tests | 3 tests | 3 tests | 2 tests | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
+| 6 | A value passed across languages that the other side cannot take | 3 tests | 3 tests | 3 tests | 2 tests | 2 tests | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
 | 7 | An event listener throws | 1 test | 1 test | 1 test | 1 test | 2 tests | [#677](https://github.com/arcships/rutis/issues/677) |
 | 8 | A call that never returns | 4 tests | 3 tests | 6 tests | no test | 2 tests | [#678](https://github.com/arcships/rutis/issues/678) |
 | 9 | Plugins calling or depending on each other | 2 tests | 1 test | 2 tests | 1 test | 2 tests | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
@@ -85,7 +85,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - TypeScript (Node): `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/value_roundtrip.rs` `node_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_node_object_crosses_to_python`
 - Bun: `crates/rutis-bridge/tests/value_roundtrip.rs` `bun_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_bun_object_crosses_to_node`; `bun/rutis-bun/test/bad-values.test.ts` “a value that cannot be sent carries code bad-value and its part (#677)”
 - Python: `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-bridge/tests/value_roundtrip.rs` `python_bad_values`; `crates/rutis-loader/tests/objects_cross.rs` `a_python_object_crosses_to_node`
-- Go: `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-loader/tests/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`; `go/rutis/internal/peer/crossing_test.go` `TestAnObjectGoesOnlyToAFarEndThatTakesObjects`
+- Go: `crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`; `crates/rutis-loader/tests/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`
 - Rust (plugin and embedding): `crates/rutis-bridge/src/session/rpc/tests/objects.rs` `a_rust_service_refuses_an_object_argument`; `crates/rutis-bridge/tests/value_roundtrip.rs` `rust_relays_a_thrown_value`
 
 ### 7. An event listener throws
