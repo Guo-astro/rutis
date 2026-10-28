@@ -315,43 +315,6 @@ impl<E: crate::Event> std::fmt::Debug for EventKey<E> {
     }
 }
 
-/// A prefix: its listener hears every event whose name starts with it
-/// (a prefix entry, protocol spec §4.2). The empty prefix matches every name.
-pub struct EventPattern<E: crate::Event> {
-    prefix: Arc<str>,
-    marker: PhantomData<fn(E) -> E>,
-}
-
-impl<E: crate::Event> EventPattern<E> {
-    pub fn prefix(prefix: impl Into<Arc<str>>) -> Self {
-        Self {
-            prefix: prefix.into(),
-            marker: PhantomData,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.prefix
-    }
-}
-
-impl<E: crate::Event> Clone for EventPattern<E> {
-    fn clone(&self) -> Self {
-        Self {
-            prefix: self.prefix.clone(),
-            marker: PhantomData,
-        }
-    }
-}
-impl<E: crate::Event> std::fmt::Debug for EventPattern<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventPattern")
-            .field("type", &std::any::type_name::<E>())
-            .field("prefix", &self.prefix)
-            .finish()
-    }
-}
-
 /// A service key that names its value type: every constructor names `T`,
 /// so the key cannot point at a service of another type.
 ///
