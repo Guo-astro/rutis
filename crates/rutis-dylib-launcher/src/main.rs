@@ -114,7 +114,7 @@ mod unix {
 ///   from the executable's directory first, and all three files are present
 ///   there (checked above); `PATH` and the working directory are searched
 ///   only for a DLL that is missing, and `.local` redirection was not
-///   honoured in the feasibility test (SDK design §十一).
+///   honoured in the feasibility test on windows-2025.
 /// - A Job Object with `KILL_ON_JOB_CLOSE` ends the host and its children
 ///   when the launcher exits for any reason.
 /// - Ctrl+C reaches every process on the console; the launcher ignores it

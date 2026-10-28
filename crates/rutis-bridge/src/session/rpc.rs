@@ -979,7 +979,7 @@ impl Import {
     /// A call on this object that failed because its session ended
     /// (`error` a transport error): `a call on an object from py failed:
     /// runtime py exited` (code `peer-gone`, data `{runtime, reason}`), as
-    /// only the host can say where an object came from (#687 §八). Any
+    /// only the host can say where an object came from. Any
     /// other error, or a reference of another kind, as it is.
     fn gone(&self, error: Error) -> Error {
         let Error::Transport(reason) = &error else {
@@ -1003,7 +1003,7 @@ impl Import {
     }
 }
 
-/// `values`, each undefined one null: what sits inside a value (#687 §七).
+/// `values`, each undefined one null: what sits inside a value.
 fn nulls(values: Vec<Value>) -> Vec<Value> {
     values
         .into_iter()
