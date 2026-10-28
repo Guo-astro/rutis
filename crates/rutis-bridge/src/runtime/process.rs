@@ -44,8 +44,7 @@ type Slots = Arc<Mutex<HashMap<String, (Option<String>, u64)>>>;
 /// and `label` inside one. Neither may contain NUL, and a label may not be
 /// empty ([`check_scoped`]), so no two (name, label) pairs share an id. Export slots, host proxies and
 /// `host:<id>` call targets are registered by it, so the same name in two
-/// scopes (two instances, say) does not collide. A runtime takes labels
-/// only with the `scopes` feature.
+/// scopes (two instances, say) does not collide.
 pub fn scoped_id(name: &str, label: Option<&str>) -> String {
     match label {
         None => name.to_owned(),
@@ -950,7 +949,7 @@ impl Process {
         let (imports, rest) = Self::imports(started);
         let peer = Connection::open(channel, imports.clone(), endpoint)?;
         peer.ready().await?;
-        Self::finish(peer, imports, child, directory, None, rest).await
+        Self::finish(peer, imports, child, directory, None, rest, true).await
     }
 
     /// What serves the runtime's calls into rutis, and the rest of the mount.
@@ -997,6 +996,24 @@ impl Process {
         session: Arc<dyn RuntimeSession>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, true).await
+    }
+
+    /// [`Process::over`] on a session whose events something else carries:
+    /// the process does not join the bus (a session with a rutis kernel,
+    /// whose listeners cross as a node's).
+    pub(crate) async fn over_without_bus(
+        session: Arc<dyn RuntimeSession>,
+        mount: Mount<'_>,
+    ) -> Result<Arc<Self>, Error> {
+        Self::routed(session, mount, false).await
+    }
+
+    async fn routed(
+        session: Arc<dyn RuntimeSession>,
+        mount: Mount<'_>,
+        bus: bool,
+    ) -> Result<Arc<Self>, Error> {
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
         let routed = session.route(imports.clone())?;
@@ -1007,6 +1024,7 @@ impl Process {
             None,
             Some(routed),
             rest,
+            bus,
         )
         .await
     }
@@ -1018,6 +1036,7 @@ impl Process {
         directory: Option<tempfile::TempDir>,
         routed: Option<Box<dyn std::any::Any + Send + Sync>>,
         rest: MountRest,
+        bus: bool,
     ) -> Result<Arc<Self>, Error> {
         let MountRest {
             plugins,
@@ -1058,13 +1077,15 @@ impl Process {
         // runtime learns which names have listeners elsewhere first
         // (events protocol §4.5).
         let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
-        let events = crate::events::SessionEvents::join(
-            ctx.as_ref(),
-            process.peer.clone(),
-            runtime.clone(),
-            scope.clone(),
-        )?;
-        let _ = process.imports.bus.set(events);
+        if bus {
+            let events = crate::events::SessionEvents::join(
+                ctx.as_ref(),
+                process.peer.clone(),
+                runtime.clone(),
+                scope.clone(),
+            )?;
+            let _ = process.imports.bus.set(events);
+        }
         let mounted = process
             .call_async(
                 "",
@@ -1081,9 +1102,7 @@ impl Process {
         for (name, (handle, version)) in slots {
             process.imports.update(name, handle, version);
         }
-        // A runner older than 0.3.0 reports no features.
-        let features: Vec<String> =
-            crate::runtime::decode(mounted.get("features").cloned().unwrap_or(json!([])))?;
+        let features: Vec<String> = crate::runtime::decode(mounted["features"].clone())?;
         let _ = process.features.set(features);
         let about: serde_json::Map<String, Value> = ["implementation", "engine"]
             .into_iter()
@@ -1177,7 +1196,7 @@ impl Process {
     /// it hears every change of each service, read from the row's scope,
     /// until the row is unloaded. A service another row exports in the same
     /// scope is refused; a name the row isolates is exported in the scope
-    /// of its label ([`scoped_id`]), which needs the runtime's `scopes`.
+    /// of its label ([`scoped_id`]).
     ///
     /// A runtime with `rows.announce` also announces the services the row
     /// provides without declaring them, with the methods each has:
@@ -1225,7 +1244,6 @@ impl Process {
         observer: Arc<dyn ServiceEvents>,
         scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
-        self.require_plugin_values()?;
         let entry = RpcValue::Reference(definition.clone());
         let loaded = self
             .load_exporting(
@@ -1245,7 +1263,6 @@ impl Process {
         &self,
         value: &crate::session::Reference,
     ) -> Result<PluginSchema, Error> {
-        self.require_plugin_values()?;
         let read = crate::runtime::rpc::settle(
             self.peer
                 .invoke_async(
@@ -1257,17 +1274,6 @@ impl Process {
         )
         .await?;
         crate::runtime::decode(read.json()?)
-    }
-
-    fn require_plugin_values(&self) -> Result<(), Error> {
-        match self.supports("plugin-values") {
-            true => Ok(()),
-            false => Err(Error::refused(
-                "the runtime's SDK is too old to hand over plugin definitions \
-                 (it lacks the feature plugin-values)"
-                    .into(),
-            )),
-        }
     }
 
     /// The scope chain the process was mounted in.
@@ -1312,9 +1318,6 @@ impl Process {
         observer: Arc<dyn ServiceEvents>,
         scope: &[rutis::events::Scope],
     ) -> Result<(), Error> {
-        if !exports.is_empty() {
-            self.require("rows.v2")?;
-        }
         for name in exports.keys() {
             check_scoped(name, label_of(isolate, name))?;
         }
@@ -1322,9 +1325,6 @@ impl Process {
             .keys()
             .map(|name| (scoped_id(name, label_of(isolate, name)), name.clone()))
             .collect();
-        if exports.keys().any(|name| label_of(isolate, name).is_some()) {
-            self.require("scopes")?;
-        }
         {
             // Registered before loading: the row's services may appear
             // while it starts.
@@ -1373,6 +1373,34 @@ impl Process {
         for (name, observer, version) in self.imports.forget(ids) {
             observer.changed(&name, None, version);
         }
+    }
+
+    /// Whether row `key` is loaded with an observer of its services.
+    pub(crate) fn has_row(&self, key: &str) -> bool {
+        self.imports.rows.lock().unwrap().contains_key(key)
+    }
+
+    /// Row `key` provides `name` with `methods`, called at `handle`, as a
+    /// runtime announces a service a row did not declare (`service` with
+    /// `{ row, methods }`). Whether its observer follows it.
+    pub(crate) fn announce_row_service(
+        &self,
+        key: &str,
+        name: &str,
+        methods: &Value,
+        handle: String,
+        version: u64,
+    ) -> bool {
+        if !self.imports.announce(key, name, methods) {
+            return false;
+        }
+        self.imports.update(name.to_owned(), Some(handle), version);
+        true
+    }
+
+    /// The service `name` a row announced is gone, at `version`.
+    pub(crate) fn withdraw_row_service(&self, name: &str, version: u64) {
+        self.imports.update(name.to_owned(), None, version);
     }
 
     /// Give row `key` a new config. Cordis commits volatile values in place
@@ -1445,7 +1473,6 @@ impl Process {
     /// `Config` converted), the services it injects, and the services it
     /// provides to rutis.
     pub async fn describe_row(&self, entry: &Path) -> Result<RowSchema, Error> {
-        self.require("rows.v2")?;
         crate::runtime::decode(self.call_async("", "rows.schema", json!([entry])).await?)
     }
 
@@ -1511,15 +1538,6 @@ impl Process {
             .is_some_and(|features| features.iter().any(|f| f == feature))
     }
 
-    fn require(&self, feature: &str) -> Result<(), Error> {
-        match self.supports(feature) {
-            true => Ok(()),
-            false => Err(Error::refused(format!(
-                "the Node runtime lacks `{feature}`: @arcships/rutis-runtime 0.3.0 or later is required"
-            ))),
-        }
-    }
-
     /// Lease the host service `name` for a row: the first lease registers
     /// it with the Node side (methods from `methods`, else from
     /// [`HostDispatch::methods`]); the last one released withdraws it. A
@@ -1536,8 +1554,7 @@ impl Process {
 
     /// [`Process::lease_host`] in the scope `label` (the row's `isolate`
     /// label for `name`): only rows isolating `name` with that label see
-    /// it, and the same name in other scopes is another service. A label
-    /// needs the runtime's `scopes`.
+    /// it, and the same name in other scopes is another service.
     pub async fn lease_host_in(
         self: &Arc<Self>,
         name: &str,
@@ -1557,9 +1574,7 @@ impl Process {
     /// [`Process::lease_host_in`]'s shared registration in `label`, as
     /// before: code of other rows that looks the name up without declaring
     /// it (a Cordis `ctx.get`) still finds it there, and those calls name
-    /// no row. This needs the runtime's `scopes` (every runtime rutis
-    /// ships has it): in a runtime without it, the lease is only the
-    /// shared one, and its calls name no row.
+    /// no row.
     pub async fn lease_host_for(
         self: &Arc<Self>,
         name: &str,
@@ -1571,9 +1586,6 @@ impl Process {
         let shared = self
             .lease_host_in(name, label, dispatch.clone(), methods.clone())
             .await?;
-        if !self.supports("scopes") {
-            return Ok(shared);
-        }
         let own = row_label(label, row.key());
         let row = row.in_scope(label);
         match self
@@ -1599,10 +1611,6 @@ impl Process {
         methods: Option<Value>,
         row: Option<CallerRow>,
     ) -> Result<HostLease, Error> {
-        self.require("hosts")?;
-        if label.is_some() {
-            self.require("scopes")?;
-        }
         check_scoped(name, label)?;
         let id = scoped_id(name, label);
         let _changing = self.host_changes.lock().await;

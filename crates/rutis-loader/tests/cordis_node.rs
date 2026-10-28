@@ -278,6 +278,7 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
                 ),
                 ("shape".to_owned(), RpcValue::Data(json!({ "now": "sync" }))),
                 ("version".to_owned(), RpcValue::Data(json!(version))),
+                ("plugin".to_owned(), RpcValue::Data(json!("clock"))),
             ]
             .into(),
         )

@@ -392,18 +392,7 @@ weather = "weather"
 
 ## 6. 被宿主使用
 
-宿主把插件装进它运行 Python 插件的环境（rutis.json 里 `runtimes.py.python` 指向的解释器；默认是激活的虚拟环境的，再是 `<runtimes.py.project>/.venv/bin/python`），然后加一行 `py:<入口点名>`。环境还没有时先建一个。Python 运行时就是这个环境里的 `rutis`，装成和宿主的 rutis-host 相同的版本（`rutis-host --version`）：
-
-```bash
-uv venv                                                         # 建 .venv
-uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # 运行时（宿主的版本）和插件
-```
-
-```json
-{ "id": "weather", "name": "py:weather", "config": { "city": "Oslo" } }
-```
-
-见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ### 宿主给的类型
 
