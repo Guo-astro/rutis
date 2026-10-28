@@ -134,12 +134,7 @@ impl Exports {
         self,
         crate_dir: impl AsRef<Path>,
     ) -> std::result::Result<String, Box<dyn std::error::Error>> {
-        let mut sources = Sources::of_crate(crate_dir.as_ref())?;
-        let generated = self.generate_from(&mut sources)?;
-        for warning in &generated.warnings {
-            eprintln!("warning: {warning}");
-        }
-        Ok(generated.typescript)
+        Ok(self.of_crate(crate_dir.as_ref())?.typescript)
     }
 
     /// What `rutis-host types` does: generate for the crate in
@@ -151,13 +146,23 @@ impl Exports {
         self,
         crate_dir: impl AsRef<Path>,
     ) -> std::result::Result<String, Box<dyn std::error::Error>> {
-        let mut sources = Sources::of_crate(crate_dir.as_ref())?;
+        let generated = self.of_crate(crate_dir.as_ref())?;
+        self.write_files(Path::new("."), &generated)?;
+        Ok(generated.typescript)
+    }
+
+    /// Generate for the crate in `crate_dir`, its warnings on stderr: what
+    /// [`Exports::declarations`] and [`Exports::write`] share.
+    fn of_crate(
+        &self,
+        crate_dir: &Path,
+    ) -> std::result::Result<Generated, Box<dyn std::error::Error>> {
+        let mut sources = Sources::of_crate(crate_dir)?;
         let generated = self.generate_from(&mut sources)?;
         for warning in &generated.warnings {
             eprintln!("warning: {warning}");
         }
-        self.write_files(Path::new("."), &generated)?;
-        Ok(generated.typescript)
+        Ok(generated)
     }
 
     /// Write each named file under `root`, only when it changes.
