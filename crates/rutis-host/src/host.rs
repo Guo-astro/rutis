@@ -725,7 +725,7 @@ impl Host {
         let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
         // The rows as they run: those plugins added or removed too.
         let (layers, editable) = (self.loader.layers(), self.loader.editable());
-        let running = rutis_loader::internal::apply_patches(&layers).rows;
+        let running = rutis_loader::patch::apply_patches(&layers).rows;
         let old = std::mem::replace(&mut self.config, new);
         self.accept(accepted);
         let applied = self

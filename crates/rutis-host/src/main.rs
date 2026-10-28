@@ -25,14 +25,17 @@ mod dev;
 mod reload;
 mod stop;
 
+use rutis_loader::runtime::binary::BinaryLanguage;
+use rutis_loader::runtime::go::Go;
+use rutis_loader::runtime::swift::Swift;
 use stop::{Ended, Stopped};
 
 /// The plugin API of Go and Swift binaries this host runs (their
 /// manifests); Node, Bun and Python runtimes check their own plugins
 /// against their own API. One definition, shared with the loader that
 /// reads the manifests.
-const PLUGIN_API: u64 = rutis_loader::internal::PLUGIN_API;
-const _: () = assert!(PLUGIN_API == rutis_loader::internal::SWIFT_PLUGIN_API);
+const PLUGIN_API: u64 = Go::PLUGIN_API;
+const _: () = assert!(PLUGIN_API == Swift::PLUGIN_API);
 
 /// The oldest plugin API of a binary this host runs: an SDK older than rutis
 /// 0.13 (plugin API 2 or lower) does not declare the event protocol of 0.13,

@@ -145,7 +145,7 @@ pub fn row_file(name: &str, runtimes: &crate::config::Runtimes) -> Option<PathBu
         if let (Some(bun), "bun") = (&runtimes.bun, prefix) {
             return file(rest, &bun.project);
         }
-        if rutis_loader::internal::is_runtime_name(prefix) {
+        if rutis_loader::runtime::is_runtime_name(prefix) {
             // Another runtime's: Go, Swift, a remote one.
             return None;
         }

@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use rutis::host::{CtxHost, FiberState};
 use rutis_loader::edit::{apply_edit, Edit, Editable, NewEntry, Version};
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use rutis_loader::report::EntryStatus;
 use rutis_loader::{Layer, LoaderError};
 use serde_json::json;

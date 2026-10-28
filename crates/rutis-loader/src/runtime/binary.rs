@@ -232,7 +232,6 @@ pub struct BinaryFile {
 
 /// What the binary at `path` serves, whatever its language: it runs `path
 /// --rutis-manifest` (within 30 s).
-#[doc(hidden)]
 pub fn read_binary_manifest(path: &Path) -> Result<BinaryManifest, String> {
     read_manifest(path)
 }

@@ -168,7 +168,6 @@ impl Naming {
 /// (`py:weather`, `bun:@acme/weather`, `<remote>:<module>`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
-#[doc(hidden)]
 pub fn is_runtime_name(name: &str) -> bool {
     name.len() >= 2
         && name != "file"

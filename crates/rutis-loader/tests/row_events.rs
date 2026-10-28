@@ -183,7 +183,7 @@ async fn rows_share_one_status_listener() {
     // there, because it is the loader's, not the rows' (#806).
     reconcile(&loader, patches(json!([{ "insert": [] }])), &store).await;
     eventually(
-        || (rutis_loader::internal::followed_rows(&loader) == 0).then_some(()),
+        || (rutis_loader::followed_rows(&loader) == 0).then_some(()),
         "no row followed",
     )
     .await;
@@ -437,7 +437,7 @@ async fn a_restarted_loader_still_listens_once() {
     view.dispose().await.unwrap();
     // Still there after the rows go: it belongs to the loader.
     eventually(
-        || (rutis_loader::internal::followed_rows(&loader) == 0).then_some(()),
+        || (rutis_loader::followed_rows(&loader) == 0).then_some(()),
         "no row followed",
     )
     .await;

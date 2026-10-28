@@ -19,7 +19,7 @@ pub mod edit;
 mod error;
 mod framework;
 mod loader;
-mod patch;
+pub mod patch;
 #[cfg(feature = "peer")]
 pub mod peer;
 mod persist;
@@ -63,6 +63,8 @@ pub struct OpenHostGuideEn;
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;
+#[doc(hidden)]
+pub use loader::followed_rows;
 pub use loader::{status, Loader, LoaderOptions, LoaderPlugin};
 pub use patch::{Layer, Patch};
 pub use resolver::{Builtins, Chain, Resolver};
@@ -88,18 +90,6 @@ pub mod resolve {
 /// What rutis-host and the tests use. No stability promise.
 #[doc(hidden)]
 pub mod internal {
-    pub use crate::loader::followed_rows;
-    pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};
-    #[cfg(feature = "binary")]
-    pub use crate::runtime::binary::read_binary_manifest;
-    #[cfg(feature = "go")]
-    pub use crate::runtime::go::PLUGIN_API;
-    #[cfg(feature = "runtimes")]
-    pub use crate::runtime::is_runtime_name;
-    #[cfg(feature = "node")]
-    pub use crate::runtime::resolve_entry;
-    #[cfg(feature = "swift")]
-    pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

@@ -610,7 +610,7 @@ impl HostConfig {
         let mut seen: Vec<&str> = Vec::new();
         for remote in &self.runtimes.remote {
             let name = remote.name.as_str();
-            if !rutis_loader::internal::is_runtime_name(name) {
+            if !rutis_loader::runtime::is_runtime_name(name) {
                 return Err(format!(
                     "remote runtime {name:?}: a runtime name is two or more of a-z, 0-9 and -, and not file"
                 ));
