@@ -1,81 +1,181 @@
 # rutis-host and rutis.json
 
-`rutis-host` is a host that requires no Rust code. It assembles the core, plugin loader, local Node / Python / Go / Swift runtimes, and network connections, all driven by a `rutis.json` file. Plugin authors can use it for local development or deployment. For applications that need custom Rust services, see [Embed in a Rust application](rust-host.en.md).
+`rutis-host` is a host that requires no Rust code. It assembles the core, plugin loader, local Node / Python / Go / Swift runtimes, and network connections, all driven by a `rutis.json` file. This page is for whoever assembles plugins: installing plugins others wrote, writing `rutis.json`, running it and trying it; plugin authors use it for local development too. For applications that need custom Rust services, see [Embed in a Rust application](rust-host.en.md); to open your own Rust product to plugins, see [Build a host open to plugins](open-host.en.md).
 
 ## Quick start
 
-A host for two plugins someone published: a TypeScript plugin, `@your-name/weather` on npm, which uses an `llm` service, and a Python plugin, `your-name-llm` on PyPI, whose entry point `llm` provides it. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
+A host made of two plugins: `greeter`, written in TypeScript, provides the `greeter` service (`hello(name)`); `welcome`, written in Python, uses it and provides the `welcome` service (`everyone(names)`). Plugins usually install from npm and PyPI (`npm:@your-name/greeter`, `pypi:your-name-welcome`); here `rutis-host new` makes the two plugin projects locally and they install from files, so every step runs as written. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
 
-1. Install `rutis-host` in a directory of the host's own, then install the two plugins with it:
+1. Make the two plugin projects. `greeter` is the template as it is, packed as an npm package (`npm pack` runs `prepack` first, which builds with `tsc`):
 
+<!-- example: rutis-host-en run -->
 ```bash
-mkdir app && cd app
-npm init -y && npm install -D @arcships/rutis-host   # rutis-host brings the Node runtime
-npx rutis-host add npm:@your-name/weather            # a plugin from npm: into the Node project here
-npx rutis-host add pypi:your-name-llm                # a plugin from PyPI: .venv created first if missing, with rutis at the same version
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
+npm install
+npm pack                                              # makes greeter-0.1.0.tgz
+cd ..
+npx @arcships/rutis-host new welcome --lang python
 ```
 
-`add` only needs to know where a plugin comes from (`npm:`, `pypi:`, a Go module path, a local path); it settles the language, the package manager, the environment and the row's name. For each plugin it prints its introduction (version, `inject`, `provides`, config schema) and what `check` says of its row:
+Replace `welcome/src/welcome/__init__.py` with a plugin that uses `greeter` (the template's test tests the code it replaces, so it is not run here; writing plugins: [Python plugins](python-plugin.en.md)):
+
+<!-- example: rutis-host-en file=welcome/src/welcome/__init__.py -->
+```python
+from rutis import define_plugin
+
+
+class Welcome:
+    def __init__(self, greeter):
+        self.greeter = greeter
+
+    async def everyone(self, names: list[str]) -> list[str]:
+        return [await self.greeter.hello(name) for name in names]
+
+
+def apply(ctx, config):
+    ctx.provide("welcome", Welcome(ctx.use("greeter")))
+
+
+plugin = define_plugin(apply, inject=["greeter"], provides={"welcome": Welcome})
+```
+
+2. Make the host's own directory, install `rutis-host` there, and install the two plugins with it:
+
+<!-- example: rutis-host-en run -->
+```bash
+mkdir app
+cd app
+npm init -y
+npm install -D @arcships/rutis-host                   # rutis-host brings the Node runtime
+npx rutis-host add ../greeter/greeter-0.1.0.tgz       # an npm package: into the Node project here
+npx rutis-host add ../welcome                         # a Python project: makes .venv if there is none, installs rutis at the same version
+```
+
+`add` only needs to know where a plugin comes from (`npm:`, `pypi:`, a Go module path, a local path); it works out the language, the package manager, the environment and the row name. After the package manager's output, for each plugin it prints the plugin's description (version, `inject`, `provides`, config schema) and what `check` says about its row:
 
 ```text
-installed @your-name/weather 1.2.0 (node) into /home/me/app
-weather (@your-name/weather): cannot run: nothing provides llm
-  version: "1.2.0"
-  inject: ["llm"]
-  provides: {}
-  config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
-  llm: add a row that provides it, or import it from a peer (import: ["llm"])
-rutis.json: added row weather, runtimes.node
-installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
-llm (py:llm): ok
-  version: "0.3.0"
+installed ../greeter/greeter-0.1.0.tgz 0.1.0 (node) into /home/me/app: plugin greeter
+greeter (greeter): ok
+  version: "0.1.0"
   inject: []
-  provides: {"llm":{"complete":"async"}}
-rutis.json: added row llm, runtimes.py
+  provides: {"greeter":{"hello":"async"}}
+  config: {"type":"object","properties":{"greeting":{"type":"string","default":"Hello"}}}
+rutis.json: added row greeter, runtimes.node
+installed ../welcome 0.1.0 (py) into /home/me/app/.venv: plugin welcome
+welcome (py:welcome): ok
+  version: "0.1.0"
+  inject: ["greeter"]
+  provides: {"welcome":{"everyone":"async"}}
+rutis.json: added row welcome, runtimes.py
 ```
 
-2. `add` wrote `rutis.json`: the runtimes to start, what was installed (`installed`), and a row per plugin (`name` is the row name in its usual form, which `add` writes: the package name for Node, `py:<entry point>` for Python; `config`, the plugin's configuration, added as needed):
+Installed first, `welcome` gets `cannot run: nothing provides greeter`; `add` still exits with 0, and installing `greeter` settles it.
+
+The `rutis.json` that `add` wrote: the runtimes to start (`runtimes`), what it installed (`installed`), a row for each plugin (`rows`; `add` writes the row's `name`: the package name for Node, `py:<entry point>` for Python):
 
 ```json
 {
   "format": 1,
-  "runtimes": { "node": {}, "py": {} },
+  "runtimes": {
+    "node": {},
+    "py": {}
+  },
   "installed": {
-    "@your-name/weather": { "from": "npm:@your-name/weather" },
-    "py:llm": { "from": "pypi:your-name-llm" }
+    "greeter": {
+      "from": "../greeter/greeter-0.1.0.tgz"
+    },
+    "py:welcome": {
+      "from": "../welcome"
+    }
   },
   "rows": [
-    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "py:llm" }
+    {
+      "id": "greeter",
+      "name": "greeter"
+    },
+    {
+      "id": "welcome",
+      "name": "py:welcome"
+    }
   ]
 }
 ```
 
 3. Check it, then run it:
 
+<!-- example: rutis-host-en run -->
 ```bash
-npx rutis-host check --strict        # every row ok, every service a row uses declared by another; exit 0
+npx rutis-host check --strict                         # every row ok, every service a row uses declared by another row; exits with 0
+```
+
+<!-- example: rutis-host-en run until="welcome: running" -->
+```bash
 npx rutis-host run --watch-config
 ```
 
 ```text
-llm: running
-weather: running
+greeter: running
+welcome: running
 ```
 
 Each row prints its state when it changes (also `starting`, `waiting for its services`, …; see [What `run` prints](#what-run-prints)).
 
-4. Change the configuration while it runs: change `"Oslo"` to `"Bergen"` in `rutis.json` and save. With `--watch-config` the host reads the file again and restarts only the row that changed:
+4. In another terminal, in `app`, see which services there are and which row provides each, then call one (`status` and `call` are not on Windows):
+
+```console
+$ npx rutis-host status
+rows:
+  greeter: running
+  welcome: running
+services:
+  greeter: greeter
+  loader: host
+  welcome: welcome
+runtimes:
+  node: running (pid 12416)
+  py: running (pid 12415)
+calls:
+  none
+$ npx rutis-host call welcome.everyone '["Ana", "Bo"]'
+[
+  "Hello, Ana!",
+  "Hello, Bo!"
+]
+```
+
+Each argument of `call` is a JSON value, a string in quotes (`'"Ana"'`); the result prints as JSON. See [Seeing the current state](#seeing-the-current-state) and [Calling a service](#calling-a-service).
+
+5. Change the configuration while it runs: add `"config": { "greeting": "Hej" }` to the `greeter` row in `rutis.json` and save. With `--watch-config` the host reads the file again and restarts only the row that changed:
 
 ```text
 rutis-host: reloaded rutis.json (1 row changed)
 ```
 
-On Unix, SIGUSR1 does the same without `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs).
+Call it again and `welcome.everyone` returns `"Hej, Ana!"`, `"Hej, Bo!"`. On Unix, SIGUSR1 does the same without `--watch-config`; see [Changing the configuration while it runs](#changing-the-configuration-while-it-runs).
 
-5. Stop it with Ctrl-C: each plugin's cleanup runs, the runtimes exit, and `rutis-host` exits with 0.
+6. Stop it with Ctrl-C: each plugin's cleanup runs, the runtimes exit, and `rutis-host` exits with 0.
 
-A plugin not published yet installs the same way from a file: `npx rutis-host add ../weather/your-name-weather-0.1.0.tgz` (what `npm pack` makes in the plugin's project), `npx rutis-host add ../llm` (the plugin's project directory). The other languages: [How a host installs plugins](#how-a-host-installs-plugins).
+Next:
+
+- Published plugins: `npx rutis-host add npm:@your-name/greeter`, `npx rutis-host add pypi:your-name-welcome`; Bun, Go and Swift plugins, and installing by hand: [How a host installs plugins](#how-a-host-installs-plugins).
+- A plugin author runs the plugin in its own project with `rutis-host dev`, which reloads it when its files change and prints the services after it starts (`rutis-host dev: services: …`); see [Developing a plugin with `dev`](#developing-a-plugin-with-dev).
+- A plugin running on another machine: see [Remote runtimes](#remote-runtimes).
+
+## A minimal rutis.json
+
+Written by hand, a `rutis.json` that runs needs only the runtimes and the rows:
+
+```json
+{
+  "runtimes": { "node": {} },
+  "rows": [{ "id": "greeter", "name": "greeter" }]
+}
+```
+
+- `rows`: a row for each plugin to run; `id` names the row, `name` is the plugin (an npm package name, `py:<entry point>`, …; see [`rows`](#rows)), with a `config` when it needs one.
+- `runtimes`: one for each runtime the rows use; an empty object takes the defaults. An npm package name does not tell the host to use Node: without `runtimes.node` the row fails with `no plugin named "greeter"`. A `py:` row without `runtimes.py` enables it with its defaults and a warning (see [`runtimes`](#runtimes)).
+- `format` (`1` by default) and `installed` (what `add` records) may be left out; the other fields: [`rutis.json`](#rutisjson).
 
 ## Installation
 
@@ -159,15 +259,24 @@ Installing by hand works as before, with the same row names: each language's plu
 | Plugin | Install it with | Into | Row `name` |
 | --- | --- | --- | --- |
 | TypeScript, JavaScript (npm) | `npm install <package>` | the Node project (`runtimes.node.project`, by default the directory of `rutis.json`), beside `@arcships/rutis-runtime` (or the one the npm `rutis-host` brings) | the package name (`@your-name/weather`) or a subpath of it; a file: `./plugins/tool.ts` |
-| Bun | `bun add @arcships/rutis-bun <package>` | the Bun project (`runtimes.bun.project`) | `bun:<package>` ([Bun plugins](bun-plugin.en.md#3-run-it-in-a-host)) |
+| Bun | `bun add @arcships/rutis-bun <package>` | the Bun project (`runtimes.bun.project`) | `bun:<package>` (see [Each language](#each-language) below) |
 | Python | `uv venv` once, then `uv pip install --python .venv/bin/python "rutis==<rutis-host's version>" <distribution>` (with pip: `.venv/bin/python -m pip install …`) | the environment of `runtimes.py.python` (by default `$VIRTUAL_ENV`, then `<runtimes.py.project>/.venv`); its `rutis` is the Python runtime, at rutis-host's version | `py:<entry point>` (`py:llm`), or `py:<module>` for a module file in `runtimes.py.project` |
-| Go | `GOBIN=<runtimes.go.dir> go install <module>/cmd/<binary>@<version>` (with the machine's Go toolchain), or the binary for the platform from the plugin's release | `runtimes.go.dir` | `go:<plugin>` ([Go plugins](go-plugin.en.md#6-used-by-a-host)) |
-| Swift (macOS) | the binary from the plugin's release | `runtimes.swift.dir` | `swift:<plugin>` ([Swift plugins](swift-plugin.en.md#7-used-by-a-host)) |
+| Go | `GOBIN=<runtimes.go.dir> go install <module>/cmd/<binary>@<version>` (with the machine's Go toolchain), or the binary for the platform from the plugin's release | `runtimes.go.dir` | `go:<plugin>` (see [Each language](#each-language)) |
+| Swift (macOS) | the binary from the plugin's release | `runtimes.swift.dir` | `swift:<plugin>` (see [Each language](#each-language)) |
 | Rust | not with `rutis-host`: a Rust application mounts its Rust plugins itself | | [Embed in a Rust application](rust-host.en.md) |
 
 - The plugins of one language share its runtime: one Node project, one Python environment. A Python plugin depends on `rutis` with a lower bound only, so installing one does not downgrade the runtime; a TypeScript plugin keeps the SDK version it was written against, and several copies work side by side ([plugin API: versions](plugin-api.en.md#versions)).
 - Declare under `runtimes` every runtime a row uses (`"node": {}`, `"py": {}`, …: an empty object takes the defaults); one left out is enabled with its defaults and a warning (see [`runtimes`](#runtimes)).
 - After installing, `rutis-host check --strict` says whether every row can run and whether every service a row uses is declared by another row; in CI it fails otherwise.
+
+### Each language
+
+- **TypeScript, JavaScript**: the row name is the package name (`@your-name/greeter`) or a subpath of it. A plugin package brings the `@arcships/rutis` version it was written against, and several versions work side by side in one host; a plugin carries the plugin API version it uses, and a host runtime older than that fails with a clear error.
+- **Bun**: for a package that depends on `@arcships/rutis-bun`, `add` installs it into `runtimes.bun.project` with `bun add`. The row name `bun:<npm name or subpath>` resolves from that project's `node_modules`, and `bun:./path` is relative to the project; `bun:sqlite` is the project's module `sqlite`, not Bun's built-in one. `runtimes.bun` can sit beside `runtimes.node` and `runtimes.py`; services are shared by name across runtimes.
+- **Python**: the row name is the plugin's entry point name in the `rutis.plugins` group (`py:welcome`), not the distribution name. The Python runtime is the `rutis` package in that environment, at the same version as `rutis-host` (`rutis-host --version`).
+- **Go**: the binaries go into `runtimes.go.dir` (`add` uses `go install`; the binary for the platform from the plugin's release works too; a binary downloaded on macOS carries the quarantine attribute, which `rutis-host check` points out). The row name `go:<plugin>` is looked up in every binary; when two binaries have a plugin of that name, write `go-<binary>:<plugin>`. A binary starts the first time a row uses it and stops after 60 idle seconds (`"start": "eager"` starts them all and keeps them running); a replaced binary takes effect when the host restarts.
+- **Swift** (macOS): download the binary from the plugin's release into `runtimes.swift.dir`; a downloaded binary carries the quarantine attribute, which `rutis-host check` points out: once you trust it, clear it with `xattr -d com.apple.quarantine <file>`. The row name is `swift:<plugin>` (`swift-<binary>:<plugin>` for a name two binaries share); the other settings are those of `runtimes.go`. Running it needs no Swift toolchain.
+- **Rust**: Rust plugins are compiled into a Rust host: see [Embed in a Rust application](rust-host.en.md); a Rust host also runs the plugins of the languages above (Go's `BinaryResolver<Go>`, `BinaryRuntimes<Go>`, for one): see [Runtime and loader](rust-host.en.md#runtime-and-loader).
 
 ## Commands
 
