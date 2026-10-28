@@ -217,7 +217,7 @@ fn resolver<L: BinaryLanguage>(
     for binary in &settings.binaries {
         binaries = binaries.file(binary);
     }
-    for (binary, name) in &settings.dev {
+    if let Some((binary, name)) = &settings.dev {
         binaries = binaries.file_named(binary, name);
     }
     let reserved = LANGUAGES

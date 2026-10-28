@@ -300,7 +300,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 `rutis-host dev [目录]` 把目录（默认当前目录）里的插件项目作为几行运行：项目自己的插件（由 `rutis.dev.json` 里同 id 的那一行配置），加上这个文件里的其他行（插件用到的服务的假实现、其他插件）。它每 0.4 秒看一次项目里的文件（不看 `node_modules`、`.venv`、`venv`、`target`、`dist`、`build`、`__pycache__` 和除 `.env` 以外的隐藏文件、目录），跟着变化：
 
 - 变了的文件是某一行的模块时（`./dev/fake-llm.ts`；Python 的行 `py:fake_llm` 的模块文件，即 Python 运行时项目里的 `fake_llm.py` 或 `fake_llm/__init__.py`），重新加载这一行。项目里其他文件变了（插件的其他模块、`package.json`、`pyproject.toml`），重新加载项目自己的那一行。文件没变的行不动。
-- Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。Go 项目里，`rutis.dev.json` 中 `name` 是项目里一个目录的行（`./dev/fakellm`，同一个模块下只服务一个插件的 main 包）是用 Go 写的假依赖：构建成它自己的二进制，作为它自己的运行时（`go-fakellm`）运行；项目里的 `check` 也构建它，`rutis.json` 没有这种行。源码变了时重新构建每个二进制，只重启内容变了的那几个运行时（见 [Go 指南](go-plugin.md#4-在本地宿主里运行)）。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
+- Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
 - `rutis.dev.json` 的内容变了就重新读，规则同 `run --watch-config`（全有或全无；运行中改不了的部分被拒绝，提示重启；见 [运行中改配置](#运行中改配置)）；Unix 上 SIGUSR1 也会触发。条目改了的行带着新的内容重启，新增的行启动，删掉的行卸载。
 - 用到某一行所提供服务的行，在这一行重新加载时随它重启，和平时服务消失又回来时一样。
 - 本机运行时（`node`、`py`、`bun`）的进程结束、又没有谁重启它时（`restart` 是默认的 `"no"`，或者 `"on-failure"` 已经放弃），它的某一行下一次变化（文件，或它在 `rutis.dev.json` 里的条目）会重新启动这个运行时，用那时的代码；它的行随之回来。别的行变化不会启动它。`restart` 会重启它（`"on-failure"`，还没放弃）、或者它正在启动时，交给它自己：它的行用那时的代码启动。
