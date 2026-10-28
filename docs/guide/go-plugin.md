@@ -399,20 +399,7 @@ dlv connect 127.0.0.1:2345
 
 ## 6. 被宿主使用
 
-宿主在 `rutis.json` 里给出 Go 插件目录，把二进制放进去：
-
-```json
-{
-  "runtimes": { "go": { "dir": "plugins/go" } },
-  "rows": [{ "id": "weather", "name": "go:weather", "config": { "city": "Oslo" } }]
-}
-```
-
-```bash
-GOBIN=plugins/go go install example.com/weather/cmd/weather@v0.1.0   # 用本机的 Go 工具链
-```
-
-`rutis-host add example.com/weather/cmd/weather@v0.1.0` 同样 `go install` 到这个目录，并替你加上行（[宿主怎样装插件](rutis-host.md#宿主怎样装插件)）。也可以下载发布里对应平台的二进制放进目录（macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 由宿主在所有二进制里查找；两个二进制里有同名插件时，写成 `go-<二进制名>:<插件名>`。目录里的二进制在第一次有行用到时才启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（`BinaryResolver<Go>`、`BinaryRuntimes<Go>`）。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 7. 在另一台机器上运行
 

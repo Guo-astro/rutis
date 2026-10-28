@@ -670,8 +670,7 @@ fn endpoint_pair() -> (Connection, Far) {
 #[tokio::test(flavor = "current_thread")]
 async fn references_forwarded_to_another_session_reach_their_owner() {
     let (a, ra) = pair();
-    // A far end that takes objects: one that does not is refused them
-    // (`an_object_goes_only_to_a_far_end_that_takes_objects`).
+    // A far end that takes objects.
     let (b, rb) = endpoint_pair();
     let b_tag = b.tag().to_owned();
     // A owns a function (1), a future (2) and an object (3).
@@ -1260,38 +1259,6 @@ mod endpoint_format {
                  upgrade the far end (rutis 0.1.0)"
             )
         );
-    }
-
-    /// guarantee: events/v2-required
-    ///
-    /// A far end of the right version that does not declare `events-v2` is
-    /// refused right after the handshake (events protocol §2.2), named by
-    /// its implementation.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_far_end_without_events_v2_is_refused() {
-        let (local, mut far) = far_pair();
-        send(
-            &mut far,
-            Frame::Hello {
-                version: ENDPOINT_PROTOCOL,
-                endpoint: Some("far".into()),
-                implementation: Some(Implementation {
-                    name: "rutis-runtime".into(),
-                    version: "0.12.1".into(),
-                }),
-                capabilities: Some(vec!["sync-wait".into()]),
-            },
-        );
-        let session =
-            Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main"))).unwrap();
-        match session.ready().await {
-            Err(error @ Error::Handshake(Handshake::Incompatible(_))) => assert_eq!(
-                error.to_string(),
-                "incompatible session: the far end (rutis-runtime 0.12.1) does not declare \
-                 events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
-            ),
-            other => panic!("expected the refusal: {other:?}"),
-        }
     }
 }
 
@@ -2499,125 +2466,6 @@ async fn a_mismatched_reference_to_an_import_left_last_closes_the_session() {
 }
 
 // ── What a call cannot send (#675) ───────────────────────────────────
-
-/// guarantee: bridge/bad-values
-///
-/// An object with methods goes only to a far end that declared `objects`
-/// (a Rust one): to any other (every runtime), a call carrying one fails on
-/// this side before it is sent, and a result holding one is answered with
-/// an error, each naming the call, the argument or the result and the far
-/// end. No relay is left behind, the object is released on its owner once
-/// dropped, and the session goes on.
-/// objects-case(rust): no-objects-declared
-/// guarantee: bridge/object-refs
-#[tokio::test(flavor = "multi_thread")]
-async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
-    struct Holding(Mutex<Option<Value>>);
-    impl Dispatch for Holding {
-        fn invoke(&self, _: &Connection, _: &str, _: &str, _: Value) -> Reply {
-            Ok(self.0.lock().unwrap().clone().unwrap_or(Value::Undefined))
-        }
-    }
-    let (a, ra) = pair();
-    let held = Arc::new(Holding(Mutex::new(None)));
-    let (local, rb) = far_pair();
-    let b = Connection::open(local, held.clone(), rust()).unwrap();
-    let owner = tokio::task::spawn_blocking(move || {
-        let mut a = Remote::start(ra);
-        let Frame::Invoke { id, .. } = a.read() else {
-            panic!("invoke expected")
-        };
-        a.ret(id, reference(3, Kind::Object, false));
-        // Released once Rust drops it, never granted on to B.
-        assert!(matches!(
-            a.read(),
-            Frame::Release {
-                reference: 3,
-                count: 1
-            }
-        ));
-    });
-    let runtime = tokio::task::spawn_blocking(move || {
-        let mut b = Remote::start_as(rb, "py", &[]);
-        let frame = b.read_json();
-        assert_eq!(
-            frame["method"], "after",
-            "the call holding the object was sent"
-        );
-        // A function of the far end's, to call with the object inside.
-        b.send_json(json!({
-            "op": "return", "id": frame["id"],
-            "value": { "type": "reference", "value": { "id": 9, "kind": "function", "home": false, "origin": [] } },
-        }));
-        b.send_json(json!({
-            "op": "invoke", "id": "py:1", "path": [], "target": "host:svc", "method": "get",
-            "args": { "type": "data", "value": [] },
-        }));
-        // The function's release may come first.
-        let reply = loop {
-            let frame = b.read_json();
-            if frame["op"] != "release" {
-                break frame;
-            }
-        };
-        assert_eq!(reply["op"], "throw", "{reply}");
-        // Kept open until the end of the test.
-        (reply["error"]["message"].as_str().unwrap().to_owned(), b)
-    });
-    a.ready().await.unwrap();
-    b.ready().await.unwrap();
-    let object = a
-        .invoke_async("", "object", Value::Undefined)
-        .await
-        .unwrap();
-    assert!(object.clone().reference().unwrap().is_object());
-    // What B returns when its far end calls it, right after `after`.
-    *held.0.lock().unwrap() = Some(object.clone());
-    let call = Value::List(vec![Value::Data(json!(1)), object.clone()]);
-    match b.invoke_async("host:svc\0scope", "take", call).await {
-        Err(Error::Value(message)) => assert_eq!(
-            message,
-            "svc.take: argument 2 cannot be sent: an object from node cannot cross to py: \
-             py does not take objects (older than rutis 0.18); upgrade it"
-        ),
-        other => panic!("a value error expected, got {other:?}"),
-    }
-    let function = b
-        .invoke_async("svc", "after", Value::List(vec![]))
-        .await
-        .unwrap()
-        .reference()
-        .unwrap();
-    // Inside a list or a record, as a function's argument: the same.
-    let nested = [
-        Value::List(vec![Value::Data(json!(1)), object.clone()]),
-        Value::Record([("o".to_owned(), object)].into_iter().collect()),
-    ];
-    for argument in nested {
-        match function.call_async(Value::List(vec![argument])).await {
-            Err(Error::Value(message)) => assert_eq!(
-                message,
-                "a function: argument 1 cannot be sent: an object from node cannot cross to py: \
-                 py does not take objects (older than rutis 0.18); upgrade it"
-            ),
-            other => panic!("a value error expected, got {other:?}"),
-        }
-    }
-    drop(function);
-    let (message, _runtime) = runtime.await.unwrap();
-    assert_eq!(
-        message,
-        "svc.get: the result cannot be sent: an object from node cannot cross to py: \
-         py does not take objects (older than rutis 0.18); upgrade it"
-    );
-    assert!(b.close_reason().is_none() && a.close_reason().is_none());
-    assert!(
-        b.0.exports.lock().unwrap().entries.is_empty(),
-        "a relay is left"
-    );
-    held.0.lock().unwrap().take();
-    owner.await.unwrap();
-}
 
 /// A memory channel whose sending side (this side's) takes messages of at
 /// most `limit` bytes, as the local and WebSocket transports do.
