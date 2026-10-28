@@ -587,7 +587,7 @@ rutis has no `tracing` / `log` integration; the host's own logging works as usua
 
 In 0.19 a remote connection has one shape ([Remote connections: one session plugin](../design-remote-session-2026-10-28.en.md)): a connection plugin gets a `Channel` and hands it to `rutis_bridge::Session`. The far end may be another rutis, a language runtime or a device, all the same; the services it provides are named `<far id>:<plugin>` here, the services here are visible there, and events are on one bus. The host first provides, in the root ctx, the id this end gives in the handshake:
 
-```rust
+```rust,ignore
 use rutis::host::FiberState;
 use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
 

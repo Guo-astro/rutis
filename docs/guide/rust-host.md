@@ -586,7 +586,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 0.19 的远程连接只有一种形状（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)）：连接插件拿到一条 `Channel`，交给 `rutis_bridge::Session`。对面是另一个 rutis、语言运行时或设备都一样；对面提供的服务在这里叫 `<对面 id>:<插件>`，这里的服务对面也看得到，事件在一条总线上。宿主要先在根 ctx 提供本端在握手里报的 id：
 
-```rust
+```rust,ignore
 use rutis::host::FiberState;
 use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
 
