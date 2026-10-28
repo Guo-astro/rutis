@@ -361,11 +361,18 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     let path = config_file(&args);
     // From the start: SIGUSR1 before the host runs reloads once it does,
     // instead of ending it.
-    let mut triggers = reload::Triggers::listen(&path, watch)?;
-    let mut config = config::HostConfig::read(&path)?;
+    let seen = rutis_host::rows_file::Seen::default();
+    let mut triggers = reload::Triggers::listen(&path, watch, seen.clone())?;
+    // Its rows are the layer plugins edit through `loader`, written back.
+    let file = rutis_host::rows_file::RowsFile::new(&path, seen);
+    let mut config = file.read()?;
     config.runtimes.prefix_output = prefix;
     warn(&config);
-    let mut host = host::Host::start(&config).await?;
+    let embedding = host::Embedding {
+        rows_file: Some(file),
+        ..host::Embedding::default()
+    };
+    let mut host = host::Host::start_with(&config, embedding).await?;
     let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
         errln!("{line}");
