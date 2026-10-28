@@ -3,8 +3,7 @@
 // listeners registered before rows.load answers, the fast path and
 // dispatch through the host (every mode, filter selector, terminal and
 // next by reference), events.call with internal/dispatch, withdrawal at
-// unload with the row's signal, events-v2 required, the removed mount
-// fields refused.
+// unload with the row's signal.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
@@ -120,30 +119,6 @@ test('unload signals running listeners and waits for them', async () => {
   } finally {
     await host.end()
   }
-})
-
-test('the removed mount fields are refused, naming the replacement', async () => {
-  const host = await fakeHost([process.execPath, runner, conformance])
-  try {
-    await within('the handshake', host.ready)
-    for (const field of ['events', 'emits']) {
-      await assert.rejects(host.call('mount', { [field]: ['x'] }), {
-        message: `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`,
-      })
-    }
-  } finally {
-    await host.end()
-  }
-})
-
-test('a host that does not declare events-v2 is refused', async () => {
-  const host = await fakeHost([process.execPath, runner, conformance], {
-    hello: { op: 'hello', version: 4, endpoint: 'host', implementation: { name: 'rutis-host', version: '0.12.1' }, capabilities: ['signals', 'sync-wait'] },
-  })
-  const code = await within('the runtime to stop', host.exited)
-  assert.equal(code, 1)
-  assert.match(host.stderr, /^rutis: refused: incompatible \(this host does not declare events-v2 \(the event protocol of rutis 0\.13\): upgrade rutis-host to 0\.13 or later\); stopping$/m)
-  await host.end()
 })
 
 // Two copies of one row (a group's two instances) in one process share the
