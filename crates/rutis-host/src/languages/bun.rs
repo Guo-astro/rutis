@@ -131,12 +131,17 @@ pub(super) fn runs_in_bun(dir: &Path) -> bool {
     let managed = ["bun.lock", "bun.lockb"]
         .iter()
         .any(|lock| dir.join(lock).exists());
-    let depends = read("package.json").is_some_and(|manifest| {
-        ["dependencies", "devDependencies"]
-            .iter()
-            .any(|field| !manifest[field]["@arcships/rutis-bun"].is_null())
-    });
+    let depends = read("package.json").is_some_and(|manifest| depends_on_runtime(&manifest));
     configured || managed || depends
+}
+
+/// Whether the package `manifest` (a package.json) depends on
+/// `@arcships/rutis-bun`, in its dependencies or devDependencies (the
+/// template's plugin has it there): it runs in Bun.
+pub(crate) fn depends_on_runtime(manifest: &Value) -> bool {
+    ["dependencies", "devDependencies"]
+        .iter()
+        .any(|field| !manifest[field]["@arcships/rutis-bun"].is_null())
 }
 
 /// Where the Bun runtime's inspector listens under `dev --debug`: Bun's

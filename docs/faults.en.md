@@ -134,7 +134,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - Bun: `bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”; `bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
 - Python: `python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`; `python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
 - Go: `go/rutis/internal/runtime/config_internal_test.go` `TestEveryConfigCaseBeforeApply`; `go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`; `go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`; `go/rutis/rutistest/config_test.go` `TestEveryConfigCase`; `go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
-- Rust (plugin and embedding): `crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis-loader/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
+- Rust (plugin and embedding): `crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. Two plugins provide a service of the same name
 

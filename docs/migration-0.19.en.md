@@ -163,8 +163,14 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
 | `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
 | `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
+| `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
+| `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 
 ### Tools
 
 - `rutis-dev` (the dev channel) is removed; use `rutis-host dev` during development.
 - `rutis-migrate` is no longer released with 0.19. The 0.17 migration still works with `cargo install rutis-migrate --version 0.18.0`.
+
+### Go plugins
+
+Rebuild them with SDK 0.18 or later (the `required` exception for binaries built before 0.18 is removed).

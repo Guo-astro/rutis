@@ -8,6 +8,8 @@ pub mod call;
 pub mod config;
 pub mod control;
 pub mod host;
+pub mod install;
+mod installer;
 pub mod languages;
 pub mod new;
 pub mod project;

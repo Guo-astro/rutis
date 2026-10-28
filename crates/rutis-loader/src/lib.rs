@@ -15,7 +15,6 @@
 
 pub mod backoff;
 mod catalog;
-pub mod config;
 pub mod edit;
 mod error;
 mod framework;

@@ -1,9 +1,10 @@
 //! The shared case list `specs/config-schema/cases.json`, run against the
-//! Rust implementation the loader and `rutis-host check` use: every case,
+//! kernel's `rutis::config::check`, the one implementation the loader, the
+//! bridge's plugin values and `rutis-host check` use: every case,
 //! compared word for word (config schema design §8).
 
+use rutis::config::check;
 use rutis::ConfigError;
-use rutis_loader::config::{check, Options};
 use serde_json::Value;
 
 fn cases() -> Vec<Value> {
@@ -42,7 +43,7 @@ fn every_case_of_the_shared_list_passes() {
     for case in cases() {
         let name = case["name"].as_str().unwrap();
         let config = case.get("config");
-        let mut checked = check(&case["schema"], config, Options::default());
+        let mut checked = check(&case["schema"], config);
         let warnings: Vec<String> = checked
             .warnings
             .iter()
@@ -77,28 +78,10 @@ fn every_case_of_the_shared_list_passes() {
         // What is filled is a copy: changing it changes nothing of the
         // next check.
         scribble(&mut checked.config);
-        let again = check(&case["schema"], config, Options::default());
+        let again = check(&case["schema"], config);
         if again.config != then["config"] {
             failures.push(format!("{name}: a second check gave {}", again.config));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-/// Manifests of Go binaries older than 0.18 list every field without
-/// `omitempty` as required: `check` ignores `required` there (design §7).
-#[test]
-fn required_can_be_ignored() {
-    let schema = serde_json::json!({
-        "type": "object",
-        "required": ["city"],
-        "properties": { "city": { "type": "string" }, "days": { "type": "integer" } }
-    });
-    let checked = check(
-        &schema,
-        Some(&serde_json::json!({ "days": "x" })),
-        Options::default().without_required(),
-    );
-    let lines = ConfigError::new(checked.errors).lines();
-    assert_eq!(lines, ["config: days should be an integer, got \"x\""]);
 }
