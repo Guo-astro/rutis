@@ -120,18 +120,6 @@ pub trait CtxInternal: sealed::Sealed {
         value: Arc<T>,
     ) -> Result<Disposer, Error>;
 
-    /// Registers `value` with a `check()` predicate that gates its consumers.
-    ///
-    /// `check` runs whenever a consumer's gate is evaluated, so at least
-    /// twice per load: at the gate and again once the consumer's
-    /// dependencies are recorded, before its plugin callbacks run.
-    fn provide_checked<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        value: Arc<T>,
-        check: impl Fn() -> bool + Send + Sync + 'static,
-    ) -> Result<Disposer, Error>;
-
     /// Register a provider-owned mutable binding and return a generation-bound
     /// writer. A write replaces the registered Arc, not existing Arc snapshots.
     fn provide_mut_at<T: ?Sized + Send + Sync + 'static>(
@@ -152,10 +140,6 @@ pub trait CtxInternal: sealed::Sealed {
         label: impl Into<String>,
         f: impl FnOnce() -> Effect,
     ) -> Result<Disposer, Error>;
-
-    /// Asks every fiber that declares dependencies to re-check them (when the
-    /// result of a `check()` predicate changes).
-    fn refresh(&self);
 
     /// The five ways to send under `name` instead of the event's own:
     /// what a typed event dispatched under a name chosen at run time needs

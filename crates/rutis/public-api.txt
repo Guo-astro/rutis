@@ -179,9 +179,6 @@ pub type F::Fut = Fut
 pub mod rutis::host
 pub mod rutis::host::diagnostics
 #[non_exhaustive] pub enum rutis::host::diagnostics::DependencyStatus
-pub rutis::host::diagnostics::DependencyStatus::CheckPanicked
-pub rutis::host::diagnostics::DependencyStatus::CheckPending
-pub rutis::host::diagnostics::DependencyStatus::CheckRejected
 pub rutis::host::diagnostics::DependencyStatus::Missing
 pub rutis::host::diagnostics::DependencyStatus::OutOfScope
 pub rutis::host::diagnostics::DependencyStatus::ProviderInactive(rutis::host::FiberState)

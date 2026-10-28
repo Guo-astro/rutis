@@ -162,6 +162,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
 | `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
 | `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
+| `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
 
 ### Tools
 

@@ -23,7 +23,7 @@ use crate::host::CtxHost;
 use crate::internal::CtxInternal;
 use crate::key::{InstanceId, Key, ScopeId, TypeKey};
 use crate::plugin::{DynPlugin, PluginFactory};
-use crate::registry::{Binding, CheckFn, Registry, StoredValue, ValueSlot};
+use crate::registry::{Binding, Registry, StoredValue, ValueSlot};
 use crate::writer::ServiceWriter;
 
 pub(crate) struct Shared {
@@ -605,7 +605,6 @@ impl Ctx {
         &self,
         key: TypeKey,
         value: Arc<T>,
-        check: Option<CheckFn>,
         mutable: bool,
     ) -> Result<(Disposer, Arc<Binding>), Error> {
         self.registration_preflight()?;
@@ -633,7 +632,7 @@ impl Ctx {
         };
         let Some(entries) = marked else {
             let plain = !mutable && key.name().is_none();
-            let provided = self.provide_native(key, value, check, mutable)?;
+            let provided = self.provide_native(key, value, mutable)?;
             // Said once it is provided: a refused provide serves nothing.
             if plain {
                 if let Some(service) = crate::service::unserved::<T>(self) {
@@ -664,7 +663,6 @@ impl Ctx {
             native: &key,
             scope: scope.as_deref(),
             entries,
-            check: check.clone(),
             provision: provision.clone(),
         };
         crate::service::admit(&exposure(entries.clone()))?;
@@ -673,7 +671,7 @@ impl Ctx {
         // before it when the provider unloads (cleanups run last in, first
         // out), as by the disposer below: no call by name finds the name
         // served and the native service gone.
-        let (native, binding) = self.provide_native(key.clone(), value, check.clone(), mutable)?;
+        let (native, binding) = self.provide_native(key.clone(), value, mutable)?;
         provision.fill(&binding);
         match crate::service::expose(exposure(entries)) {
             None => Ok((native, binding)),
@@ -705,7 +703,6 @@ impl Ctx {
         &self,
         key: TypeKey,
         value: Arc<T>,
-        check: Option<CheckFn>,
         mutable: bool,
     ) -> Result<(Disposer, Arc<Binding>), Error> {
         let scope = self.scope_for(&key);
@@ -732,8 +729,6 @@ impl Ctx {
                         provider: Arc::downgrade(fiber),
                         provider_id: fiber.id,
                         provider_gen,
-                        check,
-                        check_status: Mutex::new(None),
                         removing: AtomicBool::new(false),
                     },
                 )?;
@@ -1485,17 +1480,7 @@ impl crate::internal::CtxInternal for Ctx {
         key: impl Into<TypeKey>,
         value: Arc<T>,
     ) -> Result<Disposer, Error> {
-        self.provide_inner(key.into(), value, None, false)
-            .map(|(disposer, _)| disposer)
-    }
-
-    fn provide_checked<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        value: Arc<T>,
-        check: impl Fn() -> bool + Send + Sync + 'static,
-    ) -> Result<Disposer, Error> {
-        self.provide_inner(key.into(), value, Some(Arc::new(check)), false)
+        self.provide_inner(key.into(), value, false)
             .map(|(disposer, _)| disposer)
     }
 
@@ -1506,7 +1491,7 @@ impl crate::internal::CtxInternal for Ctx {
     ) -> Result<(Disposer, ServiceWriter<T>), Error> {
         let key = key.into();
         let scope = self.scope_for(&key);
-        let (disposer, binding) = self.provide_inner(key.clone(), value, None, true)?;
+        let (disposer, binding) = self.provide_inner(key.clone(), value, true)?;
         let writer = ServiceWriter::new(key, scope, binding, self.0.shared.clone());
         Ok((disposer, writer))
     }
@@ -1522,10 +1507,6 @@ impl crate::internal::CtxInternal for Ctx {
     ) -> Result<Disposer, Error> {
         let record = self.register_effect_named(label.into(), crate::effect::Origin::Other, f)?;
         Ok(self.record_disposer(record))
-    }
-
-    fn refresh(&self) {
-        self.0.shared.registry.refresh_all();
     }
 
     fn named(&self, name: impl Into<Arc<str>>) -> crate::events::Filtered<'_> {
