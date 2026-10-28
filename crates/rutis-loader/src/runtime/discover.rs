@@ -14,7 +14,7 @@ use std::path::Path;
 
 use rutis_bridge::runtime::{Process, RowSchema};
 
-use crate::Unavailable;
+use crate::error::Unavailable;
 
 /// What one plugin declares on one runtime session.
 #[derive(Clone)]
