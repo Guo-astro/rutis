@@ -52,8 +52,7 @@ impl PluginFactory<EntryConfig> for EntryFactory {
 }
 
 impl EntryFactory {
-    /// `config` through the loader's config step: the filled copy for the
-    /// rows the loader fills, as it is for others.
+    /// `config` through the loader's config step: the filled copy.
     fn filled(&self, config: &EntryConfig) -> Result<Value, Error> {
         let Some(loader) = self.loader.upgrade() else {
             return Ok(config.value.clone());

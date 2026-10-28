@@ -104,7 +104,7 @@ fn not_there(status: &Status, loader: &Loader, service: &str, provided: bool) ->
         .map(|provided| provided.name.clone())
         .collect();
     names.dedup();
-    let like = rutis::internal::config::closest(service, &names)
+    let like = rutis::config::closest(service, &names)
         .map(|like| format!("; did you mean {like}?"))
         .unwrap_or_default();
     let names = match names.is_empty() {

@@ -235,9 +235,8 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 
 - Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
 - Schema 要运行时才知道的行（没连上的远端运行时、对端不在的 `peer:` 行）写 `config not checked: its schema is known only when it runs`，这不是警告。
-- 0.18 以前的 SDK 构建的 Go 二进制，清单里把没有 `omitempty` 的字段都列为 `required`；`check` 忽略它们的 `required`（其余照常检查）。
 
-`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。0.18 以前的 SDK 构建的运行时加载行时不检查配置；`check` 照样检查它们。
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。
 
 ## 停止与退出码
 

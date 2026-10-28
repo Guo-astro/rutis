@@ -18,13 +18,11 @@ use crate::LoaderError;
 #[non_exhaustive]
 pub struct Resolved {
     pub factory: Arc<dyn PluginFactory<Value>>,
-    /// JSON Schema of the config. For the rows the loader fills (those
-    /// without `foreign_scope`: `Builtins`, dylibs, an embedder's own
-    /// resolver) the loader fills a copy of the config with its defaults
-    /// and validates it against the schema before `validate_config` /
-    /// `build` (config schema design §2.1); the factory's own checks come
-    /// after. For other runtimes' rows their SDK does that, and the loader
-    /// only warns of extra keys.
+    /// JSON Schema of the config. The loader fills a copy of the config
+    /// with its defaults and validates it against the schema before
+    /// `validate_config` / `build` (config schema design §2.1), for the rows
+    /// of every runtime but Cordis rows; the factory's own checks come
+    /// after, and it gets the filled copy.
     pub schema: Option<Value>,
     /// Diagnostics: version, source path, hash and the like.
     pub meta: Value,
@@ -422,7 +420,7 @@ impl<C, F> Json<C, F> {
 /// decoder error is one sentence; without one it is written by its kind
 /// (config schema design §3.3).
 fn decode<C: DeserializeOwned>(value: &Value, schema: bool) -> Result<C, Error> {
-    rutis::internal::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
+    rutis::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
 }
 
 impl<C, F> PluginFactory<Value> for Json<C, F>

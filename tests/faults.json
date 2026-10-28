@@ -466,7 +466,7 @@
         "tests": [
           ["crates/rutis-loader/tests/config_rows.rs", "a_rust_row_is_filled_and_validated"],
           ["crates/rutis-loader/tests/config_rows.rs", "extra_keys_are_warned_about_once"],
-          ["crates/rutis-loader/tests/config_cases.rs", "every_case_of_the_shared_list_passes"]
+          ["crates/rutis/tests/config_cases.rs", "every_case_of_the_shared_list_passes"]
         ]
       }
     },

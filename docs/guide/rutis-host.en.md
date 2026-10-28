@@ -235,9 +235,8 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 
 - Cordis rows (Cordis plugins exporting `Config`) are validated by Cordis with their own `Config` when they load; `check` prints their schema and does not check their config.
 - Rows whose schema is known only when they run (remote runtimes not connected, a `peer:` row whose peer is not there) say `config not checked: its schema is known only when it runs`, which is not a warning.
-- Go binaries built with an SDK older than 0.18 list every field without `omitempty` as `required` in their manifest; `check` ignores their `required` (the rest is checked).
 
-`run` and `dev` apply the same rules: a row whose config does not match fails (`weather: config: …`, a line per problem), and rows waiting for it say so (`chat: waiting for weather (row weather failed: config: …)`); extra keys are warned about once per row and config value. Runtimes built with an SDK older than 0.18 do not check configs when they load rows; `check` checks them all the same.
+`run` and `dev` apply the same rules: a row whose config does not match fails (`weather: config: …`, a line per problem), and rows waiting for it say so (`chat: waiting for weather (row weather failed: config: …)`); extra keys are warned about once per row and config value.
 
 ## Stopping and exit status
 
