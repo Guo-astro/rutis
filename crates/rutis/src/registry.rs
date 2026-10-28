@@ -9,7 +9,8 @@ use crate::key::{ScopeId, TypeKey};
 
 pub(crate) type CheckFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// 类型擦除的服务值:内层 `Box<Arc<T>>` 支持 `T: ?Sized`(trait 对象注册)。
+/// Type-erased service value. The value is kept as an `Arc<T>` behind `dyn Any`,
+/// so `T` may be unsized (trait-object registrations).
 #[derive(Clone)]
 pub(crate) struct StoredValue(Arc<Box<dyn Any + Send + Sync>>);
 
@@ -24,9 +25,9 @@ impl StoredValue {
     }
 }
 
-/// 服务绑定。注册表存 `Arc<Binding>`:所有观察者(lookup/依赖解析/摘除)
-/// 共享同一身份,`removing` 置位即刻全员可见——不再有克隆快照滞后窗口
-///(简化 S1/正确性:旧克隆体的旗标是拍照值,移除中的服务短暂可见)。
+/// A service binding. The registry stores `Arc<Binding>`, so every observer
+/// (lookup, dependency resolution, removal) shares the same instance and sees
+/// `removing` as soon as it is set.
 pub(crate) struct Binding {
     pub value: ValueSlot,
     pub provider: Weak<FiberInner>,
@@ -34,7 +35,8 @@ pub(crate) struct Binding {
     pub provider_gen: u64,
     pub check: Option<CheckFn>,
     pub check_status: Mutex<Option<DependencyStatus>>,
-    /// 摘除已开始(严格解析立即失败;绑定保留至消费者排干,供 provider 子树自访问,§四)。
+    /// Removal has started: strict reads fail at once. The binding stays until its
+    /// consumers have drained, so the provider's subtree can still read it.
     pub removing: std::sync::atomic::AtomicBool,
 }
 
@@ -63,25 +65,28 @@ impl ValueSlot {
     }
 }
 
-/// 服务注册表(支柱 3)+ 反向依赖索引(支柱 5/D21 三元组)。
+/// The service registry, with an index of the fibers that declare each key as
+/// a dependency.
 pub(crate) struct Registry {
     bindings: Mutex<HashMap<(TypeKey, Option<ScopeId>), Arc<Binding>>>,
-    /// 注入索引:TypeKey → 声明依赖它的 fiber。
+    /// Injection index: `TypeKey` → the fibers that declare a dependency on it.
     inject_index: Mutex<HashMap<TypeKey, Vec<Weak<FiberInner>>>>,
 }
 
-/// 稀疏即收缩(0.2.5):条目逻辑删除后容器容量不随历史峰值滞留。
-/// 阈值:容量超过 64 槽且长度不足容量 1/4——避免小表抖动,
-/// 收缩分摊在每次跨过阈值时。表空(长度 0)自然命中。
+/// Shrinks a map after entries were removed, so its capacity does not stay at
+/// its peak. It shrinks when the capacity exceeds 64 slots and the length is
+/// under a quarter of it; this leaves small tables alone and spreads the cost
+/// over the times the threshold is crossed.
 fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
     if map.capacity() > 64 && map.len() * 4 < map.capacity() {
         map.shrink_to_fit();
     }
 }
 
-/// 同一稀疏收缩规则用于单个键的条目列表(#291):高峰后只剩少量条目的
-/// 列表不再永久保留高峰容量。阈值与 `shrink_if_sparse` 相同,收缩后
-/// 至少要再增长到 4 倍才会再次收缩,增删交替不会退化为二次方。
+/// The same rule for one key's entry list: a list left with few entries after
+/// a peak does not keep its peak capacity. The threshold is the one of
+/// `shrink_if_sparse`; after shrinking, a list has to grow fourfold before it
+/// shrinks again, so alternating inserts and removals do not turn quadratic.
 fn shrink_vec_if_sparse<T>(list: &mut Vec<T>) {
     if list.capacity() > 64 && list.len() * 4 < list.capacity() {
         list.shrink_to_fit();
@@ -246,11 +251,10 @@ impl Registry {
         DependencyStatus::Ready
     }
 
-    /// 标记摘除开始:严格解析立即失败;绑定保留至 [`Registry::finalize_binding`]
-    /// (清理期自访问,§四)。
-    /// 最终摘除绑定(provider 最后;此前保留供清理期自访问,§四)。
-    /// 仅当槽位仍是本次摘除的那份绑定才移除——摘除窗口内被新 provide 替换
-    /// 过的槽位不动(TS dispose 同步释放槽位语义,对拍 fiber.spec inertia lock 2)。
+    /// Removes the binding for good; until now the provider's cleanup could still
+    /// read it. Removes it only if the slot still holds `expected`: a slot that a
+    /// new provide took over during removal is left alone, as TypeScript's
+    /// dispose frees the slot at once. Returns whether it removed the binding.
     pub(crate) fn finalize_binding_if(
         &self,
         key: TypeKey,
@@ -268,14 +272,16 @@ impl Registry {
         still_old
     }
 
-    /// 该依赖四元组的当前消费者(D21 简化:唯一事实源是各 fiber 的
-    /// `last_deps`,不再维护第二份反向索引)。声明注入该键、且 `last_deps`
-    /// 含此四元组(含作用域)的 fiber 即为绑定中的消费者——与装载/卸载窗口
-    /// 严格一致(last_deps 于 load 的 apply 前设置、卸载时 drain_effects
-    /// 清除;装载失败时写回失败那一代的依赖)。失败的 fiber 也算消费者:
-    /// 驱逐时对它重查,依赖缺失则保持 Failed。
-    /// 四元组含作用域:同一 provider fiber 在不同作用域提供的同键绑定
-    /// 互不为对方的消费者(isolate 语义)。
+    /// The current consumers of the dependency `quad` (provider, generation, key,
+    /// scope). Each fiber's `last_deps` is the only record: a fiber that declares
+    /// an injection of `key` and whose `last_deps` contains `quad` is bound to the
+    /// binding. This matches the load and unload windows exactly: `last_deps` is
+    /// set before a load's apply, cleared when the fiber unloads, and after a
+    /// failed load holds the dependencies of the failed generation. A failed fiber
+    /// counts as a consumer: removal checks it again, and it stays Failed if the
+    /// dependency is missing. Because `quad` includes the scope, a consumer of one
+    /// scope's binding is not a consumer of the same provider's binding of that
+    /// key in another scope.
     pub(crate) fn consumers_of(
         &self,
         key: &TypeKey,
@@ -308,9 +314,11 @@ impl Registry {
             .push(Arc::downgrade(fiber));
     }
 
-    /// 注销终态 fiber 的依赖声明(0.2.1 瞬态释放):驱动已退出的 fiber
-    /// 不再参与门控解析与重查通知;条目清空的键一并删除,keyed 声明
-    /// (每实例唯一限定名)在长寿 root 下不累积。
+    /// Removes the dependency declarations of a fiber that has finished: a fiber
+    /// whose driver has exited takes no further part in gated resolution or
+    /// re-check notifications. Keys left with no entries are removed, so keyed
+    /// declarations (one qualified name per instance) do not accumulate under a
+    /// long-lived root.
     pub(crate) fn unregister_injects(&self, fiber: &Arc<FiberInner>, keys: &[TypeKey]) {
         let weak = Arc::downgrade(fiber);
         let mut index = self.inject_index.lock().unwrap();
@@ -328,7 +336,7 @@ impl Registry {
         shrink_if_sparse(&mut index);
     }
 
-    /// 通知所有注入该键的 fiber 重查依赖。
+    /// Asks every fiber that injects `key` to re-check its dependencies.
     pub(crate) fn notify_key_changed(&self, key: &TypeKey) {
         let fibers: Vec<Arc<FiberInner>> = {
             let index = self.inject_index.lock().unwrap();
@@ -342,7 +350,8 @@ impl Registry {
         }
     }
 
-    /// 重查所有声明了依赖的 fiber(`Ctx::refresh`,check() 谓词变更触发)。
+    /// Asks every fiber that declares dependencies to re-check them (`refresh`,
+    /// when the result of a `check()` predicate changes).
     pub(crate) fn refresh_all(&self) {
         let mut seen: HashSet<PluginId> = HashSet::new();
         let index = self.inject_index.lock().unwrap();
@@ -357,7 +366,9 @@ impl Registry {
         }
     }
 
-    /// 门控解析(支柱 2):存在 + 未在摘除 + provider Active + `check()` 通过。
+    /// Gated resolution: the binding exists, is not being removed, its provider is
+    /// active and its `check()` passes (a panicking check does not pass). Returns
+    /// the provider and its generation.
     pub(crate) fn resolve_dep(
         &self,
         key: &TypeKey,

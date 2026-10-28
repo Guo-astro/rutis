@@ -91,6 +91,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
+| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`dev` 接受，`run` 要加 `--allow-call`（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 | `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
@@ -208,7 +209,26 @@ rutis-host: error: rows one, two all provide llm: only the first to start provid
 
 行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
 
-rutis-host 目前不按插件的 Schema 检查它的配置（0.18 起检查，[#669](https://github.com/arcships/rutis/issues/669)），`check` 只打印 Schema。配置有没有被检查，取决于插件的语言怎样读它：例如 Rust 插件把配置解码成类型 `C`，解码不了时这一行装载失败。
+### 每一行的配置
+
+0.18 起 `check` 给每一行的配置补上插件 Schema 里的默认值，再按插件的 JSON Schema 校验，规则和各语言 SDK 加载这一行时用的一样（检查哪些关键字见[插件 API](plugin-api.md#配置)）。不合格的配置不能运行：每个问题一行，按路径排序，退出码 1：
+
+```
+weather (weather): cannot run: config: units should be "metric" or "imperial", got "kelvin"
+weather (weather): cannot run: config: home.lat should be a number, got "north"
+```
+
+Schema 没写的键，在 Schema 允许多余的键时（有 `properties`、没写 `additionalProperties` 的对象），是标准错误上的警告，拼写接近已知的键时给出提示；这一行照常运行，插件原样拿到这个键的值。加 `--strict` 时是错误，这一行 `cannot run with --strict`：
+
+```
+rutis-host: warning: weather: config: cty is not a config key (did you mean city?)
+```
+
+- Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
+- Schema 要运行时才知道的行（没连上的远端运行时、对端不在的 `peer:` 行）写 `config not checked: its schema is known only when it runs`，这不是警告。
+- 0.18 以前的 SDK 构建的 Go 二进制，清单里把没有 `omitempty` 的字段都列为 `required`；`check` 忽略它们的 `required`（其余照常检查）。
+
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。0.18 以前的 SDK 构建的运行时加载行时不检查配置；`check` 照样检查它们。
 
 ## 停止与退出码
 
@@ -255,7 +275,14 @@ rutis-host: reloaded <文件> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <原因>; nothing changed
 ```
 
-被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
+被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。因为某一行的配置不符合 Schema 而被拒绝时，先每个问题一行，再是拒绝的那一行：
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 
@@ -334,9 +361,45 @@ calls:
 - `calls`：调用了一个行的服务、还没返回的调用：谁调用（不在行里发起的写 `host`）、哪个服务的哪个方法、已经多久；被调用的行名和服务名不同时写 `(row <行>)`。看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」，没有方法名）；进程内的 Rust 插件发起的调用记为 `host`。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
-`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），只回答 `status` 这一个请求，什么都不改。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（`dev` 接受，`run` 加 `--allow-call` 时接受，见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
 
 停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
+
+## 调用一个服务
+
+`run` 或 `dev` 运行时，另开一个终端，用 `rutis-host call` 调一个服务的方法，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call forecast.today '"Oslo"'
+"sunny in Oslo"
+$ rutis-host call forecast.week '{"days": 3}'
+{
+  "days": 3,
+  ...
+}
+```
+
+- `<服务>.<方法>` 在最后一个 `.` 处拆开（服务名可以带点）。每个参数是一个 JSON 值：`3`、`true`、`null`、`'"Oslo"'`、`'{"days": 3}'`、`'[1, 2]'`；字符串要带引号，不是 JSON 的参数报错，不猜成字符串。日期、二进制、Map 这类 JSON 写不出的值不能从命令行传：要试这样的方法，在测试里调用。
+- 找宿主与 `rutis-host status` 相同：当前目录的 `rutis.json`（插件项目里是 `dev` 运行的那个项目），或者 `--config <rutis.json | 目录>` 指定的。它只连正在运行的宿主，不启动新的。
+- 调用的是根作用域按名字看到的那个服务，哪种语言、哪个运行时或节点提供的都可以，与 [在 Rust 里按名字调用服务](rust-host.md#在-rust-里按名字调用服务) 相同。调用不来自任何行：`rutis-host status` 里记为 `host → forecast.today (row weather)  3s`。
+- 结果打印成两格缩进的 JSON，没有结果是 `null`。JSON 没有的值用它的文字：时间点、日期、大整数、Decimal、UUID 写成字符串（如 `"2026-10-27"`），二进制、Map、Set、引用写它是什么（如 `"<a map>"`）；只给人看，不保证能原样再传回去。
+- 不设时限，一直等到结果；Ctrl-C 结束 `call`（退出码 130），宿主丢弃这次调用。
+- 出错时把错误写到标准错误并以 1 退出：
+
+| 情况 | 输出 |
+| --- | --- |
+| 参数不是 JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
+| 没写方法 | `rutis-host: name a method, as forecast.<method>` |
+| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
+| 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
+| 参数类型不对 | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
+| 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
+| 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+| `run` 没加 `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call` |
+
+`call` 能执行任何服务的任何方法，所以 `dev` 接受，`run` 默认不接受：生产环境要用时在启动命令上加 `--allow-call`（只放在命令行，不写进 `rutis.json`）。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
 
 ## 输出
 
@@ -462,7 +525,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 
 - 运行时连接时出示 token `RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`；没有时用 `RUTIS_TOKEN`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
 - 每条连接是分组的一个实例：连进来时创建，断开时关闭。同一个 id 的新连接接管旧连接：旧实例关闭后再创建新实例。
-- 分组里的 `<name>:<插件>` 行在每个实例里运行在该实例的连接上。连接里没有这个插件时，这一行只在这个实例里失败（`this connection does not contain plugin <插件>`），不影响其他实例；新增这样的行也不会因此被拒绝。
+- 分组里的 `<name>:<插件>` 行在每个实例里运行在该实例的连接上。连接里没有这个插件时，这一行只在这个实例里失败（`runtime <name>: this connection does not contain plugin <插件>`），不影响其他实例；新增这样的行也不会因此被拒绝。
 - 连接上的插件提供的服务是它所在实例自己的：多条连接带同名插件互不冲突，同一实例里的行（任何语言）按名字用到的是本连接的服务。实例外的行用不到它们，需要时把使用者放进这个分组。
 - 不需要另写节点行。`listen` 与 `instances` 要同时写；监听器、分组不存在，分组不是 `instanced`，或者没有 token，启动时报错。
 - `<name>:` 行只能放在这个分组里；放在别处时这一行失败。

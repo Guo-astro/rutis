@@ -3,7 +3,7 @@
 // (docs/design-value-types-2026-10-15.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import * as rutis from '../src/index.mjs'
+import * as rutis from '../src/advanced.mjs'
 import { definePlugin } from '../src/index.mjs'
 import { load } from '../src/testing.mjs'
 

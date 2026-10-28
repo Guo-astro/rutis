@@ -16,6 +16,7 @@ import (
 // The shared case list (config schema design §8), each case through what
 // the runtime runs before Apply: a definition's apply with the case's
 // schema as its Schema.
+// guarantee: sdk/config-schema (the shared case list)
 func TestEveryConfigCaseBeforeApply(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "specs", "config-schema", "cases.json"))
 	if err != nil {

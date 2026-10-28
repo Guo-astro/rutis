@@ -1,0 +1,164 @@
+## github.com/arcships/rutis/go/rutis
+var ErrBinding = events.ErrBinding
+func Ref(v any) any
+func Serve(defs ...*Definition)
+type Ctx struct {
+    context.Context
+}
+func (c *Ctx) Bail(ctx context.Context, name string, args ...any) (any, error)
+func (c *Ctx) Effect(cleanup func(context.Context) error)
+func (c *Ctx) Emit(ctx context.Context, name string, args ...any) error
+func (c *Ctx) Filter(keep func(Listener) (bool, error)) *Emitter
+func (c *Ctx) Go(task func(context.Context) error)
+func (c *Ctx) On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...ListenOption) func()
+func (c *Ctx) Parallel(ctx context.Context, name string, args ...any) error
+func (c *Ctx) Provide(name string, value any) func()
+func (c *Ctx) Scope() []Scope
+func (c *Ctx) Serial(ctx context.Context, name string, args ...any) (any, error)
+func (c *Ctx) Use(name string, target any) error
+func (c *Ctx) Waterfall(ctx context.Context, name string, terminal Terminal, args ...any) (any, error)
+type Definition struct {
+}
+func Define[C any](p Plugin[C]) *Definition
+func (d *Definition) Name() string
+type Emitter struct {
+}
+func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, error)
+func (e *Emitter) Emit(ctx context.Context, name string, args ...any) error
+func (e *Emitter) Parallel(ctx context.Context, name string, args ...any) error
+func (e *Emitter) Serial(ctx context.Context, name string, args ...any) (any, error)
+func (e *Emitter) Waterfall(ctx context.Context, name string, terminal Terminal, args ...any) (any, error)
+type ListenOption func(*events.ListenOptions)
+type Listener = events.Listener
+type NoConfig struct {
+}
+type Plugin[C any] struct {
+    Name     string
+    Inject   []string
+    Provides Provides
+    Schema   map[string]any
+    Apply    func(ctx *Ctx, config C) error
+}
+type Provides map[string]*Shape
+type RemoteError = peer.RemoteError
+type Scope = events.Scope
+type Shape struct {
+}
+func MethodsOf[T any](options ...ShapeOption) *Shape
+func (s *Shape) Kinds() map[string]string
+type ShapeOption func(*shapeOptions)
+func Sync(methods ...string) ShapeOption
+type Terminal = events.Terminal
+## github.com/arcships/rutis/go/rutis (deprecated: moved to advanced in 0.19)
+const Implementation = "github.com/arcships/rutis/go/rutis"
+const PluginAPI = 3
+const Version string
+var ErrReservedEvent = events.ErrReservedEvent
+var ErrWaterfallNext = events.ErrWaterfallNext
+var ErrAsyncListener = events.ErrAsyncListener
+var ErrSyncWaitCycle = peer.ErrSyncWaitCycle
+func Manifest(defs ...*Definition) ([]byte, error)
+func Project() string
+func ServeArgs(args []string, defs ...*Definition) error
+func ServeConn(conn net.Conn, defs ...*Definition) error
+type AggregateError = peer.AggregateError
+type Date = values.Date
+func DateOf(t time.Time) Date
+func ParseDate(text string) (Date, error)
+type DateTime = values.DateTime
+func DateTimeOf(t time.Time) DateTime
+func ParseDateTime(text string) (DateTime, error)
+type Decimal = values.Decimal
+func ParseDecimal(text string) (Decimal, error)
+type Function = convert.Function
+type Future = convert.Future
+func Global() ListenOption
+func Prepend() ListenOption
+type Next = events.Next
+type Schemer interface {
+    JSONSchema() map[string]any
+}
+type Service struct {
+}
+func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error
+func (s *Service) Local() bool
+func (s *Service) Methods() map[string]string
+func Rename(method, wire string) ShapeOption
+type TimeOfDay = values.TimeOfDay
+func ParseTimeOfDay(text string) (TimeOfDay, error)
+func TimeOfDayOf(t time.Time) TimeOfDay
+type UUID = values.UUID
+func ParseUUID(text string) (UUID, error)
+
+## github.com/arcships/rutis/go/rutis/advanced
+const Implementation = rutis.Implementation
+const PluginAPI = rutis.PluginAPI
+const Version = rutis.Version
+var ErrReservedEvent = events.ErrReservedEvent
+var ErrWaterfallNext = events.ErrWaterfallNext
+var ErrAsyncListener = events.ErrAsyncListener
+var ErrSyncWaitCycle = peer.ErrSyncWaitCycle
+func Global() rutis.ListenOption
+func Manifest(defs ...*rutis.Definition) ([]byte, error)
+func Prepend() rutis.ListenOption
+func Project() string
+func Rename(method, wire string) rutis.ShapeOption
+func ServeArgs(args []string, defs ...*rutis.Definition) error
+func ServeConn(conn net.Conn, defs ...*rutis.Definition) error
+type AggregateError = peer.AggregateError
+type Date = values.Date
+func DateOf(t time.Time) Date
+func ParseDate(text string) (Date, error)
+type DateTime = values.DateTime
+func DateTimeOf(t time.Time) DateTime
+func ParseDateTime(text string) (DateTime, error)
+type Decimal = values.Decimal
+func ParseDecimal(text string) (Decimal, error)
+type Function = convert.Function
+type Future = convert.Future
+type Next = events.Next
+type Schemer = rutis.Schemer
+type Service = rutis.Service
+type TimeOfDay = values.TimeOfDay
+func ParseTimeOfDay(text string) (TimeOfDay, error)
+func TimeOfDayOf(t time.Time) TimeOfDay
+type UUID = values.UUID
+func ParseUUID(text string) (UUID, error)
+
+## github.com/arcships/rutis/go/rutis/rutistest
+type Emitter struct {
+}
+func (e *Emitter) Bail(ctx context.Context, name string, args ...any) (any, error)
+func (e *Emitter) Emit(ctx context.Context, name string, args ...any) error
+func (e *Emitter) Parallel(ctx context.Context, name string, args ...any) error
+func (e *Emitter) Serial(ctx context.Context, name string, args ...any) (any, error)
+func (e *Emitter) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error)
+type Loaded struct {
+}
+func Load(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) *Loaded
+func TryLoad(t testing.TB, plugin *rutis.Definition, config any, services map[string]any, opts ...Option) (loaded *Loaded, err error)
+func (l *Loaded) Bail(ctx context.Context, name string, args ...any) (any, error)
+func (l *Loaded) Emit(ctx context.Context, name string, args ...any) error
+func (l *Loaded) Filter(keep func(rutis.Listener) (bool, error)) *Emitter
+func (l *Loaded) Load(config any, options ...Option) *Loaded
+func (l *Loaded) On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func()
+func (l *Loaded) Parallel(ctx context.Context, name string, args ...any) error
+func (l *Loaded) Provided() []string
+func (l *Loaded) Reported() []string
+func (l *Loaded) Scope() []rutis.Scope
+func (l *Loaded) Serial(ctx context.Context, name string, args ...any) (any, error)
+func (l *Loaded) Service(name string) *Service
+func (l *Loaded) Unload()
+func (l *Loaded) Update(config any)
+func (l *Loaded) Waterfall(ctx context.Context, name string, terminal rutis.Terminal, args ...any) (any, error)
+type Option func(*options)
+func InChain(chain ...rutis.Scope) Option
+func InScope(path string, groups ...string) Option
+func Row(key string) Option
+func RuntimeName(name string) Option
+type Service struct {
+}
+func (s *Service) Bind(target any) error
+func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error
+func (s *Service) Methods() map[string]string
+

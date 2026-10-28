@@ -119,6 +119,17 @@ bunx --bun rutis-host dev
 - `runtimes.bun` 的字段：`project`（默认 `.`）、`runtime`（`@arcships/rutis-bun` 的位置，默认项目里装的）、`program`（Bun 可执行文件，默认 `PATH` 上的 `bun`）。
 - 可以和 `runtimes.node`、`runtimes.py` 同时配置；服务按名字跨运行时共享。
 
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ bunx --bun rutis-host call greeter.hello '"Ada"' '"en"'
+"Hello, Ada!"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+
 ### 调试
 
 `--debug` 打开 Bun 运行时进程自己的检查器，地址固定为 `ws://127.0.0.1:6499/rutis`：

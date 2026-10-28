@@ -41,13 +41,13 @@ class FakePeer:
 
 class Exported(unittest.TestCase):
     def test_load_error_is_exported(self):
-        import rutis
+        import rutis.advanced
 
-        self.assertIs(rutis.LoadError, LoadError)
-        self.assertIn("LoadError", rutis.__all__)
+        self.assertIs(rutis.advanced.LoadError, LoadError)
+        self.assertIn("LoadError", rutis.advanced.__all__)
 
     def test_a_sync_wait_cycle_prints_its_message_alone(self):
-        from rutis import SyncWaitCycle
+        from rutis.advanced import SyncWaitCycle
         from rutis.peer import decode_error
 
         error = decode_error({"name": "SyncWaitCycle", "message": "a.b would wait on itself: x → y → x (synchronous calls)"})

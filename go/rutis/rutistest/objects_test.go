@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/rutistest"
 )
 
@@ -15,7 +16,7 @@ func (c *cache) Set(key string, value int) { c.values[key] = value }
 func (c *cache) Get(key string) int        { return c.values[key] }
 
 // warmer takes an object as a struct of function fields, or as any.
-type warmer struct{ kept *rutis.Service }
+type warmer struct{ kept *advanced.Service }
 
 func (w *warmer) Warm(ctx context.Context, c struct {
 	Set func(ctx context.Context, key string, value int) error
@@ -27,12 +28,12 @@ func (w *warmer) Warm(ctx context.Context, c struct {
 	return c.Get(ctx, "a")
 }
 
-func (w *warmer) Keep(ctx context.Context, c *rutis.Service) { w.kept = c }
+func (w *warmer) Keep(ctx context.Context, c *advanced.Service) { w.kept = c }
 func (w *warmer) Bump(ctx context.Context, m map[string]int) int {
 	m["n"] = 2
 	return m["n"]
 }
-func (w *warmer) Back(ctx context.Context) *rutis.Service { return w.kept }
+func (w *warmer) Back(ctx context.Context) *advanced.Service { return w.kept }
 func (w *warmer) Missing(ctx context.Context) string {
 	var remote *rutis.RemoteError
 	if err := w.kept.Call(ctx, "gett", nil); errors.As(err, &remote) {
@@ -46,7 +47,7 @@ func (w *warmer) Missing(ctx context.Context) string {
 // objects-case(go): no-method
 // The testing tool passes an object (rutis.Ref) across its session, as
 // between processes (#687): the plugin calls the original, keeps it as a
-// *rutis.Service, passes it back as the original; a method the object
+// *advanced.Service, passes it back as the original; a method the object
 // lacks is no-method; data is copied.
 func TestAnObjectCrossesAsBetweenProcesses(t *testing.T) {
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
