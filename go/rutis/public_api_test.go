@@ -47,9 +47,13 @@ func TestPublicAPI(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A Windows checkout may turn the snapshot's (and the sources') line
+	// ends into CRLF: compare the lines, not the bytes.
 	want, _ := os.ReadFile("public-api.txt")
-	if !bytes.Equal(want, out.Bytes()) {
-		t.Fatalf("\n%sthe public API of rutis changed: review the diff, then run go test -run TestPublicAPI -update", diff(string(want), out.String()))
+	wantText := strings.ReplaceAll(string(want), "\r\n", "\n")
+	got := strings.ReplaceAll(out.String(), "\r\n", "\n")
+	if wantText != got {
+		t.Fatalf("\n%sthe public API of rutis changed: review the diff, then run go test -run TestPublicAPI -update", diff(wantText, got))
 	}
 }
 
