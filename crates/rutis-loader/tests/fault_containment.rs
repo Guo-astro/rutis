@@ -12,13 +12,13 @@ use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, Probe, COLD};
+use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle};
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -181,7 +181,7 @@ async fn fixture(language: Language, dir: &Path) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
+    rows_stage(&root, resolver).await;
     COLD.within("the runtime to start", (&runtime).into_future())
         .await
         .unwrap();

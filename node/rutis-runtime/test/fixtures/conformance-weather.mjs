@@ -4,7 +4,7 @@
 // runtime and the testing tool (@arcships/rutis/testing,
 // node/rutis/test/conformance.test.mjs) are both checked against it. It
 // imports the SDK by path, so it is loaded where it is, not copied.
-import * as rutis from '../../../rutis/src/index.mjs'
+import * as rutis from '../../../rutis/src/advanced.mjs'
 import { definePlugin } from '../../../rutis/src/index.mjs'
 
 // Values only JavaScript makes, by name (`samples` in the expectations).

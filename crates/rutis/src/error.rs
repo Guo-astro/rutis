@@ -115,8 +115,9 @@ pub struct ServiceWriteError {
 /// cloneable::<rutis::Error>();
 /// ```
 ///
-/// 变体分层(D25):`PluginFailed` 仅包装 apply/清理边界外来的非 rutis 错误;
-/// apply 自身返回的 rutis 错误直接传播,不再递归包一层。
+/// `PluginFailed` wraps only errors that are not rutis errors; a rutis
+/// error returned from `apply` or a cleanup keeps its own kind and is not
+/// wrapped again.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -130,8 +131,9 @@ pub enum ErrorKind {
     PluginFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("multiple errors: {errors:?}")]
     Aggregate {
-        /// 聚合成员,不压平(D18/§五 dispose 契约)。`Arc` 成员是 D11(不
-        /// Clone)与 D25(错误 identity 缓存 `Arc`)的推论,见 §八 实现记录。
+        /// The member errors, not flattened. Members are `Arc`s because
+        /// errors are not `Clone` and a member may be shared with other
+        /// holders of the same error.
         errors: Vec<Arc<ErrorKind>>,
     },
     #[error("fiber disposed")]
@@ -152,7 +154,7 @@ pub enum ErrorKind {
     /// does the same.
     #[error("dependency unsatisfied: {0:?}")]
     InjectUnsatisfied(Vec<String>),
-    /// 同一 (key, scope) 重复注册(实现新增变体,见 §八 实现记录)。
+    /// A service was registered twice for the same key in the same scope.
     #[error("service {0:?} already registered in scope")]
     ServiceExists(String),
     #[error("instance {instance} is outside the caller's fiber subtree")]
@@ -441,10 +443,11 @@ impl From<Error> for anyhow::Error {
     }
 }
 
-/// 错误汇聚点。默认实现输出到 stderr(设计 §二)。
+/// Where errors nobody awaits are reported. The default writes to stderr
+/// ([`default_sink`]).
 ///
-/// 成员为 `Arc<ErrorKind>`:dispose 类错误经 `TransitionTask` 缓存 identity
-/// (D25),而 `Error` 刻意不 Clone(D11),见 §八 实现记录。
+/// It takes `Arc<ErrorKind>`: a dispose error is cached and shared by its
+/// transition, and `Error` is deliberately not `Clone`.
 pub type ErrorSink = Arc<dyn Fn(Arc<ErrorKind>) + Send + Sync>;
 
 /// The sink `Ctx::root` / `Ctx::root_with` install: each error on stderr
@@ -519,7 +522,8 @@ fn format_for_sink(error: &ErrorKind) -> String {
     out
 }
 
-/// 单错原样、多错聚合不压平,成员是共享 identity 的 `Arc`;返回 `None` 表示无错。
+/// One error as it is, several as an unflattened `Aggregate` of the shared
+/// `Arc`s; `None` when there are no errors.
 pub(crate) fn aggregate_arcs(errors: Vec<Arc<ErrorKind>>) -> Option<Arc<ErrorKind>> {
     match errors.len() {
         0 => None,
@@ -528,7 +532,8 @@ pub(crate) fn aggregate_arcs(errors: Vec<Arc<ErrorKind>>) -> Option<Arc<ErrorKin
     }
 }
 
-/// 把任务边界捕获的 panic 转成 `PluginFailed`(D30)。
+/// Turns a panic caught at a task boundary into a `PluginFailed` carrying
+/// the panic message.
 pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> Error {
     let msg = if let Some(s) = p.downcast_ref::<&str>() {
         (*s).to_string()
@@ -540,8 +545,9 @@ pub(crate) fn panic_error(p: Box<dyn std::any::Any + Send>) -> Error {
     ErrorKind::PluginFailed(msg.into()).into()
 }
 
-/// JoinError → 错误:先区分 panic 与取消——`into_panic()` 在取消场景会
-/// 二次 panic(评审 P2),取消转明确的任务取消错误。
+/// Turns a `JoinError` into an error. A panic becomes [`panic_error`]; a
+/// cancellation becomes a "task cancelled" error, since `into_panic()` would
+/// panic again on a cancelled task.
 pub(crate) fn join_panic_error(join_err: tokio::task::JoinError) -> Error {
     if join_err.is_panic() {
         panic_error(join_err.into_panic())

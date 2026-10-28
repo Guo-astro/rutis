@@ -13,13 +13,13 @@ mod common;
 
 use std::sync::Arc;
 
-use common::runtimes::{go_binary, layer, repo, row_state, Probe};
+use common::runtimes::{go_binary, layer, repo, row_state, rows_stage, Probe};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
 use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -191,8 +191,8 @@ async fn fixture() -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(node_rows));
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
+    rows_stage(&root, node_rows).await;
+    rows_stage(&root, python_rows).await;
     root.plugin(GoRuntimes::new(go, dir.path()).idle(None))
         .await
         .unwrap();
