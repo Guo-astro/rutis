@@ -354,6 +354,8 @@ func main() { rutis.Serve(plugin) }
 
 ### 调用一个方法
 
+`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: weather (weather), llm (llm)`。
+
 `dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
 
 ```console
