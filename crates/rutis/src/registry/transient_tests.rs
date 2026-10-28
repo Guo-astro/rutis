@@ -1,5 +1,6 @@
-//! 终态释放(0.2.1)单元验证:依赖声明随驱动退出注销,keyed 声明
-//! (每实例唯一限定名)在长寿 root 下不累积 `inject_index`。
+//! Release of dependency declarations: they are unregistered when the
+//! driver exits, so keyed declarations (a unique qualifier per instance) do
+//! not accumulate in `inject_index` under a long-lived root.
 
 use super::*;
 use crate::ctx::Ctx;

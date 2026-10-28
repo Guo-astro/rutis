@@ -8,10 +8,10 @@ iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康
 
 ## 1. 加入 SDK
 
-在 Xcode 里：File → Add Package Dependencies…，填 `https://github.com/arcships/rutis`，从 `0.17.2` 起，把库 `Rutis` 加到应用的 target。在包里：
+在 Xcode 里：File → Add Package Dependencies…，填 `https://github.com/arcships/rutis`，从 `0.18.0` 起，把库 `Rutis` 加到应用的 target。在包里：
 
 ```swift
-.package(url: "https://github.com/arcships/rutis", from: "0.17.2"),
+.package(url: "https://github.com/arcships/rutis", from: "0.18.0"),
 // target 里：
 .product(name: "Rutis", package: "rutis"),
 ```
@@ -195,7 +195,7 @@ RUTIS_TOKEN_PHONE=<应用出示的 token> rutis-host run rutis.json
 
 - 每条应用连接以它的 id 创建一个实例，断开时关闭；同一 id 的新连接接管旧的。
 - 每个实例里，`phone:health` 装载该应用的 `health` 插件，`py:coach`（rutis 机器上的 Python 插件）使用该应用的 `health` 与 `device`。两部手机带同样的插件就是两个实例：每个 `coach` 只看到自己那部手机，分组外的行看不到任何手机的服务。
-- 应用没有某一行写到的插件时，只有这一行在它的实例里失败（`this connection does not contain plugin …`）。
+- 应用没有某一行写到的插件时，只有这一行在它的实例里失败（`runtime <名>: this connection does not contain plugin …`）。
 - 应用停止或被挂起时它的实例关闭，那里的 `coach` 停下；再次开始时新的实例重新装载这些行。
 
 字段与规则见 [连进来的运行时](nodes.md#连进来的运行时) 和 [rutis-host](rutis-host.md#连进来的运行时)。

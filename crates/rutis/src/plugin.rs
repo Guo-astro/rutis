@@ -80,23 +80,29 @@ fn short_type_name<T: ?Sized>() -> &'static str {
 /// `injects` and read them with `require_at`. A boxed one is one too, so a
 /// host can mount plugins chosen at run time.
 pub trait DynPlugin: Send + Sync + 'static {
-    /// 显示名(日志/诊断)。注册时同步调用；panic 向注册调用方传播。
+    /// Display name, for logs and diagnostics. Called synchronously at
+    /// registration; a panic propagates to the caller that registers it.
     fn name(&self) -> &str;
 
-    /// 依赖门控声明(支柱 2):全部就绪(存在 + provider Active + `check()` 通过)才启动。
-    /// 注册时同步调用一次，panic 向注册调用方传播。
+    /// The dependencies that gate the plugin: it starts only when every one
+    /// is ready (registered, its provider Active, and its readiness check,
+    /// if any, passing). Called once, synchronously, at registration; a
+    /// panic propagates to the caller that registers it.
     fn injects(&self) -> Vec<TypeKey> {
         Vec::new()
     }
 
-    /// 校验自持有 config(D12:validate-before-store,注册/装载期调用)。
-    /// panic 在装载边界转换为 `PluginFailed` 并回滚已注册资源。
+    /// Validates the plugin's own config before it is applied. Called on
+    /// each load (and in a config update's dry run). An error or a panic
+    /// fails the load: a panic becomes a `PluginFailed`, and what was
+    /// registered is rolled back.
     fn validate(&self) -> Result<(), Error> {
         Ok(())
     }
 
-    /// 装配体:提供 0..n 服务、注册 0..n 监听、交回清理。
-    /// 创建 Future 或 poll 时的 panic 均转换为 `PluginFailed` 并回滚。
+    /// The plugin body: provides services, registers listeners and returns
+    /// its cleanup. A panic while creating or polling the future becomes a
+    /// `PluginFailed` and the load is rolled back.
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>>;
 
     /// Whether this plugin is part of rutis itself (a transport, a link, a
@@ -155,34 +161,42 @@ impl DynPlugin for Box<dyn DynPlugin> {
     }
 }
 
-/// 插件工厂(D32:配置热更新):每代从当前 config 构造插件实例。
+/// A plugin factory, for config updates: each load builds a fresh plugin
+/// instance from the current config.
 ///
-/// `build` 必须是纯构造(无副作用或幂等)——`FiberView::update` 的 dry-run
-/// 与实际装载各调用一次,两次产物不要求同一实例但要求等价。
+/// `build` must be pure construction (no side effects, or idempotent ones):
+/// `FiberView::update` calls it once for a dry run and again for the actual
+/// load. The two instances need not be the same, but must be equivalent.
 ///
-/// 依赖声明与 [`DynPlugin::injects`] 同形:**静态**,spawn 时注册一次、终身
-/// 不变(D32f)。按配置选依赖的标准形态是拆成多个插件、配置决定装哪个。
+/// Dependencies are declared like [`DynPlugin::injects`]: **static**,
+/// registered once at spawn and never changed. To pick dependencies by
+/// config, split the plugin into several and let the config decide which
+/// one to mount.
 ///
 /// A typed build function (`Fn(&C) -> Result<P>` with `P: Plugin`) needs no
 /// factory: `plugin_from`, `Builtins::register` and `export_plugin!(build:)`
 /// take it and declare `P::Deps`.
 pub trait PluginFactory<C: Send + Sync + 'static>: Send + Sync + 'static {
-    /// 显示名(日志/诊断,fiber 创建时取用,不再随代变化)。
+    /// Display name, for logs and diagnostics. Read once when the fiber is
+    /// created; it does not change across loads.
     fn name(&self) -> &str {
         std::any::type_name::<Self>()
     }
 
-    /// 依赖门控声明(静态,spawn 时注册一次;与 [`DynPlugin::injects`] 对称)。
+    /// The dependencies that gate the plugin, as in [`DynPlugin::injects`]:
+    /// static, registered once at spawn.
     fn injects(&self) -> Vec<TypeKey> {
         Vec::new()
     }
 
-    /// config 级校验(不构造实例;`update` 的 dry-run 第一步)。
+    /// Validates a config without building an instance. The first step of
+    /// `update`'s dry run.
     fn validate_config(&self, _config: &C) -> Result<(), Error> {
         Ok(())
     }
 
-    /// 构造插件实例。失败 = config 无法产出可用实例(装载期走 `fail_load`)。
+    /// Builds the plugin instance. An error means the config cannot produce
+    /// a usable instance; during a load it fails the load.
     fn build(&self, config: &C) -> Result<Box<dyn DynPlugin>, Error>;
 }
 

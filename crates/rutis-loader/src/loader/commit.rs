@@ -9,9 +9,10 @@ use rutis::{Ctx, Error};
 
 use crate::edit::{apply_edit, Edit};
 use crate::error::Failure;
+use crate::error::{PersistError, Unavailable};
 use crate::patch::Layer;
 use crate::resolver::Build;
-use crate::{LoaderError, PersistError, Unavailable};
+use crate::LoaderError;
 
 use super::desired::{Desired, Row};
 use super::{Failing, Inner, LoaderChanged, PendingEditDropped, Slot, State};

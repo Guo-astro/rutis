@@ -8,10 +8,10 @@ The plugins are the same as [Swift plugins](swift-plugin.en.md) for Mac binaries
 
 ## 1. Add the SDK
 
-In Xcode: File → Add Package Dependencies…, `https://github.com/arcships/rutis`, from `0.17.2`, and add the library `Rutis` to the app target. In a package:
+In Xcode: File → Add Package Dependencies…, `https://github.com/arcships/rutis`, from `0.18.0`, and add the library `Rutis` to the app target. In a package:
 
 ```swift
-.package(url: "https://github.com/arcships/rutis", from: "0.17.2"),
+.package(url: "https://github.com/arcships/rutis", from: "0.18.0"),
 // in the target:
 .product(name: "Rutis", package: "rutis"),
 ```
@@ -195,7 +195,7 @@ RUTIS_TOKEN_PHONE=<the token the apps present> rutis-host run rutis.json
 
 - Each app connection creates an instance named by its id, and closes it when it goes; a newer connection with the same id takes over.
 - In each instance, `phone:health` loads the app's `health` plugin, and `py:coach` (a Python plugin on the rutis machine) uses that app's `health` and `device`. Two phones with the same plugins are two instances: each `coach` sees its own phone only, and rows outside the group see no phone's services.
-- An app that does not have a plugin a row names fails that row in its instance only (`this connection does not contain plugin …`).
+- An app that does not have a plugin a row names fails that row in its instance only (`runtime <name>: this connection does not contain plugin …`).
 - When an app stops or is suspended, its instance closes and `coach` stops there; when it starts again, a new instance loads the rows again.
 
 For the fields and rules, see [Runtimes that connect in](nodes.en.md#runtimes-that-connect-in) and [rutis-host](rutis-host.en.md#runtimes-that-connect-in).
