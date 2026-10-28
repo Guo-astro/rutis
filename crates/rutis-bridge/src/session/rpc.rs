@@ -300,10 +300,8 @@ impl Reference {
             ReferenceInner::Local(object) => object.call(args),
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection
-                        .request_sync(Operation::Call(import.id, None, args), deadline.as_ref())
+                    connection.request_sync(Operation::Call(import.id, None, args))
                 })
             }
             ReferenceInner::Home(_) => Err(not_callable()),
@@ -314,11 +312,11 @@ impl Reference {
             ReferenceInner::Local(object) => object.call(args),
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                let call = connection.request_async(Operation::Call(import.id, None, args));
-                match self.deadline(&connection) {
-                    Some(deadline) => forwarded_async(&connection, deadline.bound(call)).await,
-                    None => forwarded_async(&connection, call).await,
-                }
+                forwarded_async(
+                    &connection,
+                    connection.request_async(Operation::Call(import.id, None, args)),
+                )
+                .await
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -343,8 +341,7 @@ impl Reference {
             .connection()
             .and_then(|connection| {
                 forwarded(&connection, || {
-                    connection
-                        .request_sync(Operation::Call(import.id, Some(method.into()), args), None)
+                    connection.request_sync(Operation::Call(import.id, Some(method.into()), args))
                 })
             })
             .map_err(|error| import.gone(error))
@@ -365,7 +362,7 @@ impl Reference {
         let import = self.remote_object()?;
         let connection = import.connection()?;
         forwarded(&connection, || {
-            connection.request_sync(Operation::Get(import.id, property.into()), None)
+            connection.request_sync(Operation::Get(import.id, property.into()))
         })
     }
     pub async fn wait_async(&self) -> Reply {
@@ -373,12 +370,11 @@ impl Reference {
             ReferenceInner::Local(object) => object.wait(false, current_path(), caller()).await,
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                let call =
-                    connection.request_async(Operation::Await(import.id, import.origin.clone()));
-                match self.deadline(&connection) {
-                    Some(deadline) => forwarded_async(&connection, deadline.bound(call)).await,
-                    None => forwarded_async(&connection, call).await,
-                }
+                forwarded_async(
+                    &connection,
+                    connection.request_async(Operation::Await(import.id, import.origin.clone())),
+                )
+                .await
             }
             ReferenceInner::Home(_) => Err(not_callable()),
         }
@@ -387,12 +383,8 @@ impl Reference {
         match &self.0 {
             ReferenceInner::Remote(import) => {
                 let connection = import.connection()?;
-                let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection.request_sync(
-                        Operation::Await(import.id, import.origin.clone()),
-                        deadline.as_ref(),
-                    )
+                    connection.request_sync(Operation::Await(import.id, import.origin.clone()))
                 })
             }
             ReferenceInner::Local(_) => {
@@ -971,9 +963,6 @@ struct Import {
     /// may be gone by the time a call fails.
     source: String,
     end: Arc<std::sync::OnceLock<String>>,
-    /// For a future a limited call returned: when it must have settled
-    /// (`limits`).
-    deadline: std::sync::OnceLock<limits::Deadline>,
 }
 impl Import {
     fn connection(&self) -> Result<Connection, Error> {
@@ -1343,8 +1332,6 @@ struct SessionState {
     /// ids in chains forwarded to other sessions (see [`rebase`]).
     tag: String,
     format: Format,
-    /// The far end as the channel's connector verified it, if it did.
-    verified: Option<PeerId>,
     /// The far end of a compat-format session as whoever started it named
     /// it ([`Connection::name_far_end`]), for messages.
     named: std::sync::OnceLock<String>,
@@ -1373,9 +1360,6 @@ struct SessionState {
     /// The far end's `events.*` operations, run one after another in
     /// arrival order by one task, never on the reader ([`Ordered`]).
     ordered: Mutex<Ordered>,
-    /// The host's limit on calls into the far end (a runtime's plugin
-    /// code), if it set one (`limits`).
-    limit: std::sync::OnceLock<Arc<limits::CallLimit>>,
 }
 
 /// The event operations of a session waiting for their turn (events
@@ -1389,7 +1373,7 @@ struct Ordered {
 }
 impl Drop for SessionState {
     fn drop(&mut self) {
-        self.closer.close("session dropped");
+        self.closer.close(crate::channel::Close::Done);
     }
 }
 
@@ -1424,9 +1408,9 @@ impl Connection {
     }
 
     /// [`Connection::open`] in `format`. In the endpoint format the session
-    /// is ready only once the far end greeted with the endpoint the channel
-    /// verified (if it verified one) and this side expects (if it expects
-    /// one); otherwise [`Connection::ready`] fails with [`Error::Handshake`].
+    /// is ready only once the far end greeted with the endpoint this side
+    /// expects (if it expects one); otherwise [`Connection::ready`] fails
+    /// with [`Error::Handshake`].
     pub fn open_with(
         channel: Channel,
         dispatch: Arc<dyn Dispatch>,
@@ -1436,9 +1420,7 @@ impl Connection {
             sender,
             mut receiver,
             closer,
-            info,
         } = channel;
-        let label = info.label;
         let (local_prefix, remote_prefix, hello) = match &format {
             Format::Compat => (
                 "rust:".to_owned(),
@@ -1465,7 +1447,6 @@ impl Connection {
         let peer = Self(Arc::new(SessionState {
             tag: next_tag(),
             format,
-            verified: info.peer,
             named: std::sync::OnceLock::new(),
             end: Arc::default(),
             local_prefix,
@@ -1487,7 +1468,6 @@ impl Connection {
                 changed: Notify::new(),
             }),
             ordered: Mutex::default(),
-            limit: std::sync::OnceLock::new(),
         }));
         // Greet before reading (#239). A side that finds the far end's
         // greeting incompatible closes the channel; had it not greeted yet,
@@ -1515,7 +1495,7 @@ impl Connection {
                     let message = match receiver.recv() {
                         Ok(Some(message)) => message,
                         Ok(None) => return Err(Error::Transport("peer disconnected".into())),
-                        Err(error) => return Err(ended(&label, error)),
+                        Err(error) => return Err(ended(error)),
                     };
                     let Some(peer) = weak.upgrade().map(Self) else {
                         return Ok(());
@@ -1599,7 +1579,7 @@ impl Connection {
         // Interrupt a blocked write before taking the writer lock. Serialize
         // table teardown with encoding/sending so no export can be added after
         // teardown and no partial encoding rollback races the cleared table.
-        self.0.closer.close(&error.to_string());
+        self.0.closer.close(crate::channel::Close::Done);
         let writer = self.0.writer.lock().unwrap();
         let (waiting, incoming, awaiting) = {
             let mut calls = self.0.calls.lock().unwrap();
@@ -1701,7 +1681,7 @@ impl Connection {
         }
     }
     pub fn invoke(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_sync(Operation::Invoke(target.into(), method.into(), args), None)
+        self.request_sync(Operation::Invoke(target.into(), method.into(), args))
     }
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
         self.request_async(Operation::Invoke(target.into(), method.into(), args))
@@ -1791,7 +1771,7 @@ impl Connection {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
         }
-        writer.send(bytes).map_err(|error| ended("", error))
+        writer.send(bytes).map_err(ended)
     }
     fn send(&self, call: Operation, mut waiting: Waiting) -> Result<String, Error> {
         let mut writer = self.0.writer.lock().unwrap();
@@ -1950,12 +1930,9 @@ impl Connection {
         }
         Ok(id)
     }
-    /// Send `call` and wait for its reply, running the calls that arrive
-    /// meanwhile. Past `deadline` (if any), the far end is told to cancel it
-    /// and a late reply is discarded.
-    fn request_sync(&self, call: Operation, deadline: Option<&limits::Deadline>) -> Reply {
+    fn request_sync(&self, call: Operation) -> Reply {
         let (sender, receiver) = mpsc::channel();
-        let id = self.send(
+        self.send(
             call,
             Waiting::Sync {
                 sender,
@@ -1963,26 +1940,8 @@ impl Connection {
             },
         )?;
         loop {
-            let message = match deadline {
-                None => receiver.recv().map_err(transport)?,
-                Some(deadline) => match receiver.recv_timeout(deadline.left()) {
-                    Ok(message) => message,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        self.cancel(&id);
-                        return Err(deadline.ran_out());
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(transport(mpsc::RecvError))
-                    }
-                },
-            };
-            match message {
-                Message::Reply(result) => {
-                    return match deadline {
-                        Some(deadline) => deadline.carry(result),
-                        None => result,
-                    }
-                }
+            match receiver.recv().map_err(transport)? {
+                Message::Reply(result) => return result,
                 Message::Invoke(incoming) => {
                     let _pumping = Pumping::enter();
                     let _runtime = LentRuntime::enter(&self.0.executor);
@@ -2406,7 +2365,6 @@ impl Connection {
                             origin,
                             source: self.far_name(),
                             end: self.0.end.clone(),
-                            deadline: std::sync::OnceLock::new(),
                         });
                         imports.insert(id, Arc::downgrade(&import));
                         drop(imports);
@@ -2475,16 +2433,11 @@ impl Connection {
             .and_then(|endpoint| {
                 PeerId::new(endpoint).map_err(|error| incompatible(error.to_string()))
             })?;
-        for (whose, expected) in [
-            ("verified", &self.0.verified),
-            ("expected", &local.expected),
-        ] {
-            if let Some(expected) = expected {
-                if expected != &endpoint {
-                    return Err(Error::Handshake(Handshake::IdentityMismatch(format!(
-                        "the far end greeted as {endpoint}, but {expected} is the {whose} endpoint"
-                    ))));
-                }
+        if let Some(expected) = &local.expected {
+            if expected != &endpoint {
+                return Err(Error::Handshake(Handshake::IdentityMismatch(format!(
+                    "the far end greeted as {endpoint}, but {expected} is the expected endpoint"
+                ))));
             }
         }
         if endpoint == local.local {
@@ -3241,11 +3194,8 @@ fn transport(error: impl std::fmt::Display) -> Error {
 }
 /// The error a channel failure ends a session with: `"<label>: <reason>"`,
 /// or the bare reason for an unlabelled channel.
-fn ended(label: &str, error: ChannelError) -> Error {
-    let reason = match label {
-        "" => error.to_string(),
-        label => format!("{label}: {error}"),
-    };
+fn ended(error: ChannelError) -> Error {
+    let reason = error.to_string();
     match error {
         ChannelError::Closed { .. } => Error::Transport(reason),
         ChannelError::Rejected { .. } => Error::Handshake(Handshake::IdentityMismatch(reason)),
@@ -3253,7 +3203,6 @@ fn ended(label: &str, error: ChannelError) -> Error {
 }
 
 pub(crate) mod crossing;
-pub(crate) mod limits;
 mod relay;
 pub(crate) mod waits;
 use relay::Relayed;

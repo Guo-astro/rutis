@@ -273,20 +273,15 @@ fn rpc_client() -> std::path::PathBuf {
         .join("../../node/rutis-runtime/test/fixtures/rpc-client.mjs")
 }
 
-/// The fixture started by the local transport, on the channel it hands
-/// over (fd 3, or a loopback address); the channel's end says how it exited.
+/// The fixture started on a local pipe, on the channel it is handed (fd 3,
+/// or a loopback address); the channel's end says how it exited.
 #[tokio::test(flavor = "current_thread")]
 async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
-    use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::local::{LocalTransport, Spawn};
-    use rutis_bridge::{Dial, Transport};
+    use rutis_bridge::pipe::{Processes, Spawn};
 
-    let transport = LocalTransport::default();
-    let mut spawn = Spawn::new("node", PeerId::new("node").unwrap());
+    let mut spawn = Spawn::new("node");
     spawn.args = vec![rpc_client().into()];
-    transport.spawner("rpc-client", spawn);
-    let channel = transport
-        .dial(&Dial::address("spawn:rpc-client"))
+    let channel = rutis_bridge::pipe::spawn(&spawn, &Processes::default())
         .await
         .unwrap();
     let peer = Connection::open(channel, Arc::new(Service(Mutex::new(None)))).unwrap();
@@ -300,7 +295,7 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
 mod websocket {
     use super::*;
     use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketTransport};
+    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketTransport};
     use rutis_bridge::{Credential, Dial, Identity, Registration, StaticIdentity, Transport};
     use tokio::io::AsyncBufReadExt;
 
@@ -365,7 +360,6 @@ mod websocket {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(channel.info.peer, Some(id("node")));
         let peer = Connection::open_with(
             channel,
             Arc::new(Service(Mutex::new(None))),

@@ -1,7 +1,7 @@
 //! Local language runtimes: a process this machine starts, a link to it,
 //! and the runtime plugin running its rows, composed. Its session comes the
 //! way a remote runtime's does (`RuntimeSession#<name>` from a link), only
-//! started here: the local transport ([`crate::transport::local`]) spawns it on
+//! started here: the local transport ([`crate::pipe`]) spawns it on
 //! an inherited socket, the
 //! link speaks the compat protocol with it and does not reconnect, since a
 //! local runtime process is not restarted.
@@ -29,7 +29,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::{Ctx, Error};
 use serde_json::Value;
 
-use crate::transport::local::{Handover, LocalTransport, Processes, Spawn};
+use crate::pipe::{Handover, LocalTransport, Processes, Spawn};
 
 /// Set to report every message crossing a runtime channel (direction and
 /// length, never content) on stderr, as for runtimes `Process` starts.
@@ -48,10 +48,6 @@ pub struct LocalRuntime {
     processes: Processes,
     /// How long its process may take to greet; `None`: the default, 30 s.
     greeting: Option<Duration>,
-    /// The host's limit on calls into it ([`LocalRuntime::call_limit`]).
-    call_limit: Option<Duration>,
-    /// A call over the limit also ends the process.
-    kill_on_timeout: bool,
 }
 
 impl LocalRuntime {
@@ -150,17 +146,13 @@ impl LocalRuntime {
             anchor,
             processes,
             greeting: None,
-            call_limit: None,
-            kill_on_timeout: false,
         }
     }
 
     /// The process to start: the launcher, given its channel and the
-    /// anchor as its last two arguments; the endpoint is the runtime's name.
+    /// anchor as its last two arguments.
     fn spawn(&self) -> Spawn {
-        let peer = PeerId::new(self.runtime_name.clone())
-            .unwrap_or_else(|_| PeerId::new("runtime").expect("a valid id"));
-        let mut spawn = Spawn::new(self.launcher.program.clone(), peer);
+        let mut spawn = Spawn::new(self.launcher.program.clone());
         spawn.args = self.launcher.args.clone();
         spawn.env = self.launcher.env.clone();
         spawn.cwd = self.launcher.cwd.clone();
@@ -239,52 +231,6 @@ impl LocalRuntime {
         self
     }
 
-    /// Limit each call into the runtime's plugin code to `limit`: a call of
-    /// a service one of its rows provides (by name), or of a function one of
-    /// its plugins passed by reference, from the host, a plugin of another
-    /// runtime or a Rust plugin. A call not finished within it is cancelled
-    /// (the runtime is told, as when the caller gives up) and its caller
-    /// gets an error with code `timeout`: `call to weather.tomorrow did not
-    /// finish within 30s (the host's limit for runtime agent); the call was
-    /// cancelled`. Calls between plugins of this runtime are not limited.
-    /// Not set, calls are not limited.
-    pub fn call_limit(mut self, limit: Duration) -> Self {
-        self.call_limit = Some(limit);
-        self.runtime = self.runtime.call_limit(limit, self.kill_on_timeout);
-        self
-    }
-
-    /// With [`LocalRuntime::call_limit`]: a call over the limit also ends
-    /// the runtime's process, for a plugin stuck in synchronous code that
-    /// a cancellation cannot stop. Its other calls in progress fail with
-    /// code `peer-gone`; the runtime is down (`ended by the host: …`) until
-    /// the host restarts it (`FiberView::restart` on the fiber
-    /// `plugin(runtime)` returned).
-    pub fn kill_on_timeout(mut self) -> Self {
-        self.kill_on_timeout = true;
-        if let Some(limit) = self.call_limit {
-            self.runtime = self.runtime.call_limit(limit, true);
-        }
-        self
-    }
-
-    /// Let the runtime's plugins use only these of the services from
-    /// outside it: the host's, Rust plugins', other runtimes' rows'.
-    /// Services its own rows provide each other are not limited, and
-    /// neither are the host's own calls. A row whose plugin injects
-    /// another fails to start, saying so: `uses llm, which the host does
-    /// not let runtime wordcount use (allowed: tools, notes)`. Not set,
-    /// they may use any.
-    pub fn allowed_services<I, S>(mut self, names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let names = names.into_iter().map(Into::into).collect();
-        self.runtime = self.runtime.allowed_services(names);
-        self
-    }
-
     /// How long the runtime's process may take to greet once started: 30 s
     /// by default; [`Duration::MAX`] waits for as long as it takes, for a
     /// process stopped at its first line for a debugger (`--inspect-brk`).
@@ -324,7 +270,8 @@ impl DynPlugin for LocalRuntime {
             // is running, and this one is still starting.
             let kind = format!("local:{}", self.runtime_name);
             let spawn = self.spawn();
-            let peer = spawn.peer.clone();
+            let peer = PeerId::new(self.runtime_name.clone())
+                .unwrap_or_else(|_| PeerId::new("runtime").expect("a valid id"));
             ctx.plugin(Carrier {
                 label: format!("{kind} carrier"),
                 kind: kind.clone(),

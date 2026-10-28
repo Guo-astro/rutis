@@ -4,7 +4,7 @@
 
 `rutis` 内核在插件、fiber、服务和事件之外提供的能力，以及它们的使用边界。入门请先看 [README](../README.zh-CN.md) 的快速开始、[写一个 Rust 插件](guide/rust-plugin.md)和[应用设计指南](development-guide.md)。
 
-下文的宿主方法（`plugin_from`、`shutdown`、`diagnostics`、`require` 等）来自 `rutis::host::CtxHost`，先写 `use rutis::host::*;`。标明在 `rutis::internal` 里的，是 rutis 自己的 crate（rutis-bridge、rutis-loader 等）之间用的，不承诺稳定。
+下文的宿主方法（`plugin_with`、`shutdown`、`diagnostics`、`require` 等）来自 `rutis::host::CtxHost`，先写 `use rutis::host::*;`。标明在 `rutis::internal` 里的，是 rutis 自己的 crate（rutis-bridge、rutis-loader 等）之间用的，不承诺稳定。
 
 ## 配置热更新
 
@@ -13,18 +13,19 @@
 ```rust
 struct Weather { city: String }
 
-impl Weather {
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
     /// 纯构造：预检查和正式装载都会调用它。
-    fn new(config: &WeatherConfig) -> rutis::Result<Self> {
-        Ok(Weather { city: config.city.clone() })
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather { city: config.city.clone() }))
     }
 }
 
-let view = ctx.plugin_from(Weather::new, cfg_v1);
+let view = ctx.plugin_with(WeatherFactory, cfg_v1);
 view.update(cfg_v2).await?;   // dry-run 不过则现状不动;通过则卸载重载
 ```
 
-`Weather` 是普通的 `Plugin`，依赖取自它的 `type Deps`。依赖要到运行时才知道的插件，照旧实现 `host::PluginFactory<C>`（`build` 返回 `Box<dyn host::DynPlugin>`），用 `ctx.plugin_with(factory, config)` 装。
+`Weather` 是普通的 `Plugin`；工厂（`host::PluginFactory<C>`）每次装载从当前配置构造它，依赖写在工厂的 `injects()` 里。
 
 ## 事件：一张监听器表，五种方式
 

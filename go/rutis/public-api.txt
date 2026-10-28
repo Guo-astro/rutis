@@ -1,5 +1,5 @@
 ## github.com/arcships/rutis/go/rutis
-var ErrBinding = events.ErrBinding
+var ErrBinding = runtime.ErrBinding
 func Ref(v any) any
 func Serve(defs ...*Definition)
 type Ctx struct {
@@ -49,51 +49,11 @@ func (s *Shape) Kinds() map[string]string
 type ShapeOption func(*shapeOptions)
 func Sync(methods ...string) ShapeOption
 type Terminal = events.Terminal
-## github.com/arcships/rutis/go/rutis (deprecated: moved to advanced in 0.19)
-const Implementation = "github.com/arcships/rutis/go/rutis"
-const PluginAPI = 3
-const Version string
-var ErrReservedEvent = events.ErrReservedEvent
-var ErrWaterfallNext = events.ErrWaterfallNext
-var ErrAsyncListener = events.ErrAsyncListener
-var ErrSyncWaitCycle = peer.ErrSyncWaitCycle
-func Manifest(defs ...*Definition) ([]byte, error)
-func Project() string
-func ServeArgs(args []string, defs ...*Definition) error
-func ServeConn(conn net.Conn, defs ...*Definition) error
-type AggregateError = peer.AggregateError
-type Date = values.Date
-func DateOf(t time.Time) Date
-func ParseDate(text string) (Date, error)
-type DateTime = values.DateTime
-func DateTimeOf(t time.Time) DateTime
-func ParseDateTime(text string) (DateTime, error)
-type Decimal = values.Decimal
-func ParseDecimal(text string) (Decimal, error)
-type Function = convert.Function
-type Future = convert.Future
-func Global() ListenOption
-func Prepend() ListenOption
-type Next = events.Next
-type Schemer interface {
-    JSONSchema() map[string]any
-}
-type Service struct {
-}
-func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error
-func (s *Service) Local() bool
-func (s *Service) Methods() map[string]string
-func Rename(method, wire string) ShapeOption
-type TimeOfDay = values.TimeOfDay
-func ParseTimeOfDay(text string) (TimeOfDay, error)
-func TimeOfDayOf(t time.Time) TimeOfDay
-type UUID = values.UUID
-func ParseUUID(text string) (UUID, error)
 
 ## github.com/arcships/rutis/go/rutis/advanced
-const Implementation = rutis.Implementation
-const PluginAPI = rutis.PluginAPI
-const Version = rutis.Version
+const Implementation = runtime.Implementation
+const PluginAPI = runtime.PluginAPI
+const Version = runtime.Version
 var ErrReservedEvent = events.ErrReservedEvent
 var ErrWaterfallNext = events.ErrWaterfallNext
 var ErrAsyncListener = events.ErrAsyncListener
@@ -117,8 +77,14 @@ func ParseDecimal(text string) (Decimal, error)
 type Function = convert.Function
 type Future = convert.Future
 type Next = events.Next
-type Schemer = rutis.Schemer
-type Service = rutis.Service
+type Schemer interface {
+    JSONSchema() map[string]any
+}
+type Service struct {
+}
+func (s *Service) Call(ctx context.Context, method string, result any, args ...any) error
+func (s *Service) Local() bool
+func (s *Service) Methods() map[string]string
 type TimeOfDay = values.TimeOfDay
 func ParseTimeOfDay(text string) (TimeOfDay, error)
 func TimeOfDayOf(t time.Time) TimeOfDay

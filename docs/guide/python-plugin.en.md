@@ -245,8 +245,8 @@ class Events(unittest.TestCase):
         asyncio.run(go())
 ```
 
-- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.AggregateError` whose `errors` are in registration order.
-- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.AsyncListener`.
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.advanced.AggregateError` whose `errors` are in registration order.
+- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.advanced.AsyncListener`.
 - `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
 - Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives every event of the name on the root bus; a scope is only a descriptor for filters.
 - On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
@@ -386,7 +386,7 @@ The entry point in `pyproject.toml` lets the host find the plugin by name:
 weather = "weather"
 ```
 
-Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; while the plugin API version stays, `rutis` removes or changes no name plugins import ([plugin API: versions](plugin-api.en.md#versions)).
+Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; a release of `rutis` that removes or moves a name plugins import says so in its migration guide, and plugins upgrade together with the host ([plugin API: versions](plugin-api.en.md#versions)).
 
 Before publishing, give the distribution a name of your own: a short name such as `weather` is most likely taken on PyPI. Change `name` in `pyproject.toml`, for example to `your-name-weather`; the entry point name (`weather` above) stays, and a host's row is still `py:weather`.
 

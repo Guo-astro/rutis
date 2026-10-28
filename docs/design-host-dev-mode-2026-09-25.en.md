@@ -1,7 +1,7 @@
 # Host Development Mode: Developing Plugins Against a Real Host (2026-09-25)
 
 > Developer-experience surface for plugin layering in #52; depends on dylib SDK hot replacement in #45/#56.
-> Status: design document. The channel skeleton is implemented (`crates/rutis-dev`, built on rutis-loader): `hello` / `describe` / `status` / `watch` / `load` / `swap` / `unload-dev`; loaded items enter the loader overlay layer, and swap is all-or-nothing. Bus probe, recording, synthesized dev manifests, configurable retention limit, and `cargo xtask dev` are not implemented.
+> Status: design document. The channel skeleton once implemented (`crates/rutis-dev`) and the loader's overlay layer were removed in 0.19 (#694, [platform cleanup](design-platform-cleanup-2026-10-28.en.md) §5.4 item 5); development mode is `rutis-host dev`.
 > Core judgment from the 2026-09-25 discussion about plugin development: **plugin development must happen against a real host; the host itself is the development platform, not merely a runtime container.**
 
 ## 1. Motivation and positioning

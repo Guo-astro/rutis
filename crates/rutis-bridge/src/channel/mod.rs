@@ -4,9 +4,9 @@
 //! A [`Channel`] is one ordered, reliable, duplex stream of messages: every
 //! message sent arrives once, in order, with its boundaries kept. It moves
 //! opaque bytes and knows nothing of protocol frames or their encoding.
-//! Implementations, with their framing, limits and liveness, live in the
-//! transport crates (`rutis-transport-*`); this crate holds only the
-//! contract and the connection errors.
+//! Implementations, with their framing, limits and liveness:
+//! [`crate::memory::pair`], [`crate::pipe::spawn`] and, with feature
+//! `websocket`, `websocket::dial` and `websocket::listen`.
 
 use std::sync::Arc;
 
@@ -15,19 +15,17 @@ pub mod testing;
 pub mod trace;
 
 /// One established channel. The sender and receiver are used from one
-/// thread each; the closer may be called from anywhere.
+/// thread each; the closer may be called from anywhere. Who is at the far
+/// end is said by the far end itself, in the session's handshake.
 pub struct Channel {
     pub sender: Box<dyn Sender>,
     pub receiver: Box<dyn Receiver>,
     pub closer: Arc<dyn Closer>,
-    pub info: ChannelInfo,
 }
 
 impl std::fmt::Debug for Channel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Channel")
-            .field("info", &self.info)
-            .finish_non_exhaustive()
+        f.debug_struct("Channel").finish_non_exhaustive()
     }
 }
 
@@ -50,37 +48,30 @@ pub trait Receiver: Send {
 }
 
 pub trait Closer: Send + Sync {
-    /// Idempotent; wakes threads blocked in `send` and `recv`.
-    fn close(&self, reason: &str);
-
-    /// Close because a newer connection of the same endpoint took over. A
-    /// transport that can tell the far end so (WebSocket close code 4002)
-    /// does; others just close.
-    fn replaced(&self) {
-        self.close("replaced by a new connection");
-    }
-
-    /// Close because the far end's identity was rejected after the channel
-    /// was established (an access point refusing the id a runtime greeted
-    /// with). A transport that can tell the far end so (WebSocket close
-    /// code 4003, which dialers treat as an authentication failure) does;
-    /// others just close.
-    fn rejected(&self, reason: &str) {
-        self.close(&format!("rejected: {reason}"));
-    }
+    /// Close the channel, saying why to the far end where the channel can.
+    /// Idempotent (the first close counts); wakes threads blocked in
+    /// `send` and `recv`.
+    fn close(&self, why: Close);
 }
 
-/// What the connector established about a channel. Identity is delivered
-/// here, never inside the message stream.
-#[derive(Debug, Clone, Default)]
-pub struct ChannelInfo {
-    /// `"unix"`, `"fd"`, `"memory"`, `"websocket"`, …
-    pub transport: &'static str,
-    /// The far end's endpoint, as confirmed by the connector; for a local
-    /// child, as named by whoever started it.
-    pub peer: Option<PeerId>,
-    /// For diagnostics, for example `"peer mac"`; may be empty.
-    pub label: String,
+/// Why a channel is closed. The far end learns which, where the channel
+/// can tell it: dialers decide whether to retry by it
+/// (`bridge/dial-out-rules`).
+///
+/// | `Close` | WebSocket | process pipe | memory |
+/// | --- | --- | --- | --- |
+/// | `Done` | close code 1000 (1001 when the host stops) | the child's end of the channel closed | the far end's `recv` gives `Ok(None)` |
+/// | `Replaced` | close code 4002 | as `Done` | the far end's `recv` gives `Closed` |
+/// | `Rejected(reason)` | close code 4003 with `reason` | as `Done` | the far end's `recv` gives `Rejected` |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Close {
+    /// A normal end.
+    Done,
+    /// A newer connection of the same far end took over.
+    Replaced,
+    /// The far end was refused after the channel was established: an
+    /// authentication failure.
+    Rejected(String),
 }
 
 /// An endpoint id: lowercase letters, digits and `-`, unique in a

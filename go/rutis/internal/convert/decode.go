@@ -94,7 +94,7 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 		case anyType:
 			return reflect.ValueOf(any(&Future{x})), nil
 		}
-		return reflect.Value{}, fmt.Errorf("an asynchronous result cannot be decoded as %s: use *rutis.Future", t)
+		return reflect.Value{}, fmt.Errorf("an asynchronous result cannot be decoded as %s: use *advanced.Future", t)
 	case peer.Object:
 		// This process's own object, come home: itself (also into any).
 		if o, ok := x.(object); ok && o.rv.Type().AssignableTo(t) {
@@ -108,7 +108,7 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 		// A plugin definition is its own value within this process: a
 		// service of this process gets its arguments as peer values when
 		// the client's field type is not the method's, or through
-		// *rutis.Service (localService → Call; see
+		// *advanced.Service (localService → Call; see
 		// TestALocalServiceGetsTheDefinitionItself).
 		if x.Value != nil && reflect.TypeOf(x.Value).AssignableTo(t) {
 			return valueOf(x.Value, t), nil
@@ -450,13 +450,13 @@ func fieldByJSONName(t reflect.Type, name string) (reflect.StructField, bool) {
 }
 
 // ErrNotForObjects is why an object of the far end cannot be decoded as a
-// type: it is received only as a struct of function fields, *rutis.Service
+// type: it is received only as a struct of function fields, *advanced.Service
 // or any (#687 §四).
 var ErrNotForObjects = errors.New("an object is received only as a struct of function fields or any")
 
 // objectFromPeer decodes an object of the far end as `t`: a struct of
 // function fields (each field calls the method of its name, blocking, as a
-// synchronous call), *rutis.Service or any.
+// synchronous call), *advanced.Service or any.
 func objectFromPeer(x *peer.RemoteObject, t reflect.Type) (reflect.Value, error) {
 	if (t == anyType || t == ServiceType) && ObjectFromPeer != nil {
 		return valueOf(ObjectFromPeer(x), t), nil

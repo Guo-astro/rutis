@@ -7,7 +7,7 @@ use std::os::unix::net::UnixListener;
 
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::transport::local::LocalPlugin;
+use rutis_bridge::pipe::LocalPlugin;
 use rutis_bridge::{transport_key, ConnectError, Transport};
 
 #[tokio::test]
@@ -27,7 +27,6 @@ async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
         .dial(&rutis_bridge::Dial::address(&address))
         .await
         .unwrap();
-    assert_eq!(channel.info.transport, "unix");
     let (mut remote, _) = listener.accept().unwrap();
     channel.sender.send(b"{\"op\":\"hello\"}").unwrap();
     let mut line = String::new();
@@ -54,7 +53,7 @@ async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
 
 #[tokio::test]
 async fn failures_carry_their_category() {
-    let transport = rutis_bridge::transport::local::LocalTransport::default();
+    let transport = rutis_bridge::pipe::LocalTransport::default();
     let missing = tempfile::tempdir().unwrap().path().join("none.sock");
     assert!(matches!(
         transport

@@ -11,10 +11,11 @@
 // in RUTIS_TOKEN, a listener certificate and key in RUTIS_CERT and
 // RUTIS_KEY), or `dial:ws://…` / `dial:wss://…`, a rutis access point to
 // dial and to dial again (dialing.ts), presenting the token in RUTIS_TOKEN
-// and trusting the CA in RUTIS_CA besides the default roots. Local channels
-// speak the compat protocol unless `--format endpoint`; remote ones the
-// endpoint format, as `--id`, expecting `--peer` as the controller when
-// given. Plugin modules resolve from <project>.
+// and trusting the CA in RUTIS_CA besides the default roots. A channel
+// speaks the endpoint format, as `--id`, expecting `--peer` as the
+// controller when given: remote ones always, local ones when given `--id`
+// (or `--format endpoint`); a local channel without either speaks the
+// compat protocol. Plugin modules resolve from <project>.
 import { realpathSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -104,7 +105,8 @@ while (rest[0]?.startsWith('--')) {
 if (!channel || rest.length !== 1) fail(USAGE)
 const project = resolve(rest[0])
 const remote = /^(listen|dial):/.test(channel)
-if ((remote || flags.format === 'endpoint') && !flags.id) fail(`a network channel needs --id <endpoint>: ${channel}`)
+if (remote && !flags.id) fail(`a network channel needs --id <endpoint>: ${channel}`)
+if (flags.format === 'endpoint' && !flags.id) fail(`the endpoint format needs --id <endpoint>: ${channel}`)
 if (channel.startsWith('listen:')) {
   try { await serve(channel.slice('listen:'.length), { id: flags.id, peer: flags.peer, project }) } catch (error: any) {
     fail(error.message)
@@ -116,7 +118,7 @@ if (channel.startsWith('dial:')) {
   process.exit(code)
 }
 // A runner is a runtime: the controller manages its rows.
-const endpoint = flags.format === 'endpoint' ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
+const endpoint = flags.id ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
 // The session of a dialing runtime: its supervisor reports what ends it.
 const dialed = flags.supervisor === 'dial'
 const token = takeToken()
