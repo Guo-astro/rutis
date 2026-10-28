@@ -246,7 +246,9 @@ async fn volatile_changes_reach_cordis_in_place() {
     assert!(report.failures.is_empty(), "{report:?}");
     probe.wait_for("t: start 1").await;
     probe.wait_for("g: start 1").await;
-    // A change goes in place only to a running row, and `start` is
+    // A change goes in place only to a running row (the forward to Cordis
+    // listens from when the row runs; a change before that would be lost,
+    // so it restarts the row instead), and `start` is
     // recorded inside `apply`, before the row runs in rutis (`rows.load`
     // returns once the Cordis fiber settled). `reconcile` does not wait
     // for that when the rows wait for the runtime's rows stage
