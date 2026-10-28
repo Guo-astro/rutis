@@ -240,7 +240,18 @@ pub async fn status(target: &Path) -> Result<String, String> {
 /// answer within 10 seconds is said to.
 #[cfg(unix)]
 async fn status_in(base: &Path, target: &Path) -> Result<String, String> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), ask(base, target))
+    let asked = async {
+        ask(base, target, "status\n").await.map_err(|error| {
+            error.unwrap_or_else(|| {
+                format!(
+                    "no rutis-host runs {}: start it with `rutis-host run` or `rutis-host dev`, \
+                     or name the configuration it runs (rutis-host status path/to/rutis.json)",
+                    key(target).display()
+                )
+            })
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), asked)
         .await
         .unwrap_or_else(|_| {
             Err(format!(
@@ -250,27 +261,20 @@ async fn status_in(base: &Path, target: &Path) -> Result<String, String> {
         })
 }
 
+/// Send the request `line` to the host running `target`, and read its
+/// whole reply; `Err(None)` when no host runs it.
 #[cfg(unix)]
-async fn ask(base: &Path, target: &Path) -> Result<String, String> {
+async fn ask(base: &Path, target: &Path, line: &str) -> Result<String, Option<String>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let path = socket_in(base, target);
-    let mut stream = tokio::net::UnixStream::connect(&path).await.map_err(|_| {
-        format!(
-            "no rutis-host runs {}: start it with `rutis-host run` or `rutis-host dev`, or name \
-             the configuration it runs (rutis-host status path/to/rutis.json)",
-            key(target).display()
-        )
-    })?;
-    stream
-        .write_all(b"status\n")
+    let mut stream = tokio::net::UnixStream::connect(&path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| None)?;
+    let io = |error: std::io::Error| Some(error.to_string());
+    stream.write_all(line.as_bytes()).await.map_err(io)?;
     let mut reply = String::new();
-    stream
-        .read_to_string(&mut reply)
-        .await
-        .map_err(|error| error.to_string())?;
+    stream.read_to_string(&mut reply).await.map_err(io)?;
     Ok(reply)
 }
 
@@ -298,24 +302,20 @@ async fn call_in(
     target: &Path,
     request: &crate::call::Request,
 ) -> Result<String, Refused> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let path = socket_in(base, target);
-    let mut stream = tokio::net::UnixStream::connect(&path).await.map_err(|_| {
-        Refused::NoHost(format!(
-            "no rutis-host run or dev is running for {} (start one, or name its configuration \
-             with --config)",
-            key(target).display()
-        ))
-    })?;
     let line = format!(
         "call {}\n",
         serde_json::to_string(request).map_err(|error| Refused::Error(error.to_string()))?
     );
-    let io = |error: std::io::Error| Refused::Error(error.to_string());
-    stream.write_all(line.as_bytes()).await.map_err(io)?;
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply).await.map_err(io)?;
+    let reply = ask(base, target, &line)
+        .await
+        .map_err(|error| match error {
+            Some(error) => Refused::Error(error),
+            None => Refused::NoHost(format!(
+                "no rutis-host run or dev is running for {} (start one, or name its \
+                 configuration with --config)",
+                key(target).display()
+            )),
+        })?;
     match reply.split_once('\n') {
         Some(("ok", result)) => Ok(result.trim_end().to_owned()),
         Some(("error", error)) => Err(Refused::Error(error.trim_end().to_owned())),

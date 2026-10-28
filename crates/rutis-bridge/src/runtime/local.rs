@@ -268,6 +268,23 @@ impl LocalRuntime {
         self
     }
 
+    /// Let the runtime's plugins use only these of the services from
+    /// outside it: the host's, Rust plugins', other runtimes' rows'.
+    /// Services its own rows provide each other are not limited, and
+    /// neither are the host's own calls. A row whose plugin injects
+    /// another fails to start, saying so: `uses llm, which the host does
+    /// not let runtime wordcount use (allowed: tools, notes)`. Not set,
+    /// they may use any.
+    pub fn allowed_services<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let names = names.into_iter().map(Into::into).collect();
+        self.runtime = self.runtime.allowed_services(names);
+        self
+    }
+
     /// How long the runtime's process may take to greet once started: 30 s
     /// by default; [`Duration::MAX`] waits for as long as it takes, for a
     /// process stopped at its first line for a debugger (`--inspect-brk`).

@@ -316,8 +316,8 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
-    let (watch, args) = reload::watch_flag(args);
-    let (allow_call, args) = allow_call_flag(args);
+    let (watch, args) = take_flag(&args, "--watch-config");
+    let (allow_call, args) = take_flag(&args, "--allow-call");
     // Plugins' output as they write it, unless asked (#678).
     let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
@@ -358,16 +358,11 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `--allow-call` taken out of `args`: whether `rutis-host call` may call
-/// this `run`'s services, and the rest.
-fn allow_call_flag(args: Vec<String>) -> (bool, Vec<String>) {
-    let allow = args.iter().any(|arg| arg == "--allow-call");
-    (
-        allow,
-        args.into_iter()
-            .filter(|arg| arg != "--allow-call")
-            .collect(),
-    )
+/// `flag` (`--watch-config`, `--allow-call`, `--debug`) taken out of
+/// `args`: whether it was there, and the rest.
+pub(crate) fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
+    let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();
+    (rest.len() < args.len(), rest)
 }
 
 /// `--prefix-output` and `--no-prefix-output` taken out of `args`: whether
@@ -902,8 +897,21 @@ fn plugin_api_line(go: bool, swift: bool) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{plugin_api_line, runtime_line};
+    use super::{plugin_api_line, runtime_line, take_flag};
     use serde_json::json;
+
+    #[test]
+    fn a_flag_is_taken_out() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            take_flag(&args(&["--watch-config", "a.json"]), "--watch-config"),
+            (true, args(&["a.json"]))
+        );
+        assert_eq!(
+            take_flag(&args(&["a.json"]), "--watch-config"),
+            (false, args(&["a.json"]))
+        );
+    }
 
     /// `check` names the plugin API only for the binaries' languages the
     /// configuration has (#680).

@@ -21,7 +21,9 @@
 //!   to Cordis, which commits it in place and emits `loader/volatile-update`
 //!   to the plugin, as dsh's loader does.
 //! - **Python** (feature `python`, [`RuntimeResolver::modules`]): a row named
-//!   `py:<module>` loads that module as a leaf plugin.
+//!   `py:<module>` loads that module as a leaf plugin. A Node runtime named
+//!   otherwise takes rows `<runtime name>:<npm name or file>` the same way,
+//!   for a process per plugin.
 //! - **Go** (feature `go`, [`GoResolver`](go::GoResolver), [`GoRuntimes`](go::GoRuntimes)): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
 //!   per binary, started when a row uses it. What compiled languages share
@@ -219,9 +221,18 @@ impl RuntimeResolver {
         }
     }
 
-    /// Rows of a runtime that loads plugins by module name, such as a
-    /// Python runtime (`rutis_bridge::runtime::LocalRuntime::python`): a row named
-    /// `<runtime name>:<module>` (`py:weather.plugin`) loads `<module>`.
+    /// Rows named after their runtime: a row `<runtime name>:<plugin>`
+    /// loads `<plugin>` into that runtime. For a Python runtime
+    /// (`rutis_bridge::runtime::LocalRuntime::python`) the plugin is a
+    /// module (`py:weather.plugin`); for a Node runtime, an npm name or a
+    /// file, as [`RuntimeResolver::node`] takes them (`wordcount:wordcount-plugin`).
+    ///
+    /// One process per plugin (or per group of plugins): a
+    /// `LocalRuntime` of its own for each, named
+    /// (`LocalRuntime::named`), each with a resolver of this kind; rows
+    /// with the same prefix share that runtime's process. It asks the
+    /// runtime at every resolution, as for Python, rather than caching by
+    /// the package's `version`.
     pub fn modules(runtime: RuntimeHandle) -> Self {
         let prefix = format!("{}:", runtime.name());
         Self::with_naming(runtime, Naming::Modules { prefix })
@@ -1000,6 +1011,11 @@ impl JsRow {
                 .is_some_and(|origin| origin == process.connection().tag())
             {
                 continue;
+            }
+            // From outside the runtime: only what the host lets it use
+            // (`LocalRuntime::allowed_services`).
+            if let Some(runtime) = runtime {
+                runtime.may_use(name).map_err(failed)?;
             }
             let label = label_of(&isolate, name);
             let lease = process
