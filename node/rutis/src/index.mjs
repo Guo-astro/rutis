@@ -25,19 +25,8 @@
 // marks methods `sync` and tells `rutis-host check` what the plugin
 // provides before it runs.
 
-// The plugin API this SDK writes plugins against. A runtime refuses a plugin
-// that needs a newer one, naming both.
-// 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
-// refuses such a plugin at load instead of failing in apply.
-// 3: the unified events of rutis 0.13 (#464): ctx.parallel, serial,
-// waterfall, bail and filter, ctx.signal, and `prepend` / `global` on
-// ctx.on. A runtime of 0.12 or older refuses such a plugin at load.
 import { schemaOf } from './config.mjs'
-
-export const PLUGIN_API = 3
-
-// Marks what definePlugin returns, across copies of this package.
-export const PLUGIN = Symbol.for('rutis.leaf-plugin')
+import { PLUGIN, PLUGIN_API } from './advanced.mjs'
 
 export function definePlugin(spec) {
   if (typeof spec?.apply !== 'function') throw new TypeError('a plugin needs apply(ctx, config)')
@@ -57,19 +46,6 @@ export function definePlugin(spec) {
   return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true })
 }
 
-// Whether `value` is a plugin definePlugin made.
-export const isPlugin = value => value?.[PLUGIN] === true
-
-// Values JavaScript has no type for, to send as what they are (#308): a
-// local date and time, a date, a time of day, a decimal, a UUID. Received,
-// they are strings; a plain string is sent as a string.
-//
-//   import * as rutis from '@arcships/rutis'
-//   return { at: rutis.datetime('2026-10-15T14:30'), price: rutis.decimal('1.10') }
-//
-// A Date, Uint8Array, Map, Set and bigint need no constructor: they cross
-// as an instant, bytes, a map, a set and a big integer.
-export { datetime, date, time, decimal, uuid } from './values.mjs'
-// The mark on what they make, across copies of this package and in the
-// runtimes: `Symbol.for('rutis.value')`.
-export { MARK as VALUE } from './values.mjs'
+// Moved to `@arcships/rutis/advanced` in 0.19 (#692); kept here, marked
+// deprecated in index.d.ts, until the plugin API version changes.
+export { PLUGIN_API, PLUGIN, isPlugin, VALUE, datetime, date, time, decimal, uuid } from './advanced.mjs'

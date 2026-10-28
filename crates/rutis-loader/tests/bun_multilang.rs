@@ -10,12 +10,12 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, Probe, COLD};
+use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::json;
 
@@ -190,7 +190,7 @@ async fn fixture() -> Fixture {
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
     for rows in [bun_rows, python_rows, node_rows] {
-        root.plugin(RuntimeRowsPlugin::new(rows));
+        rows_stage(&root, rows).await;
     }
     Fixture {
         root,

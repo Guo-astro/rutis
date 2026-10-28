@@ -8,13 +8,13 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use common::runtimes::{layer, Probe, COLD};
+use common::runtimes::{layer, rows_stage, Probe, COLD};
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::Value as RpcValue;
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::status::{Call, Row, RowState, RuntimeState, Service};
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin};
 use serde_json::json;
@@ -63,7 +63,7 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
     );
     let loader = plugin_loader.handle();
     root.plugin(plugin_loader).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    rows_stage(&root, rows).await;
     loader
         .reconcile(
             layer(vec![

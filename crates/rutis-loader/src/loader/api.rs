@@ -273,7 +273,7 @@ impl Loader {
     pub async fn resolve(
         &self,
         name: &str,
-    ) -> Result<std::sync::Arc<crate::Resolved>, LoaderError> {
+    ) -> Result<std::sync::Arc<crate::resolver::Resolved>, LoaderError> {
         self.inner.resolver.resolve(name).await
     }
 
@@ -552,7 +552,7 @@ impl Loader {
                 };
             }
             inner.reconcile_inner().await;
-            let lingering: Vec<crate::Failure> = {
+            let lingering: Vec<crate::error::Failure> = {
                 let state = inner.state.lock().unwrap();
                 Failing::public(
                     Inner::failures(&state)
