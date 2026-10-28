@@ -78,7 +78,7 @@ The theme of 0.18.0 is "errors you can understand" (#694): #677, #678, #679, #66
 
 A minor version change of 0.x allows breaking changes, so `cargo-semver-checks` accepts the Rust API changes when it compares with 0.17.2 (`session::Error::Binding`, the `stuck` field of `DisposeWaitError::TimedOut` and so on; see the migration guide). `format` of `rutis.json` stays 1 and the format does not change: the persisted sample is copied from 0.17.2 and its expectations are unchanged; dsh's user layer has not changed, so `cordis.patch.yml` is copied as is. Checking configuration against the Schema (#669) only changes whether a configuration that does not pass can run; the samples' configuration passes. The protocol version is unchanged; it only adds the capability `objects` (objects with methods, used when both ends declare it), and error nodes gain two optional fields, `site` and `rethrown`. The release gate's cross-version tests (`RUTIS_E2E_ONLY_OLDER=1`) meet 0.17.2: a 0.17.2 runtime cannot receive objects, and such a call fails with `bad-value`; under a 0.17.2 host, objects passed between 0.18 runtimes fail with 0.17.2's text. Either way only that call fails.
 
-Before releasing, as section 10 of the [configuration Schema design](design-config-schema-2026-10-27.en.md) says, run Dim's tests and one start with 0.18: no `config:` failures in the `ReconcileReport` and no warnings about extra keys; record the result in the release checklist.
+The run on Dim before release that section 10 of the [configuration Schema design](design-config-schema-2026-10-27.en.md) describes is skipped for this release, by the maintainer's decision.
 
 ## 0.17.2
 

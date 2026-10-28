@@ -78,7 +78,7 @@ cargo run -p rutis-bridge --features websocket --example smoke -- \
 
 0.x 的次版本号变化允许不兼容的改动，所以 `cargo-semver-checks` 与 0.17.2 比较时接受 Rust API 的改动（`session::Error::Binding`、`DisposeWaitError::TimedOut` 的 `stuck` 等，见迁移指南）。`rutis.json` 的 `format` 仍是 1，格式没有变化：持久化样本从 0.17.2 复制，期望不变；dsh 的用户层没有变化，`cordis.patch.yml` 原样复制。配置按 Schema 校验（#669）只改变不合格的配置能不能运行，样本的配置照常通过。协议版本不变，只新增能力 `objects`（带方法的对象，两端都声明才用），错误节点多两个可选字段 `site`、`rethrown`；发布门（`RUTIS_E2E_ONLY_OLDER=1`）的跨版本测试与 0.17.2 相遇：0.17.2 的运行时收不到对象，这次调用以 `bad-value` 失败；0.17.2 的宿主下 0.18 运行时之间传对象以 0.17.2 的文字失败，都只影响这一次调用。
 
-发布前按[配置 Schema 设计](design-config-schema-2026-10-27.md) §10，用 0.18 跑一遍 Dim 的测试和一次启动：`ReconcileReport` 里没有 `config:` 失败、没有多出来的键的告警，结果写进发布清单。
+[配置 Schema 设计](design-config-schema-2026-10-27.md) §10 写的发布前在 Dim 上跑一遍，这一版按维护者的决定不做。
 
 ## 0.17.2
 
