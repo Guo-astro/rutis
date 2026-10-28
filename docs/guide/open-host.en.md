@@ -34,7 +34,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session;
@@ -50,10 +50,9 @@ pub struct Notes {
 #[rutis::service]                                     // plugins use it by the name "notes"
 impl Notes {
     /// Add a note.
-    pub fn add(&self, text: String) -> Result<(), String> {
-        let open = std::fs::OpenOptions::new().create(true).append(true).open(&self.file);
-        let mut file = open.map_err(|error| error.to_string())?;
-        writeln!(file, "{text}").map_err(|error| error.to_string())
+    pub fn add(&self, text: String) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.file)?;
+        writeln!(file, "{text}")
     }
 
     /// Every note, oldest first.
@@ -397,8 +396,6 @@ export interface Commands {
 
 A plugin author writes `ctx.use<Services['commands']>('commands')` (Python: `commands: Commands = ctx.use("commands")`), and the editor, `tsc` and pyright check the calls before they run; without them it runs all the same. Give the two files to plugin authors (section 5 puts them in the template), and write them again when the Rust side changes.
 
-The generator reads source only: write `use rutis::host::BoxFuture;`. Brought in through `use rutis::host::*;`, the generator does not recognise it, skips the method and warns `Commands::register is not exported: the function it takes must return a future of a Result (BoxFuture<'static, Result<..>>), for its failure to reach the caller`.
-
 ## 3. Keep plugins in check
 
 Third-party plugins are not yours: one may crash or hang. What rutis gives you is putting plugins in processes of their own, and a greeting limit for local runtimes; limiting calls and which services a plugin may use are yours to decide (see the end of this section).
@@ -654,7 +651,7 @@ export interface RustError<Name extends string = string, Code extends string = s
 export interface Notes {
   /**
    * Add a note.
-   * @throws {StringThrown}
+   * @throws {IoErrorThrown}
    */
   add(text: string): Promise<void>
   /** Every note, oldest first. */
@@ -673,8 +670,8 @@ export interface Commands {
 /** What a method returning `Err(Error)` throws. */
 export type ErrorThrown = RustError<"Error", string, undefined>
 
-/** What a method returning `Err(String)` throws. */
-export type StringThrown = RustError<"Error", "Error", undefined>
+/** What a method returning `Err(io::Error)` throws. */
+export type IoErrorThrown = RustError<"Error", "Error", undefined>
 
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {

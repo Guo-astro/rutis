@@ -667,7 +667,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 ### 源码从哪来
 
-生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
+生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。rutis 本身的源码不读：它的名字按已知路径认（`rutis::Error`、`Result`、`Ctx`、`Definition`，`rutis::host::BoxFuture`、`ErrorKind`），经 `use rutis::*;`、`use rutis::host::*;` 引入的也认。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
 
 ### 能传什么
 
@@ -708,7 +708,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
 | 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
 
-`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。
+`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。`ErrorThrown` 留给 rutis 自己的错误；别的叫 `Error` 的类型、以及与已有的同名而不同的错误类型，按它所在的模块命名：`io::Error` 是 `IoErrorThrown`，`anyhow::Error` 是 `AnyhowErrorThrown`，`notes::Error` 是 `NotesErrorThrown`。抛出时的 `name` 仍是类型自己的名字（`Error`）。
 
 ### 声明
 
