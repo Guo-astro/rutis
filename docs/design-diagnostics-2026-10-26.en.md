@@ -221,7 +221,7 @@ How long a call should wait is decided by the caller's business, so rutis sets n
 | Rust | `tokio::time::timeout(...)` (dropping the future cancels it) |
 | TypeScript | `Promise.race` with a timer; the other side is not cancelled, the same as native JS (a promise itself cannot be cancelled) |
 
-The plugin API guide includes this table. What rutis does is only make it visible: the state snapshot lists in-flight calls and how long they have been waiting (§5). A host that wants to limit the resources of third-party plugins is covered by #683 in 0.19 (a host option, off by default).
+The plugin API guide includes this table. What rutis does is only make it visible: the state snapshot lists in-flight calls and how long they have been waiting (§5). When a plugin is still stuck in synchronous code after its caller gave up, the host ends its process and restarts it ([0.19 platform cleanup](design-platform-cleanup-2026-10-28.en.md) §5.5).
 
 ### 6.2 Shutdown: the time limit belongs to the host
 

@@ -12,7 +12,6 @@ use serde_json::{Map, Value};
 
 use crate::runtime::rpc::{Reply, Value as RpcValue};
 use crate::runtime::{host_key, HostDispatch, Process, Projection};
-use crate::session::rpc::limits::{Called, Deadline};
 use crate::session::CallerRow;
 use rutis::internal::CtxInternal;
 
@@ -92,30 +91,12 @@ impl RowService {
     }
 }
 
-impl RowService {
-    /// A synchronous call of `method`, within `deadline` when the host set
-    /// a limit.
-    fn send(&self, method: &str, args: RpcValue, deadline: &Option<Deadline>) -> Reply {
-        let target = self.process.connection();
-        match deadline {
-            Some(deadline) => target.invoke_within(&self.handle, method, args, deadline),
-            None => target.invoke(&self.handle, method, args),
-        }
-    }
-}
-
 impl HostDispatch for RowService {
     fn invoke(&self, method: &str, args: RpcValue) -> Reply {
         let target = self.process.connection();
         // A call from another runtime's session carries that session's
         // chain, which must be rebased for this one.
         let source = crate::runtime::rpc::caller().filter(|source| source.tag() != target.tag());
-        // The host's limit on calls into this runtime, counted from now
-        // (`LocalRuntime::call_limit`).
-        let deadline = target.call_limit().map(|limit| {
-            let service = self.service.as_deref().unwrap_or(&self.handle);
-            limit.deadline(Called::Service(service.to_owned(), method.to_owned()))
-        });
         match self.methods.get(method).and_then(Value::as_str) {
             Some("async") => {
                 let ongoing = self.begin(method);
@@ -131,11 +112,8 @@ impl HostDispatch for RowService {
                         )
                         .await
                     };
-                    let settled = match &deadline {
-                        Some(deadline) => deadline.bound(settled).await,
-                        None => settled.await,
-                    };
                     settled
+                        .await
                         .map_err(|error| gone(&process, error))
                         .map_err(|error| match &site {
                             Some(site) => error.with_site(site),
@@ -155,8 +133,10 @@ impl HostDispatch for RowService {
                     .zip(self.owner.as_ref())
                     .map(|(from, to)| (from.id().to_owned(), to.id().to_owned()));
                 let reply = crate::session::rpc::waits::with_rows(rows, || match source {
-                    Some(source) => target.forward(&source, || self.send(method, args, &deadline)),
-                    None => self.send(method, args, &deadline),
+                    Some(source) => {
+                        target.forward(&source, || target.invoke(&self.handle, method, args))
+                    }
+                    None => target.invoke(&self.handle, method, args),
                 });
                 reply
                     .map_err(|error| gone(&self.process, error))
