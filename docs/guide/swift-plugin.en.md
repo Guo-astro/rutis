@@ -82,7 +82,7 @@ In short:
 | Using services | A protocol with `@RutisClient` (its methods `async throws`); `ctx.use("llm", LLMProxy.self)` returns an `any LLM`, the provider itself when it is in the same process and implements the protocol. Or call by name: `try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
 | Call chain | It travels with the Task (`@TaskLocal`): plugin code passes no context. Tasks a plugin starts with `ctx.spawn { ... }` carry it and are cancelled at unload; the unload waits for them at most until the shutdown deadline it shares with the listeners, so a Task that ignores cancellation does not hold it |
 | Concurrency | Every incoming call runs in a Task of its own: provided objects must be safe for concurrent use |
-| Cancellation | A caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation |
+| Cancellation | See [plugin API: cancellation](plugin-api.en.md#cancellation) |
 | Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.Advanced.DateTime`, `Rutis.Advanced.CalendarDate`, `Rutis.Advanced.TimeOfDay`, `Rutis.Advanced.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference (see [Objects with methods](#objects-with-methods)); a parameter of type `Any` receives native values, and an object of another process as a `Rutis.Advanced.Client` |
 | Errors | A thrown error crosses with its type's name (`QuotaError`), its message (`LocalizedError`'s `errorDescription`, else its description), and the stored properties `code` and `data` when it has them, which the caller reads as its error's `code` and `data`. An error received is a `RutisError` (`name`, `message`, `code`, `data`, `errors`, `cause`), matched by `name` |
 | `fatalError`, `try!`, a force unwrap | Not catchable in Swift: the runtime process ends, its rows stop, and the host does what `restart` says ([When a runtime ends](rutis-host.en.md#when-a-runtime-ends)) |
@@ -102,108 +102,23 @@ How Swift values cross ([Passing values](plugin-api.en.md#passing-values)):
 
 ### Handing a plugin to a service
 
-A plugin is a value too: hand the result of `Rutis.define(...)` to a service as an ordinary argument (an application's part registry, say), and the receiver mounts it elsewhere, one copy per mount, using what you prepared in `apply`. In a `@RutisClient` protocol, the parameter or result type is `Rutis.Definition`:
-
-```swift
-@RutisClient
-protocol Parts {
-    func register(_ scope: String, _ part: Rutis.Definition) async throws
-}
-
-let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
-    let pool = try await openPool()
-    let status = Rutis.define(Plugin(name: "git_status", inject: ["history"], config: StatusConfig.self) { ctx, config in
-        ctx.provide("gitStatus", GitStatus(pool: pool, depth: config.depth))
-    })
-    try await ctx.use("parts", PartsProxy.self).register("session", status)
-})
-```
-
-- Each copy runs in this plugin's runtime, isolated by the instance it is mounted in, and gated by its `inject`.
-- It belongs to this generation of the row that handed it over: when the row unloads, reloads or ends, every copy mounted from it ends first, then the row unloads.
-- Handed to a test double of `RutisTest`, the double receives the definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
-- The parameter or result must be a `Rutis.Definition` (or `Rutis.Definition?`) itself. Plugin definitions inside an array, a dictionary or a struct (such as `[Rutis.Definition]`) are not supported: make one call per definition.
-- The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+A plugin is itself a value, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
 
 ### Objects with methods
 
-Data (`Codable` structs and classes) is copied; an instance of a `@RutisService` type goes to another language by reference: the far end gets a proxy whose calls reach the original object here. For an object another process passes, type the parameter with a `@RutisClient` protocol, or as `Any`:
-
-```swift
-/// How to use an object another process passes: declared at file level.
-@RutisClient
-protocol Cache {
-    func get(_ key: String) async throws -> Int?
-    func set(_ key: String, _ value: Int) async throws
-}
-
-@RutisService
-final class Warmer: @unchecked Sendable {
-    func warm(_ cache: any Cache) async throws -> Int? {
-        try await cache.set("a", 1)          // every method is async, a call of the far end's object
-        return try await cache.get("a")
-    }
-
-    /// When you do not know what arrives, take Any: an object is a Rutis.Advanced.Client, called by name.
-    func peek(_ value: Any) async throws -> Int? {
-        guard let cache = value as? Rutis.Advanced.Client else { return nil }
-        return try await cache.call("get", values: ["a"], as: Int?.self)
-    }
-}
-```
-
-- A parameter typed with a `@RutisClient` protocol (`any Cache`) gets that protocol's proxy, the same kind of proxy as `ctx.use("cache", CacheProxy.self)`; so does the result of a `@RutisClient` method. A parameter typed `Any` gets a `Rutis.Advanced.Client`: `try await client.call("get", [Rutis._Generated.encode("a")], as: Int?.self)` or `call("get", values: ["a"], as: Int?.self)`. Objects inside arrays and dictionaries, and in event arguments, arrive through `Any` as `Rutis.Advanced.Client`; `[any Cache]` is not supported in 0.18.
-- Only a `@RutisClient` protocol declared at file level receives objects: the `rutisObjectProxy` overload the macro generates for it is visible to Swift only at file scope. A `@RutisClient` protocol nested in another type still works with `ctx.use`, but a parameter typed with it does not take an object (`bad-argument`). An optional parameter or result (`(any Cache)?`) does not take an object in 0.18 either; write `any Cache`.
-- A parameter of a data type (a `Codable` type, `String` and so on) fails the call with `bad-argument`: `warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`.
-- A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
-- One object passed several times is one proxy here; a received proxy or `Rutis.Advanced.Client` passed on sends the original object, and passed back to its process it is the original there.
-- An object does not follow its row: after the row that passed it unloads, it can still be called. An on-demand Swift runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from swift-plugin-binary failed: runtime swift-plugin-binary stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`. Once the far end's runtime has exited, calls fail with `peer-gone` too.
-- Objects cannot go to an end older than 0.18: connected directly to one, the call fails with `bad-value` (`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`), and the session goes on.
-- Rows in the same runtime get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
+Data (`Codable` structs and classes) is copied; an instance of a `@RutisService` type goes to another language by reference, the far end getting a proxy: see [plugin API: objects with methods](plugin-api.en.md#objects-with-methods).
 
 ### Events
 
-Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result. A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored); in a waterfall its last parameter is a `Rutis.Advanced.Next<R>`.
+Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result. A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored).
 
 ```swift
-let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }   // options: prepend:, global:
+let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }
 
-try ctx.emit("session/created", id)                                   // returns at once; throws only for a refused emission
-try await ctx.parallel("session/created", id)                         // waits for all; a RutisError named AggregateError
-let value = try await ctx.serial("config/resolve", key, as: String.self)   // the first result (anything but nil and false)
-let first = try await ctx.bail("config/resolve", key, as: String.self)     // serial as a synchronous call
-let text = try await ctx.waterfall("chat/reply", message, as: String.self) { (message: String) in message }   // the terminal: the end of the chain
-let some = try await ctx.filter { $0.row == "chat" }.serial("config/resolve", key, as: String.self)
+try ctx.emit("session/created", id)   // returns at once; throws only for a refused emission
 ```
 
-A complete example: the plugin answers `greeting/pick` and adds a link to the `greeting/format` waterfall; the service it provides takes the first result with `serial`, lets other plugins (in any language) rewrite the greeting with `waterfall`, and notifies with `emit`:
-
-```swift
-import Rutis
-
-@RutisService
-public final class Greeter: @unchecked Sendable {
-    let ctx: Rutis.Ctx
-    init(ctx: Rutis.Ctx) { self.ctx = ctx }
-
-    public func hello(_ name: String, _ lang: String) async throws -> String {
-        let word = try await ctx.serial("greeting/pick", lang, as: String.self) ?? "Hello"
-        let text = try await ctx.waterfall("greeting/format", "\(word), \(name)", as: String.self) { (text: String) in text }
-        try ctx.emit("greeting/said", name)
-        return text ?? ""
-    }
-}
-
-public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
-    ctx.on("greeting/pick") { (lang: String) -> String? in lang == "sv" ? "Hej" : nil }   // nil: the next listener goes on
-    ctx.on("greeting/format") { (text: String, next: Rutis.Advanced.Next<String>) in
-        (try await next() ?? text) + "!"                                                // next runs the rest of the chain
-    }
-    ctx.provide("greeter", Greeter(ctx: ctx))
-})
-```
-
-The rules (waterfall, failures, scope, filter, cancellation, reserved names) are the same in every language: see [plugin API: events](plugin-api.en.md#events) and the [Go guide's table](go-plugin.en.md#events). In Swift, a listener's Task is cancelled when its row unloads, and when the emitter of a `parallel`, `serial`, `waterfall` or `bail` gives up; every listener is called as a synchronous one, so `bail` reaches Swift listeners anywhere.
+The other ways to emit (`parallel`, `serial`, `waterfall`, `bail`), filters, the rules and a complete example are in [plugin API: events](plugin-api.en.md#swift).
 
 The config is validated against `@RutisConfig`'s schema, its defaults filled, before it is decoded: a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). Optional properties (`T?`) and `var`s with a literal initial value (`var units = "metric"`, also numbers, booleans and arrays and dictionaries of them) are not required; the literal is the default. Any other initial value is no default, and the property is required. A type writing its own `static let rutisSchema` is validated against it; a plain `Decodable` struct without `@RutisConfig` is only decoded (a primitive type such as `String`, or a `CaseIterable` enum with `String` raw values, is still validated against the schema derived from the type). A decoding error after the schema passed is written `<path> is not a value the plugin accepts`.
 
@@ -233,7 +148,7 @@ final class FakeLLM: @unchecked Sendable {
 swift test
 ```
 
-Events in tests: `loaded.emit`, `parallel`, `serial`, `waterfall`, `bail` emit from the row's scope; `loaded.on(name) { ... }` listens as the host does; `loaded.load(config:row:scope:)` loads another row (`RutisTest.scope("t1/s1")`); `loaded.update(config:)` changes a row's config as rutis does; `loaded.reported` is what the runtime reported of failed `emit` listeners. What works only within one process (sharing a class instance that is not a `@RutisService`, relying on shared memory) fails here, as it would in a host.
+Events in tests: `loaded.on(name) { ... }` listens as the host does, and `loaded.emit` emits from the row's scope. What works only within one process (sharing a class instance that is not a `@RutisService`, relying on shared memory) fails here, as it would in a host. The rest of the interface is in [plugin API: the Swift test tool](plugin-api.en.md#the-swift-test-tool).
 
 ## 4. Run it in a local host
 

@@ -100,22 +100,7 @@ In short (`advanced.*` is package `github.com/arcships/rutis/go/rutis/advanced`:
 
 **Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other.
 
-**A plugin is itself a value.** The result of `rutis.Define(...)` (a `*rutis.Definition`) can be handed to a service as an ordinary argument (an application's part registry, say), the function field's parameter typed `*rutis.Definition`; the receiver can mount it elsewhere, one copy per mount, each running in this process with what `Apply` prepared. A definition only handed over may leave out `Name`:
-
-```go
-var parts struct {
-	Register func(ctx context.Context, scope string, def *rutis.Definition) error
-}
-if err := ctx.Use("parts", &parts); err != nil {
-	return err
-}
-return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
-	Inject: []string{"history"},
-	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* use pool directly */ return nil },
-}))
-```
-
-When this row unloads or reloads, every copy mounted from a definition it handed over ends first. See [Plugin API](plugin-api.en.md#plugin-definitions).
+**A plugin is itself a value**, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
 
 ### Events
 
@@ -124,110 +109,16 @@ Every listener on a host, in any language and any process, is on one event bus (
 ```go
 off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
 	return nil, nil // nil and false are no result; anything else is one
-}, advanced.Prepend()) // options: advanced.Prepend(), advanced.Global()
-
-err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; err only for a refused emission
-err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *advanced.AggregateError in registration order
-value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
-value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
-value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil; terminal is a rutis.Terminal, func(ctx context.Context, args ...any) (any, error), called with the event's arguments
-value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
-```
-
-A complete example: the plugin answers `greeting/pick` and adds a link to the `greeting/format` waterfall; the service it provides takes the first result with `Serial`, lets other plugins (in any language) rewrite the greeting with `Waterfall`, and notifies with `Emit`:
-
-```go
-package greeter
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/arcships/rutis/go/rutis"
-	"github.com/arcships/rutis/go/rutis/advanced"
-)
-
-type Greeter struct{ ctx *rutis.Ctx }
-
-func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
-	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // the first result; nil when none
-	if err != nil {
-		return "", err
-	}
-	if word == nil {
-		word = "Hello"
-	}
-	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
-		return args[0], nil // the terminal: the innermost end of the chain
-	}, fmt.Sprintf("%v, %s", word, name))
-	if err != nil {
-		return "", err
-	}
-	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // returns at once
-		return "", err
-	}
-	return text.(string), nil
-}
-
-var Plugin = rutis.Define(rutis.Plugin[struct{}]{
-	Name: "greeter",
-	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
-		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
-			if args[0] == "sv" {
-				return "Hej", nil
-			}
-			return nil, nil // no result: the next listener goes on
-		})
-		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(advanced.Next) // waterfall: next is the last argument
-			inner, err := next(ctx)
-			if err != nil {
-				return nil, err
-			}
-			return fmt.Sprintf("%v!", inner), nil
-		})
-		ctx.Provide("greeter", &Greeter{ctx: ctx})
-		return nil
-	},
 })
+
+err := ctx.Emit(callerCtx, "session/created", id) // returns at once; err only for a refused emission
 ```
 
-Python or TypeScript plugins, or Rust code in the host, listening to the same names join the same chain; see [plugin API: events](plugin-api.en.md#events).
-
-| Topic | Rule |
-| --- | --- |
-| Waterfall | The listener gets `next` (a `advanced.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
-| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*advanced.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
-| Scope | Events are delivered by name on one bus; `ctx.Scope()` is a descriptor for filters, not a delivery rule |
-| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Prefix`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error (`Emit` does not return it but reports a line `rutis: filter of <name> from row <row> failed: …`); listeners registered with `advanced.Global()` skip filters |
-| Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the row unloads, and when the emitter of a `Parallel`, `Serial`, `Waterfall` or `Bail` gives up; an `Emit` listener is not cancelled when the emitter gives up. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
-| Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
-
-Pass on the context your caller gave you, as with service calls. `errors.Is(err, advanced.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
+Pass on the context your caller gave you, as with service calls. The other ways to emit (`Parallel`, `Serial`, `Waterfall`, `Bail`), filters, listener options, the rules and a complete example are in [plugin API: events](plugin-api.en.md#go).
 
 ### Objects with methods
 
-Structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`: the far end gets a proxy whose calls reach the original here. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*advanced.Service`:
-
-```go
-type Cache struct {
-	Get func(ctx context.Context, key string) (any, error)
-	Set func(ctx context.Context, key string, value any) error
-}
-
-func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
-	if err := cache.Set(ctx, "a", 1); err != nil {
-		return nil, err
-	}
-	return cache.Get(ctx, "a")
-}
-```
-
-- A function field's call blocks; its first parameter is a `context.Context`. A struct with a field that is not a function, or a parameter of another type, fails the call with `bad-argument`: `warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`.
-- `any` receives a `*advanced.Service`, the type `ctx.Use` gives: `Call(ctx, method, result, args...)`. An object has no method table, so `Methods()` returns `nil`, and a method it lacks is answered `no-method` by the object's own process.
-- Only a `*advanced.Service` keeps its identity: one object received several times is one `*advanced.Service`, and handed back to its process it is the original there. A struct of function fields is data: handed over, each field becomes a new function reference; to hand over the object itself, make the parameter `any`.
-- An object does not follow its row: after the row that passed it unloads, it can still be called. But an on-demand runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
-- An object's methods may be called concurrently.
+Structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`: see [plugin API: objects with methods](plugin-api.en.md#objects-with-methods).
 
 ## 3. Test
 
@@ -268,33 +159,9 @@ go test ./...
 
 `Provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). When present it applies (`Sync` marks synchronous methods, `Rename` renames them). It also runs without one: what `ctx.Provide` provides still reaches rutis by itself, its methods the value's exported ones, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
-Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
-
-```go
-func TestEvents(t *testing.T) {
-	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
-	said := make(chan any, 1)
-	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
-		said <- args[0] // the test side listens as the host does
-		return nil, nil
-	})
-	var text string
-	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
-		t.Fatal(err)
-	}
-	if text != "Hej, Ada!" || <-said != "Ada" {
-		t.Fatalf("got %q", text)
-	}
-	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // the test emits too
-	if err != nil || word != nil {
-		t.Fatalf("got %v, %v", word, err)
-	}
-}
-```
+Events in tests: the test side is the host of the bus; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis), and `loaded.Emit` emits from the row. The rest of the interface (`Serial` and the others, scopes, `Update`, `Reported`, plugin definitions handed to a double) is in [plugin API: the Go test tool](plugin-api.en.md#the-go-test-tool).
 
 `Load` checks what a host would: the plugin uses only the services `Inject` declares; provided services are of the type `Provides` declares (an undeclared service is called as rutis calls it, by its exported methods, all async); cleanups succeed on unload. What works only within one process (passing a struct as an object, relying on shared memory) fails here.
-
-A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: like rutis mounting a copy, it loads another row in the runtime that defined it, with what the plugin's `Apply` prepared; the `services` given then are that copy's own, as the services of the instance it is in, and so are the services it declares in `Provides`: several copies of one definition can be loaded at once when they provide only declared services (an undeclared service's name is not known in advance and is not isolated). Descriptors and reported lines call a copy's row by the id of its origin row. A definition belongs to the row that handed it over (as an argument, as the result of a service it provides, or in an event it emitted): when that row unloads or is updated (a restart), its copies unload first, and loading the definition fails from then on. A copy's config is fixed when it is mounted: `Update` and `Load` on a copy fail. A definition without a `Name` can also be passed to `rutistest.Load` directly.
 
 ## 4. Run it in a local host
 
