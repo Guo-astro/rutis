@@ -406,7 +406,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 | `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）、`<Go 或 Swift 运行时> restarted`，或者 `<行> restarted`：它用到的、随这次变化重启的行（`llm` 重新加载、`greeter` 用到 `llm` 时，打印 `caller: restarted (greeter restarted)`）。写出的原因一定是这一行用到的行；不知道它用到哪些行时（依赖在运行时内部，Cordis 行之间），不写原因：`<行 id>: restarted`。这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
 | `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
-| `rutis-host dev: services: forecast (weather), llm (llm)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`；没有服务时写 `rutis-host dev: services: none`。每次都打印，不和上次比较；此外服务有变化（例如运行时在行启动之后才提供服务）时也照实再打印一次。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`（例如 rutis 自己提供的 `loader`）；没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。每次都打印，不和上次比较；此外服务有变化（例如运行时在行启动之后才提供服务）时也照实再打印一次。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
 
 ## 运行时结束时
@@ -445,6 +445,7 @@ rows:
   slow: running
   caller: starting
 services:
+  loader: host
   slow: slow
 runtimes:
   node: running (pid 4242)
@@ -492,7 +493,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | --- | --- |
 | 参数不是 JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
 | 没写方法 | `rutis-host: name a method, as forecast.<method>` |
-| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)` |
 | 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
 | 参数类型不对 | `rutis-host: forecast.today: argument 1 should be a string, got 3` |

@@ -590,6 +590,75 @@ impl std::fmt::Display for Status {
     }
 }
 
+/// As data, for plugins of other languages (the service `loader`'s
+/// `status()`): `{rows: [{id, instance?, state, reason?}], services:
+/// [{name, provider}], runtimes: [{name, state, reason?, pid?}], calls:
+/// [{from, to, service, method, ms}]}`. A state is the word `Display`
+/// prints (`running`, `waiting`, `starting`, `failed`, `disabled`,
+/// `stopped`); a `provider` or `from` of `null` is the host.
+impl serde::Serialize for Status {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde_json::{json, Map, Value};
+        let some = |object: &mut Map<String, Value>, key: &str, value: Option<Value>| {
+            if let Some(value) = value {
+                object.insert(key.into(), value);
+            }
+        };
+        let rows: Vec<Value> = self
+            .rows
+            .iter()
+            .map(|row| {
+                let mut object = Map::new();
+                object.insert("id".into(), json!(row.id));
+                some(
+                    &mut object,
+                    "instance",
+                    row.instance.as_ref().map(|i| json!(i)),
+                );
+                object.insert("state".into(), json!(state_word(&row.state)));
+                some(&mut object, "reason", row.reason.as_ref().map(|r| json!(r)));
+                Value::Object(object)
+            })
+            .collect();
+        let services: Vec<Value> = self
+            .services
+            .iter()
+            .map(|service| json!({ "name": service.name, "provider": service.provider }))
+            .collect();
+        let runtimes: Vec<Value> = self
+            .runtimes
+            .iter()
+            .map(|runtime| {
+                let mut object = Map::new();
+                object.insert("name".into(), json!(runtime.name));
+                object.insert("state".into(), json!(runtime.state.to_string()));
+                some(
+                    &mut object,
+                    "reason",
+                    runtime.reason.as_ref().map(|r| json!(r)),
+                );
+                some(&mut object, "pid", runtime.pid.map(|pid| json!(pid)));
+                Value::Object(object)
+            })
+            .collect();
+        let calls: Vec<Value> = self
+            .calls
+            .iter()
+            .map(|call| {
+                json!({
+                    "from": call.from,
+                    "to": call.to,
+                    "service": call.service,
+                    "method": call.method,
+                    "ms": call.elapsed.as_millis() as u64,
+                })
+            })
+            .collect();
+        json!({ "rows": rows, "services": services, "runtimes": runtimes, "calls": calls })
+            .serialize(serializer)
+    }
+}
+
 /// `chat → forecast.tomorrow (row weather)  42s`: the caller (`host` for
 /// none), the service and method, the row called when its name is not the
 /// service's, how long it has taken.
