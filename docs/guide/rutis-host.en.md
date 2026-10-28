@@ -293,6 +293,8 @@ Installing by hand works as before, with the same row names: each language's plu
 | `rutis-host upgrade [<plugin>[@<version>]] [rutis.json]` | Upgrades plugins `add` installed to the newest version (or the one given); a running host uses it once it restarts. |
 | `rutis-host types [directory] [-o file] [--python file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; `--python` writes their Python types too; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations). |
 
+Add `--help` or `-h` to any command to print its usage (only that command's lines) and exit 0 without doing anything else; `rutis-host --help` prints them all.
+
 ## What `run` prints
 
 The output of `run` and `dev` is read by people, scripts and tests. Its format is as follows; changes to it are treated as incompatible changes.

@@ -102,8 +102,49 @@ check fails), 2 when stopping did not finish (past the deadline, a second
 Ctrl-C, or runtime processes that did not exit), 3 when a runtime whose
 restart is \"exit\" ended and the host stopped.";
 
+/// The commands `USAGE` describes, each with its own lines there.
+const COMMANDS: [&str; 10] = [
+    "run", "dev", "check", "status", "call", "new", "add", "remove", "upgrade", "types",
+];
+
+/// The lines of `USAGE` about `command`: its own entry and the options
+/// that name it (`run and dev: …`), as `rutis-host <command> --help`
+/// prints them.
+fn command_usage(command: &str) -> String {
+    let lines = USAGE
+        .lines()
+        .skip_while(|line| *line != "usage:")
+        .skip(1)
+        .take_while(|line| !line.is_empty());
+    let mut kept = vec!["usage:"];
+    let mut keep = false;
+    for line in lines {
+        if let Some(entry) = line.strip_prefix("  rutis-host ") {
+            keep = entry.split_whitespace().next() == Some(command);
+        } else if let Some((names, _)) = line
+            .strip_prefix("    ")
+            .filter(|rest| !rest.starts_with(' '))
+            .and_then(|rest| rest.split_once(": "))
+        {
+            keep = names.split(" and ").any(|name| name == command);
+        }
+        if keep {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [command, rest @ ..] = args.as_slice() {
+        if COMMANDS.contains(&command.as_str())
+            && rest.iter().any(|arg| arg == "--help" || arg == "-h")
+        {
+            outln!("{}", command_usage(command));
+            return;
+        }
+    }
     let result = match args.first().map(String::as_str) {
         Some("new") => new_project(&args[1..]).map(|()| Stopped::Done),
         Some("types") => types(&args[1..]).map(|()| Stopped::Done),
@@ -963,5 +1004,23 @@ mod tests {
         assert_eq!(super::some_of(&rows(2)), "r0, r1");
         assert_eq!(super::some_of(&rows(3)), "r0, r1, r2");
         assert_eq!(super::some_of(&rows(9)), "r0, r1, r2 and 6 more");
+    }
+
+    /// Every command `USAGE` lists has its own `--help`, and only those.
+    #[test]
+    fn the_commands_are_those_of_the_usage() {
+        let listed: Vec<&str> = super::USAGE
+            .lines()
+            .filter_map(|line| line.strip_prefix("  rutis-host "))
+            .filter_map(|entry| entry.split_whitespace().next())
+            .filter(|command| !command.starts_with('-'))
+            .collect();
+        assert_eq!(listed, super::COMMANDS);
+        for command in super::COMMANDS {
+            assert!(super::command_usage(command)
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with(&format!("  rutis-host {command} "))));
+        }
     }
 }
