@@ -254,7 +254,6 @@ Receiving: function types → Go functions calling the remote one; `*rutis.Futur
 | Wait-cycle detection | call frames of synchronous calls carry `sync: true` (sent only to a far end that declared `sync-wait`); declares `sync-wait`, not `sync-stack` (#385) |
 | Plugin obligations | service objects safe for concurrent use; no lock held across calls into other services |
 | Call chain | incoming: `path + [id]` in the method's ctx; outgoing: `path` from the ctx given; `Apply` / cleanup ctx carry the `rows.load` / `rows.unload` chain |
-| ctx checks | `nil` ctx panics; in development mode (`RUTIS_DEV=1`), a chainless ctx while an incoming synchronous call runs warns once with the call site |
 | Incoming cancellation | a `cancel` frame cancels the method's ctx |
 | Outgoing cancellation | `async`: send `cancel`, return `ctx.Err()` at once, drop the late result; `sync`: return `ctx.Err()` at once, drop the late result, the far end runs on |
 | Row unload | cancels the row's `*rutis.Ctx` |
