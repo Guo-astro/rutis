@@ -104,7 +104,7 @@ if (!channel || rest.length !== 1) fail(USAGE)
 const project = resolve(rest[0])
 const remote = /^(listen|dial):/.test(channel)
 if (remote && !flags.id) fail(`a network channel needs --id <endpoint>: ${channel}`)
-if (!flags.id) fail(`a local channel needs --id <endpoint>: ${channel}`)
+if (!flags.id) fail(`a local channel needs --id <endpoint>: ${channel}; a host older than rutis 0.19 started this runtime: upgrade the host`)
 if (channel.startsWith('listen:')) {
   try { await serve(channel.slice('listen:'.length), { id: flags.id, peer: flags.peer, project }) } catch (error: any) {
     fail(error.message)

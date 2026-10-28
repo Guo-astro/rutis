@@ -26,7 +26,13 @@ const { channelSpec, pluginPath, endpoint, flags } = (() => {
   const flags = {}
   while (rest[0]?.startsWith('--')) flags[rest.shift().slice(2)] = rest.shift()
   const network = /^(wss?|listen|dial):/.test(channelSpec)
-  if (!flags.id) throw new Error(`a ${network ? 'network' : 'local'} channel needs --id <endpoint>: ${channelSpec}`)
+  if (!flags.id && network) throw new Error(`a network channel needs --id <endpoint>: ${channelSpec}`)
+  // Only a host older than 0.19 starts a local runtime without --id: one
+  // line saying so, no stack.
+  if (!flags.id) {
+    writeSync(2, `a local channel needs --id <endpoint>: ${channelSpec}; a host older than rutis 0.19 started this runtime: upgrade the host\n`)
+    process.exit(1)
+  }
   // A runner is a runtime: the controller manages its rows.
   const endpoint = { local: flags.id, expected: flags.peer, declare: ['runtime'] }
   return { channelSpec, pluginPath: rest[0], endpoint, flags }

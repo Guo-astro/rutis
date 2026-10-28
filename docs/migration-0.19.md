@@ -92,17 +92,37 @@
 
 ## 一起升级（#695）
 
-0.19 在握手时拒绝 0.18 及更早的宿主、运行时、节点与 SDK：会话协议从版本 3 升到 4，只留 endpoint 格式（[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三）。拒绝的消息说明升级哪一端，例如 0.19 的宿主遇到 0.18 的远程 Python 运行时：
+0.19 在握手时拒绝 0.18 及更早的宿主、运行时、节点与 SDK：会话协议从版本 3 升到 4，只留 endpoint 格式（[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三）。拒绝的消息说明升级哪一端：
 
-```
-incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)
-```
+- 0.19 的宿主起 0.18 的本机运行时（它说本机的协议 2），宿主写出：
+
+  ```
+  incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
+  ```
+
+- 0.18 的节点或远程运行时拨号 0.19 的监听方，拨号方写出：
+
+  ```
+  this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer
+  ```
+
+- 0.19 拨号 0.18 的监听方，被拒的文字以监听方说的为准，例如 0.18 的远程 Python 运行时：
+
+  ```
+  this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)
+  ```
+
+- 0.18 的宿主起 0.19 的本机运行时（不传 `--id`），运行时在握手之前停下：
+
+  ```
+  a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host
+  ```
 
 宿主与各语言运行时、SDK（Node、Bun、Python、Go、Swift、Kotlin）要一起升到 0.19；用旧 SDK 构建的 Go、Swift 二进制要用 0.19 的 SDK 重新构建。跨版本相遇只在不含不兼容改动的相邻版本之间成立。
 
 自己启动运行时进程、或自己实现运行时的：
 
-- 本机通道（`fd:3`、socket 路径、`tcp:`）也要带 `--id <名字>`：`<通道> --id <名字> [--peer <id>] <项目>`。宿主起本机运行时时传 `--id <运行时名>`，运行时在握手里报这个名字。不带 `--id` 时运行时拒绝启动：`a local channel needs --id <endpoint>: <channel>`。
+- 本机通道（`fd:3`、socket 路径、`tcp:`）也要带 `--id <名字>`：`<通道> --id <名字> [--peer <id>] <项目>`。宿主起本机运行时时传 `--id <运行时名>`，运行时在握手里报这个名字。不带 `--id` 时运行时拒绝启动：`a local channel needs --id <endpoint>: <channel>; a host older than rutis 0.19 started this runtime: upgrade the host`。
 - Node、Bun 运行时的 `--format` 参数删除；`package.json` 的 `rutisProtocol` 为 4。
 - WebSocket 子协议为 `rutis.4`。
 - Go：`advanced.ServeConn(conn, defs...)` 改为 `advanced.ServeConn(conn, id, defs...)`，`id` 即握手里报的名字，同 `--id`。

@@ -54,7 +54,7 @@ test('a local channel without --id is refused', () => {
   for (const channel of ['fd:3', '/tmp/rutis.sock']) {
     const ran = spawnSync(process.execPath, [runner, channel, conformance], { encoding: 'utf8', timeout: 30_000 })
     assert.equal(ran.status, 1)
-    assert.match(ran.stderr, new RegExp(`a local channel needs --id <endpoint>: ${channel}`))
+    assert.equal(ran.stderr, `a local channel needs --id <endpoint>: ${channel}; a host older than rutis 0.19 started this runtime: upgrade the host\n`)
   }
 })
 

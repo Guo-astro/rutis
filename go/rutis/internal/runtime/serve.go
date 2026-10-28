@@ -163,7 +163,7 @@ func parseArgs(args []string) (channel string, endpoint *peer.Endpoint, dir stri
 		if network {
 			return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
 		}
-		return "", nil, "", fmt.Errorf("a local channel needs --id <endpoint>: %s", channel)
+		return "", nil, "", fmt.Errorf("a local channel needs --id <endpoint>: %s; a host older than rutis 0.19 started this runtime: upgrade the host", channel)
 	}
 	if !peer.ValidID(flags["id"]) {
 		return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])

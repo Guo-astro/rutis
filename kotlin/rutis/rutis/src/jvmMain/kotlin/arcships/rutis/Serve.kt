@@ -98,7 +98,10 @@ internal fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
         throw IllegalArgumentException("a WebSocket channel is listen:<address> or dial:<address>: $channel")
     }
     // Every channel greets as --id: a runtime, its controller managing its rows.
-    val id = flags["id"] ?: throw IllegalArgumentException("a ${if (network) "network" else "local"} channel needs --id <endpoint>: $channel")
+    val id = flags["id"] ?: throw IllegalArgumentException(
+        if (network) "a network channel needs --id <endpoint>: $channel"
+        else "a local channel needs --id <endpoint>: $channel; a host older than rutis 0.19 started this runtime: upgrade the host"
+    )
     if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
     val endpoint = Endpoint(id, flags["peer"], listOf("runtime"))
     if (!network) return serveLocal(channel, endpoint, plugins)

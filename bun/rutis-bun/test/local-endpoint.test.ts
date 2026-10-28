@@ -60,7 +60,7 @@ test('a local channel without --id is refused', async () => {
     })
     const code = await within('the runtime to stop', child.exited)
     const stderr = await new Response(child.stderr).text()
-    expect(stderr).toBe(`runtime bun: a local channel needs --id <endpoint>: ${path}\n`)
+    expect(stderr).toBe(`runtime bun: a local channel needs --id <endpoint>: ${path}; a host older than rutis 0.19 started this runtime: upgrade the host\n`)
     expect(code).toBe(2)
   } finally {
     rmSync(dir, { recursive: true, force: true })

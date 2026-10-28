@@ -92,17 +92,37 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 
 ## Upgrade together (#695)
 
-0.19 refuses 0.18 and older hosts, runtimes, nodes and SDKs at the handshake: the session protocol goes from version 3 to 4 and keeps only the endpoint format ([Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3). The refusal says which end to upgrade, for example a 0.19 host meeting a 0.18 remote Python runtime:
+0.19 refuses 0.18 and older hosts, runtimes, nodes and SDKs at the handshake: the session protocol goes from version 3 to 4 and keeps only the endpoint format ([Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3). The refusal says which end to upgrade:
 
-```
-incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)
-```
+- A 0.19 host starting a 0.18 local runtime (which speaks the local protocol 2) prints:
+
+  ```
+  incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
+  ```
+
+- A 0.18 node or remote runtime dialing a 0.19 listener prints, on the dialer:
+
+  ```
+  this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer
+  ```
+
+- 0.19 dialing a 0.18 listener is refused in the listener's words, for example a 0.18 remote Python runtime:
+
+  ```
+  this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)
+  ```
+
+- A 0.18 host starting a 0.19 local runtime (passing no `--id`): the runtime stops before the handshake:
+
+  ```
+  a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host
+  ```
 
 Upgrade the host and every language runtime and SDK (Node, Bun, Python, Go, Swift, Kotlin) to 0.19 together; rebuild Go and Swift binaries with the 0.19 SDK. Meetings across versions hold only between adjacent releases without incompatible changes.
 
 If you start runtime processes yourself, or implement a runtime:
 
-- Local channels (`fd:3`, a socket path, `tcp:`) take `--id <name>` too: `<channel> --id <name> [--peer <id>] <project>`. The host starts a local runtime with `--id <runtime name>`, and the runtime greets as that name. Without `--id` the runtime refuses to start: `a local channel needs --id <endpoint>: <channel>`.
+- Local channels (`fd:3`, a socket path, `tcp:`) take `--id <name>` too: `<channel> --id <name> [--peer <id>] <project>`. The host starts a local runtime with `--id <runtime name>`, and the runtime greets as that name. Without `--id` the runtime refuses to start: `a local channel needs --id <endpoint>: <channel>; a host older than rutis 0.19 started this runtime: upgrade the host`.
 - The `--format` argument of the Node and Bun runtimes is removed; `rutisProtocol` in their `package.json` is 4.
 - The WebSocket subprotocol is `rutis.4`.
 - Go: `advanced.ServeConn(conn, defs...)` becomes `advanced.ServeConn(conn, id, defs...)`; `id` is the name it greets as, as `--id`.

@@ -65,8 +65,9 @@ def parse(argv: list[str]) -> tuple[str, dict, str]:
     if len(rest) != 1:
         raise ValueError("usage: python3 -m rutis <channel> --id <endpoint> [--peer <endpoint>] <project>")
     if "id" not in flags:
-        kind = "network" if channel.startswith(("listen:", "dial:")) else "local"
-        raise ValueError(f"a {kind} channel needs --id <endpoint>: {channel}")
+        if channel.startswith(("listen:", "dial:")):
+            raise ValueError(f"a network channel needs --id <endpoint>: {channel}")
+        raise ValueError(f"a local channel needs --id <endpoint>: {channel}; a host older than rutis 0.19 started this runtime: upgrade the host")
     # A runner is a runtime: the controller manages its rows.
     endpoint = {"local": flags["id"], "expected": flags.get("peer"), "declare": ["runtime"]}
     if channel.startswith("dial:"):

@@ -211,7 +211,9 @@ extension Rutis {
         guard rest.count == 1 else { throw RutisError(name: "Error", message: serveUsage) }
         let network = channel.hasPrefix("listen:") || channel.hasPrefix("dial:")
         guard let id = flags["id"], !id.isEmpty else {
-            throw RutisError(name: "Error", message: "a \(network ? "network" : "local") channel needs --id <endpoint>: \(channel)")
+            throw RutisError(name: "Error", message: network
+                ? "a network channel needs --id <endpoint>: \(channel)"
+                : "a local channel needs --id <endpoint>: \(channel); a host older than rutis 0.19 started this runtime: upgrade the host")
         }
         guard validEndpointID(id) else {
             throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")

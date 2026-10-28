@@ -79,7 +79,7 @@ class LocalEndpoint(unittest.TestCase):
                 env={**os.environ, "PYTHONPATH": package},
             )
         self.assertEqual(done.returncode, 1)
-        self.assertEqual(done.stderr, f"a local channel needs --id <endpoint>: {path}\n")
+        self.assertEqual(done.stderr, f"a local channel needs --id <endpoint>: {path}; a host older than rutis 0.19 started this runtime: upgrade the host\n")
 
 
 if __name__ == "__main__":

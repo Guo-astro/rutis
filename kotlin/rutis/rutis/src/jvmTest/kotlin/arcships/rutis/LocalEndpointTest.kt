@@ -69,7 +69,7 @@ class LocalEndpointTest {
     @Test
     fun aLocalChannelWithoutAnIdIsRefused() {
         val error = assertFailsWith<IllegalArgumentException> { serveArgs(listOf("unix:/nowhere", "."), listOf(plugin)) }
-        assertEquals("a local channel needs --id <endpoint>: unix:/nowhere", error.message)
+        assertEquals("a local channel needs --id <endpoint>: unix:/nowhere; a host older than rutis 0.19 started this runtime: upgrade the host", error.message)
     }
 
     /** A far end of protocol 3 (rutis 0.18) is refused at its handshake. */

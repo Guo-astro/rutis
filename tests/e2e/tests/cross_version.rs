@@ -745,7 +745,10 @@ fn the_current_runtimes_refuse_a_previous_host() {
                     }),
                 );
                 let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-                host.expect("a local channel needs --id <endpoint>: fd:3");
+                host.expect(
+                    "a local channel needs --id <endpoint>: fd:3; \
+                     a host older than rutis 0.19 started this runtime: upgrade the host",
+                );
                 host.expect(&format!("rutis-host: the {runtime} runtime did not start"));
                 assert_eq!(host.count(&format!("{row}: running")), 0);
                 ended_failing(host);

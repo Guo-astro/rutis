@@ -32,7 +32,7 @@ struct LocalEndpointTests {
             try Rutis.Advanced.serveArgs(["unix:/nowhere", NSTemporaryDirectory()], [plugin])
             XCTFail("expected an error")
         } catch let error as RutisError {
-            XCTAssertEqual(error.message, "a local channel needs --id <endpoint>: unix:/nowhere")
+            XCTAssertEqual(error.message, "a local channel needs --id <endpoint>: unix:/nowhere; a host older than rutis 0.19 started this runtime: upgrade the host")
         }
     }
 
