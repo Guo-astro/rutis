@@ -7,12 +7,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use common::runtimes::Probe;
+use common::runtimes::{rows_stage, Probe};
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::json;
 
@@ -43,7 +43,7 @@ async fn reloading_a_row_runs_the_edited_module() {
     );
     let loader = plugin_loader.handle();
     root.plugin(plugin_loader).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    rows_stage(&root, rows).await;
 
     let patches: Vec<Patch> = serde_json::from_value(
         json!([{ "insert": [{ "id": "e", "name": "py:edited", "config": {} }] }]),

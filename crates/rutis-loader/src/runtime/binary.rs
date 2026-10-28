@@ -43,7 +43,9 @@ use serde_json::{json, Value};
 
 use super::{leaf_resolved, RowsSource, RuntimeRowsPlugin};
 use crate::backoff::{Backoff, LIMIT, WINDOW};
-use crate::{EntryStatus, Loader, LoaderError, Resolved, Resolver, ServiceCatalog};
+use crate::loader::EntryStatus;
+use crate::resolver::Resolved;
+use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 
 /// A language whose plugins are compiled into programs, one runtime per
 /// program: what differs between Go, Swift and the like. A zero-sized type
@@ -2625,7 +2627,7 @@ mod tests {
     }
 
     #[cfg(feature = "go")]
-    fn kept(runtimes: &crate::GoRuntimesHandle) -> Option<Vec<(String, u64)>> {
+    fn kept(runtimes: &crate::runtime::go::GoRuntimesHandle) -> Option<Vec<(String, u64)>> {
         let unreported = runtimes.inner.unreported.lock().unwrap();
         unreported.as_ref().map(|ends| {
             let mut kept: Vec<_> = ends
@@ -2645,10 +2647,10 @@ mod tests {
     #[test]
     fn ends_kept_for_supervising_are_bounded_and_dropped_when_it_will_not_come() {
         let dir = tempfile::tempdir().unwrap();
-        let resolver = Arc::new(crate::GoResolver::new(
-            crate::GoBinaries::new().dir(dir.path()),
+        let resolver = Arc::new(crate::runtime::go::GoResolver::new(
+            crate::runtime::go::GoBinaries::new().dir(dir.path()),
         ));
-        let runtimes = crate::GoRuntimes::new(resolver, dir.path()).handle();
+        let runtimes = crate::runtime::go::GoRuntimes::new(resolver, dir.path()).handle();
         for generation in 1..=100 {
             runtimes.inner.ended(ended("go-a", generation));
             runtimes.inner.ended(ended("go-b", generation));

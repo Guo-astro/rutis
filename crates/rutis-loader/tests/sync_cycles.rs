@@ -10,14 +10,14 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
-use common::runtimes::{repo, COLD};
+use common::runtimes::{repo, rows_stage, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::recv_within;
 use serde_json::{json, Value};
@@ -381,7 +381,7 @@ async fn fixture(
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
     for resolver in resolvers {
-        root.plugin(RuntimeRowsPlugin::new(resolver));
+        rows_stage(&root, resolver).await;
     }
     #[cfg(feature = "go")]
     if let Some(go) = go {

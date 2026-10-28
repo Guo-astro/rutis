@@ -17,24 +17,25 @@ use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
 use crate::{BoxFuture, DynPlugin, PluginFactory};
 
-/// 六态状态机(§四:保留 TS 六态)。
+/// The states of a fiber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FiberState {
-    /// 等待声明的依赖就绪。
+    /// Waiting for its declared dependencies.
     Pending,
-    /// apply 执行中。
+    /// `apply` is running.
     Loading,
-    /// 装配完成,提供中。
+    /// Loaded and providing.
     Active,
-    /// validate/apply 失败。
+    /// Its last load failed (`build`, `validate` or `apply`), or its driver
+    /// panicked.
     Failed,
-    /// 已移除,不可重启(root 除外)。
+    /// Removed; cannot be restarted, except the root.
     Disposed,
-    /// 清理执行中。
+    /// Its cleanups are running.
     Unloading,
 }
 
-/// fiber 快照(watch 载荷,generation 兼作 sequence,D24)。
+/// A fiber's state at one moment, as published on its watch channel.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub generation: u64,
@@ -42,15 +43,16 @@ pub struct Snapshot {
     pub error: Option<Arc<ErrorKind>>,
 }
 
-/// 插件身份(D10:注册返回的显式 id,非闭包指针)。
+/// A plugin's identity: the id returned when it is registered.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct PluginId(pub u64);
 
-/// 等待卸载的结果。超时只结束本次等待；驱动继续执行清理，再次调用
-/// `dispose()` 会 join 同一任务。同步代码若不让出执行权，Tokio 无法
-/// 强制中断，deadline 也无法在该 runtime 线程上及时触发。
+/// The result of waiting for an unload. A timeout ends only this wait: the
+/// driver keeps running the cleanup, and calling `dispose()` again joins the
+/// same task. Tokio cannot interrupt synchronous code that does not yield,
+/// and the deadline cannot fire on time on the runtime thread it blocks.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DisposeWaitError {
@@ -195,8 +197,9 @@ pub(crate) fn stuck_below(top: &Arc<FiberInner>) -> Vec<Stuck> {
         .collect()
 }
 
-/// fiber 状态迁移事件(D24:锁内 FIFO 入队、锁外分发;
-/// `seq` 保证提交顺序可识别,不保证 listener 完成顺序)。
+/// A fiber state change. Events are queued in order under the transition
+/// lock and emitted after it is released; `seq` gives the order in which
+/// changes were made, not the order in which listeners finish.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct FiberStatusChanged {
@@ -218,13 +221,15 @@ pub(crate) enum TaskDone {
     Done(Option<Arc<ErrorKind>>),
 }
 
-/// 恰好一次的转换任务(D6/D20):锁内单 `Arc`,同代 join 同一个;
-/// 完成结果缓存 `Arc<ErrorKind>`(identity 归这里,D25)。
+/// A transition that runs exactly once: one `Arc` kept under the lock, which
+/// every caller for the same transition joins. The result is cached as an
+/// `Arc<ErrorKind>`, so every joiner gets the same `Arc`.
 pub(crate) struct TransitionTask {
     pub done_tx: watch::Sender<TaskDone>,
-    /// 常驻 receiver 保活(§八 7 同坑):无 receiver 时 watch 通道视为关闭,
-    /// `send` 静默失败——消费者快速完成(如等值合并直接跳过)而 join 方
-    /// 尚未订阅时,完成值丢失、join 永等(对拍 isolate 用例实锤)。
+    /// A receiver kept alive: with no receiver the watch channel counts as
+    /// closed and `send` fails silently. If the consumer finished quickly (for
+    /// example, skipped an unchanged reload) before a joiner subscribed, the
+    /// result would be lost and the join would wait forever.
     _keepalive: watch::Receiver<TaskDone>,
 }
 
@@ -244,10 +249,12 @@ impl TransitionTask {
 
 pub(crate) enum Intent {
     RefreshDeps,
-    /// 带完成信号的依赖重查(驱逐 join 用,D14):处理完成后任务收到终态。
+    /// Re-check dependencies, then complete the task: a withdrawal waits on
+    /// it for each consumer.
     RefreshDepsJoin(Arc<TransitionTask>),
-    /// 稳定性栅栏(简化 Settle):FIFO 排到它时,此前入队的意图都已处理完,
-    /// 按当时状态完成任务——"稳定了吗"由 mailbox 顺序直接回答。
+    /// A barrier: when the FIFO mailbox reaches it, every intent queued
+    /// before it has been handled, and the task completes with the state at
+    /// that point. The mailbox order answers whether the fiber has settled.
     Settle(Arc<TransitionTask>),
     Restart(Arc<TransitionTask>),
     Dispose,
@@ -297,7 +304,8 @@ pub(crate) fn post_join_to(
     }
 }
 
-/// 意图携带的完成信号即刻完成(驱动不存在时防 join 永等)。
+/// Complete the task an intent carries at once, so a join does not wait
+/// forever when no driver will handle the intent.
 fn complete_intent(intent: &Intent, err: Option<Arc<ErrorKind>>) {
     if let Some(task) = intent.task() {
         task.complete(err);
@@ -331,9 +339,10 @@ pub(crate) struct FiberInner {
     /// The root, or a plugin of rutis itself ([`DynPlugin::platform`]).
     pub platform: bool,
     pub plugin: Option<Arc<dyn DynPlugin>>,
-    /// 工厂模式(D32):与 `plugin` 互斥(工厂模式 plugin 为 None)。
+    /// Factory mode: set instead of `plugin` (`plugin` is `None` then).
     pub factory: Option<Arc<dyn ErasedFactory>>,
-    /// 工厂模式的当前 config(Arc 存储便于快照;update 原子替换)。
+    /// The current config in factory mode, stored as an `Arc` for cheap
+    /// snapshots; `update` and `set_config` replace it.
     pub config: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
     pub ctx: Ctx,
     pub parent_fiber: Option<Weak<FiberInner>>,
@@ -345,13 +354,16 @@ pub(crate) struct FiberInner {
     pub shutdown_task: Mutex<Option<Arc<TransitionTask>>>,
     pub shutdown_inner: Mutex<Option<Arc<TransitionTask>>>,
     pub driver: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// 当前 fiber 代的取消 token(D27):每次 load 新建一代;卸载第②步取消。
-    /// 意图发送方(dispose/restart/驱逐)在入队前预取消,使运行中的 apply
-    /// 经 `ctx.cancelled()` 协作退出——驱动串行,不预取消则 apply 永远等不到。
+    /// The cancellation token of the current generation: each load creates a
+    /// new one, and an unload cancels it. Dispose, restart and withdrawal cancel
+    /// it before queueing their intent, so a running `apply` can return through
+    /// `ctx.cancelled()`: the driver is serial, and without this the intent
+    /// would wait for `apply` forever.
     pub token: Mutex<CancellationToken>,
     pub transition: Mutex<Trans>,
     pub snapshot_tx: watch::Sender<Snapshot>,
-    /// 常驻 receiver:保活 watch 通道(无 receiver 时通道视为关闭,send 静默失败)。
+    /// A receiver kept alive so the watch channel stays open (with no
+    /// receiver, `send` fails silently); [`FiberView::watch`] clones it.
     pub snapshot_rx: watch::Receiver<Snapshot>,
     pub effects: Mutex<Vec<Arc<EffectRecord>>>,
     /// The plugin definitions this fiber's current generation made or
@@ -360,27 +372,33 @@ pub(crate) struct FiberInner {
     /// Weak index keeps draining records visible after `drain_effects` takes
     /// the active list, without retaining cleanups or finished child fibers.
     pub effect_index: Mutex<Vec<Weak<EffectRecord>>>,
-    /// 已 drain 记录寄存的清理错误(0.2.1):记录 Done 自摘后,错误在此
-    /// 等待 fiber 级卸载/重启统一观察——单一错误保持 Arc 同一性,
-    /// 与记录留在列表中被再次 join 的旧语义等价。
+    /// Cleanup errors of effect records drained early. A drained record removes
+    /// itself, and its error waits here for the fiber's next unload or restart
+    /// to report it; a single error keeps its `Arc` identity.
     pub drained_errors: Mutex<Vec<Arc<ErrorKind>>>,
-    /// 本 fiber 在 parent 上的 mount 记录(级联 dispose 的 effect,
-    /// 0.2.1:终态退出时主动 drain,记录自摘,长寿 parent 不残留)。
+    /// This fiber's mount record on its parent: the effect that disposes this
+    /// fiber with the parent. It is drained when this fiber reaches a terminal
+    /// state, so the record removes itself and a long-lived parent keeps nothing.
     pub mount: Mutex<Option<Arc<EffectRecord>>>,
-    /// 注册时捕获的依赖声明快照(spawn 边界一次性读取;终态退出时据此注销
-    /// `inject_index`,不再回调用户 `injects()`)。
+    /// The dependency declarations read once at spawn. Every dependency check
+    /// uses them, and they unregister the fiber from `inject_index` when it
+    /// ends, without calling the plugin's `injects()` again.
     pub declared_injects: Vec<TypeKey>,
     pub intents_tx: mpsc::UnboundedSender<Intent>,
-    /// 驱动存活标志:置 false 后 post 拒绝投递并即刻完成携带的任务
-    ///(评审 #2/#3:驱动退出后的排队意图不得让 join 永等)。
+    /// Whether the driver is running. Once it is false, `post` refuses intents
+    /// and completes their tasks at once, so an intent queued after the driver
+    /// exits does not leave a join waiting forever.
     pub alive: crate::sync::AtomicBool,
-    /// 本 fiber 提供的 (key, scope)。
+    /// The `(key, scope)` pairs this fiber provides.
     pub provided: Mutex<Vec<(TypeKey, Option<crate::key::ScopeId>)>>,
-    /// 等值合并键:最近一次装载(含失败的一代)解析到的依赖四元组集
-    /// (§〇 epoch 语义);Failed 的 fiber 只在依赖与之不同时重试。
-    /// 亦是驱逐判定的唯一事实源(D21:消费者 = last_deps 含该四元组者;
-    /// 含作用域——同一 fiber 在不同作用域提供的同键绑定不可混淆)。
-    /// 失败的 fiber 因此也算消费者:驱逐时对它重查,依赖缺失则保持 Failed。
+    /// The dependencies the last load resolved, including a load that failed:
+    /// `(provider, provider generation, key, scope)`. A refresh that resolves
+    /// the same set is skipped, so a Failed fiber retries only when its
+    /// dependencies change. It is also how a withdrawal finds consumers: a
+    /// consumer is a fiber whose `last_deps` contains the binding. The scope is
+    /// part of each entry, so bindings of one key that a fiber provides in
+    /// different scopes stay apart. A Failed fiber counts as a consumer too: the
+    /// withdrawal re-checks it, and with a dependency missing it stays Failed.
     pub last_deps: Mutex<Option<HashSet<(PluginId, u64, TypeKey, Option<crate::key::ScopeId>)>>>,
     pub accesses: Mutex<Vec<ServiceAccess>>,
     /// The loader group this fiber is an instance of (`Ctx::mark_scope`).
@@ -395,7 +413,8 @@ pub(crate) struct FiberInner {
     pub waiting_watch: Mutex<Option<u64>>,
 }
 
-/// 工厂擦除面(D32):泛型 `PluginFactory<C>` 的类型擦除适配层内部协议。
+/// The type-erased interface of a generic `PluginFactory<C>`, used inside
+/// the kernel.
 pub(crate) trait ErasedFactory: Send + Sync + 'static {
     fn config_type_id(&self) -> TypeId;
     fn name(&self) -> &str;
@@ -404,7 +423,8 @@ pub(crate) trait ErasedFactory: Send + Sync + 'static {
     fn build_erased(&self, config: &dyn Any) -> Result<Box<dyn DynPlugin>, Error>;
 }
 
-/// 泛型工厂的擦除包装(同 registry `StoredValue` 手法)。
+/// Wraps a generic factory behind [`ErasedFactory`] (the same approach as
+/// the registry's `StoredValue`).
 struct FactoryAdapter<F, C> {
     factory: F,
     _marker: std::marker::PhantomData<fn() -> C>,
@@ -468,11 +488,11 @@ impl FiberInner {
             .push(Arc::downgrade(&record));
     }
 
-    /// 当前代插件实例(D32):静态模式克隆既有实例;工厂模式用当前
-    /// config 构造(每代一个新实例 = 配置热更新生效点)。
-    /// `build` 是用户回调且 panic 概率高于 validate(评审:三处用户回调
-    /// 唯独此处漏边界会杀驱动 → fiber 卡 Loading、join 永等)——panic
-    /// 转 `fail_load`,与 validate 的边界对称。
+    /// The plugin instance for the current generation. A static plugin is
+    /// cloned; a factory builds a new instance from the current config each
+    /// generation, which is how a config update takes effect. `build` is user
+    /// code: a panic in it becomes an error, which the caller passes to
+    /// `fail_load` as it does for `validate`, so it does not kill the driver.
     fn current_plugin(&self) -> Result<Arc<dyn DynPlugin>, Error> {
         if let Some(plugin) = &self.plugin {
             return Ok(plugin.clone());
@@ -494,7 +514,8 @@ impl FiberInner {
         built.map(Arc::from)
     }
 
-    /// 当前代 token(`ctx.cancellation_token()`/`ctx.cancelled()` 暴露给插件)。
+    /// The current generation's token, which `ctx.cancellation_token()` and
+    /// `ctx.cancelled()` expose to the plugin.
     pub(crate) fn current_token(&self) -> CancellationToken {
         self.token.lock().unwrap().clone()
     }
@@ -602,8 +623,10 @@ impl FiberInner {
         token
     }
 
-    /// 投递无完成信号的意图。驱动已退出时返回 false；终态错误
-    /// 预留给未来可能携带完成信号的意图。
+    /// Post an intent. Returns false if the driver has stopped; a task the
+    /// intent carries (a `Shutdown`'s) then completes at once with the fiber's
+    /// error, or `Closed` while the instance is closing. Unlike `post_join`, it
+    /// does not check `alive` again after sending.
     pub(crate) fn post(&self, intent: Intent) -> bool {
         if !self.alive.load(Ordering::SeqCst) {
             complete_intent(&intent, self.stopped_error());
@@ -628,11 +651,13 @@ impl FiberInner {
         })
     }
 
-    /// 投递携带完成信号的意图。发送后复查 alive:若发送落在驱动排空之后
-    /// (该意图无人处理),任务即刻自完成。重复完成不会留下等待者
-    ///(封住"查过 alive → 驱动退出排空 → send 才落地"的竞态,简化红线)。
-    /// 自完成携带 fiber 终态错误而非凭空 Ok(评审 3:Failed 态下驱动退出,
-    /// None 会把真实错误覆盖成伪装成功)。
+    /// Post an intent that carries a completion task. `alive` is checked again
+    /// after sending: if the send landed after the driver drained its mailbox
+    /// (so nothing will handle the intent), the task completes at once.
+    /// Completing twice leaves no waiter behind. This closes the race "alive
+    /// checked, driver exits and drains, send lands". The task completes with
+    /// the fiber's error (or `Closed` while the instance is closing), not with
+    /// `Ok`: a driver that stopped in Failed must not report success.
     pub(crate) fn post_join(
         &self,
         task: Arc<TransitionTask>,
@@ -682,7 +707,8 @@ impl FiberInner {
         }
     }
 
-    /// 锁内:改状态 + FIFO 入队 + watch 发布(绝不持锁跨 await,D5)。
+    /// Under the transition lock: change the state, queue the status event in
+    /// order and publish the snapshot. The lock is never held across an await.
     fn set_state(&self, tr: &mut Trans, new: FiberState) {
         let old = tr.state;
         if old == new {
@@ -704,7 +730,8 @@ impl FiberInner {
         });
     }
 
-    /// 锁外:排干状态事件队列,fire-and-forget 分发(D24)。
+    /// Outside the lock: take the queued status events and emit them in order;
+    /// an emit error goes to the error sink.
     fn flush_status(&self) {
         let queue: Vec<FiberStatusChanged> = {
             let mut tr = self.transition.lock().unwrap();
@@ -971,13 +998,16 @@ impl FiberInner {
         this.flush_status();
     }
 
-    /// 失败装载的回滚(评审 #1,对齐 TS fiber.ts:749-779 的失败路径):
-    /// 经 UNLOADING 排干 apply 半注册的资源(监听/服务/子插件),再进 Failed。
-    /// 装配失败保持原子性(支柱 1);清理错误路由 ErrorSink 且并入终态错误
-    ///(0.2.3:原始装载错误在前、回滚错误随后聚合——join 方拿到完整失败
-    /// 画面,sink 仍是额外观察者)。
-    /// 失败的这一代记下装载时的依赖 `deps`:只有依赖变化才重试,同一组依赖
-    /// 的重复通知(如提供者激活时逐键发出的通知)不再重新装载(#327)。
+    /// Roll back a failed load: through Unloading, drain what `apply` had
+    /// registered so far (listeners, services, child plugins), then enter
+    /// Failed, so a failed start leaves nothing behind. Cleanup errors go to
+    /// the error sink and are also aggregated into the fiber's error after the
+    /// load error, so a joiner sees the whole failure.
+    /// The failed generation records the dependencies it loaded with (`deps`):
+    /// it is retried only when they change, so repeated notifications for the
+    /// same set (such as one per key when a provider activates) do not reload
+    /// it. Unless the load was being stopped or the plugin is rutis's own, a
+    /// `StartFailed` error also goes to the error sink.
     async fn fail_load(
         this: &Arc<Self>,
         error: Error,
@@ -1025,10 +1055,13 @@ impl FiberInner {
         }
     }
 
-    /// ④ EffectRecord 严格 LIFO 串行清理 + 消费边/依赖快照/提供表复位。
-    /// 对照声明(审计):cordis 跨顶层 effect **并发**清理(`Promise.all`,
-    /// fiber.ts:676),仅单 effect 内部 LIFO;此处跨 effect 也串行 LIFO——
-    /// 完成顺序确定、错误聚合可预期,方向性强化而非语义缺失。
+    /// Run this generation's cleanups: end the copies of the plugin
+    /// definitions it made and wait for them, drain the effect records one at
+    /// a time in reverse order, add the errors of records drained early, then
+    /// clear `last_deps` and the provided table. Returns the cleanup errors.
+    /// Cordis cleans up top-level effects concurrently (LIFO only within one
+    /// effect); here they run one after another across effects too, so the
+    /// completion order is fixed and errors aggregate predictably.
     async fn drain_effects(this: &Arc<Self>) -> Vec<Arc<ErrorKind>> {
         let handle = this.ctx.handle().clone();
         // The copies of the plugin definitions this generation made end
@@ -1052,8 +1085,11 @@ impl FiberInner {
         errors
     }
 
-    /// 卸载五步(D7):①标 unloading → ②cancel 当前代 → ③(驱动串行,apply 已退出)
-    /// → ④EffectRecord LIFO 清理 → ⑤发布终态。
+    /// Unload: mark Unloading, cancel the current generation's token, wait for
+    /// event calls (`apply` has already returned, as the driver is serial),
+    /// drain the effect records in reverse order, then publish the next state.
+    /// For `Pending` (restart or dependency refresh) cleanup errors go to the
+    /// error sink; for `Disposed` they become the fiber's error.
     async fn unload(this: &Arc<Self>, next: NextState) {
         {
             // Close dispatch admission and transition together. A snapshot
@@ -1107,8 +1143,10 @@ pub fn shutdown_deadline() -> Duration {
         .unwrap_or(Duration::from_secs(10))
 }
 
-/// fiber 驱动任务:意图串行处理(Loading→Unloading→Loading 不丢唤醒;
-/// apply 与卸载天然互斥,跨代结果不会串染)。
+/// The fiber's driver task. It handles intents one at a time, so Loading →
+/// Unloading → Loading loses no wakeup, `apply` and an unload never overlap,
+/// and results of different generations never mix. A non-root driver exits
+/// after a dispose or shutdown.
 pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver<Intent>) {
     while let Some(intent) = rx.recv().await {
         let current_task = intent.task().cloned();
@@ -1300,8 +1338,11 @@ pub(crate) async fn drive(this: Arc<FiberInner>, mut rx: mpsc::UnboundedReceiver
     }
 }
 
-/// 意外 panic 不能让驱动直接消失:撤销已注册资源,让当前及排队等待者
-/// 都观察同一个终态错误。正常的 apply/validate panic 走 load 的回滚路径。
+/// Recover from an unexpected panic in the driver instead of letting the
+/// driver vanish: withdraw what was registered, enter Failed, and complete
+/// the current task, the terminal task and every queued intent with the same
+/// error. A panic in `build`, `validate` or `apply` does not come here: the
+/// load's rollback handles it.
 async fn recover_driver_panic(
     this: &Arc<FiberInner>,
     rx: &mut mpsc::UnboundedReceiver<Intent>,
@@ -1350,7 +1391,8 @@ async fn recover_driver_panic(
     }
 }
 
-/// 以 fiber 当前终态错误完成转换任务(join 者收到同一 `Arc`,D25)。
+/// Complete a transition task with the fiber's current error (every joiner
+/// gets the same `Arc`).
 fn complete_task(this: &Arc<FiberInner>, task: Arc<TransitionTask>) {
     let err = {
         let tr = this.transition.lock().unwrap();
@@ -1359,11 +1401,15 @@ fn complete_task(this: &Arc<FiberInner>, task: Arc<TransitionTask>) {
     task.complete(err);
 }
 
-/// 终态 fiber 的瞬态残留释放(0.2.1,长寿 parent 下的瞬态子插件):
-/// ①注销 `inject_index` 中的依赖声明(死 driver 不再收门控/重查通知);
-/// ②drain parent 上的 mount 记录——清理闭包内的 `dispose()` 返回缓存
-/// 终态即刻完成,EffectRecord 进 Done 后从 parent 的 effects 列表自摘。
-/// parent 先行卸载(mem::take 整表清理)时两步均自然 no-op。
+/// Release what a fiber in a terminal state still holds (a transient child
+/// under a long-lived parent):
+/// 1. unregister its dependency declarations from `inject_index`, so the
+///    stopped driver gets no more dependency notifications;
+/// 2. drain its mount record on the parent: the `dispose()` in that cleanup
+///    returns the cached terminal result at once, and the record, now done,
+///    removes itself from the parent's effects (if the parent unloaded
+///    first, the record is already done and this does nothing);
+/// 3. remove it, and dead entries, from the parent's children.
 async fn release_transient(this: &Arc<FiberInner>) {
     let shared = this.ctx.shared().clone();
     shared
@@ -1396,7 +1442,7 @@ pub(crate) fn spawn_fiber(
     spawn_fiber_inner(shared, parent_ctx, plugin, None, None, is_root)
 }
 
-/// 工厂模式 spawn(D32:`Ctx::plugin_with` 入口)。
+/// Spawn a fiber in factory mode (used by `Ctx::plugin_with`).
 pub(crate) fn spawn_factory_fiber<F, C>(
     shared: &Arc<Shared>,
     parent_ctx: Option<&Ctx>,
@@ -1572,14 +1618,16 @@ fn spawn_fiber_inner(
     this
 }
 
-/// fiber 句柄:注册返回,`IntoFuture` = 等待进入稳定态(启动错误经 Err 返回)。
+/// A handle to a fiber, returned on registration. Awaiting it
+/// (`IntoFuture`) waits until the fiber settles; a failed start comes back
+/// as `Err`.
 ///
 /// Awaiting a view waits until what is already queued for the fiber has
 /// been handled, not until the plugin runs: a plugin waiting for a
 /// dependency that is not there is `Pending`, and the await returns
 /// `Ok(())`. To wait until it runs, watch its state ([`FiberView::watch`]).
 pub struct FiberView {
-    /// 插件身份(D10)。
+    /// The plugin's identity.
     pub id: PluginId,
     pub(crate) inner: Arc<FiberInner>,
 }
@@ -1601,13 +1649,14 @@ impl FiberView {
         }
     }
 
-    /// 当前快照。
+    /// The current snapshot.
     pub fn state(&self) -> Snapshot {
         self.inner.state_snapshot()
     }
 
-    /// 当前快照,及造成它的 `FiberStatusChanged` 的 `seq`(尚无变化时为 0):
-    /// 与事件对照,可知哪些事件早于这份快照。
+    /// The current snapshot, with the `seq` of the `FiberStatusChanged` that
+    /// produced it (0 if there was no change yet): compare it with events to
+    /// know which ones came before this snapshot.
     pub fn sequenced_state(&self) -> (u64, Snapshot) {
         self.inner.sequenced_snapshot()
     }
@@ -1624,7 +1673,7 @@ impl FiberView {
             .collect()
     }
 
-    /// 插件显示名。
+    /// The plugin's display name.
     pub fn name(&self) -> &str {
         &self.inner.name
     }
@@ -1664,13 +1713,15 @@ impl FiberView {
         Box::pin(async move { join_task(&task).await })
     }
 
-    /// 订阅状态变化(watch:last-value,晚订阅先 `borrow()` 再 `changed()`,D6)。
+    /// Subscribe to state changes. The channel keeps the last value: a late
+    /// subscriber reads `borrow()` first, then waits on `changed()`.
     pub fn watch(&self) -> watch::Receiver<Snapshot> {
         self.inner.snapshot_rx.clone()
     }
 
-    /// dispose:恰好一次;重复/并发调用 join 同一 `Arc<ErrorKind>`(D6/D20)。
-    /// 入队前预取消当前代 token(运行中的 apply 协作退出,D27 第②步前置)。
+    /// Dispose the fiber, exactly once: repeated or concurrent calls join the
+    /// same `Arc<ErrorKind>`. The current generation's token is cancelled
+    /// before the intent is queued, so a running `apply` can return early.
     ///
     /// Root (#234): the call is ordered against `Ctx::shutdown()` by the
     /// admission lock. Before shutdown closes admission it registers its own
@@ -1740,8 +1791,9 @@ impl FiberView {
         Ok(task)
     }
 
-    /// 限制等待时间，不强制终止正在执行的插件或清理任务。
-    /// 超时后再次调用 `dispose()` 可继续等待同一终态任务及其错误。
+    /// Dispose, waiting at most `limit`. It does not stop the plugin or the
+    /// cleanup that is running: after a timeout, calling `dispose()` again keeps
+    /// waiting for the same terminal task and its error.
     pub fn dispose_with_timeout(
         &self,
         limit: Duration,
@@ -1767,10 +1819,12 @@ impl FiberView {
         })
     }
 
-    /// restart:干净卸载后重装配(无状态迁移,Erlang code_change 省略版)。
-    /// 已 Disposed(或 Dispose 已入队/驱动已退出)的非 root fiber返回
-    /// `InactiveEffect`——不得让 join 永等(评审 #2)。
-    /// 经转换任务 join:等待本次 restart 排干并回传终态错误。
+    /// Unload cleanly and load again; no state is carried over. Returns
+    /// `Closed` while the fiber or instance is closing, and `InactiveEffect` for
+    /// a non-root fiber that is disposed, has a dispose registered or whose
+    /// driver has stopped. Waits until this restart is handled: returns the new
+    /// generation's error, or `Ok(())` if it is waiting for dependencies. A
+    /// disposed root becomes Active again.
     pub fn restart(&self) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
         let this = self.inner.clone();
         Box::pin(async move {
@@ -1798,15 +1852,18 @@ impl FiberView {
         })
     }
 
-    /// 配置热更新(D32):dry-run 通过后存入并按状态矩阵重启。
+    /// Replace the config, after a dry run, and restart with it.
     ///
-    /// - dry-run = `validate_config` + `build` + 实例 `validate`,任一失败
-    ///   返回 Err,**不存不重启**(现状不动);
-    /// - 通过后存 config,经 `Intent::Restart` 收敛:Active/Loading/Failed
-    ///   → 卸载重载(新 config 构造新实例);Pending → 直接重查,依赖就绪
-    ///   即用新 config 装载,未就绪则存着等门控;
-    /// - 非工厂 fiber(静态 `plugin()` 装载)返回 `Validation` 错;
-    /// - 与 restart 同款终态拒绝(Disposed/终态已登记/驱动已退出)。
+    /// - The dry run is `validate_config` + `build` + the instance's
+    ///   `validate`; if any fails, the error is returned and nothing is stored
+    ///   or restarted.
+    /// - Once it passes, the config is stored and a restart follows: an
+    ///   Active, Loading or Failed fiber unloads and loads with an instance
+    ///   built from the new config; a Pending one re-checks its dependencies
+    ///   and loads if they are ready, else keeps waiting with the new config.
+    /// - A static plugin (not from a factory), or a config of another type,
+    ///   returns a `Validation` error.
+    /// - Refused like `restart` when closing or disposed.
     pub fn update<C: Send + Sync + 'static>(
         &self,
         new_config: C,
@@ -1885,7 +1942,8 @@ impl FiberView {
         })
     }
 
-    /// 当前 config 快照(D32,诊断用)。非工厂 fiber 或类型不符返回 None。
+    /// The current config, for diagnostics. `None` for a static plugin or a
+    /// different type.
     pub fn current_config<C: Send + Sync + 'static>(&self) -> Option<Arc<C>> {
         let boxed = self.inner.config.lock().unwrap().clone()?;
         boxed.downcast::<C>().ok()
@@ -2021,9 +2079,11 @@ pub(crate) async fn join_task(task: &Arc<TransitionTask>) -> Result<(), Arc<Erro
     }
 }
 
-/// settle(`IntoFuture`)= Settle 栅栏 + join:"稳定了吗"由 mailbox 的 FIFO
-/// 顺序直接回答——Settle 排到时,此前入队的意图(初始装载、再装载通知、
-/// restart)都已处理完;错误只认 Failed(dispose 聚合错误经 dispose() 返回)。
+/// Awaiting a view (`IntoFuture`): a `Settle` barrier plus a join. The
+/// mailbox's FIFO order answers whether the fiber has settled: when `Settle`
+/// is reached, the intents queued before it (initial load, reload
+/// notifications, restarts) have been handled. Only a Failed state reports
+/// an error; a dispose's errors come back through `dispose()`.
 fn settle(this: &FiberInner) -> BoxFuture<'static, Result<(), Arc<ErrorKind>>> {
     let task = TransitionTask::new();
     this.post_join(task.clone(), Intent::Settle);

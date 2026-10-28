@@ -10,10 +10,11 @@ use rutis::{Ctx, Error, Event};
 use serde_json::Value;
 
 use crate::error::Failure;
+use crate::error::Unavailable;
 use crate::patch::{apply_patches, Layer};
 use crate::resolver::{Build, BuildLink, Resolved};
 use crate::volatile::{volatile_change, volatile_paths, VolatileUpdate};
-use crate::{LoaderError, Unavailable};
+use crate::LoaderError;
 
 use super::desired::{BoundScope, Desired, Eval, Row};
 use super::plugins::{EntryConfig, EntryFactory, GroupPlugin};
