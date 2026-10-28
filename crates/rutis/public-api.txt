@@ -8,7 +8,6 @@ pub rutis::events::Mode::Emit
 pub rutis::events::Mode::Parallel
 pub rutis::events::Mode::Serial
 pub rutis::events::Mode::Waterfall
-pub rutis::events::Mode::WaterfallSync
 impl rutis::events::Mode
 pub fn rutis::events::Mode::as_str(self) -> &'static str
 pub fn rutis::events::Mode::is_sync(self) -> bool
@@ -141,8 +140,8 @@ pub fn rutis::events::SyncCall<'_, E>::mode(&self) -> rutis::events::Mode
 pub fn rutis::events::SyncCall<'_, E>::name(&self) -> &str
 pub fn rutis::events::SyncCall<'_, E>::next(self) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl<'a, E> core::marker::Freeze for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Freeze
-impl<'a, E> !core::marker::Send for rutis::events::SyncCall<'a, E>
-impl<'a, E> !core::marker::Sync for rutis::events::SyncCall<'a, E>
+impl<'a, E> core::marker::Send for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Send
+impl<'a, E> core::marker::Sync for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Sync
 impl<'a, E> core::marker::Unpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Unpin
 impl<'a, E> core::marker::UnsafeUnpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::UnsafeUnpin
 impl<'a, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::SyncCall<'a, E>
@@ -575,7 +574,6 @@ impl core::panic::unwind_safe::UnwindSafe for rutis::host::ListenerKind
 pub rutis::host::NextMisuse::AlreadyCalled
 pub rutis::host::NextMisuse::Ended
 pub rutis::host::NextMisuse::NotWaterfall(rutis::events::Mode)
-pub rutis::host::NextMisuse::OtherThread
 pub rutis::host::NextMisuse::SyncInAsync
 impl core::clone::Clone for rutis::host::NextMisuse
 pub fn rutis::host::NextMisuse::clone(&self) -> Self
@@ -928,7 +926,6 @@ pub fn rutis::host::CtxHost::shutdown_with_timeout(&self, core::time::Duration) 
 pub fn rutis::host::CtxHost::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
 pub fn rutis::host::CtxHost::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::host::CtxHost::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
-pub fn rutis::host::CtxHost::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl rutis::host::CtxHost for rutis::Ctx
 pub fn rutis::Ctx::cancellation_token(&self) -> tokio_util::sync::cancellation_token::CancellationToken
 pub fn rutis::Ctx::diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics
@@ -959,7 +956,6 @@ pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::
 pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
 pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
-pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 pub trait rutis::host::DynPlugin: core::marker::Send + core::marker::Sync + 'static
 pub fn rutis::host::DynPlugin::apply<'a>(&'a self, &'a rutis::Ctx) -> rutis::host::BoxFuture<'a, core::result::Result<rutis::host::Effect, rutis::Error>>
 pub fn rutis::host::DynPlugin::injects(&self) -> alloc::vec::Vec<rutis::host::TypeKey>
@@ -1102,7 +1098,6 @@ pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::
 pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
 pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
-pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl core::marker::Freeze for rutis::Ctx
 impl core::marker::Send for rutis::Ctx
 impl core::marker::Sync for rutis::Ctx

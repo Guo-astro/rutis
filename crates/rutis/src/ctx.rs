@@ -1427,18 +1427,6 @@ impl crate::host::CtxHost for Ctx {
         self.plugin_with(crate::plugin::BuildFn::new(build), config)
     }
 
-    fn waterfall_sync<E, F>(
-        &self,
-        event: impl crate::events::IntoEvent<E>,
-        terminal: F,
-    ) -> Result<Option<E::Value>, Error>
-    where
-        E: crate::Event,
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>,
-    {
-        self.waterfall_sync_impl(event.into_event(), terminal)
-    }
-
     fn subscriptions(&self) -> Vec<crate::bus::EventSubscription> {
         self.events().subscriptions()
     }

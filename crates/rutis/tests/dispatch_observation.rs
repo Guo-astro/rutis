@@ -127,17 +127,13 @@ async fn all_modes_observe_before_listener_selection_even_when_empty() {
     assert_eq!(seen.lock().unwrap().len(), 4);
 
     assert_eq!(root.bail(Ping(5)).unwrap(), None);
-    assert_eq!(
-        root.waterfall_sync(Ping(6), |_| Ok(Some(8))).unwrap(),
-        Some(8)
-    );
 
     root.named("dynamic")
-        .emit(Ping(7))
+        .emit(Ping(6))
         .expect("default event dispatch");
     {
         let entries = seen.lock().unwrap();
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 6);
         assert_eq!(
             entries.iter().map(|e| e.0).collect::<Vec<_>>(),
             [
@@ -146,17 +142,16 @@ async fn all_modes_observe_before_listener_selection_even_when_empty() {
                 Mode::Parallel,
                 Mode::Waterfall,
                 Mode::Bail,
-                Mode::WaterfallSync,
                 Mode::Emit,
             ]
         );
-        assert_eq!(entries[6].1, "dynamic");
-        assert!(entries[..6].iter().all(|e| e.1 == Ping::NAME));
+        assert_eq!(entries[5].1, "dynamic");
+        assert!(entries[..5].iter().all(|e| e.1 == Ping::NAME));
         assert!(entries.iter().all(|e| e.2 == root.root_view().unwrap().id));
         assert!(entries.iter().all(|e| e.3 == root.instance()));
         assert_eq!(
             entries.iter().map(|e| e.4).collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7]
+            [1, 2, 3, 4, 5, 6]
         );
     }
     observer.dispose().await.unwrap();

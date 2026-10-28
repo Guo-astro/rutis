@@ -49,16 +49,9 @@ async fn thousand_subtrees_release_exact_and_prefix_entries() {
             .unwrap();
         ctx.listen::<Ping>()
             .prefix("room/")
-            .on_sync(|_, call| {
-                if call.mode().is_waterfall() {
-                    call.next()
-                } else {
-                    Ok(None)
-                }
-            })
+            .on_sync(|_, _| Ok(None))
             .unwrap();
-        ctx.named(name.clone()).bail(Ping).unwrap();
-        ctx.named(name).waterfall_sync(Ping, |_| Ok(None)).unwrap();
+        ctx.named(name).bail(Ping).unwrap();
         view.shutdown().await.unwrap();
         assert_eq!(bus.table_counts().0, 0);
         assert_eq!(bus.table_counts().1, 0);

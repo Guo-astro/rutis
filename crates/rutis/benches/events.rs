@@ -24,13 +24,9 @@ async fn through(_: Arc<Ping>, call: Call<Ping>) -> rutis::Result<Option<u64>> {
         Ok(None)
     }
 }
-/// The synchronous `through`.
-fn sync_through(_: Arc<Ping>, call: SyncCall<'_, Ping>) -> rutis::Result<Option<u64>> {
-    if call.mode() == Mode::WaterfallSync {
-        call.next()
-    } else {
-        Ok(None)
-    }
+/// The synchronous `through`: no result.
+fn sync_through(_: Arc<Ping>, _: SyncCall<'_, Ping>) -> rutis::Result<Option<u64>> {
+    Ok(None)
 }
 fn measure(mut call: impl FnMut(), iterations: usize) -> f64 {
     for _ in 0..1000 {
@@ -62,7 +58,6 @@ fn main() {
     for listeners in [0, 1, 8, 64] {
         let root = Ctx::root().unwrap();
         for _ in 0..listeners {
-            // One table: the same listeners serve both modes.
             root.on_sync::<Ping>(sync_through).unwrap();
         }
         let ping = Arc::new(Ping);
@@ -71,18 +66,6 @@ fn main() {
             measure(
                 || {
                     black_box(root.bail::<Ping>(ping.clone()).unwrap());
-                },
-                iterations,
-            ),
-        );
-        report(
-            &format!("waterfall_sync exact listeners={listeners}"),
-            measure(
-                || {
-                    black_box(
-                        root.waterfall_sync::<Ping, _>(ping.clone(), |_| Ok(Some(1)))
-                            .unwrap(),
-                    );
                 },
                 iterations,
             ),

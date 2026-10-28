@@ -151,7 +151,7 @@ A runtime R dispatches an emission of name N itself (**fast path**), with no mes
 
 `mode` is one of `emit`, `parallel`, `serial`, `waterfall`, `bail`. `args` is a `list` of values (§10). `filter` (§6) and `terminal` (`waterfall` only) are optional function references. `rutis/*` names are refused before sending (§11). The answer is per mode (§5.4).
 
-**`events.call`** (host → runtime, or node → node over a link), `invoke` with empty target; synchronous (`sync: true` under the `sync-wait` rules) for `bail` and `waterfall-sync`:
+**`events.call`** (host → runtime, or node → node over a link), `invoke` with empty target; synchronous (`sync: true` under the `sync-wait` rules) for `bail`:
 
 ```json
 [{ "listener": "7", "dispatch": "d1042", "own": false, "name": "session/created", "mode": "waterfall", "args": [ … ], "next": <function reference>, "signal": {"type":"signal"} }]
@@ -162,11 +162,11 @@ A runtime R dispatches an emission of name N itself (**fast path**), with no mes
 | `listener` | The receiving side's entry id (its own `events.on` id, or for a link the id it announced) |
 | `dispatch` | Host-chosen id, unique per host; the same for every invocation of one dispatch |
 | `own` | `true` when the dispatch came from this same session's `events.dispatch` |
-| `mode` | `emit`, `parallel`, `serial`, `waterfall`, `bail`, `waterfall-sync` (only Rust emits `waterfall-sync`) |
-| `next` | `waterfall` / `waterfall-sync` only: a function reference taking no arguments, returning the rest of the chain |
+| `mode` | `emit`, `parallel`, `serial`, `waterfall`, `bail` (0.19 removed `waterfall-sync`) |
+| `next` | `waterfall` only: a function reference taking no arguments, returning the rest of the chain |
 | `signal` | The existing `signal` value: it aborts when the host cancels this invocation (§5.7) |
 
-The receiving runtime calls the listener with the event arguments, and in `waterfall` / `waterfall-sync` with `next` appended as the last argument. It answers with the listener's return value as is (the dispatcher applies the result rule), or a `throw` with the listener's error. In `emit` mode it answers `undefined` once the listener finished, whatever happened; a failure is reported on its side (§5.6).
+The receiving runtime calls the listener with the event arguments, and in `waterfall` with `next` appended as the last argument. It answers with the listener's return value as is (the dispatcher applies the result rule), or a `throw` with the listener's error. In `emit` mode it answers `undefined` once the listener finished, whatever happened; a failure is reported on its side (§5.6).
 
 An `events.call` for an id that is unknown or withdrawn is answered with `throw` `BindingError`, message `listener <id> of <name> is withdrawn`.
 
@@ -185,11 +185,10 @@ Semantics follow Cordis 4.0.4 `events.ts` (the design's table). "Start" means ca
 | `serial` | Starts one at a time, waits for each | The first return value that is a result; a listener's error is thrown as is and stops the rest; `undefined` when none had a result |
 | `waterfall` | Invokes the first entry with `next`; `next` of entry *i* invokes entry *i+1* (skipping withdrawn entries); `next` of the last calls `terminal` with the event arguments, or yields `undefined` without one | The outermost listener's return value, **as is** (not normalized; `false` stays `false`). No entries: the terminal's value, or `undefined`. A listener that does not call `next` vetoes the rest |
 | `bail` | Like `serial`, each invocation synchronous (`sync: true`) | Like `serial`, synchronously |
-| `waterfall-sync` | Like `waterfall`, synchronous, `next` called synchronously | Like `waterfall`, synchronously (Rust emitters only) |
 
-`next` rules: it takes no arguments; calling it a second time, or after its dispatch ended or was cancelled, fails that call with `WaterfallNext` (§11). In `waterfall` the receiving runtime gives the listener a `next` returning a Promise / awaitable / Go blocking call; in `waterfall-sync` it calls the reference synchronously.
+`next` rules: it takes no arguments; calling it a second time, or after its dispatch ended or was cancelled, fails that call with `WaterfallNext` (§11). In `waterfall` the receiving runtime gives the listener a `next` returning a Promise / awaitable / Go blocking call.
 
-Synchronous modes and listener kinds: in `bail` / `waterfall-sync` an entry of kind `async` is not invoked; the dispatch fails with `AsyncListener`. An entry of kind `any` is invoked; if it returns a Promise / thenable / awaitable, the listener's runtime discards it (a Python coroutine is closed; a Promise's rejection is caught and ignored) and fails the invocation with `AsyncListener`. Go listeners are `sync`. Rust: `on` entries are `async`, `on_sync` entries `sync`. Every synchronous invocation takes part in wait-cycle detection like a synchronous service call (`SyncWaitCycle`).
+Synchronous modes and listener kinds: in `bail` an entry of kind `async` is not invoked; the dispatch fails with `AsyncListener`. An entry of kind `any` is invoked; if it returns a Promise / thenable / awaitable, the listener's runtime discards it (a Python coroutine is closed; a Promise's rejection is caught and ignored) and fails the invocation with `AsyncListener`. Go listeners are `sync`. Rust: `on` entries are `async`, `on_sync` entries `sync`. Every synchronous invocation takes part in wait-cycle detection like a synchronous service call (`SyncWaitCycle`).
 
 ### 5.5 Emit order
 
@@ -282,7 +281,7 @@ Event arguments, results, `next` / terminal results and filter descriptors are s
 | `name` | When | Message (exact; `<…>` filled in) |
 | --- | --- | --- |
 | `AggregateError` | `parallel` with failures | `<n> listeners of <name> failed`; children in registration order: on the wire the error graph's root is an `error` node named `AggregateError` whose `errors` refer to the children's nodes (each child's own graph grafted in), as JavaScript encodes an `AggregateError` |
-| `AsyncListener` | async listener in `bail` / `waterfall-sync` | `listener of <name> in <listener> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>`; `<listener>` is `row <row>`, `runtime <runtime>`, `node <peer>` or `plugin <plugin>`, the first the descriptor has |
+| `AsyncListener` | async listener in `bail` | `listener of <name> in <listener> is asynchronous and cannot run in a synchronous bail`; `<listener>` is `row <row>`, `runtime <runtime>`, `node <peer>` or `plugin <plugin>`, the first the descriptor has |
 | `WaterfallNext` | `next` twice / after the end / after cancellation / outside a waterfall (Rust) / Rust sync listener in an async waterfall | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` · `next of <name> was called off the thread of its waterfall` (Rust: the synchronous `next` of a listener elsewhere called off the thread dispatching it) |
 | `ReservedEvent` | emitting `rutis/*` (any mode, any language, refused synchronously by the emit API) | `rutis/* events are emitted by rutis only: <name>` |
 | `SyncWaitCycle` | a synchronous invocation would close a wait cycle | as for service calls |
@@ -408,7 +407,7 @@ pub enum ListenerKind { Sync, Async, Any }
 /// (a runtime session, a node link). Same table, positions, name delivery,
 /// filter (by its `ListenerInfo`) and `global` as any entry.
 pub trait RemoteListener: Send + Sync + 'static {
-    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail / waterfall-sync (AsyncListener)
+    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail (AsyncListener)
     /// Called in registration order when the call starts (for `emit`, before
     /// the dispatch resolves); dropping the future cancels the call (§5.7).
     fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
@@ -431,7 +430,7 @@ impl EventBus {
     /// batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
     /// For `emit` it resolves once every call started.
     pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
-    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync
+    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail
     /// Call one entry by id outside a dispatch (a node running the other node's `events.call`, §9).
     pub fn invoke_entry<'a>(&self, ctx: &'a Ctx, id: u64, call: EntryCall) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
     pub fn invoke_entry_sync(&self, ctx: &Ctx, id: u64, call: EntryCall) -> Result<Option<Value>, CordisError>;
@@ -662,11 +661,6 @@ A **case**: `case` (id), `rule` (the section of this document), `name` (default 
       "vary": ["a", "b", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "throws": { "name": "BErr" }, "log": ["a", "b"] } } ] },
 
-    { "case": "waterfall-sync/chain", "rule": "5.4 waterfall-sync", "name": "t/wfs", "tool": false,
-      "listeners": [ { "label": "a", "at": "X", "does": { "next": "a" } }, { "label": "b", "at": "Y", "does": { "next": "b" } } ],
-      "vary": ["a", "b"],
-      "steps": [ { "emit": { "from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t" }, "expect": { "returns": "abt", "log": ["a", "b", "terminal"] } } ] },
-
     { "case": "bail/first-result", "rule": "5.4 bail", "name": "t/bail",
       "listeners": [
         { "label": "a", "at": "Y", "does": { "returns": null } },
@@ -880,7 +874,7 @@ Where the design was silent, this specification chose:
 7. **Registration order** is the host's acceptance order with positions; `prepend` takes the lowest position; `rows.load` waits for the row's `events.on` answers; the host queues presence updates before answering `events.on`.
 8. **The host withdraws a row's entries** when it sends `rows.unload` or receives `rows.ended`; the runtime refuses that row's invocations at once.
 9. **Snapshot, then a liveness check before each start**: withdrawn entries are skipped silently; invocations already sent fail once with `BindingError` (`listener <id> of <name> is withdrawn`) or the transport error.
-10. **Listener kinds** `sync` / `async` / `any`: declared-async entries are never invoked by `bail` / `waterfall-sync`; `any` entries are checked by what they return.
+10. **Listener kinds** `sync` / `async` / `any`: declared-async entries are never invoked by `bail`; `any` entries are checked by what they return.
 11. **`parallel` always throws `AggregateError`**, even for one failure (Cordis).
 12. **`waterfall` returns the outermost value as is**; with no entries, the terminal's value or no result; `next` takes no arguments; the terminal receives the event arguments; a Cordis plugin's terminal is Cordis's mandatory last argument; a leaf plugin gives it with `waterfall.with(terminal)` (amended 2026-10-19: its arguments may be functions, so the last cannot be told apart), optional elsewhere.
 13. **The filter runs over the name-matched snapshot before any invocation**; `global` entries skip it; a throwing filter fails the dispatch (in `emit`, reported).

@@ -258,7 +258,7 @@ fn index(ctx: &Ctx, path: String) -> rutis::Result {
 | `parallel` | 并发调用监听器，等待全部完成 | 成功返回 `()`；失败汇总为 `ListenersFailed`（只有一个失败时也是），按注册顺序排列 |
 | `serial` | 按注册顺序逐个调用，遇到结果或错误时结束 | 返回首个结果；`None` 和 `Some(false)` 视为没有结果 |
 | `waterfall` | 监听器通过 `call.next()` 调用后续处理，并可处理其返回结果 | 返回最外层监听器的结果 |
-| `bail` / `waterfall_sync` | 与 `serial` / `waterfall` 相同，但在调用方线程内同步执行（`waterfall_sync` 是宿主层的方法） | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
+| `bail` | 与 `serial` 相同，但在调用方线程内同步执行 | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
 
 监听器的返回类型为 `rutis::Result<Option<E::Value>>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
 

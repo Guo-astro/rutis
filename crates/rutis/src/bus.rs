@@ -15,8 +15,7 @@ use std::time::Instant;
 
 use run::{
     filter_any, filter_each, filter_sync, first_poll, report_listener, run_bail, run_parallel,
-    run_serial, AsyncNext, ErasedSyncTerminal, ErasedTerminal, FilterSpec, Inv, NoTerminal,
-    OwnedInv, RawTerm, Started, SyncNext,
+    run_serial, AsyncNext, ErasedTerminal, FilterSpec, Inv, NoTerminal, OwnedInv, RawTerm, Started,
 };
 use table::{Body, Entry, Table};
 
@@ -930,34 +929,6 @@ impl EventBus {
         run_bail(&inv, &entries)
     }
 
-    pub(crate) fn waterfall_sync_erased(
-        &self,
-        ctx: &Ctx,
-        name: Arc<str>,
-        event: PayloadRef<'_>,
-        terminal: &dyn ErasedSyncTerminal,
-        mut opts: Opts,
-    ) -> Result<Option<Value>, Error> {
-        ctx.registration_preflight()?;
-        let entries = self.snapshot(ctx, &name, Mode::WaterfallSync, event.as_any(), &mut opts)?;
-        let entries = filter_sync(&name, entries, opts.filter.take())?;
-        let inv = Inv {
-            bus: self,
-            emitter: ctx,
-            name: &name,
-            mode: Mode::WaterfallSync,
-            event,
-            dispatch: self.dispatch_id(),
-            origin: opts.origin,
-        };
-        SyncNext {
-            inv: &inv,
-            chain: &entries,
-            terminal,
-        }
-        .invoke()
-    }
-
     // ── typed dispatch ───────────────────────────────────────────
 
     /// `emit` of a framework event: only rutis emits `rutis/*`.
@@ -1021,32 +992,20 @@ impl EventBus {
                         .await
                 })
             }
-            Mode::Bail | Mode::WaterfallSync => Box::pin(std::future::ready(Err(Error::from(
+            Mode::Bail => Box::pin(std::future::ready(Err(Error::from(
                 ErrorKind::Validation {
-                    issues: vec![format!("{} is synchronous: use dispatch_sync", d.mode)],
+                    issues: vec!["bail is synchronous: use dispatch_sync".to_owned()],
                 },
             )))),
         }
     }
 
-    /// Dispatch an erased event synchronously (`bail`, `waterfall-sync`).
+    /// Dispatch an erased event synchronously (`bail`).
     pub fn dispatch_sync(&self, ctx: &Ctx, mut d: Dispatch) -> Result<Option<Value>, Error> {
         let opts = Self::raw_opts(&mut d);
         let name: Arc<str> = Arc::from(d.name.as_str());
         match d.mode {
             Mode::Bail => self.bail_erased(ctx, name, d.payload.as_ref(), opts),
-            Mode::WaterfallSync => {
-                let terminal = d.terminal.take();
-                match terminal {
-                    Some(terminal) => {
-                        let terminal = RawTerm(Mutex::new(Some(terminal)));
-                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &terminal, opts)
-                    }
-                    None => {
-                        self.waterfall_sync_erased(ctx, name, d.payload.as_ref(), &NoTerminal, opts)
-                    }
-                }
-            }
             mode => Err(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use dispatch")],
             }
@@ -1119,11 +1078,8 @@ impl EventBus {
                     let next = AsyncNext::start(rest, Vec::new(), terminal);
                     run::call_async(&entry, &inv, Some(next)).await
                 }
-                Mode::Bail | Mode::WaterfallSync => Err(Error::from(ErrorKind::Validation {
-                    issues: vec![format!(
-                        "{} is synchronous: use invoke_entry_sync",
-                        call.mode
-                    )],
+                Mode::Bail => Err(Error::from(ErrorKind::Validation {
+                    issues: vec!["bail is synchronous: use invoke_entry_sync".to_owned()],
                 })),
                 _ => run::call_async(&entry, &inv, None).await,
             };
@@ -1138,7 +1094,7 @@ impl EventBus {
         })
     }
 
-    /// [`EventBus::invoke_entry`] for `bail` and `waterfall-sync`.
+    /// [`EventBus::invoke_entry`] for `bail`.
     pub fn invoke_entry_sync(
         &self,
         ctx: &Ctx,
@@ -1164,16 +1120,7 @@ impl EventBus {
             origin: call.origin,
         };
         let out = match call.mode {
-            Mode::Bail => run::call_sync(&entry, &inv, None),
-            Mode::WaterfallSync => {
-                let terminal = RawTerm(Mutex::new(call.next));
-                let next = SyncNext {
-                    inv: &inv,
-                    chain: &[],
-                    terminal: &terminal,
-                };
-                run::call_sync(&entry, &inv, Some(next))
-            }
+            Mode::Bail => run::call_sync(&entry, &inv),
             mode => Err(Error::from(ErrorKind::Validation {
                 issues: vec![format!("{mode} is asynchronous: use invoke_entry")],
             })),

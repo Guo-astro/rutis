@@ -65,11 +65,9 @@ Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同
 | `waterfall` | 最外层监听器的返回值，原样 | 由外向内，每个监听器的最后一个参数是 `next`；`next()` 执行链上其余部分，最后执行终态（terminal） | 链式传递；不调 `next` 就否决其余 | 抛到发出方；`next` 调两次、在分发结束后调用，以 `WaterfallNext` 失败 |
 | `bail`（同步） | 第一个有结果的返回值，同步 | 按登记顺序同步调用；别处的监听器作为同步调用执行，与同步服务调用参加同一套等待环检测 | 同 `serial` | 抛出并停止；等待成环（`SyncWaitCycle`）或对端断开时报错；遇到异步监听器以 `AsyncListener` 失败 |
 
-Rust 宿主另有 `waterfall_sync`（`rutis::host`）：同步的 `waterfall`，规则与 `bail` 相同。
-
 - **没有结果**：返回 `undefined` / `null`（JavaScript）、`None`（Python）、`nil`（Go）、`None`（Rust），或任何语言的 `false`（包括 Rust 的 `Some(false)`）。其余都是结果，`0` 和 `""` 也是。
 - **`waterfall` 原样返回**：不做"有没有结果"的归一，`false` 仍是 `false`。`next` 不带参数，返回链上其余部分的结果（JavaScript：Promise；Python：可 await 的对象；Go：阻塞调用；Rust：future）。终态收到事件参数；没有终态时最后一个 `next()` 得到没有结果。没有监听器时，`waterfall` 返回终态的值。
-- **异步监听器**：JavaScript 的 `async` 函数、Python 的 `async def`、Rust 用 `on` 登记的监听器不能被 `bail` / `waterfall_sync` 调用（`AsyncListener`）；普通函数返回了 Promise / 协程时也以 `AsyncListener` 失败（返回的 Promise / 协程被丢弃）。Go 的监听器都是同步的。
+- **异步监听器**：JavaScript 的 `async` 函数、Python 的 `async def`、Rust 用 `on` 登记的监听器不能被 `bail` 调用（`AsyncListener`）；普通函数返回了 Promise / 协程时也以 `AsyncListener` 失败（返回的 Promise / 协程被丢弃）。Go 的监听器都是同步的。
 
 ### 各语言的写法
 
@@ -83,7 +81,7 @@ Rust 宿主另有 `waterfall_sync`（`rutis::host`）：同步的 `waterfall`，
 | `parallel` | `ctx.parallel(e).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` | `ctx.parallel(name, *args)`（挂起） |
 | `serial` | `ctx.serial(e).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` | `ctx.serial(name, *args): Any?`（挂起） |
 | `waterfall` | `ctx.waterfall(e).terminal(t).await`（`.terminal` 可省略） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） | `try await ctx.waterfall(name, args..., as: R.self) { 终态 }` | `ctx.waterfall(name, *args, terminal = { args -> })`（挂起） |
-| `bail` | `ctx.bail(e)`；宿主的 `ctx.waterfall_sync(e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)`（线上同步） | `ctx.bail(name, *args): Any?`（阻塞本线程） |
+| `bail` | `ctx.bail(e)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)`（线上同步） | `ctx.bail(name, *args): Any?`（阻塞本线程） |
 | 过滤 | `ctx.filter(\|info\| ..)`，之后同样的五个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Advanced.Listener) in ... }` → `Rutis.Advanced.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
 | 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` | `ctx.scope` | `ctx.scope` |
 | 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 | 监听器的 Task 被取消 | 监听器的协程被取消 |
@@ -209,7 +207,7 @@ Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 se
 | 名字 | 何时 | 各语言 |
 | --- | --- | --- |
 | `AggregateError` | `parallel` 有失败；子错误按登记顺序，信息 `<n> listeners of <name> failed` | JS `AggregateError`（`errors`）；Python `rutis.advanced.AggregateError`（`errors`）；Go `*advanced.AggregateError`（`Errors`）；Rust `ErrorKind::ListenersFailed` |
-| `AsyncListener` | `bail` / `waterfall_sync` 遇到异步监听器 | JS 名为 `AsyncListener` 的 `Error`；Python `rutis.advanced.AsyncListener`；Go `advanced.ErrAsyncListener`；Rust `ErrorKind::AsyncListener` |
+| `AsyncListener` | `bail` 遇到异步监听器 | JS 名为 `AsyncListener` 的 `Error`；Python `rutis.advanced.AsyncListener`；Go `advanced.ErrAsyncListener`；Rust `ErrorKind::AsyncListener` |
 | `WaterfallNext` | `next` 调两次、在分发结束或取消后调用；Rust 在 waterfall 之外调用 `call.next()`，或同步监听器在异步 waterfall 里调用它 | JS `WaterfallNext`；Python `rutis.advanced.WaterfallNext`；Go `advanced.ErrWaterfallNext`；Rust `ErrorKind::WaterfallNext` |
 | `ReservedEvent` | 发出 `rutis/*`，发出的 API 同步拒绝 | JS `ReservedEvent`；Python `rutis.advanced.ReservedEvent`；Go `advanced.ErrReservedEvent`；Rust `ErrorKind::ReservedEvent` |
 | `SyncWaitCycle` | 一次同步调用（`bail`）会使等待成环 | 同服务调用：Python `rutis.advanced.SyncWaitCycle`；Go `advanced.ErrSyncWaitCycle` |
