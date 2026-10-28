@@ -1,32 +1,21 @@
-//! The local transport as a native plugin: it dials Unix sockets while
-//! mounted, classifies failures by kind, and unloading closes its channels.
-// Unix only (Q7.8): the plugin dials Unix socket paths.
+//! `pipe::dial`: it dials Unix sockets with newline framing, and classifies
+//! failures by kind.
+// Unix only (Q7.8): it dials Unix socket paths.
 #![cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 
-use rutis::host::CtxHost;
-use rutis::Ctx;
-use rutis_bridge::pipe::LocalPlugin;
-use rutis_bridge::{transport_key, ConnectError, Transport};
+use rutis_bridge::pipe;
+use rutis_bridge::ConnectError;
 
 #[tokio::test]
-async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
+async fn dials_unix_sockets_with_newline_framing() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("peer.sock");
     let listener = UnixListener::bind(&path).unwrap();
-    let root = Ctx::root().unwrap();
-    let fiber = root.plugin(LocalPlugin::new());
-    (&fiber).await.unwrap();
-    let transport = root
-        .get_at::<dyn Transport>(&transport_key("local"))
-        .expect("Transport#local is provided");
 
     let address = format!("unix:{}", path.display());
-    let mut channel = transport
-        .dial(&rutis_bridge::Dial::address(&address))
-        .await
-        .unwrap();
+    let mut channel = pipe::dial(&address).await.unwrap();
     let (mut remote, _) = listener.accept().unwrap();
     channel.sender.send(b"{\"op\":\"hello\"}").unwrap();
     let mut line = String::new();
@@ -38,37 +27,26 @@ async fn dials_unix_sockets_with_newline_framing_until_unloaded() {
     assert_eq!(channel.receiver.recv().unwrap().unwrap(), b"{}");
 
     // A bare path is a Unix socket too.
-    let bare = transport
-        .dial(&rutis_bridge::Dial::address(path.to_str().unwrap()))
-        .await
-        .unwrap();
+    let bare = pipe::dial(path.to_str().unwrap()).await.unwrap();
     drop(bare);
 
-    fiber.dispose().await.unwrap();
-    assert!(root
-        .get_at::<dyn Transport>(&transport_key("local"))
-        .is_none());
+    channel.closer.close(rutis_bridge::Close::Done);
     assert!(matches!(channel.receiver.recv(), Ok(None) | Err(_)));
 }
 
 #[tokio::test]
 async fn failures_carry_their_category() {
-    let transport = rutis_bridge::pipe::LocalTransport::default();
     let missing = tempfile::tempdir().unwrap().path().join("none.sock");
     assert!(matches!(
-        transport
-            .dial(&rutis_bridge::Dial::address(missing.to_str().unwrap()))
-            .await,
+        pipe::dial(missing.to_str().unwrap()).await,
         Err(ConnectError::Retryable { .. })
     ));
     assert!(matches!(
-        transport
-            .dial(&rutis_bridge::Dial::address("wss://example.com/rutis"))
-            .await,
+        pipe::dial("wss://example.com/rutis").await,
         Err(ConnectError::Incompatible { .. })
     ));
     assert!(matches!(
-        transport.dial(&rutis_bridge::Dial::address("fd:3")).await,
+        pipe::dial("fd:3").await,
         Err(ConnectError::Incompatible { .. })
     ));
 }

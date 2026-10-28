@@ -119,7 +119,6 @@
           "weather"
         ],
         "runtime": "office-node",
-        "transport": "websocket",
         "identity": "host"
       }
     },
@@ -129,7 +128,6 @@
       "config": {
         "peer": "branch",
         "listen": "public",
-        "transport": "websocket",
         "identity": "edge"
       }
     },
@@ -140,7 +138,6 @@
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
         "runtime": "gpu",
-        "transport": "websocket",
         "identity": "host"
       }
     },

@@ -295,8 +295,8 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
 mod websocket {
     use super::*;
     use rutis_bridge::channel::PeerId;
-    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketTransport};
-    use rutis_bridge::{Credential, Dial, Identity, Registration, StaticIdentity, Transport};
+    use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
+    use rutis_bridge::{Credential, Registration, Registrations, StaticIdentity};
     use tokio::io::AsyncBufReadExt;
 
     const PROTOCOL: &str = "rutis.3";
@@ -325,28 +325,32 @@ mod websocket {
     /// The same session, Node dialing a Rust listener over WebSocket.
     #[tokio::test(flavor = "current_thread")]
     async fn node_dialing_a_rust_listener() {
-        let transport = WebSocketTransport::start(Config::new().listener(ListenerConfig::new(
-            "public",
-            "127.0.0.1:0".parse().unwrap(),
-            id("main"),
-        )))
+        let registrations = Registrations::new();
+        let listener = websocket::listen(
+            &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+            &Limits::default(),
+            websocket::admit_registered(registrations.clone(), "public"),
+        )
         .unwrap();
         let (sender, accepted) = std::sync::mpsc::channel();
         let sender = Mutex::new(sender);
-        let _registered = transport
-            .register(Registration {
-                listener: "public".into(),
-                peer: id("node"),
-                identity: Arc::new(
-                    StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
-                ),
-                protocol: PROTOCOL.into(),
-                deliver: Box::new(move |channel| {
-                    let _ = sender.lock().unwrap().send(channel);
-                }),
-            })
+        let _registered = registrations
+            .register(
+                &id("main"),
+                Registration {
+                    listener: "public".into(),
+                    peer: id("node"),
+                    identity: Arc::new(
+                        StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
+                    ),
+                    protocol: PROTOCOL.into(),
+                    deliver: Box::new(move |channel| {
+                        let _ = sender.lock().unwrap().send(channel);
+                    }),
+                },
+            )
             .unwrap();
-        let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+        let address = format!("ws://{}/rutis", listener.local_addr());
         let child = tokio::process::Command::new("node")
             .arg(rpc_client())
             .arg(address)
@@ -393,20 +397,15 @@ mod websocket {
                 break address.to_owned();
             }
         };
-        let transport = WebSocketTransport::start(Config::new()).unwrap();
-        let identity: Arc<dyn Identity> = Arc::new(
-            StaticIdentity::new(id("main"))
-                .present(id("node"), Credential::Bearer("main-token".into())),
-        );
-        let channel = transport
-            .dial(
-                &Dial::address(address)
-                    .peer(id("node"))
-                    .identity(identity)
-                    .protocol(PROTOCOL),
-            )
-            .await
-            .unwrap();
+        let channel = websocket::dial(
+            &address,
+            PROTOCOL,
+            Some(&Credential::Bearer("main-token".into())),
+            &Trust::default(),
+            &Limits::default(),
+        )
+        .await
+        .unwrap();
         let peer = Connection::open_with(
             channel,
             Arc::new(Service(Mutex::new(None))),

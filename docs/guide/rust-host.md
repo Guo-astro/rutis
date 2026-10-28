@@ -583,28 +583,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 节点
 
-```rust,no_run
-# use rutis::host::*;
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let root = rutis::Ctx::root()?;
-# let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
-
-let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
-root.plugin(WebSocketPlugin::new(Config::new())?).await?;
-root.plugin(IdentityPlugin::new(
-    "main",
-    StaticIdentity::new(main).present(office.clone(), Credential::Bearer(token)),
-));
-root.plugin(PeerPlugin::new(
-    LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
-    Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
-)?);
-# Ok(())
-# }
-```
+0.19 重做远程连接（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)），Rust 里直接搭节点的写法随之改变，这一节在新写法落地后补上；现在用 rutis-host 的节点行（见 [连接节点](nodes.md)）。
 
 用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
 

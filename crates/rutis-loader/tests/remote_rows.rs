@@ -19,8 +19,8 @@ use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
-use rutis_bridge::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
+use rutis_bridge::websocket::{Limits, Trust};
+use rutis_bridge::{Credential, Dialer, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::{json, Value};
@@ -109,6 +109,24 @@ async fn remote_python_on(project: &Path, port: u16) -> (tokio::process::Child, 
     (child, address)
 }
 
+/// Dials the WebSocket at `address`, presenting the link's credential.
+fn websocket_dialer(address: &str) -> Dialer {
+    let address = address.to_owned();
+    Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            rutis_bridge::websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    })
+}
+
 /// guarantee: loader/remote-runtime-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_python_runtime_runs_loader_rows() {
@@ -120,15 +138,12 @@ async fn a_remote_python_runtime_runs_loader_rows() {
     let clock = Clock::default();
     root.provide_at(host_key("clock"), Arc::new(clock.clone()))
         .unwrap();
-    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).present(id("gpu"), Credential::Bearer("main-token".into())),
     ));
     let link = LinkPlugin::new(
-        LinkConfig::dial(id("gpu"), "websocket", "main", &address).require("runtime"),
+        LinkConfig::dial(id("gpu"), "main", websocket_dialer(&address)).require("runtime"),
     );
     let link_state = link.state();
     root.plugin(link);
@@ -224,15 +239,12 @@ async fn a_remote_runtime_running_again_describes_its_rows_again() {
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("clock"), Arc::new(Clock::default()))
         .unwrap();
-    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).present(id("gpu"), Credential::Bearer("main-token".into())),
     ));
     root.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("gpu"), "websocket", "main", &address).require("runtime"),
+        LinkConfig::dial(id("gpu"), "main", websocket_dialer(&address)).require("runtime"),
     ));
     root.plugin(RuntimeAccessPlugin::new(id("gpu"), "py"));
     let python = RuntimePlugin::remote("py");
@@ -352,16 +364,13 @@ async fn a_remote_node_runtime_resolves_and_runs_npm_rows() {
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("clock"), Arc::new(Clock::default()))
         .unwrap();
-    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main"))
             .present(id("edge"), Credential::Bearer("main-token".into())),
     ));
     root.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("edge"), "websocket", "main", &address).require("runtime"),
+        LinkConfig::dial(id("edge"), "main", websocket_dialer(&address)).require("runtime"),
     ));
     root.plugin(RuntimeAccessPlugin::new(id("edge"), "node"));
     let node = RuntimePlugin::remote("node");
@@ -450,15 +459,12 @@ async fn remote_rows_share_the_runtime_session() {
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("clock"), Arc::new(Clock::default()))
         .unwrap();
-    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).present(id("gpu"), Credential::Bearer("main-token".into())),
     ));
     root.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("gpu"), "websocket", "main", &address).require("runtime"),
+        LinkConfig::dial(id("gpu"), "main", websocket_dialer(&address)).require("runtime"),
     ));
     root.plugin(RuntimeAccessPlugin::new(id("gpu"), "py"));
     let python = RuntimePlugin::remote("py");
@@ -567,6 +573,7 @@ async fn connect(
 async fn a_runtime_link_can_listen() {
     use futures_util::{SinkExt, StreamExt};
     use rutis_bridge::websocket::ListenerConfig;
+    use rutis_bridge::{Accepting, Registrations};
 
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("weather_plugin.py"), WEATHER).unwrap();
@@ -576,24 +583,29 @@ async fn a_runtime_link_can_listen() {
     let clock = Clock::default();
     root.provide_at(host_key("clock"), Arc::new(clock.clone()))
         .unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = rutis_bridge::websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        rutis_bridge::websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let transport = websocket.clone();
-    (&root.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        transport.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("gpu-token", id("gpu")),
     ));
     root.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("gpu"), "websocket", "main", "public").require("runtime"),
+        LinkConfig::listen(
+            id("gpu"),
+            "main",
+            Accepting {
+                registrations,
+                listener: "public".into(),
+                local: id("main"),
+            },
+        )
+        .require("runtime"),
     ));
     root.plugin(RuntimeAccessPlugin::new(id("gpu"), "py"));
     let python = RuntimePlugin::remote("py");

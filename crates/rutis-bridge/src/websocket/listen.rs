@@ -2,7 +2,7 @@
 //! admission accepts, each as a channel handed to where the admission said.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::Channel;
@@ -44,10 +44,6 @@ pub enum Refused {
 /// Decides, for each upgrade, whether it is let through and where its
 /// channel goes. Called on the listener's threads: it must not block.
 pub type Admit = Arc<dyn Fn(Upgrade<'_>) -> Result<Admitted, Refused> + Send + Sync>;
-
-/// What a listener does with each connection's channel besides delivering
-/// it: the transport tracks them to close them when it stops.
-pub(crate) type Track = Arc<dyn Fn(Weak<connection::Shared>) + Send + Sync>;
 
 /// Why a dialer that offered none of this endpoint's session protocol is
 /// refused, saying which end to upgrade (standard Q6.2.4) when the
@@ -93,20 +89,13 @@ impl Drop for Listener {
     }
 }
 
-/// What the connections of one listener share.
-pub(crate) struct Hooks {
-    pub admit: Admit,
-    pub limits: Limits,
-    /// Counts each connection task while it runs (the transport's).
-    pub live: Option<Arc<crate::websocket::Shared>>,
-    pub track: Option<Track>,
-}
-
 pub(crate) fn start(
     config: &ListenerConfig,
-    hooks: Arc<Hooks>,
+    limits: &Limits,
+    admit: Admit,
     runtime: &tokio::runtime::Handle,
 ) -> Result<Listener, String> {
+    let limits = Arc::new(limits.clone());
     let std_listener = std::net::TcpListener::bind(config.bind).map_err(|error| {
         let hint = match error.kind() {
             std::io::ErrorKind::AddrInUse => {
@@ -145,16 +134,17 @@ pub(crate) fn start(
             };
             let _ = tcp.set_nodelay(true);
             crate::websocket::dial::keepalive(&tcp);
-            let (hooks, acceptor, path, handle2) = (
-                hooks.clone(),
+            let (limits, admit, acceptor, path, handle2) = (
+                limits.clone(),
+                admit.clone(),
                 acceptor.clone(),
                 path.clone(),
                 handle.clone(),
             );
             handle.spawn(async move {
-                let limit = hooks.limits.handshake;
-                let _ =
-                    tokio::time::timeout(limit, accept(tcp, acceptor, hooks, path, handle2)).await;
+                let limit = limits.handshake;
+                let accepting = accept(tcp, acceptor, limits, admit, path, handle2);
+                let _ = tokio::time::timeout(limit, accepting).await;
             });
         }
     });
@@ -252,7 +242,8 @@ async fn linger(mut tcp: TcpStream) {
 async fn accept(
     tcp: TcpStream,
     acceptor: Option<TlsAcceptor>,
-    hooks: Arc<Hooks>,
+    limits: Arc<Limits>,
+    admit: Admit,
     path: Arc<str>,
     runtime: tokio::runtime::Handle,
 ) {
@@ -274,7 +265,6 @@ async fn accept(
     type Deliver = Box<dyn FnOnce(Channel) + Send>;
     let admitted: Arc<Mutex<Option<Deliver>>> = Arc::default();
     let route = admitted.clone();
-    let admit = hooks.admit.clone();
     // tungstenite fixes this callback's signature, error response included.
     #[allow(clippy::result_large_err)]
     let check = move |request: &Request, mut response: Response| {
@@ -300,7 +290,7 @@ async fn accept(
     let Ok(socket) = tokio_tungstenite::accept_hdr_async_with_config(
         io,
         check,
-        Some(crate::websocket::ws_config(&hooks.limits)),
+        Some(crate::websocket::ws_config(&limits)),
     )
     .await
     else {
@@ -309,10 +299,5 @@ async fn accept(
     let Some(deliver) = admitted.lock().unwrap().take() else {
         return;
     };
-    let live = hooks.live.clone().map(connection::Live::new);
-    let (channel, connection) = connection::channel(socket, &hooks.limits, &runtime, live);
-    if let Some(track) = &hooks.track {
-        track(connection);
-    }
-    deliver(channel);
+    deliver(connection::channel(socket, &limits, &runtime));
 }
