@@ -25,8 +25,6 @@
 //! Design: `docs/design-protocol-channel-decoupling-2026-10-03.md`,
 //! `docs/design-remote-plugins-2026-10-03.md`.
 
-#[cfg(feature = "exports")]
-pub mod build;
 pub mod channel;
 #[cfg(feature = "cordis")]
 pub mod cordis;

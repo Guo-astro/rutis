@@ -18,7 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
 | `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行；`peer`：节点行和 `peer:` 行 |
-| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`exports`（放在 `[build-dependencies]`）：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明；`testing`：一致性测试 |
+| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
+| `rutis-types` | 放在 `[build-dependencies]`：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明与 Python 类型 |
 
 只用其中一种语言时只开那一个 feature，应用只编译、只启动它用到的部分。
 
@@ -254,7 +255,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waits(&entry)` 列出这一行等的名字，原因是 `WaitReason::Explained`，说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
 - **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。重新构建不用换版本号：同一插件的两次构建类型的 `TypeId` 相同，每个值按提供它的那次构建的代码对外，两次构建可以同时加载。去掉标注的构建，它的值不再按名字对外；名字以最新的构建为准。宿主要链接 `rutis-bridge`。
 - **没链接 rutis-bridge**：按名字对外和重名检查都由它做。程序没链接它时，标注的类型只按类型提供，第一次提供时错误汇集收到一次 `ErrorKind::NotServedByName`（默认写 `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`）。
-- **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
+- **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_types::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-types`），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
 
 完整示例：[`examples/marked-services`](../../examples/marked-services)。
 
@@ -650,7 +651,7 @@ off.dispose().await?;
 
 ## 导出服务：参考
 
-Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明和 Python 类型由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_bridge::build::Exports`（构建依赖开 `exports` feature）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
+Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明和 Python 类型由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_types::Exports`（构建依赖 `rutis-types`）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
 
 | `Exports` | 作用 |
 | --- | --- |

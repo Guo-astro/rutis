@@ -21,6 +21,7 @@ export const crates = [
   'rutis-bridge',
   'rutis-loader',
   'rutis-dylib',
+  'rutis-types',
   'rutis-host',
   'rutis-dylib-launcher',
 ]

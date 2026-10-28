@@ -21,7 +21,7 @@ type Result<T> = std::result::Result<T, String>;
 /// from an application's `build.rs` on every build:
 ///
 /// ```ignore
-/// rutis_bridge::build::Exports::new()
+/// rutis_types::Exports::new()
 ///     .typescript("rows/services.d.ts")
 ///     .generate()
 ///     .expect("generate the service declarations");
