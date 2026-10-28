@@ -2,9 +2,7 @@
 # The public API of the Swift SDK (the libraries `Rutis` and `RutisTest`),
 # one symbol a line (its path and kind) as the symbol graph lists it,
 # against the snapshot in swift/rutis/public-api.txt (SDK entry design §6,
-# #692). The deprecated
-# names (moved to `Rutis.Advanced` / `Rutis._Generated` in 0.19) are in a
-# section of their own. A new name changes the snapshot, so a review sees it.
+# #692). A new name changes the snapshot, so a review sees it.
 #
 # Usage: tools/public-api-swift.sh          compare; exit 1 on a difference
 #        tools/public-api-swift.sh --write  update the snapshot
@@ -20,24 +18,18 @@ graphs="${written:-$(swift build --show-bin-path)/../symbolgraph}"
 # One line per symbol: its path (which holds a function's argument labels),
 # then its kind. Not its declaration: compilers spell those differently
 # (Swift 6.3 writes `any Encoder`, 6.4 `Encoder`). Members the compiler
-# synthesizes are left out; `deprecated` marks the moved names.
+# synthesizes are left out.
 lines() {
-  jq -r --arg deprecated "$2" '
+  jq -r '
     .symbols[]
     | select((.identifier.precise | contains("::SYNTHESIZED::")) | not)
-    | select(([.availability[]? | select(.isUnconditionallyDeprecated == true)] | length > 0) == ($deprecated == "yes"))
     | (.pathComponents | join(".")) + "  " + .kind.identifier
   ' "$graphs/$1.symbols.json" | LC_ALL=C sort
 }
 public_api() {
   for module in Rutis RutisTest; do
     echo "## $module"
-    lines "$module" no
-    deprecated="$(lines "$module" yes)"
-    if [ -n "$deprecated" ]; then
-      echo "## $module (deprecated: moved to Rutis.Advanced or Rutis._Generated in 0.19)"
-      echo "$deprecated"
-    fi
+    lines "$module"
     echo
   done
 }
