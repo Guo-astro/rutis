@@ -1,4 +1,5 @@
-import type { Emitter, Listener, ListenerDescriptor, ListenerOptions, Plugin } from './index.js'
+import type { Plugin } from './index.js'
+import type { Emitter, Listener, ListenerDescriptor, ListenerOptions } from './advanced.js'
 
 export declare class PluginTestError extends Error {
   /** For a refusal a runtime makes too: its code (`not-declared`, `unavailable`, `no-method`). */

@@ -33,7 +33,7 @@ Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件
 
 发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；任务等部署发布完成才结束（最多一小时）；Central Portal 已发布这个版本的模块跳过（经 Portal 的 publisher API 查询，不看会滞后的 repo1.maven.org）。Portal 要发布完成（上传后 10～30 分钟）才说已发布，所以上传前先在缓存里记下这个版本上传过：重跑时若之前上传过、模块还没发布，先等它发布（最多 45 分钟），不重复上传；到时仍未发布（部署失败，或上次没真正上传）才重新上传。所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
 
-插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加。Python 插件对 `rutis` 只写下限，和运行时共用宿主环境里的同一个 `rutis`，所以 Python 的 `rutis` 在 `PLUGIN_API` 不变时不删、不改插件导入的名字：要去掉的名字保留下来，用到时给出弃用警告，到 `PLUGIN_API` 增加时才删。`PLUGIN_API` 增加时，删除 0.19 起各 SDK 标为弃用的旧位置（[SDK 的默认入口](design-sdk-entry-convergence-2026-10-27.md) §五，#692）。`PLUGIN_API` 增加时，运行时要继续加载旧的插件 API（像 0.13 继续加载 API 2 那样）；做不到时，拒绝的报错要写明插件用哪个版本的 SDK 重新构建。会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
+插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加。Python 插件对 `rutis` 只写下限，和运行时共用宿主环境里的同一个 `rutis`：一个版本删掉或移动了插件导入的名字时，在那一版的迁移指南里写明，插件随宿主一起升级。`PLUGIN_API` 增加时，运行时要继续加载旧的插件 API（像 0.13 继续加载 API 2 那样）；做不到时，拒绝的报错要写明插件用哪个版本的 SDK 重新构建。会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
 
 ## 持久化样本
 
