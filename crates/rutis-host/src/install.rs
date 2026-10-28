@@ -384,7 +384,6 @@ async fn check_rows(
         remote.dial = None;
         remote.listen = None;
         remote.instances = None;
-        remote.transport = None;
     }
     let host = crate::host::Host::start(&config).await?;
     host.runtimes_ready().await?;

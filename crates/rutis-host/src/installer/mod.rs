@@ -1064,11 +1064,12 @@ type Plugins = std::collections::BTreeMap<String, RowSchema>;
 /// them (`BinaryResolver::binaries`): each with its plugins, or why it has
 /// none.
 fn binaries_in(lang: Lang, dir: &Path) -> Vec<(PathBuf, Result<Plugins, String>)> {
-    use rutis_loader::runtime::binary::Binaries;
+    use rutis_loader::runtime::binary::{Binaries, BinaryResolver};
+    use rutis_loader::runtime::{go::Go, swift::Swift};
     let binaries = Binaries::new().dir(dir);
     let found = match lang {
-        Lang::Go => rutis_loader::runtime::go::GoResolver::new(binaries).binaries(),
-        Lang::Swift => rutis_loader::runtime::swift::SwiftResolver::new(binaries).binaries(),
+        Lang::Go => BinaryResolver::<Go>::new(binaries).binaries(),
+        Lang::Swift => BinaryResolver::<Swift>::new(binaries).binaries(),
         _ => Vec::new(),
     };
     found
