@@ -511,13 +511,10 @@ let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), 
 
 ### 本机运行时的选项
 
-管住第三方插件时用，都默认关，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
+管住第三方插件时用，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
 
 | `LocalRuntime` 的方法 | 作用 |
 | --- | --- |
-| `.call_limit(时限)` | 进入这个运行时里插件代码的调用（按名字调用它的行的服务、调用它交出的函数）超过时限就取消，调用方收到错误码 `timeout`（`data`：`{runtime, limit, service?, method?}`，`limit` 为毫秒）。同一运行时里插件之间的调用不受限 |
-| `.kill_on_timeout()` | 与 `call_limit` 一起用：超时后再结束运行时的进程，状态为 `down (ended by the host: …)`；重启用运行时 fiber 的 `restart()` |
-| `.allowed_services([..])` | 插件只能用这些来自运行时之外的服务；`inject` 里有别的时这一行启动失败（错误码 `unavailable`）。同一运行时里的行互相提供的不受限 |
 | `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
 
 每个插件一个进程：每个插件一个 `named` 的运行时，行用 `RuntimeResolver::modules`，写 `<运行时名>:<npm 名或文件>`（Node、Python 都这样）。
