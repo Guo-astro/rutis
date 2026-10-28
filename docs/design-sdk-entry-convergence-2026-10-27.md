@@ -4,7 +4,7 @@
 
 状态：定稿，未实现。日期：2026-10-27。基准：main `103c0d22`。排期：0.19。
 Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](https://github.com/arcships/rutis/issues/663) 体验要求 2、方向 3）。先例：[Rust API 收敛](design-rust-api-convergence-2026-10-24.md)（0.17）。
-与 0.18 设计的关系：只换名字的位置，不改任何行为。错误类型名与字段沿用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §十一 的"不变"；弃用提示的文字遵守它 §4.5 的禁用词；Go 的 `rutis.Ref` 沿用 [对象引用](design-object-refs-2026-10-27.md) O1 的写法，留在根上。
+与 0.18 设计的关系：只换名字的位置，不改任何行为。错误类型名与字段沿用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §十一 的"不变"；Go 的 `rutis.Ref` 沿用 [对象引用](design-object-refs-2026-10-27.md) O1 的写法，留在根上。
 
 范围外：Rust（0.17 已收敛并由 `public-api.txt` 锁住，见 §2 E9）；测试工具上新增的名字（#670 做，本稿只把测试工具的公开面也锁进快照）；按层重写指南（#671，只用本稿 §三 定下的根上名字）；生成 Python 类型与假服务（#684）；Node 里的 Cordis 插件（用 Cordis 自己的 `ctx`）；改名 Python 的实现模块（`rutis.peer`、`rutis.events` 等）；迁移工具（§八）；在运行时打印弃用提示。
 
@@ -31,9 +31,9 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 | E1 | 每种语言的根上只放 7 个概念要的名字，加上服务调用失败的错误类型。清单见 §三 | 三 |
 | E2 | 其余名字放进每种语言的 advanced 子模块：`@arcships/rutis/advanced`、`rutis.advanced`、`github.com/arcships/rutis/go/rutis/advanced`、`Rutis.Advanced`（Swift 命名空间）、`arcships.rutis.advanced`（Kotlin 包）。不删能力，行为不变 | 三 |
 | E3 | `ctx` 上的方法（五种发出方式、`filter`、作用域）不移、不弃用，和 Cordis、Rust 0.17 一样留在 `ctx` 上；指南（#671）只讲 `on` / `emit` | 四 |
-| E4 | 旧位置在 0.19 照常可用，用各语言自带的弃用机制写明新位置；到插件 API 版本（`PLUGIN_API`）增加时，所有语言一起删除 | 五 |
+| E4 | 旧位置在 0.19 直接删，不留转发与弃用声明（2026-10-28 改，[平台清理](design-platform-cleanup-2026-10-28.md) §7.1） | 五 |
 | E5 | 0.19 不升 `PLUGIN_API` | 五 |
-| E6 | Swift 宏、Kotlin KSP 生成的代码才用的名字移到 `Rutis._Generated`、`arcships.rutis.generated`，旧位置按 E4 处理 | 三 |
+| E6 | Swift 宏、Kotlin KSP 生成的代码才用的名字移到 `Rutis._Generated`、`arcships.rutis.generated`，旧位置按 E4 删除 | 三 |
 | E7 | 每种语言的公开面（根、advanced、`ctx`、测试工具、生成代码用的）由本语言最现成的工具锁住，CI 比对 | 六 |
 | E8 | 不做迁移工具 | 八 |
 | E9 | Rust 不动 | 三 |
@@ -60,7 +60,7 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 - **Go 的 `Ref`** 留在根上：Go 的结构体分不出数据和对象，按引用传对象只能写 `rutis.Ref(v)`（对象引用 O1）。
 - **值类型**（TypeScript `datetime` 等、Go `Date` 等、Swift `CalendarDate` 等）进 advanced：#692 正文把"各种值类型的构造"列为进阶。
 - **`RutisApp`、`RutisState`**（Swift、Kotlin）留在根上：它们是应用托管插件的入口，每个用 rutis 的应用都要写；Kotlin 只有这一种用法。
-- **生成代码用的**（E6）：作者不写这些名字，但它们出现在 `Rutis.` 和 `arcships.rutis` 的补全里。Swift 的 `Rutis.encode`、`export`、`Encoded`、`Arguments`、`Method`、`Schema` 进 `Rutis._Generated`（下划线开头，补全不显示）；协议 `RutisExportable`、`RutisProxy`、`RutisConfigurable` 出现在根上的签名里，留在顶层。Kotlin 的 `ServiceTable`、`ServiceHandle`、`ClientFactory`、`Tables`、`Generated`、`ValueEncoder`、`ValueDecoder` 进 `arcships.rutis.generated`。旧位置也按 E4 保留：Kotlin 的 `rutis-ksp` 是单独的 Maven 坐标，版本由作者另写，旧版 KSP 生成的代码在 0.19 的 SDK 上要照样能编译。
+- **生成代码用的**（E6）：作者不写这些名字，但它们出现在 `Rutis.` 和 `arcships.rutis` 的补全里。Swift 的 `Rutis.encode`、`export`、`Encoded`、`Arguments`、`Method`、`Schema` 进 `Rutis._Generated`（下划线开头，补全不显示）；协议 `RutisExportable`、`RutisProxy`、`RutisConfigurable` 出现在根上的签名里，留在顶层。Kotlin 的 `ServiceTable`、`ServiceHandle`、`ClientFactory`、`Tables`、`Generated`、`ValueEncoder`、`ValueDecoder` 进 `arcships.rutis.generated`。旧位置也按 E4 删除：Kotlin 的 `rutis-ksp` 是单独的 Maven 坐标，要与 SDK 同版本（《迁移到 0.19》写明）。
 - **Rust 不动**（E9）：0.17 的验收口径（作者手写的名字 ≤ 10、根与 `rutis::events` 由快照锁住）已经满足；Rust 的 `Ctx` 上也保留五种发出方式和 `filter`，与 §四 一致。
 
 每种语言 advanced 里的名字：
@@ -85,25 +85,11 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 
 ## 五、旧位置与插件 API 版本
 
-**规则**：旧位置在 0.19 照常可用，提示新位置；到 `PLUGIN_API` 增加时，所有语言一起删除。
+**规则**（2026-10-28 改，[平台清理](design-platform-cleanup-2026-10-28.md) §7.1）：旧位置在 0.19 直接删，不留转发与弃用声明；仓库自己的示例与测试用新位置。新位置由《迁移到 0.19》的对照表给出。
 
-为什么不在 0.19 直接删：
+原来的规则是"0.19 照常可用、到 `PLUGIN_API` 增加时所有语言一起删"。改为直接删，因为平台不为旧写法留第二条路径（"不做兼容"）。Python 插件与运行时共用宿主环境里的同一个 `rutis` 包，所以 Python 插件随宿主一起升级到 0.19（[release.md](release.md)、[plugin-api.md](guide/plugin-api.md#版本) 的规则同时改为：删掉或移动插件导入的名字时，那一版的迁移指南写明，插件随宿主一起升级）。
 
-- Python 不能删。插件只写 `rutis>=` 下限，和运行时共用同一个包，所以 `PLUGIN_API` 增加之前不删、不改插件导入的名字（#692 评论，[release.md](release.md)、[plugin-api.md](guide/plugin-api.md) 已写明）。
-- TypeScript 与 Go 的编译器对"找不到这个名字"只报名字，不能附上新位置，而 #692 要求旧写法"给出明确的报错或提示（写明新位置）"。保留旧名字并标为弃用，才能写明新位置。
-- Swift、Kotlin 本来可以直接删，但统一成一条规则更简单。
-
-所以 0.19 里 #692 对任何人都不是必须改的；作者到 `PLUGIN_API` 增加的那一版升级 SDK 时才需要改。
-
-| 语言 | 旧写法 | 提示出现在 |
-| --- | --- | --- |
-| TypeScript / Bun | 根上的旧导出在 `.d.ts` 里标 `@deprecated`，写明新位置；运行时不变 | 编辑器（划线、悬停文字）；`typescript-eslint` 的 `no-deprecated` |
-| Python | 旧的根上名字由模块的 `__getattr__`（PEP 562）给出，第一次取用时发 `DeprecationWarning`；它们继续留在 `__all__` 里（`from rutis import *` 也不能变） | pytest 的警告汇总、`python -W default`；`-W error` 可以让测试在用到旧名字时失败 |
-| Go | 旧名字保留为别名或转发，注释 `// Deprecated: …` | gopls（划线）、`staticcheck` 的 SA1019 |
-| Swift | `@available(*, deprecated, renamed:)` | 编译警告；Xcode 的修改建议 |
-| Kotlin | `@Deprecated(message, ReplaceWith(…))` 的 `typealias` 或转发函数，级别 WARNING | 编译警告；IDE 一键替换 |
-
-**0.19 不升 `PLUGIN_API`**：`PLUGIN_API` 只在插件看到的接口不兼容时增加（[release.md](release.md)）。本稿只在 SDK 一侧加了模块，运行时建出的 `ctx`、协议都不变；升了它反而要求所有已发布的插件重新构建（#663 的 A8）。实施时在 release.md 的那条规则后补一句："`PLUGIN_API` 增加时，删除 0.19 起各 SDK 标为弃用的旧位置。"
+**0.19 不升 `PLUGIN_API`**：`PLUGIN_API` 只在插件看到的接口不兼容时增加（[release.md](release.md)）。本稿只在 SDK 一侧加了模块，运行时建出的 `ctx`、协议都不变；升了它反而要求所有已发布的插件重新构建（#663 的 A8）。
 
 ## 六、公开面快照与 CI
 
@@ -118,7 +104,7 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 | Kotlin | `kotlin/rutis/rutis/api/` | Kotlin 官方的 Binary Compatibility Validator，`apiCheck` 挂在 `check` 上（Kotlin Gradle 插件 2.2 自带的 ABI 校验还是实验性的，不用） | `runtimes-kotlin` | `./gradlew apiDump` |
 | Rust | `crates/rutis/public-api.txt` | 不变（`tools/public-api.sh`） | `public-api` | 不变 |
 
-TypeScript 的 `.d.ts` 是手写的，本身就是公开面，再生成一份快照是重复；检查只需保证运行时的导出和它一致。弃用的名字在各文本里单独放一节，删除时整节去掉。测试工具也锁住：#670 给它加名字时在同一个 PR 里更新。实施时在 ci.md §4 的各任务行里写上这一项。
+TypeScript 的 `.d.ts` 是手写的，本身就是公开面，再生成一份快照是重复；检查只需保证运行时的导出和它一致。测试工具也锁住：#670 给它加名字时在同一个 PR 里更新。实施时在 ci.md §4 的各任务行里写上这一项。
 
 ## 七、开发者看到什么
 
@@ -159,11 +145,11 @@ import "github.com/arcships/rutis/go/rutis/advanced"
 day := advanced.DateOf(time.Now())
 ```
 
-**旧代码不改**：照常运行，提示新位置。
+**旧代码**：旧位置已删（§五），用到时报找不到这个名字。
 
 | 语言 | 输入 | 看到 |
 | --- | --- | --- |
-| TypeScript | `import { datetime } from '@arcships/rutis'` | 编辑器划线，悬停：`'datetime' is deprecated. Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes.` |
+| TypeScript | `import { datetime } from '@arcships/rutis'` | `tsc`：`error TS2305: Module '"@arcships/rutis"' has no exported member 'datetime'.`；直接运行：`SyntaxError: The requested module '@arcships/rutis' does not provide an export named 'datetime'` |
 | Python | `from rutis import AggregateError`，在 pytest 里跑 | `DeprecationWarning: AggregateError moved in 0.19: import it from rutis.advanced. The old name is removed when the plugin API version changes.` |
 | Go | `rutis.DateOf(t)` | `go build`：`undefined: rutis.DateOf` |
 | Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`，附修改建议 |
@@ -187,23 +173,23 @@ the public API of rutis changed: review the diff, then run RUTIS_PUBLIC_API_WRIT
 
 > 0.19 起，各语言 SDK 的根上只留写插件常用的名字，其余放进 advanced：TypeScript / Bun `@arcships/rutis/advanced`，Python `rutis.advanced`，Go `github.com/arcships/rutis/go/rutis/advanced`，Swift `Rutis.Advanced`，Kotlin `arcships.rutis.advanced`。
 >
-> **不改也能跑**。旧的写法在 0.19 照常可用，编辑器、编译器或测试会提示新位置；到插件 API 版本增加时才删除，那一版的发布说明会再写一次。
+> **直接移动，无旧名**。旧位置在 0.19 删除，用到旧名字时编译或导入报找不到这个名字。Python 插件与运行时共用宿主环境里的同一个 `rutis`，要与宿主一起升级到 0.19；Kotlin 的 `rutis-ksp` 与 SDK 同版本。
 >
 > 要改的只有导入：根上移走的名字（值类型、`PLUGIN_API`、事件的描述类型、只在某种发出方式里出现的错误等）同名从 advanced 导入；完整列表见 [SDK 的默认入口](design-sdk-entry-convergence-2026-10-27.md) §三。
 >
 > 不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
 
-**不做迁移工具**（E8）：Rust 的 `rutis-migrate` 是因为 0.17 改了 trait 的签名，手改容易错；这里只是换导入的位置，旧写法还能用，Swift、Kotlin 的 IDE 有一键替换，其余三种语言每处改一行。#663 的评估里普通插件只用到根上的名字，大多数插件一处都不用改。
+**不做迁移工具**（E8）：Rust 的 `rutis-migrate` 是因为 0.17 改了 trait 的签名，手改容易错；这里只是换导入的位置，每处改一行。#663 的评估里普通插件只用到根上的名字，大多数插件一处都不用改。
 
 ## 九、实施
 
-每种语言一个 PR，互不依赖；第 6 步在最后。
+每种语言一个 PR，互不依赖；第 6 步在最后。旧位置由[平台清理](design-platform-cleanup-2026-10-28.md) §十三 的 CL28-*（每种语言一个 PR）删除。
 
 | 步 | 内容 | 完成条件 |
 | --- | --- | --- |
-| 1 | TypeScript / Bun：`node/rutis` 加 `./advanced` 入口；根上的旧导出在 `.d.ts` 里标 `@deprecated`；导出一致性测试 | 测试通过；仓库自己的示例、模板、测试插件改用新位置 |
-| 2 | Python：`rutis.advanced`；根的 `__getattr__`；快照测试 | 快照测试通过；旧名字的导入、`from rutis import *` 各有一个测试，确认可用且发出 `DeprecationWarning`，`-W error` 下失败 |
-| 3 | Go：`advanced` 子包（以别名指向内部包或根上的类型）；根上旧名字加 `// Deprecated:`；快照测试 | 快照测试通过；`staticcheck` 对旧写法报 SA1019；`rutistest` 与 `examples` 改用新位置 |
-| 4 | Swift：`Rutis.Advanced`、`Rutis._Generated`；宏改为引用 `_Generated`；旧名字标 `deprecated`；快照脚本 | `RutisSelfTest` 通过；快照比对通过；旧写法只有警告没有错误 |
-| 5 | Kotlin：`arcships.rutis.advanced`、`arcships.rutis.generated`；KSP 改为引用新包；旧名字 `@Deprecated(WARNING)`；接入 Binary Compatibility Validator | `gradle check`（含 `apiCheck`）通过；0.17.2 的 `rutis-ksp` 生成的代码在新 SDK 上能编译；Android 示例照常构建 |
-| 6 | 文档与 CI：《迁移到 0.19》两份写入 §八 的一节；`plugin-api.md` 的速查表把移走的名字改到新位置；ci.md §4 写上各任务的检查；release.md 补 §五 的一句 | 链接检查通过；对照 #692 的「完成」清单：默认入口与子模块（1–5）、快照与 CI（1–5 与 ci.md）、迁移指南两份（6） |
+| 1 | TypeScript / Bun：`node/rutis` 加 `./advanced` 入口；导出一致性测试 | 测试通过；仓库自己的示例、模板、测试插件改用新位置 |
+| 2 | Python：`rutis.advanced`；快照测试 | 快照测试通过 |
+| 3 | Go：`advanced` 子包（以别名指向内部包或根上的类型）；快照测试 | 快照测试通过；`rutistest` 与 `examples` 改用新位置 |
+| 4 | Swift：`Rutis.Advanced`、`Rutis._Generated`；宏改为引用 `_Generated`；快照脚本 | `RutisSelfTest` 通过；快照比对通过 |
+| 5 | Kotlin：`arcships.rutis.advanced`、`arcships.rutis.generated`；KSP 改为引用新包；接入 Binary Compatibility Validator | `gradle check`（含 `apiCheck`）通过；Android 示例照常构建 |
+| 6 | 文档与 CI：《迁移到 0.19》两份写入 §八 的一节；`plugin-api.md` 的速查表把移走的名字改到新位置；ci.md §4 写上各任务的检查 | 链接检查通过；对照 #692 的「完成」清单：默认入口与子模块（1–5）、快照与 CI（1–5 与 ci.md）、迁移指南两份（6） |

@@ -416,25 +416,25 @@ fn unknown_fields_are_refused() {
     assert!(config.warnings.is_empty(), "{:?}", config.warnings);
 }
 
-/// A link's token is `RUTIS_TOKEN_<PEER>` (upper case, `-` as `_`), else
-/// `RUTIS_TOKEN`; none without either.
+/// A link's token is `RUTIS_TOKEN_<PEER>` (upper case, `-` as `_`) only:
+/// a bare `RUTIS_TOKEN` is no peer's token (#695).
 /// risk: B5
 /// guarantee: host/credentials-from-env
 #[test]
-fn a_peers_token_comes_before_the_shared_one() {
+fn a_peers_token_is_its_own_variable_only() {
     let _environment = environment();
     assert_eq!(token("office-a"), None);
     std::env::set_var("RUTIS_TOKEN", "shared");
-    assert_eq!(token("office-a").as_deref(), Some("shared"));
+    assert_eq!(token("office-a"), None);
     std::env::set_var("RUTIS_TOKEN_OFFICE_A", "office");
     assert_eq!(token("office-a").as_deref(), Some("office"));
-    assert_eq!(token("gpu").as_deref(), Some("shared"));
+    assert_eq!(token("gpu"), None);
     // The variable is the upper-case one only (on Windows, where names
     // ignore case, there is no other).
     std::env::remove_var("RUTIS_TOKEN_OFFICE_A");
     if cfg!(not(windows)) {
         std::env::set_var("RUTIS_TOKEN_office_a", "lower");
-        assert_eq!(token("office-a").as_deref(), Some("shared"));
+        assert_eq!(token("office-a"), None);
         std::env::remove_var("RUTIS_TOKEN_office_a");
     }
     std::env::remove_var("RUTIS_TOKEN");

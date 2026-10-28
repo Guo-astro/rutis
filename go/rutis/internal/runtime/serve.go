@@ -77,7 +77,7 @@ func ServeArgs(args []string, defs ...*Definition) error {
 	if err != nil {
 		return err
 	}
-	return serveChannel(peer.NewLines(conn), nil, defs)
+	return serveChannel(peer.NewLines(conn), endpoint, defs)
 }
 
 // ServeConn serves the plugins `defs` on `conn` (the compat protocol, one
@@ -148,20 +148,22 @@ func parseArgs(args []string) (channel string, endpoint *peer.Endpoint, dir stri
 	if len(rest) != 1 {
 		return "", nil, "", errors.New(usage)
 	}
-	if strings.HasPrefix(channel, "listen:") || strings.HasPrefix(channel, "dial:") {
-		if flags["id"] == "" {
-			return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
+	network := strings.HasPrefix(channel, "listen:") || strings.HasPrefix(channel, "dial:")
+	if network && flags["id"] == "" {
+		return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
+	}
+	if flags["id"] != "" {
+		if !peer.ValidID(flags["id"]) {
+			return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])
 		}
-		// A runner is a runtime: the controller manages its rows.
+		// With --id, every channel speaks the endpoint format, greeting as
+		// that id. A runner is a runtime: the controller manages its rows.
 		endpoint = &peer.Endpoint{Local: flags["id"], Expected: flags["peer"], Declare: []string{"runtime"}}
 	}
 	if strings.HasPrefix(channel, "dial:") {
 		// What retrying cannot fix fails here, before any dial.
 		if _, err := dialHost(strings.TrimPrefix(channel, "dial:")); err != nil {
 			return "", nil, "", err
-		}
-		if !peer.ValidID(flags["id"]) {
-			return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])
 		}
 	}
 	return channel, endpoint, rest[0], nil
