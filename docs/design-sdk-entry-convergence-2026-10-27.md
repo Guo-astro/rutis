@@ -153,7 +153,7 @@ day := advanced.DateOf(time.Now())
 | Python | `from rutis import AggregateError` | `ImportError: cannot import name 'AggregateError' from 'rutis' (…/rutis/__init__.py)` |
 | Go | `rutis.DateOf(t)` | `go build`：`undefined: rutis.DateOf` |
 | Swift | `let d: Rutis.DateTime` | `error: 'DateTime' is not a member type of enum 'Rutis.Rutis'` |
-| Kotlin | `RutisFormat.encode(…)` | `w: 'RutisFormat' is deprecated. Moved in 0.19: use arcships.rutis.advanced.RutisFormat.`；IDE 一键替换并补上导入 |
+| Kotlin | `RutisFormat.encode(…)` | `e: … Unresolved reference 'RutisFormat'.` |
 
 **rutis 的贡献者加了一个公开名字，没有更新快照**：CI 失败，输出差异和改法，例如：
 

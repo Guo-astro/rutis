@@ -8,12 +8,6 @@
 use std::sync::Arc;
 
 pub use crate::bus::EventBus;
-/// How config problems are written (config schema design §6.2).
-pub mod config {
-    pub use crate::config::{
-        closest, decode, distance, float_text, number_text, path_text, value_text,
-    };
-}
 pub use crate::error::{ServiceWriteError, ServiceWriteFailure};
 pub use crate::events::kinds::{EventOptions, RESERVED_PREFIX};
 pub use crate::key::EventKey;

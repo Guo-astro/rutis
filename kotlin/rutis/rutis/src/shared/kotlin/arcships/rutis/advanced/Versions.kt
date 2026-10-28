@@ -1,14 +1,10 @@
-@file:Suppress("DEPRECATION")
-
 package arcships.rutis.advanced
 
-import arcships.rutis.Rutis
-
 /** This SDK's version: the runtime's implementation version (the release train checks it). */
-const val VERSION: String = Rutis.VERSION
+const val VERSION: String = "0.18.0"
 
 /** The plugin API this SDK writes plugins against and its runtime supports. */
-const val PLUGIN_API: Int = Rutis.PLUGIN_API
+const val PLUGIN_API: Int = 3
 
 /** The name the runtime reports itself by: the Maven coordinates it is published as. */
-const val IMPLEMENTATION: String = Rutis.IMPLEMENTATION
+const val IMPLEMENTATION: String = "io.github.arcships:rutis"
