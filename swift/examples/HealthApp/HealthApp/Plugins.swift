@@ -68,16 +68,34 @@ final class Device: @unchecked Sendable {
 }
 
 // What `ctx.provide` provides reaches rutis by itself: no `provides` needed.
-let health = Rutis.define(Plugin(name: "health") { ctx in
-    ctx.provide("health", Health())
+/// The `health` plugin's configuration: the app gives it in `RutisApp`.
+@RutisConfig
+struct HealthConfig: Codable {
+    /// The name it provides its service as: `health-<installation>`, so
+    /// that two devices on one rutis do not clash.
+    var service = "health"
+}
+
+let health = Rutis.define(Plugin(name: "health", config: HealthConfig.self) { ctx, config in
+    ctx.provide(config.service, Health())
 })
 
 /// The `device` plugin's configuration: the app gives it in `RutisApp`.
+@RutisConfig
 struct DeviceConfig: Codable {
     /// The id this app connects to rutis with.
     var installation: String
+    /// The name it provides its service as: `device-<installation>`.
+    var service = "device"
 }
 
 let device = Rutis.define(Plugin(name: "device", config: DeviceConfig.self) { ctx, config in
-    ctx.provide("device", Device(installation: config.installation))
+    ctx.provide(config.service, Device(installation: config.installation))
 })
+
+/// The plugins' configurations for the installation `id`: its services are
+/// `health-<id>` and `device-<id>`.
+func configs(_ id: String) -> [String: any Encodable] {
+    ["health": HealthConfig(service: "health-\(id)"),
+     "device": DeviceConfig(installation: id, service: "device-\(id)")]
+}

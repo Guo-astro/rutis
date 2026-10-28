@@ -45,9 +45,11 @@ struct HealthApp: App {
     @Environment(\.scenePhase) private var phase
     @State private var rutis: RutisApp = {
         let id = Settings.id
-        // Installed once connected, in this order: `health` with its
-        // defaults, `device` with the configuration given here.
-        return RutisApp(plugins: [health, device], configs: ["device": DeviceConfig(installation: id)],
+        // Installed once connected, in this order, each with the
+        // configuration given here: the services are named after this
+        // installation (`health-<id>`, `device-<id>`), so that two devices
+        // on one rutis do not clash (the second `health` would be refused).
+        return RutisApp(plugins: [health, device], configs: configs(id),
                         connect: Settings.connect, id: id, token: Settings.token, trust: Settings.trust)
     }()
 

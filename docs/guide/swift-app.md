@@ -298,7 +298,7 @@ token 写在 `RUTIS_TOKEN_IPAD`（行 id 大写）；自己的 CA 签发的证�
 
 ## 8. 示例应用
 
-[`swift/examples/HealthApp`](../../swift/examples/HealthApp) 是一个 iOS 应用的 Xcode 项目，托管 §2 的 `health` 与 `device` 插件（`device` 的配置是这个安装的 id，在 `RutisApp` 里给出），业务层按 §3 在前台开始、进入后台停止。它依赖本仓库里的 SDK（本地包），连接到哪里由启动参数给出（`-RutisConnect`、`-RutisID`、`-RutisToken`，以及 `-RutisCA`：base64 的 DER 格式 CA 证书），在 Xcode 的 scheme 里设置。
+[`swift/examples/HealthApp`](../../swift/examples/HealthApp) 是一个 iOS 应用的 Xcode 项目，托管 §2 的 `health` 与 `device` 插件。服务名按 §4 "每台设备各算一份"的第二种改法带上这个安装的 id（连接的 `id`）：`health-<id>`、`device-<id>`（`-RutisID kim-iphone` 时是 `health-kim-iphone`、`device-kim-iphone`），经 `RutisApp` 的 `configs` 给出（`HealthConfig(service:)`、`DeviceConfig(installation:service:)`），两台设备连同一个 rutis 不会相互拒绝，业务层按 §3 在前台开始、进入后台停止。它依赖本仓库里的 SDK（本地包），连接到哪里由启动参数给出（`-RutisConnect`、`-RutisID`、`-RutisToken`，以及 `-RutisCA`：base64 的 DER 格式 CA 证书），在 Xcode 的 scheme 里设置。
 
 在模拟器上，连同一台 Mac 上的 `rutis-host`（模拟器能访问 Mac 的回环地址）：
 
@@ -306,7 +306,7 @@ token 写在 `RUTIS_TOKEN_IPAD`（行 id 大写）；自己的 CA 签发的证�
 cargo test -p rutis-e2e --test ios_app -- --ignored
 ```
 
-它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的 `rutis-host/listen` 行和一个使用应用服务的 Python 行，检查：每台模拟器的应用装上自己的插件（`<id>:device`）；应用进入后台时它的插件卸载、回到前台时重新装上，另一台不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 Xcode 与 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`），只在本地运行，`bash tools/ios-selftest.sh`（SDK 自己的测试在模拟器里运行）也一样：CI 不运行需要模拟器、设备或授权提示的测试。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
+它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的 `rutis-host/listen` 行和一个使用应用服务的 Python 行，检查：每台模拟器的应用装上自己的插件（`<id>:health`、`<id>:device`），服务名各不相同（`health-<id>`、`device-<id>`）；应用进入后台时它的插件卸载、回到前台时重新装上，另一台不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 Xcode 与 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`），只在本地运行，`bash tools/ios-selftest.sh`（SDK 自己的测试在模拟器里运行）也一样：CI 不运行需要模拟器、设备或授权提示的测试。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
 
 ### 人工验收清单（真机）
 
@@ -319,5 +319,5 @@ cargo test -p rutis-e2e --test ios_app -- --ignored
 5. **拒绝传回调用方：** 全部关掉后点"允许"（或"不允许"）：`authorize()` 返回 `false`，`stepsToday()` 在 Python 调用方失败，`HealthAccessDenied: step counts are not shared with this app (denied)`，`code` 为 `denied`。
 6. **授权：** 在"设置 → 健康 → 数据访问与设备 → Rutis Health"里打开步数：`stepsToday()` 返回今天的步数。
 7. **后台与前台：** 回到主屏幕：控制台显示插件卸载、`stopped`，rutis 上这部手机的插件卸载、用它们的行停下；再打开应用：`connected`，插件重新装上，行重新运行。
-8. **两台设备：** 在第二台设备（或模拟器）上以另一个 `-RutisID` 运行：rutis 上有两组 `<id>:health`、`<id>:device`；两台都提供 `health` 时后来的那台被拒绝并说明原因（§4），按 §4 "每台设备各算一份"的两种改法之一区分。
+8. **两台设备：** 在第二台设备（或模拟器）上以另一个 `-RutisID` 运行：rutis 上有两组 `<id>:health`、`<id>:device`，服务是 `health-<id>`、`device-<id>`，两台都可用；监听 `rutis/service` 的行看到两台各自的服务出现（§4）。
 9. **断网：** 在前台时打开飞行模式：rutis 的行停下；关闭飞行模式：应用自己重连，行恢复。
