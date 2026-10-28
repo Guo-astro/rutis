@@ -2,7 +2,7 @@
 
 [English](design-try-and-test-plugins-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27；2026-10-29：`call` 报找不到服务时列出的名单里多了 rutis 自己提供的 `loader`（#185）。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#670](https://github.com/arcships/rutis/issues/670)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 A5、A6、H5）。
 与 0.18 的关系：建在 [0.18 的诊断](design-diagnostics-2026-10-26.md)上，不重复、不改它：`call` 用它 §5.3 的本地 socket 与找法，`dev` 列出的服务就是它 §5.1 `Loader::status()` 的 `services`，出错文字按它 §4（`site`、错误码、§4.5 的禁用词）。依赖 [#678](https://github.com/arcships/rutis/issues/678) 先合并。
 与其他 0.19 设计的关系：从宿主的 `#[rutis::service]` 生成严格假服务、装进测试工具，归 [#684](https://github.com/arcships/rutis/issues/684)；本稿只管插件作者自己写的假依赖和测试工具的 `on`。SDK 默认入口归 [#692](https://github.com/arcships/rutis/issues/692)：本稿不往 SDK 根上加名字，`on` 加在测试工具装载出来的对象上。限制插件能用哪些服务归 [#683](https://github.com/arcships/rutis/issues/683)，它限制的是插件，`call` 是宿主自己的调用。
@@ -177,7 +177,7 @@ rutis-host dev: services: forecast (weather), llm (llm)
 | `rutis-host call forecast.week '{"days": 3}'` | 两格缩进的 JSON，0 |
 | `rutis-host call forecast.today Oslo` | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'`，1 |
 | `rutis-host call forecast` | `rutis-host: name a method, as forecast.<method>`，1 |
-| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)`，1 |
+| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)`，1 |
 | `rutis-host call forecast.tomorow '"Oslo"'` | `rutis-host: forecast has no method tomorow (methods: today, week)`，1（0.18 `no-method`） |
 | `rutis-host call forecast.today 3` | `rutis-host: forecast.today: argument 1 should be a string, got 3`，1（0.18 `bad-argument`） |
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下一行 `weather at plugin.go:31 in Today`，1 |

@@ -9,5 +9,5 @@ import (
 )
 
 func main() {
-	rutis.Serve(multilang.Provider, multilang.Consumer, multilang.Local, multilang.Gated, multilang.Row, multilang.Registrant, multilang.CalendarUser, multilang.GoTaker, values.Origin, values.Crash, objects.GoOwner, objects.GoHolder)
+	rutis.Serve(multilang.Provider, multilang.Consumer, multilang.Local, multilang.Gated, multilang.Row, multilang.Registrant, multilang.CalendarUser, multilang.GoTaker, multilang.Maker, values.Origin, values.Crash, objects.GoOwner, objects.GoHolder)
 }

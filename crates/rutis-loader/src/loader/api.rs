@@ -15,7 +15,7 @@ use super::{
     PendingEditDropped, ReconcileReport, RowInfo, Slot,
 };
 
-fn generate_id(taken: impl Fn(&str) -> bool) -> String {
+pub(super) fn generate_id(taken: impl Fn(&str) -> bool) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let seed = std::time::SystemTime::now()

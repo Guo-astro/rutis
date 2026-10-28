@@ -188,6 +188,8 @@ impl DynPlugin for LoaderPlugin {
         Box::pin(async move {
             // The service is released with the fiber.
             ctx.provide(self.loader.clone())?;
+            // The same loader by name, for plugins of every language (#185).
+            ctx.provide(super::LoaderService(self.loader.clone()))?;
             // Copies of plugin definitions other languages hand over are
             // mounted through it, anywhere below.
             #[cfg(feature = "runtimes")]

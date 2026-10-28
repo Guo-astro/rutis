@@ -271,3 +271,62 @@ var GoTaker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		return nil
 	},
 })
+
+// Maker manages a row through the host's `loader`
+// (crates/rutis-loader/tests/loader_service.rs, #185): once started, as a
+// row cannot edit rows while the loader starts it.
+var Maker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:   "go_maker",
+	Inject: []string{"loader", "probe"},
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+		p, err := probe(ctx)
+		if err != nil {
+			return err
+		}
+		var loader struct {
+			Create func(ctx context.Context, options map[string]any) (string, error)
+			Reload func(ctx context.Context, id string) error
+			Status func(ctx context.Context) (map[string]any, error)
+			Remove func(ctx context.Context, id string) error
+		}
+		if err := ctx.Use("loader", &loader); err != nil {
+			return err
+		}
+		go func() {
+			fail := func(err error) { _ = p.Record(ctx, "go: "+err.Error()) }
+			id, err := loader.Create(ctx, map[string]any{"id": "from-go", "name": "py:tiny"})
+			if err != nil {
+				fail(err)
+				return
+			}
+			if err := loader.Reload(ctx, id); err != nil {
+				fail(err)
+				return
+			}
+			status, err := loader.Status(ctx)
+			if err != nil {
+				fail(err)
+				return
+			}
+			state := ""
+			rows, _ := status["rows"].([]any)
+			for _, row := range rows {
+				if row, ok := row.(map[string]any); ok && row["id"] == id {
+					state, _ = row["state"].(string)
+				}
+			}
+			if err := loader.Remove(ctx, id); err != nil {
+				fail(err)
+				return
+			}
+			err = loader.Remove(ctx, id)
+			var remote *rutis.RemoteError
+			if !errors.As(err, &remote) {
+				fail(fmt.Errorf("expected a remote error, got %v", err))
+				return
+			}
+			_ = p.Record(ctx, fmt.Sprintf("go: %s %s / %s %v %s", id, state, remote.Name, remote.Data, remote.Message))
+		}()
+		return nil
+	},
+})

@@ -2,7 +2,7 @@
 
 [中文](design-try-and-test-plugins-2026-10-27.md)
 
-Status: final, not implemented. Date: 2026-10-27. Baseline: `main` `103c0d22` (after 0.17.2). Scheduled for: 0.19.
+Status: final, not implemented. Date: 2026-10-27; 2026-10-29: the list `call` prints for a missing service now includes `loader`, which rutis provides itself (#185). Baseline: `main` `103c0d22` (after 0.17.2). Scheduled for: 0.19.
 Issue: [#670](https://github.com/arcships/rutis/issues/670) (A5, A6 and H5 of [#663](https://github.com/arcships/rutis/issues/663)).
 Relation to 0.18: built on [diagnostics for 0.18](design-diagnostics-2026-10-26.en.md), without repeating or changing it: `call` uses the local socket and the way of finding it from its §5.3, the services `dev` lists are the `services` of its §5.1 `Loader::status()`, and error text follows its §4 (`site`, error codes, the banned words of §4.5). Depends on [#678](https://github.com/arcships/rutis/issues/678) being merged first.
 Relation to other 0.19 designs: generating strict fakes from the host's `#[rutis::service]` and putting them into the test tools belongs to [#684](https://github.com/arcships/rutis/issues/684); this design only covers fakes plugin authors write themselves and the test tools' `on`. SDK default entry points belong to [#692](https://github.com/arcships/rutis/issues/692): this design adds no names to an SDK root; `on` goes on the object the test tool loads. Limiting which services a plugin may use belongs to [#683](https://github.com/arcships/rutis/issues/683); it limits plugins, and `call` is the host's own call.
@@ -177,7 +177,7 @@ In another terminal:
 | `rutis-host call forecast.week '{"days": 3}'` | JSON with a two-space indent, 0 |
 | `rutis-host call forecast.today Oslo` | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'`, 1 |
 | `rutis-host call forecast` | `rutis-host: name a method, as forecast.<method>`, 1 |
-| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)`, 1 |
+| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)`, 1 |
 | `rutis-host call forecast.tomorow '"Oslo"'` | `rutis-host: forecast has no method tomorow (methods: today, week)`, 1 (0.18 `no-method`) |
 | `rutis-host call forecast.today 3` | `rutis-host: forecast.today: argument 1 should be a string, got 3`, 1 (0.18 `bad-argument`) |
 | The method throws | `rutis-host: call to forecast.today failed: KeyError: 'region'`, then `weather at plugin.go:31 in Today`, 1 |

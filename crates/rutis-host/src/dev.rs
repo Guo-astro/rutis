@@ -24,8 +24,7 @@ use rutis_host::config::{read_text, HostConfig};
 use rutis_host::host::{Host, RowChange};
 use rutis_host::languages::{self, DevBuild};
 use rutis_host::{errln, project, status};
-use rutis_loader::report::EntryStatus;
-use rutis_loader::LoaderError;
+use rutis_loader::report::{cannot_reload, EntryStatus};
 
 use crate::reload::Triggers;
 use crate::stop::{self, Ended, Stopped};
@@ -802,59 +801,6 @@ impl Affected {
     }
 }
 
-/// The line for the row `id` that did not reload: `error` names the rows
-/// that failed with its new code first, the row itself when it is the
-/// one; `running`, whether it runs on (its previous version, which the
-/// loader keeps).
-fn cannot_reload(id: &str, error: &LoaderError, running: bool) -> String {
-    let failed = |failures: &[rutis_loader::report::Failure]| -> String {
-        failures
-            .iter()
-            .map(|failure| match failure.id == id {
-                true => failure.error.clone(),
-                false => format!("{} failed with it: {}", failure.id, failure.error),
-            })
-            .collect::<Vec<_>>()
-            .join("; ")
-    };
-    let why = match error {
-        LoaderError::ApplyFailed { failures } => failed(failures),
-        LoaderError::RollbackFailed { apply, rollback } => {
-            // The row itself failing on: its line says it does not run.
-            let others: Vec<String> = rollback
-                .iter()
-                .filter(|failure| failure.id != id)
-                .map(|failure| format!("{} still fails: {}", failure.id, failure.error))
-                .collect();
-            match others.is_empty() {
-                true => failed(apply),
-                false => format!(
-                    "{}; with the previous {id} back, {}",
-                    failed(apply),
-                    others.join("; ")
-                ),
-            }
-        }
-        error => error.to_string(),
-    };
-    // A config error is a line per problem: each gets the row's prefix.
-    // (from the row's error, or a runtime's `bad-config` text).
-    let problems: Vec<&str> = why.lines().collect();
-    let config = problems.len() > 1 && problems.iter().all(|line| line.starts_with("config: "));
-    let lines = match config {
-        true => problems
-            .iter()
-            .map(|line| format!("{id}: cannot reload: {line}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        false => format!("{id}: cannot reload: {why}"),
-    };
-    match running {
-        true => format!("{lines}; the previous version keeps running"),
-        false => lines,
-    }
-}
-
 /// Delete the builds in `stale`, keeping those that cannot be deleted yet
 /// (on Windows, while a process that ran one is not quite gone) for the
 /// next try.
@@ -924,45 +870,6 @@ mod tests {
         assert_eq!(runtime_of("dev/fake.ts", &["py".to_owned()]), None);
         assert!(owns("go-weather", "go-weather:weather"));
         assert!(!owns("go-weather", "go-weather-2:near"));
-    }
-
-    /// The row that failed with another's new code comes first in the line,
-    /// and whether the previous version runs on is said.
-    #[test]
-    fn a_failed_reload_names_the_row_that_failed() {
-        use rutis_loader::report::Failure;
-        let failure = |id: &str, error: &str| Failure {
-            id: id.into(),
-            error: error.into(),
-        };
-        let apply = LoaderError::ApplyFailed {
-            failures: vec![failure("weather", "SyntaxError")],
-        };
-        assert_eq!(
-            cannot_reload("llm", &apply, true),
-            "llm: cannot reload: weather failed with it: SyntaxError; the previous version keeps running"
-        );
-        assert_eq!(
-            cannot_reload("weather", &apply, false),
-            "weather: cannot reload: SyntaxError"
-        );
-        let rollback = LoaderError::RollbackFailed {
-            apply: vec![failure("weather", "SyntaxError")],
-            rollback: vec![failure("weather", "SyntaxError")],
-        };
-        assert_eq!(
-            cannot_reload("llm", &rollback, true),
-            "llm: cannot reload: weather failed with it: SyntaxError; with the previous llm back, weather still fails: SyntaxError; the previous version keeps running"
-        );
-        // Its own apply failing, the row fails on: no more than its error.
-        let own = LoaderError::RollbackFailed {
-            apply: vec![failure("weather", "Error: boom")],
-            rollback: vec![failure("weather", "Error: boom")],
-        };
-        assert_eq!(
-            cannot_reload("weather", &own, false),
-            "weather: cannot reload: Error: boom"
-        );
     }
 
     /// A row restarted by a change names the changed rows it uses, else

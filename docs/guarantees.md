@@ -380,6 +380,7 @@ PR 模板中有对应的检查项。
 | `swift/app-access-belongs-to-the-app` | [Swift SDK](design-swift-sdk-2026-10-12.md) §八；[Swift 应用](guide/swift-app.md)「权限」 | iOS 对托管插件访问受保护数据（HealthKit、定位、通讯录）的决定记在应用上：提示显示在应用之上、写着应用的名字和应用的用途说明；拒绝（或尚未决定）以插件的错误到达任何语言的调用方，带名字、消息与 `code` | 契约行为 | 部分验证 | `rutis-e2e/tests/ios_app.rs::an_ios_app_hosts_plugins_per_instance_stops_in_the_background_and_its_health_access_is_its_own`（iOS 模拟器：尚未决定时 Python 调用方收到 `HealthAccessDenied`，`code` 为 `not-determined`；"健康"授权页写着应用的名字，从截图读出） | 在本地运行（Xcode 与 iOS 模拟器；不在 CI 里）。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit：拒绝、授权与真机是 Swift 应用指南 §8 的人工清单 |
 | `loader/plugin-value-copies` | [插件定义](design-plugin-values-2026-10-25.md) §四 R4–R7 | 其他语言交来的插件定义，`def.at(&ctx, config)` 按 `ctx` 所在的实例算出键：每一份在定义它的运行时里作为一行运行，共享名字按实例隔离，按声明的 `inject` 门控，只看得到挂载实例的服务；用到实例里的名字时挂到实例外失败；Cordis 的对象、函数、类插件同样能挂；来源行卸载时先结束每一份（它们的清理先于来源行自己的），之后 `ended()` 完成、`at` 失败；重载后交来的新定义能再挂；运行时进程退出时副本结束；连进来的应用交出的定义只能挂在它的连接所在的实例里，应用断开时副本结束 | 契约行为 | 已验证 | `rutis-loader/tests/plugin_values.rs`（Node、Bun、Python、Go、Swift、Kotlin 各一遍；`dialed_in::a_dialed_in_kotlin_app_s_definitions_mount_only_in_its_instance`、`::a_dialed_in_swift_app_s_definitions_mount_only_in_its_instance`） | #642，P1、P2、P3 |
 | `loader/status` | [rutis-host](guide/rutis-host.md)「查看当前状态」；[Rust 宿主](guide/rust-host.md)「调试」 | `Loader::status()` 一份快照，只用名字：每一行（实例里的行每个实例一份）的状态与原因（等待原因同 `Loader::waits`，失败的第一行）；每个服务的名字与提供它的行，宿主提供的为空；解析器列出的每个运行时（状态、退出原因、本机运行时的进程号）；进行中的调用（调用方的行，不在行里的为空；被调用的行、服务、方法、已经多久），调用返回或被放弃后消失；运行时不在运行（退出、启动中）时，它在运行或启动中的行立即显示为等这个运行时。`Display` 一项一行 | 契约行为 | 已验证 | `rutis-loader/tests/status.rs::the_status_names_rows_services_runtimes_and_calls`、`rutis-loader/src/loader/status.rs::tests::a_status_prints_one_item_a_line`、`rutis-bridge/src/runtime/calls.rs::tests::a_call_is_listed_until_it_returns` | 各部分依次读，不是同一时刻。**明确不保证**看到：同一个运行时里的调用；按引用传过来的函数的调用（没有方法名）；进程内的 Rust 插件发起的调用（记为宿主）；拨入的远程运行时连接（#678） |
+| `loader/service` | [宿主自己写插件](design-host-writes-plugins-2026-10-27.md) §三、§七 | `LoaderPlugin` 按名字提供服务 `loader`，任何语言的插件 `inject` 后可用 `create(options, parent?, position?)`（返回行 id，没给 `id` 时生成 8 位十六进制）、`reload(id)`、`remove(id)`、`status()`（与 `Loader::status()` 同一份快照，作为数据）；失败时抛出名为 `Error` 的错误，`data` 是 `{row}`，消息是 rutis 给人看的那段文字：已有的 id 是 `a row <id> already exists`，没有的行是 `no row <id>`，起不来的行每个失败一行 `<行>: <原因>` 且不留下，重载失败时写 `<id>: cannot reload: <原因>`、旧版本仍在运行时加 `; the previous version keeps running`，没有可编辑层时是 `this host keeps no editable configuration, so rows cannot be added or removed`，已生效但没存下时是 `<id>: added, but <原因>` | 契约行为 | 已验证 | `rutis-loader/tests/loader_service.rs::a_python_plugin_manages_rows_through_the_loader_service`、`::node_and_go_plugins_manage_rows_through_the_loader_service`、`rutis-loader/src/loader/service.rs::tests::an_edit_that_failed_says_what_happened_to_the_row`、`::a_failed_reload_names_the_row_that_failed` | 错误码是 Rust 服务通用的 `Error`，不另加 |
 
 ---
 
@@ -431,12 +432,12 @@ PR 模板中有对应的检查项。
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
 | `sdk/*`（§12） | 7 | 1 | 0 | 0 | 8 |
 | `host/*`（§13） | 5 | 0 | 0 | 0 | 5 |
-| `loader/*`（§14） | 37 | 4 | 0 | 0 | 41 |
+| `loader/*`（§14） | 38 | 4 | 0 | 0 | 42 |
 | `host/*`（§15） | 17 | 3 | 1 | 1 | 22 |
-| 合计 | 170 | 12 | 1 | 3 | 186 |
+| 合计 | 171 | 12 | 1 | 3 | 187 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 
-核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 147 条：已验证 137，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
+核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 148 条：已验证 138，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

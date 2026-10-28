@@ -404,7 +404,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | --- | --- |
 | 参数不是 JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
 | 没写方法 | `rutis-host: name a method, as forecast.<method>` |
-| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)` |
 | 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
 | 参数类型不对 | `rutis-host: forecast.today: argument 1 should be a string, got 3` |

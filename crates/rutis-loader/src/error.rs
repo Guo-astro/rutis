@@ -50,7 +50,7 @@ pub enum LoaderError {
     /// (`config: …`): where it is printed, the row is named.
     #[error("{}", rejected_text(id, error))]
     Rejected { id: String, error: Arc<ErrorKind> },
-    #[error("no entry {0:?}")]
+    #[error("no row {0}")]
     UnknownEntry(String),
     #[error("invalid entry: {0}")]
     InvalidEntry(String),
@@ -66,10 +66,12 @@ pub enum LoaderError {
     },
     #[error("unsupported: {0}")]
     Unsupported(String),
-    #[error("no editable layer")]
+    /// Rows can be added or removed only in an editable layer.
+    #[error("this host keeps no editable configuration, so rows cannot be added or removed")]
     NoEditableLayer,
-    /// The edit validated but rows failed to start; it was rolled back.
-    #[error("apply failed, rolled back: {}", list(.failures))]
+    /// The edit validated but rows failed to start; it was rolled back:
+    /// each row and its error.
+    #[error("{}", list(.failures))]
     ApplyFailed { failures: Vec<Failure> },
     /// The rollback after `ApplyFailed` could not restore the old rows either.
     #[error(
