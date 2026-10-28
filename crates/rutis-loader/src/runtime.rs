@@ -33,7 +33,7 @@
 //!   `BinaryRuntimes<Swift>`): a
 //!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
 //!   it, as Go does.
-
+//!
 //! Services cross between the rows and the rest of rutis by name, as
 //! `dyn HostDispatch` at `host_key(name)`:
 //!

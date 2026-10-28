@@ -571,12 +571,10 @@ impl NodeConfig {
     /// instances, features that publish keys the rest of the tree uses
     /// (`rows`): every instance's link would publish the same.
     fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), Error> {
-        if build.instances().next().is_some() {
-            if self.rows {
-                return Err(refused(
-                    "a link inside instances cannot carry rows: put the `rows` link outside instanced groups",
-                ));
-            }
+        if build.instances().next().is_some() && self.rows {
+            return Err(refused(
+                "a link inside instances cannot carry rows: put the `rows` link outside instanced groups",
+            ));
         }
         if let Some(loader) = loader {
             // Prefixes select events only.

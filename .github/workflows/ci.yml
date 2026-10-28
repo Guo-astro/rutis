@@ -90,8 +90,8 @@ env:
     marked_services python_runtime runtime_conformance swift_runtime
     value_roundtrip
   MACOS_SKIP_TESTS_LOADER: >-
-    events_conformance events_nodes go_rows go_stop instance_go leases
-    marked_services multilang_go runtime_instances runtime_rows sync_cycles
+    events_conformance events_nodes go_rows go_stop instance_go
+    marked_services multilang_go runtime_rows sync_cycles
   WINDOWS_SKIP_TESTS_BRIDGE: >-
     dsh_baseline event_hub events_expected go_runtime kotlin_runtime
     marked_services python_runtime runtime_conformance swift_runtime
@@ -544,7 +544,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: written
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test leases --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
+        run: cargo test -p rutis-loader --features node,python,go,bun,peer --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
         if: always()
         run: echo "rust job, $(( ($(date +%s) - RUTIS_JOB_STARTED) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
@@ -967,7 +967,7 @@ jobs:
         run: cargo test -p rutis-bridge --features testing,websocket,go --test session_matrix --test runtime_conformance go_
       - name: cargo test (Go rows)
         if: needs.changes.outputs.all == 'true'
-        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go --test leases
+        run: cargo test -p rutis-loader --features node,python,go --test go_rows --test go_stop --test multilang_go --test instance_go
       # Pull requests run these rows on Windows (runtimes-windows), where
       # loopback is how processes start; full runs also run them here.
       - name: cargo test (Go rows on loopback channels)
@@ -1045,10 +1045,10 @@ jobs:
           cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
       # Remote: the dial-out column, the listener's and dialer's own rules
       # (statuses, frames, heartbeat, takeover, TLS both ways), and
-      # rutis-host's `runtimes.remote[].language: "kotlin"`.
+      # rutis-host's dial and listen rows with Kotlin.
       - name: cargo test (the Kotlin runtime remotely)
         run: |
-          cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
+          cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
           cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
           cargo test -p rutis-host --features kotlin --test kotlin
       # Kotlin rows among Node and Python ones (the multilang Kotlin column),
@@ -1124,7 +1124,7 @@ jobs:
       # rules (statuses, frames, heartbeat, takeover, TLS both ways).
       - name: cargo test (the Swift runtime remotely)
         run: |
-          cargo test -p rutis-bridge --features testing,websocket,swift --test dial_conformance swift::
+          cargo test -p rutis-host --test dial_conformance swift::
           cargo test -p rutis-bridge --features testing,websocket,swift --test swift_remote
       - name: cargo test (the Swift runtime in the bridge)
         run: cargo test -p rutis-bridge --features testing,swift --test swift_runtime
@@ -1245,16 +1245,15 @@ jobs:
       # Only the Bun tests of the contract suites: the other runtimes run
       # in their own jobs.
       - name: cargo test (rutis-bridge, the contract suites with Bun)
-        run: cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix --test dial_conformance bun
+        run: |
+          cargo test -p rutis-bridge --features bun,testing,websocket --test runtime_conformance --test session_matrix bun
+          cargo test -p rutis-host --test dial_conformance bun::
       - name: cargo test (rutis-bridge, the runtime contract with Bun on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback
         run: cargo test -p rutis-bridge --features bun,testing,websocket --test session_matrix bun
       - name: cargo test (rutis-loader, Bun rows)
         run: cargo test -p rutis-loader --features bun,node,python --test bun_rows --test bun_instances --test bun_multilang --test caller_rows
-      # A listening Bun runtime's leases (the other languages run in `rust`).
-      - name: cargo test (rutis-loader, remote Bun runtime leases)
-        run: cargo test -p rutis-loader --features bun,node,python --test leases bun
       - name: cargo test (rutis-loader, Bun rows on loopback channels)
         env:
           RUTIS_LOCAL_HANDOVER: loopback

@@ -1,7 +1,7 @@
 // Dialing out (dial-out design §六): how failures are classified, the
 // backoff, and the loop that dials again, against stand-ins for the dial
 // and the session; what is checked before dialing. The rules against a
-// rutis access point are crates/rutis-bridge/tests/dial_conformance.rs.
+// rutis access point are crates/rutis-host/tests/dial_conformance.rs.
 import { expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
