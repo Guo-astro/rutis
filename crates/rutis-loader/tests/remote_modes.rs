@@ -195,8 +195,7 @@ async fn main(way: Way, lists: bool) -> Main {
         { "id": "contacts", "name": "rt:contacts" },
         { "id": "missing", "name": "rt:missing" }
     ]);
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let (chain, rows, single) = match way {
         Way::Instances => {
             let instances = RuntimeInstances::new("rt", "rt", &catalog);

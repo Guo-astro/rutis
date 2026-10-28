@@ -100,10 +100,9 @@ async fn loader(applied: &Arc<AtomicUsize>) -> (Ctx, Loader) {
         "remote",
         Arc::new(|_: &Value| Err("it runs on gpu, which is not connected".to_owned())),
     );
-    // Only the names registered are shared; the others a foreign row
-    // injects are its runtime's.
+    // Every name is shared by name but `clock`, registered as the
+    // application's own.
     let mut catalog = ServiceCatalog::new();
-    catalog.share_registered_only();
     catalog.register::<String>("clock");
     let foreign = Foreign(Arc::new(
         Resolved::new(Arc::new(CountedFactory(applied.clone())))
@@ -317,12 +316,20 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
     let (_root, loader) = loader(&applied).await;
     let report = loader
         .check(&layers(json!([
-            { "id": "cordis", "name": "foreign", "inject": ["native-only", "clock"] },
+            { "id": "cordis", "name": "foreign", "inject": ["shared", "clock"] },
         ])))
         .await;
-    // `clock` is the application's own service, not shared by name.
-    assert_eq!(supplies(&report, "cordis"), []);
-    assert_eq!(report.failing().count(), 0);
+    // `shared` is shared by name and nothing provides it; `clock` is the
+    // application's own service, not shared by name, so not checked.
+    assert_eq!(
+        supplies(&report, "cordis"),
+        [(
+            "shared".to_owned(),
+            Supply::Missing {
+                disabled: Vec::new()
+            }
+        )]
+    );
 }
 
 /// A `#[rutis::service]` type of the application nothing has provided is

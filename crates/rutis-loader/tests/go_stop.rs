@@ -17,7 +17,8 @@ use rutis::Ctx;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::transport::local::{kill_processes, running_processes};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -66,7 +67,7 @@ async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts()
     let root = Ctx::root().unwrap();
     let catalog = ServiceCatalog::new();
     let resolver =
-        Arc::new(GoResolver::new(GoBinaries::new().dir(&plugins)).with_catalog(&catalog));
+        Arc::new(BinaryResolver::<Go>::new(Binaries::new().dir(&plugins)).with_catalog(&catalog));
     let plugin = LoaderPlugin::new(
         Chain::new().with_shared(resolver.clone()),
         LoaderOptions {
@@ -76,7 +77,7 @@ async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts()
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let go = GoRuntimes::new(resolver.clone(), dir.path());
+    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path());
     let runtimes = go.handle();
     root.plugin(go).await.unwrap();
     loader

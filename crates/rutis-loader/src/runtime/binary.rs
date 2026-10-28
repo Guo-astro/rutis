@@ -1044,8 +1044,7 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
                     );
                     if replaced {
                         message.push_str(&format!(
-                            "; its binary was replaced, which takes effect after restarting it ({}Runtimes restart {runtime:?})",
-                            L::TITLE
+                            "; its binary was replaced, which takes effect after restarting the runtime {runtime:?}"
                         ));
                     }
                     return Err(failed(message));
@@ -1075,10 +1074,8 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
                     }
                     0 if !replaced_having.is_empty() => {
                         return Err(failed(format!(
-                            "the binary of {} was replaced; {plugin} takes effect after restarting it ({}Runtimes restart {:?})",
-                            replaced_having[0],
-                            L::TITLE,
-                            replaced_having[0]
+                            "the binary of {} was replaced; {plugin} takes effect after restarting the runtime {:?}",
+                            replaced_having[0], replaced_having[0]
                         )));
                     }
                     0 => {}
@@ -2627,7 +2624,9 @@ mod tests {
     }
 
     #[cfg(feature = "go")]
-    fn kept(runtimes: &crate::runtime::go::GoRuntimesHandle) -> Option<Vec<(String, u64)>> {
+    fn kept(
+        runtimes: &crate::runtime::binary::BinaryRuntimesHandle<crate::runtime::go::Go>,
+    ) -> Option<Vec<(String, u64)>> {
         let unreported = runtimes.inner.unreported.lock().unwrap();
         unreported.as_ref().map(|ends| {
             let mut kept: Vec<_> = ends
@@ -2647,10 +2646,16 @@ mod tests {
     #[test]
     fn ends_kept_for_supervising_are_bounded_and_dropped_when_it_will_not_come() {
         let dir = tempfile::tempdir().unwrap();
-        let resolver = Arc::new(crate::runtime::go::GoResolver::new(
-            crate::runtime::go::GoBinaries::new().dir(dir.path()),
+        let resolver = Arc::new(crate::runtime::binary::BinaryResolver::<
+            crate::runtime::go::Go,
+        >::new(
+            crate::runtime::binary::Binaries::new().dir(dir.path())
         ));
-        let runtimes = crate::runtime::go::GoRuntimes::new(resolver, dir.path()).handle();
+        let runtimes = crate::runtime::binary::BinaryRuntimes::<crate::runtime::go::Go>::new(
+            resolver,
+            dir.path(),
+        )
+        .handle();
         for generation in 1..=100 {
             runtimes.inner.ended(ended("go-a", generation));
             runtimes.inner.ended(ended("go-b", generation));

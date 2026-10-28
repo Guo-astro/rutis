@@ -132,7 +132,7 @@ Also: during step 4 the test calls `weather.today` every 100 ms and no call fail
 ## 9. Compatibility
 
 - New, available by default, as in Cordis: every host that shares names gains a service `loader`.
-- A plugin or host that already provides `loader` by name now clashes with it (the later provider fails, the existing same-name rule). `loader` is a reserved name, as in Cordis; this is not a 0.19 breaking item, only one note in "Migrating to 0.19": rename it, or use `share_registered_only`.
+- A plugin or host that already provides `loader` by name now clashes with it (the later provider fails, the existing same-name rule). `loader` is a reserved name, as in Cordis; this is not a 0.19 breaking item, only one note in "Migrating to 0.19": rename it.
 - rutis-host: rows added or removed through `loader` while running are written back to `rutis.json`; other fields of the file are unchanged.
 
 ## 10. Implementation

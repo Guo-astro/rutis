@@ -49,7 +49,6 @@ impl Expressions for Mini {
 fn catalog() -> ServiceCatalog {
     // Only the names registered: an unknown name is refused, not shared.
     let mut catalog = ServiceCatalog::new();
-    catalog.share_registered_only();
     catalog
         .register::<Dep>("dep")
         .readable::<Startup>("startup");

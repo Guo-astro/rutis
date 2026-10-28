@@ -126,7 +126,7 @@ On Windows a process has an id here only once it has connected to the host, so t
 
 ### What is not a limit
 
-- `ServiceCatalog::share_registered_only` and read interception decide the names services are shared by; they are not permissions. Whether a plugin may use a service is `allowed_services`.
+- Read interception decides the names services are shared by; it is not a permission. Whether a plugin may use a service is `allowed_services`.
 - Plugins in one process can reach each other through the language itself (globals, the module cache), so the list covers only services from outside the process; to keep plugins apart, put them in different runtimes.
 - A plugin process has all the rights of the host's user (files, network, child processes). rutis has no sandbox and no memory or CPU limits.
 
