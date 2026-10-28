@@ -58,7 +58,9 @@ pub(crate) struct CtxInner {
     pub(crate) generation_token: Option<CancellationToken>,
 }
 
-/// 上下文 = `Arc<CtxInner>`(所有权模型:Clone 廉价;isolate/plugin 返回共享内核的新 Ctx)。
+/// A plugin's context. Cloning is cheap; [`plugin`](Ctx::plugin) and
+/// [`isolate`](crate::host::CtxHost::isolate) return new contexts that share
+/// the same root.
 #[derive(Clone)]
 pub struct Ctx(Arc<CtxInner>);
 
@@ -266,7 +268,8 @@ impl Ctx {
             .unwrap_or_default()
     }
 
-    /// scope 解析:沿 Ctx 父链回溯,取该键最近的 isolate 覆盖(§四:保留父链查找)。
+    /// The scope for `key`: walks up the parent contexts and takes the nearest
+    /// isolate of that key.
     pub(crate) fn scope_for(&self, key: &TypeKey) -> Option<ScopeId> {
         let mut current = Some(self.clone());
         while let Some(ctx) = current {
@@ -280,11 +283,12 @@ impl Ctx {
         None
     }
 
-    /// 类型键读取(显式定位器,D13):沿父链解析作用域;
-    /// provider 非 Active 时不可见,但其子树内自访问除外(清理期自访问,§四)。
-    /// 访问方自身失活(Unloading/Disposed)时同样不可见——TS inactive context
-    /// 语义(reflect.spec 'service inject leak' 的语言无关内核;provider 子树
-    /// 内自访问豁免,与清理期自访问同一条规则)。
+    /// Reads the service of type `T`, in the isolate scope found along the parent
+    /// chain. A service whose provider is not active, or which is being removed,
+    /// is hidden, except from the provider's own subtree (so its cleanup can
+    /// still read it). It is also hidden when the reading fiber is itself
+    /// unloading or disposed, as with an inactive context in Cordis; the
+    /// provider's own subtree is again exempt.
     ///
     /// An optional read: it does not gate and creates no reload relation;
     /// diagnostics record it as an undeclared access. `T` may be a trait
@@ -892,8 +896,10 @@ impl Ctx {
         }))
     }
 
-    /// `effect` 的内部形态:返回记录本体,供 mount 登记等持有引用。
-    /// Disposer 语义不变:drop 不触发清理,fiber 卸载仍兜底(D28)。
+    /// Internal form of `effect`: returns the record itself, for callers that
+    /// keep a reference to it (such as mount registration). The `Disposer`
+    /// behaves as usual: dropping it does not run the cleanup, and the fiber's
+    /// unload still runs it.
     pub(crate) fn register_effect_named(
         &self,
         label: String,
@@ -950,8 +956,9 @@ impl Ctx {
         Ok(record)
     }
 
-    /// 装载插件(支柱 1)。返回 FiberView;级联卸载:child dispose 注册为
-    /// parent fiber 的 effect(D28:child plugin 自动归 parent fiber 所有)。
+    /// Mounts a plugin and returns its [`FiberView`](crate::host::FiberView). The
+    /// child belongs to this context's fiber: its dispose is registered as an
+    /// effect of the parent, so it unloads with the parent.
     pub fn plugin(&self, p: impl DynPlugin) -> FiberView {
         // A copy of a plugin definition is recorded as it mounts, so it ends
         // with the definition's origin even while it waits for dependencies.
@@ -982,8 +989,9 @@ impl Ctx {
         true
     }
 
-    /// 装配收尾:级联卸载 effect + 初始装载意图(评审 #10:parent 失活时
-    /// 处置子 fiber,不再触发装载)。
+    /// Finishes mounting: registers the cascading dispose and posts the first
+    /// load. If the parent is no longer active, the child is disposed and never
+    /// loads.
     fn mount_fiber(&self, fiber: std::sync::Arc<crate::fiber::FiberInner>) -> FiberView {
         let view = FiberView::from_inner(fiber.clone());
         if !fiber.alive.load(Ordering::SeqCst) {
@@ -1043,7 +1051,9 @@ impl Ctx {
         view
     }
 
-    /// 等待当前 fiber 代被取消(协作取消;不观察则 dispose 无限等待,D27 限制)。
+    /// Resolves when the current fiber generation is cancelled. Cancellation is
+    /// cooperative: a plugin that never observes it can keep its unload, and so
+    /// a `dispose`, waiting indefinitely.
     pub fn cancelled(&self) -> impl Future<Output = ()> + Send + 'static {
         let token = self.cancellation_token();
         async move { token.cancelled().await }
@@ -1614,12 +1624,16 @@ impl crate::internal::CtxInternal for Ctx {
     }
 }
 
-/// 服务摘除(D14):①捕获本次绑定并标记摘除(严格解析立即失败,绑定保留供
-/// 清理期自访问)→ ②预取消 + 可 join 的依赖重查(驱动已退出的消费者任务即刻
-/// 完成,不 join 永等,评审 #3)→ ③并发排干后按 Arc 身份最终摘除——
-/// 摘除窗口内被新 provide 替换过的槽位不动(TS dispose 同步释放槽位语义,
-/// 对拍 fiber.spec inertia lock 2)→ ④摘除 provider 的 `provided` 记账
-/// (0.2.1:长寿 root 上反复 provide/dispose 不累积)。
+/// Withdraws a service: (1) marks this binding as being removed, so strict
+/// reads fail at once while the provider's cleanup can still read it;
+/// (2) cancels its consumers and has each re-check its dependencies, joining
+/// them (a consumer whose driver has exited completes at once, so the join
+/// does not hang); (3) once they have drained, removes the binding and
+/// reports the removal, only if the slot still holds this binding: a slot a
+/// new provide took over in the meantime is left alone, as TypeScript's
+/// dispose frees the slot at once; (4) removes the entry from the provider's
+/// `provided` list, so repeated provide/dispose on a long-lived root does
+/// not accumulate.
 async fn evict_and_finalize(
     shared: &Arc<Shared>,
     provider: Weak<FiberInner>,

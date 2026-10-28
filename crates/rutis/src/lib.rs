@@ -1,4 +1,4 @@
-//! rutis: Cordis 核心范式的 Rust 惯用实现。
+//! rutis: an idiomatic Rust implementation of the Cordis plugin paradigm.
 //!
 //! A plugin is one trait, [`Plugin`]: what it depends on (`type Deps`) and
 //! what it registers when they are ready (`async fn apply`). What it
@@ -28,12 +28,16 @@
 //! also use [`host`]; the hidden `internal` module is for rutis's own
 //! crates.
 //!
-//! 五支柱(设计文档 §一):
-//! 1. 插件 = 装配单元(一次 `apply`,提供服务/监听/清理)
-//! 2. fiber = 生命周期容器(六态状态机 + 依赖门控 + 级联卸载 + 恰好一次清理)
-//! 3. 服务 = 类型键注册表 + isolate 作用域
-//! 4. 事件总线 = 一张监听器表、五种分发(emit/parallel/serial/waterfall/bail),按名字与作用域
-//! 5. 依赖驱动重载(provider 卸载 → 消费者驱逐并自动重载)
+//! The five concepts:
+//! 1. Plugin: the unit of assembly; one `apply` provides services, listeners
+//!    and cleanups.
+//! 2. Fiber: the lifecycle container; a six-state machine with dependency
+//!    gating, cascading unload and exactly-once cleanup.
+//! 3. Services: a registry keyed by type, with isolate scopes.
+//! 4. Event bus: one listener table, by name and scope, with six dispatch
+//!    modes (emit, parallel, serial, waterfall, bail, waterfall-sync).
+//! 5. Dependency-driven reload: when a provider unloads, its consumers are
+//!    evicted and load again automatically.
 
 #![allow(clippy::type_complexity)]
 
