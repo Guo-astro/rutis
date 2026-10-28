@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{environment, repo, write};
+use rutis_bridge::memory::MemoryTransport;
 use rutis_bridge::session::{
     settle, Connection, Dispatch, Endpoint, Error, Format, Reply, Value as RpcValue,
 };
-use rutis_bridge::transport::memory::MemoryTransport;
 use rutis_bridge::{protocol, ConnectError, Credential, Dial, PeerId, StaticIdentity, Transport};
 use rutis_host::config::HostConfig;
 use rutis_host::host::{Embedding, Host};

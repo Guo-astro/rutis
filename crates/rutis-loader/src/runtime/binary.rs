@@ -34,10 +34,10 @@ use rutis::host::{
     shutdown_deadline, BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberView, TypeKey,
 };
 use rutis::{Ctx, Error};
+use rutis_bridge::pipe::{isolate_manifest_command, ManifestChild, Processes};
 use rutis_bridge::runtime::{
     LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
-use rutis_bridge::transport::local::{isolate_manifest_command, ManifestChild, Processes};
 use serde::Deserialize;
 use serde_json::{json, Value};
 

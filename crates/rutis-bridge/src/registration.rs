@@ -212,7 +212,9 @@ impl Registrations {
                     .revocations()
                     .is_some_and(|revocations| revocations.is_revoked(&ticket.peer));
                 if revoked {
-                    channel.closer.rejected(crate::identity::NOT_ACCEPTED);
+                    channel.closer.close(crate::channel::Close::Rejected(
+                        crate::identity::NOT_ACCEPTED.into(),
+                    ));
                     return Err(channel);
                 }
                 (entry.deliver)(channel);
@@ -275,13 +277,12 @@ mod tests {
             }
         }
         impl crate::channel::Closer for Nothing {
-            fn close(&self, _: &str) {}
+            fn close(&self, _: crate::channel::Close) {}
         }
         Channel {
             sender: Box::new(Nothing),
             receiver: Box::new(Nothing),
             closer: Arc::new(Nothing),
-            info: Default::default(),
         }
     }
 

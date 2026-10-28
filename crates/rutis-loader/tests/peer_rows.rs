@@ -14,7 +14,7 @@ use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key, PluginFactory, PluginId,
 };
 use rutis::{Ctx, Error};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
     Retry, StaticCatalog, StaticIdentity,

@@ -226,7 +226,7 @@ pub fn malformed(open: impl Fn() -> crate::channel::Channel) {
         let _ = sender.send(message);
         let ended = ended.recv_timeout(Duration::from_secs(10));
         // Unblock the reader either way, so a failure is reported, not hung.
-        closer.close("checked");
+        closer.close(crate::channel::Close::Done);
         let (received, end) = reading.join().unwrap();
         assert!(ended.is_ok(), "{case}: the far end kept the session open");
         let ops: Vec<String> = received

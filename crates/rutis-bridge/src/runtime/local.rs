@@ -1,7 +1,7 @@
 //! Local language runtimes: a process this machine starts, a link to it,
 //! and the runtime plugin running its rows, composed. Its session comes the
 //! way a remote runtime's does (`RuntimeSession#<name>` from a link), only
-//! started here: the local transport ([`crate::transport::local`]) spawns it on
+//! started here: the local transport ([`crate::pipe`]) spawns it on
 //! an inherited socket, the
 //! link speaks the compat protocol with it and does not reconnect, since a
 //! local runtime process is not restarted.
@@ -29,7 +29,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::{Ctx, Error};
 use serde_json::Value;
 
-use crate::transport::local::{Handover, LocalTransport, Processes, Spawn};
+use crate::pipe::{Handover, LocalTransport, Processes, Spawn};
 
 /// Set to report every message crossing a runtime channel (direction and
 /// length, never content) on stderr, as for runtimes `Process` starts.
@@ -156,11 +156,9 @@ impl LocalRuntime {
     }
 
     /// The process to start: the launcher, given its channel and the
-    /// anchor as its last two arguments; the endpoint is the runtime's name.
+    /// anchor as its last two arguments.
     fn spawn(&self) -> Spawn {
-        let peer = PeerId::new(self.runtime_name.clone())
-            .unwrap_or_else(|_| PeerId::new("runtime").expect("a valid id"));
-        let mut spawn = Spawn::new(self.launcher.program.clone(), peer);
+        let mut spawn = Spawn::new(self.launcher.program.clone());
         spawn.args = self.launcher.args.clone();
         spawn.env = self.launcher.env.clone();
         spawn.cwd = self.launcher.cwd.clone();
@@ -324,7 +322,8 @@ impl DynPlugin for LocalRuntime {
             // is running, and this one is still starting.
             let kind = format!("local:{}", self.runtime_name);
             let spawn = self.spawn();
-            let peer = spawn.peer.clone();
+            let peer = PeerId::new(self.runtime_name.clone())
+                .unwrap_or_else(|_| PeerId::new("runtime").expect("a valid id"));
             ctx.plugin(Carrier {
                 label: format!("{kind} carrier"),
                 kind: kind.clone(),

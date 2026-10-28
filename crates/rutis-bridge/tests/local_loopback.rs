@@ -2,8 +2,8 @@
 //! (and anywhere): the process dials a loopback address and presents a
 //! one-time token; anything else connecting there is turned away. The
 //! channel still owns the process.
-use rutis_bridge::channel::{ChannelError, PeerId};
-use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn, CHANNEL_TOKEN};
+use rutis_bridge::channel::ChannelError;
+use rutis_bridge::pipe::{Handover, LocalTransport, Spawn, CHANNEL_TOKEN};
 use rutis_bridge::{Dial, Transport};
 use rutis_test_support::within;
 
@@ -15,7 +15,7 @@ fn python() -> String {
 /// A Python script on a loopback channel: `channel` is the `tcp:` address,
 /// `token` the token to present, `rest` what follows.
 fn script(body: &str) -> Spawn {
-    let mut spawn = Spawn::new(python(), PeerId::new("child").unwrap());
+    let mut spawn = Spawn::new(python());
     let prelude = format!(
         "import os, socket, sys, time\n\
          host, _, port = sys.argv[1][len('tcp:'):].rpartition(':')\n\
@@ -47,7 +47,6 @@ async fn a_process_dials_back_with_its_token_and_its_exit_ends_the_channel() {
         ),
     );
     let mut channel = transport.dial(&Dial::address("spawn:echo")).await.unwrap();
-    assert_eq!(channel.info.transport, "tcp");
     channel.sender.send(b"hello").unwrap();
     let (reply, end) = tokio::task::spawn_blocking(move || {
         let reply = channel.receiver.recv().unwrap().unwrap();

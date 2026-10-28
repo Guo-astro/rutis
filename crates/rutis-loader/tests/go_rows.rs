@@ -154,7 +154,7 @@ fn situation(fixture: &Fixture, ids: &[&str]) -> String {
             None => format!("{id}: none"),
         })
         .collect();
-    let processes: Vec<String> = rutis_bridge::transport::local::running_processes()
+    let processes: Vec<String> = rutis_bridge::pipe::running_processes()
         .into_iter()
         .map(|pid| match alive(pid) {
             Some(true) => format!("{pid} (alive)"),

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::channel::PeerId;
 
-/// The configuration of one [`crate::transport::websocket::WebSocketPlugin`].
+/// The configuration of one [`crate::websocket::WebSocketPlugin`].
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     pub listeners: Vec<ListenerConfig>,
@@ -71,7 +71,7 @@ impl Config {
 pub struct ListenerConfig {
     /// How links name it when they register.
     pub name: String,
-    /// Port 0 picks a free port ([`crate::transport::websocket::WebSocketTransport::local_addr`]).
+    /// Port 0 picks a free port ([`crate::websocket::WebSocketTransport::local_addr`]).
     pub bind: SocketAddr,
     /// The upgrade path; `/rutis` by default.
     pub path: String,

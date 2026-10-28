@@ -1347,8 +1347,6 @@ struct SessionState {
     /// ids in chains forwarded to other sessions (see [`rebase`]).
     tag: String,
     format: Format,
-    /// The far end as the channel's connector verified it, if it did.
-    verified: Option<PeerId>,
     /// The far end of a compat-format session as whoever started it named
     /// it ([`Connection::name_far_end`]), for messages.
     named: std::sync::OnceLock<String>,
@@ -1393,7 +1391,7 @@ struct Ordered {
 }
 impl Drop for SessionState {
     fn drop(&mut self) {
-        self.closer.close("session dropped");
+        self.closer.close(crate::channel::Close::Done);
     }
 }
 
@@ -1428,9 +1426,9 @@ impl Connection {
     }
 
     /// [`Connection::open`] in `format`. In the endpoint format the session
-    /// is ready only once the far end greeted with the endpoint the channel
-    /// verified (if it verified one) and this side expects (if it expects
-    /// one); otherwise [`Connection::ready`] fails with [`Error::Handshake`].
+    /// is ready only once the far end greeted with the endpoint this side
+    /// expects (if it expects one); otherwise [`Connection::ready`] fails
+    /// with [`Error::Handshake`].
     pub fn open_with(
         channel: Channel,
         dispatch: Arc<dyn Dispatch>,
@@ -1440,9 +1438,7 @@ impl Connection {
             sender,
             mut receiver,
             closer,
-            info,
         } = channel;
-        let label = info.label;
         let (local_prefix, remote_prefix, hello) = match &format {
             Format::Compat => (
                 "rust:".to_owned(),
@@ -1469,7 +1465,6 @@ impl Connection {
         let peer = Self(Arc::new(SessionState {
             tag: next_tag(),
             format,
-            verified: info.peer,
             named: std::sync::OnceLock::new(),
             end: Arc::default(),
             local_prefix,
@@ -1519,7 +1514,7 @@ impl Connection {
                     let message = match receiver.recv() {
                         Ok(Some(message)) => message,
                         Ok(None) => return Err(Error::Transport("peer disconnected".into())),
-                        Err(error) => return Err(ended(&label, error)),
+                        Err(error) => return Err(ended(error)),
                     };
                     let Some(peer) = weak.upgrade().map(Self) else {
                         return Ok(());
@@ -1603,7 +1598,7 @@ impl Connection {
         // Interrupt a blocked write before taking the writer lock. Serialize
         // table teardown with encoding/sending so no export can be added after
         // teardown and no partial encoding rollback races the cleared table.
-        self.0.closer.close(&error.to_string());
+        self.0.closer.close(crate::channel::Close::Done);
         let writer = self.0.writer.lock().unwrap();
         let (waiting, incoming, awaiting) = {
             let mut calls = self.0.calls.lock().unwrap();
@@ -1795,7 +1790,7 @@ impl Connection {
         if let Some(error) = &self.0.calls.lock().unwrap().closed {
             return Err(error.clone());
         }
-        writer.send(bytes).map_err(|error| ended("", error))
+        writer.send(bytes).map_err(ended)
     }
     fn send(&self, call: Operation, mut waiting: Waiting) -> Result<String, Error> {
         let mut writer = self.0.writer.lock().unwrap();
@@ -2479,16 +2474,11 @@ impl Connection {
             .and_then(|endpoint| {
                 PeerId::new(endpoint).map_err(|error| incompatible(error.to_string()))
             })?;
-        for (whose, expected) in [
-            ("verified", &self.0.verified),
-            ("expected", &local.expected),
-        ] {
-            if let Some(expected) = expected {
-                if expected != &endpoint {
-                    return Err(Error::Handshake(Handshake::IdentityMismatch(format!(
-                        "the far end greeted as {endpoint}, but {expected} is the {whose} endpoint"
-                    ))));
-                }
+        if let Some(expected) = &local.expected {
+            if expected != &endpoint {
+                return Err(Error::Handshake(Handshake::IdentityMismatch(format!(
+                    "the far end greeted as {endpoint}, but {expected} is the expected endpoint"
+                ))));
             }
         }
         if endpoint == local.local {
@@ -3245,11 +3235,8 @@ fn transport(error: impl std::fmt::Display) -> Error {
 }
 /// The error a channel failure ends a session with: `"<label>: <reason>"`,
 /// or the bare reason for an unlabelled channel.
-fn ended(label: &str, error: ChannelError) -> Error {
-    let reason = match label {
-        "" => error.to_string(),
-        label => format!("{label}: {error}"),
-    };
+fn ended(error: ChannelError) -> Error {
+    let reason = error.to_string();
     match error {
         ChannelError::Closed { .. } => Error::Transport(reason),
         ChannelError::Rejected { .. } => Error::Handshake(Handshake::IdentityMismatch(reason)),

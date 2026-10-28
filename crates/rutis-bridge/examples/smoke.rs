@@ -26,9 +26,7 @@ use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin};
 use rutis_bridge::{
     Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState,
     StaticIdentity,

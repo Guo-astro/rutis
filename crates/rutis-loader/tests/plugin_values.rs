@@ -976,7 +976,7 @@ mod kotlin {
 mod dialed_in {
     use super::*;
     use common::runtimes::id;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
     use rutis_bridge::{AccessPointConfig, AccessPointPlugin, AdmissionPlugin, SharedToken};
     use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
     use rutis_test_support::{scaled, HANG_GUARD};

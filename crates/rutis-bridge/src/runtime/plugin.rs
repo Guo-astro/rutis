@@ -110,7 +110,7 @@ pub struct RuntimeHandle {
     remote: bool,
     state: watch::Receiver<RuntimeState>,
     starts: Arc<std::sync::atomic::AtomicU64>,
-    processes: Option<crate::transport::local::Processes>,
+    processes: Option<crate::pipe::Processes>,
 }
 
 impl RuntimeHandle {
@@ -239,7 +239,7 @@ pub struct RuntimePlugin {
     /// `rutis/runtime` follows the state (once started, [`RuntimePlugin::announce`]).
     announcing: Arc<std::sync::atomic::AtomicBool>,
     /// The processes a local runtime started, for its process id.
-    processes: Option<crate::transport::local::Processes>,
+    processes: Option<crate::pipe::Processes>,
     /// The host's limit on calls into it, and whether a call over it ends
     /// the process (a local runtime's, `LocalRuntime::call_limit`).
     limit: Option<(std::time::Duration, bool)>,
@@ -330,7 +330,7 @@ impl RuntimePlugin {
 
     /// The processes that run it, for [`RuntimeHandle::pid`] (a local
     /// runtime's).
-    pub(crate) fn processes(mut self, processes: crate::transport::local::Processes) -> Self {
+    pub(crate) fn processes(mut self, processes: crate::pipe::Processes) -> Self {
         self.processes = Some(processes);
         self
     }
