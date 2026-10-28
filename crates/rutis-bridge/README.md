@@ -19,7 +19,7 @@ Connect a [rutis](https://github.com/arcships/rutis) application to other proces
 rutis-bridge = { version = "0.17", features = ["python", "websocket"] }
 ```
 
-A service plugins use by name is a `dyn rutis_bridge::session::HostDispatch` under `host_key(name)`, a `rutis::host::Key<dyn HostDispatch>`: `ctx.provide_at(host_key("clock"), Arc::new(Clock))?`. The other key helpers (`peer_key`, `transport_key`, `identity_key`, …) return typed keys too; `.erase()` gives the `TypeKey` where one is needed.
+A service plugins use by name is a `dyn rutis_bridge::session::HostDispatch` under `host_key(name)`, a `rutis::host::Key<dyn HostDispatch>`: `ctx.provide_at(host_key("clock"), Arc::new(Clock))?`. The other key helpers (`peer_key`, `identity_key`, …) return typed keys too; `.erase()` gives the `TypeKey` where one is needed.
 
 Guides (Chinese): [embedding in Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.md), [nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.md), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.md). Local runtimes need Linux or macOS.
 

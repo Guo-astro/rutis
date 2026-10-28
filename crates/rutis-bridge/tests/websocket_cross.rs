@@ -8,11 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rutis_bridge::channel::Channel;
 use rutis_bridge::channel::{ConnectError, PeerId};
-use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketTransport};
-use rutis_bridge::{
-    Credential, Dial, Identity, Registered, Registration, StaticIdentity, Transport,
-};
+use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig, ServerTls, Trust};
+use rutis_bridge::{Credential, Registered, Registration, Registrations, StaticIdentity};
 use rutis_test_support::within;
 use tokio::io::AsyncBufReadExt;
 
@@ -136,29 +135,59 @@ async fn python_listen(url: &str, env: &[(&str, &str)]) -> (tokio::process::Chil
     (child, address)
 }
 
-fn register(transport: &WebSocketTransport, protocol: &str) -> Registered {
-    transport
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("node"),
-            identity: Arc::new(StaticIdentity::new(id("main")).accept_token("good", id("node"))),
-            protocol: protocol.into(),
-            deliver: Box::new(|_| {}),
-        })
-        .unwrap()
+/// A loopback listener `public` as `config` says, accepting `node` with
+/// token `good` speaking `protocol`.
+fn listen(config: ListenerConfig, protocol: &str) -> (Listener, Registered) {
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &config,
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
+    .unwrap();
+    let registered = registrations
+        .register(
+            &id("main"),
+            Registration {
+                listener: "public".into(),
+                peer: id("node"),
+                identity: Arc::new(
+                    StaticIdentity::new(id("main")).accept_token("good", id("node")),
+                ),
+                protocol: protocol.into(),
+                deliver: Box::new(|_| {}),
+            },
+        )
+        .unwrap();
+    (listener, registered)
+}
+
+/// Dial `url` offering `protocol`, with bearer `token`, trusting `trust`.
+async fn dial(
+    url: &str,
+    token: Option<&str>,
+    protocol: &str,
+    trust: &Trust,
+) -> Result<Channel, ConnectError> {
+    let credential = token.map(|token| Credential::Bearer(token.into()));
+    websocket::dial(
+        url,
+        protocol,
+        credential.as_ref(),
+        trust,
+        &Limits::default(),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dialing_rust_is_refused_by_category() {
     let (ca, certificate, key) = pki();
-    let plain = WebSocketTransport::start(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
-    .unwrap();
-    let _r = register(&plain, "rutis.3");
-    let url = format!("ws://{}/rutis", plain.local_addr("public").unwrap());
+    let (plain, _r) = listen(
+        ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        "rutis.3",
+    );
+    let url = format!("ws://{}/rutis", plain.local_addr());
     assert_eq!(
         node_dial(&url, "rutis.3", &[("RUTIS_TOKEN", "good")]).await,
         "connected"
@@ -174,19 +203,15 @@ async fn node_dialing_rust_is_refused_by_category() {
     );
 
     // wss: verified against the CA, refused without it.
-    let secure = WebSocketTransport::start(Config::new().listener(
-        ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap(), id("main")).tls(ServerTls {
+    let (secure, _s) = listen(
+        ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()).tls(ServerTls {
             certificate_pem: certificate.into_bytes(),
             key_pem: key.into_bytes(),
             client_ca_pem: None,
         }),
-    ))
-    .unwrap();
-    let _s = register(&secure, "rutis.3");
-    let url = format!(
-        "wss://localhost:{}/rutis",
-        secure.local_addr("public").unwrap().port()
+        "rutis.3",
     );
+    let url = format!("wss://localhost:{}/rutis", secure.local_addr().port());
     let dir = tempfile::tempdir().unwrap();
     let ca_file = dir.path().join("ca.pem");
     std::fs::write(&ca_file, ca).unwrap();
@@ -209,24 +234,15 @@ async fn node_dialing_rust_is_refused_by_category() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_dialing_node_is_refused_by_category() {
     let (ca, certificate, key) = pki();
-    let client = WebSocketTransport::start(Config::new()).unwrap();
-    let dial = |url: &str, token: &str, protocol: &str| {
-        let identity: Arc<dyn Identity> = Arc::new(
-            StaticIdentity::new(id("main")).present(id("node"), Credential::Bearer(token.into())),
-        );
-        Dial::address(url)
-            .peer(id("node"))
-            .identity(identity)
-            .protocol(protocol)
-    };
+    let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = node_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
-    assert!(client.dial(&dial(&url, "good", "rutis.3")).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.3", &system).await.is_ok());
     assert!(matches!(
-        client.dial(&dial(&url, "bad", "rutis.3")).await,
+        dial(&url, Some("bad"), "rutis.3", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
-        client.dial(&dial(&url, "good", "rutis.9")).await,
+        dial(&url, Some("good"), "rutis.9", &system).await,
         Err(ConnectError::Incompatible { .. })
     ));
 
@@ -243,11 +259,9 @@ async fn rust_dialing_node_is_refused_by_category() {
         ],
     )
     .await;
-    let trusting =
-        WebSocketTransport::start(Config::new().trust(Trust::only(ca.into_bytes()))).unwrap();
-    assert!(trusting.dial(&dial(&url, "good", "rutis.3")).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.3", &trusting).await.is_ok());
     assert!(matches!(
-        client.dial(&dial(&url, "good", "rutis.3")).await,
+        dial(&url, Some("good"), "rutis.3", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
 }
@@ -257,33 +271,19 @@ async fn rust_dialing_node_is_refused_by_category() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_dialing_python_is_refused_by_category() {
     let (ca, certificate, key) = pki();
-    let client = WebSocketTransport::start(Config::new()).unwrap();
-    let dial = |url: &str, token: Option<&str>, protocol: &str| {
-        let identity = StaticIdentity::new(id("main"));
-        let identity: Arc<dyn Identity> = Arc::new(match token {
-            Some(token) => identity.present(id("python"), Credential::Bearer(token.into())),
-            None => identity,
-        });
-        Dial::address(url)
-            .peer(id("python"))
-            .identity(identity)
-            .protocol(protocol)
-    };
+    let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = python_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
-    assert!(client
-        .dial(&dial(&url, Some("good"), "rutis.3"))
-        .await
-        .is_ok());
+    assert!(dial(&url, Some("good"), "rutis.3", &system).await.is_ok());
     assert!(matches!(
-        client.dial(&dial(&url, Some("bad"), "rutis.3")).await,
+        dial(&url, Some("bad"), "rutis.3", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
-        client.dial(&dial(&url, None, "rutis.3")).await,
+        dial(&url, None, "rutis.3", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
-        client.dial(&dial(&url, Some("good"), "rutis.9")).await,
+        dial(&url, Some("good"), "rutis.9", &system).await,
         Err(ConnectError::Incompatible { .. })
     ));
 
@@ -308,14 +308,9 @@ async fn rust_dialing_python_is_refused_by_category() {
         .and_then(|(_, rest)| rest.split('/').next())
         .unwrap();
     let url = format!("wss://localhost:{port}/rutis");
-    let trusting =
-        WebSocketTransport::start(Config::new().trust(Trust::only(ca.into_bytes()))).unwrap();
-    assert!(trusting
-        .dial(&dial(&url, Some("good"), "rutis.3"))
-        .await
-        .is_ok());
+    assert!(dial(&url, Some("good"), "rutis.3", &trusting).await.is_ok());
     assert!(matches!(
-        client.dial(&dial(&url, Some("good"), "rutis.3")).await,
+        dial(&url, Some("good"), "rutis.3", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
 }

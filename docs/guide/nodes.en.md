@@ -113,7 +113,7 @@ One `runtimes.remote` entry describes a remote runtime whole. Who connects, and 
 | `listen` + `instances: <group>` | Many, each connection an instance (see [Runtimes that connect in](#runtimes-that-connect-in)) |
 | none of them | No connection of its own: a node row with `runtime`, or the program embedding the host, provides its session |
 
-`dial` and `listen` cannot both be set, nor `dial` and `instances` (rutis can dial only one runtime). The token is `RUTIS_TOKEN_<NAME>`. The optional `transport` picks the transport, `websocket` by default; a host's own way of connecting (a relay, QUIC, …) implements a `Transport`, which the program embedding rutis-host mounts, and `transport` names it ([rutis-host](rutis-host.en.md#runtimes)).
+`dial` and `listen` cannot both be set, nor `dial` and `instances` (rutis can dial only one runtime). The token is `RUTIS_TOKEN_<NAME>`. The connection is over WebSocket.
 
 The form before 0.19 — `runtimes.remote` with only `name` and `language`, plus a `rutis-bridge/peer` row with `"runtime": "gpu"` — still works (see [Migrating to 0.19](../migration-0.19.en.md)).
 

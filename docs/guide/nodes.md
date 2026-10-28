@@ -113,7 +113,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 | `listen` + `instances: <分组>` | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
 | 都不写 | 不起连接，由一条带 `runtime` 的节点行或嵌入的程序提供会话 |
 
-`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。可选的 `transport` 选传输，默认 `websocket`；宿主自己的连接方式（中继、QUIC 等）实现一个 `Transport`，由嵌入 rutis-host 的程序挂上，`transport` 写它的名字（[rutis-host](rutis-host.md#runtimes)）。
+`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。连接走 WebSocket。
 
 0.19 之前的写法——`runtimes.remote` 只写 `name` 与 `language`，另写一条带 `"runtime": "gpu"` 的 `rutis-bridge/peer` 行——照常可用（见[迁移到 0.19](../migration-0.19.md)）。
 

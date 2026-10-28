@@ -6,7 +6,7 @@ Status: final, not implemented. Date: 2026-10-26. Baseline: `main` `b4eee45e` (0
 Issue: [#695](https://github.com/arcships/rutis/issues/695) (implementation: [#696](https://github.com/arcships/rutis/issues/696) loader, [#698](https://github.com/arcships/rutis/issues/698) rutis-host). Decision record: [remote runtime consistency](decision-remote-runtime-consistency-2026-10-26.en.md).
 Revises: the rule in §4 of [Remote runtimes: dialing out and dynamic connections](design-remote-runtime-dial-2026-10-14.en.md) that "`listen` together with `instances` means dynamic connections"; see §6.
 
-Out of scope: a new hand-over interface or a "connection plugin" layer; opening up authentication (custom credentials, checks that can wait); a relay example (reasons in the decision record); local runtimes; node interconnection; the session protocol and the runtime side in each language.
+Out of scope: a new hand-over interface or a "connection plugin" layer; opening up authentication (custom credentials, checks that can wait); a relay example (reasons in the decision record); the optional `transport` field in configuration (revised 2026-10-28: there is no custom `Transport` today, and the host building its own connections, [#699](https://github.com/arcships/rutis/issues/699), was decided against, so the field has no use; the replaceable `Transport` interface stays in the code, to be exposed in configuration if a need ever comes); local runtimes; node interconnection; the session protocol and the runtime side in each language.
 
 ## 1. Today: the layers are already separated
 
@@ -31,7 +31,7 @@ So "decoupling connections from plugin management" and "the host building its ow
 | P1 | One connection needs configuration in two places | One `runtimes.remote` entry + one `rutis-bridge/peer` row with `runtime`; the two are not checked against each other, and if one is missing the row waits forever |
 | P2 | When the remote side lacks a plugin, one connection and many connections report different errors | One connection: `NotFound` at resolution, the whole row fails; many connections: `Unavailable`, unavailable only on that connection |
 | P3 | Many connections produce no output | The access point has `AccessEvent`; rutis-host does not subscribe to it |
-| P4 | Many connections are hard-wired to WebSocket | rutis-host always gives the access point `"websocket"`; a transport the host builds itself can only be used by a one-connection link |
+| P4 | Many connections are hard-wired to WebSocket | rutis-host always gives the access point `"websocket"`; a transport the host builds itself can only be used by a one-connection link (not addressed, see M4) |
 | P5 | Discovery and checks are written twice | `RuntimePlugin` and `AcceptInstances` each read the `mount` reply, each check `rows.v2` / `hosts`, and each has its own offline placeholder |
 
 The difference in service visibility (global for one connection, only inside the instance for many connections) is not a problem: that is exactly the difference between one connection and many connections, and `instances` decides it.
@@ -43,7 +43,7 @@ The difference in service visibility (global for one connection, only inside the
 | M1 | Keep the current layers and the two hand-over points; no new hand-over interface, no rewrite of the link or the access point |
 | M2 | One `runtimes.remote` entry configures a whole remote runtime; rutis-host generates today's link and runtime wiring internally; the old link-row form keeps working |
 | M3 | `instances` decides one connection or many connections; `dial` / `listen` decides who connects; the two are independent |
-| M4 | Optional `transport`, used for both one connection and many connections; building your own connection = implementing `Transport` |
+| M4 | The transport is the existing WebSocket; the replaceable `Transport` interface stays in the code and is not exposed in configuration (revised 2026-10-28; it was an optional `transport` field; reasons under out of scope) |
 | M5 | One connection and many connections share one implementation of discovery and checks; a missing plugin is always `Unavailable` |
 | M6 | Many connections print connected, disconnected and refused |
 | M7 | The runtime side, the session protocol and the Rust API are unchanged |
@@ -58,7 +58,7 @@ The difference in service visibility (global for one connection, only inside the
 | — | — | — | No connection; waits for `RuntimeSession#<name>` to be provided elsewhere | Nothing (as today, for Rust embedding) |
 
 - `dial` together with `listen`, or `dial` together with `instances`: startup error (what rutis dials can only be one connection).
-- `transport`: optional, default `websocket`. Names a `Transport#<kind>` mounted by the host; both the one-connection link and the many-connection access point use it.
+- The connection is over WebSocket; there is no `transport` field (M4).
 - Token rules are unchanged: `RUTIS_TOKEN_<name>`, falling back to `RUTIS_TOKEN` when absent.
 
 ```json
@@ -114,6 +114,6 @@ Today `gpu` and `mac` each need a separate `rutis-bridge/peer` row; with the new
 | Issue | Content | Acceptance |
 | --- | --- | --- |
 | [#696](https://github.com/arcships/rutis/issues/696) loader | M5 | The same set of row tests runs over three wirings — link dial, link listen, access point — and reports a missing plugin the same way; the `ROW_FEATURES` check exists in one place only; the existing remote tests, `websocket_conformance` and `dial_conformance` pass with unchanged test cases |
-| [#698](https://github.com/arcships/rutis/issues/698) rutis-host | M2, M3, M4, M6, documentation and migration guide | End to end for four forms: `dial`, `listen`, `listen` + `instances`, and the old link row; a custom `Transport` used in tests is connected to many connections through the `transport` field |
+| [#698](https://github.com/arcships/rutis/issues/698) rutis-host | M2, M3, M4, M6, documentation and migration guide | End to end for four forms: `dial`, `listen`, `listen` + `instances`, and the old link row (revised 2026-10-28: the acceptance for a custom `Transport` went with the `transport` field) |
 
 Review also found two separate small problems, not covered here: [#701](https://github.com/arcships/rutis/issues/701) rows resolved while connected are not resolved again after reconnection (0.17.2); [#702](https://github.com/arcships/rutis/issues/702) a token conflict on the same listener becomes a startup error (0.18).

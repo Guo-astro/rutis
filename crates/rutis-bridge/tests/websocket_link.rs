@@ -8,9 +8,10 @@ use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{Connection, Value};
-use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
 use rutis_bridge::{
-    peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, Peer, StaticIdentity,
+    peer_key, Accepting, Credential, Dialer, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
+    Registrations, StaticIdentity,
 };
 use rutis_test_support::eventually;
 use serde_json::json;
@@ -19,47 +20,60 @@ fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
 }
 
+/// Dial `address` over WebSocket, trusting the system's roots.
+fn dialer(address: &str) -> Dialer {
+    let address = address.to_owned();
+    Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    })
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_rust_endpoints_link_over_websocket() {
     // main: listens for mac.
     let main = Ctx::root().unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(LinkConfig::listen(
         id("mac"),
-        "websocket",
         "main",
-        "public",
+        Accepting {
+            registrations,
+            listener: "public".into(),
+            local: id("main"),
+        },
     )));
 
     // mac: dials main.
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     mac.plugin(LinkPlugin::new(LinkConfig::dial(
         id("main"),
-        "websocket",
         "mac",
-        &address,
+        dialer(&address),
     )));
 
     let at_main = eventually(|| main.get_at::<Peer>(&peer_key(&id("mac"))), "the link").await;

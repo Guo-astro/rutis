@@ -5,7 +5,7 @@
 
 use std::sync::{mpsc, Arc, Mutex};
 
-use rutis_bridge::channel::{Channel, ChannelError, PeerId};
+use rutis_bridge::channel::{Channel, ChannelError};
 use rutis_bridge::websocket::{
     self, Admit, Admitted, Limits, Listener, ListenerConfig, Refused, Trust, Upgrade,
 };
@@ -33,11 +33,7 @@ fn listening() -> (Listener, String, mpsc::Receiver<Channel>) {
         Some("later") => Err(Refused::Unavailable("not yet".into())),
         _ => Err(Refused::Forbidden("not accepted here".into())),
     });
-    let config = ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        PeerId::new("main").unwrap(),
-    );
+    let config = ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap());
     let listener = websocket::listen(&config, &Limits::default(), admit).unwrap();
     let address = format!("ws://{}/rutis", listener.local_addr());
     (listener, address, delivered)

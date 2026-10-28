@@ -567,13 +567,13 @@ pub fn register(builtins: &mut Builtins, log: Arc<EventsLog>, tap: Tap) -> Hooks
 
 // ── The second node ─────────────────────────────────────────────
 
-/// A second rutis node linked to the host over the memory transport; both
+/// A second rutis node linked to the host in memory; both
 /// export and import `t/*` and `rutis/*` (not `n/*`). Its participants are
 /// Rust plugins at its root.
 pub struct Node {
     host: Ctx,
     node: std::sync::Mutex<Option<Ctx>>,
-    transport: Arc<rutis_bridge::memory::MemoryTransport>,
+    transport: rutis_bridge::Registrations,
     /// Whether the node's process is alive: a killed one logs nothing more.
     alive: std::sync::Mutex<Arc<AtomicBool>>,
     log: Arc<EventsLog>,
@@ -606,20 +606,22 @@ impl Node {
         node
     }
 
-    /// The host's end, once: its transport, identity and listening link.
-    async fn host_side(host: &Ctx) -> Arc<rutis_bridge::memory::MemoryTransport> {
-        use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
-        use rutis_bridge::{Features, IdentityPlugin, LinkConfig, PeerPlugin, StaticIdentity};
-        let transport = Arc::new(MemoryTransport::default());
-        transport.endpoint("host-in", peer_id("host"));
-        (&host.plugin(MemoryPlugin::with_transport(transport.clone()))).await.unwrap();
+    /// The host's end, once: its listener's registrations, identity and
+    /// listening link.
+    async fn host_side(host: &Ctx) -> rutis_bridge::Registrations {
+        use rutis_bridge::{Accepting, Features, IdentityPlugin, LinkConfig, PeerPlugin, Registrations, StaticIdentity};
+        let transport = Registrations::new();
         host.plugin(IdentityPlugin::new(
             "host",
             StaticIdentity::new(peer_id("host")).accept_token("node-token", peer_id("node")),
         ));
         let features = Features { export: shared(), import: shared(), ..Features::default() };
         host.plugin(
-            PeerPlugin::new(LinkConfig::listen(peer_id("node"), "memory", "host", "host-in"), features).unwrap(),
+            PeerPlugin::new(LinkConfig::listen(
+                peer_id("node"),
+                "host",
+                Accepting { registrations: transport.clone(), listener: "host-in".into(), local: peer_id("host") },
+            ), features).unwrap(),
         );
         transport
     }
@@ -640,18 +642,17 @@ impl Node {
             }
         });
         let node = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
-        // The host's transport, provided as is: the node's end must not
-        // close it (`MemoryPlugin` closes every channel and listener of the
-        // shared transport when it goes, the host's too).
-        node.provide_at(rutis_bridge::transport_key("memory"), self.transport.clone())
-            .unwrap();
         node.plugin(IdentityPlugin::new(
             "node",
             StaticIdentity::new(peer_id("node")).present(peer_id("host"), Credential::Bearer("node-token".into())),
         ));
         let features = Features { export: shared(), import: shared(), ..Features::default() };
         node.plugin(
-            PeerPlugin::new(LinkConfig::dial(peer_id("host"), "memory", "node", "host-in"), features).unwrap(),
+            PeerPlugin::new(LinkConfig::dial(
+                peer_id("host"),
+                "node",
+                rutis_bridge::memory::dialer(self.transport.clone(), "host-in"),
+            ), features).unwrap(),
         );
         // A new process: alive until killed.
         let alive = Arc::new(AtomicBool::new(true));

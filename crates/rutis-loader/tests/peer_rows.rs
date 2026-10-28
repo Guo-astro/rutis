@@ -1,5 +1,5 @@
 //! Rows hosted on another node (`peer:<id>/<plugin>`): two applications in
-//! one process, linked over the memory transport; `mac` hosts installed
+//! one process, linked in memory; `mac` hosts installed
 //! plugins for `main`, whose loader manages them as rows.
 #![cfg(feature = "peer")]
 
@@ -14,12 +14,11 @@ use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key, PluginFactory, PluginId,
 };
 use rutis::{Ctx, Error};
-use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
-    Retry, StaticCatalog, StaticIdentity,
+    peer_key, Accepting, Connect, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig,
+    LinkPlugin, Peer, Registrations, Retry, StaticCatalog, StaticIdentity,
 };
-use rutis_loader::peer::{PeerResolver, PeerRowsPlugin};
+use rutis_loader::peer::{Address, PeerResolver, PeerRowsPlugin, Reach};
 use rutis_loader::report::EntryStatus;
 use rutis_loader::{Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch};
 use rutis_test_support::eventually;
@@ -64,6 +63,25 @@ impl DynPlugin for Greeting {
 }
 struct GreetingService(String);
 
+/// How a node's `rutis-bridge/peer` rows reach their peers in this
+/// process: listening on `registrations` as `local`, or dialing them.
+fn reach(registrations: &Registrations, local: &str) -> Reach {
+    let (registrations, local) = (registrations.clone(), id(local));
+    Arc::new(move |_, address| {
+        Ok(match address {
+            Address::Listen(listener) => Connect::Listen(Accepting {
+                registrations: registrations.clone(),
+                listener: listener.into(),
+                local: local.clone(),
+            }),
+            Address::Dial(listener) => Connect::Dial(rutis_bridge::memory::dialer(
+                registrations.clone(),
+                listener,
+            )),
+        })
+    })
+}
+
 struct Nodes {
     main: Ctx,
     mac: Ctx,
@@ -90,8 +108,7 @@ fn greeting_as(mac: &Ctx, key: &str) -> Option<String> {
 /// main's loader holds `rows` before anything is linked; then mac links in
 /// and opens its host.
 async fn nodes(rows: Value) -> Nodes {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let quick = Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
@@ -101,7 +118,7 @@ async fn nodes(rows: Value) -> Nodes {
 
     let main = Ctx::root().unwrap();
     let transitions = common::Transitions::on(&main);
-    let resolver = Arc::new(PeerResolver::new());
+    let resolver = Arc::new(PeerResolver::new(reach(&transport, "main")));
     let plugin = LoaderPlugin::new(
         Chain::new().with_shared(resolver.clone()),
         LoaderOptions::default(),
@@ -119,28 +136,36 @@ async fn nodes(rows: Value) -> Nodes {
         .into_iter()
         .filter_map(|entry| Some((entry.id, entry.plugin?)))
         .collect();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in").retry(quick.clone()),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        )
+        .retry(quick.clone()),
     ));
     main.plugin(PeerRowsPlugin::new(id("mac"), resolver));
 
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport)))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     let mac_link = mac.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in").retry(quick),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        )
+        .retry(quick),
     ));
     let starts = Arc::new(AtomicUsize::new(0));
     let catalog = StaticCatalog::new().with(
@@ -330,8 +355,7 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
         }
     }
 
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
 
     // main: exports clock, runs peer:mac/… rows on mac.
     let main = Ctx::root().unwrap();
@@ -339,14 +363,11 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
         .unwrap();
     main.provide_at(host_key("calendar"), Arc::new(Fixed(2)))
         .unwrap();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
-    let rows = Arc::new(PeerResolver::new());
+    let rows = Arc::new(PeerResolver::new(reach(&transport, "main")));
     let mut builtins = Builtins::new();
     register_peer_node(&mut builtins, rows.clone());
     let plugin = LoaderPlugin::new(
@@ -358,7 +379,7 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
     let main_rows = |export: Value| -> Vec<Layer> {
         let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
             { "id": "link", "name": "rutis-bridge/peer", "config": {
-                "peer": "mac", "transport": "memory", "identity": "main", "listen": "main-in",
+                "peer": "mac", "identity": "main", "listen": "main-in",
                 "export": export, "rows": true
             } },
             { "id": "g", "name": "peer:mac/greeter", "config": { "text": "composed" } }
@@ -373,22 +394,22 @@ async fn loader_rows_compose_links_and_change_features_in_place() {
 
     // mac: imports clock and calendar, hosts what its loader resolves.
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport)))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     let mut installed = Builtins::new();
     installed.register_raw("greeter", Greeter(Arc::new(AtomicUsize::new(0))), None);
-    register_peer_node(&mut installed, Arc::new(PeerResolver::new()));
+    register_peer_node(
+        &mut installed,
+        Arc::new(PeerResolver::new(reach(&transport, "mac"))),
+    );
     let plugin = LoaderPlugin::new(Chain::new().with(installed), LoaderOptions::default());
     let mac_loader = plugin.handle();
     (&mac.plugin(plugin)).await.unwrap();
     let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
         { "id": "link", "name": "rutis-bridge/peer", "config": {
-            "peer": "main", "transport": "memory", "identity": "mac", "dial": "main-in",
+            "peer": "main", "identity": "mac", "dial": "main-in",
             "import": ["clock", "calendar"], "host": true
         } }
     ] }]))
@@ -477,8 +498,7 @@ async fn hosted_rows_share_the_session_of_their_link() {
 /// guarantee: loader/peer-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("a-in", id("a"));
+    let transport = Registrations::new();
     let quick = Retry {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(200),
@@ -486,14 +506,14 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
         ..Retry::default()
     };
     async fn node(
-        transport: &Arc<MemoryTransport>,
+        transport: &Registrations,
         me: &str,
         other: &str,
         link: LinkConfig,
         identity: StaticIdentity,
     ) -> (Ctx, Arc<AtomicUsize>, FiberView) {
         let root = Ctx::root().unwrap();
-        let rows = Arc::new(PeerResolver::new());
+        let rows = Arc::new(PeerResolver::new(reach(transport, me)));
         let plugin = LoaderPlugin::new(
             Chain::new().with_shared(rows.clone()),
             LoaderOptions::default(),
@@ -507,9 +527,6 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
         .unwrap();
         loader
             .reconcile(vec![Layer::new("rows", patches)], None)
-            .await
-            .unwrap();
-        (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
             .await
             .unwrap();
         root.plugin(IdentityPlugin::new(me, identity));
@@ -526,7 +543,16 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
         &transport,
         "a",
         "b",
-        LinkConfig::listen(id("b"), "memory", "a", "a-in").retry(quick.clone()),
+        LinkConfig::listen(
+            id("b"),
+            "a",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "a-in".into(),
+                local: id("a"),
+            },
+        )
+        .retry(quick.clone()),
         StaticIdentity::new(id("a")).accept_token("b-token", id("b")),
     )
     .await;
@@ -534,7 +560,12 @@ async fn nodes_hosting_for_each_other_start_and_reconnect_without_deadlock() {
         &transport,
         "b",
         "a",
-        LinkConfig::dial(id("a"), "memory", "b", "a-in").retry(quick),
+        LinkConfig::dial(
+            id("a"),
+            "b",
+            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
+        )
+        .retry(quick),
         StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())),
     )
     .await;

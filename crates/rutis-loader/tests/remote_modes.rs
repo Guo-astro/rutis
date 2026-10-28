@@ -14,18 +14,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::runtimes::id;
-use rutis::host::{BoxFuture, CtxHost, FiberState};
+use rutis::host::{CtxHost, FiberState};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
-use rutis_bridge::memory::{pair, MemoryPlugin, MemoryTransport};
+use rutis_bridge::memory::pair;
 use rutis_bridge::runtime::{RuntimeAccessPlugin, RuntimePlugin};
 use rutis_bridge::session::{
     host_key, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
 use rutis_bridge::{
-    protocol, transport_key, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Channel,
-    ConnectError, Credential, Dial, IdentityPlugin, LinkConfig, LinkPlugin, SharedToken,
-    StaticIdentity, Transport,
+    Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Channel, ConnectError,
+    Credential, Dialer, IdentityPlugin, LinkConfig, LinkPlugin, Registrations, SharedToken,
+    StaticIdentity,
 };
 use rutis_loader::edit::{Editable, NewEntry, Version};
 use rutis_loader::report::{EntryStatus, Unavailable};
@@ -134,31 +134,22 @@ fn serve(channel: Channel, lists: bool) -> Connection {
     Connection::open_with(channel, Arc::new(runtime), Format::Endpoint(endpoint)).unwrap()
 }
 
-/// A transport whose every dial reaches a new stand-in runtime: what rutis
-/// dials out to.
+/// Stand-in runtimes rutis dials out to: every dial reaches a new one.
 struct ToRuntime {
     lists: bool,
     sessions: Mutex<Vec<Connection>>,
 }
 
-impl Transport for ToRuntime {
-    fn kind(&self) -> &str {
-        "to-runtime"
-    }
-
-    fn dial<'a>(&'a self, _dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
-        Box::pin(async move {
+impl ToRuntime {
+    fn dialer(self: &Arc<Self>) -> Dialer {
+        let to = self.clone();
+        Arc::new(move |_| {
             let (ours, theirs) = pair();
-            self.sessions
-                .lock()
-                .unwrap()
-                .push(serve(theirs, self.lists));
-            Ok(ours)
+            to.sessions.lock().unwrap().push(serve(theirs, to.lists));
+            Box::pin(std::future::ready(Ok(ours)))
         })
     }
-}
 
-impl ToRuntime {
     fn close(&self) {
         for session in self.sessions.lock().unwrap().drain(..) {
             session.close(Error::Transport("gone".into()));
@@ -241,26 +232,24 @@ async fn main(way: Way, lists: bool) -> Main {
                 lists,
                 sessions: Mutex::default(),
             });
-            let provided: Arc<dyn Transport> = transport.clone();
-            root.provide_at(transport_key("to-runtime"), provided)
-                .unwrap();
             root.plugin(IdentityPlugin::new(
                 "main",
                 StaticIdentity::new(id("main"))
                     .present(id("rt"), Credential::Bearer("rt-token".into())),
             ));
             root.plugin(LinkPlugin::new(
-                LinkConfig::dial(id("rt"), "to-runtime", "main", "rt").require("runtime"),
+                LinkConfig::dial(id("rt"), "main", transport.dialer()).require("runtime"),
             ));
             root.plugin(RuntimeAccessPlugin::new(id("rt"), "rt"));
             Box::new(move || transport.close())
         }
         Way::Listen | Way::Instances => {
-            let memory = Arc::new(MemoryTransport::default());
-            memory.endpoint("main-in", id("main"));
-            (&root.plugin(MemoryPlugin::with_transport(memory.clone())))
-                .await
-                .unwrap();
+            let memory = Registrations::new();
+            let accepting = Accepting {
+                registrations: memory.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            };
             match (way, single) {
                 (Way::Instances, Err(instances)) => {
                     (&root.plugin(AdmissionPlugin::new(
@@ -270,8 +259,7 @@ async fn main(way: Way, lists: bool) -> Main {
                         .await
                         .unwrap();
                     let access = AccessPointPlugin::new(
-                        AccessPointConfig::new(id("rt"), "memory", "rt", "main-in")
-                            .require("runtime"),
+                        AccessPointConfig::new(id("rt"), "rt", accepting).require("runtime"),
                     )
                     .accept(instances.accept(loader.clone(), root.clone()));
                     (&root.plugin(access)).await.unwrap();
@@ -282,8 +270,7 @@ async fn main(way: Way, lists: bool) -> Main {
                         StaticIdentity::new(id("main")).accept_token("rt-token", id("rt")),
                     ));
                     root.plugin(LinkPlugin::new(
-                        LinkConfig::listen(id("rt"), "memory", "main", "main-in")
-                            .require("runtime"),
+                        LinkConfig::listen(id("rt"), "main", accepting).require("runtime"),
                     ));
                     root.plugin(RuntimeAccessPlugin::new(id("rt"), "rt"));
                 }
@@ -301,17 +288,11 @@ async fn main(way: Way, lists: bool) -> Main {
 }
 
 /// The runtime dials rutis at `main-in`, once rutis listens for it.
-async fn dial_in(memory: &Arc<MemoryTransport>, lists: bool) -> Connection {
-    let identity = Arc::new(
-        StaticIdentity::new(id("rt")).present(id("main"), Credential::Bearer("rt-token".into())),
-    );
-    let dial = Dial::address("main-in")
-        .peer(id("main"))
-        .identity(identity)
-        .protocol(protocol());
+async fn dial_in(memory: &Registrations, lists: bool) -> Connection {
+    let dial = rutis_bridge::memory::dialer(memory.clone(), "main-in");
     let channel = within("rutis listening", async {
         loop {
-            match memory.dial(&dial).await {
+            match dial(Some(Credential::Bearer("rt-token".into()))).await {
                 Ok(channel) => break channel,
                 Err(ConnectError::Retryable { .. }) => {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await
