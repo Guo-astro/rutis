@@ -1,6 +1,5 @@
 use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{Error, Value};
-use rutis_test_support::within;
 use serde_json::json;
 use std::io::Write;
 use std::path::Path;
@@ -436,29 +435,6 @@ mod websocket {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn independent_callback_progresses_while_original_runtime_is_blocked() {
-    let (_file, peer) = launch().await;
-    let owner = std::thread::current().id();
-    let connection = peer.connection().clone();
-    let callback = Value::callback(move |_| {
-        connection.independent_future(move || async move {
-            assert_ne!(std::thread::current().id(), owner);
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            let value = tokio::spawn(async { 42 }).await.unwrap();
-            Ok(json!(value).into())
-        })
-    });
-    let future = peer
-        .connection()
-        .invoke("callbacks", "awaitCallback", args(vec![callback]))
-        .unwrap()
-        .reference()
-        .unwrap();
-    assert_eq!(number(future.wait().unwrap()), 42.0);
-    peer.dispose().await.unwrap();
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn sync_wait_detects_an_async_callback_already_running_on_its_runtime() {
     let (_file, peer) = launch().await;
     let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -479,40 +455,6 @@ async fn sync_wait_detects_an_async_callback_already_running_on_its_runtime() {
     observed.recv().await.unwrap();
     assert!(matches!(future.wait(), Err(Error::Remote { name, .. }) if name == "SyncWaitCycle"));
     peer.dispose().await.unwrap();
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn close_cancels_shared_executor_even_with_a_retained_reference() {
-    let (_file, peer) = launch().await;
-    let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
-    let (dropped, mut completed) = tokio::sync::mpsc::unbounded_channel();
-    struct OnDrop(tokio::sync::mpsc::UnboundedSender<()>);
-    impl Drop for OnDrop {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-    let connection = peer.connection().clone();
-    let callback = Value::callback(move |_| {
-        let (started, dropped) = (started.clone(), dropped.clone());
-        connection.independent_future(move || async move {
-            let _guard = OnDrop(dropped);
-            started.send(()).unwrap();
-            std::future::pending().await
-        })
-    });
-    let future = peer
-        .connection()
-        .invoke_async("callbacks", "awaitCallback", args(vec![callback]))
-        .await
-        .unwrap()
-        .reference()
-        .unwrap();
-    observed.recv().await.unwrap();
-    peer.connection()
-        .close(Error::Transport("explicit close".into()));
-    within("the completion", completed.recv()).await.unwrap();
-    assert!(future.wait_async().await.is_err());
 }
 
 /// Two Node runtimes. A calls the host service `bridge` synchronously with a

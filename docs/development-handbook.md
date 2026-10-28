@@ -423,9 +423,9 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 
 ### 处理错误
 
-生命周期操作和等待型事件的错误通过返回值处理。错误类型是 `rutis::Error`，`?` 能把任何标准错误转成它；要区分 rutis 自己的失败时用 `err.kind()`，它返回 `Option<&ErrorKind>`，来自插件代码的错误是 `None`。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。ErrorSink、`take_cleanup_errors()`，以及等待 `FiberView`、`dispose()`、`shutdown()` 得到的错误，是共享的 `Arc<ErrorKind>`。
+生命周期操作和等待型事件的错误通过返回值处理。错误类型是 `rutis::Error`，`?` 能把任何标准错误转成它；要区分 rutis 自己的失败时用 `err.kind()`，它返回 `Option<&ErrorKind>`，来自插件代码的错误是 `None`。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。ErrorSink，以及等待 `FiberView`、`dispose()`、`shutdown()` 得到的错误，是共享的 `Arc<ErrorKind>`。
 
-提前释放 effect 时，先处理 `Disposer::dispose()` 的结果。长寿命插件还可定期调用 `take_cleanup_errors()`，取走并处理已完成的历史清理错误。后台任务的错误由任务所有者观察和报告。
+提前释放 effect 时，先处理 `Disposer::dispose()` 的结果；同一个错误之后在终态卸载时进入结果，在重载时交给 ErrorSink。后台任务的错误由任务所有者观察和报告。
 
 ### 验证关键过程
 

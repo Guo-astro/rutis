@@ -19,11 +19,8 @@ serde_json = "1"
 # What `#[rutis::service]` blocks and the bridge exchange values through.
 erased-serde = "0.4"
 rutis-macros = { path = "../rutis-macros", version = "0.18.0" }
-# `From<rutis::Error> for anyhow::Error` and `Error::from_anyhow`.
-anyhow = { version = "1.0.90", optional = true }
 
 [features]
-anyhow = ["dep:anyhow"]
 # Test hooks only (`EventBus::on_selected_for_testing`): what a conformance
 # runner needs to see of a dispatch. Never part of a product build.
 testing = []
