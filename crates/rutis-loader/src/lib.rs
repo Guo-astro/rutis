@@ -96,11 +96,11 @@ pub mod internal {
     #[cfg(feature = "binary")]
     pub use crate::runtime::binary::read_binary_manifest;
     #[cfg(feature = "go")]
-    pub use crate::runtime::go::{read_go_manifest, GO_MARKER, PLUGIN_API};
+    pub use crate::runtime::go::PLUGIN_API;
     #[cfg(feature = "runtimes")]
     pub use crate::runtime::is_runtime_name;
     #[cfg(feature = "node")]
     pub use crate::runtime::resolve_entry;
     #[cfg(feature = "swift")]
-    pub use crate::runtime::swift::{read_swift_manifest, SWIFT_MARKER, SWIFT_PLUGIN_API};
+    pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

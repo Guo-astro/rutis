@@ -28,7 +28,7 @@ fn send(channel: &mut Channel, frame: Json) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_runs_on_a_memory_channel() {
-    let (local, mut remote) = rutis_bridge::transport::memory::pair();
+    let (local, mut remote) = rutis_bridge::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     let far = std::thread::spawn(move || {
         // A 0.13 far end declares events-v2 (events protocol §2.1).
@@ -83,7 +83,7 @@ async fn a_session_runs_on_a_memory_channel() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_far_end_closing_ends_the_session() {
-    let (local, mut remote) = rutis_bridge::transport::memory::pair();
+    let (local, mut remote) = rutis_bridge::memory::pair();
     let session = Connection::open(local, Arc::new(Echo)).unwrap();
     read(&mut remote);
     send(
@@ -91,7 +91,7 @@ async fn the_far_end_closing_ends_the_session() {
         json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }),
     );
     session.ready().await.unwrap();
-    remote.closer.close("bye");
+    remote.closer.close(rutis_bridge::Close::Done);
     session.closed().await;
     let error = session
         .invoke_async("", "x", Value::Undefined)

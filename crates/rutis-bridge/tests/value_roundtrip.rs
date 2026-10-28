@@ -80,7 +80,7 @@ fn rust_far_end() -> (Connection, Connection) {
 
 /// [`rust_far_end`], greeting as `far` (with its capabilities).
 fn rust_far_end_as(far: Endpoint) -> (Connection, Connection) {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let far = Connection::open_with(
         b,
         Arc::new(Fixture::default()),
@@ -126,12 +126,12 @@ async fn far_end_with(
     let reader = stream.try_clone().unwrap();
     struct Shut(std::os::unix::net::UnixStream);
     impl rutis_bridge::channel::Closer for Shut {
-        fn close(&self, _: &str) {
+        fn close(&self, _: rutis_bridge::Close) {
             let _ = self.0.shutdown(std::net::Shutdown::Both);
         }
     }
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
-    let channel = rutis_bridge::transport::local::framed(reader, stream, closer);
+    let channel = rutis_bridge::pipe::framed(reader, stream, closer);
     let connection = Connection::open_with(channel, Arc::new(Nothing), format).unwrap();
     connection.ready().await.unwrap();
     (connection, child)

@@ -19,7 +19,7 @@ use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
-use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, WebSocketPlugin};
 use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
@@ -566,7 +566,7 @@ async fn connect(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_link_can_listen() {
     use futures_util::{SinkExt, StreamExt};
-    use rutis_bridge::transport::websocket::ListenerConfig;
+    use rutis_bridge::websocket::ListenerConfig;
 
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("weather_plugin.py"), WEATHER).unwrap();

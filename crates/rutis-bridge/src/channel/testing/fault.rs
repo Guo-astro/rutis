@@ -63,10 +63,10 @@ impl Faults {
     }
 
     /// Drop whatever is in flight and close, as a far end that disappears.
-    pub fn drop_and_close(&self, reason: &str) {
+    pub fn drop_and_close(&self) {
         self.state.mode.lock().unwrap().1 = true;
         self.state.changed.notify_all();
-        self.closer.close(reason);
+        self.closer.close(crate::channel::Close::Done);
     }
 }
 
@@ -91,7 +91,6 @@ pub fn fault(channel: Channel) -> (Channel, Faults) {
             state,
         }),
         closer,
-        info: channel.info,
     };
     (channel, faults)
 }
@@ -172,9 +171,9 @@ struct FaultCloser {
     state: Arc<State>,
 }
 impl Closer for FaultCloser {
-    fn close(&self, reason: &str) {
+    fn close(&self, why: crate::channel::Close) {
         self.state.mode.lock().unwrap().1 = true;
         self.state.changed.notify_all();
-        self.inner.close(reason);
+        self.inner.close(why);
     }
 }

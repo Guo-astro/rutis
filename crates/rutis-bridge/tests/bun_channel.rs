@@ -19,7 +19,7 @@ fn repo() -> PathBuf {
 struct Shut(UnixStream);
 
 impl Closer for Shut {
-    fn close(&self, _: &str) {
+    fn close(&self, _: rutis_bridge::Close) {
         let _ = self.0.shutdown(std::net::Shutdown::Both);
     }
 }
@@ -27,7 +27,7 @@ impl Closer for Shut {
 fn framed(stream: UnixStream) -> Channel {
     let reader = stream.try_clone().unwrap();
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
-    rutis_bridge::transport::local::framed(reader, stream, closer)
+    rutis_bridge::pipe::framed(reader, stream, closer)
 }
 
 /// Two Rust channels joined through a Bun relay.

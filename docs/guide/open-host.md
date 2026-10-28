@@ -83,7 +83,7 @@ Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount:
 
 - rutis 不给调用限时：调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）。插件卡在同步代码里、取消停不下时，用 `LocalRuntime::processes()` 的 `kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `restart()`：新的进程，它的行重新装载。
 - rutis 不管插件能用哪些服务：哪些服务给哪个插件是你的业务，由你自己分配。
-- `ServiceCatalog::share_registered_only` 与读取拦截决定服务按什么名字共享，不是权限。
+- 读取拦截决定服务按什么名字共享，不是权限。
 - 同一进程里的插件能用语言本身的办法互相拿到对方（全局变量、模块缓存）；要隔开，放进不同的运行时。
 - 插件进程有宿主用户的全部权限（文件、网络、子进程）。rutis 不做沙箱，也不限内存、CPU。
 

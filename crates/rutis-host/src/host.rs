@@ -8,11 +8,9 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
 use rutis::{Ctx, Error as RutisError};
+use rutis_bridge::pipe::LocalPlugin;
 use rutis_bridge::runtime::{RuntimeHandle, RuntimePlugin, RuntimeState};
-use rutis_bridge::transport::local::LocalPlugin;
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin};
 use rutis_bridge::{
     transport_key, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity,
     IdentityPlugin, LinkConfig, PeerId, Presented, SharedToken, Transport,
@@ -44,7 +42,7 @@ pub struct Host {
     fibers: Vec<(String, FiberView)>,
     /// The processes each local runtime started, by name: to wait for its
     /// own once it is stopped ([`Host::reload`]).
-    processes: Vec<(String, rutis_bridge::transport::local::Processes)>,
+    processes: Vec<(String, rutis_bridge::pipe::Processes)>,
     /// The `rutis-bridge/peer` rows' resolver, which also knows their links'
     /// states ([`PeerResolver::link_state`]).
     pub peers: Arc<PeerResolver>,
@@ -117,7 +115,7 @@ pub const OUTPUT_GUARD: Duration = Duration::from_secs(2);
 /// has all been passed on: what a program running a [`Host`] does last,
 /// so that their last lines are not lost when it exits (#332).
 pub fn output_written() {
-    rutis_bridge::transport::local::output_ended(OUTPUT_GUARD);
+    rutis_bridge::pipe::output_ended(OUTPUT_GUARD);
 }
 
 /// How long killed runtime processes may take to be gone.
@@ -212,8 +210,7 @@ impl Host {
         // Each row's line says what it waits for (`status`): the kernel's
         // report of a long wait would say it again.
         root.report_waiting_after(None);
-        let mut catalog = ServiceCatalog::new();
-        catalog.share_by_name();
+        let catalog = ServiceCatalog::new();
 
         // Transports and this node's identity, for the rows that link.
         (&root.plugin(LocalPlugin::new()))
@@ -849,7 +846,7 @@ impl Host {
     /// processes to end: their channels closed, so they end by themselves
     /// (or are killed after a grace period of their own).
     pub async fn processes_exit(&self, time: Duration) -> Result<(), Unfinished> {
-        tokio::time::timeout(time, rutis_bridge::transport::local::processes_ended())
+        tokio::time::timeout(time, rutis_bridge::pipe::processes_ended())
             .await
             .map_err(|_| Unfinished::Processes(format!("{}s passed", time.as_secs_f64())))
     }
@@ -857,10 +854,10 @@ impl Host {
     /// End the runtime processes now, without their cleanups, and wait
     /// (briefly) until they are gone.
     pub async fn kill_processes(&self) {
-        rutis_bridge::transport::local::kill_processes();
-        let gone = rutis_bridge::transport::local::processes_ended();
+        rutis_bridge::pipe::kill_processes();
+        let gone = rutis_bridge::pipe::processes_ended();
         if tokio::time::timeout(KILLED_EXIT, gone).await.is_err() {
-            let left = rutis_bridge::transport::local::running_processes();
+            let left = rutis_bridge::pipe::running_processes();
             errln!("rutis-host: processes {left:?} did not end when killed");
         }
     }
