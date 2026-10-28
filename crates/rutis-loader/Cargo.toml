@@ -41,11 +41,6 @@ runtimes = ["dep:rutis-bridge"]
 # share; enabled by their features.
 binary = ["runtimes"]
 
-# Installing plugins from npm, PyPI, Go modules and local paths
-# (`install::Installer`): the languages it installs are the language
-# features enabled.
-install = ["runtimes"]
-
 # Rows hosted on other nodes (`peer:<id>/<plugin>`), over rutis-bridge links.
 peer = ["dep:rutis-bridge"]
 

@@ -117,18 +117,6 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 
 写哪个文件：第二个参数；没有时当前目录的 `rutis.json`；没有 `rutis.json`、有 `rutis.dev.json`（插件项目）时写它；都没有时新建 `rutis.json`。
 
-`add --dry-run <插件>` 把包装进一个临时目录，打印包里每个插件的介绍后删掉它，不改 `rutis.json`，也不碰宿主的项目和环境：
-
-```text
-$ rutis-host add --dry-run github.com/bo/netkit/cmd/netkit
-(go 的输出)
-github.com/bo/netkit/cmd/netkit 0.4.1 (go): plugin dns
-dns
-  version: "0.4.1"
-  provides: {"dns":{"lookup":"async"}}
-nothing was installed (--dry-run)
-```
-
 `remove` 与 `upgrade`：
 
 ```text
@@ -160,7 +148,7 @@ a running host keeps the old versions until it restarts
 
 失败时包管理器已经装上的包留在原处，和直接运行 npm、uv 一样；出错文字写明卸掉它的命令。
 
-**只装信任的插件。** `add`、`upgrade`、`--dry-run` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
+**只装信任的插件。** `add`、`upgrade` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
 
 ### 不用 add 时
 
@@ -188,7 +176,7 @@ a running host keeps the old versions until it restarts
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
-| `rutis-host add [--dry-run] <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行；`--dry-run` 只打印介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
+| `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |

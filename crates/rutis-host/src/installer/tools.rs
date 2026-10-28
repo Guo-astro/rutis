@@ -88,7 +88,10 @@ impl Tools {
     /// [`Tools::run`]; `missing` says what to do when the program cannot be
     /// started (its error given).
     pub fn run_or(&self, run: &Run, missing: impl FnOnce(&str) -> String) -> Result<(), Error> {
-        let status = crate::runtime::retry_busy(|| self.command(run).stdin(Stdio::null()).status())
+        let status = self
+            .command(run)
+            .stdin(Stdio::null())
+            .status()
             .map_err(|error| Error::Other(missing(&io_error(&error))))?;
         match status.success() {
             true => Ok(()),
@@ -111,13 +114,12 @@ impl Tools {
         run: &Run,
         missing: impl FnOnce(&str) -> String,
     ) -> Result<String, Error> {
-        let output = crate::runtime::retry_busy(|| {
-            self.command(run)
-                .stdin(Stdio::null())
-                .stderr(Stdio::inherit())
-                .output()
-        })
-        .map_err(|error| Error::Other(missing(&io_error(&error))))?;
+        let output = self
+            .command(run)
+            .stdin(Stdio::null())
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|error| Error::Other(missing(&io_error(&error))))?;
         match output.status.success() {
             true => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
             false => Err(Error::Failed(format!(
@@ -130,14 +132,12 @@ impl Tools {
 
     /// Whether it runs and succeeds, nothing shown.
     pub fn succeeds(&self, run: &Run) -> bool {
-        crate::runtime::retry_busy(|| {
-            self.command(run)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-        })
-        .is_ok_and(|status| status.success())
+        self.command(run)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     }
 }
 
@@ -186,7 +186,6 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// `path` as a shell takes it.
-#[doc(hidden)]
-pub fn quoted_path(path: &Path) -> String {
+pub(crate) fn quoted_path(path: &Path) -> String {
     quoted(&path.display().to_string())
 }

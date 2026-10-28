@@ -6,7 +6,7 @@
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
 //! rutis-host status [rutis.json]   what a running host is doing now
 //! rutis-host new <name> --lang node|bun|python|go|swift
-//! rutis-host add [--dry-run] <plugin> [rutis.json]
+//! rutis-host add <plugin> [rutis.json]
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host go add <module>@<version> [rutis.json]
@@ -74,8 +74,6 @@ usage:
                                               a local path (directory, .tgz, .whl, binary), with
                                               @<version> or not (the latest); its language's
                                               package manager runs (npm, bun, uv or pip, go)
-    add: --dry-run                            install it into a directory of its own, say what
-                                              it declares, and remove it again
   rutis-host remove <plugin> [rutis.json]     uninstall what add installed, and remove its rows
   rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
                                               install the newest version (or the one named) of
@@ -373,11 +371,7 @@ fn go_command(args: &[String]) -> Result<(), String> {
         .go
         .and_then(|go| go.dir)
         .ok_or("the configuration has no runtimes.go.dir to install into")?;
-    // The install code `add` uses; its words as before.
-    rutis_loader::internal::install_go_module(module, &dir).map_err(|error| match error {
-        rutis_loader::install::Error::Failed(_) => format!("go install {module} failed"),
-        other => other.to_string(),
-    })?;
+    rutis_host::install::install_go_module(module, &dir)?;
     outln!("installed {module} into {}", dir.display());
     Ok(())
 }

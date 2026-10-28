@@ -29,8 +29,8 @@ use crate::host::Error;
 mod binary;
 mod bun;
 mod go;
-mod node;
-mod python;
+pub(crate) mod node;
+pub(crate) mod python;
 mod swift;
 
 pub use binary::{BinaryHost, DevBuild};

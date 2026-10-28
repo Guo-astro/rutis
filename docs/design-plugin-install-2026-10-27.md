@@ -1,14 +1,15 @@
-# 插件安装：`rutis-host add` / `remove` / `upgrade` 与嵌入 API
+# 插件安装：`rutis-host add` / `remove` / `upgrade`
 
 [English](design-plugin-install-2026-10-27.en.md)
 
 状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#691](https://github.com/arcships/rutis/issues/691)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 H2、O4）。
 2026-10-28 调整（I6、§六）：`add` 写行时直接用已有的行名写法（Node 包名、`bun:`、`py:`、`go:`、`swift:`）；`installed` 以行名为键，只记 `from`；去掉"行名是记录里的键时按记录解析"这一层，行名解析完全照旧。原因：按记录换写法让同一个插件有两种行名，还多一条与已有写法重复的名字规则。
+2026-10-28 第二次调整（I1、I8、§八、§九）：去掉嵌入 API（`rutis-loader` 的 `install` feature）与装之前看介绍（`add --dry-run`、`describe`）；安装代码只放在 rutis-host 内部。原因见范围外。
 与 0.18 设计的关系：`add` 打印的插件介绍就是 `check` 已有的描述（版本、`inject`、`provides`、配置 Schema），不另起一份；新写的行不带 `config`，默认值按 [0.18 配置 Schema](design-config-schema-2026-10-27.md) C1 由 SDK 补，缺必填项时 `add` 用 `check` 的同一段检查说出来；出错文字遵守 [0.18 诊断](design-diagnostics-2026-10-26.md) §4.5。
 兼容：全部兼容，不进《迁移到 0.19》。旧的行名写法（`py:`、`bun:`、`go:`、`swift:` 前缀，npm 包名）、手动安装和 `rutis-host go add` 照常可用，不转换。
 
-范围外：沙箱或审核安装脚本；安装语言工具链本身；版本范围；pnpm、yarn、私有源的配置（用包管理器自己的配置）；按记录重装全部插件；运行中热升级；远程运行时与应用里的插件；从网址下载二进制；失败时回滚包管理器已经做了的事（直接用 npm / uv 时也没有，§五）。
+范围外：沙箱或审核安装脚本；安装语言工具链本身；版本范围；pnpm、yarn、私有源的配置（用包管理器自己的配置）；按记录重装全部插件；运行中热升级；远程运行时与应用里的插件；从网址下载二进制；失败时回滚包管理器已经做了的事（直接用 npm / uv 时也没有，§五）；嵌入 API（`rutis-loader` 里供别的宿主调用的安装代码）：唯一的使用方是 rutis-host，评估里的 deskmate 只是假想的宿主，没有真实需要时不做公开 API；装之前看介绍（`add --dry-run`）：`add` 装完本来就打印插件介绍，不值得为它多一条把包装进临时目录的路径。
 
 ## 一、场景：现在卡在哪
 
@@ -30,7 +31,7 @@ rutis-host add pypi:bo-llm
 rutis-host run
 ```
 
-宿主持有者只说插件从哪里来，不需要知道语言、包管理器、环境和行名前缀。嵌入的宿主用同一套代码做自己的「装插件」。
+宿主持有者只说插件从哪里来，不需要知道语言、包管理器、环境和行名前缀。
 
 ## 二、已有的东西
 
@@ -51,14 +52,14 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 
 | # | 决策 | 节 |
 | --- | --- | --- |
-| I1 | `rutis-host add <引用> [rutis.json]`、`remove <插件或引用>`、`upgrade [<插件或引用>[@版本]]`；`add --dry-run` 装前看介绍；`go add` 保留，改为调用同一份安装代码，行为不变 | 五、七、八 |
+| I1 | `rutis-host add <引用> [rutis.json]`、`remove <插件或引用>`、`upgrade [<插件或引用>[@版本]]`；`go add` 保留，改为调用同一份安装代码，行为不变 | 五、七 |
 | I2 | 插件引用写来源，不写语言：`npm:`、`pypi:` 前缀；Go 模块路径与本地路径本身说明来源；版本统一写 `@版本`；不带来源的名字报错 | 四 |
 | I3 | 语言由包自己决定：npm 包依赖 `@arcships/rutis-bun` 是 Bun，否则 Node；PyPI 是 Python；Go 模块是 Go；本地目录按项目文件；本地可执行文件按 SDK 标记（Go、Swift） | 四 |
 | I4 | 装到现在就用的位置：`runtimes.<语言>` 写了就用它指的；没写时用它的默认（Go、Swift 为 `plugins/go`、`plugins/swift`），并把用到的设置写进 `runtimes`（`"py": {}`、`"go": { "dir": "plugins/go" }`），运行时照现有规则启动，不另加推出规则 | 五 |
 | I5 | 运行时缺了就准备好：执行运行时现在缺东西时提示的命令（§二），以及建 Go / Swift 目录；不装 Node、Bun、Python、Go 本身 | 五 |
 | I6 | 安装记录写在 `rutis.json` 顶层的 `installed`，以行名为键，只有 `from`；行名用已有写法，由 `add` 写好 | 六 |
 | I7 | 插件介绍用插件已有的声明（`check` 打印的描述），不新增清单格式；`provides` 仍可不写 | 八 |
-| I8 | 嵌入 API 在 `rutis-loader` 的 `install` feature（默认关）：`Installer`、`Places`、`Installed`；引用是字符串；记录由调用方保存；`rutis` 内核不变 | 九 |
+| I8 | 安装代码只在 rutis-host 内部（私有模块），不加 `rutis-loader` 的 feature，不新增公开类型；`rutis` 内核不变 | 九 |
 | I9 | `rutis.json` 最后才写，前面任何一步失败它都不变；包管理器已经装上的东西不回滚，出错文字写明怎样卸 | 五 |
 | I10 | 运行中的宿主按现有的改配置规则接上新行（`run --watch-config`、`dev`）；`upgrade` 只换磁盘上的包，重启后生效 | 七 |
 
@@ -95,7 +96,7 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 
    `runtimes.go`（`swift`）写了但没有 `dir` 时报错：`add` 不知道装到哪里。包管理器的输出原样显示。
 3. 找出包里的插件：Node、Bun 是包名（一个包一个插件）；Python 是这个发行包在 `rutis.plugins` 组里的入口点（一个包可以有几个）；Go、Swift 是二进制清单里的插件。
-4. 描述每个插件：启动它的运行时，和 `check` 一样描述这一行（§八），打印出来。
+4. 描述每个插件：启动它的运行时，和 `check` 一样描述这一行（§八）；描述不了的不是插件（§十一）。介绍在第 6 步与检查结果一起打印。
 5. 写文件：`installed` 加上每个插件的记录（键是行名）；`rows` 末尾每个插件加一行 `{ "id": <id>, "name": <行名> }`，行名用已有写法（§六），id 由插件名得出（已有的 `id_of`），已被占用时加 `-2`、`-3`，同名的行已经有了时不再加；`runtimes` 没写这门语言时写上用到的设置（I4）。按原有键的顺序写回，缩进两格，先写临时文件再改名（`--watch-config` 不会读到写了一半的文件）。
 6. 用 `check` 的同一段检查看新加的行，打印它的结果：缺它要用的服务、配置缺必填项（0.18）时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
 
@@ -136,44 +137,21 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 - `rutis-host upgrade [<行名、插件名或引用>[@版本]] [rutis.json]`：不写名字时升级全部记录。按记录的来源装最新版（或给出的版本），行不改。新版本多出的插件打印一句如何加行；少了的插件删掉记录，用它的行打印一句"新版本里没有这个插件"。
 - **运行中的宿主**：`upgrade` 只换磁盘上的包，正在运行的宿主继续运行旧代码，重启后生效；`upgrade` 结束时说明这一点（Koishi 更新依赖后同样要重启）。不热换的原因：重新加载一行只重新导入它自己的入口模块（`dev` 的已有规则），升级换掉的是整个包。
 
-## 八、装之前看介绍
+## 八、插件介绍
 
-插件介绍就是插件已经写下的声明：TypeScript `definePlugin({ inject, provides, config })`、Python `define_plugin(...)`、Go 的清单与 `rutis.Plugin`。`check` 已经把它打印成 `version`、`inject`、`provides`、`config` 几行。
-
-`rutis-host add --dry-run <引用>` 把包装进一个临时目录（和第 2 步相同的命令），描述包里的每个插件，打印介绍，删掉临时目录；不改 `rutis.json`，也不碰宿主的项目和环境。
+`add` 打印的介绍就是插件已经写下的声明：TypeScript `definePlugin({ inject, provides, config })`、Python `define_plugin(...)`、Go 的清单与 `rutis.Plugin`。`check` 已经把它打印成 `version`、`inject`、`provides`、`config` 几行，`add` 用同一段检查打印（§五 第 6 步）。
 
 - 不新增清单格式：现有的声明四种语言都有，`check` 已在用；另起一份，插件作者就要多写一份 rutis 特有的东西。
 - 不读注册表的元数据（`npm view`、PyPI 的 JSON）：TypeScript 叶子插件、Python、Go 的声明都在代码里，包元数据里没有。
 - `provides` 没写时介绍里是 `provides: none declared (it may provide more once it runs)`。
-- 代价：`--dry-run` 要下载并导入插件，会运行包里的代码（§十）。
+- 装之前看介绍（`add --dry-run`）2026-10-28 删去，见范围外。
 
-## 九、嵌入 API
+## 九、安装代码放在哪里
 
-`rutis-loader` 加 `install` feature（默认关），和语言 feature 一起决定能装哪些语言：
-
-```rust
-use rutis_loader::install::{Installer, Places};
-
-let installer = Installer::new(Places {
-    node: Some(home.join("plugins/node")),    // Node 项目
-    python: Some(home.join("plugins/.venv")), // Python 环境（没有就建）
-    go: Some(home.join("plugins/go")),        // 二进制目录
-    ..Places::default()
-});
-let about = installer.describe("npm:@ana/wordcount").await?;  // Vec<RowSchema>：装之前看
-let added = installer.add("npm:@ana/wordcount").await?;       // Vec<Installed>：每个插件一条
-for plugin in &added {
-    rows.push(json!({ "id": my_id(&plugin.name), "name": plugin.row_name() }));  // py:llm 等
-}
-installer.upgrade(&added[0], None).await?;
-installer.remove(&added[0]).await?;
-```
-
-- `Installed` 是 `installed` 里的一条（只有 `from`）加上插件名 `name` 与语言 `language`（算出来的，不写进文件），可序列化；rutis-host 读写 `installed` 用的就是它。`row_name()` 给出插件的行名，也是记录的键；`Installed::of_row(行名, from)` 从键与记录还原。
-- 引用用字符串，解析错误由 `add` / `describe` 返回，不另开类型。`describe` 返回已有的 `RowSchema`。
-- **放在 rutis-loader**：嵌入的宿主本来就依赖它；描述插件要用的运行时也在这里。只在调用时把 npm、uv、go 当作外部命令运行。`rutis` 内核不变。rutis-host 的库不是公开 API，不放那里。
-- **记录归调用方**：API 不读写任何配置文件，也不碰 loader 与运行时。
-- rutis-host 的 `add` / `remove` / `upgrade` 与 `go add` 都调用它，安装逻辑只有一份。
+- 安装代码是 rutis-host 的私有模块（`crates/rutis-host/src/installer/`）：引用解析、按语言准备运行时与装包、找出包里的插件、卸载与升级。`add` / `remove` / `upgrade` 与 `go add` 都调用它，安装逻辑只有一份。
+- 不做成 `rutis-loader` 的公开 API（2026-10-28 删去，见范围外）。
+- 只用已有的东西：二进制里的插件用 `rutis-loader` 已有的 `BinaryResolver::binaries` 找（与 Go、Swift 运行时找二进制相同）；Python 环境、Node 运行时的位置用 rutis-host 已有的查找。只在调用时把 npm、uv、go 当作外部命令运行。`rutis` 内核不变。
+- 记录（`installed`）由 rutis-host 读写；安装代码本身不读写配置文件。
 
 ## 十、与其他设计的关系、安全
 
@@ -181,7 +159,7 @@ installer.remove(&added[0]).await?;
 - **与 `dev`（#670）**：`add` 在插件项目里写 `rutis.dev.json`，`dev` 照现有规则重新读它：新行 `added` 并启动，别的行不动。新行要的运行时还没在运行时，`add` 写进的 `runtimes.<语言>` 照现有规则被拒绝、提示重启（`reload rejected: runtimes.py added: restart the host; nothing changed`）。`run --watch-config` 相同。
 - **#683**：各插件在哪个进程运行、能用哪些服务，是 #683 设在运行时（进程）上的选项，与怎样装无关。
 - **#698**：只装到本机运行时。
-- **安全**：`add`、`upgrade`、`--dry-run` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
+- **安全**：`add`、`upgrade` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
 
 ## 十一、开发者看到什么
 
@@ -203,14 +181,6 @@ llm (py:llm): ok
   version: "0.3.0"
   provides: none declared (it may provide more once it runs)
 rutis.json: added row llm, runtimes.py
-
-$ rutis-host add --dry-run github.com/bo/netkit/cmd/netkit
-(go 的输出)
-github.com/bo/netkit/cmd/netkit v0.4.1 (go): plugin dns
-dns
-  version: "0.4.1"
-  provides: {"dns":{"lookup":"async"}}
-nothing was installed (--dry-run)
 
 $ rutis-host remove llm
 uninstalled bo-llm from /app/.venv
@@ -246,9 +216,9 @@ npm 包的行名就是包名（Bun 是 `bun:<包>`），冲突在装包前就报
 
 | 步骤 | 内容 | 完成条件 |
 | --- | --- | --- |
-| P1 | `rutis-loader` 的 `install` feature：引用解析、`Places`、`Installer` 的 `add` / `remove` / `upgrade` / `describe`、`Installed`；`go add` 改为调用它 | 单元测试：§四 每种写法解析出的来源、语言与包管理器命令（`PATH` 上放记录参数的假命令） |
-| P2 | rutis-host：`installed` 字段（以行名为键）、`add`（含 `--dry-run`）/ `remove` / `upgrade`、写回文件（含 `runtimes`） | `crates/rutis-host/tests/install.rs`：有记录的行照常解析；键不是行名写法时报错；写回保持键顺序；§十一 的每条出错输出逐字比较 |
-| P3 | 端到端：`tests/e2e/tests/plugin_install.rs`（与 `dev_loop.rs` 同在 ci.yml 的 e2e 任务里） | Node、Bun、Python、Go 各一个场景：用 `rutis-host new` 的模板打出本地包（`npm pack`、`uv build` 的 wheel、Go 模块目录）→ `add --dry-run` → `add` → `check` → `run`，probe 调到它的服务 → 改版本后 `upgrade` → `remove`；Python 场景从没有环境开始；`pypi:` 与 Go 模块路径的写法用 uv 的本地 `--find-links` 与 `GOPROXY=file://` 跑一遍；一个 `dev` 场景：`add` 写进 `rutis.dev.json` 后新行 `added`，项目自己的行不重启 |
-| P4 | 文档 | [rutis-host 指南](guide/rutis-host.md)（命令表、「快速上手」、「宿主怎样装插件」、`installed` 字段）、宿主持有者指南（#671，原 #685）、[在 Rust 应用里嵌入](guide/rust-host.md) 的 `Installer` 一节，中英两份同步；写明安装脚本与信任（§十） |
+| P1 | 2026-10-28 撤销：原为 `rutis-loader` 的 `install` feature（嵌入 API），代码移进 P2 | — |
+| P2 | rutis-host：安装代码（私有模块，§九）、`installed` 字段（以行名为键）、`add` / `remove` / `upgrade`、写回文件（含 `runtimes`）；`go add` 改为调用安装代码 | 单元测试：§四 每种写法解析出的来源、语言与包管理器命令（`PATH` 上放记录参数的假命令）；`crates/rutis-host/tests/install.rs`：有记录的行照常解析；键不是行名写法时报错；写回保持键顺序；§十一 的每条出错输出逐字比较 |
+| P3 | 端到端：`tests/e2e/tests/plugin_install.rs`（与 `dev_loop.rs` 同在 ci.yml 的 e2e 任务里） | Node、Bun、Python、Go 各一个场景：用 `rutis-host new` 的模板打出本地包（`npm pack`、`uv build` 的 wheel、Go 模块目录）→ `add` → `check` → `run`，probe 调到它的服务 → 改版本后 `upgrade` → `remove`；Python 场景从没有环境开始；`pypi:` 与 Go 模块路径的写法用 uv 的本地 `--find-links` 与 `GOPROXY=file://` 跑一遍；一个 `dev` 场景：`add` 写进 `rutis.dev.json` 后新行 `added`，项目自己的行不重启 |
+| P4 | 文档 | [rutis-host 指南](guide/rutis-host.md)（命令表、「快速上手」、「宿主怎样装插件」、`installed` 字段）、宿主持有者指南（#671，原 #685），中英两份同步；写明安装脚本与信任（§十） |
 
-P1 → P2 → P3；P4 随 P2 一起。对应 issue 的「完成」：命令与 API 及四种语言的端到端测试是 P1–P3，两份指南是 P4。
+P1 → P2 → P3；P4 随 P2 一起。对应 issue 的「完成」：命令与四种语言的端到端测试是 P2、P3，两份指南是 P4。

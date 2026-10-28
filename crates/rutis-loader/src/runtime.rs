@@ -97,34 +97,6 @@ pub(crate) use connections::{claimed, claimed_names};
 pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
 
-/// How often starting a program is tried while it is busy (ETXTBSY), and
-/// the first pause between tries, doubled after each.
-pub(crate) const BUSY_TRIES: u32 = 5;
-const BUSY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
-
-/// Run `spawn` again while it fails because the file is busy: on Linux a
-/// file just written cannot be run (ETXTBSY) while a process another
-/// thread is starting still holds it open for writing, until that process
-/// runs its own program a moment later (Go's os/exec and cargo retry too).
-pub(crate) fn retry_busy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-    // ETXTBSY on Linux and macOS.
-    const ETXTBSY: i32 = 26;
-    let mut pause = BUSY_PAUSE;
-    let mut tries = 1;
-    loop {
-        match spawn() {
-            Err(error)
-                if cfg!(unix) && error.raw_os_error() == Some(ETXTBSY) && tries < BUSY_TRIES =>
-            {
-                std::thread::sleep(pause);
-                pause *= 2;
-                tries += 1;
-            }
-            result => return result,
-        }
-    }
-}
-
 use rutis::internal::CtxInternal;
 #[cfg(doc)]
 use rutis_bridge::runtime::RuntimePlugin;

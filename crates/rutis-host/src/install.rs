@@ -2,13 +2,13 @@
 //! they come from (npm, PyPI, a Go module, a local path), recorded in
 //! `installed` and given a row (docs/design-plugin-install-2026-10-27.md).
 //!
-//! The installing is `rutis_loader::install`'s; here are the file (which
+//! The installing is [`crate::installer`]'s; here are the file (which
 //! one, its records, its rows and runtimes, written back in its own key
 //! order) and what is said.
 
 use std::path::{Path, PathBuf};
 
-use rutis_loader::install::{Error as InstallError, Installed, Installer, Places};
+use crate::installer::{Error as InstallError, Installed, Installer, Places};
 use rutis_loader::report::{RowStatus, Supply};
 use serde_json::{json, Map, Value};
 
@@ -23,6 +23,8 @@ struct Target {
     /// The file as written; `{}` for one not there yet.
     raw: Map<String, Value>,
     config: HostConfig,
+    /// Its records (`installed`), by row name.
+    installed: std::collections::BTreeMap<String, Installed>,
 }
 
 impl Target {
@@ -46,7 +48,20 @@ impl Target {
             Ok(Value::Object(raw)) => raw,
             _ => return Err(format!("{}: not a JSON object", path.display())),
         };
-        Ok(Self { path, raw, config })
+        let installed = config
+            .installed
+            .iter()
+            .filter_map(|(row, record)| {
+                let plugin = Installed::of_row(row, record.from.clone())?;
+                Some((row.clone(), plugin))
+            })
+            .collect();
+        Ok(Self {
+            path,
+            raw,
+            config,
+            installed,
+        })
     }
 
     /// Its file name, as the lines say it (`rutis.json`).
@@ -125,7 +140,7 @@ impl Target {
     }
 
     fn installer(&self) -> Installer {
-        Installer::new(self.places()).with_installed(self.config.installed.values().cloned())
+        Installer::new(self.places()).with_installed(self.installed.values().cloned())
     }
 
     /// Write it back: its keys in their order, two-space indents, through
@@ -249,44 +264,20 @@ fn install_error(error: InstallError, file: &str) -> String {
     }
 }
 
-/// `rutis-host add [--dry-run] <reference> [rutis.json]`.
+/// `rutis-host add <reference> [rutis.json]`.
 pub async fn add(args: &[String]) -> Result<(), String> {
-    let usage = "usage: rutis-host add [--dry-run] <npm:package | pypi:package | Go module | ./path>[@version] [rutis.json]";
-    let dry_run = args.iter().any(|arg| arg == "--dry-run");
-    let rest: Vec<&String> = args.iter().filter(|arg| *arg != "--dry-run").collect();
-    let (reference, file) = match rest.as_slice() {
+    let (reference, file) = match args {
         [reference] => (reference.as_str(), None),
         [reference, file] => (reference.as_str(), Some(file.as_str())),
-        _ => return Err(usage.into()),
+        _ => {
+            return Err(
+                "usage: rutis-host add <npm:package | pypi:package | Go module | ./path>[@version] [rutis.json]"
+                    .into(),
+            )
+        }
     };
     let mut target = Target::open(file)?;
     let installer = target.installer();
-    if dry_run {
-        let described = installer
-            .describe(reference)
-            .await
-            .map_err(|error| install_error(error, &target.name()))?;
-        let plugins: Vec<Installed> = described.iter().map(|(plugin, _)| plugin.clone()).collect();
-        outln!(
-            "{}{}",
-            package_said(&plugins),
-            plugins_said_always(&plugins)
-        );
-        for (plugin, schema) in &described {
-            outln!("{}", plugin.name);
-            let version = schema.version.clone().map(Value::String);
-            for line in introduction(
-                version.as_ref(),
-                &json!(schema.inject),
-                &Value::Object(schema.provides.clone()),
-                schema.config.as_ref(),
-            ) {
-                outln!("{line}");
-            }
-        }
-        outln!("nothing was installed (--dry-run)");
-        return Ok(());
-    }
     let added = installer
         .add(reference)
         .await
@@ -302,10 +293,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     // The file: records, rows, the runtime.
     let mut records = target.records();
     for plugin in &added {
-        records.insert(
-            plugin.row_name(),
-            serde_json::to_value(plugin).expect("a record"),
-        );
+        records.insert(plugin.row_name(), json!({ "from": plugin.from }));
     }
     let mut said = Vec::new();
     if !target.declares(&language) {
@@ -377,15 +365,6 @@ pub async fn add(args: &[String]) -> Result<(), String> {
         false => outln!("{}: added {}", target.name(), said.join(", ")),
     }
     Ok(())
-}
-
-/// `: plugin a` or `: plugins a, b`, whatever the package.
-fn plugins_said_always(plugins: &[Installed]) -> String {
-    let names: Vec<&str> = plugins.iter().map(|plugin| plugin.name.as_str()).collect();
-    match names.as_slice() {
-        [one] => format!(": plugin {one}"),
-        all => format!(": plugins {}", all.join(", ")),
-    }
 }
 
 /// Each row's id and name in `rows` and its groups.
@@ -461,7 +440,7 @@ async fn check_rows(target: &Target, names: &[String]) -> Result<(), String> {
 /// The records of the package `wanted` names: a plugin's row name, its
 /// name, or its reference (`from`, with no version).
 fn package_of<'a>(target: &'a Target, wanted: &str) -> Option<(String, Vec<&'a Installed>)> {
-    let installed = &target.config.installed;
+    let installed = &target.installed;
     let from = installed
         .get(wanted)
         .or_else(|| installed.values().find(|record| record.name == wanted))
@@ -576,7 +555,7 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
             packages.push(found);
         }
         None => {
-            for record in target.config.installed.values() {
+            for record in target.installed.values() {
                 if !packages.iter().any(|(from, _)| *from == record.from) {
                     packages.push((record.from.clone(), None));
                 }
@@ -593,7 +572,6 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
     let mut failed = false;
     for (from, version) in &packages {
         let before: Vec<Installed> = target
-            .config
             .installed
             .values()
             .filter(|record| record.from == *from)
@@ -623,10 +601,7 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
         }
         for plugin in &upgraded.plugins {
             if !before.iter().any(|record| record.name == plugin.name) {
-                records.insert(
-                    plugin.row_name(),
-                    serde_json::to_value(plugin).expect("a record"),
-                );
+                records.insert(plugin.row_name(), json!({ "from": plugin.from }));
                 outln!(
                     "{package}: new plugin {name}: add a row {{ \"id\": \"{id}\", \"name\": \"{row}\" }} to run it",
                     name = plugin.name,
@@ -688,4 +663,13 @@ fn is_group(row: &Value) -> bool {
         row.get("group"),
         None | Some(Value::Null | Value::Bool(false))
     )
+}
+
+/// `rutis-host go add`: `go install <module>` into `dir`, with the install
+/// code `add` uses; its words as before.
+pub fn install_go_module(module: &str, dir: &Path) -> Result<(), String> {
+    crate::installer::install_go_module(module, dir).map_err(|error| match error {
+        InstallError::Failed(_) => format!("go install {module} failed"),
+        other => other.to_string(),
+    })
 }

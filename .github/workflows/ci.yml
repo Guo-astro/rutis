@@ -529,7 +529,7 @@ jobs:
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
-        run: cargo test -p rutis-loader --features node,python,go,bun,peer,install
+        run: cargo test -p rutis-loader --features node,python,go,bun,peer
 
       # Both runtimes, every transport, and the conformance suites.
       - name: cargo test (rutis-bridge, all features)
