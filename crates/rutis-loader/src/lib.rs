@@ -89,6 +89,7 @@ pub mod resolve {
 /// What rutis-host and the tests use. No stability promise.
 #[doc(hidden)]
 pub mod internal {
+    pub use crate::loader::followed_rows;
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};
