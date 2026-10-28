@@ -251,7 +251,12 @@ pub(crate) fn answer_status(
     host: &host::Host,
     calls: bool,
 ) -> Option<control::Serving> {
-    match control::serve(target, host.loader.clone(), calls.then(|| host.root())) {
+    match control::serve(
+        target,
+        host.loader.clone(),
+        host.status_report(),
+        calls.then(|| host.root()),
+    ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
         Err(why) => {

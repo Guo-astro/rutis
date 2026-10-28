@@ -155,6 +155,15 @@ A node row's (`rutis-bridge/peer`) state only says that the row runs; whether it
 - Whole seconds are written `30s`; other waits to a tenth of a second.
 - States are checked every 200 ms and only changes are printed: a line the same as the last one is not printed again (the same refusal every 30 seconds is printed once), and a state lasting less than 200 ms may not be printed. Nothing is printed while a dialing side has no result yet (connecting), nor while a listening side has no far end yet.
 
+The connections of the remote runtimes `runtimes.remote` connects itself (`dial`, `listen`, `listen` + `instances`) print lines starting `runtime <name>`:
+
+| Output | Meaning |
+| --- | --- |
+| `runtime <name>: link connected`, … | One runtime (`dial`, `listen`): its link's state, each line as the node row's in the table above, prefixed `runtime <name>` instead (a node row of the old form still uses its row id) |
+| `runtime <name>: connected <id>` | Many: a connection came in and is an instance |
+| `runtime <name>: disconnected <id> (<reason>)` | Many: the connection ended (or a newer one with the same id took over); its instance closed |
+| `runtime <name>: refused (<reason>)` | Many: a connection was refused before it became an instance, such as a runtime not speaking the row contract (`lacks rows.v2 and hosts`); a connection with a wrong token is refused in its handshake and not printed |
+
 A listener that fails in an `emit` (the emitter does not wait, so nobody else hears of it) prints one line on stderr, where it ran: `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>` for the host's own, the same line from the runtime for a runtime's; a call the host could not deliver names where it went (`in runtime <name>`, `in node <peer>`). A failing filter of an `emit` prints `rutis: filter of <name> from row <row> failed: …` (`from the mount` for a plugin a mount loaded).
 
 ### Events
@@ -354,12 +363,16 @@ runtimes:
   py: running (pid 4243)
 calls:
   caller → slow.wait  42s
+connections:
+  gpu: link connected
+  worker: worker-1, worker-2
 ```
 
 - `rows`: each row (a row inside instances once per instance, as `<row> in <group> #<number>`) and its state: `running`, `starting`, `stopped`, `disabled`, and `waiting` for a waiting row when rutis cannot say for what; a waiting row says what it waits for (in the words of `run`'s waiting lines); a failed row, the first line of its failure. When a runtime exits, its rows show at once that they wait for it.
 - `services`: each service by name and the row providing it; one the host (Rust) provides says `host`.
 - `runtimes`: each runtime's state (`running`, `starting`, `down`, `stopped`), how one that exited ended, and a local runtime's process id.
 - `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
+- `connections`: the remote runtimes `runtimes.remote` connects itself (the part is left out when there are none). One runtime: its link's state (as `run`'s link lines; before it connects, `connecting` or `waiting for it to connect`); many: the ids connected now (`none connected` when none is).
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
 `run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (`dev` accepts it, `run` with `--allow-call`; see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
@@ -488,7 +501,7 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `py` | `project` (default `.`), `python`, `restart` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one (objects it handed out and that are held elsewhere do not count as use: once it stopped, calls on them fail with `peer-gone`); `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
-| `remote` | `name`, `language`, `listen`, `instances` | A runtime on another machine: connected through a node row with `"runtime": "<name>"`, see [Connect nodes](nodes.en.md); or, with `listen` and `instances`, one that connects in, see below. |
+| `remote` | `name`, `language`, `dial`, `listen`, `instances`, `transport` | A runtime on another machine, written whole in one entry: `dial` has rutis dial it, `listen` waits for it to connect in, `listen` + `instances` makes each connection an instance; see [Remote runtimes](#remote-runtimes) below. With none of them, it is connected through a node row with `"runtime": "<name>"` (the form before 0.19), see [Connect nodes](nodes.en.md). |
 
 If a runtime package is missing, startup fails and prints an installation command. When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
 
@@ -503,6 +516,43 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 A runtime enabled so that cannot start with its defaults (no `package.json`, `@arcships/rutis-runtime` not installed, or no `rutis` in the Python environment, say) does not stop the host: a warning on stderr says why and what to do (`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`), its rows fail as before (`unresolved: no plugin named …`), and the other rows run. A runtime declared under `runtimes` that cannot start still fails the start.
 
 `restart` of `node`, `py`, `bun`, `go` and `swift` (`"no"`, the default; `"on-failure"`; `"exit"`) says what happens when the runtime's process ends on its own (for `go` and `swift`, each of their runtimes'); see [When a runtime ends](#when-a-runtime-ends).
+
+#### Remote runtimes
+
+One `remote` entry describes a remote runtime whole; no node row is needed:
+
+| `dial` | `listen` | `instances` | Meaning |
+| --- | --- | --- | --- |
+| address | — | — | One runtime, which rutis dials; its `--id` is `name` |
+| — | listener | — | One runtime, which connects in; its `--id` is `name` |
+| — | listener | group | Many, each connection an instance (see [Runtimes that connect in](#runtimes-that-connect-in)) |
+| — | — | — | No connection of its own: a node row with `"runtime": "<name>"`, or the embedding program, provides its session |
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "remote": [
+    { "name": "gpu",    "language": "python", "dial": "wss://gpu.example.com:7443/rutis" },
+    { "name": "mac",    "language": "swift",  "listen": "public" },
+    { "name": "worker", "language": "python", "listen": "public", "instances": "worker" }
+  ] },
+  "rows": [
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "calendar", "name": "mac:calendar" },
+    { "id": "worker", "group": true, "instanced": true, "config": [
+      { "id": "chunker", "name": "worker:chunker" }
+    ] }
+  ]
+}
+```
+
+- Token: `RUTIS_TOKEN_<NAME>` (the runtime's name in upper case, `-` as `_`), else `RUTIS_TOKEN`. With `dial` it is presented; with `listen` it admits the runtime connecting in, and without one the host does not start.
+- `transport`: optional, `websocket` by default. A host's own way of connecting (a relay, QUIC, …) implements `Transport`, which the Rust program embedding rutis-host mounts (`Embedding`'s `transports`), and `transport` names it; one runtime and many both use it. On another transport, `listen` names that transport's own listener; no listener of that name is needed in `listen`.
+- Refused at startup: `dial` with `listen` (`dial and listen both set`), `dial` with `instances` (`dial and instances both set`), `instances` without `listen`, `transport` without `dial` or `listen`, a `transport` the host does not have, a `listen` listener that does not exist, and a node row with `"runtime"` for the same runtime (`link row <id> connects it too`).
+- One runtime's `listen` takes part in the same-token check as a listening node row does (#702, #726): two entries that would accept one token stop the host at startup.
+- When the remote side does not contain a row's plugin, only that row fails (`runtime <name>: this connection does not contain plugin <plugin>`); the other rows are not affected, and adding such a row is not refused.
+- How the connections change: [What `run` prints](#what-run-prints); their state now: `connections` in [Seeing the current state](#seeing-the-current-state).
 
 #### Runtimes that connect in
 
@@ -528,7 +578,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 - Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
 - The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`runtime <name>: this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
 - The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
-- No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
+- No node row is needed. `instances` goes with `listen` (`listen` alone is one runtime); a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
 - `<name>:` rows belong in that group; anywhere else the row fails.
 
 A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --peer <this host's id> <project>`, a Go plugin binary with `<binary> dial:wss://… --id <id> --peer <this host's id> <project>`, and Node and Bun runtimes with `dial:` too; the commands are in [Connect nodes](nodes.en.md#runtimes-that-connect-in).
