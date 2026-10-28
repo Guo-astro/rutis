@@ -27,7 +27,7 @@ Issue：不另开，Refs [#694](https://github.com/arcships/rutis/issues/694)（
 | 层 | 是什么 | 规则 |
 | --- | --- | --- |
 | 平台 | `rutis` 内核（含 `rutis-macros`）、`rutis-bridge`、`rutis-loader`、各语言 SDK 与运行时 | 只放五项职责要的东西 |
-| `rutis-host` | 参考宿主与工具 | 只能用平台的公开 API，不能把功能推进平台 |
+| `rutis-host` 与工具 crate `rutis-types` | 参考宿主与工具 | 只能用平台的公开 API，不能把功能推进平台 |
 | 其余 | 业务 | 平台不为它兜底 |
 
 原则：
@@ -66,15 +66,15 @@ Issue：不另开，Refs [#694](https://github.com/arcships/rutis/issues/694)（
 | `waterfall_sync` 与协议方式 `waterfall-sync` | `host.rs:248`、`ctx.rs:1430`、`events/api.rs:400,494–507,691–700`、`events.rs:123–146`（`Mode::WaterfallSync`）、`bus.rs:933,1024,1038–1046,1122,1168`、`bus/run.rs:477–610`、`events/remote.rs:113,151–200` | Rust 生产无发出方。示例 `examples/sync_decision.rs`（整份只演示它）、`benches/events.rs:79–83`、loader 测试 `rust_participant.rs:407–409` | C | 接收分支：bridge `events/hub.rs:1160,1254`（清单漏列）、`events/link.rs:495,578`（#811 改写的文件）、测试工具 `runtime/testing/events.rs` 与 `events.expected.json` 的 `waterfall-sync/*` 两个用例；六个 SDK 的接收分支见 §七；`lib.rs:38` 的"six dispatch modes"改成五种。内核现有的 3 处 `unsafe` 全部只为同步 next 存在（`bus/run.rs:589`、`events/remote.rs:163,197`），随之消失 |
 | `internal` 里的 `get_key`、`require_key`、`provide_key` | `internal.rs:99,104,122`；`ctx.rs:1488,1521,1543` | 生产：bridge 留下的 `marked.rs:172,223`、`runtime/rows.rs:317`、`services.rs` 余下部分；loader `catalog.rs:120,125`、`runtime.rs:878,1008`、`runtime/rows.rs:122`；内核 `deps.rs:63,97`；其余在 #811 删除的文件里 | C（与 `*_at` 重复） | 改用 `Key::of/named/dynamic(..).instance(..)` 与 `get_at`/`require_at`/`provide_at`。调用方要改为持有 `Key<T>`：`RuntimeRows::key() -> TypeKey`（`rows.rs:51`，公开）与 `catalog.rs` 的闭包签名跟着改。内核 `deps.rs` 改用 crate 内部方法 |
 | 线上错误名 `"CordisError"` | `service.rs:1024`（`FailCordis`） | 生成器 `build/exports.rs:479–491,1856–1858,1876`；生成文件 `examples/rust-services/rows/services.d.ts`、`examples/marked-services/rows/services.{d.ts,py}`；测试 `marked_services.rs:274`；指南 `rust-host.md:145,718` | C | 改名为 `"Error"`，`code` 仍是 `ErrorKind` 的变体名；生成的类型 `CordisErrorThrown` 改为 `ErrorThrown`。理由：0.18 [诊断设计](design-diagnostics-2026-10-26.md) §4.5 规定面向开发者的文字只用开发者写过的东西，开发者写的是 `rutis::Error`。生成器对旧路径 `rutis::CordisError` 的识别一起删。六个 SDK 与 specs 里没有这个名字 |
-| `anyhow` feature、`from_anyhow`、`From<Error> for anyhow::Error` | `Cargo.toml:22–23,26`；`error.rs:374–379,439–444` | 只有 `tests/author_api.rs:227–245`；CI `ci.yml:493–495` 专门跑它；没有 Cargo.toml 打开它 | C | 指南给替代写法 `.map_err(\|e\| Error::msg(format!("{e:#}")))`。bridge 生成器里识别 `anyhow::Result` 的代码与这个 feature 无关，随 §八 处理 |
+| `anyhow` feature、`from_anyhow`、`From<Error> for anyhow::Error` | `Cargo.toml:22–23,26`；`error.rs:374–379,439–444` | 只有 `tests/author_api.rs:227–245`；CI `ci.yml:493–495` 专门跑它；没有 Cargo.toml 打开它 | C | 指南给替代写法 `.map_err(\|e\| Error::msg(format!("{e:#}")))`。生成器里识别 `anyhow::Result` 的代码与这个 feature 无关，留（随 §八 搬到 `rutis-types`） |
 | `try_filter`、`try_filter_named` | `events/api.rs` | 只有 loader 测试 `rust_participant.rs:354` | C | `Ctx::filter` 留，见 3.3 |
 
 ### 3.2 搬
 
 | 名字 | 清单 | 核实后的处理 |
 | --- | --- | --- |
-| loader 的 Schema 校验 `rutis_loader::config::check`（594 行） | 未列 | **搬进内核** `rutis::config`，见 3.4 第 2 条 |
-| `internal::config` 的提示工具 `closest`、`distance`、`value_text`、`path_text`、`number_text`、`float_text` | 移到 loader | **留在内核**，从 `internal` 移出：`closest` 公开在 `rutis::config`，其余改为 `pub(crate)`。见 3.4 第 2 条 |
+| loader 的 Schema 校验 `rutis_loader::config::check`（594 行） | 未列（用户 2026-10-28 确认） | **搬进内核** `rutis::config`，内核是唯一一份配置校验，见 3.4 第 2 条 |
+| `internal::config` 的提示工具 `closest`、`distance`、`value_text`、`path_text`、`number_text`、`float_text` | 移到 loader | **留在内核**，从 `internal` 移出，公开在 `rutis::config`。见 3.4 第 2 条 |
 | 过滤与作用域描述 `row`、`group`、`mark_row`、`mark_scope`、`CtxHost::scope`/`row`、`events::Scope`、`ListenerInfo.row/scope` | 移到 loader | **不搬**，见 3.4 第 3 条 |
 
 ### 3.3 留
@@ -96,7 +96,7 @@ Issue：不另开，Refs [#694](https://github.com/arcships/rutis/issues/694)（
 ### 3.4 核实后与清单不同的地方
 
 1. **`plugin_from` 与 `plugin_with` + `PluginFactory`、`Definition::new` 并不完全重复**。`Definition::new` 加 `ctx.plugin(def.at(..))` 得到的 `FiberView` 不能 `update(config)`（`fiber.rs:500`，没有 factory）；`plugin_with` 要手写 `PluginFactory`，把闭包变成 factory 的 `build_fn`（`plugin.rs:241`）是隐藏的。处理：照清单删 `plugin_from`；需要 `update` 的宿主实现公开的 `host::PluginFactory`（`host.rs:26`），不公开 `build_fn`，不另开入口。指南两处与 doctest 改为 `PluginFactory` 的写法。
-2. **提示工具不能整体搬到 loader**：内核的 `decode` 自己就用 `closest`、`value_text`（`config/decode.rs:11,105,111,126,214`），`ConfigIssue::at` 用 `path_text`（`config/mod.rs:108`），而 loader 依赖内核，内核不能反过来调 loader。另一个事实：§七 要把 Schema 校验只留 Rust 一份，但插件值（`ctx.plugin(def.at(&ctx, config))`）的配置由 bridge 直接 `rows.load`（`runtime/process.rs:1220–1299`），不经过 loader；校验只放 loader，这条路径就没人校验。内核是 loader 与 bridge 共同的下层，`check` 只依赖 `serde_json` 与内核自己的 `ConfigError`。处理：`rutis_loader::config::check` 搬进内核 `rutis::config`，与 `ConfigError`、`decode` 放在一起，配置的校验、补默认值、解码、错误文字在内核只有一份；loader 的行与 bridge 的插件值都调它。提示工具留在内核：`closest` 公开（loader `loader/waits.rs:439`、rutis-host `call.rs:107` 用它说"是不是指"），其余 `pub(crate)`。这样 rutis-host 不再用 `rutis::internal::config`，loader 也不再用。
+2. **提示工具不能整体搬到 loader**：内核的 `decode` 自己就用 `closest`、`value_text`（`config/decode.rs:11,105,111,126,214`），`ConfigIssue::at` 用 `path_text`（`config/mod.rs:108`），而 loader 依赖内核，内核不能反过来调 loader。另一个事实：§七 要把 Schema 校验只留 Rust 一份，但插件值（`ctx.plugin(def.at(&ctx, config))`）的配置由 bridge 直接 `rows.load`（`runtime/process.rs:1220–1299`），不经过 loader；校验只放 loader，这条路径就没人校验。内核是 loader 与 bridge 共同的下层，`check` 只依赖 `serde_json` 与内核自己的 `ConfigError`。决定（用户 2026-10-28 确认）：`rutis_loader::config::check` 搬进内核 `rutis::config`，与 `ConfigError`、`decode` 放在一起；内核是唯一一份配置校验，配置的校验、补默认值、解码、错误文字只在这里；loader 的行与 bridge 的插件值都调它。提示工具留在内核，从 `internal` 移出、在 `rutis::config` 公开（`closest`、`distance`、`value_text`、`path_text`、`number_text`、`float_text`；loader `loader/waits.rs:439,441`、rutis-host `call.rs:107` 用 `closest`、`distance` 说"是不是指"）。这样 rutis-host 与 loader 都不再用 `rutis::internal::config`。
 3. **`row`、`group`、`mark_row`、`mark_scope` 不是只服务过滤描述**：内核的监听器描述（`bus.rs:333,336`）、错误文字（`bus.rs:1195` 的 `FilterFailed`、`fiber.rs:604`）、Stuck 与诊断的显示名（`fiber.rs:476`、`diagnostics.rs:60,164,262,284`）、`ServiceChanged` 的 `row`（`ctx.rs:815–816`）、`Definition` 的挂载范围检查（`definition.rs:117,151`）都用它们；它们也是事件协议的一部分（[事件协议](design-events-protocol-2026-10-18.md) §3 的 `rows.load` 第七个参数 `{scope, id}`、§4.2 描述里的 `row`/`scope`），各语言 SDK 的过滤函数读的就是这些字段。处理：不搬，内核保留；写入它们的仍是 loader（`loader/plugins.rs:97,132`）。理由：行与作用域是协议里的值、是诊断里的名字，属于职责 1 与 5。`Ctx::filter` 留（3.3），只删 `try_filter*`。
 4. **`check()` 被测试当作卡住门控的钩子**：`tests/load_window.rs:383–410` 的 `CheckedProvider` 用阻塞的 check 停住门控，4 个测试（`:456,:491,:631,:837`）是保证 `core/D6`、`core/D7`、`core/D14`、`loader/rows-gate-on-services` 的证据。处理：这 4 个测试改为用一个 `apply` 里等待信号、之后才 `provide` 的提供方插件卡住门控；不加测试钩子。`contract.rs` 的 check 测试与 `lifecycle_diagnostics.rs::cached_check_diagnostics_do_not_call_user_code` 删；`parity.rs:345` 把 `refresh` 当作 Cordis `reflect.notify` 的对应，改写对拍说明。
 5. **拦截器的测试文件里约一半测的是 `ServiceWriter`**（`service_intercepts.rs:219–700`）：这部分移到新文件 `service_writer.rs`，用例不变。projection 的两个测试（`a_proxy_held_during_reentrant_replacement_stays_callable`、`a_retried_publication_keeps_its_handle`）用写拦截制造重入与拒绝：前者改为用真实的重新提供（另一个提供方在 Drop 里重入）制造；后者测的拒绝只有拦截器能制造，随拦截器删掉，`projection.rs` 的重试路径只剩 `provide_mut_at` 失败一个入口，由现有的属主检查测试覆盖。
@@ -152,7 +152,7 @@ Issue：不另开，Refs [#694](https://github.com/arcships/rutis/issues/694)（
 6. **`report_line` 不搬**：bridge 自己的 `events::testing::Tap`（`events/testing.rs:64`，loader 测试在用）用它；它依赖私有的 `named`；rust-host 指南（`:658`）把它写给嵌入方，嵌入方的事件监听器出错时用它打印一行。它与 `report`、`headline` 是同一组错误文字，属于职责 5。处理：留在 bridge 的 `events`，rutis-host 照旧调用。
 7. **`RUTIS_TRACE` 不只服务本机调试**：rust-host 指南（`:496,:574`）把它写给 Rust 嵌入方，dsh 的挂载也经它（`runtime/spawn.rs:289–300`）。清单的条件是"若只服务本机调试"，条件不成立。处理：留在 bridge，随 #811 的 `pipe::spawn` 走（`pipe::spawn` 在 bridge）。
 8. **Node/Bun/Python 运行时一侧的行前缀不能删**：这三种运行时一个进程里有多个插件，前缀 `[行名] ` 按"当前在跑的行"加（Node `output.mjs:32–81`、Bun `runner.ts:143–147`、Python `_output.py:37–99`），宿主读管道时分不出是哪一行写的。bridge 的 `output_prefix` 只给一进程一插件的 Go/Swift/Kotlin 用。处理：运行时一侧的前缀保留；rutis-host 只给二进制运行时加运行时名前缀，并设 `RUTIS_PREFIX_OUTPUT` 让脚本运行时自己加。
-9. **删 `events-v2` 拒绝后，旧对端只能靠协议版本拒绝**：endpoint 格式的版本 `ENDPOINT_PROTOCOL = 3`（`session/mod.rs:18`）从 2026-10-06（`ee5b605c`）起没变，0.11–0.18 的远程运行时都说 3。#811 §七 写"0.18 的宿主或运行时：握手时按协议版本拒绝"，这句本身就要求 0.19 的 endpoint 版本与 0.18 不同。处理：#811 的 S2b 把 `ENDPOINT_PROTOCOL` 升到 4（WebSocket 子协议 `rutis.4`），本稿的协商删除排在它之后。这是落实 #811 已写的结论，不加新机制。
+9. **会话协议版本升到 4**：删 `events-v2` 拒绝后，旧对端只能靠协议版本拒绝。endpoint 格式的版本 `ENDPOINT_PROTOCOL = 3`（`session/mod.rs:18`）从 2026-10-06（`ee5b605c`）起没变，0.11–0.18 的远程运行时都说 3；#811 §七 写"0.18 的宿主或运行时：握手时按协议版本拒绝"，这句本身也要求 0.19 的版本与 0.18 不同。决定（用户 2026-10-28 确认）：`ENDPOINT_PROTOCOL` 升到 4（WebSocket 子协议 `rutis.4`），落在 #811 的 S2b（与删 compat 同一个 PR）。0.18 及更早的宿主或运行时连上时在握手被拒，不重试，文字写明升级：`the far end speaks protocol 3, this side 4: upgrade the far end to rutis 0.19`。本稿的协商删除（CL11a）排在 S2b 之后。
 10. **`greeting` 的载体被 #811 删**：它挂在 `LocalRuntime`（`local.rs:50,152,293`），经 `LinkConfig::local_runtime()`（`link.rs:140,154`，默认 30 秒）与 `Retry::handshake` 生效，三者都在 #811 删除清单里，#811 没给新位置。处理：`greeting` 成为 `rutis-host/spawn` 的 Rust 构造选项（默认 30 秒），与现在一样只在 Rust 嵌入上有；rutis.json 不加字段。与 #811 S4 同一个 PR。
 11. **`plugins` 能力**：Rust 的自查（`rpc.rs:2421`）是死分支，删。六个 SDK 的"只向声明了 `plugins` 的对端发插件值"不是旧版兼容，是保证 `bridge/plugin-values` 的内容，并且 #811 的 `sessions.open` 会出现运行时对运行时的会话；不删。
 12. **`objects` 的删除连带一致性夹具**：Go 夹具 `go/rutis/internal/fixtures/session/main.go:193` 故意不声明 `objects`，`rpc/tests.rs:2676–2706` 测"不能发到 py"，跨语言用例 `objects.expected.json:180` 的 `no-objects-declared`。这些随删除一起删。
@@ -196,7 +196,7 @@ loader 只留 `restart(name)` 与状态。**按需启动与闲置停止留在 lo
 | --- | --- | --- |
 | 配置表达式：`Expressions`（`catalog.rs:526`）、`ExprScope`（`:459`）、`{"__jsExpr":…}`（`loader/desired.rs:111,161`、`loader/mod.rs:90`）、`readable`、`readable_keyed`（`catalog.rs:226,233`）、`NotReadable`（`error.rs:103`） | — | Cordis/dsh 兼容：dsh 的 profile 用它们（`profile/mod.rs:23,73`、`profile/expr.rs:19,782`、`profile/yaml.rs:22`）。见 5.4 第 4 条 |
 | `patch.rs`（367 行） | — | Cordis/dsh 兼容：照搬 cordis-plugin-include 的格式与行为 |
-| 层叠（`Layer`、`apply_patches`）与 overlay 层（`Loader::set_overlay`、`overlays()`） | `api.rs:97,115` | 层叠是 dsh 在用；overlay 见 5.4 第 5 条 |
+| 层叠（`Layer`、`apply_patches`） | — | dsh 在用（它的 `--patch` 就是一层） |
 
 `internal` 模块（给外部的后门，`lib.rs:89–105`）按下表处理，处理完删掉模块：
 
@@ -213,11 +213,11 @@ loader 只留 `restart(name)` 与状态。**按需启动与闲置停止留在 lo
 
 ### 5.4 核实后与清单不同的地方
 
-1. **不带前缀的 npm 包名是现在的主写法，也是 dsh 兼容要的写法**。清单写"行名不能再写不带前缀的 npm 包名"。核实：rutis-host 默认 Node 运行时走 `RuntimeResolver::node`；指南 `rutis-host.md:75,596`、`typescript-plugin.md:283,293`、`rust-host.md:440,460` 都写包名；#805 的 `add` 给 Node 写的就是裸包名，`Installed::of_row` 明确拒绝 `node:` 前缀；持久化样本 0.8–0.18 有 `weather-plugin` 等；dsh 的 Cordis 行（`@deepseek-ai/dsh-storage`、`@rutis/dsh-aimux`）是 Cordis 的写法——Cordis 插件名就是 npm 包名。处理：**删 Rust 里的 npm 解析，保留不带前缀的行名**，名字原样交给 Node 运行时解析（现有的远程分支 `runtime.rs:130–133` 已经这样做，#811 统一本机与远程后本来也只剩这一条路）。`RuntimeResolver` 只有一个，Node 行名两种：不带前缀（默认 Node 运行时，Cordis/dsh 与 #805 的写法）、`<运行时名>:<包或文件>`（每个插件一个进程，#683 H1 的 `modules`）。代价：失去 Rust 一侧按 `package.json` 的 `version` 判断过期；运行时重启后的重新解析由已有的按会话判断（`take_stale`，#701）覆盖，运行中的 Node 不会因为文件变了换代码，所以不需要版本判断。删掉约 215 行与 `url` 依赖，不需要迁移。
+1. **不带前缀的 npm 包名是现在的主写法，也是 dsh 兼容要的写法**。清单写"行名不能再写不带前缀的 npm 包名"。核实：rutis-host 默认 Node 运行时走 `RuntimeResolver::node`；指南 `rutis-host.md:75,596`、`typescript-plugin.md:283,293`、`rust-host.md:440,460` 都写包名；#805 的 `add` 给 Node 写的就是裸包名，`Installed::of_row` 明确拒绝 `node:` 前缀；持久化样本 0.8–0.18 有 `weather-plugin` 等；dsh 的 Cordis 行（`@deepseek-ai/dsh-storage`、`@rutis/dsh-aimux`）是 Cordis 的写法——Cordis 插件名就是 npm 包名。决定（用户 2026-10-28 确认）：**删 Rust 里的 npm 解析，保留不带前缀的行名**，名字原样交给 Node 运行时解析（现有的远程分支 `runtime.rs:130–133` 已经这样做，#811 统一本机与远程后本来也只剩这一条路）。`RuntimeResolver` 只有一个，Node 行名两种：不带前缀（默认 Node 运行时，Cordis/dsh 与 #805 的写法）、`<运行时名>:<包或文件>`（每个插件一个进程，#683 H1 的 `modules`）。代价：失去 Rust 一侧按 `package.json` 的 `version` 判断过期；运行时重启后的重新解析由已有的按会话判断（`take_stale`，#701）覆盖，运行中的 Node 不会因为文件变了换代码，所以不需要版本判断。删掉约 215 行与 `url` 依赖，不需要迁移。
 2. **Go/Swift 两种行名是两种用途**：`go:<插件>` 在所有二进制里找，`go-<文件>:<插件>` 在同名冲突时指定二进制；`rutis-host dev` 的 `dev_rows`（`languages/go.rs:107–109,164–178`）用限定写法把行钉在开发构建上。#805 的 `add`/`installed`、指南主写法都用 `go:<插件>`。处理：**只留语言前缀写法 `go:<插件>`、`swift:<插件>`**。理由：它不把行名和文件名绑在一起（二进制改名行不失效），#805 与指南已经用它。两个二进制提供同名插件时启动报错，写明两个文件名，由插件作者改名——与内核"同名后来的被拒"一致，不另给消歧写法。`dev` 下 Go/Swift 运行时只看开发构建的目录（`.rutis/go/`），不看已装目录，所以 `go:<插件>` 只命中开发构建。持久化样本里的 `go-dns:resolver`、`swift-MacKit:clipboard` 按 #811 §十一 第 8 条的同一做法：样本删掉这些写法，加 `rejected/` 用例。
 3. **`report::RowState` 是协议值**（线上 `rutis/row` 事件的取值，[事件协议](design-events-protocol-2026-10-18.md) §8、保证 `events/framework`），不能并进带载荷的 Rust 枚举。另有第四套 `check::RowStatus`（`loader/check.rs:79`，`check` 的结果，不是运行状态，本稿不动）。处理：`status::RowState` 删，状态快照直接用 `EntryStatus`（`Starting` 由 `Running` 的快照阶段给出）；`report::RowState` 作为线上取值保留，改名 `RowEventState`，避免两个同名类型。完成条件：`rutis-host status`、`call` 的输出逐字不变。
 4. **配置表达式的公开名字里本来没有 JS**：只有线上键 `__jsExpr` 与文档注释带 JS。`__jsExpr` 是 Cordis/dsh 的格式键，dsh 的 YAML（`!!js` → 这个节点）、持久化样本 `0.15.1`、`0.17.2` 的 `cordis.patch.expected.json` 都在用。处理：键名不改，只改文档注释的措辞。
-5. **`Loader::set_overlay` 没有 dsh 使用**：dsh 的 `--patch` 是普通的应用层（`profile/layers.rs:550–557` 做成 `Layer::new("patch:…")`，经 `watch.rs:95` 的 `reconcile`），不走 `set_overlay`。它唯一的生产调用方是要删的 rutis-dev（`server.rs:285,309`）。处理：本稿按清单保留 `set_overlay`，保留理由更正为"`Loader` 公开的覆盖层，保证 `loader/overlay`（`guarantees.md:356`）"；dsh 需要的是层叠与 `apply_patches`。rutis-dev 删掉后它只剩测试 `tests/overlay.rs` 与这条保证，见 §十三 后的说明。
+5. **`Loader::set_overlay` 没有 dsh 使用**：dsh 的 `--patch` 是普通的应用层（`profile/layers.rs:550–557` 做成 `Layer::new("patch:…")`，经 `watch.rs:95` 的 `reconcile`），不走 `set_overlay`。它唯一的生产调用方是要删的 rutis-dev（`server.rs:285,309`）。清单的保留理由不成立。决定（用户 2026-10-28 确认）：overlay 层删除——`Loader::set_overlay`（`api.rs:115`）、`overlays()`（`api.rs:97`）、overlay 状态（`loader/mod.rs:412,528–536`、`loader/commit.rs:312–332`）、测试 `tests/overlay.rs`（187 行）、保证 `loader/overlay`（`guarantees.md:356`）；与删 rutis-dev 放在同一个闭环（§十三 CL23）。
 6. **别名是每种语言 8 个**，已在 5.1 按实数写。
 
 ### 5.5 #683 宿主限制（rutis-bridge 与 loader 两层一起写）
@@ -238,7 +238,7 @@ loader 只留 `restart(name)` 与状态。**按需启动与闲置停止留在 lo
 
 | 名字 | 现状（核实） | 一起改的 |
 | --- | --- | --- |
-| `crates/rutis-dev` 整个 crate | src 588 行、tests 389 行、公开项 13；版本 0.1.0，`publish = false`；无任何 crate 依赖；不在发布列车；功能与 rutis-host 的 `control.rs`（`status`、`call`）、`dev.rs:376`（`reload`）、`status.rs`（状态变化）重复 | 根 `Cargo.toml:3`、`Cargo.lock`、`ci.yml:175` 与 `nightly.yml:112` 的路径过滤、`docs/ci.md:80`、`docs/quality-status.md` 第 59、71、105、142、411、413 行、`design-host-dev-mode-2026-09-25.md:4` 的状态行 |
+| `crates/rutis-dev` 整个 crate | src 588 行、tests 389 行、公开项 13；版本 0.1.0，`publish = false`；无任何 crate 依赖；不在发布列车；功能与 rutis-host 的 `control.rs`（`status`、`call`）、`dev.rs:376`（`reload`）、`status.rs`（状态变化）重复 | 同一个闭环删 loader 的 overlay 层（5.4 第 5 条）；根 `Cargo.toml:3`、`Cargo.lock`、`ci.yml:175` 与 `nightly.yml:112` 的路径过滤、`docs/ci.md:80`、`docs/quality-status.md` 第 59、71、105、142、411、413 行、`design-host-dev-mode-2026-09-25.md:4` 的状态行 |
 | `crates/rutis-migrate` | src 3354 行（`lib.rs` 3226、`main.rs` 128）、tests 286 行；只做 0.16→0.17；无 crate 依赖 | 退出发布列车：`scripts/train.mjs:26–27`、`release.yml:8` 的注释、`docs/release.md:9` 的表、根 `Cargo.toml`、`Cargo.lock`。crates.io 上的旧版仍可 `cargo install`，所以 `crates/rutis/README.md:53`、`guide/README.md:32`、`migration-0.17.md` 的指向保留。#811 §八 把"rutis-migrate 的名字表"（`lib.rs:2878`）列为影响方，crate 删后那一项不用做 |
 | `rutis-host go add` | `main.rs:383–416`（约 35 行）、分发 `:100`、说明 `:11`、用法 `:76–78`；无专门测试 | 见 6.3 第 1 条 |
 
@@ -265,7 +265,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 ### 6.4 核实后与清单不同的地方
 
 1. **#805 保留了 `go add`**：#805（未合并）让 `go add` 改调 `install_go_module`，它的设计稿兼容一节与 I1 写"`go add` 保留，行为不变"。行为差异：`add <Go 模块>` 用同样的 `GOBIN=runtimes.go.dir go install` 安装，另外写 `installed` 记录与行；`go add` 只装二进制、不改配置。处理：照清单在 #805 合并后删 `go add`（§十三 CL25），同一个 PR 改 `docs/design-plugin-install-2026-10-27.md` 的兼容一节与 I1、`rutis-host.md:78,96`、`go-plugin.md:411`、`templates/go/README.md:11`、保证 `host/go-add`。"只装不加行"的用法不再有：插件要被加载本来就要一行。
-2. **`Loader::set_overlay` 不是 dsh 在用**（5.4 第 5 条）。
+2. **`Loader::set_overlay` 不是 dsh 在用**，随 rutis-dev 一起删（5.4 第 5 条）。
 3. **`apply_patches` 的使用方是 dsh，不是 rutis-host**（5.3 的表已按事实写）。
 
 ## 七、各语言 SDK
@@ -296,6 +296,11 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | `objects` 兜底 | `session.mjs:348–349` | `session.ts:337–338` | `peer.py:1150–1156` | `peer.go:749–750`、`crossing.go:153–166` | `Peer.swift:733–742` | `Peer.kt:500`、`Crossing.kt:46–50` |
 | `sync` 字段（只在对端声明 `sync-wait` 时发） | `session.mjs:573–575` | `session.ts:563–565` | `peer.py:1436–1439` | `peer.go:1113–1116` | `Peer.swift:930–932` | `Peer.kt:738–740` |
 | `waterfall-sync` 接收分支（§三） | `events.mjs:524,540`（两份）、`bridge/features.mjs:341,345` | `events.mjs:524,540` | `runner.py:1037–1038` | `internal/events/events.go:105,111,118,349`、`events.go:710` | `EventsCore.swift:111,113`、`RuntimeEvents.swift:478` | `Bus.kt:34,38`、`EventsRuntime.kt:458`、`api/*.api` |
+
+另删两处（清单外，用户 2026-10-28 确认），放进各自语言的闭环：
+
+- Go 只在 dev 下生效的 `warnChainless` 提示（`go/rutis/runtime.go:1165–1192`，调用 `events.go:537`、`runtime.go:1075`；`devMode` 只为它存在）。`RUTIS_DEV` 仍由 Node、Bun 的行跟踪使用（`runner.mjs:106`、`plugin.ts:125`），rutis-host `dev.rs:54` 照旧设置。`design-go-runtime-2026-10-10.md:257` 的一行删。
+- Kotlin、Swift 的"旧宿主的 emit 回复是 future"分支（`EventsRuntime.kt:305–311`、`RuntimeEvents.swift:350–359`）：核实发现它不是旧宿主的兼容，见 7.6 第 11 条。
 
 "插件 API 1、2 的装载"没有专门的分支，三种脚本运行时都只查 `api > PLUGIN_API`。处理：删 `api ?? 1` 的默认与注释；插件对象由 `definePlugin` / `plugin(...)` 生成，总带 `api`。不新加 `api < 3` 的拒绝。
 
@@ -365,7 +370,9 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 9. **测试工具与快速路径的先后**：测试工具完全依赖本地分发，所以每种语言的快速路径删除与测试工具改写放在同一个 PR（7.5 开头）。
 10. **SDK 与 bridge 的协商删除有先后**：bridge 先停止检查对端的 `events-v2`、`objects`、`sync-wait`，SDK 再停止检查宿主的与停止自己声明，最后 bridge 停止声明。反过来做，带方法的对象会被拒、等待环检测会失效。§十三 CL11 按这个顺序拆。
 
-## 八、生成类型的新做法
+11. **Kotlin、Swift 的"旧宿主的 emit 回复是 future"分支在当前宿主上仍会走到**：bridge 的 `events.dispatch` 在同一行已有 emit 在跑时把这次 emit 排队，回一个 future（`crates/rutis-bridge/src/events/hub.rs:809–814` 的 `run_emit` 返回 false 一支）；Go 的同一处 `peer.Settle`（`events.go:541–545`）注释写的正是这个现行行为（#677）。这个分支的注释（c2c1b7e8，2026-10-21）写成"older host"，与事实不符。删掉它，同一行连续 emit 时后一次的完成与错误会丢失，Kotlin、Swift 的测试会失败。处理：按 §13.1 第 2 条不绕过——分支不删，只把注释改为"宿主排队时回一个 future"，在 Kotlin、Swift 的 CL26 里做；这一条报回用户。
+
+## 八、生成类型：做法不变，搬出平台
 
 ### 8.1 现在
 
@@ -375,54 +382,36 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 
 `src/exports.rs`（228 行）与 `src/marked.rs`（1096 行）是运行时代码（错误转换、按名字对外），不属于生成，留。
 
-### 8.2 核实：宏看得到什么
+### 8.2 决定
 
-清单写"宏本来就看得到全部类型"。核实不成立：属性宏只拿到被标注的 `impl` 块的 token——方法名、`async`、接收者、参数名、参数与返回值**按书写的路径**、方法的 doc 注释、`#[service(skip)]`。被引用的结构体与枚举的字段、字段 doc、serde 属性、枚举变体（错误码从这里来）、类型别名指向什么、路径属于哪个 crate，宏都看不到。现有例子正是跨 crate 的：`examples/rust-services` 的数据类型 `NewEntry`、`Entry`、`CalendarError` 在依赖 crate `rust-services-calendar` 里，那个 crate 写明不认识 rutis-bridge。`crates.rs` 就是为这个存在的。
+生成的做法不变（用户 2026-10-28 定）：保留 `Exports` 读源码生成 TypeScript 与 Python 的实现。作者不用为数据类型多写任何东西，只有手写 serde 实现的类型用 `Exports::declared` / `declared_python` 写出它的类型。只把它从 rutis-bridge 搬出平台：它是给开发者的工具（§二 的 B 类），不是平台的职责。
 
-另一个事实：build.rs 在本 crate 编译之前运行，宏带进二进制的描述在 build.rs 里拿不到，所以 `Exports::generate()` 的 build.rs 写法无法保留。
+搬到一个独立的工具 crate `rutis-types`（`crates/rutis-types`，随发布列车发布），不搬进 rutis-host。理由（按依赖关系）：
 
-### 8.3 新做法
+- 生成器只依赖 syn、quote、proc-macro2 与标准库（核实：`build/exports.rs`、`build/crates.rs` 的 `use` 里没有 rutis 或 bridge 的任何东西），独立成 crate 不需要拆任何依赖。
+- 它的使用方里有 build.rs（`examples/rust-services/build.rs`，以及照 rust-host 指南写的嵌入方）。搬进 rutis-host，build.rs 就要把 rutis-host 整棵依赖（loader、bridge、tokio、WebSocket、TLS）拉进 build-dependencies；rutis-host 的库还声明不做 semver 承诺（`lib.rs:4–5`）。独立 crate 只带 syn。
+- rutis-host 依赖 `rutis-types` 实现 `rutis-host types`。
 
-宏只描述它看得到的签名；被引用类型的结构由 `schemars::JsonSchema` 给出。理由：loader 已经用 `schemars 1` 描述 Rust 插件的配置（`crates/rutis-loader/src/resolver.rs:11,501`），Rust 插件作者已经为配置类型派生它；它的派生遵守 serde 属性、把 doc 放进 description、对 chrono/uuid/url 有现成实现；不用我们再写一份 serde 属性解析。数据类型所在的 crate 只依赖 schemars，不必认识 rutis（`rust-services-calendar` 加 `#[derive(JsonSchema)]` 即可）。
+写法不变：`rutis_types::Exports::new().typescript(..).python(..).declared(..).declared_python(..)`，`.generate()`、`.declarations()`、`.write(dir)` 都照旧；`rutis-host types <crate 目录>`、`--python` 照旧；build.rs 只把依赖从 `rutis-bridge = { features = ["exports"] }` 改成 `rutis-types`，`use` 路径从 `rutis_bridge::build::Exports` 改成 `rutis_types::Exports`。生成的内容逐字不变。
 
-1. **宏怎样带出**：`#[rutis::service]` 为每个方法生成一个 `fn() -> serde_json::Value` 的描述函数，放进现有的 `service::Entry`（`service.rs:155`）新字段 `describe`，随现有的 `__on_load!` 登记，不另开登记表。参数与返回类型的结构经内核的宏 `rutis::internal::describe!(T)` 取得：类型实现了 `JsonSchema` 时取它的 Schema，没有实现时得到"未知"（TypeScript `unknown`、Python `Any`）；判断用宏现有的那种在展开后的代码里按 trait 选择的写法（宏现在就这样判断 `Result` 与函数类型）。`Result<T, E>`、函数与回调、`rutis::Error`、`serde_json::Value` 由内核给出固定描述。
-2. **依赖**：内核加 feature `describe`（依赖 `schemars`），`rutis-bridge` 打开它；只有带 bridge 的程序才有类型结构，纯 Rust 宿主的内核依赖不变（设计哲学 §二 的依赖表加一句）。
-3. **描述的格式**（内部格式，不是公开契约，带版本号）：
+### 8.3 为什么不改做法
 
-   ```json
-   {
-     "format": 1,
-     "services": [
-       {
-         "name": "calendar",
-         "doc": "…",
-         "methods": [
-           {
-             "name": "add",
-             "kind": "async",
-             "doc": "…",
-             "params": [{ "name": "entry", "schema": { "$ref": "#/$defs/NewEntry" } }],
-             "returns": { "$ref": "#/$defs/Entry" },
-             "errors": { "$ref": "#/$defs/CalendarError" }
-           }
-         ]
-       }
-     ],
-     "$defs": { "NewEntry": { "…": "JSON Schema" } }
-   }
-   ```
+清单原写"由 `#[rutis::service]` 宏在编译时把服务描述带进二进制"。核实后三种改法都不用：
 
-   `format` 变了，读取方报"描述格式 N，这个 rutis-host 读 M"，不兼容旧格式。
-4. **生成**：bridge 的 `build` 模块换成 `types` 模块：`Types::new().typescript(path).python(path).declared(..).declared_python(..).write()` 与 `.check()`（比对文件是否最新），读当前进程里登记的描述，生成 TypeScript 与 Python。生成部分沿用 `exports.rs` 现有的输出代码（约 1000–1300 行），输入从 syn 的语法树换成描述。`.declared`、`.declared_python`（手写一个类型的输出，H2 给透明包装类型用）保留。
-5. **`rutis-host types` 怎样读**：读**运行中的宿主**——经控制 socket（与 `rutis-host call` 同一个，`control.rs`）发 `types` 请求，宿主进程用 `Types` 生成并写到给定目录。不读编译产物：从二进制里找自定义段要按平台处理，`#[used]` 的段在链接时是否保留因平台而异。Rust 嵌入的宿主（没有 rutis-host 的控制接口）在自己的测试里调 `Types::check()` / `write()`，这就是 `examples/marked-services` 现在的快照测试写法。`rutis-host types <crate 目录>` 的旧写法删。
-6. **对示例与 feature 的影响**：
-   - `examples/rust-services`：build.rs 删，改为测试 `Types::check()`；`rust-services-calendar` 的数据类型加 `#[derive(schemars::JsonSchema)]`。
-   - `examples/marked-services`：快照测试改用 `Types`，两份快照文件（`services.d.ts`、`services.py`）内容不变（`CordisError` 改名已在之前的 PR 做）。
-   - bridge `cordis` feature：不再依赖 `exports`；`cordis/build.rs:291` 的标识符检查改为手写（字母或下划线开头，后接字母、数字、下划线，排除关键字表）。bridge 不再依赖 syn、quote、proc-macro2；`exports` feature 删。
-   - 保证 `bridge/marked-services` 里"依赖 crate 的类型包一层再标注"一句改为"数据类型派生 `JsonSchema`；没有派生的类型生成为 `unknown`/`Any`，可以用 `.declared` 手写"。
-7. **与已合并 PR 的关系**：#798（Python 类型，K2）与 #810（文档与 H4，K5）生成的内容不变，来源从读源码变为宏的描述；`rutis-host types --python` 的写法不变，只是改为对运行中的宿主。H4 与生成无关（7.5）。`.declared_python` 留。
+- **宏带描述**：属性宏只拿到被标注的 `impl` 块——方法名、`async`、参数名、参数与返回值**按书写的路径**、方法的 doc 注释；被引用的结构体与枚举的字段、字段 doc、serde 属性、枚举变体（错误码从这里来）、类型别名指向什么、路径属于哪个 crate，宏都看不到。现有例子正是跨 crate 的：`examples/rust-services` 的数据类型在依赖 crate `rust-services-calendar` 里，`build/crates.rs` 就是为这个存在的。另外 build.rs 在本 crate 编译之前运行，宏带进二进制的描述在 build.rs 里拿不到。
+- **serde-reflection 一类（运行时追踪 serde）**：已核实不可行。rutis 的值类型、`#[serde(tag)]`、`untagged`、`flatten` 都走 `deserialize_any`，追踪追不出结构；不同模块里的同名类型会被当成一个，给出错误的结果；返回值只有 `Serialize` 时也走不通。现在的生成器这些都支持，有测试。
+- **schemars（`JsonSchema` 派生）**：要作者给每个参数、返回值、错误里出现的类型都加派生，依赖 crate 里的类型也要加；这违背"作者不用多写"。
 
-完成条件：两个示例的生成结果与现在提交的文件逐字相同；做不到的构造（某个 serde 写法 schemars 给出不同的 Schema）在 PR 里列出，停下报告，不在生成器里加特例。
+### 8.4 影响
+
+- bridge：`build/` 三个文件（4515 行）整体移到 `crates/rutis-types/src/`；`pub mod build`（`lib.rs:32`）、`exports` feature 删；`cordis/build.rs:291` 的 `syn::parse_str::<syn::Ident>` 改为手写检查（字母或下划线开头，后接字母、数字、下划线，排除关键字），`cordis` 不再依赖 `exports`（syn 的另一个用户 `cordis/build/rust.rs` 由 CL10 删）。之后 bridge 不再依赖 syn、quote、proc-macro2。
+- `src/exports.rs`（228 行）与 `src/marked.rs`（1096 行）是运行时代码（错误转换、按名字对外，loader 也用），不是生成，留在 bridge。
+- rutis-host：`Cargo.toml:32` 的 `rutis-bridge` `exports` feature 改为依赖 `rutis-types`；`main.rs:150–184` 改 `use`。
+- `examples/rust-services`：build-dependency 改 `rutis-types`；`examples/marked-services`：dev-dependency 改 `rutis-types`，快照测试不变。
+- 生成器的单元测试（`exports.rs` 内约 830 行）随文件搬，测试夹具字符串里的 `crate::types` 等不变。
+- 发布列车：`scripts/train.mjs` 在 `rutis-host` 之前加 `rutis-types`；`docs/release.md:9` 的表加一行。
+- 与已合并 PR 的关系：#798（Python 类型）、#810（文档与 H4）不受影响，只是代码所在的 crate 变了；CL5 改的 `CordisError` 识别在搬之前做。
+- 保证 `bridge/marked-services` 的验证列里 `exports.rs` 单元测试的路径改为新 crate。
 
 ## 九、改前改后
 
@@ -433,10 +422,11 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | crate | 现在行数（src） | 现在公开项 | #811 后（估计） | 本稿后（估计） | 本稿的主要变化 |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `rutis` | 16180 | 408 | 16180 | 约 15500 | 删拦截器 −390、bus −170、run.rs −150、ctx −90、internal −80 等约 −1230；加 `config::check` +约 560 |
-| `rutis-macros` | 1284 | 4 | 1284 | 约 1500 | 加描述函数 +约 250；删 `actor` 参数 |
-| `rutis-bridge` | 41378 | 750 | 约 36100 | 约 30300 | 反方向挂载 −1040、`runtime/spawn.rs` −767、`process.rs` −213、`output.rs` −259、`runtime/mod.rs` −71、协商 −60、#683 −约 400；`build/` −4515、加 `types` +约 1300 |
-| `rutis-loader` | 15404 | 297 | 约 13610 | 约 11900 | `config.rs` 搬进内核 −594、重启策略搬走 −250、npm 解析 −215、别名与死方法 −约 400 |
+| `rutis-macros` | 1284 | 4 | 1284 | 约 1280 | 删 `actor` 参数 |
+| `rutis-bridge` | 41378 | 750 | 约 36100 | 约 29000 | 反方向挂载 −1040、`runtime/spawn.rs` −767、`process.rs` −213、`output.rs` −259、`runtime/mod.rs` −71、协商 −60、#683 −约 400；`build/` −4515（搬到 `rutis-types`） |
+| `rutis-loader` | 15404 | 297 | 约 13610 | 约 11850 | `config.rs` 搬进内核 −594、重启策略搬走 −250、npm 解析 −215、别名与死方法 −约 400、overlay 层 −约 60 |
 | `rutis-host` | 11128 | 176 | 约 10760 | 约 12000 | 接收语言启动 +200、输出 +260、重启 +330（合并去重 −100）、`rutis-host test` +约 300；`go add` −35 |
+| `rutis-types`（新） | — | — | — | 4515 | 从 bridge 的 `build/` 原样搬来 |
 | `rutis-dev` | 588 | 13 | 588 | 0 | 删 |
 | `rutis-migrate` | 3354 | 5 | 3354 | 0 | 删 |
 | dylib 族（`rutis-dylib`、`-meta`、`-launcher`、`rutis-sdk`、`rutis-xtask`） | 4087 | 57 | 4087 | 4087 | 不动 |
@@ -455,7 +445,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | `rutis/src/key.rs` | 531 | 27 | 约 495 |
 | `rutis/src/internal.rs` | 202 | 21 | 约 120 |
 | `rutis/src/config/mod.rs` + `decode.rs` | 1136 | 18 | 约 1700（收下 `check`） |
-| `rutis-bridge/src/build/`（三个文件） | 4515 | 73 | 0 |
+| `rutis-bridge/src/build/`（三个文件） | 4515 | 73 | 0（搬到 `crates/rutis-types`） |
 | `rutis-bridge/src/cordis/build/rust.rs` | 855 | 1 | 0 |
 | `rutis-bridge/src/cordis/server.rs` | 106 | 2 | 0 |
 | `rutis-bridge/src/runtime/spawn.rs` | 767 | 0 | 0 |
@@ -471,7 +461,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | `rutis-loader/src/runtime/binary.rs` | 2667 | 35 | 约 2400 |
 | `rutis-loader/src/backoff.rs` | 68 | 7 | 0（搬 rutis-host） |
 
-- crate 个数 17 → 15；workspace 成员 29 → 27；crates.io 发布列表 10 → 9。
+- crate 个数 17 → 16（删 `rutis-dev`、`rutis-migrate`，加 `rutis-types`）；workspace 成员 29 → 28；crates.io 发布列表 10 → 10（去 `rutis-migrate`，加 `rutis-types`）。
 - 内核 `CtxInternal` 的方法 18 → 9（删 `get_key`、`require_key`、`provide_key`、`provide_checked`、`refresh`、`intercept_require_as`、`intercept_set_as`、`try_filter`、`try_filter_named`）；`CtxHost` 的方法 30 → 27。内核根导出 14 个名字不变。
 - rutis-loader 根导出 20 项（12 个名字、8 个公开模块）→ 约 18：去掉 `backoff`、`internal`（`peer` 由 #811 去掉），加 `patch`。
 - bridge 的 Cargo feature 11 个（`default`、`node`、`python`、`go`、`bun`、`kotlin`、`swift`、`websocket`、`exports`、`cordis`、`testing`）→ 4 个（`websocket`、`cordis`、`testing`、`default` 为空）；依赖少 syn、quote、proc-macro2。
@@ -514,8 +504,8 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | #777 E5 Kotlin | `Moved.kt` | 删；版本常量挪进 `Versions.kt`；"旧 `rutis-ksp` 生成的代码照样编译"不再成立 | advanced、generated 包 |
 | #778 E6 | 《迁移到 0.19》一节、速查表、ci.md、release.md | 迁移一节改为"直接移动，无旧名"；`release.md:36` 的规则改写（7.6 第 1 条） | 速查表的新位置写法 |
 | #765 K1 / #803 K1d | 契约描述（已删） | 无 | — |
-| #798 K2 | Python 类型 | 来源改为宏的描述（§八）；`Exports` 换成 `Types` | 生成内容、`--python` 写法 |
-| #810 K5 / H4 | 文档、测试工具拒绝宿主已有的服务名 | H4 改由真实内核报，两处手写检查删；rust-host.md 里 `build.rs`/`Exports` 的表改写 | python-plugin.md 的用法 |
+| #798 K2 | Python 类型 | 代码随 `build/` 搬到 `rutis-types`（§八） | 生成内容、`Exports` 的写法、`--python` |
+| #810 K5 / H4 | 文档、测试工具拒绝宿主已有的服务名 | H4 改由真实内核报，两处手写检查删；rust-host.md 里 build.rs 的依赖改为 `rutis-types` | python-plugin.md 的用法 |
 | #770 T4 | 测试工具 `t.on` | 实现改为真实内核上的测试插件 `ctx.on`；两个测试改为跑在真实内核上 | `t.on(name, listener, options)` 写法与指南 |
 | #772 C1、#794 C2 | `rutis-host call`、`dev` 的服务行 | `call.rs:107`、`dev.rs:611` 改用公开 API（6.3） | 功能 |
 | #801、#804 | 指南、去掉 `--allow-call` | 无 | — |
@@ -528,7 +518,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | --- | --- | --- |
 | [SDK 入口收敛](design-sdk-entry-convergence-2026-10-27.md) | §二 决策表、§五 整节、§六、§七、§八、§九 第 2、3、5 步 | 旧位置不再可用；删"为什么不在 0.19 直接删"与 Python 不能删的理由；提示文字表改为编译错误或导入错误；完成条件里的 `DeprecationWarning`、SA1019、"0.17.2 的 `rutis-ksp` 能编译"删 |
 | [宿主管住插件](design-host-plugin-limits-2026-10-27.md) | 标题、头部、§二、§三、§四 H2/H3/H5、§4.2、§4.3、§五 第 1–4 条、§六、§七 第 2、3、5 条、§八 第 1–3 步 | 只剩 §4.1（H1 每插件一进程）与 §4.4（greeting）；头部写明调用时限与服务名单 0.19 内加了又删、未发布 |
-| [宿主契约类型](design-host-contract-types-2026-10-27.md) | §三 H1、§4.1、§五、§七 | H1 的来源改为 §八；`build.rs` 写法删；H4 改为真实内核拒绝；"协议、内核、loader、各语言运行时不变"改写 |
+| [宿主契约类型](design-host-contract-types-2026-10-27.md) | §三 H1、§4.1、§五、§七 | `Exports` 所在 crate 改为 `rutis-types`（写法不变）；H4 改为真实内核拒绝；"协议、内核、loader、各语言运行时不变"改写 |
 | [配置 Schema](design-config-schema-2026-10-27.md) | §2.1、§2.2、§2.3、§六 开头、§6.1、§七 第 3 条、§八、§十一 第 2–5 步 | 校验在内核一份，SDK 只解码；Cordis 行例外保留；0.18 前 Go 的 `required` 特例删；用例表只测内核与 `check` |
 | [宿主自己写插件](design-host-writes-plugins-2026-10-27.md) | L3（第 41、148 行） | "宿主要限制，用 #683 的 `allowed_services`"改为"限制哪些插件能用 `loader` 是宿主的业务，由宿主在自己的行上处理（例如 `isolate`）" |
 | [0.18 诊断](design-diagnostics-2026-10-26.md) | §6.1 末句 | 删"宿主想限制第三方插件的资源，属于 0.19 的 #683" |
@@ -560,8 +550,8 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
    | `Loader::waiting_for`、`locate`、`schema_of` | `waits`/`waits_of`、`row`、`resolve(name).await?.schema` |
    | `GoBinaries`、`GoResolver`、`GoRuntimes` 等 16 个别名 | `binary::*` 加 `Go`、`Swift` |
    | `LocalRuntime::call_limit`、`kill_on_timeout`、`allowed_services`，错误码 `timeout` | 调用方自己限时；超时后 `processes().kill()` 加 `FiberView::restart()`；能用哪些服务由宿主自己决定 |
-   | `rutis_bridge::build::Exports` 与 build.rs | `rutis_bridge::types::Types` 在测试里调用；数据类型派生 `schemars::JsonSchema` |
-   | `rutis-host types <crate 目录>` | 宿主运行时 `rutis-host types --out <目录>` |
+   | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
+   | `Loader::set_overlay`、`overlays()` | 删；要覆盖一行就在自己的层里写 |
    | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
    | `rutis_bridge::Launcher::node` 等、bridge 的语言 feature | rutis-host 的库（`rutis-host/spawn`）；测试用 `rutis-test-support` |
    | `rutis_loader::internal::*` | `rutis_loader::patch::apply_patches`、公开的 `is_runtime_name`、`read_binary_manifest`、`Go::PLUGIN_API` |
@@ -574,15 +564,15 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 6. **测试工具**：写法不变；运行时需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`），Node 项目把 `@arcships/rutis-runtime`、`@arcships/rutis-host` 加为开发依赖；Kotlin 测试工具的依赖坐标改为 `rutis-testing`；设备上的测试连开发机上的 `rutis-host test --listen`。
 7. **事件**：Kotlin 在 Android 主线程上的同步 `bail` 一律被拒；Go 会话结束后的 `emit` 报会话已结束。
 8. **`rutis-host go add`**：改用 `rutis-host add <模块路径>`（它会同时写一行）。
-9. **工具**：`rutis-dev` 删；`rutis-migrate` 不再随 0.19 发布（0.17 的迁移仍可 `cargo install rutis-migrate --version 0.18.0`）。
+9. **工具**：`rutis-dev` 删；生成类型的 `Exports` 搬到新 crate `rutis-types`，build.rs 改依赖它，写法不变；`rutis-migrate` 不再随 0.19 发布（0.17 的迁移仍可 `cargo install rutis-migrate --version 0.18.0`）。
 10. **一起升级**：同 #811 §十一 第 5 条——宿主与各语言运行时、SDK 一起升到 0.19；协议版本 4 与 0.18 不相遇。
 
 ## 十二、要同步改的文档
 
 | 文档（两种语言） | 改什么 |
 | --- | --- |
-| `docs/guarantees.md` | 删：`events/v2-required`、`events/presence`、`host/go-add`。改：`core/D4`、`core/D16`、`core/D17`、`events/waterfall`（去掉 `waterfall_sync` 与它的测试）；`core/D11`（去掉 `take_cleanup_errors`）；`core/D14`（证据改为 3.4 第 4 条的新测试）；`core/D18`、`events/reserved`、`events/serial-bail`（换测试）；`events/old-peer-refused`、`bridge/cross-version-meetings`（按协议版本 4 拒绝，与 #811 一起）；`events/hub-filter`（过滤一律在宿主）；`events/one-bus`、`sdk/testing-matches-runtime`（测试工具就是真实内核，差异一节删）；`sdk/undeclared-use`（由内核报）；`sdk/config-schema`（只有内核与 `check`）；`sdk/leaf-events`（删 `refuseRemoved` 一句）；`host/output-prefix`、`host/output-lines-whole`（测试路径）；`loader/go-runtimes`、`loader/swift-runtimes`（只留语言前缀写法，重启策略在 rutis-host）；`host/runtime-restart`（测试路径）；`loader/schema`、`bridge/marked-services`（`waiting_for`、`schema_of`、生成类型的写法）；`host/plugin-limits`（收窄）；`host/check`（去掉"0.12 SDK"）；`boundary/5.6`（夹具与测试改写后测试名不变）；`tests/events.rs:602` 的悬空标签 `events/waterfall-sync` 删。每行的测试名随测试改，§15 计数重算 |
-| `docs/guide/rust-host.md` | `plugin_from`（:39,89）、`take_cleanup_errors`（:146）、`CordisError`（:145,718）、拦截（:238）、`share_registered_only`（:434）、`LocalRuntime::*`（:426–560，改为 rutis-host 库）、限制选项表（:512–523）、`waterfall_sync`（:641,654）、`waiting_for`（:243,487）、Go 别名（:539–547 doctest）、`Exports`/`build.rs`/`.declared`（:246,280,667–675,731–748）、`report_line`（:658，留）、`RUTIS_TRACE`（:496,574，留） |
+| `docs/guarantees.md` | 删：`events/v2-required`、`events/presence`、`host/go-add`、`loader/overlay`。改：`core/D4`、`core/D16`、`core/D17`、`events/waterfall`（去掉 `waterfall_sync` 与它的测试）；`core/D11`（去掉 `take_cleanup_errors`）；`core/D14`（证据改为 3.4 第 4 条的新测试）；`core/D18`、`events/reserved`、`events/serial-bail`（换测试）；`events/old-peer-refused`、`bridge/cross-version-meetings`（按协议版本 4 拒绝，与 #811 一起）；`events/hub-filter`（过滤一律在宿主）；`events/one-bus`、`sdk/testing-matches-runtime`（测试工具就是真实内核，差异一节删）；`sdk/undeclared-use`（由内核报）；`sdk/config-schema`（只有内核与 `check`）；`sdk/leaf-events`（删 `refuseRemoved` 一句）；`host/output-prefix`、`host/output-lines-whole`（测试路径）；`loader/go-runtimes`、`loader/swift-runtimes`（只留语言前缀写法，重启策略在 rutis-host）；`host/runtime-restart`（测试路径）；`loader/schema`、`bridge/marked-services`（`waiting_for`、`schema_of`、生成类型的写法）；`host/plugin-limits`（收窄）；`host/check`（去掉"0.12 SDK"）；`boundary/5.6`（夹具与测试改写后测试名不变）；`tests/events.rs:602` 的悬空标签 `events/waterfall-sync` 删。每行的测试名随测试改，§15 计数重算 |
+| `docs/guide/rust-host.md` | `plugin_from`（:39,89）、`take_cleanup_errors`（:146）、`CordisError`（:145,718）、拦截（:238）、`share_registered_only`（:434）、`LocalRuntime::*`（:426–560，改为 rutis-host 库）、限制选项表（:512–523）、`waterfall_sync`（:641,654）、`waiting_for`（:243,487）、Go 别名（:539–547 doctest）、`Exports` 的依赖与路径改为 `rutis-types`（:246,280,667–675,731–748，写法不变）、`report_line`（:658，留）、`RUTIS_TRACE`（:496,574，留） |
 | `docs/guide/rust-plugin.md` | `anyhow`（:495）、`plugin_from`（:615，doctest） |
 | `docs/guide/plugin-api.md` | `waterfall_sync`（:68,72,86,212）、events-v2 报错（:227,230）、:253 的 open-host 一句、测试工具差异（:421–432）、Python 弃用规则（:478）、Python 3.10（:265,452） |
 | `docs/guide/open-host.md` | 第 3 节删"调用时限""能用的服务"；`share_registered_only`（:129）；示例代码按 #811 改 |
@@ -594,8 +584,8 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | `docs/core-features.md` | :7,23,45,46,48,55,59,63,81 |
 | `docs/development-handbook.md`、`development-guide.md` | `plugin_from`、`provide_checked`、`waterfall_sync`、`take_cleanup_errors` |
 | `docs/quality-status.md` | `rutis-dev`、Python 3.10 |
-| `docs/design-philosophy.md` | §二 内核依赖表加"带 bridge 时打开 `describe`（schemars）"；§六 Python 3.10+ 改 3.12+ |
-| `docs/release.md` | 发布列表删 `rutis-migrate`（:9）；`PLUGIN_API` 与弃用规则（:36）；Go/Kotlin 版本常量的路径（:18） |
+| `docs/design-philosophy.md` | §六 Python 3.10+ 改 3.12+ |
+| `docs/release.md` | 发布列表删 `rutis-migrate`、加 `rutis-types`（:9）；`PLUGIN_API` 与弃用规则（:36）；Go/Kotlin 版本常量的路径（:18） |
 | `docs/ci.md` | `rutis-dev` 路径过滤（:80）；公开面检查的 deprecated 一节（:99,107）；bridge/loader feature 组合（:103）改为 `RUTIS_TEST_RUNTIMES`；`requires-python`（:276,288,294,342,344）；Swift/Kotlin 测试工具（:108,109）；`anyhow` 任务 |
 | `.agents/skills/rutis-new-runtime/SKILL.md` | :72（测试工具）、:54,117（能力）、:74–77（新语言不再在 bridge 加 `Launcher`/`LocalRuntime`/feature，改为 rutis-host）、:120（本地转发） |
 | `.agents/skills/rutis-new-runtime/references/runtime-contract.md` | 能力表 :34–42（删 `sync-wait`、`signals`、`objects`、`events-v2`；`plugins` 留）、:65（`events`/`emits`）、:113–123（`events.elsewhere`、快速路径、`waterfall-sync`）、:147（旧宿主）、:174（测试工具期望文件） |
@@ -604,7 +594,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | `specs/config-schema/README.md` | :5、:16 |
 | `specs/cross-runtime-sync/README.md` | `sync-wait` 能力（:15） |
 | templates（`crates/rutis-host/templates/`） | `python/pyproject.toml:6`（3.12）；`go/README.md:11`（`add`）；`node`、`bun` 的 `package.json` 加开发依赖；各模板测试按新测试工具重跑 |
-| `README.md`、`CONTRIBUTING.md`、`python/rutis/README.md`、`go/rutis/README.md`、`swift/README.md`、`kotlin/README.md`、`bun/rutis-bun/README.md`、`crates/rutis/README.md`、`crates/rutis-loader/README.md`、`crates/rutis-bridge/README.md`、`examples/native-mount/README.md`、`examples/marked-services/README.md` | Python 3.12；测试工具段落；`LocalRuntime` 语言构造；反方向挂载一行；`EventPattern`/`waterfall_sync`；生成类型写法 |
+| `README.md`、`CONTRIBUTING.md`、`python/rutis/README.md`、`go/rutis/README.md`、`swift/README.md`、`kotlin/README.md`、`bun/rutis-bun/README.md`、`crates/rutis/README.md`、`crates/rutis-loader/README.md`、`crates/rutis-bridge/README.md`、`examples/native-mount/README.md`、`examples/marked-services/README.md` | Python 3.12；测试工具段落；`LocalRuntime` 语言构造；反方向挂载一行；`EventPattern`/`waterfall_sync`；`Exports` 所在的 crate |
 
 历史文档（旧设计稿、`review-*`、`research-*`、0.18 及以前的迁移指南与发布说明）不改。
 
@@ -642,7 +632,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | --- | --- | --- | --- | --- |
 | CL10 反方向 Cordis 挂载 | 删 `rutis_plugin`、`cordis::server`、`runtime/unix.rs`；Node 一侧的 `launch`/`dispose`/`executable`/`io-worker.mjs:55–79`；`cordis/build.rs:291` 的 syn 检查改手写；`cordis` 不再依赖 `exports` | bridge `cordis/build/rust.rs`、`cordis/build.rs:5–6,291`、`cordis/mod.rs:16`、`cordis/server.rs`、`runtime/unix.rs`、`Cargo.toml`；`node/rutis-runtime/src/client.mjs`、`io-worker.mjs`、`test/fixtures/rust-mount.test.mjs`（删）、`bench/sync-call.mjs`（删）；`examples/native-mount` 的 `src/lib.rs`、`src/bin/rutis-counter.rs`、`tests/cordis_mount.rs`、`tests/export_identity.rs`、`build.rs:9–14`、README；bridge `tests/rpc_callbacks.rs:305` 改走本机管道（测试名不变） | `boundary/5.6` 的测试通过；dsh 与 `examples/dsh-baseline`、`interop-experiments` 构建通过 | — |
 | CL11a bridge：不再检查对端的旧能力 | bridge 不再要求对端声明 `events-v2`、不再按对端的 `objects`、`sync-wait` 改变行为；删 mount 层旧特性检查（0.3.0、`require_plugin_values`、无 `scopes` 的旧路）；删 `plugins` 自查自；bridge 自己仍声明这些能力 | `session/rpc.rs:1294,1579,1838,2421,2461,2500`、`relay.rs:41`、`crossing.rs:171–175`、`runtime/process.rs:1087,1231,1251,1265,1329,1517–1524,1577,1607`；测试 `rpc/tests.rs::a_far_end_without_events_v2_is_refused`、`event_hub.rs::a_runtime_without_events_v2_is_refused`、`rpc/tests.rs:2676–2706` 删；guarantees `events/v2-required` 删、`events/old-peer-refused` 改为按协议版本 | 0.18 及更早的对端在握手时被拒（#811 S2b 已升到版本 4） | #811 S2b |
-| CL26-node / bun / py / go / swift / kotlin 各语言：旧宿主分支与旧能力 | 每种语言一个 PR：删 7.2 表里本语言的全部分支（`announce`、`events-v2` 要求、`refuseRemoved`、插件 API 默认、`rows.failed`、`objects` 与 `sync` 的对端检查、`waterfall-sync` 接收）；不再声明 `events-v2`、`objects`、`sync-wait`、`signals`；Python 的 PR 同时把最低版本提到 3.12（7.3） | 本语言 7.2 表列的文件；测试：Go `oldhost_test.go`、`events_session_test.go:455` 删，Node `runner-events.test.mjs`、Bun `test/old-host.test.ts` 的旧宿主用例删，Go 夹具 `internal/fixtures/session/main.go:193` 与 `objects.expected.json:180` 的 `no-objects-declared`（在本语言最后一个 PR 删用例）；本语言的 `public-api` 快照；Python：`_eager.py`、`_unhandled.py`、`tests/test_eager.py`、三处 `requires-python`、ci.yml 与 install.yml 的 3.10、文档里的 3.10 | 本语言的全部测试与 `runtime_conformance` 通过；`git grep` 本语言源码无 `events-v2`、`waterfall-sync` | CL11a；本语言的 #811 R-x 与 S2b（改同一个 `session` 文件）；Kotlin、Swift 另在 A1、A2 之后 |
+| CL26-node / bun / py / go / swift / kotlin 各语言：旧宿主分支与旧能力 | 每种语言一个 PR：删 7.2 表里本语言的全部分支（`announce`、`events-v2` 要求、`refuseRemoved`、插件 API 默认、`rows.failed`、`objects` 与 `sync` 的对端检查、`waterfall-sync` 接收）；不再声明 `events-v2`、`objects`、`sync-wait`、`signals`；Python 的 PR 同时把最低版本提到 3.12（7.3）；Go 的 PR 同时删 `warnChainless`；Kotlin、Swift 的 PR 把"older host answers with a future"的注释改为现行行为（7.6 第 11 条） | 本语言 7.2 表列的文件；测试：Go `oldhost_test.go`、`events_session_test.go:455` 删，Node `runner-events.test.mjs`、Bun `test/old-host.test.ts` 的旧宿主用例删，Go 夹具 `internal/fixtures/session/main.go:193` 与 `objects.expected.json:180` 的 `no-objects-declared`（在本语言最后一个 PR 删用例）；本语言的 `public-api` 快照；Python：`_eager.py`、`_unhandled.py`、`tests/test_eager.py`、三处 `requires-python`、ci.yml 与 install.yml 的 3.10、文档里的 3.10；Go：`runtime.go:1165–1192`、`events.go:537`、`runtime.go:1075`、`design-go-runtime-2026-10-10.md:257`（两种语言） | 本语言的全部测试与 `runtime_conformance` 通过；`git grep` 本语言源码无 `events-v2`、`waterfall-sync` | CL11a；本语言的 #811 R-x 与 S2b（改同一个 `session` 文件）；Kotlin、Swift 另在 A1、A2 之后 |
 | CL11b bridge：不再声明旧能力 | bridge 删 `EVENTS_CAPABILITY`、`signals`、`forwarding`、`objects`、`sync-wait` 的声明；`.agents` 的能力表 | `session/rpc.rs:922,1243–1251`、`session/testing.rs:201`、`rpc/tests.rs:1033`；`runtime-contract.md:34–42` | `grep` 这些能力名在 `crates/rutis-bridge/src` 与六个 SDK 的源码下无结果 | CL26-* 全部 |
 | CL12a 测试起进程辅助 | `rutis-test-support` 加各语言起本机运行时的辅助与 `RUTIS_TEST_RUNTIMES`；bridge、loader、examples 的测试全部切过去；CI 各任务设置 `RUTIS_TEST_RUNTIMES` 代替 `--features` | `crates/rutis-test-support`；bridge 17 个测试文件、loader 约 20 个、`tests/common/runtimes.rs:218,243`、`examples/rust-services`、`marked-services` 的测试；`ci.yml`、`stress.yml`；`docs/ci.md:103` | CI 每个语言任务实际跑了它那门语言的测试（日志里没有 skipped） | #811 S5（`LocalRuntime` 已删，测试已改走 `pipe::spawn`） |
 | CL12b 语言知识移出 bridge | 删 bridge 的 `Launcher::node/python/go/swift/bun`、`node_inherits`、`Process::launch*`/`attach`、`runtime/spawn.rs`、语言 feature；`Process::mount` 改走 `pipe::spawn`，Node 命令放进 `cordis` 模块；`go_runtime_name`/`swift_runtime_name` 搬 loader；输出分行与前缀（`output.rs`、`Stdio::Lines`、`output_prefix`、`prefix_output`）搬 rutis-host；loader 的 `python`、`bun`、`kotlin` feature 删 | bridge `runtime/process.rs`、`runtime/spawn.rs`、`runtime/mod.rs`、`transport/local/output.rs`、`transport/local/spawn.rs`、`Cargo.toml`；loader `Cargo.toml`、`runtime/go.rs`、`swift.rs`、`binary.rs:1550–1557,2293–2310`；rutis-host `lib.rs`、`host.rs:119–121`、`languages/*.rs`、`Cargo.toml:33`；`examples/*/Cargo.toml`、`tests/e2e/fixture-tenants`、`fixture-toolhost`（改用 rutis-host 库）；guarantees `host/output-lines-whole`、`host/output-prefix`；`rust-host.md:426–560`、`crates/rutis-bridge/README.md:5`、`crates/rutis-loader/README.md:17`、`bun/rutis-bun/README.md:28`、`rutis-new-runtime/SKILL.md:74–77` | `cargo tree -p rutis-bridge` 无语言 feature；dsh 构建与 dsh 测试通过；`rutis-host run` 的前缀输出逐字不变 | CL12a、#811 S4、S5 |
@@ -663,7 +653,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 
 | PR | 内容 | 闭环清单 | 完成条件 | 依赖 |
 | --- | --- | --- | --- | --- |
-| CL23 删 rutis-dev | 删 crate | 根 `Cargo.toml`、`Cargo.lock`、`ci.yml:175`、`nightly.yml:112`、`docs/ci.md:80`、`docs/quality-status.md`、`design-host-dev-mode` 状态行 | workspace 构建通过 | — |
+| CL23 删 rutis-dev 与 overlay 层 | 删 crate；删 loader 的 `set_overlay`、`overlays()` 与 overlay 状态（5.4 第 5 条） | loader `loader/api.rs:97,115`、`loader/mod.rs:412,528–536`、`loader/commit.rs:312–332`、`tests/overlay.rs`；guarantees `loader/overlay`；根 `Cargo.toml`、`Cargo.lock`、`ci.yml:175`、`nightly.yml:112`、`docs/ci.md:80`、`docs/quality-status.md`、`design-host-dev-mode` 状态行 | workspace 构建通过；`set_overlay`、`overlays` 在 `crates/` 下搜不到 | — |
 | CL24 删 rutis-migrate | 删 crate，退出发布列车 | 根 `Cargo.toml`、`Cargo.lock`、`scripts/train.mjs:26–27`、`release.yml:8`、`docs/release.md:9` | `node scripts/train.mjs --crates` 不再列它；ci 的打包检查通过 | — |
 | CL25 删 `go add` | 按 6.4 第 1 条 | rutis-host `main.rs:11,76–78,100,383–416`；guarantees `host/go-add`；`rutis-host.md:78,96`、`go-plugin.md:411`、`templates/go/README.md:11`；`design-plugin-install` 兼容一节与 I1 | — | #805 合并 |
 | CL27 `rutis-host test` | 加 `rutis-host test`（标准输入输出上的 session、`--listen`）与插件 `rutis-host/test` | rutis-host `main.rs`、新 `test.rs`；`tests/` 端到端测试；`rutis-host.md` | 用 Node 与 Python 的最小测试插件经它跑通 load、on、emit、update、unload | #811 S4（session 与 listen） |
@@ -672,8 +662,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 
 | PR | 内容 | 闭环清单 | 完成条件 | 依赖 |
 | --- | --- | --- | --- | --- |
-| CL15a 宏带出描述，`Types` 生成 | 内核 `describe` feature 与 `describe!`；宏生成描述函数；bridge 新 `types` 模块（输出代码从 `exports.rs` 搬来）；`rutis-host types` 改为读运行中的宿主；两个示例切到 `Types` | `rutis-macros`、内核 `service.rs`、`Cargo.toml`；bridge 新 `types/`；rutis-host `main.rs:150–184`、`control.rs`；`examples/rust-services`（删 build.rs、calendar crate 派生 `JsonSchema`、加测试）、`examples/marked-services`（`tests/rows.rs`）；guarantees `bridge/marked-services` | 两个示例生成结果与提交的文件逐字相同（§八 完成条件） | CL5 |
-| CL15b 删 syn 生成器 | 删 `build/`、`exports` feature、syn/quote/proc-macro2 | bridge `build/`、`Cargo.toml:33–35,77`；rutis-host `Cargo.toml:32`；`rust-host.md` 的 `Exports` 表；`design-host-contract-types` §三、§4.1 | `cargo tree -p rutis-bridge` 无 syn | CL15a、CL10 |
+| CL15 生成器搬出平台 | 按 §八：`build/` 三个文件原样搬到新 crate `crates/rutis-types`；删 bridge 的 `pub mod build`、`exports` feature 与 syn、quote、proc-macro2 依赖；rutis-host 与两个示例改依赖 | bridge `lib.rs:32`、`build/`、`Cargo.toml:33–35,77`；新 `crates/rutis-types`（`Cargo.toml`、README 两种语言）；根 `Cargo.toml` 的 members、`Cargo.lock`；rutis-host `Cargo.toml:32`、`main.rs:150–184`；`examples/rust-services`（build-dependency、`build.rs` 的 `use`）、`examples/marked-services`（dev-dependency、`tests/rows.rs`）；`scripts/train.mjs`、`docs/release.md:9`；guarantees `bridge/marked-services` 的测试路径；`rust-host.md:246,280,667–675,731–748` 的依赖与路径；`design-host-contract-types` §三、§4.1 | 两个示例的生成结果与提交的文件逐字相同；`rutis-host types` 输出不变；`cargo tree -p rutis-bridge` 里没有 syn | CL5、CL10 |
 
 **各语言 SDK**（每种语言一组，组内按序）
 
@@ -686,7 +675,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 ### 13.3 先后
 
 ```text
-可以马上开始、互不依赖：CL1 → CL2 → CL3；CL4；CL5 → CL15a → CL15b（另需 CL10）；CL7；CL8；CL10；CL13；CL17；CL23；CL24；CL28-*；CL29-bench
+可以马上开始、互不依赖：CL1 → CL2 → CL3；CL4；CL5 → CL15（另需 CL10）；CL7；CL8；CL10；CL13；CL17；CL23；CL24；CL28-*；CL29-bench
 #811 S2b 之后：CL11a → CL26-*（各语言，另需本语言 R-x；Kotlin、Swift 另需 A1、A2）→ CL11b
 #811 S3 之后：CL19 → CL20
 #811 S4 之后：CL27 → CL30-*（另需 CL8、CL29-bench、本语言 CL26）
@@ -697,4 +686,3 @@ CL13 在 #811 S4 之前；CL17 在 #811 S5 之前；CL21 在 CL13 之后
 
 全部合并后，§十二 的文档已随各 PR 改完；发布前按 #690 的发布门跑一遍开发者体验检查，《迁移到 0.19》的"平台清理"一节由各 PR 逐条写入，最后一个 PR 核对条目齐全。
 
-`Loader::set_overlay` 在 CL23 之后只有测试与保证 `loader/overlay` 使用（5.4 第 5 条）；本稿按清单保留，不删。
