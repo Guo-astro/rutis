@@ -584,9 +584,36 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 节点
 
-0.19 重做远程连接（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)），Rust 里直接搭节点的写法随之改变，这一节在新写法落地后补上；现在用 rutis-host 的节点行（见 [连接节点](nodes.md)）。
+0.19 的远程连接只有一种形状（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)）：连接插件拿到一条 `Channel`，交给 `rutis_bridge::Session`。对面是另一个 rutis、语言运行时或设备都一样；对面提供的服务在这里叫 `<对面 id>:<插件>`，这里的服务对面也看得到，事件在一条总线上。宿主要先在根 ctx 提供本端在握手里报的 id：
 
-用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
+```rust
+use rutis::host::FiberState;
+use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+
+root.provide(LocalId(PeerId::new("main")?));
+
+// 一个连接插件的 apply：去连 office，会话卸载后再连。
+loop {
+    let channel = websocket::dial(
+        "wss://office.example.com/rutis",
+        &rutis_bridge::protocol(),
+        Some(&Credential::Bearer(token.clone())),
+        &websocket::Trust::default(),
+        &websocket::Limits::default(),
+    )
+    .await?;
+    let session = ctx.plugin(Session::new(channel));
+    let mut state = session.watch();
+    let _ = state.wait_for(|s| s.state == FiberState::Disposed).await;
+    tokio::time::sleep(backoff.next()).await;
+}
+```
+
+- 要让对面运行一个插件，在 rutis-loader 的配置里写行 `<连接行>:<插件>`，对面不在时这一行等待；Rust 里也可以用 `Session::handshake(&ctx, channel).await?` 拿到 `Greeted`，`greeted.handle().run(插件, 配置)`，再 `ctx.plugin(greeted)` 装上。
+- 本端 id 没有提供时，会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
+- 别的语言的插件经服务 `sessions` 的 `open` 交出连接，见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)。
+
+0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
 
 ## 事件
 

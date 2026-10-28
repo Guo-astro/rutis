@@ -86,7 +86,7 @@ connection plugin (rutis-host/dial, rutis-host/listen, rutis-host/spawn, or anyo
 - **Session → remote plugins**: far plugins come from two sources, both registered as `<id>:<plugin>` and unloaded when they end or the session unloads:
   - this end has it run: a row `<connection row>:<plugin>`, for which the loader finds the session and calls `run`;
   - plugins the far end installs itself and that provide services (when the far end is a rutis node, or a device app installing its own plugins).
-- **Services**: visible everywhere on both sides through the session. What a far plugin `inject`s is borrowed from this end (as local runtimes do today); what the far end provides is `provide`d here by its remote plugin. Same names follow the kernel's rule: the later registration is refused. Services that came over a session are not sent back over the same session.
+- **Services**: visible everywhere on both sides through the session. What a far plugin `inject`s is borrowed from this end (as local runtimes do today); what the far end provides is `provide`d here by its remote plugin. Same names follow the kernel's rule: the later registration is refused. Services that came over a session are not sent back over the same session. How: the session follows the kernel's `ServiceChanged` (sent when a service is provided or withdrawn) and sends this end's shareable services (`host_key(<name>)`, not in an instance, not `isolate`d, not provided by a platform plugin) to the far end with `services.announce`, except those provided by this session's own remote plugins; it takes every service the far end sends. `services.announce` carries a `plugin` field (the name of the plugin providing it; a rutis node sends the id of the provider's row), and this end registers it as the remote plugin `<far id>:<plugin>`.
 - **Events**: one flat bus. The far end's listeners are entries on this end's bus, as runtimes' are today.
 - **Remote plugins ↔ local plugins**: as for any plugin (`inject` / `provide`); every lifecycle is the kernel's own.
 - **Replacement**: only inside `rutis-host/listen` (§4.2). The session core keeps no ids and replaces nothing.
@@ -98,8 +98,20 @@ Rust (connection plugins compiled into a host):
 ```rust
 pub struct Channel { /* §3 */ }
 
+/// The id this end gives in the handshake: the host puts it in the root ctx (rutis-host uses rutis.json's `id`, `main` by default).
+pub struct LocalId(pub PeerId);
+
 impl Session {
+    /// The handshake first (10 s); registers nothing.
+    pub async fn handshake(ctx: &Ctx, channel: Channel) -> Result<Greeted, Error>;
+    /// Shorthand for "handshake + mount", as a plugin.
     pub fn new(channel: Channel) -> Self;
+}
+/// A session that has greeted and is not mounted yet; only `ctx.plugin(greeted)` registers the far end's plugins and starts sharing services.
+/// Dropped unmounted, it closes the Channel with `Close::Done`.
+impl Greeted {
+    pub fn id(&self) -> &str;
+    pub fn handle(&self) -> SessionHandle;
 }
 impl SessionHandle {
     /// The id the far end gave in its handshake.
@@ -121,7 +133,11 @@ sessions.open(far: Far): Near
 - The functions in `far` and `near` cross languages by reference (0.18 #687).
 - A session `open` creates is mounted under the plugin that called it: when that plugin unloads, all its sessions unload.
 
-These four names are the session's whole public API. Why `run` stays: having the far end run a plugin is a step of the session protocol (`rows.v2`), and for a language runtime or an app it is the only way; for a rutis node far end it is used too, with no second way.
+- The handshake is a step of its own for `rutis-host/listen`'s replacement (§4.2): listen gets `greeted.id()` after the handshake, unloads the old session of that id first, then mounts the new one. spawn and dial use `Session::new` directly.
+- This end's id comes from `LocalId` in the root ctx; without it the session fails before the handshake: `the host provides no id for its sessions`. rutis-bridge has no default.
+- When the far end is a rutis node, the node's session looks in its own ctx for the catalog of runnable plugins the loader provides: with it, it answers `run` (`mount` / `rows.*`); without it, it answers that this connection does not contain the plugin. `Session::new` takes no extra parameter.
+
+The session's public API is `Session::{handshake, new}`, `Greeted::{id, handle}`, `SessionHandle::{id, run}` and `sessions.open`, plus `LocalId`. Why `run` stays: having the far end run a plugin is a step of the session protocol (`rows.v2`), and for a language runtime or an app it is the only way; for a rutis node far end it is used too, with no second way.
 
 ### 2.5 The structure afterwards
 
@@ -344,7 +360,7 @@ Following [Diagnostics](design-diagnostics-2026-10-26.en.md) §4.5: output never
 **Input**
 
 - rutis.json: `runtimes.*` (local runtimes); `rutis-host/dial` and `rutis-host/listen` rows (remote runtimes, devices, nodes); rows running at the far end are `<connection row>:<plugin>`.
-- Rust: `Session::new(channel)`, `SessionHandle::{id, run}`; `websocket::{dial, listen}`, `pipe::spawn`, `memory::pair`.
+- Rust: `LocalId` (the host puts it in the root ctx), `Session::handshake(&ctx, channel)` then `ctx.plugin(greeted)`, `Session::new(channel)`, `SessionHandle::{id, run}`; `websocket::{dial, listen}`, `pipe::spawn`, `memory::pair`.
 - Other languages: `open(far)` on the `sessions` service.
 
 **What `run` prints**: prefixed with the connection row's id, using only the words connected / disconnected, with the reason in parentheses.
@@ -374,6 +390,7 @@ connections:
 | Case | Text |
 | --- | --- |
 | The far end lacks a row's plugin | `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder` (#768) |
+| The host provides no `LocalId` in the root ctx | the session fails: `the host provides no id for its sessions` |
 | A far service has the name of a local one | `office:weather: weather is provided here by row weather: not registered from office` |
 | The far end lacks the row contract | `the gpu runtime lacks rows.v2 and hosts: a runtime speaking the row contract is required` (without today's "for Node, @arcships/rutis-runtime 0.3.0 or later") |
 | 0.18 meeting 0.19 | refused in the handshake (on WebSocket, at the subprotocol step), not retried, saying which end to upgrade. A 0.19 host starting a 0.18 local runtime (which speaks the local protocol 2): `incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`; 0.18 dialing a 0.19 listener, the dialer prints `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`; 0.19 dialing a 0.18 listener, the listener answers `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<its package>)` (for example `(PyPI rutis)`). The exception: a 0.18 host starting a 0.19 local runtime passes no `--id`, and the runtime prints only `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` before the handshake and exits |
@@ -398,8 +415,8 @@ The old forms are removed in 0.19, not deprecated, with no dedicated conversion 
 | `PeerPlugin`, `PeerHandle`, `Features` | rutis-bridge `compose.rs` | a composition plugin; `PeerPlugin::new` always returns `Ok` | rutis-host; loader; tests |
 | `Peer`, `peer_key`, `Handler`, `Offered`, `Offers`, `family()` | rutis-bridge `peer.rs` | merged into the session; `family()` has no caller | bridge internals; tests |
 | `ExportPlugin`, `ImportPlugin`, and `export`, `import` | rutis-bridge `services.rs`, the list part of `events/link.rs` | decision 1 | node configurations; tests; a hint in `check.rs` |
-| `HostPlugin`, `PluginCatalog`, `StaticCatalog`, `Described`, `Installed`, `ServiceKeys`, and `host`, `rows` | rutis-bridge `host.rs` | what the far end runs goes through `run` only | node configurations; `peer_rows.rs`, `node.rs` |
-| `peer:<peer>/<plugin>` rows, the row name `rutis-bridge/peer` (and its `runtime`, `transport`, `identity` fields), `PeerRows`, `PeerResolver`, `PeerRowsPlugin`, `LoaderCatalog`, `register_peer_node`, `node_schema` | rutis-loader `peer.rs` | remote plugins are only `<id>:<plugin>`; a node is a connection plugin's row | node configurations; persisted samples |
+| `HostPlugin`, `Described`, `Installed`, `ServiceKeys`, and `host`, `rows` (`PluginCatalog` and `StaticCatalog` stay: a node's session answers `run` with them) | rutis-bridge `host.rs` | what the far end runs goes through `run` only | node configurations; `peer_rows.rs`, `node.rs` |
+| `peer:<peer>/<plugin>` rows, the row name `rutis-bridge/peer` (and its `runtime`, `transport`, `identity` fields), `PeerRows`, `PeerResolver`, `PeerRowsPlugin`, `register_peer_node` (`LoaderCatalog` stays, moved out of `peer.rs`), `node_schema` | rutis-loader `peer.rs` | remote plugins are only `<id>:<plugin>`; a node is a connection plugin's row | node configurations; persisted samples |
 | `RuntimeSession`, `runtime_session_key`, `RuntimeAccessPlugin` | rutis-bridge `runtime/` | the service-shaped handover | loader; tests |
 | `RuntimePlugin::remote` | rutis-bridge `runtime/plugin.rs` | remote and local go through the same session | rutis-host; loader; tests |
 | `LocalRuntime` | rutis-bridge `runtime/local.rs` | starting processes moves to `rutis-host/spawn` | rutis-host; tests |
@@ -456,7 +473,7 @@ Line counts are `wc -l` on `3d19634f` (including in-file unit tests); "public it
 
 - This table counts `session/rpc.rs` and `catalog.rs` too, which the previous version did not (removing compat and `share_registered_only` touches them).
 - Names exported at the rutis-bridge root: 59 now, about 7 after (`Channel`, `Close`, `PeerId`, `Session`, `SessionHandle`, `RowHandle`, `thrown`), estimated.
-- The session's public API: four names, `Session::new`, `SessionHandle::id`, `SessionHandle::run`, `sessions.open`.
+- The session's public API: `Session::{handshake, new}`, `Greeted::{id, handle}`, `SessionHandle::{id, run}`, `sessions.open`, and `LocalId`.
 - Lifecycle paths go from 4 to 1, handover shapes from 2 to 1, admission, replacement and state each from 3 copies to 1 (replacement only in listen); nodes and remote runtimes have no code of their own.
 - Each language runtime's entry points (after removing compat, estimated): Node `runner.mjs` 1162 → 1140, `session.mjs` 810 → 740; Bun `main.ts` 203 → 195; Python `__main__.py` 352 → 340, `peer.py` 1903 → 1820; Go `serve.go` 295 → 270; Swift `Serve.swift` 263 → 240; Kotlin `Peer.kt` 1438 → 1360, jvm `Serve.kt` 217 → 205. The Kotlin and Swift SDKs gain apps installing their own plugins and `services.announce` (S4), about 150 more lines each.
 - Tests: files testing only removed interfaces are deleted or rewritten, about 5500 lines (`access_point.rs` 584, `revocation.rs` 798, `link.rs` 547, `fault_links.rs` 959, `memory_mux.rs` 730, `runtime_instances.rs` 703, `peer_rows.rs` 556, most of `node.rs` 1011, the `runtimes.remote` part of `remote_runtimes.rs`, …), estimated.
