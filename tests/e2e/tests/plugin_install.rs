@@ -245,6 +245,85 @@ fn a_node_plugin_installs_runs_upgrades_and_goes() {
     s.finish();
 }
 
+/// A local npm registry with one package, this checkout's Bun runtime
+/// (`@arcships/rutis-bun`): `add --dry-run` installs it into a scratch
+/// project, and the version of this checkout may not be published yet.
+/// Its address, for `BUN_CONFIG_REGISTRY`; it serves until the test ends.
+fn bun_registry(s: &Scenario) -> String {
+    use std::io::{BufRead, BufReader, Write};
+
+    let out = s.dir().join("bun-registry");
+    std::fs::create_dir_all(&out).unwrap();
+    program(
+        s,
+        "",
+        "npm",
+        &[
+            "pack",
+            "--ignore-scripts",
+            "--pack-destination",
+            &out.display().to_string(),
+            &repo().join("bun/rutis-bun").display().to_string(),
+        ],
+        NPM_ENV,
+    );
+    let tarball = std::fs::read_dir(&out)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "tgz"))
+        .expect("the packed Bun runtime");
+    let tarball = std::fs::read(tarball).unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(repo().join("bun/rutis-bun/package.json")).unwrap())
+            .unwrap();
+    let version = manifest["version"].as_str().unwrap().to_owned();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}/", listener.local_addr().unwrap());
+    let package = json!({
+        "name": "@arcships/rutis-bun",
+        "dist-tags": { "latest": version },
+        "versions": { &version: {
+            "name": "@arcships/rutis-bun",
+            "version": version,
+            "dist": { "tarball": format!("{address}rutis-bun.tgz") },
+        } },
+    })
+    .to_string()
+    .into_bytes();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut request = String::new();
+            if reader.read_line(&mut request).is_err() {
+                continue;
+            }
+            // The headers, to the empty line.
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                line.clear();
+            }
+            let path = request.split(' ').nth(1).unwrap_or_default();
+            let (status, body) = if path.ends_with("/rutis-bun.tgz") {
+                ("200 OK", &tarball)
+            } else if path.contains("rutis-bun") {
+                ("200 OK", &package)
+            } else {
+                ("404 Not Found", &Vec::new())
+            };
+            let mut stream = &stream;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        }
+    });
+    address
+}
+
 /// risk: B1
 /// guarantee: host/plugin-install
 #[test]
@@ -270,7 +349,8 @@ fn a_bun_plugin_installs_runs_upgrades_and_goes() {
     let bun_tmp = s.dir().join("bun-tmp");
     std::fs::create_dir_all(&bun_tmp).unwrap();
     let bun_tmp = bun_tmp.display().to_string();
-    let env: &[(&str, &str)] = &[("TMPDIR", &bun_tmp)];
+    let registry = bun_registry(&s);
+    let env: &[(&str, &str)] = &[("TMPDIR", &bun_tmp), ("BUN_CONFIG_REGISTRY", &registry)];
     program(&s, "", "bun", &["install"], env);
 
     says(
@@ -379,11 +459,12 @@ with zipfile.ZipFile(os.path.join(out, f"{name}-{version}-py3-none-any.whl"), "w
 /// project's `wheels/`.
 fn wheel(s: &Scenario, name: &str, source: &str) {
     s.write(format!("{name}/src/{name}/__init__.py"), source);
-    let version = s
-        .path(format!("{name}/version"))
-        .exists()
-        .then(|| std::fs::read_to_string(s.path(format!("{name}/version"))).unwrap())
-        .unwrap_or_else(|| "0.1.0".into());
+    let file = s.path(format!("{name}/version"));
+    let version = if file.exists() {
+        std::fs::read_to_string(file).unwrap()
+    } else {
+        "0.1.0".into()
+    };
     let src = s.path(format!("{name}/src/{name}"));
     let out = s.path("wheels");
     program(
