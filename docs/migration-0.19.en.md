@@ -154,10 +154,10 @@ Only imports change: a name moved off the root (value types, `PLUGIN_API`, the t
 
 Two more points for Kotlin:
 
-- Import the advanced names explicitly (the IDE's replacement adds explicit imports). In 0.19 both the old and the new names exist, so with both `import arcships.rutis.*` and `import arcships.rutis.advanced.*` the compiler reports `Overload resolution ambiguity` for `RutisFormat`, `Scope` and the like. Old code with only `import arcships.rutis.*` is not affected.
-- These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK (its source does not change).
+- Use the same version of `rutis-ksp` as of the SDK: the code a `rutis-ksp` before 0.19 generated refers to the old places at the root and does not compile against the 0.19 SDK.
+- These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK.
 
-Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change; the code 0.17.2's `rutis-ksp` generated still compiles against the 0.19 SDK, with deprecation warnings only. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
+Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
 
 ## Platform cleanup (#694)
 
@@ -184,8 +184,14 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
 | `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
 | `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
+| `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
+| `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 
 ### Tools
 
 - `rutis-dev` (the dev channel) is removed; use `rutis-host dev` during development.
 - `rutis-migrate` is no longer released with 0.19. The 0.17 migration still works with `cargo install rutis-migrate --version 0.18.0`.
+
+### Go plugins
+
+Rebuild them with SDK 0.18 or later (the `required` exception for binaries built before 0.18 is removed).

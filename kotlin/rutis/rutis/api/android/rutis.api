@@ -63,10 +63,7 @@ public final class arcships/rutis/Plugin {
 }
 
 public final class arcships/rutis/Rutis {
-	public static final field IMPLEMENTATION Ljava/lang/String;
 	public static final field INSTANCE Larcships/rutis/Rutis;
-	public static final field PLUGIN_API I
-	public static final field VERSION Ljava/lang/String;
 	public final fun define (Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;)Larcships/rutis/Plugin;
 	public static synthetic fun define$default (Larcships/rutis/Rutis;Ljava/lang/String;Lkotlinx/serialization/KSerializer;Ljava/util/List;Ljava/util/Map;Lkotlinx/serialization/json/JsonElement;Lkotlin/jvm/functions/Function3;ILjava/lang/Object;)Larcships/rutis/Plugin;
 }

@@ -25,8 +25,8 @@
 //! ```
 //!
 //! The root holds what plugin authors use. Applications embedding rutis
-//! also use [`host`]; the hidden `internal` module is for rutis's own
-//! crates.
+//! also use [`host`], and [`config`] for checking a config against its
+//! schema; the hidden `internal` module is for rutis's own crates.
 //!
 //! The five concepts:
 //! 1. Plugin: the unit of assembly; one `apply` provides services, listeners
@@ -42,7 +42,7 @@
 #![allow(clippy::type_complexity)]
 
 mod bus;
-mod config;
+pub mod config;
 mod ctx;
 mod definition;
 mod deps;

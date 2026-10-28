@@ -154,10 +154,10 @@ rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote r
 
 Kotlin 另有两点：
 
-- 进阶的名字用显式导入（IDE 一键替换补的就是显式导入）。0.19 里旧名字和新名字都在，同时写 `import arcships.rutis.*` 和 `import arcships.rutis.advanced.*` 时，编译器对 `RutisFormat`、`Scope` 等报 `Overload resolution ambiguity`。只写 `import arcships.rutis.*` 的旧代码不受影响。
-- 这些类换了包。单独发布、预先编译好的 Kotlin 插件库要用 0.19 的 SDK 重新编译后，才能和 0.19 的 SDK 放进同一个应用（源代码不用改）。
+- `rutis-ksp` 与 SDK 用同一个版本：0.19 之前的 `rutis-ksp` 生成的代码引用根上的旧位置，在 0.19 的 SDK 上不能编译。
+- 这些类换了包。单独发布、预先编译好的 Kotlin 插件库要用 0.19 的 SDK 重新编译后，才能和 0.19 的 SDK 放进同一个应用。
 
-不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改；0.17.2 的 `rutis-ksp` 生成的代码在 0.19 的 SDK 上照样编译，只有弃用警告。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
+不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
 
 ## 平台清理（#694）
 
@@ -184,8 +184,14 @@ Kotlin 另有两点：
 | `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |
 | `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代 |
 | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
+| `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
+| `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 
 ### 工具
 
 - `rutis-dev`（dev 通道）删除；开发时用 `rutis-host dev`。
 - `rutis-migrate` 不再随 0.19 发布。0.17 的迁移仍可用 `cargo install rutis-migrate --version 0.18.0`。
+
+### Go 插件
+
+用 0.18 及以后的 SDK 重新构建（0.18 前构建的二进制的 `required` 例外删除）。

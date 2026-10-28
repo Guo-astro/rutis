@@ -1,12 +1,20 @@
-//! A row's config that does not match its plugin's schema: the error and
-//! how its text is written (config schema design §5, §6.2, §6.3; the shared
-//! case list `specs/config-schema/cases.json` locks the text).
+//! Configs: checking one against its plugin's JSON Schema ([`check`]:
+//! defaults filled, then validated), decoding one into a Rust type, the
+//! error when it does not match, and how its text is written (config schema
+//! design §3–§6; the shared case list `specs/config-schema/cases.json`
+//! locks the text). The only copy of these rules: rutis-loader's rows, the
+//! plugin values of other languages and `rutis-host check` all use it.
 
 use std::fmt;
 
 use serde_json::Value;
 
+mod check;
 mod decode;
+pub use check::{check, Checked};
+/// For rutis's own crates: how `Definition`, rutis-sdk and the loader's
+/// `Builtins` decode a config into a plugin's type.
+#[doc(hidden)]
 pub use decode::decode;
 
 /// At most this many problems are written; the rest as one last line.

@@ -24,16 +24,11 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.io.IOException
 import kotlin.system.exitProcess
-import arcships.rutis.advanced.manifest
 
 private const val USAGE = "usage: <program> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 @Volatile
 internal var projectDir: String = ""
-
-/** The project directory the host gave this runtime (its last argument). */
-@Deprecated("Moved in 0.19: use arcships.rutis.advanced.project.", ReplaceWith("project", "arcships.rutis.advanced.project"))
-val Rutis.project: String get() = projectDir
 
 /**
  * The desktop entry (jvm target): runs `plugins` as a rutis runtime as the
@@ -61,11 +56,7 @@ fun Rutis.serve(args: Array<String>, vararg plugins: Plugin): Nothing {
     exitProcess(status)
 }
 
-/** What the plugins declare, as `--rutis-manifest` prints it. */
-@Deprecated("Moved in 0.19: use arcships.rutis.advanced.manifest.", ReplaceWith("manifest(*plugins)", "arcships.rutis.advanced.manifest"))
-fun Rutis.manifest(vararg plugins: Plugin): String = manifestOf(plugins.toList())
-
-/** `Rutis.manifest`. */
+/** `arcships.rutis.advanced.manifest`. */
 internal fun manifestOf(plugins: List<Plugin>): String {
     RuntimeSession.checkPlugins(plugins)
     val state = arcships.rutis.internal.RuntimeState(plugins)
@@ -86,7 +77,7 @@ private fun jsonOf(value: Any?): JsonElement = arcships.rutis.internal.peer.plai
 internal fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     RuntimeSession.checkPlugins(plugins)
     if (args.size == 1 && args[0] == "--rutis-manifest") {
-        println(Rutis.manifest(*plugins.toTypedArray()))
+        println(manifestOf(plugins))
         return 0
     }
     if (args.isEmpty()) throw IllegalArgumentException(USAGE)

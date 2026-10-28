@@ -237,11 +237,12 @@ mod tests {
     /// A Rust config error crosses as `bad-config` with its issues.
     #[test]
     fn a_config_error_crosses_with_its_code() {
-        let config = rutis::internal::config::decode::<std::collections::BTreeMap<String, u8>>(
-            &json!({ "a": "x" }),
-            false,
+        let config = rutis::config::check(
+            &json!({ "properties": { "a": { "type": "integer" } } }),
+            Some(&json!({ "a": "x" })),
         )
-        .unwrap_err();
+        .error()
+        .unwrap();
         let error = to_session(&ErrorKind::PluginFailed(Box::new(config)));
         assert_eq!(error.code(), Some("bad-config"));
         assert_eq!(

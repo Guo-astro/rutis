@@ -779,6 +779,58 @@ mod node {
         fixture.root.shutdown().await.unwrap();
     }
 
+    /// Hands over a definition whose config `n` is an integer.
+    const STRICT: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['parts', 'probe'],
+  async apply(ctx) {
+    const probe = ctx.use('probe')
+    await ctx.use('parts').register('strict', definePlugin({
+      config: { type: 'object', properties: { n: { type: 'integer' } } },
+      apply(ctx, config) { probe.record(`strict ${JSON.stringify(config)}`) },
+    }))
+  },
+})
+"#;
+
+    /// guarantee: sdk/config-schema (plugin values)
+    ///
+    /// A copy of a plugin definition whose config does not match the
+    /// schema it declares is refused by the bridge, before anything is
+    /// sent to the runtime: `def.at` itself fails with the config error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_config_of_a_plugin_value_is_refused_by_the_bridge() {
+        let fixture = fixture(Lang::Node).await;
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        let sdk = url::Url::from_file_path(&sdk).unwrap();
+        fixture
+            .add("strict", &STRICT.replace("PLUGIN", sdk.as_str()))
+            .await;
+        let definition = COLD
+            .eventually(|| fixture.parts.of("strict").pop(), "the strict definition")
+            .await;
+        let refused = match definition.at(&fixture.root, json!({ "n": "A" })) {
+            Ok(_) => panic!("a config that does not match its schema was accepted"),
+            Err(error) => error,
+        };
+        let refused = refused.into_kind();
+        let config = rutis::ConfigError::of(&refused).expect("a config error");
+        assert_eq!(
+            config.lines(),
+            ["config: n should be an integer, got \"A\""]
+        );
+        assert!(!fixture
+            .probe
+            .lines()
+            .iter()
+            .any(|line| line.starts_with("strict")));
+        fixture.root.shutdown().await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dead_process_ends_its_copies() {
         super::a_dead_process_ends_its_copies(Lang::Node).await
