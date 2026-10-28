@@ -1,11 +1,11 @@
 package arcships.rutis.internal
 
 import arcships.rutis.EventArgs
-import arcships.rutis.Listener
-import arcships.rutis.Next
-import arcships.rutis.RemoteFunction
+import arcships.rutis.advanced.Listener
+import arcships.rutis.advanced.Next
+import arcships.rutis.advanced.RemoteFunction
 import arcships.rutis.RutisException
-import arcships.rutis.Scope
+import arcships.rutis.advanced.Scope
 import arcships.rutis.internal.peer.CallChain
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.RemoteFuture

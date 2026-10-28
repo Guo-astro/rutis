@@ -5,7 +5,7 @@
 // another runtime; the holder keeps what it is given as a @RutisClient proxy.
 package arcships.rutis.conformance.plugins.objects
 
-import arcships.rutis.RemoteObject
+import arcships.rutis.advanced.RemoteObject
 import arcships.rutis.Rutis
 import arcships.rutis.RutisClient
 import arcships.rutis.RutisException
