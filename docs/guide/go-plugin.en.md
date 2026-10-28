@@ -98,7 +98,7 @@ In short (`advanced.*` is package `github.com/arcships/rutis/go/rutis/advanced`:
 | Values | Data (numbers, strings, slices, maps, structs) is copied, struct fields and the items of slices and maps checked one by one (field names follow `json` tags); `time.Time` (an instant, in UTC), `[]byte`, `*big.Int`, maps whose keys are not strings, `map[K]struct{}` (a set) and `advanced.DateTime`, `advanced.Date`, `advanced.TimeOfDay`, `advanced.Decimal`, `advanced.UUID` cross as their own values, see [Passing values](plugin-api.en.md#passing-values); integers beyond ±(2^53−1) (`int64`, `uint64`, ...) cross as big integers by themselves, and a big integer received decodes into the declared integer type, or `*big.Int` into `any`; functions cross by reference; an object crosses by reference only as `rutis.Ref(v)` |
 | Errors | A returned `error` crosses with its type name (`*QuotaError` → `QuotaError`; `Name() string` overrides); with `Code() string` and `Data() any` it carries a code and data, which the caller reads as its error's `code` and `data` (`Data` is encoded as JSON); a panic becomes an error named `Panic`. An error received is a `*rutis.RemoteError` with `Name`, `Message`, `Code` and `Data` |
 
-**Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other. Under `rutis-host dev`, a call that lost its chain is reported once on stderr.
+**Always pass ctx on.** The call chain (`path`) lives in `context.Context`: when Node calls your method synchronously and your method calls back into Node synchronously, Node recognizes the chain it is waiting on only if the call carries the ctx you received; with `context.Background()` both sides wait for each other.
 
 **A plugin is itself a value**, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
 
@@ -266,20 +266,7 @@ Whoever wants your plugin in a binary of their own imports your package: `rutis.
 
 ## 6. Used by a host
 
-A host names a Go plugin directory in `rutis.json` and puts binaries there:
-
-```json
-{
-  "runtimes": { "go": { "dir": "plugins/go" } },
-  "rows": [{ "id": "weather", "name": "go:weather", "config": { "city": "Oslo" } }]
-}
-```
-
-```bash
-GOBIN=plugins/go go install example.com/weather/cmd/weather@v0.1.0   # with the machine's Go toolchain
-```
-
-`rutis-host add example.com/weather/cmd/weather@v0.1.0` runs the same `go install` into this directory and adds the row for you ([How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins)). Or download the binary for the platform from a release into the directory (on macOS a downloaded binary is quarantined; `rutis-host check` says so). The host finds `go:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `go-<binary name>:<plugin>`. A binary in the directory starts when a row first uses it and stops after 60 s idle (`"start": "eager"` starts all and keeps them running); a replaced binary takes effect when the host restarts. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`BinaryResolver<Go>`, `BinaryRuntimes<Go>`).
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ## 7. Run it on another machine
 

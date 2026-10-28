@@ -14,6 +14,7 @@ pub mod languages;
 pub mod new;
 pub mod project;
 pub mod restart;
+pub mod rows_file;
 pub mod status;
 
 /// Print a line on stdout in one write, under the locks the runtimes'

@@ -57,21 +57,7 @@ bunx --bun rutis-host dev
 
 `rutis-host dev` runs the project in Bun when it finds `bun.lock`, `runtimes.bun` in `rutis.dev.json`, or a dependency on `@arcships/rutis-bun`, and reloads it when its files change; only the rows whose files changed reload (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)).
 
-A host's `rutis.json`:
-
-```json
-{
-  "runtimes": { "bun": { "project": "." } },
-  "rows": [
-    { "id": "greeter", "name": "bun:greeter" },
-    { "id": "report", "name": "bun:./report.ts", "inject": ["greeter"] }
-  ]
-}
-```
-
-- `bun:<npm name or subpath>` resolves from the `node_modules` of `project`; `bun:./path` is relative to `project`. The row `bun:sqlite` names the project's module `sqlite`, not Bun's built-in `bun:sqlite`.
-- Fields of `runtimes.bun`: `project` (default `.`), `runtime` (where `@arcships/rutis-bun` is; by default the project's), `program` (the Bun executable; by default `bun` on `PATH`).
-- It can be configured together with `runtimes.node` and `runtimes.py`; services are shared across runtimes by name.
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ### Calling a method
 
@@ -111,7 +97,7 @@ Open the `https://debug.bun.sh/#127.0.0.1:6499/rutis` from the output in a brows
 
 ## 5. Publish
 
-As for TypeScript plugins: `npm publish` (it runs `prepack`, the build, first; the template's workflow publishes on a `v*` tag; give the package a scoped name, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)). A host installs it with `bun add` and adds a row `{ "id": "greeter", "name": "bun:greeter" }`.
+As for TypeScript plugins: `npm publish` (it runs `prepack`, the build, first; the template's workflow publishes on a `v*` tag; give the package a scoped name, see [TypeScript plugins §5](typescript-plugin.en.md#5-publish)). How a host installs it: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ## 6. Run on another machine
 

@@ -235,18 +235,7 @@ Before publishing, give the distribution a name of your own: a short name such a
 
 ## 6. Use from a host
 
-Install the plugin in the Python environment used to run Python plugins (the interpreter named by `runtimes.py.python` in `rutis.json`; by default the active virtual environment's, then `<runtimes.py.project>/.venv/bin/python`), then add a row named `py:<entry-point-name>`. Create the environment first if there is none. The Python runtime is the `rutis` in that environment: install it at the version of the host's rutis-host (`rutis-host --version`):
-
-```bash
-uv venv                                                         # creates .venv
-uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # the runtime (the host's version) and the plugin
-```
-
-```json
-{ "id": "weather", "name": "py:weather", "config": { "city": "Oslo" } }
-```
-
-See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ### Types from the host
 

@@ -696,10 +696,10 @@ In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an e
 
 ### Mixing with 0.12 and earlier
 
-The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a 0.13 host is refused before anything loads:
+The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a current host is refused by its protocol version before anything loads:
 
 ```text
-incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
 A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](../migration-0.13.en.md).
@@ -787,7 +787,7 @@ A plugin and the services it uses may run in different processes. Across process
 | Values nested more than 64 levels deep | Cannot cross processes (the call fails, see below) |
 | A call or result over 16 MiB once encoded | Cannot cross processes (the call fails, see below) |
 
-A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, when a 0.18 host would forward an object from Node to a Python runtime older than 0.18, the call gets `weather.store: argument 2 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument or the result (`{part, argument?, limit?}`); not the name or the text.
+A value that cannot cross fails **only that call**: the error names the method, which argument (or the result) and why; for example, when an argument is too large once encoded, the call gets `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`. The session, the runtime, other calls on the same session and other rows are not affected. The error's name depends on which side refused the value and its language (`BindingError` from the host, `RangeError` or `TypeError` from Node and Bun, `ValueError` from Python, `Error` from Go, Swift and Kotlin) and is not guaranteed: to tell which failure it is, check the error code: a value that cannot cross is always `bad-value`, with `data` saying whether it was an argument or the result (`{part, argument?, limit?}`); not the name or the text.
 
 Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, object / dictionary (dataclasses included), map, set, and Go slice, map or struct is a level, whether or not it holds references; an `Error` / exception passed as a value is a level too. A call's argument list is not a level: each argument may nest 64 levels; a result may nest 64 levels. The side that **would send** a deeper value refuses it before sending, failing only that call, with an error naming the limit (`value nested deeper than 64 levels`):
 
@@ -836,7 +836,6 @@ Objects inside arrays and dictionaries each go by reference too. A received obje
 - A parameter whose declared type cannot take an object (data in Go, Swift and Kotlin) fails the call with `bad-argument`, saying how to receive one.
 - Lifetime is that of a function reference: the sender lets the object go once the receiver no longer holds the proxy, or the receiver's process exits. An object does not follow its row: after the row that passed it unloads, it can still be called.
 - Once the sender's runtime has exited or disconnected, calls on its objects fail with `peer-gone` (`a call on an object from py failed: runtime py exited`), and only those calls fail.
-- An end older than 0.18 does not take objects: a call that would hand it one fails with `bad-value` (`… an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`), and the session goes on. Upgrade that end.
 
 #### Handing over and receiving objects in each language
 

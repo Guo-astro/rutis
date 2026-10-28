@@ -210,16 +210,7 @@ public final class Calendar: @unchecked Sendable {
 
 ## 7. 被宿主使用
 
-宿主在 `rutis.json` 里指定 Swift 插件目录，把二进制放进去：
-
-```json
-{
-  "runtimes": { "swift": { "dir": "plugins/swift", "restart": "on-failure" } },
-  "rows": [{ "id": "weather", "name": "swift:weather", "config": { "city": "Oslo" } }]
-}
-```
-
-从 Release 下载二进制放进这个目录（下载的二进制带隔离属性：`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除）。宿主在所有二进制里找 `swift:<插件>`；两个二进制有同名插件时写 `swift-<二进制名>:<插件>`。设置与 `runtimes.go` 相同：二进制在第一次有行用到时启动，空闲 `idle` 秒（60）后停下，`"start": "eager"` 全部启动并一直运行，`restart`（默认 `no`、`on-failure`、`exit`）对每个运行时各自生效，换了二进制在它的运行时重启后生效。运行 Swift 二进制不需要 Swift 工具链。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（rutis-loader 的 `BinaryResolver<Swift>`、`BinaryRuntimes<Swift>`）。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 8. 在另一台机器上运行
 

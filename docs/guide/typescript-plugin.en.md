@@ -206,17 +206,7 @@ Declare a version range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new`
 
 ## 6. Use from a host
 
-Install the plugin in the host's Node project, alongside `@arcships/rutis-runtime`, then add a row named after the package:
-
-```bash
-npm install @your-name/weather
-```
-
-```json
-{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
-```
-
-See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ## Existing Cordis plugins
 

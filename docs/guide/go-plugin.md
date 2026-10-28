@@ -98,7 +98,7 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 | 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `advanced.DateTime`、`advanced.Date`、`advanced.TimeOfDay`、`advanced.Decimal`、`advanced.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数（`int64`、`uint64` 等）自动按大整数传，收到的大整数解码进声明的整数类型，到 `any` 时是 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
 | 错误 | 返回的 `error` 带着类型名跨进程（`*QuotaError` → `QuotaError`，实现 `Name() string` 可以自定）；实现 `Code() string` 和 `Data() any` 时带上 code 和 data，调用方从错误的 `code`、`data` 读到（`Data` 按 JSON 编码）；panic 变成名为 `Panic` 的错误。收到的错误是 `*rutis.RemoteError`，有 `Name`、`Message`、`Code`、`Data` |
 
-**一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。
+**一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。
 
 **插件本身也是一个值**，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
 
@@ -266,20 +266,7 @@ dlv connect 127.0.0.1:2345
 
 ## 6. 被宿主使用
 
-宿主在 `rutis.json` 里给出 Go 插件目录，把二进制放进去：
-
-```json
-{
-  "runtimes": { "go": { "dir": "plugins/go" } },
-  "rows": [{ "id": "weather", "name": "go:weather", "config": { "city": "Oslo" } }]
-}
-```
-
-```bash
-GOBIN=plugins/go go install example.com/weather/cmd/weather@v0.1.0   # 用本机的 Go 工具链
-```
-
-`rutis-host add example.com/weather/cmd/weather@v0.1.0` 同样 `go install` 到这个目录，并替你加上行（[宿主怎样装插件](rutis-host.md#宿主怎样装插件)）。也可以下载发布里对应平台的二进制放进目录（macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 由宿主在所有二进制里查找；两个二进制里有同名插件时，写成 `go-<二进制名>:<插件名>`。目录里的二进制在第一次有行用到时才启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（`BinaryResolver<Go>`、`BinaryRuntimes<Go>`）。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 7. 在另一台机器上运行
 
