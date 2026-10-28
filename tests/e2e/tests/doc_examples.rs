@@ -1,8 +1,9 @@
 //! The guides' runnable examples (#193, Q2.13): each one marked in
 //! docs/guide/*.md (tools/doc-examples.mjs) is followed as written, in a
 //! new directory, with the published packages (the guides install from the
-//! registries), in installed mode. install.yml runs this after a release;
-//! `cargo test` skips it:
+//! registries), in installed mode. Swift plugins build only on macOS, so
+//! the Swift guides' examples run on macOS and the others elsewhere.
+//! install.yml runs this after a release; `cargo test` skips it:
 //!
 //!   RUTIS_E2E_SOURCE=registry cargo test -p rutis-e2e --test doc_examples -- --ignored
 
@@ -25,7 +26,10 @@ fn the_guides_examples_run_as_written() {
     let examples: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let _ = std::fs::remove_file(&out);
     for example in examples.as_array().unwrap() {
-        follow(example);
+        let swift = example["guide"].as_str().unwrap().starts_with("swift-");
+        if swift == cfg!(target_os = "macos") {
+            follow(example);
+        }
     }
 }
 

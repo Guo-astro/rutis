@@ -24,7 +24,7 @@ The other side (`office`) listens:
 }
 ```
 
-Both sides use the same token. The dialing side presents `RUTIS_TOKEN` (or `RUTIS_TOKEN_OFFICE`); the listening side uses it to verify that the peer is `main`.
+Both sides use the same token. The dialing side (`main`) presents `RUTIS_TOKEN_OFFICE`; the listening side (`office`) checks it against `RUTIS_TOKEN_MAIN` to verify that the peer is `main`. Set both variables to the same value.
 
 - `dial` accepts `wss://…` for remote connections (TLS required) or `ws://127.0.0.1…` for the local loopback interface.
 - For a self-signed certificate, add its issuing CA to `RUTIS_CA` on the dialing side.
@@ -115,7 +115,7 @@ One `runtimes.remote` entry describes a remote runtime whole. Who connects, and 
 | `listen` + `instances: <group>` | Many, each connection an instance (see [Runtimes that connect in](#runtimes-that-connect-in)) |
 | none of them | No connection of its own: a node row with `runtime`, or the program embedding the host, provides its session |
 
-`dial` and `listen` cannot both be set, nor `dial` and `instances` (rutis can dial only one runtime). Tokens are as before: `RUTIS_TOKEN_<NAME>`, else `RUTIS_TOKEN`. The optional `transport` picks the transport, `websocket` by default; a host's own way of connecting (a relay, QUIC, …) implements a `Transport`, which the program embedding rutis-host mounts, and `transport` names it ([rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#remote-runtimes)).
+`dial` and `listen` cannot both be set, nor `dial` and `instances` (rutis can dial only one runtime). The token is `RUTIS_TOKEN_<NAME>`. The optional `transport` picks the transport, `websocket` by default; a host's own way of connecting (a relay, QUIC, …) implements a `Transport`, which the program embedding rutis-host mounts, and `transport` names it ([rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#remote-runtimes)).
 
 The form before 0.19 — `runtimes.remote` with only `name` and `language`, plus a `rutis-bridge/peer` row with `"runtime": "gpu"` — still works (see [Migrating to 0.19](https://github.com/arcships/rutis/blob/main/docs/migration-0.19.en.md)).
 
@@ -150,7 +150,7 @@ A runtime can also connect to rutis instead: use this when the remote machines a
 }
 ```
 
-Every connection presents the same token (`RUTIS_TOKEN_WORKER`, or `RUTIS_TOKEN`), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. That holds for the services they provide without declaring them too (which reach rutis by themselves): those are visible only inside that instance, to the rows of the instance, never to rows outside it or to other instances. For the fields and rules, see [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#runtimes-that-connect-in).
+Every connection presents the same token (`RUTIS_TOKEN_WORKER` on the rutis side), reports an id of its own, and becomes an instance of the group: created when it connects, closed when it disconnects; a newer connection with the same id takes over. The group's rows run, in each instance, on that instance's connection, and the services they provide are seen only in that instance. That holds for the services they provide without declaring them too (which reach rutis by themselves): those are visible only inside that instance, to the rows of the instance, never to rows outside it or to other instances. For the fields and rules, see [rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#runtimes-that-connect-in).
 
 A Python runtime connects in with `dial:`:
 

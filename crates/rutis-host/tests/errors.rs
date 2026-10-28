@@ -331,7 +331,7 @@ async fn a_runtime_that_dials_in_without_what_it_needs() {
         // `listen` alone is one runtime (0.19): it needs its token too.
         (
             config(r#", "listen": "public""#, ""),
-            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
+            "remote runtime phone: set RUTIS_TOKEN_PHONE: the token its runtimes present when they dial in",
         ),
         (
             config(r#", "instances": "phone""#, group),
@@ -351,7 +351,7 @@ async fn a_runtime_that_dials_in_without_what_it_needs() {
         ),
         (
             config(both, group),
-            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
+            "remote runtime phone: set RUTIS_TOKEN_PHONE: the token its runtimes present when they dial in",
         ),
     ];
     for (text, expected) in cases {
