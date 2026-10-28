@@ -8,7 +8,9 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{active, repo, title, tool_callers, NoConfig, Probe, Title, Tools, COLD};
+use common::runtimes::{
+    active, repo, rows_stage, title, tool_callers, NoConfig, Probe, Title, Tools, COLD,
+};
 use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
@@ -16,7 +18,7 @@ use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
 use rutis_loader::edit::{Instance, InstanceResult};
 use rutis_loader::report::{EntryInfo, EntryStatus};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -228,8 +230,8 @@ async fn fixture() -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(node_rows));
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
+    rows_stage(&root, node_rows).await;
+    rows_stage(&root, python_rows).await;
 
     let rows = json!([{ "insert": [
         { "id": "session", "group": true, "instanced": true, "config": [

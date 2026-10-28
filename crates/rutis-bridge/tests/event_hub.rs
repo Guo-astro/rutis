@@ -266,6 +266,9 @@ async fn a_runtime_hears_what_is_elsewhere() {
         let rig = rig_with(root.clone(), Endpoint::rust(id("rt")))
             .await
             .unwrap();
+        // Sent before `attach` returns, as a one-way message: the far side
+        // handles it in its own time.
+        eventually(|| !rig.elsewhere().is_empty(), "t/before").await;
         assert_eq!(rig.elsewhere()[0], json!({ "add": ["t/before"] }));
 
         let later = root
