@@ -278,7 +278,7 @@ package enum ValueCodec {
     /// A received value as Swift's own: numbers as Int or Double, objects as
     /// [String: Any?], lists as [Any?], maps as [AnyHashable: Any?], sets as
     /// Set<AnyHashable>, the tagged values as their types, functions as
-    /// Rutis.RemoteFunction; nil for null and undefined.
+    /// Rutis.Advanced.RemoteFunction; nil for null and undefined.
     package static func native(_ value: Value) -> Any? {
         switch value {
         case .undefined: return nil

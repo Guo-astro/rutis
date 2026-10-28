@@ -5,15 +5,15 @@ import Foundation
 // Everything else crosses as a native type: Date (instant), Data (bytes),
 // Dictionary (map), Set (set), Decimal (decimal), UUID (uuid).
 //
-//	| tag      | Swift                  | text on the wire                     |
-//	| instant  | Date                   | 2026-10-15T03:22:15.123456Z          |
-//	| datetime | Rutis.DateTime         | 2026-10-15T14:30:05.25, no time zone |
-//	| date     | Rutis.CalendarDate     | 2026-10-15                           |
-//	| time     | Rutis.TimeOfDay        | 14:30:05.25, 24-hour, no time zone   |
-//	| bytes    | Data                   | base64 (RFC 4648 §4, padded)         |
-//	| bigint   | Rutis.BigInt           | decimal integer, at most 4300 digits |
-//	| decimal  | Decimal                | decimal, no exponent, zeros kept     |
-//	| uuid     | UUID                   | lowercase 8-4-4-4-12 hex             |
+//	| tag      | Swift                       | text on the wire                     |
+//	| instant  | Date                        | 2026-10-15T03:22:15.123456Z          |
+//	| datetime | Rutis.Advanced.DateTime     | 2026-10-15T14:30:05.25, no time zone |
+//	| date     | Rutis.Advanced.CalendarDate | 2026-10-15                           |
+//	| time     | Rutis.Advanced.TimeOfDay    | 14:30:05.25, 24-hour, no time zone   |
+//	| bytes    | Data                        | base64 (RFC 4648 §4, padded)         |
+//	| bigint   | Rutis.Advanced.BigInt       | decimal integer, at most 4300 digits |
+//	| decimal  | Decimal                     | decimal, no exponent, zeros kept     |
+//	| uuid     | UUID                        | lowercase 8-4-4-4-12 hex             |
 
 /// The most digits a bigint or decimal may have: Python's default limit on
 /// integer text.
