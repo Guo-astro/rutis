@@ -20,18 +20,17 @@ use crate::fiber::{
     TransitionTask,
 };
 use crate::host::CtxHost;
-use crate::intercept::{ServiceInterceptors, ServiceWriter};
 use crate::internal::CtxInternal;
 use crate::key::{InstanceId, Key, ScopeId, TypeKey};
 use crate::plugin::{DynPlugin, PluginFactory};
 use crate::registry::{Binding, CheckFn, Registry, StoredValue, ValueSlot};
+use crate::writer::ServiceWriter;
 
 pub(crate) struct Shared {
     pub admission: Mutex<()>,
     pub handle: Handle,
     pub bus: EventBus,
     pub registry: Registry,
-    pub interceptors: Arc<ServiceInterceptors>,
     pub error_sink: ErrorSink,
     pub next_plugin_id: AtomicU64,
     pub closing: AtomicBool,
@@ -286,7 +285,6 @@ impl Ctx {
         key: TypeKey,
         location: &'static std::panic::Location<'static>,
         provision: Option<&crate::service::Provision>,
-        actor: Option<&Ctx>,
     ) -> Result<Arc<T>, ServiceReadError> {
         let scope = self.scope_for(&key);
         let caller = self.0.fiber.upgrade();
@@ -425,7 +423,7 @@ impl Ctx {
                 return Err(self.read_error(key, reason, location));
             }
         }
-        let mut reason = value.is_none().then(|| {
+        let reason = value.is_none().then(|| {
             if !own_service
                 && caller.as_ref().is_none_or(|fiber| {
                     matches!(fiber.state(), FiberState::Unloading | FiberState::Disposed)
@@ -447,13 +445,7 @@ impl Ctx {
             })
         });
         let result = match value {
-            Some(value) => actor
-                .unwrap_or(self)
-                .apply_read_interceptors(&key, scope.as_ref(), value)
-                .map_err(|failure| {
-                    reason = Some(failure);
-                    self.read_error(key.clone(), failure, location)
-                }),
+            Some(value) => Ok(value),
             None => Err(self.read_error(key.clone(), reason.unwrap(), location)),
         };
         if let Some(fiber) = caller.as_ref() {
@@ -1076,7 +1068,6 @@ impl crate::host::CtxHost for Ctx {
             handle,
             bus: EventBus::new(),
             registry: Registry::new(),
-            interceptors: Arc::new(ServiceInterceptors::default()),
             error_sink: sink,
             next_plugin_id: AtomicU64::new(1),
             closing: AtomicBool::new(false),
@@ -1394,18 +1385,6 @@ impl crate::host::CtxHost for Ctx {
         self.require_key::<T>(key.erase())
     }
 
-    fn waterfall_sync<E, F>(
-        &self,
-        event: impl crate::events::IntoEvent<E>,
-        terminal: F,
-    ) -> Result<Option<E::Value>, Error>
-    where
-        E: crate::Event,
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>,
-    {
-        self.waterfall_sync_impl(event.into_event(), terminal)
-    }
-
     fn subscriptions(&self) -> Vec<crate::bus::EventSubscription> {
         self.events().subscriptions()
     }
@@ -1489,7 +1468,7 @@ impl crate::internal::CtxInternal for Ctx {
         &self,
         key: impl Into<TypeKey>,
     ) -> Result<Arc<T>, ServiceReadError> {
-        self.require_inner(key.into(), std::panic::Location::caller(), None, None)
+        self.require_inner(key.into(), std::panic::Location::caller(), None)
     }
 
     #[track_caller]
@@ -1497,14 +1476,8 @@ impl crate::internal::CtxInternal for Ctx {
         &self,
         key: impl Into<TypeKey>,
         provision: &crate::service::Provision,
-        actor: Option<&Ctx>,
     ) -> Result<Arc<T>, ServiceReadError> {
-        self.require_inner(
-            key.into(),
-            std::panic::Location::caller(),
-            Some(provision),
-            actor,
-        )
+        self.require_inner(key.into(), std::panic::Location::caller(), Some(provision))
     }
 
     fn provide_key<T: ?Sized + Send + Sync + 'static>(
@@ -1557,22 +1530,6 @@ impl crate::internal::CtxInternal for Ctx {
 
     fn named(&self, name: impl Into<Arc<str>>) -> crate::events::Filtered<'_> {
         crate::events::Filtered::named(self, name.into())
-    }
-
-    fn intercept_require_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> crate::intercept::ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error> {
-        self.intercept_require_impl(key, hook)
-    }
-
-    fn intercept_set_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> crate::intercept::ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error> {
-        self.intercept_set_impl(key, hook)
     }
 }
 

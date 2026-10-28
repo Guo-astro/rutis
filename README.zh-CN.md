@@ -241,7 +241,7 @@ Go 插件用模块 [`github.com/arcships/rutis/go/rutis`](go/rutis)：SDK，以�
 - **[设计哲学](docs/design-philosophy.md)**：rutis 为什么存在，由此而来的形态、代价和原则。
 - **[应用设计指南](docs/development-guide.md)**：如何拆分插件、画依赖图、设计重载与多实例。
 - **[开发手册](docs/development-handbook.md)**：API 用法、资源清理、事件、排障与验证。
-- **[内核能力一览](docs/core-features.md)**：配置热更新、动态事件、拦截、诊断，以及各自的使用边界。
+- **[内核能力一览](docs/core-features.md)**：配置热更新、动态事件、诊断，以及各自的使用边界。
 - **[保证登记表](docs/guarantees.md)**：rutis 承诺了什么、属于哪一级、由哪些测试验证。
 - **[API 文档](https://docs.rs/rutis)**：docs.rs 上的完整参考。
 - **设计记录**：[内核设计](docs/design-rust-port.md)、[与 Cordis 的逐条对拍](docs/cordis-spec-parity-2026-08-18.md)，以及 [docs](docs) 目录下的全部设计记录。

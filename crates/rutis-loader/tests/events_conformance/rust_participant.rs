@@ -179,7 +179,7 @@ fn perform_sync(
     call: SyncCall<'_, Args>,
 ) -> Result<Option<ArgValue>, RutisError> {
     if let Some(spec) = does.get("emits") {
-        // A synchronous dispatch (`bail`, `waterfall-sync`) from here: it
+        // A synchronous dispatch (`bail`) from here: it
         // runs to its end inline, never waiting.
         let mut dispatched = std::pin::pin!(dispatch(ctx, log, spec, None));
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
@@ -189,7 +189,7 @@ fn perform_sync(
             }
             std::task::Poll::Pending => Err(thrown(&json!({
                 "name": "Unknown",
-                "message": "a synchronous listener emits only bail or waterfall-sync",
+                "message": "a synchronous listener emits only bail",
             }))),
         };
     }
@@ -432,15 +432,6 @@ async fn dispatch_now(
             .events()
             .dispatch_sync(ctx, erased(rutis::events::Mode::Bail, filter))
             .and_then(decoded),
-        ("waterfall-sync", _) => ctx
-            .named(name)
-            .waterfall_sync(args, |event| {
-                Ok(terminal.map(|t| {
-                    log.add("terminal");
-                    t.result(&event)
-                }))
-            })
-            .map(value),
         (mode, _) => return Err(Error::Value(format!("unknown mode {mode}"))),
     };
     result.map_err(|e| rutis_bridge::events::to_session_error(&e))

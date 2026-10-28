@@ -247,7 +247,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外，也只在这些构建里检查能不能绑定（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；同一个类型的不同标注块不能有两个方法映射到同一个对外名字，`provide` 会失败并指出那个名字。参数类型可以写生命周期或 `Self`。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
-- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读取拦截器（`intercept_require_as`）与对处在调用方行位置的 Rust 读取方一样拒绝或替换它：生效的是这一行的祖先注册的拦截器（没有行调用时为提供方的）。读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
+- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
 - **作用域跟着提供的位置**：在实例里提供（`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。在隔离作用域里提供（`ctx.isolate(Key::<Notes>::of(), "a")`）时，名字在同一个作用域里对外（`isolate(host_key("notes"), "a")`），两个隔离作用域各自对外。不用写实例组。实例里提供过之后，实例里的行用的是这个实例自己的，不会退回到同名的全局服务：实例里的服务撤下时，它们等它在这个实例里重新提供（设计 R3：作用域跟着提供的位置）。
 - **能传什么、错误怎么抛**：见[参考](#导出服务参考)：serde 参数与返回值、按引用的回调、`&Ctx` 调用方行、`Err(e)` 抛出时带 `name`、`code`、`message`、`data`。
 - **编译期报错**：带标注的块里有公开方法绑定不了（`&mut self`、返回借用、可变引用参数、不是函数的泛型参数等），是指到那个方法的编译错误；不想对外的，在方法上加 `#[service(skip)]`。
@@ -647,20 +647,19 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // 可省略：没有终态
     .await?;
 let sync = ctx.bail(Created("s1".into(), 3));                         // 遇到上面的异步监听器：AsyncListener
-let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // 宿主方法：同步的 waterfall
 let python_only = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
-# let _ = (first, out, sync, chain, python_only);
+# let _ = (first, out, sync, python_only);
 # Ok(())
 # }
 ```
 
 | 事项 | 规则 |
 | --- | --- |
-| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` / `waterfall_sync` 调用（`AsyncListener`） |
+| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` 调用（`AsyncListener`） |
 | 选项与前缀 | `ctx.listen::<E>()` 后接 `.prefix("session/")`（收这个前缀下的所有名字，`call.name()` 是实际的名字）、`.name(n)`、`.once()`、`.prepend()`、`.global()`，最后是 `.on(…)` 或 `.on_sync(…)` |
 | 按名字 | 不定义类型时用 `rutis_bridge::events::Args` 监听：`ctx.listen::<Args>().name("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换。名字由值决定的事件类型把 `NAME` 写成 `""`，重写 `Event::name` |
 | 作用域 | 发出方的作用域是 `ctx.scope()`：加载器把每个组实例标为一个作用域。事件按名字送达所有监听器；作用域只是描述，按 `ListenerInfo::scope` 过滤 |
