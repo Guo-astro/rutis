@@ -386,7 +386,7 @@ uv publish
 weather = "weather"
 ```
 
-对 `rutis` 的依赖只写下限：`rutis>=0.17`（`rutis-host new` 写的是它自己的版本）。插件和 Python 运行时是同一个 `rutis` 包，装在宿主的同一个环境里；写了上限（`<0.18`），宿主装插件时 rutis 会被降级，或者以后升级 rutis 时解析失败。能不能加载由插件 API 版本决定：`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载；插件 API 版本不变时，`rutis` 不删、不改插件导入的名字（[插件 API：版本](plugin-api.md#版本)）。
+对 `rutis` 的依赖只写下限：`rutis>=0.17`（`rutis-host new` 写的是它自己的版本）。插件和 Python 运行时是同一个 `rutis` 包，装在宿主的同一个环境里；写了上限（`<0.18`），宿主装插件时 rutis 会被降级，或者以后升级 rutis 时解析失败。能不能加载由插件 API 版本决定：`define_plugin` 在插件上标记它所用的插件 API 版本，宿主的运行时比它旧时明确报错，比它新时照常加载；`rutis` 删掉或移动插件导入的名字时，那一版的迁移指南写明，插件随宿主一起升级（[插件 API：版本](plugin-api.md#版本)）。
 
 发布前给分发包起一个你自己的名字：`weather` 这样的短名字在 PyPI 上多半已被占用。改 `pyproject.toml` 的 `name`，例如 `your-name-weather`；入口点名（上面的 `weather`）不用改，宿主的行名仍是 `py:weather`。
 
