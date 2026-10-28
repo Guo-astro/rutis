@@ -34,8 +34,8 @@
 //! 2. Fiber: the lifecycle container; a six-state machine with dependency
 //!    gating, cascading unload and exactly-once cleanup.
 //! 3. Services: a registry keyed by type, with isolate scopes.
-//! 4. Event bus: one listener table, by name and scope, with six dispatch
-//!    modes (emit, parallel, serial, waterfall, bail, waterfall-sync).
+//! 4. Event bus: one listener table, by name and scope, with five dispatch
+//!    modes (emit, parallel, serial, waterfall, bail).
 //! 5. Dependency-driven reload: when a provider unloads, its consumers are
 //!    evicted and load again automatically.
 

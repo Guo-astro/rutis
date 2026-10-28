@@ -647,20 +647,19 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // optional: no terminal
     .await?;
 let sync = ctx.bail(Created("s1".into(), 3));                         // meets the async listener above: AsyncListener
-let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // a host method: a synchronous waterfall
 let python_only = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
-# let _ = (first, out, sync, chain, python_only);
+# let _ = (first, out, sync, python_only);
 # Ok(())
 # }
 ```
 
 | Topic | Rule |
 | --- | --- |
-| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail` / `waterfall_sync` (`AsyncListener`) |
+| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail` (`AsyncListener`) |
 | Options and prefixes | `ctx.listen::<E>()` followed by `.prefix("session/")` (every name under the prefix; `call.name()` is the actual one), `.name(n)`, `.once()`, `.prepend()`, `.global()`, then `.on(…)` or `.on_sync(…)` |
 | By name | Without a type, listen with `rutis_bridge::events::Args`: `ctx.listen::<Args>().name("file-changed")`, arguments `Args(vec![Value::Data(json!(…))])`, results `ArgValue`. Typed and `Args` listeners of one name receive each other's events, converted through serde. An event type whose value decides its name has an empty `NAME` and overrides `Event::name` |
 | Scope | The emitter's scope is `ctx.scope()`: the loader marks each group instance as a scope. Events are delivered by name to every listener; a scope is a descriptor for filters (`ListenerInfo::scope`) |

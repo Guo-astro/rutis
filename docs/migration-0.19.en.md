@@ -152,6 +152,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
 | feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
+| `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
 
 ### Tools
 

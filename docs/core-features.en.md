@@ -43,8 +43,8 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 - `emit` returns at once and starts every listener in registration order without waiting for any; one name's emits start in emit order; a listener's failure goes to the ErrorSink (`ListenerFailed`) and never affects the other listeners.
 - `parallel` starts in registration order and waits for all; failures are always `ListenersFailed` (AggregateError), in registration order.
-- `serial` / `bail` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail` / `waterfall_sync` meeting an async listener fail with `AsyncListener`.
-- `waterfall` / `waterfall_sync` run outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`ctx.waterfall(e).terminal(…)`, none when left out; `waterfall_sync(e, terminal)` is a host method); the outermost value is returned.
+- `serial` / `bail` return the first result (`None` and `Some(false)` are no result); an error stops them. `bail` meeting an async listener fails with `AsyncListener`.
+- `waterfall` runs outer to inner, each listener calling the rest with `call.next()`; not calling it vetoes; the terminal is optional (`ctx.waterfall(e).terminal(…)`, none when left out); the outermost value is returned.
 - Synchronous listeners register with `on_sync`; every mode can call them. `ctx.listen::<E>().prefix("room/")` registers a prefix listener, which reads the actual name from `call.name()`; `listen()` also has `.once()`, `.prepend()` and `.global()`.
 - **Scope**: the loader marks each group instance as a scope (`mark_scope`, in `rutis::internal`); `ctx.scope()` is the scope chain from the root. Events are delivered by name on one root's bus, and every listener receives them; a scope is only a descriptor in `ListenerInfo` for filters.
 - **Filter**: `ctx.filter(|info: &ListenerInfo| ..)` gives the same five emitting methods; the filter sees each non-`global` listener's descriptor (plugin, row, runtime, node, scope) in the emitter's process, before any call.

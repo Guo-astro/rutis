@@ -130,11 +130,7 @@ async fn one_listener_is_called_by_every_mode() {
     let seen = modes.clone();
     root.on_sync::<Ping>(move |_, call| {
         push(&seen, call.mode().as_str());
-        if call.mode() == Mode::WaterfallSync {
-            call.next()
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     })
     .unwrap();
     root.emit(Ping(1)).unwrap();
@@ -143,17 +139,9 @@ async fn one_listener_is_called_by_every_mode() {
     root.serial(Ping(1)).await.unwrap();
     root.waterfall(Ping(1)).await.unwrap();
     root.bail(Ping(1)).unwrap();
-    root.waterfall_sync(Ping(1), |_| Ok(None)).unwrap();
     assert_eq!(
         entries(&modes),
-        [
-            "emit",
-            "parallel",
-            "serial",
-            "waterfall",
-            "bail",
-            "waterfall-sync"
-        ]
+        ["emit", "parallel", "serial", "waterfall", "bail"]
     );
     root.shutdown().await.unwrap();
 }
@@ -500,23 +488,6 @@ async fn bail_meets_an_async_listener() {
         error.to_string(),
         "listener of t/ping in plugin root is asynchronous and cannot run in a synchronous bail"
     );
-    root.listen::<Ping>()
-        .name("t/only-async")
-        .on(returns::<Ping>(&order, "c", None))
-        .unwrap();
-    // `waterfall_sync` has no form taking a name chosen at run time: a type
-    // named `t/only-async` dispatches under that name.
-    #[derive(Serialize, Deserialize)]
-    struct OnlyAsync(i64);
-    impl Event for OnlyAsync {
-        const NAME: &'static str = "t/only-async";
-        type Value = String;
-    }
-    let error = root.waterfall_sync(OnlyAsync(0), |_| Ok(None)).unwrap_err();
-    assert!(
-        error.to_string().ends_with("synchronous waterfall-sync"),
-        "{error}"
-    );
     root.shutdown().await.unwrap();
 }
 
@@ -594,26 +565,6 @@ async fn waterfall_chains_vetoes_and_ends_in_the_terminal() {
         .unwrap();
     let out = root.waterfall(Flag).await.unwrap();
     assert_eq!(out, Some(serde_json::json!(false)));
-    root.shutdown().await.unwrap();
-}
-
-/// `waterfall_sync` chains synchronous listeners into a borrowed terminal.
-///
-/// guarantee: events/waterfall-sync
-#[tokio::test]
-async fn waterfall_sync_chains_into_a_borrowed_terminal() {
-    let root = Ctx::root().unwrap();
-    for label in ["a", "b"] {
-        root.on_sync::<Ping>(move |_, call| {
-            Ok(Some(format!("{label}{}", call.next()?.unwrap_or_default())))
-        })
-        .unwrap();
-    }
-    let local = String::from("t");
-    let out = root
-        .waterfall_sync(Ping(0), |_| Ok(Some(local.clone())))
-        .unwrap();
-    assert_eq!(out.as_deref(), Some("abt"));
     root.shutdown().await.unwrap();
 }
 
@@ -724,15 +675,6 @@ async fn rutis_events_are_reserved() {
     reserved(root.named(name).serial(Ping(0)).await.unwrap_err());
     reserved(root.named(name).waterfall(Ping(0)).await.unwrap_err());
     reserved(root.named(name).bail(Ping(0)).unwrap_err());
-    // `waterfall_sync` has no form taking a name chosen at run time: a type
-    // named `rutis/row` dispatches under that name.
-    #[derive(Serialize, Deserialize)]
-    struct Row(i64);
-    impl Event for Row {
-        const NAME: &'static str = "rutis/row";
-        type Value = String;
-    }
-    reserved(root.waterfall_sync(Row(0), |_| Ok(None)).unwrap_err());
     assert!(entries(&order).is_empty());
     root.events()
         .emit_framework(&root, &EventKey::<Ping>::named(name), Arc::new(Ping(0)))
@@ -1019,17 +961,7 @@ impl RemoteListener for Remote {
     }
     fn call_sync(&self, call: RemoteSyncCall<'_>) -> Result<Option<Value>, Error> {
         push(&self.log, format!("{}:{}", self.label, call.mode()));
-        match call.next() {
-            Some(next) if self.wrap => {
-                let inner = next.call()?;
-                let inner: String = match inner {
-                    Some(value) => value.into_typed(&JsonTranscoder)?,
-                    None => String::new(),
-                };
-                Ok(Some(Value::new(format!("{}{inner}", self.label))))
-            }
-            _ => Ok(Some(Value::new(self.label.to_string()))),
-        }
+        Ok(Some(Value::new(self.label.to_string())))
     }
 }
 
@@ -1215,16 +1147,14 @@ async fn remote_waterfall_next_runs_once() {
     root.shutdown().await.unwrap();
 }
 
-/// Synchronous modes call a remote entry's `call_sync` inline; its next
-/// runs the rest of the chain on the dispatching thread.
+/// `bail` calls a remote entry's `call_sync` inline.
 ///
 /// guarantee: events/remote-sync
 #[tokio::test]
 async fn remote_entries_in_synchronous_modes() {
     let root = Ctx::root().unwrap();
     let order = log();
-    let mut remote = Remote::new("r", &order);
-    remote.wrap = true;
+    let remote = Remote::new("r", &order);
     root.events()
         .on_remote(
             &root,
@@ -1236,15 +1166,10 @@ async fn remote_entries_in_synchronous_modes() {
             Arc::new(remote),
         )
         .unwrap();
-    root.on_sync::<Ping>(|_, call| Ok(Some(format!("s{}", call.next()?.unwrap_or_default()))))
-        .unwrap();
-    let out = root
-        .waterfall_sync(Ping(0), |_| Ok(Some("t".into())))
-        .unwrap();
-    assert_eq!(out.as_deref(), Some("rst"));
+    root.on_sync::<Ping>(|_, _| Ok(Some("s".into()))).unwrap();
     let out = root.bail(Ping(0)).unwrap();
     assert_eq!(out.as_deref(), Some("r"));
-    assert_eq!(entries(&order), ["r:waterfall-sync", "r:bail"]);
+    assert_eq!(entries(&order), ["r:bail"]);
     root.shutdown().await.unwrap();
 }
 
