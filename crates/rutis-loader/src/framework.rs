@@ -110,74 +110,56 @@ pub(crate) fn follow(
 #[derive(Default)]
 pub(crate) struct Followers {
     rows: Mutex<HashMap<PluginId, Arc<Follower>>>,
-    /// The registration, taken when the loader has stopped and its last
-    /// follower has left.
-    listener: Mutex<Listener>,
+    /// The registration on the root: made once, at the first `apply`, and
+    /// withdrawn when this is dropped.
+    listener: Mutex<Option<Listener>>,
 }
 
-#[derive(Default)]
 struct Listener {
-    disposer: Option<rutis::Disposer>,
-    /// The loader's fiber is going: rows still stop, and their changes must
-    /// be said.
-    stopped: bool,
+    disposer: rutis::Disposer,
+    /// The root's runtime, kept for the withdrawal: `Drop` may run outside
+    /// a runtime.
+    handle: tokio::runtime::Handle,
 }
 
 impl Followers {
-    /// Registers the dispatch on the root of `ctx`'s tree.
+    /// Registers the dispatch on the root of `ctx`'s tree, once.
     ///
     /// It follows the loader's rows wherever they run — its tree, the
     /// instances it creates, the anchors below — through the map keyed by the
     /// change's fiber. It is registered on the root rather than on the
     /// loader's context because a row stopping with the loader starts
     /// delivery while the loader's own fiber is `closing`, and an entry whose
-    /// owner is closing is skipped (`Entry::live`). It leaves with
-    /// [`Followers::stop`] and the last follower (see [`Followers::remove`]),
-    /// and called again while it is still there it keeps that one
-    /// registration.
+    /// owner is closing is skipped (`Entry::live`).
+    ///
+    /// It stays until this is dropped, whatever the rows do. Tied to "the
+    /// loader's fiber went and the last row left" it leaks: the two readings
+    /// cross — the loader's disposal sees a row still in the map, that row's
+    /// `Disposed` (a spawned delivery) empties it before the disposal has
+    /// said it is going, and neither withdraws. A host that builds and tears
+    /// down loaders would keep one empty listener per loader. Called again (a
+    /// restart) it finds the registration and registers nothing.
     pub(crate) fn listen(self: &Arc<Self>, ctx: &Ctx) -> Result<(), Error> {
         let mut listener = self.listener.lock().unwrap();
-        // Live again either way: a registration found below is the one of
-        // this run.
-        listener.stopped = false;
-        // A loader applied again (a restart) may come before the rows of the
-        // previous run have said `Disposed`: their deliveries are spawned
-        // tasks, and nothing in `restart` waits for them. The registration is
-        // still there then — it is on the root, which is not closing, so it
-        // still delivers — and it stays the one registration. Registering a
-        // second one would deliver every change twice and leave the first
-        // behind: `stop()` took it only for the last follower, which is no
-        // longer the rule now that `stopped` is false again.
-        if listener.disposer.is_some() {
+        if listener.is_some() {
             return Ok(());
         }
-        let followers = self.clone();
-        listener.disposer = Some(ctx.root_ctx().on_sync::<FiberStatusChanged>(
-            move |changed, _| {
+        let root = ctx.root_ctx();
+        // Weak: the map holds the followers, and this closure is on the root,
+        // which outlives them.
+        let followers = Arc::downgrade(self);
+        let disposer = root.on_sync::<FiberStatusChanged>(move |changed, _| {
+            // The followers are gone: nothing is left to say changes to.
+            if let Some(followers) = followers.upgrade() {
                 followers.dispatch(&changed);
-                Ok(None)
-            },
-        )?);
-        Ok(())
-    }
-
-    /// The loader's fiber is being disposed. Its rows are still going: the
-    /// listener stays until the last of them has left, so every `stopped` is
-    /// still said.
-    pub(crate) fn stop(&self) {
-        let empty = self.rows.lock().unwrap().is_empty();
-        let disposer = {
-            let mut listener = self.listener.lock().unwrap();
-            listener.stopped = true;
-            if empty {
-                listener.disposer.take()
-            } else {
-                None
             }
-        };
-        if let Some(disposer) = disposer {
-            dispose_in_background(disposer);
-        }
+            Ok(None)
+        })?;
+        *listener = Some(Listener {
+            disposer,
+            handle: root.handle().clone(),
+        });
+        Ok(())
     }
 
     /// Routes one change to the follower of its fiber, if a row still runs
@@ -194,44 +176,34 @@ impl Followers {
         self.rows.lock().unwrap().insert(follower.view.id, follower);
     }
 
-    /// Takes the row out of the map; the last one out, after the loader has
-    /// stopped, withdraws the listener.
+    /// Takes the row out of the map.
     fn remove(&self, id: PluginId) {
-        let empty = {
-            let mut rows = self.rows.lock().unwrap();
-            rows.remove(&id);
-            rows.is_empty()
-        };
-        if !empty {
-            return;
-        }
-        let disposer = {
-            let mut listener = self.listener.lock().unwrap();
-            if listener.stopped {
-                listener.disposer.take()
-            } else {
-                None
-            }
-        };
-        if let Some(disposer) = disposer {
-            dispose_in_background(disposer);
-        }
+        self.rows.lock().unwrap().remove(&id);
     }
 
-    #[cfg(test)]
-    fn len(&self) -> usize {
+    /// How many rows it follows: the map's size (`internal::followed_rows`,
+    /// for the tests of the listener's life).
+    pub(crate) fn followed(&self) -> usize {
         self.rows.lock().unwrap().len()
     }
 }
 
-/// Withdraws a registration without holding up the caller. Without a runtime
-/// it is not withdrawn: the entry stays on the root until the root goes, one
-/// entry per unmounted loader.
-fn dispose_in_background(disposer: rutis::Disposer) {
-    if let Ok(tasks) = tokio::runtime::Handle::try_current() {
-        tasks.spawn(async move {
-            let _ = disposer.dispose().await;
-        });
+impl Drop for Followers {
+    fn drop(&mut self) {
+        // Dropping a `Disposer` does not withdraw the registration
+        // (`Disposer::dispose`): the root's runtime takes the withdrawal,
+        // kept at registration because this can run outside a runtime. A
+        // runtime that has already shut down took the root, and this entry
+        // with it.
+        let listener = match self.listener.get_mut() {
+            Ok(listener) => listener.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(listener) = listener {
+            listener.handle.spawn(async move {
+                let _ = listener.disposer.dispose().await;
+            });
+        }
     }
 }
 
@@ -312,6 +284,8 @@ mod tests {
         (root, followers, view, gate)
     }
 
+    /// guarantee: events/framework (rutis/row)
+    ///
     /// Every change of a followed row is said once and in order, and a change
     /// older than the state `follow` seeded is not said: that one covers an
     /// emission selected before the follower entered the map, delivered after
@@ -327,7 +301,7 @@ mod tests {
         })
         .unwrap();
         follow(&followers, &root, &view, "row", "row");
-        assert_eq!(followers.len(), 1);
+        assert_eq!(followers.followed(), 1);
         gate.notify_one();
         rutis_test_support::eventually(
             || {
@@ -360,12 +334,14 @@ mod tests {
         )
         .await;
         rutis_test_support::eventually(
-            || (followers.len() == 0).then_some(()),
+            || (followers.followed() == 0).then_some(()),
             "the disposed row left the map",
         )
         .await;
     }
 
+    /// guarantee: events/framework (rutis/row)
+    ///
     /// A row that runs and stops at once still says `running`: the states are
     /// the kernel's changes, not a watch of the latest one
     /// ([`follow`]'s contract).
@@ -398,23 +374,30 @@ mod tests {
         )
         .await;
         rutis_test_support::eventually(
-            || (followers.len() == 0).then_some(()),
+            || (followers.followed() == 0).then_some(()),
             "the row left the map",
         )
         .await;
     }
     /// guarantee: events/framework (rutis/row)
     ///
-    /// A loader applied again before its rows' `Disposed` was delivered keeps
-    /// the one registration: `stop()` leaves it for the rows still going, and
-    /// the second `listen()` registers no other. The rows still say
-    /// `stopped`, and `stop()` with an empty map withdraws it.
+    /// One registration per loader, for its whole life: a second `listen` (a
+    /// restart) registers nothing, its rows coming and going leave it there —
+    /// a row stopping with the loader still says `stopped` through it — and
+    /// dropping the followers withdraws it.
     #[tokio::test]
-    async fn a_second_listen_keeps_the_registration() {
+    async fn the_registration_leaves_with_the_followers() {
         let root = Ctx::root().unwrap();
         let before = status_listeners(&root);
         let followers = Arc::new(Followers::default());
         followers.listen(&root).unwrap();
+        // Applied again (a restart) before anything runs: nothing new.
+        followers.listen(&root).unwrap();
+        assert_eq!(
+            status_listeners(&root),
+            before + 1,
+            "the second listen registers nothing"
+        );
         let gate = Arc::new(tokio::sync::Notify::new());
         let view = root.plugin(GatedRow(gate.clone()));
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -432,17 +415,6 @@ mod tests {
         )
         .await;
         assert_eq!(status_listeners(&root), before + 1);
-        // The loader's fiber goes while the row still runs: the registration
-        // stays, for the row to say its `stopped`.
-        followers.stop();
-        assert_eq!(status_listeners(&root), before + 1);
-        // Applied again before the row's `Disposed` was delivered.
-        followers.listen(&root).unwrap();
-        assert_eq!(
-            status_listeners(&root),
-            before + 1,
-            "the second listen registers nothing"
-        );
         view.dispose().await.unwrap();
         rutis_test_support::eventually(
             || {
@@ -453,19 +425,21 @@ mod tests {
             "pending, running, stopped",
         )
         .await;
-        assert_eq!(status_listeners(&root), before + 1);
         rutis_test_support::eventually(
-            || (followers.len() == 0).then_some(()),
+            || (followers.followed() == 0).then_some(()),
             "the row left the map",
         )
         .await;
-        // The row leaving did not withdraw it: the second `listen` reset
-        // `stopped`.
-        assert_eq!(status_listeners(&root), before + 1);
-        followers.stop();
+        // Its last row leaving does not withdraw it: the loader still has it.
+        assert_eq!(
+            status_listeners(&root),
+            before + 1,
+            "the registration stays after its last row"
+        );
+        drop(followers);
         rutis_test_support::eventually(
             || (status_listeners(&root) == before).then_some(()),
-            "the registration left with the empty map",
+            "the registration left with the followers",
         )
         .await;
     }

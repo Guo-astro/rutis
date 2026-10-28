@@ -235,10 +235,9 @@ impl DynPlugin for LoaderPlugin {
                 if let Some(inner) = weak.upgrade() {
                     inner.detach(None, token);
                     // Instances live in the loader's tree: they go with it.
+                    // Their rows still stop, and say so: the listener is on
+                    // the root and leaves with the loader's `Inner`.
                     inner.state.lock().unwrap().instances.clear();
-                    // Their rows still stop, and say so: the listener leaves
-                    // with the last of them.
-                    inner.followers.stop();
                 }
                 Ok(())
             })))

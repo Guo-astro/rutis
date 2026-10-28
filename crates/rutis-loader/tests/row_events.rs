@@ -179,6 +179,15 @@ async fn rows_share_one_status_listener() {
     )
     .await;
     assert_eq!(status_listeners(&root), before);
+    // Every row gone: nothing is followed — and the registration is still
+    // there, because it is the loader's, not the rows' (#806).
+    reconcile(&loader, patches(json!([{ "insert": [] }])), &store).await;
+    eventually(
+        || (rutis_loader::internal::followed_rows(&loader) == 0).then_some(()),
+        "no row followed",
+    )
+    .await;
+    assert_eq!(status_listeners(&root), before);
 }
 
 /// guarantee: events/framework (rutis/row)
@@ -186,8 +195,8 @@ async fn rows_share_one_status_listener() {
 /// Rows stopping with the loader still say `stopped`: a row of the loader's
 /// tree and a row of an instance that the loader's disposer clears. The
 /// listener is not owned by the loader's fiber, which is closing while its
-/// rows go; it leaves when the last follower does, so the root's listener
-/// count returns to what it was before the loader.
+/// rows go; it belongs to the loader and stays until the loader's `Inner` is
+/// dropped (see `the_listener_leaves_when_the_loader_is_dropped`).
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_stopped_with_the_loader_say_stopped() {
     let root = rutis::Ctx::root().unwrap();
@@ -247,18 +256,90 @@ async fn rows_stopped_with_the_loader_say_stopped() {
         "both rows stopped",
     )
     .await;
+    // The rows leaving does not withdraw it: it is the loader's, and leaves
+    // with the loader's `Inner`.
+    assert_eq!(
+        status_listeners(&root),
+        before + 1,
+        "the registration stays with the loader"
+    );
+}
+
+/// guarantee: events/framework (rutis/row)
+///
+/// The listener belongs to the loader: rows stopping with it still say
+/// `stopped` through it, and once every `Loader` handle and the plugin are
+/// gone the root's listener count returns to what it was before (#806).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_listener_leaves_when_the_loader_is_dropped() {
+    let root = rutis::Ctx::root().unwrap();
+    let harness = Harness::new();
+    let store = MemStore::default();
+    let before = status_listeners(&root);
+    let plugin = rutis_loader::LoaderPlugin::new(
+        harness.resolver(),
+        rutis_loader::LoaderOptions {
+            persist: Arc::new(store.clone()),
+            ..Default::default()
+        },
+    );
+    let loader = plugin.handle();
+    let view = root.plugin(plugin);
+    (&view).await.unwrap();
+    assert_eq!(
+        status_listeners(&root),
+        before + 1,
+        "the loader listens once"
+    );
+    let events: Arc<Mutex<Vec<(String, RowState)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    root.on::<RowEvent>(move |event, _| {
+        seen.lock().unwrap().push((event.row.clone(), event.state));
+        std::future::ready(Ok(None))
+    })
+    .unwrap();
+    let reached = |row: &str, state: RowState| {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(seen, said)| seen == row && *said == state)
+    };
+    reconcile(
+        &loader,
+        patches(json!([{ "insert": [
+            { "id": "tree", "name": "echo", "config": { "label": "tree" } }
+        ] }])),
+        &store,
+    )
+    .await;
+    eventually(
+        || reached("tree", RowState::Running).then_some(()),
+        "the row runs",
+    )
+    .await;
+    view.dispose().await.unwrap();
+    eventually(
+        || reached("tree", RowState::Stopped).then_some(()),
+        "the row stopped with the loader",
+    )
+    .await;
+    // Still there: the loader has not been dropped.
+    assert_eq!(status_listeners(&root), before + 1);
+    drop(loader);
+    drop(view);
     eventually(
         || (status_listeners(&root) == before).then_some(()),
-        "the loader's listener left with its last follower",
+        "the registration left with the loader",
     )
     .await;
 }
 
 /// guarantee: events/framework (rutis/row)
 ///
-/// A restarted loader holds one listener: the registration of the previous
-/// run leaves with its last follower, and the new run's rows say their
-/// changes through its own.
+/// A restarted loader holds one listener: the registration is made once and
+/// a later `apply` finds it, and the new run's rows say their changes
+/// through it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_loader_still_listens_once() {
     let root = rutis::Ctx::root().unwrap();
@@ -352,9 +433,18 @@ async fn a_restarted_loader_still_listens_once() {
     .await;
     assert_eq!(status_listeners(&root), listening);
     view.dispose().await.unwrap();
+    // Still there after the rows go: it belongs to the loader.
+    eventually(
+        || (rutis_loader::internal::followed_rows(&loader) == 0).then_some(()),
+        "no row followed",
+    )
+    .await;
+    assert_eq!(status_listeners(&root), listening);
+    drop(view);
+    drop(loader);
     eventually(
         || (status_listeners(&root) == before).then_some(()),
-        "the listener left with the last follower",
+        "the listener left with the loader",
     )
     .await;
 }
