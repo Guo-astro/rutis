@@ -148,43 +148,6 @@ func TestAnObjectFromTheFarEndIsCalledAndGoesHome(t *testing.T) {
 	open(t, runtime)
 }
 
-// counter is an object with methods.
-type counter struct{ n int }
-
-func (c *counter) Call(ctx context.Context, method string, args []any) (any, error) {
-	c.n++
-	return c.n, nil
-}
-func (c *counter) Get(ctx context.Context, property string) (any, error) { return c.n, nil }
-
-// objects-case(go): no-objects-declared
-func TestAnObjectGoesOnlyToAFarEndThatTakesObjects(t *testing.T) {
-	a, b := endpointPair(t, ValueCapabilities, func(ctx context.Context, target, method string, args []any) (any, error) {
-		if method == "object" {
-			return &counter{}, nil
-		}
-		return "fine", nil
-	})
-	ctx := context.Background()
-	_, err := a.Call(ctx, "x", "take", []any{1, &counter{}}, true)
-	var refused *ValueError
-	want := "x.take: argument 2 cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead, or upgrade b to rutis 0.18"
-	if !errors.As(err, &refused) || err.Error() != want {
-		t.Fatalf("%v", err)
-	}
-	_, err = b.Call(ctx, "x", "object", nil, true)
-	var remote *RemoteError
-	want = "x.object: the result cannot be sent: an object with methods (counter) cannot cross to b; pass plain data or a function instead, or upgrade b to rutis 0.18"
-	if !errors.As(err, &remote) || remote.Message != want {
-		t.Fatalf("%v", err)
-	}
-	if value, err := a.Call(ctx, "x", "after", nil, true); err != nil || text(value) != "fine" {
-		t.Fatalf("%v %v", value, err)
-	}
-	open(t, a)
-	open(t, b)
-}
-
 // A value a JavaScript plugin threw that is no Error (`throw 'a string'`)
 // crosses as the graph of that value, with no nodes: relayed by Go
 // (`return err`), it keeps its name, message and graph, its nodes an

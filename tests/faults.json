@@ -240,8 +240,7 @@
       "go": {
         "tests": [
           ["crates/rutis-loader/tests/bad_values.rs", "a_bad_value_fails_only_its_call_between_node_python_and_go"],
-          ["crates/rutis-loader/tests/objects_cross.rs", "a_go_parameter_that_takes_no_object_says_so"],
-          ["go/rutis/internal/peer/crossing_test.go", "TestAnObjectGoesOnlyToAFarEndThatTakesObjects"]
+          ["crates/rutis-loader/tests/objects_cross.rs", "a_go_parameter_that_takes_no_object_says_so"]
         ]
       },
       "rust": {

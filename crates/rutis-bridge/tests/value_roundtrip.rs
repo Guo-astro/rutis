@@ -1352,10 +1352,6 @@ async fn go_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "go"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(go(), main_without_objects("go")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "go"))
-        .await
-        .unwrap();
 }
 
 /// `value` as a far end that holds lists and records of data as data

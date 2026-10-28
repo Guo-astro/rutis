@@ -25,7 +25,7 @@ func farEnd(t *testing.T, dispatch func(ctx context.Context, target, method stri
 		if _, err := far.Recv(); err != nil { // its hello
 			return
 		}
-		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2"]}`))
+		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":[]}`))
 		for {
 			message, err := far.Recv()
 			if err != nil {
