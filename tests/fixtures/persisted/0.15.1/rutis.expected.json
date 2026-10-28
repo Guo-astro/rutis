@@ -31,49 +31,7 @@
       "idle": 120,
       "project": "<dir>",
       "restart": "exit"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "office-node",
-        "language": "node"
-      },
-      {
-        "name": "edge-bun",
-        "language": "bun"
-      },
-      {
-        "name": "phone",
-        "language": "python",
-        "listen": "public",
-        "instances": "phones"
-      },
-      {
-        "name": "kiosk",
-        "language": "bun",
-        "listen": "public",
-        "instances": "kiosks"
-      },
-      {
-        "name": "iphone",
-        "language": "swift",
-        "listen": "public",
-        "instances": "iphones"
-      },
-      {
-        "name": "android",
-        "language": "kotlin",
-        "listen": "public",
-        "instances": "androids"
-      },
-      {
-        "name": "tablet",
-        "language": "kt"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -166,7 +124,6 @@
         "import": [
           "stock/changed"
         ],
-        "runtime": "office-node",
         "identity": "host"
       }
     },
@@ -185,7 +142,6 @@
       "config": {
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
         "identity": "host"
       }
     },
@@ -203,7 +159,6 @@
       "config": {
         "peer": "edge-bun",
         "dial": "wss://edge.example.com/rutis",
-        "runtime": "edge-bun",
         "identity": "host"
       }
     },
@@ -265,7 +220,6 @@
       "config": {
         "peer": "tablet",
         "dial": "wss://tablet.local:7443/rutis",
-        "runtime": "tablet",
         "identity": "host"
       }
     },

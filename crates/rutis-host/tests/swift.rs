@@ -194,9 +194,9 @@ fn sdk_version() -> String {
     rest[..rest.find('"').unwrap()].to_owned()
 }
 
-/// The Swift binary `product` running remotely on `channel` (`listen:` or
-/// `dial:`) as the endpoint `id`, for the host `test`, presenting or
-/// expecting `token`; its stderr lines come out of the receiver.
+/// The Swift binary `product` running remotely on `channel` (`listen:`) as
+/// the endpoint `id`, for the host `test`, expecting `token`; its stderr
+/// lines come out of the receiver.
 fn remote(
     product: &str,
     channel: &str,
@@ -230,11 +230,10 @@ fn remote(
 }
 
 /// A Swift binary listening on another machine (here, on loopback): a
-/// peer row links to it, `language: "swift"`, and its rows are
-/// `<runtime>:<plugin>`.
+/// dial row connects it, and its rows are `<row>:<plugin>`.
 /// guarantee: loader/remote-runtime-rows
 #[tokio::test(flavor = "multi_thread")]
-async fn a_remote_swift_runtime_runs_rows_named_after_it() {
+async fn a_dial_row_runs_swift_rows_named_after_it() {
     let (_child, mut lines) = remote(
         "RutisPing",
         "listen:ws://127.0.0.1:0/rutis",
@@ -254,9 +253,8 @@ async fn a_remote_swift_runtime_runs_rows_named_after_it() {
     std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
-        "runtimes": { "remote": [{ "name": "edge", "language": "swift" }] },
         "rows": [
-            { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+            { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
             { "id": "ping", "name": "edge:ping" }
         ]
     }))
@@ -270,52 +268,6 @@ async fn a_remote_swift_runtime_runs_rows_named_after_it() {
         call(service, "echo", json!(["far"])).await.unwrap(),
         json!("netkit pong far")
     );
-    host.shut_down(HANG_GUARD).await.ok();
-}
-
-/// A Swift binary that dials in to the host's listener: each connection is
-/// an instance of the group `runtimes.remote[].instances` names, its rows
-/// `<name>:<plugin>` on that connection; the connection going closes it.
-/// guarantee: loader/runtime-connection-instances
-#[tokio::test(flavor = "multi_thread")]
-async fn a_swift_runtime_that_dials_in_is_an_instance() {
-    std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
-    let config: HostConfig = serde_json::from_value(json!({
-        "id": "test",
-        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "remote": [{ "name": "phone", "language": "swift", "listen": "public", "instances": "phone" }]
-        },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-            { "id": "ping", "name": "phone:ping" }
-        ] }]
-    }))
-    .unwrap();
-    let host = Host::start(&config).await.unwrap();
-    host.load(config.rows()).await.unwrap();
-    let address = format!("ws://{}/rutis", host.listening[0].1);
-    let (mut child, mut lines) = remote("RutisPing", &format!("dial:{address}"), "pixel", "shared");
-    COLD.within("connected", async {
-        loop {
-            let line = lines.recv().await.expect("connected");
-            if line.starts_with("rutis: connected to ") {
-                break;
-            }
-        }
-    })
-    .await;
-    let running = |id: &str| {
-        host.loader
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.id == id && entry.instance.is_some())
-            .count()
-    };
-    COLD.until(|| running("ping") == 1, "the row of the instance")
-        .await;
-    child.kill().await.unwrap();
-    COLD.until(|| running("ping") == 0, "the instance closed")
-        .await;
     host.shut_down(HANG_GUARD).await.ok();
 }
 

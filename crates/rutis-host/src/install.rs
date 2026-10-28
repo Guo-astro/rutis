@@ -375,16 +375,10 @@ async fn check_rows(
         true => crate::project::dev_config_of(&target.base(), &text)?.0,
         false => HostConfig::parse(&text, &target.path)?,
     };
-    // The new rows run in local runtimes: the check binds no listener and
-    // connects no remote runtime, so a host running this file keeps its
-    // ports and links (§十 I10). Remote rows say their runtime is not
-    // running, as `check` does when it is not connected.
+    // The new rows run in local runtimes: the check binds no listener, so
+    // a host running this file keeps its ports (§十 I10). Its rows are
+    // checked, not run: no connection row connects.
     config.listen.clear();
-    for remote in &mut config.runtimes.remote {
-        remote.dial = None;
-        remote.listen = None;
-        remote.instances = None;
-    }
     let host = crate::host::Host::start(&config).await?;
     host.runtimes_ready().await?;
     let report = host.check(config.rows()).await?;

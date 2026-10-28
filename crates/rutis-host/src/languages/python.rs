@@ -62,10 +62,6 @@ impl Language for Python {
         }
     }
 
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["python", "py"]
-    }
-
     fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
         runtimes.py.as_ref().map(runtime)
     }

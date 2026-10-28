@@ -75,11 +75,7 @@ impl Language for Node {
         }
     }
 
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["node"]
-    }
-
-    /// npm names, resolved where the runtime runs, and `file:` URLs.
+    /// npm names and `file:` URLs.
     fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
         RuntimeResolver::node(runtime)
     }

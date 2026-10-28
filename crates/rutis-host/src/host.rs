@@ -8,23 +8,22 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
 use rutis::{Ctx, Error as RutisError};
-use rutis_bridge::runtime::{RuntimeHandle, RuntimePlugin, RuntimeState};
+use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::websocket::{Limits, ListenerConfig, ServerTls, Trust};
 use rutis_bridge::{
-    Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Connect as Reach, Credential,
-    Dialer, Identity, IdentityPlugin, LinkConfig, PeerId, Presented, Registrations, SharedToken,
+    Accepting, Connect as Reach, Credential, Dialer, Identity, IdentityPlugin, LocalId, PeerId,
+    Presented, Registrations, Session,
 };
-use rutis_bridge::{Features, PeerPlugin};
 use rutis_loader::peer::{register_peer_node, Address, PeerResolver};
 use rutis_loader::runtime::binary::RuntimeEnd;
-use rutis_loader::runtime::{RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 
-use crate::config::{token, Connect, HostConfig, Restart};
+use crate::config::{token, HostConfig, Restart};
 use crate::errln;
-use crate::languages::{self, BinaryHost, Mount, LANGUAGES};
+use crate::languages::{BinaryHost, Mount, LANGUAGES};
 
 pub struct Host {
     /// The host runs while this lives.
@@ -56,8 +55,9 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
-    /// The remote runtimes `runtimes.remote` connects itself.
-    connections: crate::status::Connections,
+    /// What each connection row (`rutis-host/dial`, `rutis-host/listen`)
+    /// has connected.
+    connections: crate::connect::Connections,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
     supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
@@ -145,28 +145,7 @@ impl Host {
 
     /// [`Host::start`], with what an embedding program adds.
     pub async fn start_with(config: &HostConfig, embedding: Embedding) -> Result<Self, Error> {
-        config.check_runtime_names()?;
-        config.check_dialing_runtimes()?;
         config.check_listener_tokens(embedding.identity.is_none())?;
-        // The token of each runtime that dials in, before anything starts:
-        // with the host's identity, one runtime's too.
-        let mut dialing = Vec::new();
-        let mut linked = Vec::new();
-        for remote in &config.runtimes.remote {
-            let needs = match remote.connect()? {
-                Connect::Instances { .. } => true,
-                Connect::Listen(_) => embedding.identity.is_none(),
-                _ => false,
-            };
-            if needs && token(&remote.name).is_none() {
-                return Err(format!(
-                    "remote runtime {}: set RUTIS_TOKEN_{}: the token its \
-                     runtimes present when they dial in",
-                    remote.name,
-                    remote.name.to_uppercase().replace('-', "_")
-                ));
-            }
-        }
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
         // the kernel prints them. A row that failed to start and a runtime
@@ -194,15 +173,24 @@ impl Host {
         root.report_waiting_after(None);
         let catalog = ServiceCatalog::new();
 
-        // The listeners and this node's identity, for the rows that link.
+        // The listeners and this node's identity, for the rows that connect.
         let local = PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?;
+        // The id every session greets with, and the `sessions` service.
+        root.provide(LocalId(local.clone()))
+            .map_err(|error| format!("id: {error}"))?;
+        root.plugin(Session::service());
         let (trust, listeners) = websocket(config)?;
         let registrations = Registrations::new();
+        let router = crate::connect::Router::new(listeners.iter().map(|l| l.name.clone()));
         let mut listening = Vec::new();
         let mut bound = Vec::new();
         for listener in &listeners {
-            let admit =
+            // A listen row's token, else a link row's (`rutis-bridge/peer`).
+            let ours = router.admit(&listener.name);
+            let links =
                 rutis_bridge::websocket::admit_registered(registrations.clone(), &listener.name);
+            let admit: rutis_bridge::websocket::Admit =
+                Arc::new(move |upgrade| ours(upgrade).or_else(|_| links(upgrade)));
             let started = rutis_bridge::websocket::listen(listener, &Limits::default(), admit)?;
             listening.push((listener.name.clone(), started.local_addr()));
             bound.push(started);
@@ -217,11 +205,12 @@ impl Host {
             Ok(())
         })
         .map_err(|error| format!("the WebSocket listeners: {error}"))?;
+        let connections = crate::connect::Connections::default();
         let reach = Reaching {
             local: local.clone(),
             registrations,
             listeners: config.listen.iter().map(|l| l.name.clone()).collect(),
-            trust,
+            trust: trust.clone(),
         };
         let accepted = match embedding.identity {
             Some(identity) => {
@@ -239,6 +228,14 @@ impl Host {
         let peers = Arc::new(PeerResolver::new(reach.resolver()));
         let mut builtins = Builtins::new();
         register_peer_node(&mut builtins, peers.clone());
+        crate::connect::register(
+            &mut builtins,
+            &crate::connect::Connect {
+                trust,
+                router,
+                connections: connections.clone(),
+            },
+        );
         if let Some(register) = embedding.builtins {
             register(&mut builtins);
         }
@@ -277,51 +274,8 @@ impl Host {
             }
         }
 
-        for remote in &config.runtimes.remote {
-            let language = languages::by_remote_name(&remote.language).ok_or_else(|| {
-                let names: Vec<String> = languages::remote_names()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect();
-                format!(
-                    "remote runtime {}: the language is {}, not {}",
-                    remote.name,
-                    languages::either(&names),
-                    remote.language
-                )
-            })?;
-            // Each connection an instance, its rows `<name>:<plugin>` on it.
-            if let Some((listen, group)) = remote.dials_in()? {
-                let instances = RuntimeInstances::new(&remote.name, group, &catalog);
-                mount.chain = std::mem::take(&mut mount.chain).with(instances.clone());
-                dialing.push((remote.name.clone(), listen.to_owned(), instances));
-                continue;
-            }
-            // One runtime over a link of its own, which the host makes as
-            // a link row's (`docs/design-remote-runtime-consistency-2026-10-26.md`
-            // §四); else a link row's, or an embedding's, session.
-            let id = || link_peer(&remote.name);
-            match remote.connect()? {
-                Connect::Dial(address) => linked.push((
-                    remote.name.clone(),
-                    LinkConfig::dial(id()?, "host", reach.websocket(address)),
-                    true,
-                )),
-                Connect::Listen(listen) => linked.push((
-                    remote.name.clone(),
-                    LinkConfig::listen(id()?, "host", reach.accepting(listen)),
-                    false,
-                )),
-                Connect::Instances { .. } | Connect::Elsewhere => {}
-            }
-            let runtime = RuntimePlugin::remote(&remote.name);
-            let handle = runtime.handle();
-            let rows = Arc::new(language.rows(handle.clone()).with_catalog(&catalog));
-            root.plugin(runtime);
-            mount.resolve(rows.clone());
-            mount.resolvers.push(rows);
-            // Not waited for at start: it runs when its link does.
-        }
+        // TODO(S3 SessionResolver): add the resolver of the rows
+        // `<connection row>:<plugin>` here, last in the chain.
         let Mount {
             chain,
             runtimes,
@@ -352,44 +306,6 @@ impl Host {
             .map_err(|error| format!("the loader: {error}"))?;
         for rows in &resolvers {
             root.plugin(RuntimeRowsPlugin::new(rows.clone()));
-        }
-        let connections = crate::status::Connections::default();
-        // A link per runtime `runtimes.remote` connects one at a time,
-        // carrying its session: the composition a link row with `runtime`
-        // mounts.
-        for (name, link, dials) in linked {
-            let features = Features {
-                runtime: Some(name.clone()),
-                ..Features::default()
-            };
-            let peer = PeerPlugin::new(link.require("runtime"), features)?;
-            let handle = peer.handle();
-            (&root.plugin(peer))
-                .await
-                .map_err(|error| format!("remote runtime {name}: {error}"))?;
-            let state = handle
-                .link_state()
-                .expect("an applied composition has its link");
-            connections.link(&name, state, dials);
-        }
-        // An access point per runtime that dials in: no link row, the
-        // connections come and go with their instances.
-        for (name, listen, instances) in dialing {
-            let token = token(&name).expect("checked above");
-            root.plugin(AdmissionPlugin::new(
-                &name,
-                SharedToken::new(local.clone(), token),
-            ));
-            let id = PeerId::new(name.clone())
-                .map_err(|error| format!("remote runtime {name}: {error}"))?;
-            let access = AccessPointPlugin::new(
-                AccessPointConfig::new(id, &name, reach.accepting(&listen)).require("runtime"),
-            )
-            .accept(instances.accept(loader.clone(), root.clone()));
-            connections.instances(&name, access.events());
-            (&root.plugin(access))
-                .await
-                .map_err(|error| format!("remote runtime {name}: {error}"))?;
         }
         let restarts = LANGUAGES
             .iter()
@@ -645,7 +561,7 @@ impl Host {
     /// while it runs"):
     ///
     /// - What a running host cannot change refuses it, saying to restart
-    ///   the host: `format`, `id`, `listen`, `runtimes.remote`, and a local
+    ///   the host: `format`, `id`, `listen`, and a local
     ///   runtime added or changed (`runtimes.go` and `runtimes.swift` in any
     ///   way).
     /// - The new rows are checked first ([`Loader::check`]): a row that
@@ -661,8 +577,6 @@ impl Host {
     /// dialed, so a peer row `new` adds presents its token.
     pub async fn reload(&mut self, new: HostConfig) -> Result<Reloaded, Error> {
         restart_needed(&self.config, &new)?;
-        new.check_runtime_names()?;
-        new.check_dialing_runtimes()?;
         new.check_listener_tokens(self.accepted.is_some())?;
         let removed: Vec<&'static str> = LANGUAGES
             .iter()
@@ -953,17 +867,27 @@ impl Host {
         crate::status::Followed {
             loader: self.loader.clone(),
             peers: self.peers.clone(),
-            connections: self.connections.clone(),
             runtimes: self.runtimes.clone(),
             binaries: self.binaries.clone(),
         }
     }
 
-    /// What `rutis-host status` answers: the loader's status, then the
-    /// connections of the remote runtimes `runtimes.remote` connects.
+    /// What `rutis-host status` answers: the loader's status, then what
+    /// each connection row has connected.
     pub fn status_report(&self) -> crate::control::Report {
         let (loader, connections) = (self.loader.clone(), self.connections.clone());
-        Arc::new(move || format!("{}{}", loader.status(), connections.status()))
+        Arc::new(move || {
+            format!(
+                "{}{}",
+                loader.status(),
+                crate::status::connections(&connections.rows())
+            )
+        })
+    }
+
+    /// What each connection row has connected now.
+    pub fn connections(&self) -> Vec<crate::connect::Row> {
+        self.connections.rows()
     }
 
     /// Forget what the runtimes' resolvers cached, so changed plugins are
@@ -1178,30 +1102,6 @@ pub fn restart_needed(old: &HostConfig, new: &HostConfig) -> Result<(), Error> {
     if format!("{:?}", new.listen) != format!("{:?}", old.listen) {
         return restart("listen changed".into());
     }
-    let names = |config: &HostConfig| -> Vec<String> {
-        config
-            .runtimes
-            .remote
-            .iter()
-            .map(|remote| remote.name.clone())
-            .collect()
-    };
-    for remote in &new.runtimes.remote {
-        let before = old.runtimes.remote.iter().find(|r| r.name == remote.name);
-        match before {
-            None => return restart(format!("runtimes.remote {} added", remote.name)),
-            Some(before) if format!("{before:?}") != format!("{remote:?}") => {
-                return restart(format!("runtimes.remote {} changed", remote.name))
-            }
-            _ => {}
-        }
-    }
-    if let Some(gone) = names(old)
-        .into_iter()
-        .find(|name| !names(new).contains(name))
-    {
-        return restart(format!("runtimes.remote {gone} removed"));
-    }
     for language in LANGUAGES {
         let key = language.key();
         match (
@@ -1293,14 +1193,8 @@ pub fn row_changes(
         .collect()
 }
 
-/// The id of the remote runtime `name`'s link: the runtime greets as it.
-fn link_peer(name: &str) -> Result<PeerId, Error> {
-    PeerId::new(name.to_owned()).map_err(|error| format!("remote runtime {name}: {error}"))
-}
-
-/// The peers of `config`'s peer rows that listen, and of the remote
-/// runtimes that dial in one at a time: their links are accepted with
-/// their tokens.
+/// The peers of `config`'s peer rows that listen: their links are
+/// accepted with their tokens.
 fn listening_peers(config: &HostConfig) -> Result<Vec<PeerId>, Error> {
     config
         .peers()
@@ -1410,7 +1304,7 @@ impl DynPlugin for Released {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, RemoteRuntime, Runtimes};
+    use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, Runtimes};
     use rutis::internal::CtxInternal;
     use rutis_bridge::session::{settle, Value};
     use rutis_test_support::{within, Guard, HANG_GUARD};
@@ -1625,45 +1519,11 @@ mod tests {
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
 
-    /// A runtime's name is its rows' prefix, so it names one runtime.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn runtime_names_are_unique() {
-        let config = |remote: &str| HostConfig {
-            format: crate::config::FORMAT,
-            id: "test".into(),
-            runtimes: Runtimes {
-                bun: Some(BunRuntime {
-                    restart: crate::config::Restart::No,
-                    project: PathBuf::from("."),
-                    runtime: None,
-                    program: None,
-                }),
-                remote: vec![RemoteRuntime {
-                    name: remote.into(),
-                    language: "python".into(),
-                    dial: None,
-                    listen: None,
-                    instances: None,
-                }],
-                ..Runtimes::default()
-            },
-            listen: Vec::new(),
-            installed: Default::default(),
-            rows: Vec::new(),
-            warnings: Vec::new(),
-        };
-        for taken in ["bun", "file", "g", "GPU"] {
-            let error = Host::start(&config(taken)).await.err().expect(taken);
-            assert!(error.contains("remote runtime"), "{taken}: {error}");
-        }
-        assert!(config("gpu").check_runtime_names().is_ok());
-    }
-
     /// A runtime on another machine (here, a process listening on loopback):
-    /// a peer row links to it, and its rows are `<runtime>:<module>`.
+    /// a dial row connects it, and its rows are `<row>:<module>`.
     /// guarantee: loader/remote-runtime-rows
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_remote_runtime_runs_rows_named_after_it() {
+    async fn a_dial_row_runs_rows_named_after_it() {
         use tokio::io::AsyncBufReadExt;
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1711,9 +1571,8 @@ mod tests {
         std::env::set_var("RUTIS_TOKEN_GPU", "remote-token");
         let config: HostConfig = serde_json::from_value(json!({
             "id": "remote-test",
-            "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
             "rows": [
-                { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": address, "runtime": "gpu" } },
+                { "id": "gpu", "name": "rutis-host/dial", "config": { "address": address } },
                 { "id": "greeter", "name": "gpu:greeter" }
             ]
         }))
@@ -1725,12 +1584,12 @@ mod tests {
     }
 
     /// A Bun runtime on another machine (here, listening on loopback): a
-    /// peer row links to it, and its rows are `<runtime>:<module>`. Bun on
+    /// dial row connects it, and its rows are `<row>:<module>`. Bun on
     /// Windows is not tested yet.
     /// guarantee: loader/remote-runtime-rows
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_remote_bun_runtime_runs_rows_named_after_it() {
+    async fn a_dial_row_runs_bun_rows_named_after_it() {
         use tokio::io::AsyncBufReadExt;
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("package.json"), "{}").unwrap();
@@ -1776,9 +1635,8 @@ mod tests {
         std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
         let config: HostConfig = serde_json::from_value(json!({
             "id": "remote-bun",
-            "runtimes": { "remote": [{ "name": "edge", "language": "bun" }] },
             "rows": [
-                { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+                { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
                 { "id": "greeter", "name": "edge:./greeter.ts" }
             ]
         }))
@@ -1802,11 +1660,7 @@ mod tests {
             "id": "main",
             "listen": [{ "name": "public", "address": "127.0.0.1:7443" }],
             "runtimes": {
-                "node": {}, "py": {}, "go": { "dir": "plugins" },
-                "remote": [
-                    { "name": "gpu", "language": "python" },
-                    { "name": "phone", "language": "python", "listen": "public", "instances": "phone" }
-                ]
+                "node": {}, "py": {}, "go": { "dir": "plugins" }
             },
             "rows": [{ "id": "a", "name": "py:a" }]
         });
@@ -1824,33 +1678,6 @@ mod tests {
             (
                 changed(&|c| c["listen"][0]["address"] = json!("127.0.0.1:7444")),
                 "listen changed",
-            ),
-            (
-                changed(&|c| c["runtimes"]["remote"][0]["language"] = json!("go")),
-                "runtimes.remote gpu changed",
-            ),
-            (
-                changed(&|c| c["runtimes"]["remote"][1]["instances"] = json!("tablet")),
-                "runtimes.remote phone changed",
-            ),
-            (
-                changed(&|c| c["runtimes"]["remote"][1]["listen"] = json!("other")),
-                "runtimes.remote phone changed",
-            ),
-            (
-                changed(&|c| {
-                    c["runtimes"]["remote"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(json!({ "name": "edge", "language": "bun" }))
-                }),
-                "runtimes.remote edge added",
-            ),
-            (
-                changed(&|c| {
-                    c["runtimes"]["remote"].as_array_mut().unwrap().remove(0);
-                }),
-                "runtimes.remote gpu removed",
             ),
             (
                 changed(&|c| c["runtimes"]["go"]["idle"] = json!(30)),
@@ -1993,11 +1820,11 @@ mod tests {
         assert_eq!(go.runtimes()[0].name, "go-netkit");
     }
 
-    /// A Go binary on another machine (here, listening on loopback): a peer
-    /// row links to it, and its rows are `<runtime>:<plugin>`.
+    /// A Go binary on another machine (here, listening on loopback): a dial
+    /// row connects it, and its rows are `<row>:<plugin>`.
     /// guarantee: loader/remote-runtime-rows
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_remote_go_runtime_runs_rows_named_after_it() {
+    async fn a_dial_row_runs_go_rows_named_after_it() {
         use tokio::io::AsyncBufReadExt;
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join(if cfg!(windows) {
@@ -2045,9 +1872,8 @@ mod tests {
         std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
         let config: HostConfig = serde_json::from_value(json!({
             "id": "remote-go",
-            "runtimes": { "remote": [{ "name": "edge", "language": "go" }] },
             "rows": [
-                { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+                { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
                 { "id": "ping", "name": "edge:ping" }
             ]
         }))

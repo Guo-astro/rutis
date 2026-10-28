@@ -2,9 +2,9 @@
 //! (feature `android`; needs `adb` with one device attached, or
 //! `ANDROID_SERIAL`; JDK 17 and the Android SDK for the Gradle build;
 //! Python 3.10+): kotlin/rutis/android-sample dials this test's host
-//! through `adb reverse`, `language: "kotlin"`, each connection an
-//! instance of the group `phone` with a `device` row from the application
-//! and a Python row using it.
+//! through `adb reverse`, to the `rutis-host/listen` row `phone`; the
+//! application installs its plugins, which rutis sees as `<id>:<plugin>`
+//! providing their services, and a Python row uses its `device`.
 //!
 //! - Its release build (R8, as an application ships), started and stopped
 //!   by intents as a business layer would: the method tables, proxies and
@@ -44,17 +44,22 @@ const DEVICE: Guard = Guard(Duration::from_secs(60));
 const PACKAGE: &str = "arcships.rutis.sample";
 const RUNNER: &str = "arcships.rutis.sample.test/androidx.test.runner.AndroidJUnitRunner";
 
-/// The host's row in each instance: it loads only once the connection's
-/// `device` answered with what an Android device is.
-const WATCHER: &str = r#"
-inject = ["device"]
+/// The host's row using the application's `device` (`device-<suffix>` of
+/// a second connection): it loads only once that answered with what an
+/// Android device is.
+fn watcher(service: &str) -> String {
+    format!(
+        r#"
+inject = ["{service}"]
 
 
 async def apply(ctx, config):
-    info = await ctx.use("device").info()
+    info = await ctx.use("{service}").info()
     if info["sdk"] < 29 or not info["model"]:
         raise RuntimeError("not an Android device: %r" % (info,))
-"#;
+"#
+    )
+}
 
 fn adb() -> Command {
     let sdk = std::env::var_os("ANDROID_HOME").map(PathBuf::from);
@@ -124,10 +129,9 @@ async fn install(names: &[&str]) {
     .unwrap();
 }
 
-/// The host: the group `phone`, an instance per connection of the
-/// application, with the rows `rows` (by default its `device` row and the
-/// Python `watcher` using it) and the Python files `files`; forwarded to
-/// the device at the same port.
+/// The host: the listen row `phone`, the rows `rows` (by default the
+/// Python `watcher` using the application's `device`) and the Python files
+/// `files`; forwarded to the device at the same port.
 struct Rutis {
     host: Host,
     port: u16,
@@ -137,16 +141,18 @@ struct Rutis {
 impl Rutis {
     async fn start() -> Self {
         Self::with(
-            json!([
-                { "id": "device", "name": "phone:device" },
-                { "id": "watcher", "name": "py:watcher" }
-            ]),
-            &[("watcher.py", WATCHER)],
+            json!([{ "id": "watcher", "name": "py:watcher" }]),
+            &[("watcher.py", &watcher("device"))],
         )
         .await
     }
 
     async fn with(rows: serde_json::Value, files: &[(&str, &str)]) -> Self {
+        let rows: Vec<serde_json::Value> =
+            [json!({ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } })]
+                .into_iter()
+                .chain(rows.as_array().unwrap().iter().cloned())
+                .collect();
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), files);
         std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
@@ -155,11 +161,8 @@ impl Rutis {
         let mut config: HostConfig = serde_json::from_value(json!({
             "id": "test",
             "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-            "runtimes": {
-                "py": { "project": dir.path(), "python": python },
-                "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }]
-            },
-            "rows": [{ "id": "phone", "group": true, "instanced": true, "config": rows }]
+            "runtimes": { "py": { "project": dir.path(), "python": python } },
+            "rows": rows
         }))
         .unwrap();
         config.rebase(dir.path());
@@ -184,13 +187,13 @@ impl Rutis {
         format!("ws://127.0.0.1:{}/rutis", self.port)
     }
 
-    /// The copies of row `id` running in an instance.
+    /// Whether row `id` runs (1) or not (0).
     fn active(&self, id: &str) -> usize {
         self.host
             .loader
             .entries()
             .into_iter()
-            .filter(|entry| entry.id == id && entry.instance.is_some())
+            .filter(|entry| entry.id == id)
             .filter(|entry| {
                 matches!(&entry.status, rutis_loader::report::EntryStatus::Running(snapshot)
                     if snapshot.state == rutis::host::FiberState::Active)
@@ -198,9 +201,15 @@ impl Rutis {
             .count()
     }
 
-    /// Instances whose `device` row runs, and whose watcher uses it.
+    /// How many of the application's `device` services rutis has (the
+    /// first connection's `device`, a second's `device-tablet`), and how
+    /// many watchers use them.
     fn instances(&self) -> (usize, usize) {
-        (self.active("device"), self.active("watcher"))
+        let devices = ["device", "device-tablet"]
+            .iter()
+            .filter(|name| self.host.service(name).is_some())
+            .count();
+        (devices, self.active("watcher") + self.active("watcher-tablet"))
     }
 
     /// Waits until each row of `want` runs in that many instances.
@@ -218,13 +227,12 @@ impl Rutis {
             .await
     }
 
-    /// The rows of the instances, for a failure.
+    /// The rows, for a failure.
     fn rows(&self) -> String {
         self.host
             .loader
             .entries()
             .into_iter()
-            .filter(|entry| entry.instance.is_some())
             .map(|entry| format!("{}: {:?}\n", entry.id, entry.status))
             .collect()
     }
@@ -257,9 +265,9 @@ impl Rutis {
 }
 
 /// The release build, R8 on, started and stopped as its business layer
-/// would (here, intents pressing its buttons): its instance comes, its
-/// `device` is used through what R8 kept, and it goes and comes back.
-/// guarantee: loader/runtime-connection-instances
+/// would (here, intents pressing its buttons): its `device` comes, is used
+/// through what R8 kept, and goes and comes back.
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn the_release_build_dials_in_and_stops_and_starts_again() {
     let _environment = environment();
@@ -274,14 +282,14 @@ async fn the_release_build_dials_in_and_stops_and_starts_again() {
 
     command("start");
     rutis
-        .reach((1, 1), "the application's instance, used", || None)
+        .reach((1, 1), "the application's device, used", || None)
         .await;
     command("stop");
-    rutis.reach((0, 0), "its instance closed", || None).await;
+    rutis.reach((0, 0), "its device gone", || None).await;
     command("start");
-    rutis.reach((1, 1), "its instance back", || None).await;
+    rutis.reach((1, 1), "its device back", || None).await;
     command("stop");
-    rutis.reach((0, 0), "its instance closed", || None).await;
+    rutis.reach((0, 0), "its device gone", || None).await;
     let _ = adb().args(["shell", "am", "force-stop", PACKAGE]).status();
     rutis.stop().await;
 }
@@ -319,20 +327,30 @@ fn checked(step: &str) {
     ]);
 }
 
-/// Two connections of the application (`AppHostingTest`) are two
-/// instances of rutis's group, each with its own `device` row and a Python
-/// row using it; stopping one closes its instance alone, and its user with
-/// it; starting it again brings them back.
-/// guarantee: loader/runtime-connection-instances
+/// Two connections of the application (`AppHostingTest`, `pixel` and
+/// `tablet`, whose services are `<name>-tablet`) on one listen row, each
+/// with a Python row using its `device`; stopping one takes its services
+/// and its user away alone; starting it again brings them back.
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
-async fn connections_of_an_application_are_instances() {
+async fn connections_of_an_application_bring_their_services() {
     let _environment = environment();
     install(&[
         "android-sample-debug.apk",
         "android-sample-debug-androidTest.apk",
     ])
     .await;
-    let rutis = Rutis::start().await;
+    let rutis = Rutis::with(
+        json!([
+            { "id": "watcher", "name": "py:watcher" },
+            { "id": "watcher-tablet", "name": "py:watcher_tablet" }
+        ]),
+        &[
+            ("watcher.py", &watcher("device")),
+            ("watcher_tablet.py", &watcher("device-tablet")),
+        ],
+    )
+    .await;
     let mut instrument = tokio::process::Command::from(adb())
         .args(["shell", "am", "instrument", "-w", "-r"])
         .args(["-e", "address", &rutis.address()])
@@ -365,19 +383,19 @@ async fn connections_of_an_application_are_instances() {
     };
 
     rutis
-        .reach((2, 2), "two instances, each used", device_ended)
+        .reach((2, 2), "two devices, each used", device_ended)
         .await;
     checked("connected");
     rutis
-        .reach((1, 1), "the stopped one's instance closed", device_ended)
+        .reach((1, 1), "the stopped one's device gone", device_ended)
         .await;
     checked("stopped");
     rutis
-        .reach((2, 2), "the started one's instance back", device_ended)
+        .reach((2, 2), "the started one's device back", device_ended)
         .await;
     checked("started");
-    // The device test ends once it stopped both: rutis sees the instances
-    // close just after.
+    // The device test ends once it stopped both: rutis sees their services
+    // go just after.
     rutis.reach((0, 0), "both stopped", || None).await;
 
     let status = DEVICE
@@ -397,7 +415,7 @@ async fn connections_of_an_application_are_instances() {
     rutis.stop().await;
 }
 
-/// Uses the connection's `contacts`: it loads once a call answered.
+/// Uses the application's `contacts`: it loads once a call answered.
 const READER: &str = r#"
 inject = ["contacts"]
 
@@ -406,7 +424,7 @@ async def apply(ctx, config):
     await ctx.use("contacts").count()
 "#;
 
-/// Posts through the connection's `notify`, and says what came of it
+/// Posts through the application's `notify`, and says what came of it
 /// (`caller.outcome()`): `posted`, or the error's code and permission.
 const CALLER: &str = r#"
 import rutis
@@ -468,11 +486,11 @@ fn text(screen: &str, id: &str) -> String {
 }
 
 /// The prompt for a plugin's permission is the application's, naming it;
-/// the user denying it fails the plugin that needs it at load, rutis seeing
-/// the error with the permission named, and a call needing it fails with
+/// the user denying it fails the plugin that needs it on the device, so its
+/// service never reaches rutis, and a call needing it fails with
 /// `permission-denied` at the caller (a Python row) with the permission in
 /// its data. Granted, the plugins load and the calls go through.
-/// guarantee: loader/runtime-connection-instances
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
     let _environment = environment();
@@ -481,8 +499,6 @@ async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
     install(&["android-sample-release.apk"]).await;
     let rutis = Rutis::with(
         json!([
-            { "id": "contacts", "name": "phone:contacts" },
-            { "id": "notify", "name": "phone:notify" },
             { "id": "reader", "name": "py:reader" },
             { "id": "caller", "name": "py:caller" }
         ]),
@@ -529,34 +545,16 @@ async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
         denied.push(asked);
     }
 
-    // `contacts` failed to load, saying which permission; `notify` loaded,
-    // and the caller got the denial with its code and permission.
-    let failed = |id: &str| {
-        rutis.host.loader.entries().into_iter().find_map(|entry| {
-            match (&entry.status, entry.instance.is_some() && entry.id == id) {
-                (rutis_loader::report::EntryStatus::Running(snapshot), true)
-                    if snapshot.state == rutis::host::FiberState::Failed =>
-                {
-                    snapshot.error.as_ref().map(|error| error.to_string())
-                }
-                _ => None,
-            }
-        })
-    };
-    let why = DEVICE
-        .eventually_with(|| failed("contacts"), "contacts failing", || rutis.rows())
-        .await;
-    assert!(
-        why.contains("android.permission.READ_CONTACTS is not granted to this application"),
-        "{why}"
-    );
+    // `contacts` failed on the device: its service never came; `notify`
+    // came, and the caller got the denial with its code and permission.
     DEVICE
         .eventually_with(
-            || (rutis.active("notify") == 1 && rutis.active("caller") == 1).then_some(()),
+            || (rutis.host.service("notify").is_some() && rutis.active("caller") == 1).then_some(()),
             "notify and its caller",
             || rutis.rows(),
         )
         .await;
+    assert!(rutis.host.service("contacts").is_none());
     assert_eq!(rutis.active("reader"), 0);
     let outcome = |want: &'static str| {
         let host = &rutis.host;
@@ -586,11 +584,9 @@ async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
         grant(&["android.permission.POST_NOTIFICATIONS"]);
     }
     press(&rutis.address(), "stop");
-    rutis.reach_rows(&[("contacts", 0), ("notify", 0)]).await;
+    rutis.reach_rows(&[("reader", 0), ("caller", 0)]).await;
     press(&rutis.address(), "start");
-    rutis
-        .reach_rows(&[("contacts", 1), ("notify", 1), ("reader", 1), ("caller", 1)])
-        .await;
+    rutis.reach_rows(&[("reader", 1), ("caller", 1)]).await;
     DEVICE
         .eventually(outcome("posted"), "the caller posted")
         .await;

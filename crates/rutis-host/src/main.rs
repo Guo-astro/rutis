@@ -603,12 +603,14 @@ fn print_row(
                 // A compiled language's row with no runtime declared:
                 // its binaries have to be named (#666).
                 // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
-                // remote runtime's rows.)
-                let remote = config
-                    .runtimes
-                    .remote
-                    .iter()
-                    .any(|remote| name.starts_with(&format!("{}:", remote.name)));
+                // connection row's rows.)
+                let remote = config.rows.iter().any(|row| {
+                    (row["name"] == rutis_host::connect::DIAL
+                        || row["name"] == rutis_host::connect::LISTEN)
+                        && row["id"]
+                            .as_str()
+                            .is_some_and(|id| name.starts_with(&format!("{id}:")))
+                });
                 let undeclared = languages::LANGUAGES.iter().find(|language| {
                     let key = language.key();
                     let named = name.starts_with(&format!("{key}:"))
