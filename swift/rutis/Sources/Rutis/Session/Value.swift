@@ -13,11 +13,11 @@ package indirect enum Value: @unchecked Sendable {
     /// An object holding a reference or tagged value somewhere.
     case record([(String, Value)])
     case instant(Instant)
-    case dateTime(Rutis.DateTime)
-    case date(Rutis.CalendarDate)
-    case time(Rutis.TimeOfDay)
+    case dateTime(Rutis.Advanced.DateTime)
+    case date(Rutis.Advanced.CalendarDate)
+    case time(Rutis.Advanced.TimeOfDay)
     case bytes(Data)
-    case bigint(Rutis.BigInt)
+    case bigint(Rutis.Advanced.BigInt)
     /// Decimal text, as it crosses.
     case decimal(String)
     /// UUID text, lowercase.
