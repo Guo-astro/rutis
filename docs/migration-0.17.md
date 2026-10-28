@@ -11,12 +11,12 @@
 ## 第一步：运行迁移工具
 
 ```bash
-cargo install rutis-migrate
+cargo install rutis-migrate --version 0.18.0
 rutis-migrate 0.17 path/to/crate            # 只显示差异
 rutis-migrate 0.17 path/to/crate --write    # 写回文件，再运行 cargo check
 ```
 
-在 rutis 仓库里也可以 `cargo run -p rutis-migrate -- 0.17 path/to/crate --write`。
+0.19 起 `rutis-migrate` 不再发布，0.18.0 是最后一版。
 
 - 它改 `PATH` 下用到 rutis 的 `.rs` 文件（跳过 `target`、隐藏目录和 `node_modules`）。语法树只用来定位，替换在原文上做，注释和格式都保留。
 - 不带 `--write` 时只打印差异，什么都不改。带 `--write` 时写回文件，然后在 `PATH` 下运行 `cargo check --all-targets`，列出剩下的错误（`--no-check` 不运行）。

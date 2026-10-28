@@ -6,7 +6,7 @@ Except for `rutis-cli` (`cli-v*`, `release-cli.yml`), these packages share a ver
 
 | Registry | Packages |
 | --- | --- |
-| crates.io | `rutis` (the core) and its macros `rutis-macros`, `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher`; the migration tool `rutis-migrate` |
+| crates.io | `rutis` (the core) and its macros `rutis-macros`, `rutis-bridge`, `rutis-loader`, `rutis-host`; the dylib toolchain `rutis-sdk`, `rutis-dylib`, `rutis-dylib-meta`, `rutis-dylib-launcher` |
 | npm | `@arcships/rutis`, `@arcships/rutis-runtime`, `@arcships/rutis-bun`, `@arcships/rutis-host` and `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`, `@arcships/rutis-host-win32-x64` |
 | PyPI | `rutis`, `rutis-host` (wheels for each platform) |
 | Go | `github.com/arcships/rutis/go/rutis` (the tag `go/rutis/vX.Y.Z`, pushed by release.yml) |

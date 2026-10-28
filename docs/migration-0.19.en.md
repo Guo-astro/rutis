@@ -149,3 +149,4 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 ### Tools
 
 - `rutis-dev` (the dev channel) is removed; use `rutis-host dev` during development.
+- `rutis-migrate` is no longer released with 0.19. The 0.17 migration still works with `cargo install rutis-migrate --version 0.18.0`.

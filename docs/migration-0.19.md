@@ -149,3 +149,4 @@ Kotlin 另有两点：
 ### 工具
 
 - `rutis-dev`（dev 通道）删除；开发时用 `rutis-host dev`。
+- `rutis-migrate` 不再随 0.19 发布。0.17 的迁移仍可用 `cargo install rutis-migrate --version 0.18.0`。
