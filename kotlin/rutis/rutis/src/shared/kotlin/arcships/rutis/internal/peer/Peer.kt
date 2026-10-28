@@ -1,5 +1,6 @@
 package arcships.rutis.internal.peer
 
+import arcships.rutis.HostGoneException
 import arcships.rutis.Plugin
 import arcships.rutis.RemoteFunction
 import arcships.rutis.RemoteObject
@@ -68,25 +69,6 @@ fun tooDeep(): ValueException =
 
 /** The far end greeted in a way this side cannot speak: retrying cannot fix it. */
 open class IncompatibleException(message: String) : IOException(message)
-
-/**
- * The host went (#677): what calls fail with then, `the host disconnected`
- * (with why, when known), code peer-gone with `{reason}`. It crosses as a
- * BindingError.
- */
-class HostGoneException internal constructor(why: String?, cause: Throwable? = null, message: String? = null) :
-    IOException(message ?: if (why == null) "the host disconnected" else "the host disconnected ($why)", cause) {
-    /** `peer-gone`. */
-    val code: String = "peer-gone"
-
-    /** `{reason}`: `disconnected`, `closed`, or what failed. */
-    val data: Map<String, Any?> = mapOf("reason" to (why ?: "disconnected"))
-
-    internal companion object {
-        /** This side closed the connection. */
-        fun closed() = HostGoneException("closed", message = "the connection to the host is closed")
-    }
-}
 
 /**
  * The far end greeted as another endpoint than the expected one, or as this

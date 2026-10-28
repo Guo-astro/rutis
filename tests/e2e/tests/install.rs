@@ -237,8 +237,13 @@ fn run_project_until(
     stop: impl FnOnce(&mut Host),
 ) {
     let mut running = s.program(dir, host, ["run"], &[]);
+    // The whole row name: `greeter: running` is inside `gogreeter: running`,
+    // and whichever row starts first would take the other's line.
     for row in rows {
-        running.expect(&format!("{row}: running"));
+        let line = format!("{row}: running");
+        running.wait_for(&format!("the line {line:?}"), |text| {
+            text.starts_with(&line)
+        });
     }
     probe.started(&mut running);
     for (service, answer) in calls {

@@ -4,7 +4,7 @@ package rutis
 // the manifest's `sdk`. The release train checks it.
 //
 // Deprecated: moved in 0.19: use advanced.Version.
-const Version = "0.17.2"
+const Version = "0.18.0"
 
 // PluginAPI is the plugin API this SDK writes plugins against and its
 // runtime supports.

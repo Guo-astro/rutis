@@ -2,7 +2,6 @@ package arcships.rutis
 
 import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.peer.Channel
-import arcships.rutis.internal.peer.HostGoneException
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.encodeError
