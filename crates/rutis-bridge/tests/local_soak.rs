@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use rutis_bridge::channel::PeerId;
 use rutis_bridge::pipe::{LocalTransport, Spawn};
 use rutis_bridge::{Dial, Transport};
 
@@ -70,7 +69,7 @@ async fn starting_processes_over_and_over_holds_nothing_more() {
         drop(reply.1);
 
         let idle = transport.dial(&Dial::address("spawn:idle")).await.unwrap();
-        idle.closer.close(Close::Done);
+        idle.closer.close(rutis_bridge::Close::Done);
         drop(idle);
         processes += 2;
         if processes == 40 {
