@@ -108,7 +108,7 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 })
 ```
 
-Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#5-emit-and-listen-to-events).
+Each language's guide has a complete example: [TypeScript](https://github.com/arcships/rutis/blob/main/docs/guide/typescript-plugin.en.md#events), [Bun](https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md#events), [Python](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md#events), [Go](https://github.com/arcships/rutis/blob/main/docs/guide/go-plugin.en.md#events), [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md#events), [Rust](https://github.com/arcships/rutis/blob/main/docs/guide/rust-plugin.en.md#events).
 
 ### Scope
 
