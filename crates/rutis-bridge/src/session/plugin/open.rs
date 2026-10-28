@@ -98,40 +98,54 @@ impl Service {
                 Some(json!({ "service": "sessions" })),
             )
         })?;
-        let mut fields = match args.list()?.into_iter().next() {
-            Some(Value::Record(fields)) => fields,
+        // A record of functions (Python), or an object whose methods they
+        // are (a plain object from Node).
+        let far = match args.list()?.into_iter().next() {
+            Some(Value::Record(mut fields)) => Far::Functions {
+                send: function(&mut fields, "send", "far")?,
+                close: function(&mut fields, "close", "far")?,
+            },
+            Some(Value::Reference(object)) if object.is_object() => Far::Object(object),
             _ => return Err(bad("sessions.open needs far = { send, close }".into())),
         };
-        let send = function(&mut fields, "send", "far")?;
-        let close = function(&mut fields, "close", "far")?;
-        let (channel, near) = far_channel(send, close, self.tokio.clone());
+        let (channel, near) = far_channel(far, self.tokio.clone());
         caller.ctx().plugin(Session::new(channel));
         Ok(near)
     }
 }
 
-/// A channel whose far end is `send` and `close`, and the `near` record
-/// that feeds what it receives.
-pub(super) fn far_channel(
-    send: Reference,
-    close: Reference,
-    tokio: tokio::runtime::Handle,
-) -> (Channel, Value) {
+/// The caller's end: its `send` and `close`.
+pub(super) enum Far {
+    Functions { send: Reference, close: Reference },
+    Object(Reference),
+}
+
+impl Far {
+    async fn call(&self, method: &str, argument: Value) -> Reply {
+        let args = Value::List(vec![argument]);
+        let reply = match (self, method) {
+            (Far::Functions { send, .. }, "send") => send.call_async(args).await?,
+            (Far::Functions { close, .. }, _) => close.call_async(args).await?,
+            (Far::Object(object), method) => object.call_method_async(method, args).await?,
+        };
+        settle(reply).await
+    }
+}
+
+/// A channel whose far end is `far`, and the `near` record that feeds what
+/// it receives.
+pub(super) fn far_channel(far: Far, tokio: tokio::runtime::Handle) -> (Channel, Value) {
+    let far = Arc::new(far);
     let queue = Arc::new(Queue::default());
     let (sender, outgoing) = std::sync::mpsc::sync_channel::<Vec<u8>>(CAPACITY);
     // One message at a time, in order.
     let draining = tokio.clone();
+    let sending = far.clone();
     let _ = std::thread::Builder::new()
         .name("rutis-sessions-open".into())
         .spawn(move || {
             for message in outgoing {
-                let sent = draining.block_on(async {
-                    settle(
-                        send.call_async(Value::List(vec![Value::Bytes(message)]))
-                            .await?,
-                    )
-                    .await
-                });
+                let sent = draining.block_on(sending.call("send", Value::Bytes(message)));
                 if sent.is_err() {
                     return;
                 }
@@ -141,7 +155,7 @@ pub(super) fn far_channel(
         sender: Box::new(FarSender(sender)),
         receiver: Box::new(NearReceiver(queue.clone())),
         closer: Arc::new(FarCloser {
-            close,
+            far,
             closed: AtomicBool::new(false),
             queue: queue.clone(),
             tokio,
@@ -199,7 +213,7 @@ impl Sender for FarSender {
 }
 
 struct FarCloser {
-    close: Reference,
+    far: Arc<Far>,
     closed: AtomicBool,
     queue: Arc<Queue>,
     tokio: tokio::runtime::Handle,
@@ -216,11 +230,9 @@ impl Closer for FarCloser {
             Close::Replaced => json!({ "kind": "replaced" }),
             Close::Rejected(reason) => json!({ "kind": "rejected", "reason": reason }),
         };
-        let close = self.close.clone();
+        let far = self.far.clone();
         self.tokio.spawn(async move {
-            if let Ok(reply) = close.call_async(Value::List(vec![Value::Data(why)])).await {
-                let _ = settle(reply).await;
-            }
+            let _ = far.call("close", Value::Data(why)).await;
         });
     }
 }

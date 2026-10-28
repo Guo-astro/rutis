@@ -346,6 +346,25 @@ async fn rows_run_on_the_session_of_their_connection_row() {
     main.root.shutdown().await.unwrap();
 }
 
+/// The far end's session unloads first: its rows there end with it, which
+/// is a disconnection here, not the row ending on its own: the row waits
+/// again and runs on the next session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_far_session_unloading_first_leaves_the_row_waiting() {
+    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }]), None).await;
+    let office = office();
+    let far = main.connect(&office);
+    main.running("contacts").await;
+    eventually(|| main.contacts(), "contacts at main").await;
+    within("the far session unloading", far.dispose())
+        .await
+        .unwrap();
+    assert_eq!(main.waiting("contacts").await, "waiting for gpu");
+    let _far = main.connect(&office);
+    main.running("contacts").await;
+    main.root.shutdown().await.unwrap();
+}
+
 /// A runtime named like a connection row keeps its rows: its resolver
 /// comes first.
 #[tokio::test(flavor = "multi_thread")]

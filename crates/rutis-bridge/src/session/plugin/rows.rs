@@ -145,8 +145,11 @@ impl Server {
             };
             match state {
                 FiberState::Disposed => {
-                    // Not unloaded by the far end: it ended here.
-                    if self.loaded.lock().unwrap().remove(&key).is_some() {
+                    // Not unloaded by the far end: it ended here, unless
+                    // the session is going away, which ends the far end's
+                    // rows as a disconnection does, to wait for the next.
+                    let ended = self.loaded.lock().unwrap().remove(&key).is_some();
+                    if ended && !self.ctx.cancellation_token().is_cancelled() {
                         let _ = self
                             .session
                             .invoke_async("", "rows.ended", json!([key]).into())
