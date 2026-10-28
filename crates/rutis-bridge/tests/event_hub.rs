@@ -14,7 +14,7 @@ use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::runtime::{Mount, Process};
-use rutis_bridge::session::{settle, Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
+use rutis_bridge::session::{settle, Connection, Dispatch, Endpoint, Error, Reply, Value};
 use rutis_test_support::within;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -92,7 +92,7 @@ struct Rig {
 async fn rig_with(root: Ctx, endpoint: Endpoint) -> Result<Rig, Error> {
     let (a, b) = rutis_bridge::memory::pair();
     let fake = Arc::new(Fake::default());
-    let far = Connection::open_with(b, fake.clone(), Format::Endpoint(endpoint)).unwrap();
+    let far = Connection::open(b, fake.clone(), endpoint).unwrap();
     let process = Process::attach(
         a,
         Mount {
@@ -100,7 +100,7 @@ async fn rig_with(root: Ctx, endpoint: Endpoint) -> Result<Rig, Error> {
             runtime: Some("rt".into()),
             ..Mount::default()
         },
-        Format::Endpoint(Endpoint::rust(id("host"))),
+        Endpoint::rust(id("host")),
     )
     .await?;
     Ok(Rig {

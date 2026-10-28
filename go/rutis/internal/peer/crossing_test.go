@@ -101,7 +101,7 @@ func TestAnObjectFromTheFarEndIsCalledAndGoesHome(t *testing.T) {
 	runtime, far, next := rawHost(t, `["sync-wait"]`)
 	object := `{"type":"reference","value":{"id":7,"kind":"object","home":false,"origin":[]}}`
 	// echo hands it back: home.
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + object + `]}}`))
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"echo","args":{"type":"list","value":[` + object + `]}}`))
 	f := next()
 	value, _ := f["value"].(map[string]any)
 	if f["op"] != "return" || value["type"] != "reference" || value["value"].(map[string]any)["home"] != true {

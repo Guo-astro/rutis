@@ -1,7 +1,6 @@
 // guarantee: events/old-peer-refused — the Bun runtime's side (#464,
 // protocol §2.1, §2.2): a host that does not declare `events-v2` (one of
-// rutis 0.12 or older) is refused right after the handshake, in either
-// format: the runtime sends nothing after its own hello, says so on stderr
+// rutis 0.12 or older) is refused right after the handshake: the runtime sends nothing after its own hello, says so on stderr
 // with the §2.2 line and exits with status 1. A real runtime process
 // (src/main.ts), against a host that only greets.
 import { expect, test } from 'bun:test'
@@ -10,9 +9,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { within } from './support.ts'
+import { ENDPOINT_PROTOCOL } from '../src/session.ts'
 
 const MAIN = new URL('../src/main.ts', import.meta.url).pathname
-const PROTOCOL = require('../package.json').rutisProtocol
 const REFUSAL = 'rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping'
 
 // Run the runtime on a Unix socket whose far end greets with `hello`; what
@@ -51,22 +50,14 @@ async function meet(hello: object, flags: string[] = []) {
   }
 }
 
-test('a host without events-v2 is refused in the compat format', async () => {
-  const { code, stderr, received } = await meet({ op: 'hello', version: PROTOCOL, capabilities: ['signals', 'sync-wait'] })
-  expect(code).toBe(1)
-  expect(stderr.split('\n')).toContain(REFUSAL)
-  // Its own hello, which declares events-v2, and nothing after it.
-  expect(received.map(frame => frame.op)).toEqual(['hello'])
-  expect(received[0].capabilities).toContain('events-v2')
-})
-
-test('a host without events-v2 is refused in the endpoint format', async () => {
+test('a host without events-v2 is refused', async () => {
   const { code, stderr, received } = await meet(
-    { op: 'hello', version: 3, endpoint: 'host', implementation: { name: 'rutis-host', version: '0.12.1' }, capabilities: ['signals', 'sync-wait'] },
-    ['--format', 'endpoint', '--id', 'rt', '--peer', 'host'],
+    { op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'host', implementation: { name: 'rutis-host', version: '0.12.1' }, capabilities: ['signals', 'sync-wait'] },
+    ['--id', 'rt', '--peer', 'host'],
   )
   expect(code).toBe(1)
   expect(stderr.split('\n')).toContain(REFUSAL)
+  // Its own hello, which declares events-v2, and nothing after it.
   expect(received.map(frame => frame.op)).toEqual(['hello'])
   expect(received[0].capabilities).toContain('events-v2')
 })
@@ -80,12 +71,12 @@ test('a host that declares events-v2 is not refused', async () => {
     const path = join(dir, 'host.sock')
     const server = createServer(connection => {
       connection.on('error', () => {})
-      connection.write(JSON.stringify({ op: 'hello', version: PROTOCOL, capabilities: ['signals', 'sync-wait', 'events-v2'] }) + '\n')
+      connection.write(JSON.stringify({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['signals', 'sync-wait', 'events-v2'] }) + '\n')
       // Once the runtime greeted back, the host ends the session.
       connection.once('data', () => connection.end())
     })
     await new Promise<void>(resolve => server.listen(path, resolve))
-    const child = Bun.spawn([process.execPath, '--no-install', '--no-env-file', MAIN, path, dir], {
+    const child = Bun.spawn([process.execPath, '--no-install', '--no-env-file', MAIN, path, '--id', 'rt', dir], {
       stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
     })
     const code = await within('the runtime to stop', child.exited)

@@ -9,7 +9,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, PeerId};
 use rutis_bridge::memory;
-use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
+use rutis_bridge::session::{Connection, Dispatch, Endpoint, Reply, Value};
 use rutis_bridge::{
     peer_key, Accept, Accepted, Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin,
     AdmissionPlugin, ConnectError, Credential, IdentityPlugin, LinkConfig, LinkPlugin, LinkState,
@@ -139,10 +139,10 @@ async fn dial_channel(transport: &Registrations, token: &str) -> Result<Channel,
 /// A runtime dialing out as `name` with `token`, its session ready.
 async fn runtime(transport: &Registrations, name: &str, token: &str) -> Connection {
     let channel = dial_channel(transport, token).await.unwrap();
-    let session = Connection::open_with(
+    let session = Connection::open(
         channel,
         Arc::new(Whoami(name.into())),
-        Format::Endpoint(Endpoint::rust(id(name)).expect(id("main"))),
+        Endpoint::rust(id(name)).expect(id("main")),
     )
     .unwrap();
     within("the runtime's session", session.ready())
@@ -193,8 +193,8 @@ async fn a_wrong_or_missing_token_is_refused_before_any_session() {
 async fn an_invalid_or_missing_id_fails_the_handshake_as_incompatible() {
     let mut main = main().await;
     for hello in [
-        json!({ "op": "hello", "version": 3, "endpoint": "Pixel 7" }),
-        json!({ "op": "hello", "version": 3 }),
+        json!({ "op": "hello", "version": rutis_bridge::session::ENDPOINT_PROTOCOL, "endpoint": "Pixel 7" }),
+        json!({ "op": "hello", "version": rutis_bridge::session::ENDPOINT_PROTOCOL }),
     ] {
         let channel = dial_channel(&main.transport, "shared").await.unwrap();
         let read = tokio::task::spawn_blocking(move || greet_raw(channel, hello))
@@ -420,7 +420,7 @@ async fn an_earlier_connection_greeting_late_does_not_take_over() {
     let read = tokio::task::spawn_blocking(move || {
         greet_raw(
             stale,
-            json!({ "op": "hello", "version": 3, "endpoint": "pixel", "capabilities": ["events-v2"] }),
+            json!({ "op": "hello", "version": rutis_bridge::session::ENDPOINT_PROTOCOL, "endpoint": "pixel", "capabilities": ["events-v2"] }),
         )
     })
     .await

@@ -23,7 +23,7 @@ TLC explores every interleaving of language runtimes calling each other synchron
   - a top that is running (not waiting) reads nothing.
 - **Rust** reads each session in order. It forwards a synchronous call to the target runtime's session with the call id appended and the `path` rewritten by `rebase`, and sends a returned result back to the caller. Rust never makes a runtime wait longer: each forwarded call runs on its own thread or on the thread already waiting for its chain.
 - **Emits and posts**: a running activation may emit an event (`MaxPosts` in total): an `events.dispatch` nobody waits for, and the activation goes on. Rust then posts the listener's call (`events.call`) to the listener's runtime, with the emitter's chain, rebased, as the host's bus does. The runtime handles it like any call: run at once when idle; while waiting, nested by a reentrant runtime and put aside by a non-reentrant one. While a forwarded call is in progress Rust records it as an **entry** (`waits.rs`).
-- **Call ids** are numbered per session (`node:n` by the runtime, `rust:n` by Rust), so `node:1` exists on two sessions at once. The model also keeps each call's true ancestry (used only by invariants), separately from the wire `path`, so it can check what the runtimes and Rust conclude from the path.
+- **Call ids** are numbered per session (a call id is `<sender id>:n`, given by the runtime or by Rust), so the same id can exist on two sessions at once. The model also keeps each call's true ancestry (used only by invariants), separately from the wire `path`, so it can check what the runtimes and Rust conclude from the path.
 - **Policies** (constant `Policy`):
   - `current`: today's behaviour, no detection;
   - `A`: Rust refuses synchronous calls between two non-reentrant runtimes (`refused`);
@@ -128,7 +128,7 @@ What an implementation of B must provide (the model's assumptions):
 1. A host-wide table of forwarded synchronous calls that have not returned (source session and id, target session and id, decoded chain);
 2. Returns recorded in frame-reading order: within a session, a return read earlier leaves the table before a call read later is checked;
 3. A check before every synchronous forward; on a cycle, do not forward, answer `SyncWaitCycle` naming the calls on the cycle;
-4. Reliable reentrancy per runtime: `reentrant-sync` in the endpoint-format handshake; the compat format has no capabilities, so the runtime plugin's configuration says it (Node: no);
+4. Reliable reentrancy per runtime: `reentrant-sync` in the handshake (the Node runtime does not declare it);
 5. Only **synchronous** waits in the graph (see below).
 
 ## Open questions

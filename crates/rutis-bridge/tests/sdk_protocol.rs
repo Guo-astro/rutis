@@ -1,4 +1,4 @@
-//! The session protocol versions the SDKs greet with are this crate's
+//! The session protocol version the SDKs greet with is this crate's
 //! (risk P8). The Python, Node, Bun and Go runtimes write them as literals; a change
 //! to one side only would be found at the handshake of a released pair.
 //! The constants are read from the source, so the check needs no
@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::session::{ENDPOINT_PROTOCOL, PROTOCOL};
+use rutis_bridge::session::ENDPOINT_PROTOCOL;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -36,10 +36,9 @@ fn constant(source: &str, path: &str, prefix: &str) -> u32 {
 
 // guarantee: bridge/version-refusal; risk P8.
 #[test]
-fn the_python_runtime_greets_with_this_crates_protocol_versions() {
+fn the_python_runtime_greets_with_this_crates_protocol_version() {
     let path = "python/rutis/rutis/peer.py";
     let source = read(path);
-    assert_eq!(constant(&source, path, "PROTOCOL = "), PROTOCOL, "{path}");
     assert_eq!(
         constant(&source, path, "ENDPOINT_PROTOCOL = "),
         ENDPOINT_PROTOCOL,
@@ -49,14 +48,14 @@ fn the_python_runtime_greets_with_this_crates_protocol_versions() {
 
 // guarantee: bridge/version-refusal; risk P8.
 #[test]
-fn the_node_runtime_greets_with_this_crates_protocol_versions() {
-    // The compat version is the package's `rutisProtocol`, which builds of
-    // a Cordis mount check too (`cordis::build`).
+fn the_node_runtime_greets_with_this_crates_protocol_version() {
+    // The package's `rutisProtocol` too, which builds of a Cordis mount
+    // check (`cordis::build`).
     let path = "node/rutis-runtime/package.json";
     let package: serde_json::Value = serde_json::from_str(&read(path)).unwrap();
     assert_eq!(
         package["rutisProtocol"].as_u64(),
-        Some(PROTOCOL.into()),
+        Some(ENDPOINT_PROTOCOL.into()),
         "{path}"
     );
     let path = "node/rutis-runtime/src/session.mjs";
@@ -69,12 +68,12 @@ fn the_node_runtime_greets_with_this_crates_protocol_versions() {
 
 // guarantee: bridge/version-refusal; risk P8.
 #[test]
-fn the_bun_runtime_greets_with_this_crates_protocol_versions() {
+fn the_bun_runtime_greets_with_this_crates_protocol_version() {
     let path = "bun/rutis-bun/package.json";
     let package: serde_json::Value = serde_json::from_str(&read(path)).unwrap();
     assert_eq!(
         package["rutisProtocol"].as_u64(),
-        Some(PROTOCOL.into()),
+        Some(ENDPOINT_PROTOCOL.into()),
         "{path}"
     );
     let path = "bun/rutis-bun/src/session.ts";
@@ -105,10 +104,9 @@ fn go_constant(source: &str, path: &str, name: &str) -> u32 {
 
 // guarantee: bridge/version-refusal; risk P8.
 #[test]
-fn the_go_runtime_greets_with_this_crates_protocol_versions() {
+fn the_go_runtime_greets_with_this_crates_protocol_version() {
     let path = "go/rutis/internal/peer/peer.go";
     let source = read(path);
-    assert_eq!(go_constant(&source, path, "Protocol"), PROTOCOL, "{path}");
     assert_eq!(
         go_constant(&source, path, "EndpointProtocol"),
         ENDPOINT_PROTOCOL,

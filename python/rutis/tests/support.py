@@ -80,3 +80,15 @@ def blocking_within(what: str, call):
     if ok:
         return value
     raise value
+
+
+# A test session's two ends: this runtime (`py`), and the host, which greets
+# as `main`.
+LOCAL = {"local": "py"}
+
+
+def hello(capabilities=("objects",)):
+    """The host's greeting, declaring `capabilities`."""
+    from rutis.peer import ENDPOINT_PROTOCOL
+
+    return {"op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "main", "capabilities": list(capabilities)}

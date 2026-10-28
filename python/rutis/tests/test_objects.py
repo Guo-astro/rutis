@@ -10,6 +10,7 @@ import socket
 import unittest
 
 import background
+from support import LOCAL, hello
 from rutis.peer import Peer, decode_error
 
 OBJECT = {"type": "reference", "value": {"id": 5, "kind": "object", "home": False, "origin": []}}
@@ -22,10 +23,10 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, dispatch)
+        peer = Peer(ours, dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2})
+        peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -42,7 +43,7 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
 
     @staticmethod
     def invoke(sequence, method, args):
-        return {"op": "invoke", "id": f"rust:{sequence}", "path": [], "target": "t", "method": method, "args": args}
+        return {"op": "invoke", "id": f"main:{sequence}", "path": [], "target": "t", "method": method, "args": args}
 
     async def test_a_received_object_is_a_proxy_whose_methods_call_it(self):
         # objects-case(python): send-call-state
@@ -100,7 +101,7 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
             ("size", "Cache has no method size (size is a field; objects passed by reference expose only their methods)"),
         ]
         for n, (method, message) in enumerate(cases, start=2):
-            peer._receive({"op": "call", "id": f"rust:{n}", "path": [], "reference": reference, "method": method, "args": data([])})
+            peer._receive({"op": "call", "id": f"main:{n}", "path": [], "reference": reference, "method": method, "args": data([])})
             thrown = await read_op("throw")
             self.assertEqual(thrown["error"]["message"], message)
             error = decode_error(thrown["error"])
@@ -142,9 +143,9 @@ class ObjectTests(background.IsolatedAsyncioTestCase):
         peer, read, read_op = self.session(lambda target, method, args: Job())
         peer._receive(self.invoke(1, "job", data([])))
         reference = (await read_op("return"))["value"]["value"]["id"]
-        peer._receive({"op": "call", "id": "rust:2", "path": [], "reference": reference, "method": "run", "args": {"type": "list", "value": [{"type": "signal"}]}})
+        peer._receive({"op": "call", "id": "main:2", "path": [], "reference": reference, "method": "run", "args": {"type": "list", "value": [{"type": "signal"}]}})
         await asyncio.sleep(0.05)
-        peer._receive({"op": "cancel", "id": "rust:2"})
+        peer._receive({"op": "cancel", "id": "main:2"})
         await asyncio.wait_for(stopped.wait(), 10)
         before = peer.references()["exports"]
         peer._receive({"op": "release", "reference": reference, "count": 1})

@@ -1,6 +1,7 @@
 package arcships.rutis
 
 import arcships.rutis.internal.peer.Channel
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.MemoryChannel
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
@@ -33,10 +34,10 @@ class EmitReplyTest {
     private fun start() {
         val (a, b) = MemoryChannel.pair()
         far = b
-        runtime = Peer(a, Options(dispatch = { _, _, _ -> answeredSeen.put(answered); null }))
+        runtime = Peer(a, Options(dispatch = { _, _, _ -> answeredSeen.put(answered); null }, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         far.recv() // its hello
-        send("""{"op":"hello","version":2,"capabilities":["events-v2"]}""")
+        send("""{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2"]}""")
         runtime.readyFuture.get(5, TimeUnit.SECONDS)
     }
 
@@ -63,7 +64,7 @@ class EmitReplyTest {
         assertEquals("events.dispatch", sent["method"]!!.jsonPrimitive.content)
         // The reply, then at once a frame the runtime handles after it.
         send("""{"op":"return","id":${id(sent)},"value":{"type":"undefined"}}""")
-        send("""{"op":"invoke","id":"rust:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}""")
+        send("""{"op":"invoke","id":"main:1","path":[],"target":"","method":"after","args":{"type":"list","value":[]}}""")
         assertTrue(answeredSeen.poll(5, TimeUnit.SECONDS)!!, "the frame after the reply was handled before the reply was told")
         val (_, error) = told.get(5, TimeUnit.SECONDS)
         assertNull(error)

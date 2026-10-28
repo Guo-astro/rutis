@@ -9,8 +9,8 @@ use std::sync::{Arc, OnceLock};
 
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{
-    arg, decode_value, BigInt, Bytes, Connection, Dispatch, Endpoint, Error, Format, Instant,
-    Reply, Value, ValueMap, ValueSet,
+    arg, decode_value, BigInt, Bytes, Connection, Dispatch, Endpoint, Error, Instant, Reply, Value,
+    ValueMap, ValueSet,
 };
 use serde_json::json;
 
@@ -37,8 +37,8 @@ fn session(
 ) -> (Connection, Connection) {
     let (a, b) = rutis_bridge::memory::pair();
     (
-        Connection::open_with(a, left_dispatch, Format::Endpoint(left)).unwrap(),
-        Connection::open_with(b, right_dispatch, Format::Endpoint(right)).unwrap(),
+        Connection::open(a, left_dispatch, left).unwrap(),
+        Connection::open(b, right_dispatch, right).unwrap(),
     )
 }
 

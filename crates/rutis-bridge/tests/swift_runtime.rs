@@ -267,6 +267,7 @@ async fn a_host_without_events_v2_is_refused() {
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let mut child = tokio::process::Command::new(binary("RutisMultilang"))
         .arg(&socket)
+        .args(["--id", "swift"])
         .arg(dir.path())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -277,7 +278,13 @@ async fn a_host_without_events_v2_is_refused() {
         .unwrap();
     // A 0.12 host's greeting: no events-v2.
     stream
-        .write_all(b"{\"op\":\"hello\",\"version\":2,\"capabilities\":[\"sync-wait\"]}\n")
+        .write_all(
+            format!(
+                "{{\"op\":\"hello\",\"version\":{},\"endpoint\":\"main\",\"capabilities\":[\"sync-wait\"]}}\n",
+                rutis_bridge::session::ENDPOINT_PROTOCOL
+            )
+            .as_bytes(),
+        )
         .await
         .unwrap();
     let mut received = String::new();

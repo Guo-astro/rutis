@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::{Channel, Closer, ConnectError, PeerId};
-use crate::session::rpc::{Connection, Endpoint, Format};
+use crate::session::rpc::{Connection, Endpoint};
 use crate::session::{Error, Handshake};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, TypeKey};
 use rutis::internal::CtxInternal;
@@ -102,10 +102,6 @@ pub struct LinkConfig {
     /// Capabilities this end declares besides the session's own and
     /// `node`, which every rutis link declares.
     pub declare: Vec<String>,
-    /// Speak the compat protocol (2), as local runtime processes do: the
-    /// far end is who its spawner named, greets with no endpoint id and
-    /// declares nothing, so nothing is required of it.
-    pub compat: bool,
     /// Connect again after a session ends. A local runtime process is not
     /// restarted: its link stops when it ends.
     pub reconnect: bool,
@@ -120,7 +116,6 @@ impl LinkConfig {
             retry: Retry::default(),
             require: Vec::new(),
             declare: Vec::new(),
-            compat: false,
             reconnect: true,
         }
     }
@@ -133,7 +128,6 @@ impl LinkConfig {
             retry: Retry::default(),
             require: Vec::new(),
             declare: Vec::new(),
-            compat: false,
             reconnect: true,
         }
     }
@@ -155,10 +149,9 @@ impl LinkConfig {
         self
     }
 
-    /// A local runtime process: the compat protocol, no reconnecting, and
-    /// 30 s to greet (`LOCAL_RUNTIME_GREETING`).
+    /// A local runtime process: no reconnecting, and 30 s to greet
+    /// (`LOCAL_RUNTIME_GREETING`).
     pub fn local_runtime(mut self) -> Self {
-        self.compat = true;
         self.reconnect = false;
         self.retry.handshake = LOCAL_RUNTIME_GREETING;
         self
@@ -352,7 +345,6 @@ pub(crate) struct Greet<'a> {
     pub(crate) expected: Option<PeerId>,
     pub(crate) declare: &'a [String],
     pub(crate) require: &'a [String],
-    pub(crate) compat: bool,
     pub(crate) timeout: Duration,
 }
 
@@ -370,15 +362,7 @@ impl Greet<'_> {
         // A rutis endpoint is a full framework node.
         endpoint.capabilities.push("node".into());
         endpoint.capabilities.extend(self.declare.iter().cloned());
-        let format = match self.compat {
-            true => Format::Compat,
-            false => Format::Endpoint(endpoint),
-        };
-        let session = Connection::open_with(channel, operations.clone(), format)?;
-        // A compat far end does not name itself: it is who its spawner said.
-        if let (true, Some(expected)) = (self.compat, &self.expected) {
-            session.name_far_end(expected.as_str());
-        }
+        let session = Connection::open(channel, operations.clone(), endpoint)?;
         let ready = tokio::time::timeout(self.timeout, session.ready()).await;
         match ready {
             Ok(Ok(())) => {}
@@ -393,14 +377,10 @@ impl Greet<'_> {
             }
         }
         // The contract is checked before use, not guessed from failing calls.
-        // A compat far end declares nothing, and is what its spawner said.
-        let missing = match self.compat {
-            true => None,
-            false => self
-                .require
-                .iter()
-                .find(|capability| !session.supports(capability)),
-        };
+        let missing = self
+            .require
+            .iter()
+            .find(|capability| !session.supports(capability));
         if let Some(missing) = missing {
             let far = session.greeting().map_or_else(
                 || "the far end".to_owned(),
@@ -412,7 +392,7 @@ impl Greet<'_> {
             session.close(error.clone());
             return Err(error);
         }
-        operations.attach(session.clone(), !self.compat);
+        operations.attach(session.clone());
         Ok((session, operations))
     }
 }
@@ -435,7 +415,6 @@ impl Link {
             expected: Some(self.config.peer.clone()),
             declare: &self.config.declare,
             require: &self.config.require,
-            compat: self.config.compat,
             timeout: self.config.retry.handshake,
         };
         let (session, operations) = greet.open(channel).await?;

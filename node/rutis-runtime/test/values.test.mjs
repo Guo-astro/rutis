@@ -5,27 +5,26 @@
 // cross-language round trip is crates/rutis-bridge/tests/value_roundtrip.rs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { Session, CAPABILITIES } from '../src/session.mjs'
+import { Session, CAPABILITIES, ENDPOINT_PROTOCOL } from '../src/session.mjs'
 import { base64Decode, base64Encode, checkText, instantFromText, instantText, VALUE_CAPABILITIES } from '../src/values.mjs'
 
-const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
 // What the SDK constructors make (@arcships/rutis), without the SDK.
 const constructed = (tag, value) => Object.freeze({ [Symbol.for('rutis.value')]: tag, value })
 
-// A compat session whose far end declared `capabilities`.
+// A session (as `node`) whose far end (`rust`) declared `capabilities`.
 function harness(dispatch = () => {}, capabilities = VALUE_CAPABILITIES) {
   const sent = [], incoming = []
   let fault
   const peer = new Session({
+    endpoint: { local: 'node' },
     dispatch,
     send: line => sent.push(JSON.parse(line)),
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
     abort: error => { fault = error },
   })
   peer.start()
-  peer.receive({ op: 'hello', version: PROTOCOL, capabilities })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities })
   return { peer, sent, incoming, fault: () => fault }
 }
 // The arguments a call on `peer` sends with `args`.
@@ -46,7 +45,7 @@ function received(value) {
   }
 }
 
-test('the session declares every tagged value in both formats', () => {
+test('the session declares every tagged value', () => {
   for (const tag of ['instant', 'datetime', 'date', 'time', 'bytes', 'map', 'set', 'bigint', 'decimal', 'uuid']) {
     assert.ok(CAPABILITIES.includes(`value-${tag}`), tag)
   }

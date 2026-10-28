@@ -2,7 +2,7 @@
 
 [中文](migration-0.19.md)
 
-0.19 is for host owners. Three changes are incompatible: how remote runtimes connect (the first section below), the host side's tokens, and the platform cleanup (the last section: removed forms are removed outright, not deprecated, with no conversion or hint); the rest are new options, off by default, whose sections are added as 0.19's changes land.
+0.19 is for host owners. Four changes are incompatible: how remote runtimes connect (the first section below), upgrading hosts and runtimes together (session protocol 4), the host side's tokens, and the platform cleanup (the last section: removed forms are removed outright, not deprecated, with no conversion or hint); the rest are new options, off by default, whose sections are added as 0.19's changes land.
 
 ## Remote runtimes (#696, #698)
 
@@ -73,7 +73,7 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 ### Rust embeddings
 
 - `rutis_host::control::serve` takes one more argument after the `Loader`: a `Report` (a function returning the status text, which `status` is answered with); `Host::status_report()` gives it.
-- The runtime side, the session protocol, and the Rust APIs of rutis and rutis-loader do not change. rutis-bridge's connection part changed (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §11):
+- The Rust APIs of rutis and rutis-loader do not change. rutis-bridge's connection and session parts changed (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §11):
 
   | 0.18 | 0.19 |
   | --- | --- |
@@ -83,8 +83,49 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
   | `Channel`'s `info` (`ChannelInfo`), `Spawn::new(program, peer)` | removed; the far end's id comes only from the session handshake; `Spawn::new(program)` |
   | `rutis_host::host::Embedding`'s `transports` | removed; a connection of your own becomes a connection plugin (once the remote-connection redesign lands) |
+  | `Connection::open(channel, dispatch)`, `Connection::open_with(channel, dispatch, Format::Endpoint(e))`, `Format` | `Connection::open(channel, dispatch, e)`: only the endpoint format, this side always names itself |
+  | `Process::attach(channel, mount, Format::Endpoint(e))` | `Process::attach(channel, mount, e)` |
+  | `session::PROTOCOL` (2), `cordis::PROTOCOL`; `session::ENDPOINT_PROTOCOL` at 3 | removed; `session::ENDPOINT_PROTOCOL` and `cordis::ENDPOINT_PROTOCOL` are 4 |
+  | `LinkConfig`'s `compat` | removed |
 
 - The `transport` field of `rutis-bridge/peer` rows and of `runtimes.remote` is removed: a rutis.json that sets it is refused at startup as an unknown field.
+
+## Upgrade together (#695)
+
+0.19 refuses 0.18 and older hosts, runtimes, nodes and SDKs at the handshake: the session protocol goes from version 3 to 4 and keeps only the endpoint format ([Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3). The refusal says which end to upgrade:
+
+- A 0.19 host starting a 0.18 local runtime (which speaks the local protocol 2) prints:
+
+  ```
+  incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
+  ```
+
+- A 0.18 node or remote runtime dialing a 0.19 listener prints, on the dialer:
+
+  ```
+  this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer
+  ```
+
+- 0.19 dialing a 0.18 listener is refused in the listener's words, for example a 0.18 remote Python runtime:
+
+  ```
+  this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)
+  ```
+
+- A 0.18 host starting a 0.19 local runtime (passing no `--id`): the runtime stops before the handshake:
+
+  ```
+  a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host
+  ```
+
+Upgrade the host and every language runtime and SDK (Node, Bun, Python, Go, Swift, Kotlin) to 0.19 together; rebuild Go and Swift binaries with the 0.19 SDK. Meetings across versions hold only between adjacent releases without incompatible changes.
+
+If you start runtime processes yourself, or implement a runtime:
+
+- Local channels (`fd:3`, a socket path, `tcp:`) take `--id <name>` too: `<channel> --id <name> [--peer <id>] <project>`. The host starts a local runtime with `--id <runtime name>`, and the runtime greets as that name. Without `--id` the runtime refuses to start: `a local channel needs --id <endpoint>: <channel>; a host older than rutis 0.19 started this runtime: upgrade the host`.
+- The `--format` argument of the Node and Bun runtimes is removed; `rutisProtocol` in their `package.json` is 4.
+- The WebSocket subprotocol is `rutis.4`.
+- Go: `advanced.ServeConn(conn, defs...)` becomes `advanced.ServeConn(conn, id, defs...)`; `id` is the name it greets as, as `--id`.
 
 ## Tokens on the host side (#695)
 
@@ -165,11 +206,13 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
+| `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
 
 ### Tools
 
 - `rutis-dev` (the dev channel) is removed; use `rutis-host dev` during development.
 - `rutis-migrate` is no longer released with 0.19. The 0.17 migration still works with `cargo install rutis-migrate --version 0.18.0`.
+- `rutis-host go add <module>@<version>` is removed; use `rutis-host add <module>@<version>`, which installs into `runtimes.go.dir` with the same `go install` and adds the row. For the binary without a row, run `GOBIN=<runtimes.go.dir> go install <module>@<version>` yourself.
 
 ### Go plugins
 

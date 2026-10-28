@@ -13,11 +13,9 @@ import { rowTracking, install as handleUnhandled, failureText, kindText, realFil
 import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugin, serviceName } from './errors.mjs'
 import { prefixOutput, say, watchBlocking } from './output.mjs'
 
-// `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
-// A channel speaks the endpoint format, as `--id`, expecting `--peer` as
-// the controller when given: network channels (`ws://`, `wss://`) always,
-// local ones (`fd:3`, a socket path) when given `--id` (or `--format
-// endpoint`); a local channel without either speaks the compat protocol.
+// `<channel> --id <endpoint> [--peer <endpoint>] <first plugin or anchor>`.
+// The session greets as `--id`, expecting `--peer` as the controller when
+// given, on a local channel (`fd:3`, a socket path) or a network one.
 // `listen:…` serves controllers one session at a time (serve.mjs);
 // `dial:ws://…` / `dial:wss://…` dials a rutis access point and dials
 // again (dial.mjs). Both run each session in a child runner; a dialing
@@ -28,10 +26,15 @@ const { channelSpec, pluginPath, endpoint, flags } = (() => {
   const flags = {}
   while (rest[0]?.startsWith('--')) flags[rest.shift().slice(2)] = rest.shift()
   const network = /^(wss?|listen|dial):/.test(channelSpec)
-  if (network && !flags.id) throw new Error(`a network channel needs --id <endpoint>: ${channelSpec}`)
-  if (flags.format === 'endpoint' && !flags.id) throw new Error(`the endpoint format needs --id <endpoint>: ${channelSpec}`)
+  if (!flags.id && network) throw new Error(`a network channel needs --id <endpoint>: ${channelSpec}`)
+  // Only a host older than 0.19 starts a local runtime without --id: one
+  // line saying so, no stack.
+  if (!flags.id) {
+    writeSync(2, `a local channel needs --id <endpoint>: ${channelSpec}; a host older than rutis 0.19 started this runtime: upgrade the host\n`)
+    process.exit(1)
+  }
   // A runner is a runtime: the controller manages its rows.
-  const endpoint = flags.id ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
+  const endpoint = { local: flags.id, expected: flags.peer, declare: ['runtime'] }
   return { channelSpec, pluginPath: rest[0], endpoint, flags }
 })()
 
@@ -78,7 +81,7 @@ const hosts = new Map()
 // the rows leasing it do not fail for the other row's mistake (they see
 // it in a scope of their own). id -> { scope, name, proxy }
 const waitingHosts = new Map()
-// What this runner supports beyond protocol 2, reported by `mount`.
+// What this runner supports, reported by `mount`.
 // rows.announce: the services a row provides (a Cordis plugin's, or a leaf
 // plugin's `ctx.provide`) reach rutis without a declaration, announced with
 // the methods they have (`service` with a fourth argument, to a host whose

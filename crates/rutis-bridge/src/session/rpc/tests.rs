@@ -1,13 +1,15 @@
 use super::*;
 use crate::channel::Receiver;
+use crate::session::ENDPOINT_PROTOCOL;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// A compat-format greeting of a 0.13 far end (`events-v2`, §2.1).
+/// The greeting of a far end `node` speaking `version`, declaring only
+/// `events-v2` (§2.1).
 fn hello(version: u32) -> Frame {
     Frame::Hello {
         version,
-        endpoint: None,
+        endpoint: Some("node".into()),
         implementation: None,
         capabilities: Some(vec![EVENTS_CAPABILITY.into()]),
     }
@@ -49,9 +51,17 @@ fn far_pair() -> (Channel, Far) {
     };
     (local, far)
 }
+/// The near end's endpoint in the scripted sessions: `rust`, calling as
+/// `rust:<n>`; the far end greets as `node` ([`hello`]).
+fn rust() -> Endpoint {
+    Endpoint::rust(PeerId::new("rust").unwrap())
+}
 fn pair() -> (Connection, Far) {
     let (local, far) = far_pair();
-    (Connection::open(local, Arc::new(NoExports)).unwrap(), far)
+    (
+        Connection::open(local, Arc::new(NoExports), rust()).unwrap(),
+        far,
+    )
 }
 
 /// The chain of a slow dispatch is taken when `with_caller` is made, not
@@ -75,11 +85,11 @@ async fn admitted_call_pins_its_target_before_a_following_counted_release() {
         assert!(matches!(
             read(&mut reader),
             Frame::Hello {
-                version: VERSION,
+                version: ENDPOINT_PROTOCOL,
                 ..
             }
         ));
-        send(&mut remote, hello(VERSION));
+        send(&mut remote, hello(ENDPOINT_PROTOCOL));
         let Frame::Invoke {
             id,
             args: WireValue::List(args),
@@ -154,7 +164,7 @@ async fn an_old_release_does_not_remove_a_concurrent_new_grant() {
     let remote = std::thread::spawn(move || {
         let mut reader = remote.try_clone().unwrap();
         read(&mut reader);
-        send(&mut remote, hello(VERSION));
+        send(&mut remote, hello(ENDPOINT_PROTOCOL));
         let Frame::Invoke {
             id,
             args: WireValue::Reference { id: reference, .. },
@@ -230,12 +240,12 @@ async fn an_old_release_does_not_remove_a_concurrent_new_grant() {
 #[tokio::test(flavor = "current_thread")]
 async fn handshake_and_release_count_fail_closed() {
     let (peer, mut remote) = pair();
-    send(&mut remote, hello(VERSION + 1));
+    send(&mut remote, hello(ENDPOINT_PROTOCOL + 1));
     assert!(peer.ready().await.is_err());
     peer.closed().await;
 
     let (peer, mut remote) = pair();
-    send(&mut remote, hello(VERSION));
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
     peer.ready().await.unwrap();
     let reference = peer
         .encode(&Value::callback(|_| Ok(Value::Undefined)), MAX_DEPTH)
@@ -301,7 +311,7 @@ async fn malformed_and_dangling_frames_close_the_session() {
     ];
     for (case, message) in cases {
         let (peer, mut remote) = pair();
-        send(&mut remote, hello(VERSION));
+        send(&mut remote, hello(ENDPOINT_PROTOCOL));
         peer.ready().await.unwrap();
         remote.sender.lock().unwrap().send(message).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), peer.closed())
@@ -516,7 +526,7 @@ async fn a_cancelled_awaited_call_leaves_no_mark() {
 #[tokio::test(flavor = "current_thread")]
 async fn explicit_close_interrupts_a_writer_whose_peer_stopped_reading() {
     let (peer, mut remote) = pair();
-    send(&mut remote, hello(VERSION));
+    send(&mut remote, hello(ENDPOINT_PROTOCOL));
     peer.ready().await.unwrap();
     let (entered, blocked) = mpsc::channel();
     let writing = peer.clone();
@@ -548,11 +558,11 @@ impl Remote {
         assert!(matches!(
             remote.read(),
             Frame::Hello {
-                version: VERSION,
+                version: ENDPOINT_PROTOCOL,
                 ..
             }
         ));
-        remote.send(hello(VERSION));
+        remote.send(hello(ENDPOINT_PROTOCOL));
         remote
     }
     fn read(&mut self) -> Frame {
@@ -606,7 +616,7 @@ fn ids(path: &[&str]) -> Vec<String> {
 }
 fn connected(dispatch: Arc<dyn Dispatch>) -> (Connection, Far) {
     let (local, remote) = far_pair();
-    (Connection::open(local, dispatch).unwrap(), remote)
+    (Connection::open(local, dispatch, rust()).unwrap(), remote)
 }
 
 #[test]
@@ -644,13 +654,11 @@ async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     assert_eq!(current_path(), ids(&["node:1"]));
 }
 
-/// A session of the endpoint format (as `main`) whose far end greets as
-/// `node`, declaring `capabilities`.
+/// A session as `main` (the far end greets as `node`, [`Remote::start`]).
 fn endpoint_pair() -> (Connection, Far) {
     let (local, far) = far_pair();
     let endpoint = Endpoint::rust(PeerId::new("main").unwrap());
-    let connection =
-        Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(endpoint)).unwrap();
+    let connection = Connection::open(local, Arc::new(NoExports), endpoint).unwrap();
     (connection, far)
 }
 
@@ -741,7 +749,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
         paths
     });
     let user = std::thread::spawn(move || {
-        let mut b = Remote::start_endpoint(rb, &["objects"]);
+        let mut b = Remote::start_declaring(rb, &["objects"]);
         let Frame::Invoke {
             id,
             args: WireValue::List(args),
@@ -1013,8 +1021,8 @@ mod endpoint_format {
     fn pair_as(left: Endpoint, right: Endpoint) -> (Connection, Connection) {
         let (a, b) = crate::memory::pair();
         (
-            Connection::open_with(a, Arc::new(Echo("left")), Format::Endpoint(left)).unwrap(),
-            Connection::open_with(b, Arc::new(Echo("right")), Format::Endpoint(right)).unwrap(),
+            Connection::open(a, Arc::new(Echo("left")), left).unwrap(),
+            Connection::open(b, Arc::new(Echo("right")), right).unwrap(),
         )
     }
 
@@ -1072,28 +1080,6 @@ mod endpoint_format {
         drop(pi);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_compat_far_end_is_incompatible_with_the_endpoint_format() {
-        let (a, b) = crate::memory::pair();
-        let endpoint = Connection::open_with(
-            a,
-            Arc::new(NoExports),
-            Format::Endpoint(Endpoint::rust(id("main"))),
-        )
-        .unwrap();
-        let compat = Connection::open(b, Arc::new(NoExports)).unwrap();
-        let result = endpoint.ready().await;
-        assert!(
-            matches!(result, Err(Error::Handshake(Handshake::Incompatible(_)))),
-            "endpoint side: {result:?}"
-        );
-        let result = compat.ready().await;
-        assert!(
-            matches!(result, Err(Error::Handshake(Handshake::Incompatible(_)))),
-            "compat side: {result:?}"
-        );
-    }
-
     /// What a session did on its channel, in order: whether it had tried
     /// to greet, and had greeted, by the time it first read.
     #[derive(Default)]
@@ -1146,37 +1132,37 @@ mod endpoint_format {
         )
     }
 
-    // #239: the far end's greeting is waiting when the compat side opens.
-    // The compat side finds it incompatible and closes at once; it must
-    // have greeted before reading it, or the endpoint side sees only the
-    // channel end (`peer disconnected`) and the compat side's `open` fails
-    // writing to the channel it closed itself.
+    // #239: the far end's greeting, of another protocol version, is
+    // waiting when this side opens. This side finds it incompatible and
+    // closes at once; it must have greeted before reading it, or the far end
+    // sees only the channel end (`peer disconnected`), not which protocol
+    // this side speaks, and this side's `open` fails writing to the channel
+    // it closed itself.
     #[tokio::test(flavor = "multi_thread")]
     async fn issue_239_an_incompatible_side_greets_before_it_reads_the_far_greeting() {
-        let (a, b) = crate::memory::pair();
-        let endpoint = Connection::open_with(
-            a,
-            Arc::new(NoExports),
-            Format::Endpoint(Endpoint::rust(id("main"))),
-        )
-        .unwrap();
-        let (b, order) = ordered(b, false);
-        let compat = Connection::open(b, Arc::new(NoExports));
-        let compat = compat.unwrap_or_else(|error| panic!("compat side open: {error:?}"));
-        let result = compat.ready().await;
+        let (local, mut far) = far_pair();
+        send(&mut far, hello(3));
+        let (local, order) = ordered(local, false);
+        let session = Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main")))
+            .unwrap_or_else(|error| panic!("open: {error:?}"));
+        let result = session.ready().await;
         assert!(
             matches!(result, Err(Error::Handshake(Handshake::Incompatible(_)))),
-            "compat side: {result:?}"
+            "{result:?}"
         );
         assert_eq!(
             order.state.lock().unwrap().2,
             Some(true),
             "read before greeting"
         );
-        let result = endpoint.ready().await;
+        // The far end reads this side's greeting before the channel end.
         assert!(
-            matches!(result, Err(Error::Handshake(Handshake::Incompatible(_)))),
-            "endpoint side: {result:?}"
+            matches!(
+                read(&mut far),
+                Frame::Hello { version: ENDPOINT_PROTOCOL, endpoint: Some(endpoint), .. }
+                    if endpoint == "main"
+            ),
+            "the far end reads the greeting"
         );
     }
 
@@ -1186,17 +1172,13 @@ mod endpoint_format {
     #[tokio::test(flavor = "multi_thread")]
     async fn issue_239_a_greeting_followed_by_the_channel_end_is_incompatible() {
         let (local, mut far) = far_pair();
-        send(&mut far, hello(VERSION));
+        send(&mut far, hello(3));
         far._closer.close(crate::channel::Close::Done);
         // This side tries to greet (and fails: the channel ended) before it
         // reads the far end's greeting.
         let (local, _) = ordered(local, true);
-        let endpoint = Connection::open_with(
-            local,
-            Arc::new(NoExports),
-            Format::Endpoint(Endpoint::rust(id("main"))),
-        )
-        .unwrap_or_else(|error| panic!("open: {error:?}"));
+        let endpoint = Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main")))
+            .unwrap_or_else(|error| panic!("open: {error:?}"));
         let result = endpoint.ready().await;
         assert!(
             matches!(result, Err(Error::Handshake(Handshake::Incompatible(_)))),
@@ -1209,41 +1191,27 @@ mod endpoint_format {
     async fn a_channel_end_before_any_greeting_is_a_transport_error() {
         let (local, far) = far_pair();
         far._closer.close(crate::channel::Close::Done);
-        let endpoint = Connection::open_with(
-            local,
-            Arc::new(NoExports),
-            Format::Endpoint(Endpoint::rust(id("main"))),
-        )
-        .unwrap_or_else(|error| panic!("open: {error:?}"));
+        let endpoint = Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main")))
+            .unwrap_or_else(|error| panic!("open: {error:?}"));
         let result = endpoint.ready().await;
         assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
     }
 
-    /// Why a session that greets in `format` refuses a far end greeting
-    /// with `version` (and `implementation`, in the endpoint format).
-    async fn refusal(
-        format: Option<Endpoint>,
-        version: u32,
-        implementation: Option<Implementation>,
-    ) -> String {
+    /// Why a session as `main` refuses a far end greeting with `version`
+    /// (and `implementation`).
+    async fn refusal(version: u32, implementation: Option<Implementation>) -> String {
         let (local, mut far) = far_pair();
-        let endpoint = format.is_some();
         send(
             &mut far,
             Frame::Hello {
                 version,
-                endpoint: endpoint.then(|| "far".into()),
+                endpoint: Some("far".into()),
                 implementation,
-                capabilities: endpoint.then(|| vec![EVENTS_CAPABILITY.into()]),
+                capabilities: Some(vec![EVENTS_CAPABILITY.into()]),
             },
         );
-        let session = match format {
-            Some(format) => {
-                Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(format))
-            }
-            None => Connection::open(local, Arc::new(NoExports)),
-        }
-        .unwrap_or_else(|error| panic!("open: {error:?}"));
+        let session = Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main")))
+            .unwrap_or_else(|error| panic!("open: {error:?}"));
         match session.ready().await {
             Err(Error::Handshake(Handshake::Incompatible(reason))) => reason,
             other => panic!("expected an incompatible handshake: {other:?}"),
@@ -1257,92 +1225,72 @@ mod endpoint_format {
     // guarantee: bridge/version-refusal
     #[tokio::test(flavor = "multi_thread")]
     async fn a_far_end_of_another_protocol_version_is_told_which_end_to_upgrade() {
-        let ours = crate::session::ENDPOINT_PROTOCOL;
-        let rust = || Some(Endpoint::rust(id("main")));
+        let ours = ENDPOINT_PROTOCOL;
         assert_eq!(
-            refusal(rust(), 99, None).await,
+            refusal(99, None).await,
             format!(
                 "the far end speaks protocol 99, this side {ours}: \
                  upgrade this side (Rust crates rutis-host / rutis-bridge)"
             )
         );
+        // A 0.18 far end (protocol 3).
+        let previous = Implementation {
+            name: "rutis-runtime".into(),
+            version: "0.18.0".into(),
+        };
         assert_eq!(
-            refusal(None, 99, None).await,
+            refusal(3, Some(previous)).await,
             format!(
-                "the far end speaks protocol 99, this side {VERSION}: \
-                 upgrade this side (Rust crates rutis-host / rutis-bridge)"
+                "the far end speaks protocol 3, this side {ours}: \
+                 upgrade the far end (rutis-runtime 0.18.0)"
             )
+        );
+        assert_eq!(
+            refusal(3, None).await,
+            format!("the far end speaks protocol 3, this side {ours}: upgrade the far end")
         );
         let older = Implementation {
             name: "rutis".into(),
             version: "0.1.0".into(),
         };
         assert_eq!(
-            refusal(rust(), 1, Some(older)).await,
+            refusal(1, Some(older)).await,
             format!(
                 "the far end speaks protocol 1, this side {ours}: \
                  upgrade the far end (rutis 0.1.0)"
             )
-        );
-        assert_eq!(
-            refusal(rust(), 1, None).await,
-            format!("the far end speaks protocol 1, this side {ours}: upgrade the far end")
-        );
-        assert_eq!(
-            refusal(None, 1, None).await,
-            format!("the far end speaks protocol 1, this side {VERSION}: upgrade the far end")
         );
     }
 
     /// guarantee: events/v2-required
     ///
     /// A far end of the right version that does not declare `events-v2` is
-    /// refused right after the handshake (events protocol §2.2), in both
-    /// formats: the endpoint format names it, the compat format cannot.
+    /// refused right after the handshake (events protocol §2.2), named by
+    /// its implementation.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_far_end_without_events_v2_is_refused() {
-        for (format, implementation, named) in [
-            (None, None, "a runtime older than rutis 0.13".to_owned()),
-            (
-                Some(Endpoint::rust(id("main"))),
-                Some(Implementation {
+        let (local, mut far) = far_pair();
+        send(
+            &mut far,
+            Frame::Hello {
+                version: ENDPOINT_PROTOCOL,
+                endpoint: Some("far".into()),
+                implementation: Some(Implementation {
                     name: "rutis-runtime".into(),
                     version: "0.12.1".into(),
                 }),
-                "rutis-runtime 0.12.1".to_owned(),
+                capabilities: Some(vec!["sync-wait".into()]),
+            },
+        );
+        let session =
+            Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main"))).unwrap();
+        match session.ready().await {
+            Err(error @ Error::Handshake(Handshake::Incompatible(_))) => assert_eq!(
+                error.to_string(),
+                "incompatible session: the far end (rutis-runtime 0.12.1) does not declare \
+                 events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
             ),
-        ] {
-            let (local, mut far) = far_pair();
-            let endpoint = format.is_some();
-            send(
-                &mut far,
-                Frame::Hello {
-                    version: match endpoint {
-                        true => crate::session::ENDPOINT_PROTOCOL,
-                        false => VERSION,
-                    },
-                    endpoint: endpoint.then(|| "far".into()),
-                    implementation,
-                    capabilities: Some(vec!["sync-wait".into()]),
-                },
-            );
-            let session = match format {
-                Some(format) => {
-                    Connection::open_with(local, Arc::new(NoExports), Format::Endpoint(format))
-                }
-                None => Connection::open(local, Arc::new(NoExports)),
-            }
-            .unwrap();
-            match session.ready().await {
-                Err(error @ Error::Handshake(Handshake::Incompatible(_))) => assert_eq!(
-                    error.to_string(),
-                    format!(
-                        "incompatible session: the far end ({named}) does not declare events-v2 \
-                         (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
-                    )
-                ),
-                other => panic!("expected the refusal: {other:?}"),
-            }
+            other => panic!("expected the refusal: {other:?}"),
         }
     }
 }
@@ -1687,55 +1635,34 @@ async fn a_frame_too_deep_fails_its_call_and_the_session_goes_on() {
 
 // ── Tagged values (#308) ─────────────────────────────────────────────
 
-/// The capabilities this side declares cover every tagged value, in both
-/// formats, and a compat-format far end may declare them.
+/// The capabilities this side declares cover every tagged value.
 #[test]
-fn this_side_declares_every_value_capability_in_both_formats() {
+fn this_side_declares_every_value_capability() {
     use crate::session::values::VALUE_TAGS;
     let endpoint = Endpoint::rust(PeerId::new("main").unwrap());
     for tag in VALUE_TAGS {
         let capability = format!("value-{tag}");
         assert!(VALUE_CAPABILITIES.contains(&capability.as_str()), "{tag}");
-        assert!(COMPAT_CAPABILITIES.contains(&capability.as_str()), "{tag}");
-        assert!(COMPAT_DECLARED.contains(&capability.as_str()), "{tag}");
         assert!(endpoint.capabilities.contains(&capability), "{tag}");
     }
 }
 
 impl Remote {
-    /// [`Remote::start`], greeting in the compat format with
-    /// `capabilities`.
+    /// [`Remote::start`], greeting as `node` with `capabilities`.
     fn start_declaring(stream: Far, capabilities: &[&str]) -> Self {
-        let mut remote = Self {
-            reader: stream.try_clone().unwrap(),
-            writer: stream,
-        };
-        assert!(matches!(remote.read(), Frame::Hello { .. }));
-        remote.send(Frame::Hello {
-            version: VERSION,
-            endpoint: None,
-            implementation: None,
-            capabilities: Some(
-                capabilities
-                    .iter()
-                    .chain([&EVENTS_CAPABILITY])
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
-        });
-        remote
+        Self::start_as(stream, "node", capabilities)
     }
-    /// [`Remote::start`] for a session of the endpoint format: greets as
-    /// `node`, declaring `capabilities`.
-    fn start_endpoint(stream: Far, capabilities: &[&str]) -> Self {
+    /// [`Remote::start`], greeting as `endpoint` with `capabilities`: the
+    /// far end then calls as `<endpoint>:<n>`.
+    fn start_as(stream: Far, endpoint: &str, capabilities: &[&str]) -> Self {
         let mut remote = Self {
             reader: stream.try_clone().unwrap(),
             writer: stream,
         };
         assert!(matches!(remote.read(), Frame::Hello { .. }));
         remote.send(Frame::Hello {
-            version: crate::session::ENDPOINT_PROTOCOL,
-            endpoint: Some("node".into()),
+            version: ENDPOINT_PROTOCOL,
+            endpoint: Some(endpoint.into()),
             implementation: None,
             capabilities: Some(
                 capabilities
@@ -2238,8 +2165,7 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
     let mut endpoint = Endpoint::rust(PeerId::new("main").unwrap());
     endpoint.capabilities.retain(|c| c != "value-uuid");
     let (local, far) = far_pair();
-    let peer =
-        Connection::open_with(local, Arc::new(EchoArgs), Format::Endpoint(endpoint)).unwrap();
+    let peer = Connection::open(local, Arc::new(EchoArgs), endpoint).unwrap();
     let (answered, calls) = tokio::sync::oneshot::channel();
     let remote = tokio::task::spawn_blocking(move || {
         let mut remote = Remote {
@@ -2248,7 +2174,7 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
         };
         assert!(matches!(remote.read(), Frame::Hello { .. }));
         remote.send(Frame::Hello {
-            version: crate::session::ENDPOINT_PROTOCOL,
+            version: ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
             capabilities: Some(
@@ -2352,8 +2278,7 @@ async fn a_refused_call_takes_its_id() {
     let mut endpoint = Endpoint::rust(PeerId::new("main").unwrap());
     endpoint.capabilities.retain(|c| c != "value-uuid");
     let (local, far) = far_pair();
-    let peer =
-        Connection::open_with(local, Arc::new(EchoArgs), Format::Endpoint(endpoint)).unwrap();
+    let peer = Connection::open(local, Arc::new(EchoArgs), endpoint).unwrap();
     let remote = tokio::task::spawn_blocking(move || {
         let mut remote = Remote {
             reader: far.try_clone().unwrap(),
@@ -2361,7 +2286,7 @@ async fn a_refused_call_takes_its_id() {
         };
         assert!(matches!(remote.read(), Frame::Hello { .. }));
         remote.send(Frame::Hello {
-            version: crate::session::ENDPOINT_PROTOCOL,
+            version: ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
             capabilities: Some(
@@ -2490,20 +2415,6 @@ async fn a_plugin_definition_goes_home_and_is_never_relayed() {
         .unwrap();
 }
 
-/// Rust takes plugin definitions in both handshake formats.
-#[tokio::test(flavor = "current_thread")]
-async fn rust_declares_plugins_in_the_compat_format() {
-    let (peer, mut far) = pair();
-    let Frame::Hello { capabilities, .. } = read(&mut far) else {
-        panic!("hello expected")
-    };
-    assert!(capabilities
-        .unwrap_or_default()
-        .iter()
-        .any(|capability| capability == PLUGINS_CAPABILITY));
-    drop(peer);
-}
-
 /// Test-only hooks into the session's code paths.
 pub(super) mod hooks {
     use super::super::SessionState;
@@ -2610,9 +2521,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     let (a, ra) = pair();
     let held = Arc::new(Holding(Mutex::new(None)));
     let (local, rb) = far_pair();
-    let b = Connection::open(local, held.clone()).unwrap();
-    // A runtime's link names it: a compat far end does not name itself.
-    b.name_far_end("py");
+    let b = Connection::open(local, held.clone(), rust()).unwrap();
     let owner = tokio::task::spawn_blocking(move || {
         let mut a = Remote::start(ra);
         let Frame::Invoke { id, .. } = a.read() else {
@@ -2629,7 +2538,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
         ));
     });
     let runtime = tokio::task::spawn_blocking(move || {
-        let mut b = Remote::start(rb);
+        let mut b = Remote::start_as(rb, "py", &[]);
         let frame = b.read_json();
         assert_eq!(
             frame["method"], "after",
@@ -2641,7 +2550,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
             "value": { "type": "reference", "value": { "id": 9, "kind": "function", "home": false, "origin": [] } },
         }));
         b.send_json(json!({
-            "op": "invoke", "id": "node:1", "path": [], "target": "host:svc", "method": "get",
+            "op": "invoke", "id": "py:1", "path": [], "target": "host:svc", "method": "get",
             "args": { "type": "data", "value": [] },
         }));
         // The function's release may come first.
@@ -2668,7 +2577,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     match b.invoke_async("host:svc\0scope", "take", call).await {
         Err(Error::Value(message)) => assert_eq!(
             message,
-            "svc.take: argument 2 cannot be sent: an object from the far end cannot cross to py: \
+            "svc.take: argument 2 cannot be sent: an object from node cannot cross to py: \
              py does not take objects (older than rutis 0.18); upgrade it"
         ),
         other => panic!("a value error expected, got {other:?}"),
@@ -2688,7 +2597,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
         match function.call_async(Value::List(vec![argument])).await {
             Err(Error::Value(message)) => assert_eq!(
                 message,
-                "a function: argument 1 cannot be sent: an object from the far end cannot cross to py: \
+                "a function: argument 1 cannot be sent: an object from node cannot cross to py: \
                  py does not take objects (older than rutis 0.18); upgrade it"
             ),
             other => panic!("a value error expected, got {other:?}"),
@@ -2698,7 +2607,7 @@ async fn an_object_goes_only_to_a_far_end_that_takes_objects() {
     let (message, _runtime) = runtime.await.unwrap();
     assert_eq!(
         message,
-        "svc.get: the result cannot be sent: an object from the far end cannot cross to py: \
+        "svc.get: the result cannot be sent: an object from node cannot cross to py: \
          py does not take objects (older than rutis 0.18); upgrade it"
     );
     assert!(b.close_reason().is_none() && a.close_reason().is_none());
@@ -2754,7 +2663,7 @@ async fn a_message_over_the_limit_fails_only_its_call() {
         }
     }
     let (local, far) = limited_pair(1024);
-    let peer = Connection::open(local, Arc::new(Big)).unwrap();
+    let peer = Connection::open(local, Arc::new(Big), rust()).unwrap();
     let script = tokio::task::spawn_blocking(move || {
         let mut far = Remote::start(far);
         let frame = far.read_json();

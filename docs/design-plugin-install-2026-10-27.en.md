@@ -8,7 +8,8 @@ Changed 2026-10-28 (I6, §6): `add` writes rows with the existing row names (the
 Changed again 2026-10-28 (I1, I8, §8, §9): the embedding API (the `install` feature of `rutis-loader`) and seeing the description before installing (`add --dry-run`, `describe`) are gone; the install code lives inside rutis-host only. Why: see Out of scope.
 Reviewed 2026-10-28 (§5, §8, §11): `add` starts no runtime of its own to describe plugins: before writing the file it works out in memory the configuration as it will be written, checks the new rows with the start and check `run` / `check` use, and writes the file only when they pass; it prints with `check`'s own code, word for word the same.
 Relation to the 0.18 designs: the plugin description `add` prints is the description `check` already prints (version, `inject`, `provides`, config schema), not a second one; rows `add` writes carry no `config`, defaults are filled by the SDK as in [0.18 config schema](design-config-schema-2026-10-27.en.md) C1, and when a required field is missing `add` says so with the same check `check` runs; error text follows [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.5.
-Compatibility: fully compatible, not part of "Migrating to 0.19". The old row names (`py:`, `bun:`, `go:`, `swift:` prefixes, npm package names), manual installation and `rutis-host go add` keep working, unconverted.
+Changed 2026-10-29 (I1, Compatibility): `rutis-host go add` is removed ([platform cleanup](design-platform-cleanup-2026-10-28.en.md) §6.4 item 1, CL25). `add <Go module>` installs with the same `go install` and adds the row; installing without a row is no longer a use: a plugin needs a row to be loaded anyway.
+Compatibility: fully compatible apart from removing `go add` (in the platform cleanup section of "Migrating to 0.19"). The old row names (`py:`, `bun:`, `go:`, `swift:` prefixes, npm package names) and manual installation keep working, unconverted.
 
 Out of scope: sandboxing or reviewing install scripts; installing the language toolchains; version ranges; pnpm, yarn, private registry settings (use the package managers' own config); reinstalling every recorded plugin; hot upgrade of a running host; remote runtimes and plugins in applications; downloading binaries from URLs; undoing what the package manager already did when a later step fails (running npm / uv directly does not either, §5); an embedding API (install code in `rutis-loader` for other hosts to call): rutis-host is its only user, deskmate in the evaluation is a hypothetical host, and without a real need there is no public API; seeing the description before installing (`add --dry-run`): `add` prints the plugin's description once installed anyway, which is not worth a second path installing into a temporary directory.
 
@@ -41,7 +42,7 @@ The host owner says only where the plugin comes from; they need not know its lan
 | One `Language` per language: its runtime key (`node`, `bun`, `py`, `go`, `swift`), recognizing a project by its files (`of_project`) | `crates/rutis-host/src/languages/` | A local directory's language is decided by `of_project`; the row name's prefix is the runtime key |
 | Telling a Bun project: it depends on `@arcships/rutis-bun` | `languages/bun.rs` `runs_in_bun` | Whether an npm package is a Bun or Node plugin, by the same rule |
 | The commands a runtime names when something is missing: Node `npm init -y`, `npm install @arcships/rutis-runtime`; Bun `bun add -d @arcships/rutis-bun`; Python creating `.venv` and installing `rutis==<host version>` (`create_venv`, `missing_rutis`) | `languages/node.rs`, `bun.rs`, `python.rs` | `add` runs those commands; nothing new is defined |
-| `rutis-host go add`: `GOBIN=<dir> go install` | `crates/rutis-host/src/main.rs` | Moves into the install code; `go add` behaves as before |
+| `rutis-host go add`: `GOBIN=<dir> go install` | `crates/rutis-host/src/main.rs` | Moves into the install code, called by `add`; `go add` removed (CL25) |
 | A runtime describing a row: version, `inject`, `provides`, config schema (`RowSchema`) | `RuntimeResolver` → `describe_row` (`crates/rutis-loader/src/runtime.rs`) | The plugin description, which `check` already prints |
 | Go and Swift binary manifests (plugin names, versions, SDK marker); a `go:<plugin>` row finds its binary in the directory by manifest | `crates/rutis-loader/src/runtime/binary.rs` | Finding the plugins in a binary; recognizing a local binary; the record needs no binary file name |
 | The `rutis.plugins` entry point group of Python plugins (the template writes it) | `templates/python/pyproject.toml` | Finding the plugins in a Python distribution |
@@ -53,7 +54,7 @@ Cordis 4 has no install command. Koishi's plugin market (the installer service o
 
 | # | Decision | Section |
 | --- | --- | --- |
-| I1 | `rutis-host add <reference> [rutis.json]`, `remove <plugin or reference>`, `upgrade [<plugin or reference>[@version]]`; `go add` stays, calling the same install code, behaving as before | 5, 7 |
+| I1 | `rutis-host add <reference> [rutis.json]`, `remove <plugin or reference>`, `upgrade [<plugin or reference>[@version]]`; `go add` removed (CL25) | 5, 7 |
 | I2 | A plugin reference names the source, not the language: `npm:`, `pypi:` prefixes; Go module paths and local paths say their source themselves; versions are always `@version`; a name without a source is an error | 4 |
 | I3 | The package decides the language: an npm package depending on `@arcships/rutis-bun` is Bun, otherwise Node; PyPI is Python; a Go module is Go; a local directory by its project file; a local executable by its SDK marker (Go, Swift) | 4 |
 | I4 | Install where the host already looks: where `runtimes.<language>` points when written; otherwise its default (`plugins/go`, `plugins/swift` for Go and Swift), and the settings used are written into `runtimes` (`"py": {}`, `"go": { "dir": "plugins/go" }`), so the runtime starts by the existing rules, with no new inference rule | 5 |
@@ -148,7 +149,7 @@ The description `add` prints is what plugins already declare: TypeScript `define
 
 ## 9. Where the install code lives
 
-- The install code is a private module of rutis-host (`crates/rutis-host/src/installer/`): parsing references, setting up runtimes and installing per language, finding a package's plugins, uninstalling and upgrading. `add` / `remove` / `upgrade` and `go add` all call it, so there is one copy of the install logic.
+- The install code is a private module of rutis-host (`crates/rutis-host/src/installer/`): parsing references, setting up runtimes and installing per language, finding a package's plugins, uninstalling and upgrading. `add` / `remove` / `upgrade` all call it, so there is one copy of the install logic.
 - It is not a public API of `rutis-loader` (removed on 2026-10-28; see Out of scope).
 - Only what exists is used: a binary's plugins are found with `rutis-loader`'s `BinaryResolver::binaries` (as the Go and Swift runtimes find binaries); the Python environment and the Node runtime are located as rutis-host already does. npm, uv and go run as external commands only when called. The `rutis` kernel is unchanged.
 - rutis-host reads and writes the records (`installed`); the install code itself reads and writes no configuration file.
@@ -211,7 +212,7 @@ An npm package's row name is its package name (`bun:<package>` for Bun), so a cl
 
 ## 12. Compatibility and migration
 
-- Nothing existing breaks: a `rutis.json` without `installed` behaves exactly as before; old-prefix rows and npm-name rows resolve as they do; plugins installed by hand run as they do; `rutis-host go add` stays. Old files are not converted, get no warning, and no existing text changes.
+- Nothing existing breaks: a `rutis.json` without `installed` behaves exactly as before; old-prefix rows and npm-name rows resolve as they do; plugins installed by hand run as they do. Old files are not converted, get no warning, and no existing text changes.
 - Not part of "Migrating to 0.19". The guide's "How a host installs plugins" leads with `add`, keeping the manual table as "without `add`".
 
 ## 13. Implementation
@@ -219,7 +220,7 @@ An npm package's row name is its package name (`bun:<package>` for Bun), so a cl
 | Step | Content | Done when |
 | --- | --- | --- |
 | P1 | Withdrawn on 2026-10-28: it was the `install` feature of `rutis-loader` (the embedding API); its code moved into P2 | — |
-| P2 | rutis-host: the install code (a private module, §9), the `installed` field (keyed by row name), `add` / `remove` / `upgrade`, writing the file back (with `runtimes`); `go add` calls the install code | Unit tests: for each form in §4, the source, language and package manager command (fake commands on `PATH` that record their arguments); `crates/rutis-host/tests/install.rs`: rows with records resolve as usual; a key not in a row-name form is refused; write-back keeps key order; every error output of §11 compared word for word |
+| P2 | rutis-host: the install code (a private module, §9), the `installed` field (keyed by row name), `add` / `remove` / `upgrade`, writing the file back (with `runtimes`) | Unit tests: for each form in §4, the source, language and package manager command (fake commands on `PATH` that record their arguments); `crates/rutis-host/tests/install.rs`: rows with records resolve as usual; a key not in a row-name form is refused; write-back keeps key order; every error output of §11 compared word for word |
 | P3 | End to end: `tests/e2e/tests/plugin_install.rs` (in ci.yml's e2e job, beside `dev_loop.rs`) | One scenario each for Node, Bun, Python and Go: local packages made from `rutis-host new` templates (`npm pack`, the wheel of `uv build`, a Go module directory) → `add` → `check` → `run`, the probe calls its service → `upgrade` after a version change → `remove`; the Python scenario starts with no environment; the `pypi:` and Go module path forms run once against uv's local `--find-links` and `GOPROXY=file://`; one `dev` scenario: after `add` writes `rutis.dev.json` the new row is `added` and the project's own row does not restart |
 | P4 | Documentation | The [rutis-host guide](guide/rutis-host.en.md) (command table, "Quick start", "How a host installs plugins", the `installed` field), the host owner guide (#671, formerly #685), both languages in step; installation scripts and trust (§10) |
 

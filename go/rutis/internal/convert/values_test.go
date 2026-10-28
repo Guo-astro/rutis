@@ -22,11 +22,11 @@ import (
 func session(t *testing.T, functions map[string]any) func(name string, result any, args ...any) error {
 	t.Helper()
 	a, b := net.Pipe()
-	host, err := peer.New(peer.NewLines(a), peer.Options{Host: true})
+	host, err := peer.New(peer.NewLines(a), peer.Options{Endpoint: &peer.Endpoint{Local: "main"}, Capabilities: peer.TestCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := peer.New(peer.NewLines(b), peer.Options{Dispatch: func(ctx context.Context, target, method string, args []any) (any, error) {
+	runtime, err := peer.New(peer.NewLines(b), peer.Options{Endpoint: &peer.Endpoint{Local: "go"}, Capabilities: peer.TestCapabilities, Dispatch: func(ctx context.Context, target, method string, args []any) (any, error) {
 		return Call(ctx, reflect.ValueOf(functions[method]), args)
 	}})
 	if err != nil {

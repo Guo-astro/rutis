@@ -1,23 +1,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { Session, ENDPOINT_PROTOCOL, MAX_MESSAGE, overLimit } from '../src/session.mjs'
 import { decode } from '../src/codec.mjs'
 import { decodeError } from '../src/errors.mjs'
 
-const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
 function harness(dispatch, options = {}) {
   const sent = [], incoming = []
   let fault
   const peer = new Session({
+    endpoint: { local: 'node' },
     ...options,
     dispatch,
     send: line => sent.push(JSON.parse(line)),
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
     abort: error => { fault = error },
   })
-  peer.receive({ op: 'hello', version: PROTOCOL })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: ['objects'] })
   return { peer, sent, incoming, fault: () => fault }
 }
 const invoke = (id, method, path = []) => ({ op: 'invoke', id: `rust:${id}`, path, target: 'test', method, args: data([]) })
@@ -241,8 +240,8 @@ test('a reference whose origin holds another session\'s tagged ids is taken (#22
   incoming.push({ op: 'return', id: 'node:1', value: { type: 'reference', value: { id: 1, kind: 'future', home: false, origin } } })
   assert.ok(peer.invoke('test', 'later', []) instanceof Promise)
   assert.equal(fault(), undefined)
-  // Untagged ids of another kind, and doubly tagged ones, are still refused.
-  for (const bad of ['py:1', 's1/s2/node:1', 's1/node:0']) {
+  // Doubly tagged ids, and ids numbered 0, are still refused.
+  for (const bad of ['s1/s2/node:1', 's1/node:0']) {
     const other = harness(() => {})
     other.incoming.push({ op: 'return', id: 'node:1', value: { type: 'reference', value: { id: 1, kind: 'future', home: false, origin: [bad] } } })
     assert.throws(() => other.peer.invoke('test', 'later', []), /invalid reference/, bad)
@@ -273,23 +272,25 @@ test('unsupported nested references fail explicitly and roll back partial grants
 // guarantee: bridge/version-refusal
 test('a far end of another protocol version is refused, saying which end to upgrade', async () => {
   const far = { name: 'rutis', version: '0.1.0' }
-  for (const [endpoint, ours] of [[{ local: 'node' }, ENDPOINT_PROTOCOL], [undefined, PROTOCOL]]) {
-    const cases = [
-      [99, undefined, `upgrade this side (npm @arcships/rutis-runtime)`],
-      [1, endpoint && far, endpoint ? 'upgrade the far end (rutis 0.1.0)' : 'upgrade the far end'],
-    ]
-    for (const [version, implementation, hint] of cases) {
-      const sent = []
-      let fault
-      const session = new Session({ dispatch: () => {}, send: line => sent.push(JSON.parse(line)), pump: () => {}, abort: error => { fault = error }, endpoint })
-      session.start()
-      assert.equal(sent[0].version, ours, 'this side greets first, with its own version')
-      session.receive({ op: 'hello', version, ...(endpoint ? { endpoint: 'main', implementation, capabilities: [] } : {}) })
-      const message = `incompatible session: the far end speaks protocol ${version}, this side ${ours}: ${hint}`
-      await assert.rejects(session.ready, error => error.category === 'incompatible' && error.message === message, message)
-      assert.equal(fault?.message, message, 'the channel is closed')
-      await assert.rejects(session.invokeAsync('t', 'm', []), undefined, 'and the session with it')
-    }
+  const ours = ENDPOINT_PROTOCOL
+  assert.equal(ours, 4)
+  const cases = [
+    [99, undefined, `upgrade this side (npm @arcships/rutis-runtime)`],
+    // rutis 0.18 and earlier speak 3.
+    [3, far, 'upgrade the far end (rutis 0.1.0)'],
+    [2, undefined, 'upgrade the far end'],
+  ]
+  for (const [version, implementation, hint] of cases) {
+    const sent = []
+    let fault
+    const session = new Session({ dispatch: () => {}, send: line => sent.push(JSON.parse(line)), pump: () => {}, abort: error => { fault = error }, endpoint: { local: 'node' } })
+    session.start()
+    assert.equal(sent[0].version, ours, 'this side greets first, with its own version')
+    session.receive({ op: 'hello', version, endpoint: 'main', implementation, capabilities: [] })
+    const message = `incompatible session: the far end speaks protocol ${version}, this side ${ours}: ${hint}`
+    await assert.rejects(session.ready, error => error.category === 'incompatible' && error.message === message, message)
+    assert.equal(fault?.message, message, 'the channel is closed')
+    await assert.rejects(session.invokeAsync('t', 'm', []), undefined, 'and the session with it')
   }
 })
 
@@ -334,7 +335,7 @@ test('an object reference goes only to a far end that declared objects', async (
       endpoint: { local: 'node', expected: 'main' },
     })
     session.start()
-    session.receive({ op: 'hello', version: 3, endpoint: 'main', capabilities })
+    session.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities })
     await session.ready
     session.receive({ op: 'invoke', id: 'main:1', path: [], target: 'svc', method: 'get', args: data([]) })
     await Promise.resolve()

@@ -3,8 +3,6 @@ use serde_json::Value;
 
 use crate::session::Error;
 
-pub(crate) const VERSION: u32 = crate::session::PROTOCOL;
-
 /// Who speaks at the far end, for diagnostics.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -156,8 +154,7 @@ impl From<Failure> for Error {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Frame {
-    /// Opens a session. Version 2 (compat) carries only the version; the
-    /// endpoint format (3) also names the endpoint, its implementation and
+    /// Opens a session: the version, the endpoint, its implementation and
     /// its capabilities.
     Hello {
         version: u32,

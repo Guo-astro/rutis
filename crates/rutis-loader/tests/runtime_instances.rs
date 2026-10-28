@@ -18,7 +18,7 @@ use rutis::host::{
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::session::{
-    settle, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
+    settle, Connection, Dispatch, Endpoint, Error, HostDispatch, Reply, Value as RpcValue,
 };
 use rutis_bridge::{
     Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential,
@@ -192,8 +192,7 @@ async fn dial_runtime(
         version: AtomicU64::new(0),
         exports: Mutex::default(),
     };
-    let session =
-        Connection::open_with(channel, Arc::new(runtime), Format::Endpoint(endpoint)).unwrap();
+    let session = Connection::open(channel, Arc::new(runtime), endpoint).unwrap();
     within("the runtime's session", session.ready())
         .await
         .unwrap();

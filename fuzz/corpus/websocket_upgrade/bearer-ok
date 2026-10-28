@@ -5,5 +5,5 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer s3cret
-Sec-WebSocket-Protocol: rutis.3
+Sec-WebSocket-Protocol: rutis.4
 

@@ -20,7 +20,7 @@ use rutis::Ctx;
 use rutis_bridge::memory::pair;
 use rutis_bridge::runtime::{RuntimeAccessPlugin, RuntimePlugin};
 use rutis_bridge::session::{
-    host_key, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
+    host_key, Connection, Dispatch, Endpoint, Error, HostDispatch, Reply, Value as RpcValue,
 };
 use rutis_bridge::{
     Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Channel, ConnectError,
@@ -131,7 +131,7 @@ fn serve(channel: Channel, lists: bool) -> Connection {
         version: AtomicU64::new(0),
         exports: Mutex::default(),
     };
-    Connection::open_with(channel, Arc::new(runtime), Format::Endpoint(endpoint)).unwrap()
+    Connection::open(channel, Arc::new(runtime), endpoint).unwrap()
 }
 
 /// Stand-in runtimes rutis dials out to: every dial reaches a new one.

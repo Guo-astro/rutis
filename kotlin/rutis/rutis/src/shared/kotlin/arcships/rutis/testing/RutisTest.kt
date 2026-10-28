@@ -26,6 +26,7 @@ import arcships.rutis.internal.Shutdown
 import arcships.rutis.internal.checkEmit
 import arcships.rutis.internal.checkListen
 import arcships.rutis.internal.peer.CallChain
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.MemoryChannel
 import arcships.rutis.internal.peer.Options
@@ -140,11 +141,12 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
     fun start() {
         Reporting.add(this)
         val (runtimeSide, hostSide) = MemoryChannel.pair()
-        served = RuntimeSession.start(runtimeSide, null, listOf(plugin))
+        served = RuntimeSession.start(runtimeSide, Endpoint("kotlin", "main", listOf("runtime")), listOf(plugin))
         session = Peer(
             hostSide,
             Options(
-                host = true,
+                endpoint = Endpoint("main", "kotlin"),
+                plugins = true,
                 dispatch = ::dispatch,
                 arrive = ::arrive,
                 // A plugin definition the plugin hands to a test double is

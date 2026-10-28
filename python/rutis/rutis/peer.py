@@ -1,4 +1,4 @@
-"""One session of the rutis protocol (version 2), as the runtime side.
+"""One session of the rutis protocol (version 4), as the runtime side.
 
 This is `node/rutis-runtime/src/peer.mjs` in Python. The asyncio loop thread owns
 every table and runs all plugin code; a reader thread only parses frames and
@@ -37,11 +37,10 @@ from . import _eager, _values
 from .plugin import Plugin
 from .channel import MAX_MESSAGE, SocketChannel
 
-PROTOCOL = 2
-# The endpoint format: endpoint ids in the handshake and the call ids,
+# The session protocol: endpoint ids in the handshake and the call ids,
 # capabilities, either side calling the other.
-ENDPOINT_PROTOCOL = 3
-# What this implementation supports in the endpoint format. `objects`: it
+ENDPOINT_PROTOCOL = 4
+# What this implementation supports. `objects`: it
 # takes objects with methods, as a proxy whose methods call them (#687). `sync-wait`: its
 # synchronous calls say so (`sync: true`), for the host's wait-cycle check;
 # `sync-stack`: calls run while it waits are stacked on its one thread;
@@ -49,8 +48,6 @@ ENDPOINT_PROTOCOL = 3
 # `events-v2`: it speaks the event protocol of rutis 0.13 (#464), which the
 # runtime requires of its host too (`require`).
 CAPABILITIES = ["objects", "signals", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
-# What it declares in the compat format.
-COMPAT_CAPABILITIES = ["objects", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
 # Why a runtime ends a session with a host that does not declare
 # `events-v2` (docs/design-events-protocol-2026-10-18.md §2.2).
 EVENTS_REFUSAL = (
@@ -78,9 +75,6 @@ def version_mismatch(far, local: int, implementation) -> str:
 
 MAX_SAFE = 9_007_199_254_740_991
 _ENDPOINT_ID = re.compile(r"^[a-z0-9-]+$")
-# In the compat format, this session's ids are `node:`/`rust:`; another
-# session's come tagged with it, whatever its format (`s1/node:3`, #225).
-_COMPAT_ORIGIN = re.compile(r"^(node|rust|s[0-9]+/[a-z0-9-]+):[1-9][0-9]*$")
 # An id in a chain: either side's, possibly tagged with the session it came
 # through (`s3/mac:4`).
 _ENDPOINT_ORIGIN = re.compile(r"^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$")
@@ -868,12 +862,13 @@ class Peer:
         dispatch: Callable,
         settled: Callable | None = None,
         reentrant: bool = True,
-        endpoint: dict | None = None,
+        *,
+        endpoint: dict,
         require: dict | None = None,
     ):
-        """`endpoint` ({"local", "expected"?, "verified"?, "declare"?}) selects
-        the endpoint format (`declare`: capabilities beyond the session's, such
-        as the contract); without it the session speaks the compat protocol.
+        """`endpoint` ({"local", "expected"?, "verified"?, "declare"?}): this
+        side's endpoint id, the far end's it expects, and the capabilities it
+        declares beyond the session's (`declare`, such as the contract).
         `require` ({capability: why}): the session ends right after the
         handshake, with `Incompatible(why)`, when the far end does not declare
         one of them (the runtime requires `events-v2`)."""
@@ -921,15 +916,15 @@ class Peer:
         self._active = 0
         self._draining: list[asyncio.Future] = []
         self._handshake = False
-        # Call id prefixes: `node:` / `rust:` (compat), `<endpoint>:` (endpoint format).
+        # Call id prefixes: `<endpoint>:`, each side's own.
         self._endpoint = endpoint
-        if endpoint is not None and not _ENDPOINT_ID.match(endpoint["local"]):
+        if not _ENDPOINT_ID.match(endpoint["local"]):
             raise ValueError(f"invalid endpoint id {endpoint['local']}")
-        self._local = f"{endpoint['local']}:" if endpoint else "node:"
-        self._remote: str | None = None if endpoint else "rust:"
-        # What the far end said of itself (endpoint format), once it greeted.
+        self._local = f"{endpoint['local']}:"
+        self._remote: str | None = None
+        # What the far end said of itself, once it greeted.
         self.greeting: dict | None = None
-        # What the far end declared (either format), once it greeted.
+        # What the far end declared, once it greeted.
         self._declared: list = []
         self.closed_error: BaseException | None = None
         self.ready: asyncio.Future = self.loop.create_future()
@@ -942,16 +937,13 @@ class Peer:
         # Greet before reading (#239): a side that finds the far end's
         # greeting incompatible closes the channel, and the far end must
         # still read this side's greeting ahead of the channel end.
-        if self._endpoint is None:
-            hello = {"op": "hello", "version": PROTOCOL, "capabilities": COMPAT_CAPABILITIES}
-        else:
-            hello = {
-                "op": "hello",
-                "version": ENDPOINT_PROTOCOL,
-                "endpoint": self._endpoint["local"],
-                "implementation": IMPLEMENTATION,
-                "capabilities": CAPABILITIES + list(self._endpoint.get("declare", [])),
-            }
+        hello = {
+            "op": "hello",
+            "version": ENDPOINT_PROTOCOL,
+            "endpoint": self._endpoint["local"],
+            "implementation": IMPLEMENTATION,
+            "capabilities": CAPABILITIES + list(self._endpoint.get("declare", [])),
+        }
         try:
             self._send(hello)
         except OSError:
@@ -961,22 +953,11 @@ class Peer:
             pass
         self._reader.start()
 
-    @property
-    def _origin_id(self):
-        return _COMPAT_ORIGIN if self._endpoint is None else _ENDPOINT_ORIGIN
-
     def supports(self, capability: str) -> bool:
         return self.greeting is not None and capability in self.greeting["capabilities"]
 
     def _greet(self, frame: dict) -> None:
         version = frame.get("version")
-        if self._endpoint is None:
-            if version != PROTOCOL or "endpoint" in frame:
-                raise ValueError(f"incompatible session: {version_mismatch(version, PROTOCOL, frame.get('implementation'))}")
-            capabilities = frame.get("capabilities")
-            self._declared = capabilities if isinstance(capabilities, list) else []
-            self._required()
-            return
         if version != ENDPOINT_PROTOCOL:
             raise ValueError(
                 f"incompatible session: {version_mismatch(version, ENDPOINT_PROTOCOL, frame.get('implementation'))}"
@@ -1147,7 +1128,7 @@ class Peer:
                     if callable(value)
                     else "object"
                 )
-                if kind == "object" and self._endpoint is not None and not self.supports("objects"):
+                if kind == "object" and not self.supports("objects"):
                     # Only a far end that declared `objects` can call its
                     # methods (#675).
                     far = self.greeting["endpoint"]
@@ -1355,7 +1336,7 @@ class Peer:
             or kind not in ("function", "future", "object", "plugin")
             or not isinstance(home, bool)
             or not isinstance(origin, list)
-            or not all(isinstance(item, str) and self._origin_id.match(item) for item in origin)
+            or not all(isinstance(item, str) and _ENDPOINT_ORIGIN.match(item) for item in origin)
         ):
             raise ValueError("invalid reference")
         if home:

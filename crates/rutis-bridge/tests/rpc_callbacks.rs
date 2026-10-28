@@ -213,6 +213,7 @@ async fn sync_await_reports_known_executor_cycle_but_allows_ready_future() {
     peer.dispose().await.unwrap();
 }
 
+use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{Connection, Dispatch, Reference, Reply};
 use std::sync::Mutex;
 
@@ -284,7 +285,9 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
     let channel = rutis_bridge::pipe::spawn(&spawn, &Processes::default())
         .await
         .unwrap();
-    let peer = Connection::open(channel, Arc::new(Service(Mutex::new(None)))).unwrap();
+    let endpoint = rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
+        .expect(PeerId::new("node").unwrap());
+    let peer = Connection::open(channel, Arc::new(Service(Mutex::new(None))), endpoint).unwrap();
     peer.ready().await.unwrap();
     within("the fixture to end its session", peer.closed()).await;
     let ended = peer.close_reason().unwrap().to_string();
@@ -294,17 +297,14 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
 #[cfg(feature = "websocket")]
 mod websocket {
     use super::*;
-    use rutis_bridge::channel::PeerId;
     use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
     use rutis_bridge::{Credential, Registration, Registrations, StaticIdentity};
     use tokio::io::AsyncBufReadExt;
 
-    const PROTOCOL: &str = "rutis.3";
+    const PROTOCOL: &str = "rutis.4";
 
-    fn endpoint(expected: &str) -> rutis_bridge::session::Format {
-        rutis_bridge::session::Format::Endpoint(
-            rutis_bridge::session::Endpoint::rust(id("main")).expect(id(expected)),
-        )
+    fn endpoint(expected: &str) -> rutis_bridge::session::Endpoint {
+        rutis_bridge::session::Endpoint::rust(id("main")).expect(id(expected))
     }
 
     fn id(s: &str) -> PeerId {
@@ -364,7 +364,7 @@ mod websocket {
         .await
         .unwrap()
         .unwrap();
-        let peer = Connection::open_with(
+        let peer = Connection::open(
             channel,
             Arc::new(Service(Mutex::new(None))),
             endpoint("node"),
@@ -406,7 +406,7 @@ mod websocket {
         )
         .await
         .unwrap();
-        let peer = Connection::open_with(
+        let peer = Connection::open(
             channel,
             Arc::new(Service(Mutex::new(None))),
             endpoint("node"),

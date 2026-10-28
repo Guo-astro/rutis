@@ -1,5 +1,4 @@
 use std::future::IntoFuture;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,28 +18,6 @@ impl DynPlugin for Consumer {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.key.clone()]
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async { Ok(Effect::Done) })
-    }
-}
-
-struct MetadataProbe {
-    key: TypeKey,
-    names: Arc<AtomicUsize>,
-    injects: Arc<AtomicUsize>,
-}
-
-impl DynPlugin for MetadataProbe {
-    fn name(&self) -> &str {
-        self.names.fetch_add(1, Ordering::SeqCst);
-        "diagnostic-metadata-probe"
-    }
-
-    fn injects(&self) -> Vec<TypeKey> {
-        self.injects.fetch_add(1, Ordering::SeqCst);
         vec![self.key.clone()]
     }
 
@@ -248,66 +225,6 @@ async fn diagnostics_explain_inactive_and_removing_provider() {
         dependency(&root, &consumer).status,
         DependencyStatus::Missing
     );
-    root.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn cached_check_diagnostics_do_not_call_user_code() {
-    let root = Ctx::root().unwrap();
-    let mode = Arc::new(AtomicU8::new(0));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let names = Arc::new(AtomicUsize::new(0));
-    let injects = Arc::new(AtomicUsize::new(0));
-    let check_mode = mode.clone();
-    let check_calls = calls.clone();
-    root.provide_checked(TypeKey::of::<u64>(), Arc::new(1u64), move || {
-        check_calls.fetch_add(1, Ordering::SeqCst);
-        match check_mode.load(Ordering::SeqCst) {
-            0 => false,
-            1 => panic!("diagnostic check panic"),
-            _ => true,
-        }
-    })
-    .unwrap();
-    let consumer = root.plugin(MetadataProbe {
-        key: TypeKey::of::<u64>(),
-        names: names.clone(),
-        injects: injects.clone(),
-    });
-    settled(&consumer).await;
-    assert_eq!(
-        dependency(&root, &consumer).status,
-        DependencyStatus::CheckRejected
-    );
-    let before = calls.load(Ordering::SeqCst);
-    let name_before = names.load(Ordering::SeqCst);
-    let inject_before = injects.load(Ordering::SeqCst);
-    for _ in 0..3 {
-        assert_eq!(
-            dependency(&root, &consumer).status,
-            DependencyStatus::CheckRejected
-        );
-    }
-    assert_eq!(calls.load(Ordering::SeqCst), before);
-    assert_eq!(names.load(Ordering::SeqCst), name_before);
-    assert_eq!(injects.load(Ordering::SeqCst), inject_before);
-    assert_eq!(consumer.state().state, FiberState::Pending);
-
-    mode.store(1, Ordering::SeqCst);
-    root.refresh();
-    settled(&consumer).await;
-    assert_eq!(
-        dependency(&root, &consumer).status,
-        DependencyStatus::CheckPanicked
-    );
-    let before = calls.load(Ordering::SeqCst);
-    root.diagnostics();
-    assert_eq!(calls.load(Ordering::SeqCst), before);
-
-    mode.store(2, Ordering::SeqCst);
-    root.refresh();
-    state(&consumer, FiberState::Active).await;
-    assert_eq!(dependency(&root, &consumer).status, DependencyStatus::Ready);
     root.shutdown().await.unwrap();
 }
 

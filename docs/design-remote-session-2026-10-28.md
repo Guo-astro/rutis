@@ -352,7 +352,7 @@ export default definePlugin({
 gpu: connected
 gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
 gpu: disconnected (auth-rejected: upgrade refused with 403 Forbidden); retrying in 30s
-gpu: disconnected (incompatible: the far end speaks protocol 1, this side 3); stopped
+gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
 phone: connected phone-1
 phone: disconnected phone-1 (connection lost)
 phone: disconnected phone-1 (replaced by a new connection)
@@ -375,7 +375,7 @@ connections:
 | 对面不含行要的插件 | `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`（#768） |
 | 对面的服务本地已有同名 | `office:weather: weather is provided here by row weather: not registered from office` |
 | 对面缺行约定 | `the gpu runtime lacks rows.v2 and hosts: a runtime speaking the row contract is required`（去掉现在的"for Node, @arcships/rutis-runtime 0.3.0 or later"） |
-| 0.18 的运行时或节点连上 0.19 | 握手时拒绝，不重试：`the far end speaks protocol 3, this side 4: upgrade the far end (<实现> <版本>)`；0.19 的运行时遇到 0.18 的宿主时，各 SDK 同样拒绝并说明升级宿主 |
+| 0.18 与 0.19 相遇 | 握手时（WebSocket 在子协议那一步）拒绝，不重试，说明升级哪一端。0.19 的宿主起 0.18 的本机运行时（它说本机的协议 2）：`incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`；0.18 拨号 0.19 的监听方，拨号方写出 `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`；0.19 拨号 0.18 的监听方，监听方答 `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<它的包>)`（例如 `(PyPI rutis)`）。例外：0.18 的宿主起 0.19 的本机运行时不传 `--id`，运行时在握手之前只写一行 `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` 并退出 |
 | 0.18 的远程写法（`runtimes.remote`、`rutis-bridge/peer` 行及其字段） | 没有专门的提示：`runtimes.remote` 是 rutis-host 配置不认识的字段，`rutis-bridge/peer` 是不认识的插件名，按 0.18 的规则报错 |
 | 对面运行插件时抛出 | 远程插件 `<id>:<插件>` 失败，按 0.18 §4.2 打印对面的错误 |
 

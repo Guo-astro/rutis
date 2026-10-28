@@ -10,12 +10,12 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
 
-// objectHost is rawHost with its own dispatch: a compat session whose far
+// objectHost is rawHost with its own dispatch: a session whose far
 // end the test writes and reads raw frames of.
 func objectHost(t *testing.T, dispatch func(ctx context.Context, target, method string, args []any) (any, error)) (*Peer, Channel, func() map[string]any) {
 	t.Helper()
 	x, y := net.Pipe()
-	runtime, err := New(NewLines(x), Options{Dispatch: dispatch})
+	runtime, err := New(NewLines(x), Options{Endpoint: &Endpoint{Local: "go"}, Capabilities: TestCapabilities, Dispatch: dispatch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func objectHost(t *testing.T, dispatch func(ctx context.Context, target, method 
 		}
 	}()
 	go func() { _ = runtime.Start() }()
-	if err := far.Send([]byte(`{"op":"hello","version":2,"capabilities":["sync-wait"]}`)); err != nil {
+	if err := far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":["objects","sync-wait"]}`)); err != nil {
 		t.Fatal(err)
 	}
 	next := func() map[string]any {
@@ -76,13 +76,13 @@ func TestAnObjectHereIsCancelledThroughAndReleased(t *testing.T) {
 		}
 		return object, nil
 	})
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"make","args":{"type":"list","value":[]}}`))
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"make","args":{"type":"list","value":[]}}`))
 	reply := next()
 	ref := fmt.Sprint(int64(reply["value"].(map[string]any)["value"].(map[string]any)["id"].(float64)))
-	_ = far.Send([]byte(`{"op":"call","id":"rust:2","path":[],"reference":` + ref + `,"method":"wait","args":{"type":"list","value":[]}}`))
-	_ = far.Send([]byte(`{"op":"cancel","id":"rust:2"}`))
+	_ = far.Send([]byte(`{"op":"call","id":"main:2","path":[],"reference":` + ref + `,"method":"wait","args":{"type":"list","value":[]}}`))
+	_ = far.Send([]byte(`{"op":"cancel","id":"main:2"}`))
 	testwait.Within(t, "the method sees the cancel", object.cancelled)
-	if f := next(); f["id"] != "rust:2" {
+	if f := next(); f["id"] != "main:2" {
 		t.Fatalf("%v", f)
 	}
 	runtime.mu.Lock()
@@ -90,8 +90,8 @@ func TestAnObjectHereIsCancelledThroughAndReleased(t *testing.T) {
 	runtime.mu.Unlock()
 	_ = far.Send([]byte(`{"op":"release","reference":` + ref + `,"count":1}`))
 	// Frames are taken in order: once ping is answered, the release was.
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:3","path":[],"target":"x","method":"ping","args":{"type":"list","value":[]}}`))
-	if f := next(); f["id"] != "rust:3" {
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:3","path":[],"target":"x","method":"ping","args":{"type":"list","value":[]}}`))
+	if f := next(); f["id"] != "main:3" {
 		t.Fatalf("%v", f)
 	}
 	runtime.mu.Lock()
@@ -116,7 +116,7 @@ func TestAnObjectOfTheFarEndIsCancelledAndReleased(t *testing.T) {
 		return args[0], nil
 	})
 	object := `{"type":"reference","value":{"id":7,"kind":"object","home":false,"origin":[]}}`
-	_ = far.Send([]byte(`{"op":"invoke","id":"rust:1","path":[],"target":"x","method":"take","args":{"type":"list","value":[` + object + `,{"type":"undefined"},{"type":"list","value":[{"type":"data","value":1},{"type":"undefined"}]}]}}`))
+	_ = far.Send([]byte(`{"op":"invoke","id":"main:1","path":[],"target":"x","method":"take","args":{"type":"list","value":[` + object + `,{"type":"undefined"},{"type":"list","value":[{"type":"data","value":1},{"type":"undefined"}]}]}}`))
 	args := testwait.Within(t, "the arguments", got)
 	next()
 	remote := args[0].(*RemoteObject)

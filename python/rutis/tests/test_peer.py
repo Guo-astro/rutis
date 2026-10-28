@@ -8,18 +8,18 @@ import threading
 import unittest
 
 import background
-from support import HANG_GUARD, within
+from support import HANG_GUARD, LOCAL, hello, within
 
 from rutis.channel import SocketChannel
-from rutis.peer import ENDPOINT_PROTOCOL, PROTOCOL, AggregateError, Peer, RemoteError, decode_error, encode_error
+from rutis.peer import ENDPOINT_PROTOCOL, AggregateError, Peer, RemoteError, decode_error, encode_error
 
 
 class PeerTests(background.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.ours, self.theirs = socket.socketpair()
         self.theirs.settimeout(HANG_GUARD)
-        self.peer = Peer(self.ours, lambda target, method, args: None)
-        self.peer._handshake = True
+        self.peer = Peer(self.ours, lambda target, method, args: None, endpoint=LOCAL)
+        self.peer._receive(hello())
         self.lines = self.theirs.makefile("rb")
 
     async def asyncTearDown(self):
@@ -38,8 +38,8 @@ class PeerTests(background.IsolatedAsyncioTestCase):
         # Exported, but its done-callback is still only scheduled.
         reference = self.peer._encode(future, [], False)["value"]["id"]
         # Inside a synchronous call `node:1`, Rust awaits it on that chain.
-        self.peer._waiting.append("node:1")
-        self.peer._receive({"op": "await", "id": "rust:1", "path": ["node:1"], "reference": reference})
+        self.peer._waiting.append("py:1")
+        self.peer._receive({"op": "await", "id": "main:1", "path": ["py:1"], "reference": reference})
         self.peer._waiting.pop()
         reply = self.read()
         self.assertEqual(reply["op"], "return", reply)
@@ -48,8 +48,8 @@ class PeerTests(background.IsolatedAsyncioTestCase):
     async def test_a_pending_future_on_the_chain_is_a_cycle(self):
         future = asyncio.get_running_loop().create_future()
         reference = self.peer._encode(future, [], False)["value"]["id"]
-        self.peer._waiting.append("node:1")
-        self.peer._receive({"op": "await", "id": "rust:1", "path": ["node:1"], "reference": reference})
+        self.peer._waiting.append("py:1")
+        self.peer._receive({"op": "await", "id": "main:1", "path": ["py:1"], "reference": reference})
         self.peer._waiting.pop()
         reply = self.read()
         self.assertEqual(reply["op"], "throw")
@@ -93,10 +93,10 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, dispatch)
+        peer = Peer(ours, dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._handshake = True
+        peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
         return peer, theirs, lambda: json.loads(lines.readline())
@@ -112,12 +112,12 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
             return 5
 
         peer, _theirs, read = self.session(lambda target, name, args: method())
-        peer._waiting.append("node:1")
-        peer._receive(self.invoke("rust:1", ["node:1"]))
+        peer._waiting.append("py:1")
+        peer._receive(self.invoke("main:1", ["py:1"]))
         reply = read()
         self.assertEqual(reply["op"], "return", reply)
         reference = reply["value"]["value"]["id"]
-        peer._receive({"op": "await", "id": "rust:2", "path": ["node:1"], "reference": reference})
+        peer._receive({"op": "await", "id": "main:2", "path": ["py:1"], "reference": reference})
         peer._waiting.pop()
         reply = read()
         self.assertEqual(reply["op"], "return", reply)
@@ -132,8 +132,8 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
             await gate
 
         peer, _theirs, read = self.session(lambda target, name, args: method())
-        peer._waiting.append("node:1")
-        peer._receive(self.invoke("rust:1", ["node:1"]))
+        peer._waiting.append("py:1")
+        peer._receive(self.invoke("main:1", ["py:1"]))
         peer._waiting.pop()
         self.assertEqual(log, ["first step"])
         self.assertEqual(read()["op"], "return")
@@ -151,13 +151,13 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
 
         methods = iter([at_once, later])
         peer, _theirs, read = self.session(lambda target, name, args: next(methods)())
-        for call, name, finish in (("rust:1", "ValueError", None), ("rust:3", "KeyError", gate)):
+        for call, name, finish in (("main:1", "ValueError", None), ("main:3", "KeyError", gate)):
             with self.subTest(name):
                 peer._receive(self.invoke(call, []))
                 reply = await asyncio.to_thread(read)
                 self.assertEqual(reply["op"], "return", reply)
                 reference = reply["value"]["value"]["id"]
-                peer._receive({"op": "await", "id": f"rust:{int(call[5:]) + 1}", "path": [], "reference": reference})
+                peer._receive({"op": "await", "id": f"main:{int(call[5:]) + 1}", "path": [], "reference": reference})
                 if finish is not None:
                     finish.set_result(None)
                 reply = await asyncio.to_thread(read)
@@ -175,13 +175,13 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
             done.set_result(None)
 
         peer, _theirs, read = self.session(lambda target, name, args: method())
-        peer._receive(self.invoke("rust:1", []))
+        peer._receive(self.invoke("main:1", []))
         self.assertEqual((await asyncio.to_thread(read))["op"], "return")
         gate.set_result(None)
         await asyncio.wait_for(done, 10)
         notification = await asyncio.to_thread(read)
         self.assertEqual(notification["op"], "invoke")
-        self.assertIn("rust:1", notification["path"])
+        self.assertIn("main:1", notification["path"])
 
     async def test_a_cancel_that_arrives_during_the_first_step_cancels_the_method(self):
         # The first step makes a synchronous call; while it waits, the far
@@ -210,14 +210,14 @@ class AsyncMethodTests(background.IsolatedAsyncioTestCase):
             for _ in range(2):
                 frame = read()
                 if frame["op"] == "invoke":
-                    theirs.sendall((json.dumps({"op": "cancel", "id": "rust:1"}) + "\n").encode())
+                    theirs.sendall((json.dumps({"op": "cancel", "id": "main:1"}) + "\n").encode())
                     theirs.sendall((json.dumps({"op": "return", "id": frame["id"], "value": {"type": "undefined"}}) + "\n").encode())
                 else:
                     reply = frame
             return reply
 
         replying = asyncio.create_task(asyncio.to_thread(far_end))
-        peer._receive(self.invoke("rust:1", []))
+        peer._receive(self.invoke("main:1", []))
         reply = await asyncio.wait_for(replying, 10)
         self.assertEqual(reply["op"], "return", reply)
         for _ in range(10):
@@ -238,17 +238,17 @@ class MalformedFrameTests(unittest.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, lambda target, method, args: "served")
+        peer = Peer(ours, lambda target, method, args: "served", endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
         return peer, theirs
 
     async def test_text_that_is_not_json_closes_the_session_and_the_channel(self):
         cases = {
-            "malformed JSON": b'{"op":"invoke","id":"rust:1"',
+            "malformed JSON": b'{"op":"invoke","id":"main:1"',
             # json.loads takes bytes that start with a BOM: Rust and Node do not.
-            "a leading BOM": b'\xef\xbb\xbf{"op":"cancel","id":"rust:1"}',
-            "invalid UTF-8": b'{"op":"cancel","id":"rust:\xff"}',
+            "a leading BOM": b'\xef\xbb\xbf{"op":"cancel","id":"main:1"}',
+            "invalid UTF-8": b'{"op":"cancel","id":"main:\xff"}',
         }
         for name, text in cases.items():
             with self.subTest(name):
@@ -265,30 +265,30 @@ class MalformedFrameTests(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_and_dangling_frames_close_the_session(self):
         cases = {
             "not an object": 42,
-            "unknown op": {"op": "frobnicate", "id": "rust:1"},
-            "wrong field type": {"op": "invoke", "id": "rust:1", "path": [], "target": 7, "method": "m", "args": {"type": "undefined"}},
-            "missing field": {"op": "invoke", "id": "rust:1", "path": [], "target": "t", "args": {"type": "undefined"}},
-            "unknown wire value": {"op": "invoke", "id": "rust:1", "path": [], "target": "t", "method": "m", "args": {"type": "bogus"}},
-            "call of an unknown reference": {"op": "call", "id": "rust:1", "path": [], "reference": 99, "args": {"type": "undefined"}},
-            "await of an unknown reference": {"op": "await", "id": "rust:1", "path": [], "reference": 99},
+            "unknown op": {"op": "frobnicate", "id": "main:1"},
+            "wrong field type": {"op": "invoke", "id": "main:1", "path": [], "target": 7, "method": "m", "args": {"type": "undefined"}},
+            "missing field": {"op": "invoke", "id": "main:1", "path": [], "target": "t", "args": {"type": "undefined"}},
+            "unknown wire value": {"op": "invoke", "id": "main:1", "path": [], "target": "t", "method": "m", "args": {"type": "bogus"}},
+            "call of an unknown reference": {"op": "call", "id": "main:1", "path": [], "reference": 99, "args": {"type": "undefined"}},
+            "await of an unknown reference": {"op": "await", "id": "main:1", "path": [], "reference": 99},
             "release of an unknown reference": {"op": "release", "reference": 99, "count": 1},
-            "reply to an unknown call": {"op": "return", "id": "node:99", "value": {"type": "undefined"}},
+            "reply to an unknown call": {"op": "return", "id": "py:99", "value": {"type": "undefined"}},
             "cancel without an id": {"op": "cancel", "id": 7},
         }
         for name, frame in cases.items():
             with self.subTest(name):
                 peer, _theirs = self.session()
-                peer._receive({"op": "hello", "version": 2})
+                peer._receive(hello())
                 peer.receive(frame)
                 self.assertIsNotNone(peer.closed_error)
                 self.assertTrue(peer.closed.done())
 
     async def test_a_cancel_for_an_unknown_call_is_ignored(self):
         peer, theirs = self.session()
-        peer._receive({"op": "hello", "version": 2})
+        peer._receive(hello())
         lines = theirs.makefile("rb")
-        peer.receive({"op": "cancel", "id": "rust:7"})
-        peer.receive({"op": "invoke", "id": "rust:1", "path": [], "target": "t", "method": "m", "args": {"type": "data", "value": []}})
+        peer.receive({"op": "cancel", "id": "main:7"})
+        peer.receive({"op": "invoke", "id": "main:1", "path": [], "target": "t", "method": "m", "args": {"type": "data", "value": []}})
         # The call runs on the loop: the reply is read from the far end.
         reply = await asyncio.to_thread(lines.readline)
         self.assertEqual(json.loads(reply)["value"], {"type": "data", "value": "served"})
@@ -313,8 +313,7 @@ class CapabilityTests(background.IsolatedAsyncioTestCase):
         lines = theirs.makefile("rb")
         peer.start()
         self.assertEqual(json.loads(lines.readline())["op"], "hello")
-        hello = {"op": "hello", "version": 3, "endpoint": "main", "capabilities": capabilities}
-        peer._receive(hello)
+        peer._receive(hello(capabilities))
         peer._receive({"op": "invoke", "id": "main:1", "path": [], "target": "svc", "method": "get", "args": {"type": "data", "value": []}})
         # The call runs on the loop: read its reply off the loop.
         return json.loads(await within("the reply", asyncio.to_thread(lines.readline)))
@@ -349,10 +348,10 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, dispatch)
+        peer = Peer(ours, dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2})
+        peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -363,7 +362,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
 
     @staticmethod
     def invoke(sequence, method):
-        return {"op": "invoke", "id": f"rust:{sequence}", "path": [], "target": "test", "method": method, "args": {"type": "data", "value": []}}
+        return {"op": "invoke", "id": f"main:{sequence}", "path": [], "target": "test", "method": method, "args": {"type": "data", "value": []}}
 
     async def test_an_admitted_callback_survives_a_following_counted_release(self):
         # guarantee: bridge/reference-release-count; risk P4.
@@ -379,7 +378,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(a["value"]["id"], b["value"]["id"], "one export, granted twice")
         reference = a["value"]["id"]
         # The call is admitted, then both grants are released before it runs.
-        peer._receive({"op": "call", "id": "rust:2", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
+        peer._receive({"op": "call", "id": "main:2", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
         peer._receive({"op": "release", "reference": reference, "count": 2})
         self.assertEqual(calls, [])
         reply = await read()
@@ -400,7 +399,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         self.assertEqual((await read())["value"]["value"]["id"], reference)
         # The release of the first grant leaves the second one usable.
         peer._receive({"op": "release", "reference": reference, "count": 1})
-        peer._receive({"op": "call", "id": "rust:3", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
+        peer._receive({"op": "call", "id": "main:3", "path": [], "reference": reference, "args": {"type": "data", "value": []}})
         self.assertEqual((await read())["value"], {"type": "data", "value": 42})
         # Released for good: the same function is exported again under a new id.
         peer._receive({"op": "release", "reference": reference, "count": 1})
@@ -414,7 +413,7 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         reference = {"type": "reference", "value": {"id": 1, "kind": "function", "home": False, "origin": []}}
         # The reply is already in the inbox: the synchronous call finds it
         # without waiting on the loop thread.
-        peer._deliver({"op": "return", "id": "node:1", "value": {"type": "list", "value": [reference, reference]}})
+        peer._deliver({"op": "return", "id": "py:1", "value": {"type": "list", "value": [reference, reference]}})
         a, b = peer.call("test", "get", [])
         self.assertIs(a, b)
         peer.release(a)
@@ -436,10 +435,10 @@ class ReferenceCountTests(background.IsolatedAsyncioTestCase):
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
         self.assertEqual(peer._identities, {})
         # Failed encoding consumes the invocation id, but sends nothing.
-        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": 7}})
+        peer._deliver({"op": "return", "id": "py:2", "value": {"type": "data", "value": 7}})
         self.assertEqual(peer.call("test", "good", []), 7)
         sent = await read()
-        self.assertEqual((sent["id"], sent["method"]), ("node:2", "good"))
+        self.assertEqual((sent["id"], sent["method"]), ("py:2", "good"))
         self.assertIsNone(peer.closed_error)
 
 
@@ -483,9 +482,9 @@ class HandshakeOrderTests(unittest.IsolatedAsyncioTestCase):
         return raised.exception
 
     async def test_issue_239_a_session_greets_before_it_reads_the_far_greeting(self):
-        far = json.dumps({"op": "hello", "version": 3, "endpoint": "main"}).encode()
+        far = json.dumps({"op": "hello", "version": ENDPOINT_PROTOCOL - 1, "endpoint": "main"}).encode()
         channel = ScriptedChannel([far])
-        peer = Peer(channel, lambda target, method, args: None)
+        peer = Peer(channel, lambda target, method, args: None, endpoint=LOCAL)
         self.addCleanup(peer.close)
         peer.start()
         error = await self.ready_error(peer)
@@ -496,7 +495,7 @@ class HandshakeOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIsInstance(error, ConnectionError)
 
     async def test_issue_239_a_greeting_followed_by_the_channel_end_is_incompatible(self):
-        far = json.dumps({"op": "hello", "version": 2}).encode()
+        far = json.dumps({"op": "hello", "version": ENDPOINT_PROTOCOL - 1, "endpoint": "main"}).encode()
         channel = ScriptedChannel([far], ended=True)
         peer = Peer(channel, lambda target, method, args: None, endpoint={"local": "py"})
         self.addCleanup(peer.close)
@@ -522,11 +521,9 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
     wording is rutis-bridge's (`session::rpc::version_mismatch`)."""
 
     async def refusal(self, endpoint, version, implementation=None):
-        far = {"op": "hello", "version": version}
-        if endpoint is not None:
-            far.update(endpoint="main", capabilities=[])
-            if implementation is not None:
-                far.update(implementation=implementation)
+        far = {"op": "hello", "version": version, "endpoint": "main", "capabilities": []}
+        if implementation is not None:
+            far.update(implementation=implementation)
         channel = ScriptedChannel([json.dumps(far).encode()])
         peer = Peer(channel, lambda target, method, args: None, endpoint=endpoint)
         self.addCleanup(peer.close)
@@ -545,14 +542,6 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
             "upgrade this side (PyPI rutis)",
         )
 
-    async def test_a_compat_session_refuses_a_far_end_of_version_99(self):
-        # guarantee: bridge/version-refusal; risk P8.
-        self.assertEqual(
-            await self.refusal(None, 99),
-            f"incompatible session: the far end speaks protocol 99, this side {PROTOCOL}: "
-            "upgrade this side (PyPI rutis)",
-        )
-
     async def test_an_endpoint_session_refuses_an_older_far_end_naming_it(self):
         # guarantee: bridge/version-refusal; risk P8.
         self.assertEqual(
@@ -566,11 +555,13 @@ class VersionMismatchTests(unittest.IsolatedAsyncioTestCase):
             "upgrade the far end",
         )
 
-    async def test_a_compat_session_refuses_an_older_far_end(self):
-        # guarantee: bridge/version-refusal; risk P8.
+    async def test_an_endpoint_session_refuses_a_far_end_of_version_3(self):
+        # guarantee: bridge/version-refusal; risk P8: rutis 0.18 spoke 3.
+        self.assertEqual(ENDPOINT_PROTOCOL, 4)
         self.assertEqual(
-            await self.refusal(None, 1),
-            f"incompatible session: the far end speaks protocol 1, this side {PROTOCOL}: upgrade the far end",
+            await self.refusal({"local": "py"}, 3, {"name": "rutis-bridge", "version": "0.18.0"}),
+            "incompatible session: the far end speaks protocol 3, this side 4: "
+            "upgrade the far end (rutis-bridge 0.18.0)",
         )
 
 
@@ -630,10 +621,10 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, dispatch)
+        peer = Peer(ours, dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2})
+        peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -654,10 +645,10 @@ class IntegerLimitTests(background.IsolatedAsyncioTestCase):
                     peer.call("test", "big", args)
         self.assertEqual(peer._exports, {}, "the partial grant is rolled back")
         # Failed encodings consume their invocation ids, but send nothing.
-        peer._deliver({"op": "return", "id": "node:4", "value": {"type": "data", "value": 7}})
+        peer._deliver({"op": "return", "id": "py:4", "value": {"type": "data", "value": 7}})
         self.assertEqual(peer.call("test", "good", [self.SAFE, -self.SAFE, True]), 7)
         sent = await read()
-        self.assertEqual((sent["id"], sent["method"]), ("node:4", "good"))
+        self.assertEqual((sent["id"], sent["method"]), ("py:4", "good"))
         self.assertEqual(sent["args"], {"type": "data", "value": [self.SAFE, -self.SAFE, True]})
         self.assertIsNone(peer.closed_error)
 
@@ -684,7 +675,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
     that call, saying which call, which argument (or the result) and why;
     the session goes on. The wording is rutis-bridge's."""
 
-    def session(self, dispatch, max_message=None, endpoint=None):
+    def session(self, dispatch, max_message=None, endpoint=LOCAL, greet=True):
         ours, theirs = socket.socketpair()
         theirs.settimeout(10)
         self.addCleanup(ours.close)
@@ -693,8 +684,8 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         peer = Peer(channel, dispatch, endpoint=endpoint)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        if endpoint is None:
-            peer._receive({"op": "hello", "version": 2})
+        if greet:
+            peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -706,7 +697,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
     @staticmethod
     def invoke(sequence, method, target="host:svc", args=None):
         return {
-            "op": "invoke", "id": f"rust:{sequence}", "path": [], "target": target, "method": method,
+            "op": "invoke", "id": f"main:{sequence}", "path": [], "target": target, "method": method,
             "args": args if args is not None else {"type": "data", "value": []},
         }
 
@@ -718,10 +709,10 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         self.assertRegex(message, r"^svc\.take: argument 2 cannot be sent: the message would be \d+ bytes, over the limit of 1024 bytes$")
         self.assertEqual(peer._exports, {}, "the callback is left granted")
         # Nothing was sent: the next frame is the call after it.
-        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": "fine"}})
+        peer._deliver({"op": "return", "id": "py:2", "value": {"type": "data", "value": "fine"}})
         self.assertEqual(peer.call("svc", "after", []), "fine")
         sent = await read()
-        self.assertEqual((sent["id"], sent["method"]), ("node:2", "after"))
+        self.assertEqual((sent["id"], sent["method"]), ("py:2", "after"))
         self.assertIsNone(peer.closed_error)
 
     async def test_the_limit_is_16_mib(self):
@@ -753,7 +744,7 @@ class BadValueTests(background.IsolatedAsyncioTestCase):
         self.assertIsNone(peer.closed_error)
 
     async def test_an_object_argument_to_a_far_end_without_objects_fails_that_call(self):
-        peer, read = self.session(lambda target, method, args: None, endpoint={"local": "py", "expected": "main"})
+        peer, read = self.session(lambda target, method, args: None, endpoint={"local": "py", "expected": "main"}, greet=False)
         peer.start()
         self.assertEqual((await read())["op"], "hello")
         peer._receive({"op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "main", "capabilities": ["events-v2"]})

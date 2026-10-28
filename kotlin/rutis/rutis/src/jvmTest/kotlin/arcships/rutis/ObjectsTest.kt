@@ -189,10 +189,10 @@ class ObjectsTest {
     private fun raw(dispatch: suspend (String, String, List<Any?>) -> Any?) {
         val (a, b) = MemoryChannel.pair()
         far = b
-        runtime = Peer(a, Options(dispatch = dispatch))
+        runtime = Peer(a, Options(dispatch = dispatch, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         assertEquals("hello", read()["op"]?.jsonPrimitive?.content)
-        far.send("""{"op":"hello","version":2,"capabilities":["events-v2","sync-wait"]}""".toByteArray())
+        far.send("""{"op":"hello","version":4,"endpoint":"main","capabilities":["objects","events-v2","sync-wait"]}""".toByteArray())
         runtime.readyFuture.get(5, TimeUnit.SECONDS)
     }
 
@@ -207,7 +207,7 @@ class ObjectsTest {
         raw { _, _, args -> got.complete(args); "ok" }
         val reference = """{"type":"reference","value":{"id":7,"kind":"object","home":false,"origin":[]}}"""
         far.send(
-            """{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"take","args":{"type":"list","value":[$reference,$reference,{"type":"undefined"},{"type":"list","value":[{"type":"undefined"}]}]}}""".toByteArray(),
+            """{"op":"invoke","id":"main:1","path":[],"target":"t","method":"take","args":{"type":"list","value":[$reference,$reference,{"type":"undefined"},{"type":"list","value":[{"type":"undefined"}]}]}}""".toByteArray(),
         )
         val args = got.get(5, TimeUnit.SECONDS)
         read()
@@ -250,24 +250,24 @@ class ObjectsTest {
     fun callsOnObjectsAreCancelledBothWays() {
         val slow = Slow()
         raw { _, method, _ -> if (method == "slow") Native.fromNative(slow) else "ok" }
-        far.send("""{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"slow","args":{"type":"list","value":[]}}""".toByteArray())
+        far.send("""{"op":"invoke","id":"main:1","path":[],"target":"t","method":"slow","args":{"type":"list","value":[]}}""".toByteArray())
         val id = read()["value"]!!.jsonObject["value"]!!.jsonObject["id"]!!.jsonPrimitive.content
-        far.send("""{"op":"call","id":"rust:2","path":[],"reference":$id,"method":"run","args":{"type":"list","value":[]}}""".toByteArray())
+        far.send("""{"op":"call","id":"main:2","path":[],"reference":$id,"method":"run","args":{"type":"list","value":[]}}""".toByteArray())
         Thread.sleep(100)
-        far.send("""{"op":"cancel","id":"rust:2"}""".toByteArray())
+        far.send("""{"op":"cancel","id":"main:2"}""".toByteArray())
         assertEquals(true, slow.cancelled.get(5, TimeUnit.SECONDS))
         read()
         val before = runtime.references().first
         far.send("""{"op":"release","reference":$id,"count":1}""".toByteArray())
-        far.send("""{"op":"invoke","id":"rust:3","path":[],"target":"t","method":"ping","args":{"type":"list","value":[]}}""".toByteArray())
-        assertEquals("rust:3", read()["id"]?.jsonPrimitive?.content)
+        far.send("""{"op":"invoke","id":"main:3","path":[],"target":"t","method":"ping","args":{"type":"list","value":[]}}""".toByteArray())
+        assertEquals("main:3", read()["id"]?.jsonPrimitive?.content)
         assertEquals(before - 1, runtime.references().first, "the object is let go of")
         // This side gives up a call of the far end's object.
         val got = CompletableFuture<List<Any?>>()
         runtime.shutdown("next")
         raw { _, _, args -> got.complete(args); "ok" }
         val reference = """{"type":"reference","value":{"id":9,"kind":"object","home":false,"origin":[]}}"""
-        far.send("""{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"take","args":{"type":"list","value":[$reference]}}""".toByteArray())
+        far.send("""{"op":"invoke","id":"main:1","path":[],"target":"t","method":"take","args":{"type":"list","value":[$reference]}}""".toByteArray())
         val remote = got.get(5, TimeUnit.SECONDS)[0] as RemoteObject
         read()
         val job = kotlinx.coroutines.GlobalScope.launch { remote.call("slow") }
@@ -285,7 +285,7 @@ class ObjectsTest {
     @Test
     fun anObjectIsLetGoOfWhenItsHolderGoes() {
         raw { _, method, _ -> if (method == "slow") Native.fromNative(Slow()) else "ok" }
-        far.send("""{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"slow","args":{"type":"list","value":[]}}""".toByteArray())
+        far.send("""{"op":"invoke","id":"main:1","path":[],"target":"t","method":"slow","args":{"type":"list","value":[]}}""".toByteArray())
         assertEquals("return", read()["op"]?.jsonPrimitive?.content)
         assertEquals(1, runtime.references().first, "the object is exported")
         far.close("killed")

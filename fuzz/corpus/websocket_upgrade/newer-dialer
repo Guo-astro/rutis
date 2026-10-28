@@ -5,5 +5,5 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer t
-Sec-WebSocket-Protocol: rutis.4,rutis.5
+Sec-WebSocket-Protocol: rutis.5,rutis.6
 

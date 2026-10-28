@@ -59,7 +59,7 @@ export async function spawnSession({ id, peer, anchor, args: extra = [] }, exite
   const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url))
   const token = LOOPBACK ? randomBytes(32).toString('hex') : undefined
   const listener = LOOPBACK ? await loopback(token) : undefined
-  const args = [...process.execArgv, runner, listener?.address ?? 'fd:3', '--id', id, '--format', 'endpoint', ...extra]
+  const args = [...process.execArgv, runner, listener?.address ?? 'fd:3', '--id', id, ...extra]
   if (peer) args.push('--peer', peer)
   args.push(anchor)
   const child = spawn(process.execPath, args, {

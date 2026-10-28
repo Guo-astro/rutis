@@ -49,7 +49,7 @@ export class Process {
     if (message?.closed) { this.#session.close(hostGone(message.closed)); return }
     this.#session.receive(message)
   }
-  // `endpoint` ({ local, expected? }) selects the endpoint format;
+  // `endpoint` ({ local, expected? }): this side's endpoint id and the far end's;
   // `options`: the session's `inline`, `requires`, `holds`, `report`,
   // `owner` and `within`.
   static async connect(channel, dispatch, settled, endpoint, options = {}) {
@@ -65,7 +65,6 @@ export class Process {
   callAnswered(target, method, args, answered) { this.#session.invokeAnswered(target, method, args, answered) }
   callFunctionAsync(fn, args) { return this.#session.callFunctionAsync(fn, args) }
   behind(key, run) { return this.#session.behind(key, run) }
-  declares(capability) { return this.#session.declares(capability) }
   release(value) { this.#session.release(value) }
   references() { return this.#session.references() }
   drain() { return this.#session.drain() }

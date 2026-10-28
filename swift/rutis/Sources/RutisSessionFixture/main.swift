@@ -131,8 +131,7 @@ guard arguments.count >= 2 else {
 do {
     let channel = try Channels.open(arguments[1].hasPrefix("tcp:") ? arguments[1] : "unix:" + arguments[1])
     let service = Conformance()
-    var options = PeerOptions()
-    options.endpoint = Endpoint(local: "swift", expected: "main")
+    var options = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
     options.implementation = [("name", "conformance"), ("version", "0")]
     options.capabilities = runtimeCapabilities
     options.dispatch = { target, method, args in try await service.dispatch(target, method, args) }

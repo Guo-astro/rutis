@@ -241,14 +241,16 @@ final class Harness: @unchecked Sendable {
         let runtimeSession = WeakPeer()
         let started = Event()
         harness.served = Task.detached {
-            try? await Rutis.serveSession(channel: runtimeSide, project: FileManager.default.currentDirectoryPath, [plugin]) { peer in
+            try? await Rutis.serveSession(channel: runtimeSide, endpoint: Endpoint(local: "swift", expected: "main", declare: ["runtime"]),
+                                          project: FileManager.default.currentDirectoryPath, [plugin]) { peer in
                 runtimeSession.set(peer)
                 started.fire()
             }
             started.fire()
         }
         await started.wait()
-        var options = PeerOptions()
+        // As rutis starts a local runtime: the host greets as `main`.
+        var options = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
         options.host = true
         options.localPlugin = { id in runtimeSession.get()?.exportedPlugin(id) }
         options.dispatch = { [weak harness] target, method, args in

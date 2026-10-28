@@ -99,12 +99,10 @@ struct BadValueTests {
     // objects-case(swift): no-objects-declared
     func testAnObjectGoesOnlyToAFarEndThatTakesObjects() async throws {
         let (a, b) = try Channels.pair()
-        var runtimeOptions = PeerOptions()
-        runtimeOptions.endpoint = Endpoint(local: "swift", expected: "main")
+        var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
         runtimeOptions.dispatch = { _, method, args in method == "object" ? .object(Gadget()) : args.first ?? .undefined }
         let runtime = try Peer(channel: a, options: runtimeOptions)
-        var hostOptions = PeerOptions()
-        hostOptions.endpoint = Endpoint(local: "main", expected: "swift")
+        var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
         // A far end older than 0.18: it does not declare `objects`.
         hostOptions.capabilities = runtimeCapabilities.filter { $0 != "objects" }
         let host = try Peer(channel: b, options: hostOptions)
@@ -134,7 +132,7 @@ struct BadValueTests {
             #"{"type":"reference","value":{"id":\#(id),"kind":"object","home":false,"origin":[]}}"#
         }
         let (a, far) = try Channels.pair()
-        var options = PeerOptions()
+        var options = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
         let kept = SavedValue()
         options.dispatch = { _, method, args in
             if method == "keep" {
@@ -155,12 +153,12 @@ struct BadValueTests {
         let hello = try await next(far)
         XCTAssertEqual(hello["op"]?.stringValue, "hello")
         XCTAssertTrue(hello["capabilities"]?.arrayValue?.contains(.string("objects")) == true, "the runtime takes objects")
-        try send(far, #"{"op":"hello","version":2,"capabilities":["events-v2","objects"]}"#)
+        try send(far, #"{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2","objects"]}"#)
         await runtime.ready()
 
         // Sent back, the object goes home as itself; the runtime's hold on
         // it is given back.
-        try send(far, #"{"op":"invoke","id":"rust:1","path":[],"target":"t","method":"echo","args":{"type":"list","value":["# + reference(7) + "]}}")
+        try send(far, #"{"op":"invoke","id":"main:1","path":[],"target":"t","method":"echo","args":{"type":"list","value":["# + reference(7) + "]}}")
         var frames: [String: JSON] = [:]
         for _ in 0 ..< 2 {
             let frame = try await next(far)
@@ -171,7 +169,7 @@ struct BadValueTests {
         XCTAssertEqual(frames["release"]?["reference"]?.int64Value, 7)
 
         // A method call is a call frame naming the method.
-        try send(far, #"{"op":"invoke","id":"rust:2","path":[],"target":"t","method":"poke","args":{"type":"list","value":["# + reference(8) + "]}}")
+        try send(far, #"{"op":"invoke","id":"main:2","path":[],"target":"t","method":"poke","args":{"type":"list","value":["# + reference(8) + "]}}")
         let call = try await next(far)
         XCTAssertEqual(call["op"]?.stringValue, "call")
         XCTAssertEqual(call["reference"]?.int64Value, 8)
@@ -187,7 +185,7 @@ struct BadValueTests {
         XCTAssertEqual(frames["release"]?["reference"]?.int64Value, 8)
 
         // Undefined: kept as a whole argument, null inside a value.
-        try send(far, #"{"op":"invoke","id":"rust:3","path":[],"target":"t","method":"keep","args":{"type":"list","value":[{"type":"undefined"},{"type":"list","value":[{"type":"undefined"}]}]}}"#)
+        try send(far, #"{"op":"invoke","id":"main:3","path":[],"target":"t","method":"keep","args":{"type":"list","value":[{"type":"undefined"},{"type":"list","value":[{"type":"undefined"}]}]}}"#)
         _ = try await next(far)
         guard case let .list(args)? = kept.value, args.count == 2 else { return XCTFail("\(String(describing: kept.value))") }
         guard case .undefined = args[0] else { return XCTFail("a whole argument keeps undefined: \(args[0])") }

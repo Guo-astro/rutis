@@ -2,9 +2,9 @@
 //! a memory channel pair, with the far end scripted as a Node runtime.
 use std::sync::Arc;
 
-use rutis_bridge::channel::Channel;
-use rutis_bridge::session::{Connection, Dispatch, Reply, Value};
-use rutis_bridge::session::{Error, PROTOCOL};
+use rutis_bridge::channel::{Channel, PeerId};
+use rutis_bridge::session::{Connection, Dispatch, Endpoint, Reply, Value};
+use rutis_bridge::session::{Error, ENDPOINT_PROTOCOL};
 use serde_json::{json, Value as Json};
 
 struct Echo;
@@ -14,6 +14,11 @@ impl Dispatch for Echo {
             json!({ "target": target, "method": method, "args": args.json()? }),
         ))
     }
+}
+
+/// This side, `main`.
+fn this_side() -> Endpoint {
+    Endpoint::rust(PeerId::new("main").unwrap())
 }
 
 fn read(channel: &mut Channel) -> Json {
@@ -29,20 +34,18 @@ fn send(channel: &mut Channel, frame: Json) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_runs_on_a_memory_channel() {
     let (local, mut remote) = rutis_bridge::memory::pair();
-    let session = Connection::open(local, Arc::new(Echo)).unwrap();
+    let session = Connection::open(local, Arc::new(Echo), this_side()).unwrap();
     let far = std::thread::spawn(move || {
-        // A 0.13 far end declares events-v2 (events protocol §2.1).
+        let hello = read(&mut remote);
         assert_eq!(
-            read(&mut remote),
-            json!({ "op": "hello", "version": PROTOCOL, "capabilities": [
-                "sync-wait", "events-v2", "plugins", "value-instant", "value-datetime", "value-date", "value-time",
-                "value-bytes", "value-map", "value-set", "value-bigint", "value-decimal",
-                "value-uuid",
-            ] })
+            (&hello["op"], &hello["version"], &hello["endpoint"]),
+            (&json!("hello"), &json!(ENDPOINT_PROTOCOL), &json!("main"))
         );
+        // A far end declares events-v2 (events protocol §2.1).
         send(
             &mut remote,
-            json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }),
+            json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node",
+                    "capabilities": ["events-v2"] }),
         );
         // A call from here reaches the far end.
         let call = read(&mut remote);
@@ -84,11 +87,12 @@ async fn a_session_runs_on_a_memory_channel() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_far_end_closing_ends_the_session() {
     let (local, mut remote) = rutis_bridge::memory::pair();
-    let session = Connection::open(local, Arc::new(Echo)).unwrap();
+    let session = Connection::open(local, Arc::new(Echo), this_side()).unwrap();
     read(&mut remote);
     send(
         &mut remote,
-        json!({ "op": "hello", "version": PROTOCOL, "capabilities": ["events-v2"] }),
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node",
+                "capabilities": ["events-v2"] }),
     );
     session.ready().await.unwrap();
     remote.closer.close(rutis_bridge::Close::Done);

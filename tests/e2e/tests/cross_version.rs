@@ -1,27 +1,29 @@
 //! Cross-version meetings (#209, quality standard Q9.3.2.4, Q6.2.4): the
 //! published releases ([`rutis_e2e::previous`]) meet the current code.
 //! Which scenarios run depends on the release met: one older than the
-//! event protocol of 0.13 (#464, `docs/design-events-protocol-2026-10-18.md`
-//! §2; [`previous::EVENTS_V2`]) is refused right after the handshake,
-//! before anything loads, with a message that says which side to upgrade,
-//! and is not retried; one from 0.13 on meets the current code: services
-//! and events work across it. Each scenario is one or the other and says
-//! so for a release it does not run for. None hangs (every wait has the
-//! hang guard). Risks J2, E13, P8 of `docs/quality-status.md`.
+//! session protocol of 0.19 (endpoint protocol 4,
+//! `docs/design-remote-session-2026-10-28.md` §十一 5;
+//! [`previous::PROTOCOL_4`]) is refused at the handshake, before anything
+//! loads, with a message that says which end to upgrade (the current
+//! runtimes under an old host stop before it), and is not retried; one from 0.19 on meets the current code: services and events
+//! work across it. Each scenario is one or the other and says so for a
+//! release it does not run for. None hangs (every wait has the hang
+//! guard). Risks J2, E13, P8 of `docs/quality-status.md`.
 //!
-//! Refused, a release older than 0.13:
+//! Refused, a release older than 0.19:
 //!
 //! | Old side | Current side | What is checked |
 //! | --- | --- | --- |
-//! | `@arcships/rutis-runtime` | rutis-host | refused naming the runtime; nothing loads |
+//! | `@arcships/rutis-runtime` | rutis-host | the host refuses its protocol, naming the runtime and the end to upgrade; nothing loads |
 //! | `@arcships/rutis-bun` | rutis-host | the same |
 //! | PyPI `rutis` (local runtime) | rutis-host | the same |
-//! | Go SDK (a binary built against the tagged module) | rutis-host | refused naming the binary's runtime, not started again; its row fails with the refusal |
-//! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | refused naming it and its version; the link stops and is not dialed again |
-//! | rutis-host | the current runtimes (Node, Python) | each runtime refuses the host on stderr and stops |
-//! | rutis-host (a node) | rutis-host (a node), both dialing and listening | the link is refused naming the old node and its version, not retried |
+//! | Go SDK (a binary built against the tagged module) | rutis-host | refused the same way, its runtime down and not started again; its row fails with the refusal |
+//! | PyPI `rutis` (`listen:`, remote runtime) | rutis-host dialing it | it refuses the upgrade (`rutis.4`), saying to upgrade it; the link stops and is not dialed again |
+//! | rutis-host | the current runtimes (Node, Bun, Python) | each stops before the handshake, saying it needs `--id` (which the old host does not pass); the old host stops |
+//! | rutis-host (a node) | rutis-host (a node), both dialing and listening | the listener refuses the dialer's upgrade, saying which end to upgrade; the link stops, not retried |
 //!
-//! Met, a release from 0.13 on:
+//! Met, a release from 0.19 on (none is published yet: they run from the
+//! 0.19.1 release gate on, and on main once 0.19.0 is published):
 //!
 //! | Old side | Current side | What is checked |
 //! | --- | --- | --- |
@@ -35,8 +37,8 @@
 //! | `@arcships/rutis-runtime`, or rutis-host | the current host, or the current Node runtime | a service a plugin of the current SDK provides without declaring it is announced and reaches rows of either runtime; the current `check` warns |
 //! | `@arcships/rutis-runtime`, PyPI `rutis` | a Rust application (`fixture-host`) | each row's calls to a Rust service name that row (`caller_row`, its lease in a scope of its own, U+0001 in the label) |
 //! | `@arcships/rutis` (the SDK a plugin was built against) | the current host, Node and Bun runtimes | its plugins run and are called (#672: a JavaScript plugin keeps the SDK of its caret range, a copy of its own) |
-//! | `@arcships/rutis-runtime` | the current host, Python runtime | objects with methods (#687): its object reaches the current runtime and is called; the current runtime's object sent to it fails just that call (`bad-value`, upgrade it) before 0.18 |
-//! | rutis-host | the current runtimes (Node, Python) | objects with methods between them: refused by a 0.17.2 host in its own words, just that call; forwarded by an older one |
+//! | `@arcships/rutis-runtime` | the current host, Python runtime | objects with methods (#687) cross both ways and are called |
+//! | rutis-host | the current runtimes (Node, Python) | objects with methods between them are forwarded and called |
 //!
 //! "Events both ways": a listener on the old side answers a `serial` the
 //! current side emits, and a listener on the current side answers one the
@@ -197,33 +199,9 @@ plugin = define_plugin(apply, inject=["TARGET"], provides={"sender": Sender})
 "#;
 
 /// A Go binary with the plugin `gogreeter`, for any version of the Go SDK
-/// (no events: the refused releases have none).
-const GREETER_GO: &str = r#"package main
-
-import "github.com/arcships/rutis/go/rutis"
-
-type Greeter struct{}
-
-func (*Greeter) Hello(name string) string { return "Hello, " + name + " (go)" }
-
-func (*Greeter) Back(value any) any { return value }
-
-var plugin = rutis.Define(rutis.Plugin[struct{}]{
-	Name:     "gogreeter",
-	Inject:   []string{},
-	Provides: rutis.Provides{"gogreeter": rutis.MethodsOf[*Greeter](rutis.Sync("Hello", "Back"))},
-	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
-		ctx.Provide("gogreeter", &Greeter{})
-		return nil
-	},
-})
-
-func main() { rutis.Serve(plugin) }
-"#;
-
-/// [`GREETER_GO`] with events, for a Go SDK from 0.13 on: it answers
+/// met: `Hello`, `Back` returning what it got. Events: it answers
 /// `t/ping/gogreeter`, and `Ring` emits `t/ring/gogreeter` (`Serial`).
-const GREETER_GO_EVENTS: &str = r#"package main
+const GREETER_GO: &str = r#"package main
 
 import (
 	"context"
@@ -436,9 +414,9 @@ fn echo_py(service: &str) -> String {
 /// Which releases a scenario is for.
 #[derive(Clone, Copy, PartialEq)]
 enum Meeting {
-    /// Those older than 0.13: refused at the handshake.
+    /// Those older than 0.19: refused at the handshake.
     Refused,
-    /// Those from 0.13 on: they work with the current code.
+    /// Those from 0.19 on: they work with the current code.
     Works,
 }
 
@@ -446,14 +424,14 @@ enum Meeting {
 /// (outside CI).
 fn each(name: &str, meeting: Meeting, scenario: impl Fn(&Release, Scenario)) {
     for release in previous::releases() {
-        let works = release.declares_events_v2();
+        let works = release.speaks_protocol_4();
         if works != (meeting == Meeting::Works) {
             eprintln!(
                 "cross-version {name}: release {} {}, not this scenario's",
                 release.version,
                 match works {
-                    true => "declares events-v2 and meets the current code",
-                    false => "is older than the event protocol and is refused",
+                    true => "speaks protocol 4 and meets the current code",
+                    false => "is older than protocol 4 and is refused",
                 }
             );
             continue;
@@ -518,28 +496,27 @@ fn go_build(s: &Scenario, release: Option<&Release>, source: &str, src: &str, ou
     }
 }
 
-// ── Releases older than 0.13: refused (#464, docs/design-events-protocol-2026-10-18.md §2) ──
+// ── Releases older than 0.19: refused (protocol 4, docs/design-remote-session-2026-10-28.md §十一 5) ──
 //
-// They lack the capability `events-v2`, so each meeting with one is refused
-// right after the handshake, before anything loads, saying which side to
-// upgrade; nothing is retried.
+// They speak an older session protocol, so each meeting with one is refused
+// at the handshake, before anything loads, saying which end to upgrade;
+// nothing is retried.
 
-/// §2.2: what a 0.13 Rust side says of a far end that does not declare
-/// `events-v2`; `who` is how the far end is named.
-fn refused_far_end(who: &str) -> String {
-    format!(
-        "incompatible session: the far end ({who}) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
-    )
-}
+/// What the current host says of a runtime of an older release it starts:
+/// that runtime greets in its local format, protocol 2 (it ignores `--id`),
+/// and is the end to upgrade (`version_mismatch` of rutis-bridge).
+const OLDER_RUNTIME: &str =
+    "incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end";
 
-/// The same, where the far end named itself (endpoint format): the name
-/// and version it reported, which must be `release`'s.
-fn refused_named(line: &str, release: &Release) -> bool {
-    let (prefix, rest) = ("incompatible session: the far end (", ") does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later");
-    line.split_once(prefix)
-        .and_then(|(_, after)| after.split_once(rest))
-        .is_some_and(|(who, _)| who.ends_with(&release.version))
-}
+/// What an older listener answers the current side dialing it, offering
+/// protocol 4 (the WebSocket subprotocol `rutis.4`): it is the end to
+/// upgrade.
+const OLDER_LISTENER: &str = "the dialer offered rutis.4: upgrade this endpoint";
+
+/// What the current side listening answers an older dialer: it offered
+/// an older protocol, and is the end to upgrade.
+const OLDER_DIALER: &str =
+    "this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer";
 
 /// A runtime the host starts with did not start: the host says why and
 /// ends with a failure status; nothing ran.
@@ -552,14 +529,14 @@ fn ended_failing(mut host: Host) {
 }
 
 /// A previous `@arcships/rutis-runtime` under the current host: refused at
-/// the handshake (compat format: the far end does not name itself), the
-/// row never runs, the host says which runtime did not start and fails.
+/// the handshake, the row never runs, the host says which runtime did not
+/// start and fails.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_node_runtime_is_refused_by_the_event_protocol() {
-    each("events-prev-node", Meeting::Refused, |release, s| {
+fn a_previous_node_runtime_is_refused_at_the_handshake() {
+    each("refused-node", Meeting::Refused, |release, s| {
         link_sdk(&s, "", &release.node_sdk());
         s.write("greeter.ts", GREETER_TS);
         s.write_json(
@@ -570,7 +547,7 @@ fn a_previous_node_runtime_is_refused_by_the_event_protocol() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(&refused_far_end("a runtime older than rutis 0.13"));
+        let line = host.expect(OLDER_RUNTIME);
         assert!(
             line.contains("the node runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -584,11 +561,11 @@ fn a_previous_node_runtime_is_refused_by_the_event_protocol() {
 /// A previous `@arcships/rutis-bun` under the current host: refused the
 /// same way.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_bun_runtime_is_refused_by_the_event_protocol() {
-    each("events-prev-bun", Meeting::Refused, |release, s| {
+fn a_previous_bun_runtime_is_refused_at_the_handshake() {
+    each("refused-bun", Meeting::Refused, |release, s| {
         link_sdk(&s, "", &release.node_sdk());
         s.write("greeter.ts", GREETER_TS);
         s.write_json(
@@ -599,7 +576,7 @@ fn a_previous_bun_runtime_is_refused_by_the_event_protocol() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let line = host.expect(&refused_far_end("a runtime older than rutis 0.13"));
+        let line = host.expect(OLDER_RUNTIME);
         assert!(
             line.contains("the bun runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -612,11 +589,11 @@ fn a_previous_bun_runtime_is_refused_by_the_event_protocol() {
 
 /// A previous PyPI `rutis` as a local runtime: refused the same way.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_python_runtime_is_refused_by_the_event_protocol() {
-    each("events-prev-python", Meeting::Refused, |release, s| {
+fn a_previous_python_runtime_is_refused_at_the_handshake() {
+    each("refused-python", Meeting::Refused, |release, s| {
         s.write("echo.py", echo_py("echo"));
         s.write_json(
             "rutis.json",
@@ -624,7 +601,7 @@ fn a_previous_python_runtime_is_refused_by_the_event_protocol() {
         );
         let old = release.python_path().display().to_string();
         let mut host = s.host_with(["run", "rutis.json"], &[("RUTIS_PYTHON_PATH", &old)]);
-        let line = host.expect(&refused_far_end("a runtime older than rutis 0.13"));
+        let line = host.expect(OLDER_RUNTIME);
         assert!(
             line.contains("the py runtime did not start"),
             "the refusal names the runtime: {line}"
@@ -641,11 +618,11 @@ fn a_previous_python_runtime_is_refused_by_the_event_protocol() {
 /// again; its row fails with the same message (it does not wait for the
 /// runtime), and the host runs on.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_go_sdk_binary_is_refused_by_the_event_protocol() {
-    each("events-prev-go", Meeting::Refused, |release, s| {
+fn a_previous_go_sdk_binary_is_refused_at_the_handshake() {
+    each("refused-go", Meeting::Refused, |release, s| {
         go_build(&s, Some(release), GREETER_GO, "go-src", "plugins/go");
         s.write_json(
             "rutis.json",
@@ -655,35 +632,39 @@ fn a_previous_go_sdk_binary_is_refused_by_the_event_protocol() {
             }),
         );
         let mut host = s.host(["run", "rutis.json"]);
-        let refusal = refused_far_end("a runtime older than rutis 0.13");
-        let line = host.expect(&refusal);
+        let line = host.expect(OLDER_RUNTIME);
         assert!(
             line.starts_with("runtime go-gogreeter: down ("),
             "the refusal names the binary's runtime: {line}"
         );
         let row = host.expect("gogreeter: unresolved: ");
         assert!(
-            row.contains(&refusal),
+            row.contains(OLDER_RUNTIME),
             "the row fails with the refusal: {row}"
         );
         // Not started again within a restart's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
-        assert_eq!(host.count(&format!("down ({refusal}")), 1, "started again");
+        assert_eq!(
+            host.count(&format!("down ({OLDER_RUNTIME}")),
+            1,
+            "started again"
+        );
         assert_eq!(host.count("gogreeter: running"), 0);
         stop(host);
         s.finish();
     });
 }
 
-/// A previous Python remote runtime the current host dials (endpoint
-/// format: it names itself): refused naming it and its version; the link
-/// stops, `link stopped: incompatible (…)`, and is not dialed again.
+/// A previous Python remote runtime the current host dials: it refuses
+/// the WebSocket upgrade, which offers protocol 4 (`rutis.4`), saying to
+/// upgrade it; the link stops, `link stopped: incompatible (…)`, and is
+/// not dialed again.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
-    each("events-prev-remote", Meeting::Refused, |release, s| {
+fn a_previous_remote_runtime_is_refused_at_the_handshake() {
+    each("refused-remote", Meeting::Refused, |release, s| {
         let token = s.secret();
         s.write("gpu/echo.py", echo_py("echo"));
         let old = release.python_path().display().to_string();
@@ -720,7 +701,7 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
         let stopped = host.wait_for("the link stopped as incompatible", |line| {
             line.starts_with("gpu: link stopped: incompatible (")
         });
-        assert!(refused_named(&stopped, release), "{stopped}");
+        assert!(stopped.contains(OLDER_LISTENER), "{stopped}");
         // Not dialed again: no second refusal within a backoff's first steps.
         std::thread::sleep(std::time::Duration::from_secs(3));
         assert_eq!(host.count("gpu: link stopped: incompatible ("), 1);
@@ -733,11 +714,12 @@ fn a_previous_remote_runtime_is_refused_by_the_event_protocol() {
 }
 
 /// The current runtimes under a previous host: each (Node, Bun, Python)
-/// refuses the host on stderr with the §2.2 line and exits with status 1
-/// (the old host then stops: a runtime of it did not start). One runtime
-/// per host, so that each one's refusal is seen.
+/// stops before the handshake, as the old host does not tell it the
+/// endpoint to greet as (`--id`), and says so; the old host then stops (a
+/// runtime of it did not start), nothing ran. One runtime per host, so
+/// that each one's refusal is seen.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
 fn the_current_runtimes_refuse_a_previous_host() {
@@ -749,7 +731,7 @@ fn the_current_runtimes_refuse_a_previous_host() {
     ];
     for (runtime, config, row, name) in runtimes {
         each(
-            &format!("events-prev-host-{runtime}"),
+            &format!("refused-host-{runtime}"),
             Meeting::Refused,
             |release, s| {
                 s.link_node_sdk();
@@ -763,9 +745,13 @@ fn the_current_runtimes_refuse_a_previous_host() {
                     }),
                 );
                 let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-                host.expect("rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping");
-                host.wait_exit();
+                host.expect(
+                    "a local channel needs --id <endpoint>: fd:3; \
+                     a host older than rutis 0.19 started this runtime: upgrade the host",
+                );
+                host.expect(&format!("rutis-host: the {runtime} runtime did not start"));
                 assert_eq!(host.count(&format!("{row}: running")), 0);
+                ended_failing(host);
                 s.finish();
             },
         );
@@ -823,25 +809,24 @@ fn start_nodes(
 }
 
 /// A previous rutis-host node and the current one, either dialing: the
-/// current node refuses the link naming the old node and its version. When
-/// the current node dials, its link stops and is not dialed again; when it
-/// listens, it refuses the old node (`link refused`) however often that
-/// one dials. Never connected.
+/// listener refuses the dialer's WebSocket upgrade, as they offer
+/// different session protocols, saying which end to upgrade; the dialing
+/// node's link stops on it and is not dialed again. Never connected.
 ///
-/// guarantee: events/old-peer-refused
+/// guarantee: bridge/cross-version-meetings, events/old-peer-refused
 #[test]
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
-fn a_previous_node_is_refused_by_the_event_protocol() {
+fn a_previous_node_is_refused_at_the_handshake() {
     for old_listens in [true, false] {
         each(
-            &format!("events-prev-node-link-{old_listens}"),
+            &format!("refused-node-link-{old_listens}"),
             Meeting::Refused,
             |release, s| {
                 let token = s.secret();
                 let old = json!({ "id": "old", "rows": [link("current", old_listens, &[], &[])] });
                 let current =
                     json!({ "id": "current", "rows": [link("old", !old_listens, &[], &[])] });
-                let (old, mut current) = start_nodes(
+                let (mut old, mut current) = start_nodes(
                     &s,
                     old_listens,
                     old,
@@ -862,19 +847,27 @@ fn a_previous_node_is_refused_by_the_event_protocol() {
                         )
                     },
                 );
-                // Listening, the link waits for the next dial; dialing, it stops.
-                let said = match old_listens {
-                    true => "old: link stopped: incompatible (",
-                    false => "old: link refused: incompatible (",
+                // The dialer's link stops, with the listener's words: the
+                // old listener says to upgrade it; the current one, the
+                // old dialer.
+                let (dialer, said, refusal) = match old_listens {
+                    true => (
+                        &mut current,
+                        "old: link stopped: incompatible (",
+                        OLDER_LISTENER,
+                    ),
+                    false => (
+                        &mut old,
+                        "current: link stopped: incompatible (",
+                        OLDER_DIALER,
+                    ),
                 };
-                let refused = current.wait_for("the link refused as incompatible", |line| {
+                let stopped = dialer.wait_for("the link stopped as incompatible", |line| {
                     line.starts_with(said)
                 });
-                assert!(refused_named(&refused, release), "{refused}");
+                assert!(stopped.contains(refusal), "{stopped}");
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                if old_listens {
-                    assert_eq!(current.count(said), 1, "not dialed again");
-                }
+                assert_eq!(dialer.count(said), 1, "not dialed again");
                 assert_eq!(current.count("old: link connected"), 0);
                 stop(current);
                 stop(old);
@@ -884,7 +877,7 @@ fn a_previous_node_is_refused_by_the_event_protocol() {
     }
 }
 
-// ── Releases from 0.13 on: they meet the current code ──
+// ── Releases from 0.19 on: they meet the current code ──
 
 /// The calls of `sender` (`probe` calls it), whose target is on a side of
 /// `release`: a string, a `Date` and a bigint make the round trip (the
@@ -1199,7 +1192,7 @@ fn a_previous_python_remote_runtime_dialed_by_the_current_host() {
 #[ignore = "downloads the published releases: the full CI run runs it (ci.yml e2e)"]
 fn a_previous_go_sdk_binary_under_the_current_host() {
     each("prev-go", Meeting::Works, |release, s| {
-        go_build(&s, Some(release), GREETER_GO_EVENTS, "go-src", "plugins/go");
+        go_build(&s, Some(release), GREETER_GO, "go-src", "plugins/go");
         s.write("sender.py", SENDER_PY.replace("TARGET", "gogreeter"));
         let probe = s.probe("probe", Lang::Python, &["gogreeter", "sender"]);
         s.write_json(
@@ -1242,7 +1235,7 @@ fn the_current_runtimes_under_a_previous_host() {
         s.link_node_sdk();
         s.write("greeter.ts", GREETER_TS);
         s.write("sender.py", SENDER_PY.replace("TARGET", "greeter"));
-        go_build(&s, None, GREETER_GO_EVENTS, "go-src", "plugins/go");
+        go_build(&s, None, GREETER_GO, "go-src", "plugins/go");
         s.write("relay.ts", RELAY_TS);
         s.write("thrower.py", THROWER_PY);
         let probe = s.probe(
@@ -1624,10 +1617,8 @@ fn previous_runtimes_lease_per_row_and_name_the_calling_row() {
 
 /// The previous `@arcships/rutis-runtime` under the current host, with the
 /// current Python runtime: an object of the old runtime reaches the
-/// current one, whose calls on it work; an object of the current one sent
-/// to the old runtime (which does not declare `objects` before 0.18) fails
-/// just that call with `bad-value`, saying to upgrade it, and the session
-/// goes on.
+/// current one, whose calls on it work, and the current one's reaches the
+/// old runtime the same way.
 ///
 /// guarantee: bridge/object-refs, bridge/cross-version-meetings
 #[test]
@@ -1656,16 +1647,11 @@ fn objects_between_a_previous_node_runtime_and_the_current_one() {
             Ok(json!("count 2")),
             "the old runtime's object reaches the current one"
         );
-        let poked = probe.call(&mut host, "tstaker", "poke", json!([]));
-        if release.older_than("0.18.0") {
-            let failed = poked.expect_err("the old runtime takes no objects");
-            assert!(
-                failed.contains("an object from py cannot cross to node: node does not take objects (older than rutis 0.18); upgrade it"),
-                "{failed}"
-            );
-        } else {
-            assert_eq!(poked, Ok(json!("count 2")));
-        }
+        assert_eq!(
+            probe.call(&mut host, "tstaker", "poke", json!([])),
+            Ok(json!("count 2")),
+            "the current runtime's object reaches the old one"
+        );
         assert_eq!(
             probe.call(&mut host, "pyobjects", "hello", json!([])),
             Ok(json!("hello"))
@@ -1675,11 +1661,8 @@ fn objects_between_a_previous_node_runtime_and_the_current_one() {
     });
 }
 
-/// The previous rutis-host with the current Node and Python runtimes: a
-/// 0.17.2 host does not know they take objects, so it refuses an object
-/// between them with its own words, failing just that call; the session
-/// goes on. A host before 0.17.2 refuses nothing: it forwards the object
-/// and the calls on it work.
+/// The previous rutis-host with the current Node and Python runtimes: it
+/// forwards objects between them both ways, and the calls on them work.
 ///
 /// guarantee: bridge/object-refs, bridge/cross-version-meetings
 #[test]
@@ -1703,17 +1686,11 @@ fn objects_between_the_current_runtimes_under_a_previous_host() {
         let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
         host.expect("tstaker: running");
         probe.started(&mut host);
-        for (service, far) in [("pyobjects", "py"), ("tstaker", "node")] {
-            let poked = probe.call(&mut host, service, "poke", json!([]));
-            if !release.older_than("0.17.2") && release.older_than("0.18.0") {
-                let failed = poked.expect_err("a 0.17.2 host forwards no objects");
-                assert!(
-                    failed.contains(&format!("an object with methods cannot cross to {far}")),
-                    "{failed}"
-                );
-            } else {
-                assert_eq!(poked, Ok(json!("count 2")));
-            }
+        for service in ["pyobjects", "tstaker"] {
+            assert_eq!(
+                probe.call(&mut host, service, "poke", json!([])),
+                Ok(json!("count 2"))
+            );
         }
         assert_eq!(
             probe.call(&mut host, "pyobjects", "hello", json!([])),

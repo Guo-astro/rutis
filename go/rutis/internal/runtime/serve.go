@@ -26,7 +26,7 @@ const channelToken = "RUTIS_CHANNEL_TOKEN"
 // (rutis-host passes its own shutdown deadline on), default 10 s.
 func endedBudget() time.Duration { return events.ShutdownTimeout() }
 
-const usage = "usage: <binary> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
+const usage = "usage: <binary> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 var project string
 
@@ -80,13 +80,23 @@ func ServeArgs(args []string, defs ...*Definition) error {
 	return serveChannel(peer.NewLines(conn), endpoint, defs)
 }
 
-// ServeConn serves the plugins `defs` on `conn` (the compat protocol, one
-// message per line) until the session ends, then unloads them.
-func ServeConn(conn net.Conn, defs ...*Definition) error {
+// ServeConn serves the plugins `defs` on `conn` (one message per line),
+// greeting as the endpoint `id`, until the session ends, then unloads them.
+func ServeConn(conn net.Conn, id string, defs ...*Definition) error {
 	if err := checkDefinitions(defs); err != nil {
 		return err
 	}
-	return serveChannel(peer.NewLines(conn), nil, defs)
+	if !peer.ValidID(id) {
+		return fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", id)
+	}
+	return serveChannel(peer.NewLines(conn), runnerEndpoint(id, ""), defs)
+}
+
+// runnerEndpoint is who a runner is in the handshake: `id`, expecting the
+// controller `expected` (if given). A runner is a runtime: the controller
+// manages its rows.
+func runnerEndpoint(id, expected string) *peer.Endpoint {
+	return &peer.Endpoint{Local: id, Expected: expected, Declare: []string{"runtime"}}
 }
 
 func checkDefinitions(defs []*Definition) error {
@@ -149,17 +159,16 @@ func parseArgs(args []string) (channel string, endpoint *peer.Endpoint, dir stri
 		return "", nil, "", errors.New(usage)
 	}
 	network := strings.HasPrefix(channel, "listen:") || strings.HasPrefix(channel, "dial:")
-	if network && flags["id"] == "" {
-		return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
-	}
-	if flags["id"] != "" {
-		if !peer.ValidID(flags["id"]) {
-			return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])
+	if flags["id"] == "" {
+		if network {
+			return "", nil, "", fmt.Errorf("a network channel needs --id <endpoint>: %s", channel)
 		}
-		// With --id, every channel speaks the endpoint format, greeting as
-		// that id. A runner is a runtime: the controller manages its rows.
-		endpoint = &peer.Endpoint{Local: flags["id"], Expected: flags["peer"], Declare: []string{"runtime"}}
+		return "", nil, "", fmt.Errorf("a local channel needs --id <endpoint>: %s; a host older than rutis 0.19 started this runtime: upgrade the host", channel)
 	}
+	if !peer.ValidID(flags["id"]) {
+		return "", nil, "", fmt.Errorf("invalid endpoint id %s: use lower-case letters, digits and -", flags["id"])
+	}
+	endpoint = runnerEndpoint(flags["id"], flags["peer"])
 	if strings.HasPrefix(channel, "dial:") {
 		// What retrying cannot fix fails here, before any dial.
 		if _, err := dialHost(strings.TrimPrefix(channel, "dial:")); err != nil {

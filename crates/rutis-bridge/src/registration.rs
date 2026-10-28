@@ -73,7 +73,7 @@ pub struct Registration {
     /// Verifies what the far end presents; its local id must be the
     /// listener's.
     pub identity: Arc<dyn Identity>,
-    /// The session protocol the far end must speak (`rutis.2`).
+    /// The session protocol the far end must speak (`rutis.4`).
     pub protocol: String,
     pub deliver: Deliver,
 }
@@ -279,7 +279,7 @@ mod tests {
                 listener: "public".into(),
                 peer: id(peer),
                 identity: Arc::new(identity),
-                protocol: "rutis.2".into(),
+                protocol: crate::link::protocol(),
                 deliver: Box::new(move |channel| {
                     let _ = sender.lock().unwrap().send(channel);
                 }),

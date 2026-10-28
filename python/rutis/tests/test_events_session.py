@@ -16,12 +16,12 @@ import types
 import unittest
 
 import background
-from support import HANG_GUARD, eventually, within
+from support import HANG_GUARD, LOCAL, eventually, hello, within
 
 from rutis import BindingError
 from rutis.advanced import AggregateError, AsyncListener
 from rutis.dialing import INCOMPATIBLE, session_failure
-from rutis.peer import CAPABILITIES, COMPAT_CAPABILITIES, EVENTS_REFUSAL, Incompatible, Peer
+from rutis.peer import CAPABILITIES, EVENTS_REFUSAL, Incompatible, Peer
 from rutis.runner import Runtime
 
 
@@ -53,14 +53,14 @@ def data(item):
 
 
 class Host:
-    """The host's end of a compat session with a real runtime."""
+    """The host's end of a session with a real runtime."""
 
-    def __init__(self, capabilities=("events-v2", "sync-wait")):
+    def __init__(self, capabilities=("objects", "events-v2", "sync-wait")):
         ours, self.sock = socket.socketpair()
         self.sock.settimeout(HANG_GUARD)
         self.capabilities = list(capabilities)
         self.runtime = Runtime()
-        self.peer = Peer(ours, self.runtime.dispatch, require={"events-v2": EVENTS_REFUSAL})
+        self.peer = Peer(ours, self.runtime.dispatch, endpoint=LOCAL, require={"events-v2": EVENTS_REFUSAL})
         self.runtime.peer = self.peer
         self.frames: queue.Queue = queue.Queue()
         self.held: list = []
@@ -78,9 +78,9 @@ class Host:
 
     def start(self) -> dict:
         self.peer.start()
-        hello = self.take(lambda frame: frame["op"] == "hello")
-        self.send({"op": "hello", "version": 2, "capabilities": self.capabilities})
-        return hello
+        greeting = self.take(lambda frame: frame["op"] == "hello")
+        self.send(hello(self.capabilities))
+        return greeting
 
     def close(self):
         self.peer.close()
@@ -124,13 +124,13 @@ class Host:
 
     def invoke(self, method, args) -> str:
         self.calls += 1
-        call = f"rust:{self.calls}"
+        call = f"main:{self.calls}"
         self.send({"op": "invoke", "id": call, "path": [], "target": "", "method": method, "args": args})
         return call
 
     def call(self, reference, args) -> str:
         self.calls += 1
-        call = f"rust:{self.calls}"
+        call = f"main:{self.calls}"
         self.send({"op": "call", "id": call, "path": [], "reference": reference, "args": data(args)})
         return call
 
@@ -143,7 +143,7 @@ class Host:
         wire = frame["value"]
         if wire.get("type") == "reference" and wire["value"]["kind"] == "future":
             self.calls += 1
-            waited = f"rust:{self.calls}"
+            waited = f"main:{self.calls}"
             self.send({"op": "await", "id": waited, "path": [], "reference": wire["value"]["id"]})
             return await self.outcome(waited)
         return "return", value(wire)
@@ -196,9 +196,8 @@ class Session(background.IsolatedAsyncioTestCase):
 
 
 class Handshake(Session):
-    async def test_the_runtime_declares_events_v2_in_both_formats(self):
+    async def test_the_runtime_declares_events_v2(self):
         self.assertIn("events-v2", CAPABILITIES)
-        self.assertIn("events-v2", COMPAT_CAPABILITIES)
 
     async def test_mount_has_no_events_feature_and_refuses_the_0_12_declarations(self):
         outcome, reply = await self.mount()
