@@ -345,6 +345,13 @@ pub async fn status(_target: &Path) -> Result<String, String> {
     Err("rutis-host status is not available on Windows in this version".into())
 }
 
+#[cfg(not(unix))]
+pub async fn call(_target: &Path, _request: &crate::call::Request) -> Result<String, Refused> {
+    Err(Refused::Error(
+        "rutis-host call is not available on Windows".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
