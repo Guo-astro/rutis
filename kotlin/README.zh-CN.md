@@ -62,7 +62,7 @@ dependencies {
 
 错误：插件抛普通异常；有 public `code: String`、`data` 属性的异常带着它们跨过去。收到的错误和 SDK 自己的错误（`AggregateError`、`SyncWaitCycle`、`ReservedEvent` 等）都是 `RutisException`，按 `name` 匹配。
 
-值：由 SDK 自己的 kotlinx-serialization 格式 `RutisFormat` 承载，不用 JSON 的默认编码。`java.time.Instant`、`kotlin.time.Instant` 是时间点，`LocalDateTime` / `LocalDate` / `LocalTime` 是本地日期时间 / 日期 / 时刻，`ByteArray` 是二进制，键不是字符串的 `Map` 是 Map，`Set` 是 Set，`BigInteger` 是大整数（超出 ±(2^53−1) 的任何整数也是），`BigDecimal` 是 Decimal（保留标度），`UUID`、`kotlin.uuid.Uuid` 是 UUID。`@Serializable` 类里这些 JDK 类型的字段标 `@Contextual`（kotlinx 的规则）。类型为 `Any?` 的参数收到原生值：`Long`、`Double`、`Map<String, Any?>`、`List<Any?>` 等。`Rutis.define` 的结果 `Plugin` 也能作为参数和返回值（客户端、服务类里类型写 `Plugin`），按插件定义传，收的一方挂它（[插件 API](../docs/guide/plugin-api.md#插件定义)）。
+值：由 SDK 自己的 kotlinx-serialization 格式 `RutisFormat`（`arcships.rutis.advanced`）承载，不用 JSON 的默认编码。`java.time.Instant`、`kotlin.time.Instant` 是时间点，`LocalDateTime` / `LocalDate` / `LocalTime` 是本地日期时间 / 日期 / 时刻，`ByteArray` 是二进制，键不是字符串的 `Map` 是 Map，`Set` 是 Set，`BigInteger` 是大整数（超出 ±(2^53−1) 的任何整数也是），`BigDecimal` 是 Decimal（保留标度），`UUID`、`kotlin.uuid.Uuid` 是 UUID。`@Serializable` 类里这些 JDK 类型的字段标 `@Contextual`（kotlinx 的规则）。类型为 `Any?` 的参数收到原生值：`Long`、`Double`、`Map<String, Any?>`、`List<Any?>` 等。`Rutis.define` 的结果 `Plugin` 也能作为参数和返回值（客户端、服务类里类型写 `Plugin`），按插件定义传，收的一方挂它（[插件 API](../docs/guide/plugin-api.md#插件定义)）。
 
 线程：每个进来的调用一个线程，`suspend` 方法在其上 `runBlocking`。调用链放在 `ThreadLocal`，随协程传递（含 `withContext` 换线程），插件代码不传上下文。调用被取消时取消方法的协程并中断其线程。
 

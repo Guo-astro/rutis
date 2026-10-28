@@ -1,11 +1,11 @@
 package arcships.rutis.internal
 
-import arcships.rutis.rutisObject
+import arcships.rutis.generated.rutisObject
 
-import arcships.rutis.RemoteFunction
-import arcships.rutis.RutisFormat
-import arcships.rutis.ServiceObject
-import arcships.rutis.Tables
+import arcships.rutis.advanced.RemoteFunction
+import arcships.rutis.advanced.RutisFormat
+import arcships.rutis.generated.ServiceObject
+import arcships.rutis.generated.Tables
 import arcships.rutis.internal.peer.Decimal
 import arcships.rutis.internal.peer.Exported
 import arcships.rutis.internal.peer.ExportedObject
@@ -40,6 +40,8 @@ import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 import kotlin.time.toJavaInstant
 import kotlin.uuid.toJavaUuid
+import arcships.rutis.generated.ObjectProxy
+import arcships.rutis.advanced.RemoteObject
 
 /**
  * Values whose type is not known at compile time (`Any?`): what a session
@@ -84,7 +86,7 @@ object Native {
         return when (value) {
             null, Undefined -> value
             is String, is Boolean, is JsonElement, is WireMap, is WireSet, is Decimal,
-            is RemoteFunction, is RemoteFuture, is arcships.rutis.RemoteObject, is Exported, is ExportedObject, is Signal, is arcships.rutis.Plugin, is RemotePlugin,
+            is RemoteFunction, is RemoteFuture, is arcships.rutis.advanced.RemoteObject, is Exported, is ExportedObject, is Signal, is arcships.rutis.Plugin, is RemotePlugin,
             is Instant, is LocalDateTime, is LocalDate, is LocalTime, is ByteArray, is BigInteger, is UUID,
             -> value
             is Char -> value.toString()
@@ -128,7 +130,7 @@ object Native {
     @OptIn(InternalSerializationApi::class)
     private fun objectOf(value: Any): Any? {
         // A proxy of an object of another process, handed on: that object (#687).
-        if (value is arcships.rutis.ObjectProxy) value.rutisObject?.let { return it }
+        if (value is arcships.rutis.generated.ObjectProxy) value.rutisObject?.let { return it }
         Tables.serviceTable(value.javaClass)?.let { return ServiceObject(value, it) }
         if (value is Function<*>) return exportFunction(value)
         @Suppress("UNCHECKED_CAST")
