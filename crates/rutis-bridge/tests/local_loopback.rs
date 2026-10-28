@@ -1,11 +1,11 @@
-//! `spawn:<name>` with `Handover::Loopback`, how processes start on Windows
+//! `pipe::spawn` with `Handover::Loopback`, how processes start on Windows
 //! (and anywhere): the process dials a loopback address and presents a
 //! one-time token; anything else connecting there is turned away. The
 //! channel still owns the process.
-use rutis_bridge::channel::{ChannelError, PeerId};
-use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn, CHANNEL_TOKEN};
-use rutis_bridge::{Dial, Transport};
-use rutis_test_support::within;
+use rutis_bridge::channel::ChannelError;
+use std::time::{Duration, Instant};
+
+use rutis_bridge::pipe::{self, Handover, Processes, Spawn, CHANNEL_TOKEN};
 
 fn python() -> String {
     std::env::var("RUTIS_PYTHON")
@@ -15,7 +15,7 @@ fn python() -> String {
 /// A Python script on a loopback channel: `channel` is the `tcp:` address,
 /// `token` the token to present, `rest` what follows.
 fn script(body: &str) -> Spawn {
-    let mut spawn = Spawn::new(python(), PeerId::new("child").unwrap());
+    let mut spawn = Spawn::new(python());
     let prelude = format!(
         "import os, socket, sys, time\n\
          host, _, port = sys.argv[1][len('tcp:'):].rpartition(':')\n\
@@ -33,21 +33,16 @@ fn script(body: &str) -> Spawn {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_process_dials_back_with_its_token_and_its_exit_ends_the_channel() {
-    let transport = LocalTransport::default();
     // An impostor without the token first: turned away. Then the process
     // answers one line with the line and its last argument, and exits 7.
-    transport.spawner(
-        "echo",
-        script(
-            "impostor = connect('not the token')\n\
-             s = connect(token)\n\
-             line = s.makefile('rb').readline().strip()\n\
-             s.sendall(line + b' ' + sys.argv[2].encode() + b'\\n')\n\
-             sys.exit(7)",
-        ),
+    let echo = script(
+        "impostor = connect('not the token')\n\
+         s = connect(token)\n\
+         line = s.makefile('rb').readline().strip()\n\
+         s.sendall(line + b' ' + sys.argv[2].encode() + b'\\n')\n\
+         sys.exit(7)",
     );
-    let mut channel = transport.dial(&Dial::address("spawn:echo")).await.unwrap();
-    assert_eq!(channel.info.transport, "tcp");
+    let mut channel = pipe::spawn(&echo, &Processes::default()).await.unwrap();
     channel.sender.send(b"hello").unwrap();
     let (reply, end) = tokio::task::spawn_blocking(move || {
         let reply = channel.receiver.recv().unwrap().unwrap();
@@ -67,10 +62,9 @@ async fn a_process_dials_back_with_its_token_and_its_exit_ends_the_channel() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_the_channel_ends_the_process() {
-    let transport = LocalTransport::default();
-    transport.spawner("idle", script("s = connect(token)\ntime.sleep(30)"));
-    let mut channel = transport.dial(&Dial::address("spawn:idle")).await.unwrap();
-    transport.close_all();
+    let idle = script("s = connect(token)\ntime.sleep(30)");
+    let mut channel = pipe::spawn(&idle, &Processes::default()).await.unwrap();
+    channel.closer.close(rutis_bridge::Close::Done);
     // It does not end by itself: killed after the grace period, and the
     // channel's end says so.
     let end = tokio::task::spawn_blocking(move || channel.receiver.recv())
@@ -86,9 +80,7 @@ async fn closing_the_channel_ends_the_process() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_process_that_exits_before_connecting_says_so() {
-    let transport = LocalTransport::default();
-    transport.spawner("quits", script("sys.exit(3)"));
-    match transport.dial(&Dial::address("spawn:quits")).await {
+    match pipe::spawn(&script("sys.exit(3)"), &Processes::default()).await {
         Err(error) => assert!(
             error.to_string().contains("exited before connecting"),
             "{error}"
@@ -99,28 +91,28 @@ async fn a_process_that_exits_before_connecting_says_so() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_silent_connection_does_not_hold_up_the_process() {
-    let transport = LocalTransport::default();
-    // A silent connection is dropped only after an hour: if it held up the
-    // process's, this would hang (and fail by the hang guard) rather than
-    // pass slowly (#231).
-    transport.token_wait(std::time::Duration::from_secs(3600));
     // Something connects first and never presents a token; the process,
-    // right behind it, is still taken at once.
-    transport.spawner(
-        "behind",
-        script(
-            "silent = socket.create_connection((host, int(port)))\n\
-             time.sleep(0.2)\n\
-             s = connect(token)\n\
-             time.sleep(30)",
-        ),
+    // right behind it, is still taken at once. A silent connection is
+    // dropped only after 10 s: if it held up the process's, the channel
+    // would take that long (#231).
+    let behind = script(
+        "silent = socket.create_connection((host, int(port)))\n\
+         time.sleep(0.2)\n\
+         s = connect(token)\n\
+         time.sleep(30)",
     );
-    let channel = within(
-        "the process's channel",
-        transport.dial(&Dial::address("spawn:behind")),
+    let started = Instant::now();
+    let channel = tokio::time::timeout(
+        Duration::from_secs(8),
+        pipe::spawn(&behind, &Processes::default()),
     )
     .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the silent connection held up the process's ({:?})",
+            started.elapsed()
+        )
+    })
     .unwrap();
-    drop(channel);
-    transport.close_all();
+    channel.closer.close(rutis_bridge::Close::Done);
 }

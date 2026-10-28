@@ -56,7 +56,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Q6.13 | Node links, remote runtimes, leases | Partly | Library tests complete; two independent host processes verified over loopback (S5, `nodes.rs`, #322, #336): a call in flight during a network cut fails once, the link comes back, the far end restarted gives a new lease, a changed token is refused, a certificate for another name or an expired one is refused; between two containers over a real network (E12, #341 → #433, nightly, report only): non-loopback + TLS, calls succeed and run once and the link stays up under 200 ms delay + 5% loss, a call in flight during an outage fails once, the heartbeat timeout is reported, the link reconnects within the backoff bound. Missing: revoking credentials while running (#273); the link's actual retry timing and the reset after 60 s stable (E3). Leases, takeover, reconnection and revocation have TLA+ models (E4, E5, #210) |
 | Q6.14 | Cordis mounts and Cordis nodes | Partly | Differential verification against native Cordis; boundary rules 3, 4, 5, 7 have cross-process tests (`boundary_rules.rs` and others, #283), and the silent degradation they found now fails explicitly (#281, #282 → #337). The black-box scenario S6 mounts published plugins from `rutis.json` (`tests/e2e/tests/cordis.rs`, #190 → #429): a plugin using a service of the rutis side makes the native calls, stops and restarts by native rules as the service is withdrawn and restored, and an uncaught error fails explicitly; published plugins mounted from `rutis.json` use each other's services by native rules and their services reach rutis by themselves, a probe's calls through them giving the native results (#428); new releases run through it every night, report only (F4). Missing: a `serial` across the boundary running as serial on the far side needs a protocol change (#340); `boundary/5.8` partly verified |
 | Q6.15 | npm, PyPI, binaries, crates.io | Partly | `install.yml`: npm, PyPI and release binaries installed and run in a clean directory, on five platforms nightly, linux-x64 on PRs, five platforms before a release; after a release the guides' examples run with the registry packages (#193 → #254, #266 → #324). Missing: crates.io and the Go module have no installation check; marking the Python guide's examples (#266 (d), waits for #259) |
-| Q6.16 | `rutis-dev` dev channel | Partly | Local socket and `0600` implemented; "absent from production builds" not verified |
+| Q6.16 | `rutis-dev` dev channel | Not applicable | `rutis-dev` removed in 0.19 (#694) |
 
 ### 1.3 Test rules, process, matrix, release
 
@@ -102,7 +102,7 @@ Status: **met**, **partly**, **not met**, **n/a**. The gaps column refers to ris
 | Bun package | `@arcships/rutis-bun` (Bun runtime, #194 B1) | Plugin authors |
 | Python packages | `rutis` (plugin SDK, test tool, runtime), `rutis-host` (distribution) | Plugin authors |
 | Go module | `github.com/arcships/rutis/go/rutis` (plugin SDK, `rutistest`, runtime) | Plugin authors |
-| dylib toolchain | `rutis-sdk`, `rutis-dylib*`, `rutis-dev` (dev channel) | Rust plugin authors |
+| dylib toolchain | `rutis-sdk`, `rutis-dylib*` | Rust plugin authors |
 | Applications | `rutis-dsh`, `rutis-agent` | Used in this repository; also the framework's first users |
 
 ### 2.2 Operating conditions and scale assumptions
@@ -139,7 +139,6 @@ Counted on 2026-10-10 (baseline `a8733d4`; coverage from the local measurement i
 | `rutis-bridge` | 34 test files; four conformance suites (channel / session / runtime / node); `fault` decorator; two soak tests | 143 | 87.8% |
 | `rutis-loader` | 20 test files; patch merging against cordis-plugin-include | 110 | 89.8% |
 | `rutis-host` | Unit tests inside src only | 8 | 69.8% (`main.rs` 0%) |
-| `rutis-dev` | dev channel | 5 | — |
 | dylib toolchain | `tools/test-dylib*.sh`, `tools/test-sdk-bundle.sh`; SDK hashes compared across two runners | — | — |
 | Node packages | `node/*/test/` | 46 | 86% |
 | Python packages | `python/rutis/tests/` | 25 | 81% |
@@ -345,7 +344,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
 | E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
 | E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Yes: TLA+ (`specs/remote-lease/`, #210) checks at most one lease during takeover, at most one instance per id at an access point, and that an old session's commands never act on a new lease; K (`leases.rs`) |
-| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: TLA+ (#210) checks that an old handshake is not handed over after its registration is revoked, that a revoked identity never gets a session again and that revocation closes only its own connections; it found two places where revoking during a handshake still set a session up, fixed (`revocation.rs`); revoking while running has the identity layer's hook and library tests (#273, `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`); rutis-host's environment tokens cannot be revoked while running, and S5 has no such step |
+| E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: TLA+ (#210) checks that an old handshake is not handed over after its registration is revoked; the identity layer's hook for revoking while running (#273) was removed in 0.19 (no production caller): existing connections are disconnected by stopping that row, changing a token takes a restart of rutis-host, and S5 has no such step |
 | E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
 | E7 | A malformed WebSocket upgrade request crashes the listener | Security, faults | High | Medium | P0 | FZ | Nightly | Yes: FZ `websocket_upgrade` (tungstenite's handshake and the listener's reading of path, bearer token and subprotocols), 20 minutes nightly (#179 → #425) |
 | E8 | Rejection categories differ between implementations (Python↔Rust) | Compatibility | Medium | Medium | P1 | K (a Python column in `websocket_cross.rs`) | PR | Yes (#288) |
@@ -406,11 +405,11 @@ Each scenario first says what it is, which parts it goes through and under what 
 | H4 | Resource use grows after hundreds of generate/load/unload cycles | Residue | Medium | Medium | P1 | SK + R | Nightly | No |
 | H5 | Tests with real models are not repeatable | — | Medium | High | P1 | Drive with a scripted model backend (`ScriptedLlm`); real models only in `#[ignore]` manual tests | — | Scripted backend exists |
 
-#### Scenario I: dylib plugins and the dev channel
+#### Scenario I: dylib plugins
 
-**What**: Rust plugins compiled as dynamic libraries, loaded after the host checks their identity; the `rutis-dev` channel swaps them during development.
+**What**: Rust plugins compiled as dynamic libraries, loaded after the host checks their identity.
 
-**Through**: `rutis-sdk`, `rutis-dylib`, the launcher, `rutis-dev`, `xtask`.
+**Through**: `rutis-sdk`, `rutis-dylib`, the launcher, `xtask`.
 
 **Conditions**: toolchain versions, build paths and platforms vary; loading the wrong library can cause memory errors.
 
@@ -526,9 +525,9 @@ The scope as it was planned is kept below for the record.
 
 ### 7.2 Spec 2: remote lease takeover, link reconnection and registration revocation (E4, E5) — done
 
-**Result** (#210 → #432, 2026-10-17): the models are in [`specs/remote-lease/`](../specs/remote-lease/README.en.md), two of them: `RemoteLease.tla` (a listening remote runtime and two dialing controller links) and `AccessPoint.tla` (the access point that landed after the issue: registration generations and hand-over, self-declared ids, takeover by the same id, the access point stopping and starting again, revoking one id or the shared token). Invariants checked: at most one active lease per runtime, at most one instance per id at an access point; commands (calls) of an old session never act on a new lease (instance); after a registration is revoked an old handshake never completes hand-over; a stopped link (dialer) never reconnects; a late handshake result never revives a session given up on; a revoked identity never gets a session again; revocation closes only that identity's connections. Liveness: without faults a controller eventually holds the lease, and someone still holds it at the end. Scale: 2 controllers (dialers), up to 3 reconnects each (2 in the access point's configurations with lost connections), unbounded message delay; the largest configuration has about 5 million states, all 21 configurations take about 2 minutes. Each property has a deliberately introduced bug (a mutation) for which TLC finds a counterexample: the model is not vacuous.
+**Result** (#210 → #432, 2026-10-17): the models are in [`specs/remote-lease/`](../specs/remote-lease/README.en.md), two of them: `RemoteLease.tla` (a listening remote runtime and two dialing controller links) and `AccessPoint.tla` (the access point that landed after the issue: registration generations and hand-over, self-declared ids, takeover by the same id, the access point stopping and starting again). Invariants checked: at most one active lease per runtime, at most one instance per id at an access point; commands (calls) of an old session never act on a new lease (instance); after a registration is revoked an old handshake never completes hand-over; a stopped link (dialer) never reconnects; a late handshake result never revives a session given up on. Liveness: without faults a controller eventually holds the lease, and someone still holds it at the end. Scale: 2 controllers (dialers), up to 3 reconnects each (2 in the access point's configurations with lost connections), unbounded message delay; the largest configuration has about 1.2 million states, all 16 configurations take under a minute. Each property has a deliberately introduced bug (a mutation) for which TLC finds a counterexample: the model is not vacuous.
 
-TLC found two places where the implementation broke "a revoked identity never gets a session again", now fixed (a separate commit of #432, tests in `rutis-bridge/tests/revocation.rs`): a controller link revoked during the handshake still had `start` provide the peer before cutting it; an access point whose id was revoked while a takeover waited still ran `Accept::accept` (creating the instance, mounting the runtime) before cutting it. Both now check before setting anything up and refuse a revoked identity as an authentication failure (4003). The §4.4 takeover order, the generation re-check, reading frames by connection and cancelling the retry on stop agree with the model. Two controllers configured for the same runtime (or two dialers with the same id) keep replacing each other, slowed by backoff (written in dial-out §6); liveness holds in the model because reconnects are bounded. CI: the `specs` job ([CI](ci.en.md) §4).
+TLC found two places where revoking an identity during a handshake still set a session up, fixed (#432); identity revocation (#273) was removed in 0.19, and its properties, configurations and tests with it. The §4.4 takeover order, the generation re-check, reading frames by connection and cancelling the retry on stop agree with the model. Two controllers configured for the same runtime (or two dialers with the same id) keep replacing each other, slowed by backoff (written in dial-out §6); liveness holds in the model because reconnects are bounded. CI: the `specs` job ([CI](ci.en.md) §4).
 
 What follows is the scope as planned, kept for the record.
 
@@ -543,7 +542,7 @@ What follows is the scope as planned, kept for the record.
 
 **Scale**: 2 controllers, up to 3 reconnects each, messages delayed by up to 2 steps.
 
-Revoking while running is the identity layer's hook (#273, `Revocations`, design in the dial-out document §5); "identity revocation" in the model follows it: after a revocation no handshake of that identity is handed over (re-checked at hand-over), and only the connections accepted as that identity close.
+Revoking while running was the identity layer's hook (#273), removed in 0.19; "identity revocation" was removed from the model with it.
 
 ### 7.3 Practice
 

@@ -1,5 +1,5 @@
 //! Which far ends a shared listener accepts, and for whom. Links register;
-//! transports route each verified connection to the one registration that
+//! listeners route each verified connection to the one registration that
 //! names its far end, and re-check that registration at hand-over.
 //!
 //! Rules (`docs/design-protocol-channel-decoupling-2026-10-03.md`, shared
@@ -7,13 +7,11 @@
 //! - a registration binds a listener, the far end's endpoint id, the
 //!   identity whose rules verify it, a delivery target, and a generation;
 //! - on one listener a far end has at most one registration;
-//! - routing uses the id the transport verified, never one the far end
+//! - routing uses the id the listener verified, never one the far end
 //!   merely claims;
 //! - hand-over re-checks the generation under the same lock revocation
 //!   takes, so a handshake that began before a revocation cannot complete
-//!   after it; and re-checks that the identity has not revoked the far end
-//!   since it was routed ([`Revocations`](crate::Revocations), #273): such
-//!   a handshake is refused as an authentication failure.
+//!   after it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -26,9 +24,49 @@ use crate::{Identity, Presented};
 /// only hand the channel on (for example into a queue), never block.
 pub type Deliver = Box<dyn Fn(Channel) + Send + Sync>;
 
+/// Where a listening link or an access point is accepted: a listener's
+/// registrations, the listener's name, and the endpoint it serves.
+/// Transitional (#695 S2): goes with links and access points.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct Accepting {
+    pub registrations: Registrations,
+    pub listener: String,
+    pub local: PeerId,
+}
+
+impl std::fmt::Debug for Accepting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Accepting({} on {})", self.local, self.listener)
+    }
+}
+
+impl Accepting {
+    /// Accept `peer`, verified by `identity`, speaking `protocol`; its
+    /// channels go to `deliver`.
+    pub fn register(
+        &self,
+        peer: PeerId,
+        identity: Arc<dyn Identity>,
+        protocol: String,
+        deliver: Deliver,
+    ) -> Result<Registered, RegistrationError> {
+        self.registrations.register(
+            &self.local,
+            Registration {
+                listener: self.listener.clone(),
+                peer,
+                identity,
+                protocol,
+                deliver,
+            },
+        )
+    }
+}
+
 /// A link's request to accept one far end on one listener.
 pub struct Registration {
-    /// The listener's name in the transport's configuration.
+    /// The listener's name.
     pub listener: String,
     /// The far end to accept.
     pub peer: PeerId,
@@ -42,8 +80,6 @@ pub struct Registration {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistrationError {
-    #[error("{0}")]
-    NoListener(String),
     /// The far end already has a registration on this listener.
     #[error("{0}")]
     Duplicate(String),
@@ -111,7 +147,7 @@ pub struct Ticket {
     generation: u64,
 }
 
-/// The registrations of one transport instance, shared by its listeners.
+/// The registrations of one or more listeners.
 #[derive(Clone, Default)]
 pub struct Registrations {
     table: Arc<Mutex<Table>>,
@@ -196,10 +232,8 @@ impl Registrations {
     }
 
     /// Hand `channel` to the registration `ticket` was routed to, if it is
-    /// still that same registration and its identity has not revoked the
-    /// far end since; otherwise give the channel back to be closed. A
-    /// revoked far end's channel is first closed as rejected (WebSocket
-    /// close code 4003: an authentication failure to the dialer).
+    /// still that same registration; otherwise give the channel back to be
+    /// closed.
     pub fn hand_over(&self, ticket: &Ticket, channel: Channel) -> Result<(), Channel> {
         let table = self.table.lock().unwrap();
         match table
@@ -207,14 +241,6 @@ impl Registrations {
             .get(&(ticket.listener.clone(), ticket.peer.clone()))
         {
             Some(entry) if entry.generation == ticket.generation => {
-                let revoked = entry
-                    .identity
-                    .revocations()
-                    .is_some_and(|revocations| revocations.is_revoked(&ticket.peer));
-                if revoked {
-                    channel.closer.rejected(crate::identity::NOT_ACCEPTED);
-                    return Err(channel);
-                }
                 (entry.deliver)(channel);
                 Ok(())
             }
@@ -228,7 +254,7 @@ impl Registrations {
         table.entries.keys().any(|(name, _)| name == listener)
     }
 
-    /// Revoke every registration (the transport unloads).
+    /// Revoke every registration.
     pub fn clear(&self) {
         self.table.lock().unwrap().entries.clear();
     }
@@ -275,13 +301,12 @@ mod tests {
             }
         }
         impl crate::channel::Closer for Nothing {
-            fn close(&self, _: &str) {}
+            fn close(&self, _: crate::channel::Close) {}
         }
         Channel {
             sender: Box::new(Nothing),
             receiver: Box::new(Nothing),
             closer: Arc::new(Nothing),
-            info: Default::default(),
         }
     }
 
@@ -368,42 +393,5 @@ mod tests {
         assert!(from_mac.try_recv().is_err());
         assert!(!registry.listens("nowhere"));
         assert!(registry.listens("public"));
-    }
-
-    /// guarantee: bridge/revocation-refuses-reconnects
-    #[test]
-    fn a_ticket_from_before_an_identity_revocation_cannot_hand_over_after_it() {
-        let registry = Registrations::new();
-        let revocations = crate::Revocations::new();
-        let identity = Arc::new(crate::Revocable::new(
-            StaticIdentity::new(id("main"))
-                .accept_token("mac-token", id("mac"))
-                .accept_token("pi-token", id("pi")),
-            revocations.clone(),
-        ));
-        let (mut mac, from_mac) = registration("mac", "mac-token");
-        mac.identity = identity.clone();
-        let _mac = registry.register(&id("main"), mac).unwrap();
-        let (mut pi, from_pi) = registration("pi", "pi-token");
-        pi.identity = identity;
-        let _pi = registry.register(&id("main"), pi).unwrap();
-
-        let late = registry
-            .route("public", Presented::Bearer("mac-token"))
-            .unwrap();
-        let other = registry
-            .route("public", Presented::Bearer("pi-token"))
-            .unwrap();
-        revocations.revoke(&id("mac"));
-        assert!(registry.hand_over(&late, channel()).is_err());
-        assert!(from_mac.try_recv().is_err());
-        // Later connections: refused as a wrong credential is.
-        assert_eq!(
-            registry.route("public", Presented::Bearer("mac-token")),
-            Err(Refusal::Unauthenticated)
-        );
-        // Another far end on the same listener is untouched.
-        assert!(registry.hand_over(&other, channel()).is_ok());
-        assert!(from_pi.try_recv().is_ok());
     }
 }

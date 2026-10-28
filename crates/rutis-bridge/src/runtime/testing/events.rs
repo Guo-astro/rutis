@@ -21,8 +21,8 @@
 //!   `does`: the row registers one listener with its language's own API.
 //!   On every call it logs, then does what `does` says (the table of §13.2).
 //! - `emitter: true`: the row provides `emitter-<label>` with
-//!   `dispatch(spec)` (async) and `dispatch_sync(spec)` (sync, for `bail`
-//!   and `waterfall-sync`), emitting with its language's own API. Plugins
+//!   `dispatch(spec)` (async) and `dispatch_sync(spec)` (sync, for `bail`),
+//!   emitting with its language's own API. Plugins
 //!   declare `emitter-e` and `emitter-f`; emitter rows are only ever
 //!   labelled so.
 //! - `provides`: it also provides an undeclared service of that name;
@@ -235,14 +235,7 @@ pub struct Then {
     pub args: Vec<Json>,
 }
 
-pub const MODES: [&str; 6] = [
-    "emit",
-    "parallel",
-    "serial",
-    "waterfall",
-    "bail",
-    "waterfall-sync",
-];
+pub const MODES: [&str; 5] = ["emit", "parallel", "serial", "waterfall", "bail"];
 
 impl Spec {
     fn parse(raw: &Json) -> Result<Self, String> {
@@ -357,7 +350,7 @@ impl Spec {
 
     /// Whether the emitter's synchronous method dispatches it.
     pub fn sync(&self) -> bool {
-        matches!(self.mode.as_str(), "bail" | "waterfall-sync")
+        self.mode == "bail"
     }
 }
 
@@ -2027,12 +2020,6 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                     if spec.scope != "root" && !expected.scopes.contains_key(&spec.scope) {
                         return Err(format!("unknown scope {}", spec.scope));
                     }
-                    if spec.mode == "waterfall-sync"
-                        && spec.from != Location::Host
-                        && !case.vary.contains(&spec.row)
-                    {
-                        return Err("only Rust emits waterfall-sync".into());
-                    }
                     if spec.cancel.is_some() && !places.contains_key(spec.cancel.as_ref().unwrap())
                     {
                         return Err("cancel names no label of the case".into());
@@ -2099,7 +2086,7 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                 });
                 let more = steps.iter().any(|step| {
                     matches!(step, Step::Kill { .. } | Step::Restart { .. } | Step::Concurrent { .. } | Step::Unload { then: Some(_), .. })
-                        || step.emits().iter().any(|spec| spec.mode == "waterfall-sync" || spec.then.is_some())
+                        || step.emits().iter().any(|spec| spec.then.is_some())
                         || matches!(step, Step::Load { participant, .. } if participant.raw["name"].as_str().unwrap_or(&case.name).starts_with("rutis/"))
                 });
                 if typed || rutis || more {

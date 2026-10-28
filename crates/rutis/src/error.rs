@@ -11,9 +11,6 @@ pub enum ServiceReadFailure {
     OutOfScope,
     Inactive,
     TypeMismatch,
-    InterceptDenied,
-    InterceptPanicked,
-    InterceptReentrant,
 }
 
 impl std::fmt::Display for ServiceReadFailure {
@@ -24,9 +21,6 @@ impl std::fmt::Display for ServiceReadFailure {
             Self::OutOfScope => f.write_str("instance outside caller's fiber ancestry"),
             Self::Inactive => f.write_str("caller context inactive"),
             Self::TypeMismatch => f.write_str("service key has a different value type"),
-            Self::InterceptDenied => f.write_str("strict read denied by interceptor"),
-            Self::InterceptPanicked => f.write_str("strict read interceptor panicked"),
-            Self::InterceptReentrant => f.write_str("same-key strict read interceptor reentered"),
         }
     }
 }
@@ -49,9 +43,6 @@ pub struct ServiceReadError {
 pub enum ServiceWriteFailure {
     WrongOwner,
     Stale,
-    InterceptDenied,
-    InterceptPanicked,
-    InterceptReentrant,
 }
 
 impl std::fmt::Display for ServiceWriteFailure {
@@ -60,11 +51,6 @@ impl std::fmt::Display for ServiceWriteFailure {
             Self::WrongOwner => f.write_str("writer called outside its provider fiber"),
             Self::Stale => {
                 f.write_str("service binding or provider generation is no longer active")
-            }
-            Self::InterceptDenied => f.write_str("service update denied by interceptor"),
-            Self::InterceptPanicked => f.write_str("service update interceptor panicked"),
-            Self::InterceptReentrant => {
-                f.write_str("same-key service update interceptor reentered")
             }
         }
     }
@@ -166,7 +152,7 @@ pub enum ErrorKind {
         name: String,
         errors: Vec<Arc<ErrorKind>>,
     },
-    /// `bail` / `waterfall-sync` met an asynchronous listener.
+    /// `bail` met an asynchronous listener.
     #[error(
         "listener of {name} in {listener} is asynchronous and cannot run in a synchronous {mode}"
     )]
@@ -272,8 +258,6 @@ pub enum NextMisuse {
     NotWaterfall(crate::Mode),
     /// By a synchronous listener in an asynchronous waterfall.
     SyncInAsync,
-    /// A remote synchronous `next` called off the dispatching thread.
-    OtherThread,
 }
 
 impl NextMisuse {
@@ -287,9 +271,6 @@ impl NextMisuse {
             NextMisuse::SyncInAsync => "a synchronous listener cannot call next in an \
                  asynchronous waterfall; register it with on"
                 .to_owned(),
-            NextMisuse::OtherThread => {
-                format!("next of {name} was called off the thread of its waterfall")
-            }
         }
     }
 }
@@ -370,13 +351,6 @@ impl Error {
     pub fn msg(message: impl Into<String>) -> Self {
         Error::new(ErrorKind::PluginFailed(message.into().into()), true)
     }
-
-    /// An `anyhow::Error` as a rutis error. `anyhow::Error` does not
-    /// implement `std::error::Error`, so `?` cannot convert it.
-    #[cfg(feature = "anyhow")]
-    pub fn from_anyhow(error: anyhow::Error) -> Self {
-        Error::new(ErrorKind::PluginFailed(error.into()), true)
-    }
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
@@ -433,13 +407,6 @@ impl From<Error> for Box<dyn std::error::Error + Send + Sync + 'static> {
 impl From<Error> for Box<dyn std::error::Error + 'static> {
     fn from(error: Error) -> Self {
         error.kind
-    }
-}
-
-#[cfg(feature = "anyhow")]
-impl From<Error> for anyhow::Error {
-    fn from(error: Error) -> Self {
-        anyhow::Error::new(error.into_kind())
     }
 }
 

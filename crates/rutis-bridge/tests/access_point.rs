@@ -1,4 +1,4 @@
-//! Access points over the memory transport: runtimes dialing out to rutis
+//! Access points over in-process channels: runtimes dialing out to rutis
 //! with a shared token, told apart by the id they greet with; admission,
 //! concurrent connections, takeover, disconnection, and a static link on
 //! the same listener.
@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, PeerId};
+use rutis_bridge::memory;
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, protocol, Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin,
-    AdmissionPlugin, ConnectError, Credential, Dial, Identity, IdentityPlugin, LinkConfig,
-    LinkPlugin, LinkState, Peer, Release, SharedToken, StaticIdentity, Transport,
+    peer_key, Accept, Accepted, Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin,
+    AdmissionPlugin, ConnectError, Credential, IdentityPlugin, LinkConfig, LinkPlugin, LinkState,
+    Peer, Registrations, Release, SharedToken, StaticIdentity,
 };
 use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::json;
@@ -61,22 +61,27 @@ impl Accept for Log {
     }
 }
 
+/// `main`'s listener `main-in` of `registrations`.
+fn main_in(registrations: &Registrations) -> Accepting {
+    Accepting {
+        registrations: registrations.clone(),
+        listener: "main-in".into(),
+        local: id("main"),
+    }
+}
+
 /// `main`, whose access point `phone` admits runtimes presenting `shared`
-/// on its endpoint `main-in`.
+/// on its listener `main-in`.
 struct Main {
-    transport: Arc<MemoryTransport>,
+    transport: Registrations,
     root: Ctx,
     access: FiberView,
     log: Log,
     events: broadcast::Receiver<AccessEvent>,
 }
 
-async fn main_with(transport: Arc<MemoryTransport>) -> Main {
-    transport.endpoint("main-in", id("main"));
+async fn main_with(transport: Registrations) -> Main {
     let root = Ctx::root().unwrap();
-    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     (&root.plugin(AdmissionPlugin::new(
         "phone",
         SharedToken::new(id("main"), "shared"),
@@ -85,7 +90,7 @@ async fn main_with(transport: Arc<MemoryTransport>) -> Main {
         .unwrap();
     let log = Log::default();
     let plugin = AccessPointPlugin::new(
-        AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
+        AccessPointConfig::new(id("phone"), "phone", main_in(&transport))
             .handshake(scaled(HANG_GUARD)),
     )
     .accept(log.clone());
@@ -102,7 +107,7 @@ async fn main_with(transport: Arc<MemoryTransport>) -> Main {
 }
 
 async fn main() -> Main {
-    main_with(Arc::new(MemoryTransport::default())).await
+    main_with(Registrations::new()).await
 }
 
 async fn next(events: &mut broadcast::Receiver<AccessEvent>) -> AccessEvent {
@@ -119,23 +124,20 @@ impl Dispatch for Whoami {
     }
 }
 
-async fn dial_channel(transport: &MemoryTransport, token: &str) -> Result<Channel, ConnectError> {
-    // The dialer's own id plays no part in the memory transport's routing.
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("runtime")).present(id("main"), Credential::Bearer(token.into())),
-    );
-    transport
-        .dial(
-            &Dial::address("main-in")
-                .peer(id("main"))
-                .identity(identity)
-                .protocol(protocol()),
-        )
-        .await
+/// Dial `main-in` presenting `credential`.
+async fn dial(
+    transport: &Registrations,
+    credential: Option<Credential>,
+) -> Result<Channel, ConnectError> {
+    memory::dialer(transport.clone(), "main-in")(credential).await
+}
+
+async fn dial_channel(transport: &Registrations, token: &str) -> Result<Channel, ConnectError> {
+    dial(transport, Some(Credential::Bearer(token.into()))).await
 }
 
 /// A runtime dialing out as `name` with `token`, its session ready.
-async fn runtime(transport: &MemoryTransport, name: &str, token: &str) -> Connection {
+async fn runtime(transport: &Registrations, name: &str, token: &str) -> Connection {
     let channel = dial_channel(transport, token).await.unwrap();
     let session = Connection::open_with(
         channel,
@@ -179,16 +181,7 @@ async fn a_wrong_or_missing_token_is_refused_before_any_session() {
         matches!(wrong, Err(ConnectError::AuthRejected { .. })),
         "{wrong:?}"
     );
-    let identity: Arc<dyn Identity> = Arc::new(StaticIdentity::new(id("runtime")));
-    let none = main
-        .transport
-        .dial(
-            &Dial::address("main-in")
-                .peer(id("main"))
-                .identity(identity)
-                .protocol(protocol()),
-        )
-        .await;
+    let none = dial(&main.transport, None).await;
     assert!(
         matches!(none, Err(ConnectError::AuthRejected { .. })),
         "{none:?}"
@@ -326,7 +319,7 @@ async fn stopping_the_access_point_releases_its_connections() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_static_link_and_an_access_point_share_a_listener() {
-    let transport = Arc::new(MemoryTransport::default());
+    let transport = Registrations::new();
     let mut main = main_with(transport.clone()).await;
     (&main.root.plugin(IdentityPlugin::new(
         "main",
@@ -336,17 +329,13 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
         .unwrap();
     (&main.root.plugin(LinkPlugin::new(LinkConfig::listen(
         id("mac"),
-        "memory",
         "main",
-        "main-in",
+        main_in(&transport),
     ))))
         .await
         .unwrap();
 
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     (&mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
@@ -355,9 +344,8 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
         .unwrap();
     (&mac.plugin(LinkPlugin::new(LinkConfig::dial(
         id("main"),
-        "memory",
         "mac",
-        "main-in",
+        memory::dialer(transport.clone(), "main-in"),
     ))))
         .await
         .unwrap();
@@ -374,7 +362,7 @@ async fn a_static_link_and_an_access_point_share_a_listener() {
     ));
     // The access point's name is taken on this listener: a link for a peer
     // of that name cannot register there.
-    let clash = LinkPlugin::new(LinkConfig::listen(id("phone"), "memory", "main", "main-in"));
+    let clash = LinkPlugin::new(LinkConfig::listen(id("phone"), "main", main_in(&transport)));
     let states = clash.state();
     (&main.root.plugin(clash)).await.unwrap();
     let stopped = eventually(
@@ -403,22 +391,15 @@ async fn a_listening_link_is_registered_once_applied() {
     )))
         .await
         .unwrap();
-    let link = LinkPlugin::new(LinkConfig::listen(id("mac"), "memory", "main", "main-in"));
+    let link = LinkPlugin::new(LinkConfig::listen(
+        id("mac"),
+        "main",
+        main_in(&main.transport),
+    ));
     let state = link.state();
     link.apply(&main.root).await.unwrap();
     assert_eq!(*state.borrow(), LinkState::Connecting);
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-    );
-    let dialed = main
-        .transport
-        .dial(
-            &Dial::address("main-in")
-                .peer(id("main"))
-                .identity(identity)
-                .protocol(protocol()),
-        )
-        .await;
+    let dialed = dial_channel(&main.transport, "mac-token").await;
     assert!(dialed.is_ok(), "{:?}", dialed.err());
 }
 
@@ -474,12 +455,8 @@ impl Accept for Slow {
 /// the accept, then releases what it set up.
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_while_accepting_still_releases() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let root = Ctx::root().unwrap();
-    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     (&root.plugin(AdmissionPlugin::new(
         "phone",
         SharedToken::new(id("main"), "shared"),
@@ -491,7 +468,7 @@ async fn stopping_while_accepting_still_releases() {
     let proceed = Arc::new(tokio::sync::Notify::new());
     let access = root.plugin(
         AccessPointPlugin::new(
-            AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
+            AccessPointConfig::new(id("phone"), "phone", main_in(&transport))
                 .handshake(scaled(HANG_GUARD)),
         )
         .accept(Slow {
@@ -530,43 +507,52 @@ impl rutis_bridge::Admission for Nobody {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dialer_whose_id_is_rejected_waits_as_rejected() {
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
     use rutis_bridge::Failure;
 
     let main = Ctx::root().unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     (&main.plugin(AdmissionPlugin::new("phone", Nobody)))
         .await
         .unwrap();
     (&main.plugin(AccessPointPlugin::new(AccessPointConfig::new(
         id("phone"),
-        "websocket",
         "phone",
-        "public",
+        Accepting {
+            registrations,
+            listener: "public".into(),
+            local: id("main"),
+        },
     ))))
         .await
         .unwrap();
 
     let pixel = Ctx::root().unwrap();
-    (&pixel.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     pixel.plugin(IdentityPlugin::new(
         "pixel",
         StaticIdentity::new(id("pixel")).present(id("main"), Credential::Bearer("any".into())),
     ));
-    let link = LinkPlugin::new(LinkConfig::dial(id("main"), "websocket", "pixel", &address));
+    let dialer: rutis_bridge::Dialer = Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    });
+    let link = LinkPlugin::new(LinkConfig::dial(id("main"), "pixel", dialer));
     let state = link.state();
     pixel.plugin(link);
     eventually(

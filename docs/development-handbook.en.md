@@ -95,10 +95,9 @@ Once a plugin is `Active`, its services are available to external consumers. Run
 | Creation method | Use when | Reload behavior |
 |---|---|---|
 | `ctx.plugin(plugin)` | Config is owned by the plugin object | Run `apply` again on the same object |
-| `ctx.plugin_from(build, config)` | Config needs to change at runtime | Call `build` to create a new plugin object from current config |
-| `ctx.plugin_with(factory, config)` | A factory lists the dependencies at run time (`host::PluginFactory`) | Create a new plugin object from current config |
+| `ctx.plugin_with(factory, config)` | Config needs to change at runtime (implement `host::PluginFactory`) | Call the factory's `build` to create a new plugin object from current config |
 
-A plugin declares its dependencies in `type Deps`; `plugin_from` takes them from the `Deps` of the plugin type `build` returns; a factory declares them in `PluginFactory::injects()`; a plugin that depends on services by name implements `host::DynPlugin` and declares them in `DynPlugin::injects()`. Declarations are fixed at registration and remain fixed for the lifetime of that fiber.
+A plugin declares its dependencies in `type Deps`; a factory declares them in `PluginFactory::injects()`; a plugin that depends on services by name implements `host::DynPlugin` and declares them in `DynPlugin::injects()`. Declarations are fixed at registration and remain fixed for the lifetime of that fiber.
 
 Put resource creation in `apply`. Each reload then uses current dependencies, creates needed resources, and registers fresh cleanup functions.
 
@@ -258,7 +257,7 @@ A listener is registered once and every dispatch mode calls it; the sender choos
 | `parallel` | Call listeners concurrently; wait for all | Returns `()` on success; failures aggregate into `ListenersFailed` (also for a single failure), in registration order |
 | `serial` | Call one at a time in registration order; stop on a result or error | Return first result; `None` and `Some(false)` count as no result |
 | `waterfall` | Listeners call later handlers through `call.next()` and can process their result | Return the outermost listener's result |
-| `bail` / `waterfall_sync` | As `serial` / `waterfall`, but synchronously on the caller's thread (`waterfall_sync` is a host method) | Listeners must be registered with `on_sync`; an async listener is an `AsyncListener` error |
+| `bail` | As `serial`, but synchronously on the caller's thread | Listeners must be registered with `on_sync`; an async listener is an `AsyncListener` error |
 
 Listeners return `rutis::Result<Option<E::Value>>`. For example, if the event declares `type Value = String`, a serial listener can return a title with `Ok(Some(title))` or pass to the next handler with `Ok(None)`.
 
@@ -330,16 +329,23 @@ fn backend(label: &String) -> rutis::Result<BackendPlugin> {
 }
 ```
 
-The host registers the plugin with the constructor and submits new config later:
+The host implements `host::PluginFactory`, calls the constructor in `build`, registers it with `plugin_with`, and submits new config later:
 
 ```rust,ignore
-let backend = root.plugin_from(backend, String::from("local"));
+struct BackendFactory;
+impl PluginFactory<String> for BackendFactory {
+    fn build(&self, label: &String) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(backend(label)?))
+    }
+}
+
+let backend = root.plugin_with(BackendFactory, String::from("local"));
 backend.update(String::from("remote")).await?;
 ```
 
 An update has two stages:
 
-1. **Preflight.** Run the constructor (for a factory, `validate_config` and `build`) and the plugin's `validate`. On failure, return an error and leave current config and instance unchanged.
+1. **Preflight.** Run the factory's `validate_config` and `build` and the plugin's `validate`. On failure, return an error and leave current config and instance unchanged.
 2. **Reload.** Save new config, clean up the old instance, then construct and load again once dependencies are ready. Consumers reload when services change.
 
 The constructor (and a factory's `build`) should perform pure object construction; put network connections, task startup, and similar side effects in `apply`. Validation also needed on initial load belongs in the constructor or plugin `validate`; a factory's `validate_config` is for update preflight.
@@ -417,9 +423,9 @@ When a plugin unloads, the framework waits for its listeners' running calls to f
 
 ### Handling Errors
 
-Lifecycle operations and waiting event APIs return errors directly. The error type is `rutis::Error`, and `?` converts any standard error into it; to tell rutis's own failures apart, use `err.kind()`, which returns `Option<&ErrorKind>` and is `None` for an error from plugin code. Emit listener errors (wrapped as `ListenerFailed`) and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger. The ErrorSink, `take_cleanup_errors()`, and waiting on a `FiberView`, `dispose()` or `shutdown()` give shared `Arc<ErrorKind>` errors.
+Lifecycle operations and waiting event APIs return errors directly. The error type is `rutis::Error`, and `?` converts any standard error into it; to tell rutis's own failures apart, use `err.kind()`, which returns `Option<&ErrorKind>` and is `None` for an error from plugin code. Emit listener errors (wrapped as `ListenerFailed`) and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger. The ErrorSink and waiting on a `FiberView`, `dispose()` or `shutdown()` give shared `Arc<ErrorKind>` errors.
 
-When releasing an effect early, handle the result of `Disposer::dispose()`. Long-lived plugins may periodically call `take_cleanup_errors()` to retrieve completed historical cleanup failures. The owner of each background task observes and reports its errors.
+When releasing an effect early, handle the result of `Disposer::dispose()`; the same error later joins a terminal unload result, or reaches the error sink on reload. The owner of each background task observes and reports its errors.
 
 ### Verifying Critical Flows
 

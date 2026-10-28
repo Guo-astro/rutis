@@ -14,9 +14,10 @@ import { cannotLoad, encodeError, entryGone, fileShown, noMethod, notDefinePlugi
 import { prefixOutput, say, watchBlocking } from './output.mjs'
 
 // `<channel> [--id <endpoint>] [--peer <endpoint>] [--format endpoint] <first plugin or anchor>`.
-// Local channels (`fd:3`, a socket path) speak the compat protocol unless
-// `--format endpoint`; network channels (`ws://`, `wss://`) the endpoint
-// format, as `--id`, expecting `--peer` as the controller when given.
+// A channel speaks the endpoint format, as `--id`, expecting `--peer` as
+// the controller when given: network channels (`ws://`, `wss://`) always,
+// local ones (`fd:3`, a socket path) when given `--id` (or `--format
+// endpoint`); a local channel without either speaks the compat protocol.
 // `listen:…` serves controllers one session at a time (serve.mjs);
 // `dial:ws://…` / `dial:wss://…` dials a rutis access point and dials
 // again (dial.mjs). Both run each session in a child runner; a dialing
@@ -26,10 +27,11 @@ const { channelSpec, pluginPath, endpoint, flags } = (() => {
   const [channelSpec, ...rest] = process.argv.slice(2)
   const flags = {}
   while (rest[0]?.startsWith('--')) flags[rest.shift().slice(2)] = rest.shift()
-  const network = /^(wss?|listen|dial):/.test(channelSpec) || flags.format === 'endpoint'
+  const network = /^(wss?|listen|dial):/.test(channelSpec)
   if (network && !flags.id) throw new Error(`a network channel needs --id <endpoint>: ${channelSpec}`)
+  if (flags.format === 'endpoint' && !flags.id) throw new Error(`the endpoint format needs --id <endpoint>: ${channelSpec}`)
   // A runner is a runtime: the controller manages its rows.
-  const endpoint = network ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
+  const endpoint = flags.id ? { local: flags.id, expected: flags.peer, declare: ['runtime'] } : undefined
   return { channelSpec, pluginPath: rest[0], endpoint, flags }
 })()
 

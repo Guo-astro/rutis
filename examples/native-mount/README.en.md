@@ -7,8 +7,6 @@ Run from the repository root:
 ```sh
 npm --prefix node/rutis-runtime ci
 cargo run -p native-mount-example
-# Reverse direction (frozen; no further capabilities will be added): Cordis app mounts a rutis plugin from src/lib.rs.
-cargo test -p native-mount-example --test cordis_mount -- --nocapture
 ```
 
 There is no separate generation step. Mounts are declared in `[package.metadata.rutis-cordis]` in [Cargo.toml](Cargo.toml); [build.rs](build.rs) calls `from_manifest()` during a normal Cargo build. Generated files go in the build directory and are not committed or maintained by hand. See the [Cordis guide](../../docs/guide/cordis.en.md) for integration details.
@@ -16,7 +14,6 @@ There is no separate generation step. Mounts are declared in `[package.metadata.
 | Direction | Original plugin | How it is used |
 | --- | --- | --- |
 | rutis mounts Cordis (primary) | [counter.ts](../../node/rutis-runtime/test/fixtures/counter.ts) | `ctx.plugin(bindings::Plugin::new(config))`, then `ctx.require::<bindings::Counter>()?` |
-| Cordis mounts rutis (frozen) | [src/lib.rs](src/lib.rs) | `ctx.plugin(plugin(executable), config)`, then `ctx.counter.add(1)` |
 
 The original plugin has no protocol imports or annotations.
 

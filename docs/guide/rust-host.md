@@ -31,13 +31,24 @@ use rutis::host::*;
 use rutis::Ctx;
 use rutis_loader::Builtins;
 
+/// 从配置构造 Weather；`update(config)` 也用它重建。
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // 用当前的 tokio 运行时
     root.plugin(Greeter { lang: "Rust".into() }).await?; // 提供 Greeting
     root.plugin(Printer).await?;                   // 它的 Deps（Greeting）已经在：打印 "hello from Rust"
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 Weather::new 重建
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 WeatherFactory 重建
 
     let mut builtins = Builtins::new();            // rutis-loader 的行按名字找到它
     builtins.register("weather", Weather::new);
@@ -86,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | 建根 | `Ctx::root()`（当前的 tokio 运行时，没有时返回错误）、`Ctx::root_with(handle)`、`Ctx::root_with_sink(handle, sink)`（自己的错误汇集） |
 | 装插件 | `root.plugin(p)`：任何 `Plugin`，或者 `host::DynPlugin`；`Box<dyn DynPlugin>` 也是，运行时才选定的插件列表用它 |
-| 按配置装 | `root.plugin_from(build, config)`：`build` 是 `Fn(&C) -> Result<P>`，依赖取自 `P::Deps`；返回的 `FiberView` 可以 `update(config)`，诊断里的名字是插件的类型名。依赖要到运行时才知道的，实现 `host::PluginFactory<C>`，用 `plugin_with(factory, config)` |
+| 按配置装 | 实现 `host::PluginFactory<C>`，`root.plugin_with(factory, config)`：每次装载用 `build` 从当前配置构造插件，返回的 `FiberView` 可以 `update(config)`；依赖写在 `injects()` 里，诊断里的名字是 `name()` |
 | rutis-loader 的行 | `Builtins::register(name, build)`：配置按 `C` 解码，Schema 从 `C` 生成（`C` 是 `serde_json::Value` 时没有）；`register_with(name, \|build, config\| …)`：每个实例各构造一份；`register_raw(name, factory, schema)`：`PluginFactory<serde_json::Value>` |
 | 读服务 | `get::<T>()`；按键 `get_at(&key)`、提供 `provide_at(key, arc)`，键是 `host::Key<T>`（见[按名字依赖](#按名字依赖)）；`require` / `require_at` 是严格读取，在 `DynPlugin` 的 `apply` 里读声明过的依赖 |
 | 停下 | `root.shutdown().await` 卸载全部并等清理，不限时（等多久由宿主决定）；`shutdown_with_timeout(limit)` 限制等待，到时的错误写明还没结束的插件和清理（[默认输出](#默认输出)）；单个插件 `view.dispose()`、`view.restart()`、`view.dispose_with_timeout(limit)` |
@@ -141,9 +152,9 @@ impl DynPlugin for Router {
 
 ### 宿主看到的错误
 
-- 所有签名里的错误都是 `rutis::Error`。宿主的函数返回 `Box<dyn Error>`（或 `Box<dyn Error + Send + Sync>`）时直接 `?`；打开 rutis 的 `anyhow` feature 后，返回 `anyhow::Result` 也直接 `?`。
-- `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等，就是 0.16 的 `CordisError` 改了名字，变体不变），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
-- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`、`dispose()`、`shutdown()` 得到的。
+- 所有签名里的错误都是 `rutis::Error`。宿主的函数返回 `Box<dyn Error>`（或 `Box<dyn Error + Send + Sync>`）时直接 `?`；遇到 `anyhow::Error` 时写 `.map_err(|e| Error::msg(format!("{e:#}")))?`（`anyhow::Error` 不实现 `std::error::Error`，写不成 `?`）。
+- `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
+- 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、等待 `FiberView`、`dispose()`、`shutdown()` 得到的。
 
 ```rust,no_run
 use std::sync::Arc;
@@ -235,12 +246,12 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外，也只在这些构建里检查能不能绑定（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；同一个类型的不同标注块不能有两个方法映射到同一个对外名字，`provide` 会失败并指出那个名字。参数类型可以写生命周期或 `Self`。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
-- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读取拦截器（`intercept_require_as`）与对处在调用方行位置的 Rust 读取方一样拒绝或替换它：生效的是这一行的祖先注册的拦截器（没有行调用时为提供方的）。读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
+- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
 - **作用域跟着提供的位置**：在实例里提供（`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。在隔离作用域里提供（`ctx.isolate(Key::<Notes>::of(), "a")`）时，名字在同一个作用域里对外（`isolate(host_key("notes"), "a")`），两个隔离作用域各自对外。不用写实例组。实例里提供过之后，实例里的行用的是这个实例自己的，不会退回到同名的全局服务：实例里的服务撤下时，它们等它在这个实例里重新提供（设计 R3：作用域跟着提供的位置）。
 - **能传什么、错误怎么抛**：见[参考](#导出服务参考)：serde 参数与返回值、按引用的回调、`&Ctx` 调用方行、`Err(e)` 抛出时带 `name`、`code`、`message`、`data`。
 - **编译期报错**：带标注的块里有公开方法绑定不了（`&mut self`、返回借用、可变引用参数、不是函数的泛型参数等），是指到那个方法的编译错误；不想对外的，在方法上加 `#[service(skip)]`。
 - **重名**：同一作用域里两个类型对外名字相同，后一个 `provide` 失败，错误写明双方；它什么都没提供，原生服务也不提供。
-- **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
+- **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waits(&entry)` 列出这一行等的名字，原因是 `WaitReason::Explained`，说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
 - **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。重新构建不用换版本号：同一插件的两次构建类型的 `TypeId` 相同，每个值按提供它的那次构建的代码对外，两次构建可以同时加载。去掉标注的构建，它的值不再按名字对外；名字以最新的构建为准。宿主要链接 `rutis-bridge`。
 - **没链接 rutis-bridge**：按名字对外和重名检查都由它做。程序没链接它时，标注的类型只按类型提供，第一次提供时错误汇集收到一次 `ErrorKind::NotServedByName`（默认写 `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`）。
 - **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
@@ -430,9 +441,8 @@ use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCata
 // 写绝对路径：每个运行时的进程在它自己的目录里启动（见下面）。
 let app = std::env::current_dir()?.join("app");
 
-// 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。只共享登记为共享的名字
-// （register_shared、export）时调用 catalog.share_registered_only()。
-let mut catalog = ServiceCatalog::new();
+// 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。
+let catalog = ServiceCatalog::new();
 
 // 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
 // 事件不用配置：运行时里的监听器自动登记到宿主的事件总线上（见下面的“事件”）。
@@ -484,12 +494,12 @@ for failure in &report.failures {
 # }
 ```
 
-- `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waiting_for(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动，报告里没有它的行装载的结果（还没装载）；要完整的报告，像上面那样先等 `RuntimeHandle::ready()`。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
+- `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waits(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动，报告里没有它的行装载的结果（还没装载）；要完整的报告，像上面那样先等 `RuntimeHandle::ready()`。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
 - 配置：`Builtins` 的行、写了 `schema:` 的 dylib 行、你自己的 resolver 用 `Resolved::with_schema` 给了 Schema 的行，loader 在 `build` 之前补默认值并校验，不合格的行以 `config: …` 失败，列在 `failures` 里（[插件 API：配置](plugin-api.md#配置)）。多余的键默认写到标准错误（`<行>: config: …`），每行每个配置值一次；`Loader::on_config_warning(Arc::new(|row, issue| …))` 改为交给你。
 - 路径：每个运行时的进程在它自己的目录里启动（Python、Go：它的项目目录；Node：运行时的包目录），收到的路径照原样使用。相对路径会从那个目录算起，而不是应用的目录：照上面那样写绝对路径。
 - 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 运行时结束不算到行头上：结束时还在加载的行和其他行一样等它，不会失败。运行时的 `Down` 原因写明进程怎样结束，正在进行的、对它的行的调用失败时也这样写明。
-- 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::transport::local::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
+- 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
 - 远程运行时（`RuntimePlugin::remote`）的会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
 - 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
@@ -511,20 +521,17 @@ let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), 
 
 ### 本机运行时的选项
 
-管住第三方插件时用，都默认关，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
+管住第三方插件时用，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
 
 | `LocalRuntime` 的方法 | 作用 |
 | --- | --- |
-| `.call_limit(时限)` | 进入这个运行时里插件代码的调用（按名字调用它的行的服务、调用它交出的函数）超过时限就取消，调用方收到错误码 `timeout`（`data`：`{runtime, limit, service?, method?}`，`limit` 为毫秒）。同一运行时里插件之间的调用不受限 |
-| `.kill_on_timeout()` | 与 `call_limit` 一起用：超时后再结束运行时的进程，状态为 `down (ended by the host: …)`；重启用运行时 fiber 的 `restart()` |
-| `.allowed_services([..])` | 插件只能用这些来自运行时之外的服务；`inject` 里有别的时这一行启动失败（错误码 `unavailable`）。同一运行时里的行互相提供的不受限 |
 | `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
 
 每个插件一个进程：每个插件一个 `named` 的运行时，行用 `RuntimeResolver::modules`，写 `<运行时名>:<npm 名或文件>`（Node、Python 都这样）。
 
 ### Go 运行时
 
-Go 插件是编译好的二进制，一个二进制一个运行时（features：`rutis-loader` 的 `go`）。`GoResolver` 读二进制的清单（`<二进制> --rutis-manifest`），把 `go:<插件>` 路由到含有它的二进制；`GoRuntimes` 在有行用到时启动它，空闲后停下：
+Go 插件是编译好的二进制，一个二进制一个运行时（features：`rutis-loader` 的 `go`）。`BinaryResolver<Go>` 读二进制的清单（`<二进制> --rutis-manifest`），把 `go:<插件>` 路由到含有它的二进制；`BinaryRuntimes<Go>` 在有行用到时启动它，空闲后停下：
 
 ```rust,no_run
 # use std::sync::Arc;
@@ -536,15 +543,16 @@ Go 插件是编译好的二进制，一个二进制一个运行时（features：
 # let root = rutis::Ctx::root()?;
 # let catalog = ServiceCatalog::new();
 # let app = std::env::current_dir()?.join("app");
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 
 let go = Arc::new(
-    GoResolver::new(GoBinaries::new().dir(app.join("plugins/go")).file(app.join("bin/netkit")))
+    BinaryResolver::<Go>::new(Binaries::new().dir(app.join("plugins/go")).file(app.join("bin/netkit")))
         .with_catalog(&catalog)
         .reserve(["node", "py"]),              // 其他运行时的名字，Go 运行时不能用
 );
 // 放进加载器的 Chain：Chain::new().with_shared(go.clone())…，加载器挂载之后：
-let go_runtimes = GoRuntimes::new(go, &app).idle(Some(Duration::from_secs(60)));
+let go_runtimes = BinaryRuntimes::<Go>::new(go, &app).idle(Some(Duration::from_secs(60)));
 let control = go_runtimes.handle();            // restart("go-netkit")、runtimes()
 root.plugin(go_runtimes).await?;
 # let _ = control;
@@ -555,7 +563,7 @@ root.plugin(go_runtimes).await?;
 - 运行时名由文件名得出（`netkit` → `go-netkit`），两个二进制有同名插件时行写 `go-netkit:<插件>`。
 - 进程运行期间按它启动时的清单解析；换了二进制，`control.restart("go-netkit")` 后生效。
 - 崩溃的运行时默认不自动重启。`control.supervise(RestartPolicy::OnFailure, |end| …)`（`rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd}`）之后，进程自己结束的运行时等一会儿后重新启动（1 秒起每次翻倍、最多 30 秒，运行满 60 秒后从 1 秒重来，5 分钟内重启 5 次后再结束就放弃），每个运行时各算各的；`RestartPolicy::Exit` 只把结束报告给回调（`RuntimeEnd::Exit`），由应用决定停下。`end.line()` 是 rutis-host 打印的那一行；`control.unsupervise()` 停止监督，正在等待的重启不再发生。第一次 `supervise` 之前就结束的运行时（应用还在启动时崩溃）由 `supervise` 照样处理，每个运行时只留最近一次；不打算监督的应用调用一次 `control.unsupervise()`，这些结束就不再留着。握手被拒（旧 SDK）的二进制不算自己结束，不重启。
-- Go 之外的编译型语言（之后的 Swift）用同一套实现：`rutis_loader::runtime::binary` 的 `BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式）；`GoResolver` 就是 `BinaryResolver<Go>`。
+- Go 之外的编译型语言（之后的 Swift）用同一套实现：`rutis_loader::runtime::binary` 的 `BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式）；Go 就是 `L` = `Go`。
 
 - 只运行一个固定的二进制时，也可以像 Python 一样：`LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（行名 `<运行时名>:<插件>`）。
 
@@ -575,28 +583,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 节点
 
-```rust,no_run
-# use rutis::host::*;
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let root = rutis::Ctx::root()?;
-# let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
-
-let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
-root.plugin(WebSocketPlugin::new(Config::new())?).await?;
-root.plugin(IdentityPlugin::new(
-    "main",
-    StaticIdentity::new(main).present(office.clone(), Credential::Bearer(token)),
-));
-root.plugin(PeerPlugin::new(
-    LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
-    Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
-)?);
-# Ok(())
-# }
-```
+0.19 重做远程连接（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)），Rust 里直接搭节点的写法随之改变，这一节在新写法落地后补上；现在用 rutis-host 的节点行（见 [连接节点](nodes.md)）。
 
 用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
 
@@ -638,20 +625,19 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // 可省略：没有终态
     .await?;
 let sync = ctx.bail(Created("s1".into(), 3));                         // 遇到上面的异步监听器：AsyncListener
-let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // 宿主方法：同步的 waterfall
 let python_only = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
-# let _ = (first, out, sync, chain, python_only);
+# let _ = (first, out, sync, python_only);
 # Ok(())
 # }
 ```
 
 | 事项 | 规则 |
 | --- | --- |
-| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` / `waterfall_sync` 调用（`AsyncListener`） |
+| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` 调用（`AsyncListener`） |
 | 选项与前缀 | `ctx.listen::<E>()` 后接 `.prefix("session/")`（收这个前缀下的所有名字，`call.name()` 是实际的名字）、`.name(n)`、`.once()`、`.prepend()`、`.global()`，最后是 `.on(…)` 或 `.on_sync(…)` |
 | 按名字 | 不定义类型时用 `rutis_bridge::events::Args` 监听：`ctx.listen::<Args>().name("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换。名字由值决定的事件类型把 `NAME` 写成 `""`，重写 `Event::name` |
 | 作用域 | 发出方的作用域是 `ctx.scope()`：加载器把每个组实例标为一个作用域。事件按名字送达所有监听器；作用域只是描述，按 `ListenerInfo::scope` 过滤 |
@@ -715,7 +701,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | 没有 serde（或 `untagged`）的枚举 | 类型名 | 变体的 Rust 名（取自 derive 的 `Debug`） | 有 serde 时为 serde 值 |
 | 有 serde 的结构体 | 类型名 | 序列化成的字符串，否则为类型名 | serde 值 |
 | `String` | `Error` | `Error`（字符串是 `message`） | — |
-| `rutis::Error`、`rutis::host::ErrorKind` | `CordisError`（线上的名字不变） | `ErrorKind` 的变体名（插件代码的错误是 `PluginFailed`） | — |
+| `rutis::Error`、`rutis::host::ErrorKind` | `Error`（声明里是 `ErrorThrown`） | `ErrorKind` 的变体名（插件代码的错误是 `PluginFailed`） | — |
 | `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
 | 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
 

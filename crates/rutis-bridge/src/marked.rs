@@ -38,8 +38,8 @@ rutis::__on_load!(install);
 
 /// A marked service, served by name: the methods of all its blocks. Each
 /// call reads the native service through the providing context's strict
-/// read path ([`Entry::resolve`]), so its read interceptors and `check()`
-/// apply as they do to Rust readers.
+/// read path ([`Entry::resolve`]), so `check()` applies as it does to Rust
+/// readers.
 struct Marked {
     ctx: Ctx,
     native: TypeKey,
@@ -69,13 +69,8 @@ impl HostDispatch for Marked {
                 .collect();
             return Err(Error::no_method(self.name(), method, methods));
         };
-        // Read interceptors apply with the calling row as the reader, as
-        // for a Rust reader in its place; with no row (a Rust or peer
-        // caller), with the provider.
-        let caller = caller_row();
-        let actor = caller.as_ref().map(|row| row.ctx());
         let service = entry
-            .resolve(&self.ctx, &self.native, &self.provision, actor)
+            .resolve(&self.ctx, &self.native, &self.provision)
             .map_err(|why| {
                 let service = self.name();
                 Error::binding(
@@ -1013,63 +1008,8 @@ mod tests {
         root.shutdown().await.unwrap();
     }
 
-    /// A plugin that hands out its context, and runs `then` on it first.
-    struct Probe<F>(std::sync::mpsc::Sender<Ctx>, F);
-
-    impl<F: Fn(&Ctx) + Send + Sync + 'static> rutis::host::DynPlugin for Probe<F> {
-        fn name(&self) -> &str {
-            "probe"
-        }
-        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, RutisError>> {
-            (self.1)(ctx);
-            self.0.send(ctx.clone()).unwrap();
-            Box::pin(async { Ok(Effect::Done) })
-        }
-    }
-
-    async fn child(parent: &Ctx, then: impl Fn(&Ctx) + Send + Sync + 'static) -> Ctx {
-        let (tx, rx) = std::sync::mpsc::channel();
-        (&parent.plugin(Probe(tx, then))).await.unwrap();
-        rx.recv().unwrap()
-    }
-
-    fn call_as(service: &Arc<dyn HostDispatch>, caller: Option<&Ctx>) -> Result<(), Error> {
-        let row = caller.map(|ctx| crate::session::CallerRow::new("row", "row", ctx.clone()));
-        crate::session::with_caller_row(row, || service.invoke("ping", Value::List(Vec::new())))
-            .map(|_| ())
-    }
-
-    /// Read interceptors of a call by name are those a Rust reader in the
-    /// calling row's place gets: the ones of the row's ancestors, not of
-    /// the provider's.
-    #[tokio::test]
-    async fn read_interceptors_are_the_calling_rows() {
-        use rutis::internal::ServiceIntercept;
-        let root = Ctx::root().unwrap();
-        root.provide(Guarded).unwrap();
-        let service = root
-            .get_at::<dyn HostDispatch>(&host_key("guarded"))
-            .unwrap();
-        // A plugin below the root denies reads of `Guarded` in its subtree.
-        let guard = child(&root, |ctx| {
-            ctx.intercept_require_as::<Guarded>(TypeKey::of::<Guarded>(), |_| {
-                ServiceIntercept::Deny
-            })
-            .unwrap();
-        })
-        .await;
-        let inside = child(&guard, |_| {}).await;
-        let outside = child(&root, |_| {}).await;
-        assert!(
-            call_as(&service, Some(&inside)).is_err(),
-            "denied in the guard's subtree"
-        );
-        assert!(call_as(&service, Some(&outside)).is_ok());
-        assert!(
-            call_as(&service, None).is_ok(),
-            "no row: the provider reads"
-        );
-        root.shutdown().await.unwrap();
+    fn ping(service: &Arc<dyn HostDispatch>) -> Result<(), Error> {
+        service.invoke("ping", Value::List(Vec::new())).map(|_| ())
     }
 
     /// A reference to the entry kept after its service went serves nothing,
@@ -1082,15 +1022,15 @@ mod tests {
         let kept = root
             .get_at::<dyn HostDispatch>(&host_key("guarded"))
             .unwrap();
-        assert!(call_as(&kept, None).is_ok());
+        assert!(ping(&kept).is_ok());
         first.dispose().await.unwrap();
         root.provide(Guarded).unwrap();
-        let error = call_as(&kept, None).unwrap_err();
+        let error = ping(&kept).unwrap_err();
         assert!(error.to_string().contains("not available"), "{error}");
         let current = root
             .get_at::<dyn HostDispatch>(&host_key("guarded"))
             .unwrap();
-        assert!(call_as(&current, None).is_ok());
+        assert!(ping(&current).is_ok());
         root.shutdown().await.unwrap();
     }
 }

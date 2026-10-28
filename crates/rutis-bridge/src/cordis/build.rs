@@ -2,9 +2,6 @@
 
 use std::path::Path;
 
-mod rust;
-pub use rust::rutis_plugin;
-
 /// Generate Rust bindings for a Cordis plugin into `OUT_DIR/cordis.rs`.
 pub fn cordis_plugin(
     plugin: impl AsRef<Path>,
@@ -288,8 +285,9 @@ pub fn from_manifest() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("[package.metadata.rutis-cordis] declares no mounts")?;
     let mut declarations = String::new();
     for (name, mount) in mounts {
-        syn::parse_str::<syn::Ident>(name)
-            .map_err(|_| format!("mount name {name} is not a Rust identifier"))?;
+        if !rust_identifier(name) {
+            return Err(format!("mount name {name} is not a Rust identifier").into());
+        }
         let mount = mount
             .as_table()
             .ok_or(format!("mount {name} must be a table"))?;
@@ -333,6 +331,24 @@ pub fn from_manifest() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Whether `name` can name the mount's generated module: a letter or `_`,
+/// then letters, digits and `_`, and not a Rust keyword (nor `_` alone).
+fn rust_identifier(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "_", "abstract", "as", "async", "await", "become", "box", "break", "const", "continue",
+        "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "if",
+        "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv",
+        "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true",
+        "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+    ];
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_')
+        && !KEYWORDS.contains(&name)
+}
+
 /// The Node runtime must speak this crate's protocol version.
 fn check_runtime(runtime: &Path, install: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = runtime.join("package.json");
@@ -364,6 +380,29 @@ pub(crate) fn removed_field(field: &str) -> String {
         "the config field {field} was removed in rutis 0.13: listeners register themselves; \
          emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)"
     )
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::rust_identifier;
+
+    #[test]
+    fn mount_names_are_rust_identifiers() {
+        for name in [
+            "bindings",
+            "edge",
+            "_private",
+            "dsh_persona",
+            "a1",
+            "union",
+            "über",
+        ] {
+            assert!(rust_identifier(name), "{name}");
+        }
+        for name in ["", "1a", "dsh-persona", "a b", "mod", "type", "Self", "_"] {
+            assert!(!rust_identifier(name), "{name}");
+        }
+    }
 }
 
 #[cfg(test)]

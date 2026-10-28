@@ -42,4 +42,5 @@ catch (crossed) {
 // Closing is explicit even while a remote-owned callback remains reachable.
 peer.call('rpc', 'save', [saved])
 clearTimeout(timer)
-await peer.dispose()
+peer.end()
+await peer.closed()

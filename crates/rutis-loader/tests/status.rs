@@ -9,13 +9,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use common::runtimes::{layer, rows_stage, Probe, COLD};
-use rutis::host::CtxHost;
+use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::Value as RpcValue;
 use rutis_bridge::session::{host_key, HostDispatch};
+use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::RuntimeResolver;
-use rutis_loader::status::{Call, Row, RowState, RuntimeState, Service};
+use rutis_loader::status::{Call, RuntimeState, Service};
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin};
 use serde_json::json;
 
@@ -91,24 +92,19 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
                     && status
                         .rows
                         .iter()
-                        .all(|row| row.state != RowState::Starting))
+                        .all(|row| !matches!(&row.state, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Loading)))
                 .then_some(status)
             },
             "the call in the status",
         )
         .await;
 
-    assert_eq!(
-        status.rows,
-        [
-            Row::new("slow", None, RowState::Running, None),
-            Row::new(
-                "needy",
-                None,
-                RowState::Pending,
-                Some("waiting for missing (no row provides it)")
-            ),
-        ]
+    let printed = status.to_string();
+    assert!(
+        printed.starts_with(
+            "rows:\n  slow: running\n  needy: waiting for missing (no row provides it)\nservices:\n"
+        ),
+        "{printed}"
     );
     assert!(status
         .services
@@ -134,7 +130,6 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
         ),
         (None, Some("slow"), "slow", "wait")
     );
-    let printed = status.to_string();
     assert!(printed.contains("  host → slow.wait  "), "{printed}");
     assert!(
         printed.contains(&format!("  py: running (pid {pid})")),
@@ -159,7 +154,10 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
         .await;
     assert_eq!(status.runtimes[0].pid, None);
     let slow_row = status.rows.iter().find(|row| row.id == "slow").unwrap();
-    assert_eq!(slow_row.state, RowState::Pending);
+    assert!(
+        matches!(&slow_row.state, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Pending),
+        "{slow_row:?}"
+    );
     assert!(
         slow_row
             .reason

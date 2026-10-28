@@ -34,13 +34,11 @@ use rutis::host::{BoxFuture, CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::Value;
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, WebSocketPlugin, WebSocketTransport,
-};
+use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig};
 use rutis_bridge::{
-    Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin, Admission,
-    AdmissionPlugin, Presented, Registration, Rejection, Release, SharedToken, StaticIdentity,
-    Transport,
+    Accept, Accepted, Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin, Admission,
+    AdmissionPlugin, Presented, Registration, Registrations, Rejection, Release, SharedToken,
+    StaticIdentity,
 };
 use rutis_test_support::{scaled, within, HANG_GUARD};
 use serde_json::json;
@@ -280,7 +278,7 @@ impl Admission for Refusing {
 /// rutis, `main`: a loopback WebSocket listener and the access point
 /// `phone` on it.
 struct Rutis {
-    websocket: FiberView,
+    listener: Listener,
     access: FiberView,
     events: broadcast::Receiver<AccessEvent>,
     port: u16,
@@ -291,35 +289,36 @@ impl Rutis {
     /// Listening on `port` (0: any free one).
     async fn start(port: u16, admission: impl Admission) -> Self {
         let root = Ctx::root().unwrap();
-        let plugin = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-            "public",
-            ([127, 0, 0, 1], port).into(),
-            id("main"),
-        )))
+        let registrations = Registrations::new();
+        let listener = websocket::listen(
+            &ListenerConfig::new("public", ([127, 0, 0, 1], port).into()),
+            &Limits::default(),
+            websocket::admit_registered(registrations.clone(), "public"),
+        )
         .unwrap();
-        let handle = plugin.clone();
-        let websocket = root.plugin(plugin);
-        (&websocket).await.unwrap();
-        let port = handle
-            .transport()
-            .unwrap()
-            .local_addr("public")
-            .unwrap()
-            .port();
+        let port = listener.local_addr().port();
         (&root.plugin(AdmissionPlugin::new("phone", admission)))
             .await
             .unwrap();
         let plugin = AccessPointPlugin::new(
-            AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
-                .handshake(scaled(HANG_GUARD))
-                .require("runtime"),
+            AccessPointConfig::new(
+                id("phone"),
+                "phone",
+                Accepting {
+                    registrations,
+                    listener: "public".into(),
+                    local: id("main"),
+                },
+            )
+            .handshake(scaled(HANG_GUARD))
+            .require("runtime"),
         )
         .accept(Rows);
         let events = plugin.events();
         let access = root.plugin(plugin);
         (&access).await.unwrap();
         Self {
-            websocket,
+            listener,
             access,
             events,
             port,
@@ -350,7 +349,7 @@ impl Rutis {
     /// Goes away: the access point, then the listener.
     async fn stop(self) {
         self.access.dispose().await.unwrap();
-        self.websocket.dispose().await.unwrap();
+        drop(self.listener);
     }
 }
 
@@ -483,22 +482,28 @@ async fn a_rejected_id_is_retried_as_rejected(language: Language) {
 /// An access point speaking another session protocol (400 at the
 /// upgrade): the dialer stops and reports, exiting non-zero.
 async fn an_incompatible_access_point_stops_the_dialer(language: Language) {
-    let transport = WebSocketTransport::start(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let _registered = transport
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("phone"),
-            identity: Arc::new(StaticIdentity::new(id("main")).accept_token(TOKEN, id("phone"))),
-            protocol: "rutis.9".into(),
-            deliver: Box::new(|_| {}),
-        })
+    let _registered = registrations
+        .register(
+            &id("main"),
+            Registration {
+                listener: "public".into(),
+                peer: id("phone"),
+                identity: Arc::new(
+                    StaticIdentity::new(id("main")).accept_token(TOKEN, id("phone")),
+                ),
+                protocol: "rutis.9".into(),
+                deliver: Box::new(|_| {}),
+            },
+        )
         .unwrap();
-    let address = format!("ws://{}/rutis", transport.local_addr("public").unwrap());
+    let address = format!("ws://{}/rutis", listener.local_addr());
     let mut pixel = Dialer::start(language, &address, "pixel", TOKEN);
     let line = pixel.expect("rutis: refused: incompatible (").await;
     assert!(line.contains("400"), "{line}");

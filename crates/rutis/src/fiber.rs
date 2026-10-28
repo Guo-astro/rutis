@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ctx::{Ctx, Shared};
 use crate::diagnostics::ServiceAccess;
-use crate::effect::{Effect, EffectMeta, EffectRecord};
+use crate::effect::{Effect, EffectRecord};
 use crate::error::{aggregate_arcs, panic_error, Error, ErrorKind, ServiceReadFailure};
 use crate::events::{CatchUnwind, Event};
 use crate::key::{InstanceId, ScopeId, TypeKey};
@@ -1661,28 +1661,9 @@ impl FiberView {
         self.inner.sequenced_snapshot()
     }
 
-    /// Current cleanup ownership tree for this fiber. Records being drained
-    /// remain visible until their cleanup completes. This is a point-in-time
-    /// read of metadata only; it never calls user code.
-    pub fn effects(&self) -> Vec<EffectMeta> {
-        let records = self.inner.effect_index.lock().unwrap().clone();
-        records
-            .into_iter()
-            .filter_map(|entry| entry.upgrade())
-            .filter_map(|record| record.snapshot())
-            .collect()
-    }
-
     /// The plugin's display name.
     pub fn name(&self) -> &str {
         &self.inner.name
-    }
-
-    /// Take this fiber's completed, early-disposed effect errors. Taken
-    /// errors are excluded from a later unload result; see
-    /// [`Ctx::take_cleanup_errors`].
-    pub fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>> {
-        std::mem::take(&mut *self.inner.drained_errors.lock().unwrap())
     }
 
     /// Permanently close this fiber and its descendants. Admission closes at

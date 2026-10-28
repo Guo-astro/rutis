@@ -1,13 +1,13 @@
 //! The public `Loader` methods.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rutis::host::{CtxHost, FiberView, PluginId};
+use rutis::host::FiberView;
 use serde_json::Value;
 
 use crate::edit::Edit;
-use crate::patch::{Layer, Patch};
+use crate::patch::Layer;
 use crate::LoaderError;
 
 use super::{
@@ -93,53 +93,12 @@ impl Loader {
         self.inner.state.lock().unwrap().layers.clone()
     }
 
-    /// The overlay layers, in composition order.
-    pub fn overlays(&self) -> Vec<Layer> {
-        self.inner.state.lock().unwrap().overlays.clone()
-    }
-
     /// The editable layer and the stored version the loader holds for it.
     pub fn editable(&self) -> Option<Editable> {
         let state = self.inner.state.lock().unwrap();
         state
             .editable
             .map(|i| Editable::new(state.layers[i].name.clone(), state.version.clone()))
-    }
-
-    /// Set (`Some`) or remove (`None`) the overlay layer `name` and reconcile.
-    ///
-    /// Overlays are composed after the application's layers and kept across
-    /// `reconcile`; they are never persisted and their rows cannot be edited
-    /// (they sit above the editable layer). A development channel loads
-    /// plugins this way without touching the user's configuration.
-    pub async fn set_overlay(
-        &self,
-        name: &str,
-        patches: Option<Vec<Patch>>,
-    ) -> Result<ReconcileReport, LoaderError> {
-        let inner = &self.inner;
-        let _op = inner.op.lock().await;
-        inner.check_open()?;
-        {
-            let mut state = inner.state.lock().unwrap();
-            if state.layers.iter().any(|l| l.name == name) {
-                return Err(LoaderError::InvalidEntry(format!(
-                    "{name:?} is an application layer"
-                )));
-            }
-            let at = state.overlays.iter().position(|l| l.name == name);
-            match (at, patches) {
-                (Some(i), Some(patches)) => state.overlays[i].patches = patches,
-                (None, Some(patches)) => state.overlays.push(Layer::new(name, patches)),
-                (Some(i), None) => {
-                    state.overlays.remove(i);
-                }
-                (None, None) => {}
-            }
-        }
-        let report = inner.reconcile_inner().await;
-        inner.emit(LoaderChanged::Overlay(name.to_owned()));
-        Ok(report)
     }
 
     /// Edits applied but not yet persisted.
@@ -169,36 +128,6 @@ impl Loader {
             }
         }
         out
-    }
-
-    /// What the copy `entry` (one of [`Loader::entries`]) waits for: each
-    /// service it injects that is missing, by name, with why when rutis
-    /// knows more (a Rust service of that name whose type is not marked
-    /// `#[rutis::service]`, so not served to other languages).
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
-    pub fn waiting_for(&self, entry: &EntryInfo) -> Vec<String> {
-        let Some(plugin) = entry.plugin else {
-            return Vec::new();
-        };
-        let Some(ctx) = self.inner.state.lock().unwrap().last_root.clone() else {
-            return Vec::new();
-        };
-        let diagnostics = ctx.diagnostics();
-        let Some(found) = diagnostics.plugins.iter().find(|found| found.id == plugin) else {
-            return Vec::new();
-        };
-        found
-            .injects
-            .iter()
-            .filter(|inject| inject.status == rutis::host::diagnostics::DependencyStatus::Missing)
-            .map(|inject| match inject.key.name() {
-                Some(name) => match rutis_bridge::exports::unexported(&ctx, name) {
-                    Some(why) => format!("{name}: {why}"),
-                    None => name.to_owned(),
-                },
-                None => inject.key.describe(),
-            })
-            .collect()
     }
 
     /// The row `id` itself (for a row inside instanced groups, without a
@@ -231,41 +160,6 @@ impl Loader {
                 .collect(),
             inject: row.raw_scope.inject.clone(),
         })
-    }
-
-    /// The row whose fiber is `plugin` or an ancestor of it.
-    pub fn locate(&self, plugin: PluginId) -> Option<String> {
-        let (records, root) = {
-            let state = self.inner.state.lock().unwrap();
-            let records: HashMap<PluginId, String> = state
-                .running
-                .iter()
-                .map(|(slot, r)| (r.view.id, slot.row.clone()))
-                .collect();
-            (records, state.groups.get(&None).map(|g| g.ctx.clone()))
-        };
-        if let Some(id) = records.get(&plugin) {
-            return Some(id.clone());
-        }
-        let parents: HashMap<PluginId, Option<PluginId>> = root?
-            .diagnostics()
-            .plugins
-            .into_iter()
-            .map(|p| (p.id, p.parent))
-            .collect();
-        let mut current = parents.get(&plugin).copied().flatten();
-        while let Some(id) = current {
-            if let Some(entry) = records.get(&id) {
-                return Some(entry.clone());
-            }
-            current = parents.get(&id).copied().flatten();
-        }
-        None
-    }
-
-    /// The config schema of a module, without loading it.
-    pub async fn schema_of(&self, name: &str) -> Result<Option<Value>, LoaderError> {
-        Ok(self.inner.resolver.resolve(name).await?.schema.clone())
     }
 
     /// Resolve a module name with this loader's resolvers, as a row naming
@@ -508,7 +402,7 @@ impl Loader {
             (
                 name.clone(),
                 state.resolved.get(&name).cloned(),
-                state.composed_layers(),
+                state.layers.clone(),
                 Inner::failures(&state),
             )
         };

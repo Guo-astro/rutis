@@ -108,7 +108,7 @@ flowchart TD
 | `parallel` | 按登记顺序开始，并发执行，等待全部完成 | 成功返回 `()`；有失败时返回 `ListenersFailed`，按登记顺序汇总 |
 | `serial` | 按登记顺序逐个调用，遇到第一个有结果的返回值或错误时结束 | 返回首个结果；`None` 与 `Some(false)` 都算没有结果 |
 | `waterfall` | 监听器通过 `call.next()` 调用后续处理，并可处理其返回结果 | 返回最外层监听器的结果 |
-| `bail_sync` / `waterfall_sync` | 同 `serial` / `waterfall`，同步执行 | 遇到异步监听器报 `AsyncListener` |
+| `bail_sync` | 同 `serial`，同步执行 | 遇到异步监听器报 `AsyncListener` |
 
 这些机制通常可以用于状态通知、请求分发、插件间协作和中间件处理。例如，同一状态变化可以交给多个监听器分别处理；一个请求可以依次交给多个处理者，直到其中一个返回结果。具体用途由事件内容和处理函数共同定义。
 

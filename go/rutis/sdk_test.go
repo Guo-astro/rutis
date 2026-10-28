@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/rutistest"
 )
 
@@ -197,7 +198,7 @@ func TestABindingMatchesDeclaredMethods(t *testing.T) {
 }
 
 func TestTheManifestDescribesEveryPlugin(t *testing.T) {
-	data, err := rutis.Manifest(weather)
+	data, err := advanced.Manifest(weather)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +212,7 @@ func TestTheManifestDescribesEveryPlugin(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Manifest != 1 || manifest.SDK != rutis.Version || manifest.PluginAPI != rutis.PluginAPI || manifest.Runtime != "rutis-go-runtime:1" {
+	if manifest.Manifest != 1 || manifest.SDK != advanced.Version || manifest.PluginAPI != advanced.PluginAPI || manifest.Runtime != "rutis-go-runtime:1" {
 		t.Fatalf("%s", data)
 	}
 	plugin := manifest.Plugins["weather"]
@@ -221,7 +222,7 @@ func TestTheManifestDescribesEveryPlugin(t *testing.T) {
 }
 
 func TestTwoPluginsMayNotShareAName(t *testing.T) {
-	err := rutis.ServeArgs([]string{"--rutis-manifest"}, weather, weather)
+	err := advanced.ServeArgs([]string{"--rutis-manifest"}, weather, weather)
 	if err == nil || !strings.Contains(err.Error(), "two plugins are named weather") {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestAnUndeclaredServiceIsAnnounced(t *testing.T) {
 	if err := weather.Call(context.Background(), "unit", &unit); err != nil || unit != "celsius" {
 		t.Fatal(unit, err)
 	}
-	data, err := rutis.Manifest(undeclared)
+	data, err := advanced.Manifest(undeclared)
 	if err != nil {
 		t.Fatal(err)
 	}

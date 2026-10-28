@@ -6,7 +6,7 @@
 
 | 注册表 | 包 |
 | --- | --- |
-| crates.io | `rutis`（内核）及其宏 `rutis-macros`、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher`；迁移工具 `rutis-migrate` |
+| crates.io | `rutis`（内核）及其宏 `rutis-macros`、`rutis-bridge`、`rutis-loader`、`rutis-host`；dylib 工具链 `rutis-sdk`、`rutis-dylib`、`rutis-dylib-meta`、`rutis-dylib-launcher` |
 | npm | `@arcships/rutis`、`@arcships/rutis-runtime`、`@arcships/rutis-bun`、`@arcships/rutis-host`（及 `@arcships/rutis-host-{linux,darwin}-{x64,arm64}`、`@arcships/rutis-host-win32-x64`） |
 | PyPI | `rutis`、`rutis-host`（各平台的 wheel） |
 | Go | `github.com/arcships/rutis/go/rutis`（tag `go/rutis/vX.Y.Z`，由 release.yml 打） |
@@ -15,7 +15,7 @@
 
 ## 步骤
 
-1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/version.go` 的 `Version`，`kotlin/rutis/gradle.properties` 的 `version` 和 `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt` 的 `VERSION`（Kotlin SDK，发布到 Maven Central），`swift/rutis/Sources/Rutis/Version.swift` 的 `sdkVersion`（Swift SDK，随根仓库的 `vX.Y.Z` tag 发布），`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。指南里写出的版本号（`README.md`、`README.zh-CN.md`、`docs/guide/` 的 `rust-host`、`cordis`、`typescript-plugin`、`python-plugin`、`README` 等，搜上一个版本号）也在这个 PR 里改，两种语言都改。Python 插件对 `rutis` 的下限（`python-plugin`、`plugin-api` 里的 `rutis>=0.17`，#672）不改，只在插件 API 变化时提高；`rutis-host new` 的模板写的是生成它的 rutis-host 自己的版本，不用手改。同一个 PR 里保存本版本的持久化样本（`tests/fixtures/persisted/`，见下文[持久化样本](#持久化样本)）。
+1. 改版本号：`scripts/train.mjs` 里 `crates` 列出的每个 crate 的 Cargo.toml（以及它们之间、和工作区其他 crate 对它们的依赖版本），`node/rutis`、`node/rutis-runtime`、`bun/rutis-bun`、`node/rutis-host` 的 package.json（`@arcships/rutis-host` 依赖的运行时和平台包版本），`python/rutis/pyproject.toml` 和 `python/rutis/rutis/peer.py` 的 `IMPLEMENTATION`，`go/rutis/internal/runtime/version.go` 的 `Version`，`kotlin/rutis/gradle.properties` 的 `version` 和 `kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt` 的 `VERSION`（Kotlin SDK，发布到 Maven Central），`swift/rutis/Sources/Rutis/Version.swift` 的 `sdkVersion`（Swift SDK，随根仓库的 `vX.Y.Z` tag 发布），`crates/rutis-host/pyproject.toml` 里 `rutis` 的范围。`node scripts/train.mjs` 检查它们一致，CI 也会跑。指南里写出的版本号（`README.md`、`README.zh-CN.md`、`docs/guide/` 的 `rust-host`、`cordis`、`typescript-plugin`、`python-plugin`、`README` 等，搜上一个版本号）也在这个 PR 里改，两种语言都改。Python 插件对 `rutis` 的下限（`python-plugin`、`plugin-api` 里的 `rutis>=0.17`，#672）不改，只在插件 API 变化时提高；`rutis-host new` 的模板写的是生成它的 rutis-host 自己的版本，不用手改。同一个 PR 里保存本版本的持久化样本（`tests/fixtures/persisted/`，见下文[持久化样本](#持久化样本)）。
 2. 合并 release PR（PR 上 CI 的 `release-dry-run` 通过，各包都能打包）。不用再等 main 上或每晚的运行：打 tag 后 release.yml 自己跑全部 CI 任务（第 5 步）。想在打 tag 前把整个发布门先走一遍，在分支上运行 `gh workflow run release.yml --ref <分支> -f dry-run=true`（可加 `-f tag=vX.Y.Z` 核对版本号）：发布门的任务都跑，发布、GitHub Release 和发布后验证都跳过，不用到任何 secret 和 environment。
 3. 发布前在两台机器上跑一次网络冒烟（下文）。
 4. **发布前 agent 试用**（每个次版本 X.Y.0 一次，不挡发版）：让 agent 按 [#663](https://github.com/arcships/rutis/issues/663)「评估方法」从零走一遍：写插件（每种语言）、用 `rutis-host` 组装插件、Rust 嵌入、14 种故障逐种打分、宿主持有者端到端。用这次的包：第 2 步发布门演练构建的包（运行的 artifact `packages`、`binary-*`、`wheels-*`），或本地 `tools/install/local-artifacts.sh`；Go SDK 与 Rust crate 还不在代理和 registry 上，用这次的源码。记下各角色要懂的概念、命令数、用时、卡住和文档不符的地方，对照 #663 的概念预算；结果写进 #663 的评估记录，新问题补进已有的 issue（没有对应的才新开）。写插件、组装插件、宿主持有者的检查已在发布门里（`tests/e2e/tests/devx.rs`，第 5 步）；这一步看的是"好不好用"。
@@ -33,7 +33,7 @@ Maven Central（release.yml 的 `maven` 任务，vanniktech maven-publish 插件
 
 发布的是 `io.github.arcships:rutis`（含 `rutis-jvm`、`rutis-android`）与 `io.github.arcships:rutis-ksp`，自动 release；任务等部署发布完成才结束（最多一小时）；Central Portal 已发布这个版本的模块跳过（经 Portal 的 publisher API 查询，不看会滞后的 repo1.maven.org）。Portal 要发布完成（上传后 10～30 分钟）才说已发布，所以上传前先在缓存里记下这个版本上传过：重跑时若之前上传过、模块还没发布，先等它发布（最多 45 分钟），不重复上传；到时仍未发布（部署失败，或上次没真正上传）才重新上传。所以重跑安全。Maven Central 同步到搜索页可能要几十分钟，发布后验证不等它。
 
-插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加。Python 插件对 `rutis` 只写下限，和运行时共用宿主环境里的同一个 `rutis`，所以 Python 的 `rutis` 在 `PLUGIN_API` 不变时不删、不改插件导入的名字：要去掉的名字保留下来，用到时给出弃用警告，到 `PLUGIN_API` 增加时才删。`PLUGIN_API` 增加时，删除 0.19 起各 SDK 标为弃用的旧位置（[SDK 的默认入口](design-sdk-entry-convergence-2026-10-27.md) §五，#692）。`PLUGIN_API` 增加时，运行时要继续加载旧的插件 API（像 0.13 继续加载 API 2 那样）；做不到时，拒绝的报错要写明插件用哪个版本的 SDK 重新构建。会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
+插件 API（`PLUGIN_API`，SDK 与运行时各有一份）只在插件看到的接口不兼容时增加。Python 插件对 `rutis` 只写下限，和运行时共用宿主环境里的同一个 `rutis`：一个版本删掉或移动了插件导入的名字时，在那一版的迁移指南里写明，插件随宿主一起升级。`PLUGIN_API` 增加时，运行时要继续加载旧的插件 API（像 0.13 继续加载 API 2 那样）；做不到时，拒绝的报错要写明插件用哪个版本的 SDK 重新构建。会话协议版本（`rutisProtocol` 与 `rutis_bridge::session::PROTOCOL`）在线格式不兼容时增加。
 
 ## 持久化样本
 

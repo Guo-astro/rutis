@@ -18,9 +18,9 @@ use rutis::host::{CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
-use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
+use rutis_bridge::websocket::{Limits, Trust};
 use rutis_bridge::{
-    peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry,
+    peer_key, Credential, Dialer, IdentityPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry,
     StaticIdentity,
 };
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
@@ -240,6 +240,24 @@ async fn controller(remote: &Remote, who: &str) -> Controller {
     controller_with_options(remote, who, true, 0).await
 }
 
+/// Dials the WebSocket at `address`, presenting the link's credential.
+fn websocket_dialer(address: &str) -> Dialer {
+    let address = address.to_owned();
+    Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            rutis_bridge::websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    })
+}
+
 async fn controller_with_options(
     remote: &Remote,
     who: &str,
@@ -247,15 +265,12 @@ async fn controller_with_options(
     stop_delay_ms: u64,
 ) -> Controller {
     let root = Ctx::root().unwrap();
-    (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     root.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main"))
             .present(id("remote"), Credential::Bearer("main-token".into())),
     ));
-    let mut config = LinkConfig::dial(id("remote"), "websocket", "main", &remote.address)
+    let mut config = LinkConfig::dial(id("remote"), "main", websocket_dialer(&remote.address))
         .require("runtime")
         .retry(Retry {
             initial: Duration::from_millis(50),

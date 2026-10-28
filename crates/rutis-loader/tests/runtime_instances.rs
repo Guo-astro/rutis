@@ -1,7 +1,7 @@
 //! Runtime connections become instances (dial-out design §四): every
 //! connection an access point admits is an instance of the `phone` group,
 //! whose `phone:<plugin>` rows run on that connection. Runtimes here are
-//! Rust stand-ins speaking the row contract over the memory transport.
+//! Rust stand-ins speaking the row contract in memory.
 #![cfg(feature = "runtimes")]
 
 mod common;
@@ -20,10 +20,9 @@ use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::session::{
     settle, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    protocol, AccessEvent, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Dial,
-    Identity, SharedToken, StaticIdentity, Transport,
+    Accepting, AccessEvent, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential,
+    Registrations, SharedToken,
 };
 use rutis_loader::edit::{Editable, NewEntry, Version};
 use rutis_loader::report::{EntryInfo, EntryStatus};
@@ -177,17 +176,8 @@ async fn dial_runtime(
     undeclared: bool,
     drops: bool,
 ) -> Connection {
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id(name)).present(id("main"), Credential::Bearer("shared".into())),
-    );
-    let channel = main
-        .transport
-        .dial(
-            &Dial::address("main-in")
-                .peer(id("main"))
-                .identity(identity)
-                .protocol(protocol()),
-        )
+    let dial = rutis_bridge::memory::dialer(main.transport.clone(), "main-in");
+    let channel = dial(Some(Credential::Bearer("shared".into())))
         .await
         .unwrap();
     let mut endpoint = Endpoint::rust(id(name)).expect(id("main"));
@@ -301,7 +291,7 @@ impl HostDispatch for GlobalWeather {
 /// `reader` using `contacts`, and an access point admitting runtimes that
 /// present `shared`, each an instance of `phone`.
 struct Main {
-    transport: Arc<MemoryTransport>,
+    transport: Registrations,
     _root: Ctx,
     loader: Loader,
     log: Log,
@@ -311,12 +301,8 @@ struct Main {
 }
 
 async fn main() -> Main {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let root = Ctx::root().unwrap();
-    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     (&root.plugin(AdmissionPlugin::new(
         "phone",
         SharedToken::new(id("main"), "shared"),
@@ -332,8 +318,7 @@ async fn main() -> Main {
     )
     .unwrap();
 
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let log = Log::default();
     let mut builtins = Scoped::new();
     {
@@ -407,9 +392,17 @@ async fn main() -> Main {
         .unwrap();
 
     let access = AccessPointPlugin::new(
-        AccessPointConfig::new(id("phone"), "memory", "phone", "main-in")
-            .require("runtime")
-            .handshake(scaled(HANG_GUARD)),
+        AccessPointConfig::new(
+            id("phone"),
+            "phone",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        )
+        .require("runtime")
+        .handshake(scaled(HANG_GUARD)),
     )
     .accept(instances.accept(loader.clone(), root.clone()));
     let events = access.events();

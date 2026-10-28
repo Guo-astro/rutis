@@ -500,7 +500,7 @@ The endpoint ID of this node. Connected nodes see this name. Defaults to `host`.
 | `py` | `project` (default `.`), `python`, `restart` | Starts the Python runtime. The interpreter defaults to `$VIRTUAL_ENV/bin/python`, then `<project>/.venv/bin/python`, then `python3` (on Windows, `Scripts\python.exe` and `python`). Its environment must contain `rutis` and the plugins. |
 | `go` | `dir`, `binaries`, `start` (`on-demand` by default / `eager`), `idle` (seconds, default 60), `project` (default `.`), `restart` | Go plugins: one runtime process per binary. Every executable in `dir` that contains the Go SDK's marker counts (the directory is trusted as a whole and should be dedicated); `binaries` lists single files. A runtime is named after its file (`netkit` → `go-netkit`). An on-demand runtime starts when a row first uses it and stops after `idle` seconds without one (objects it handed out and that are held elsewhere do not count as use: once it stopped, calls on them fail with `peer-gone`); `eager` starts all and keeps them running (not together with `idle`). A replaced binary takes effect when the host restarts. |
 | `swift` | as `go` | Swift plugins (macOS): as `go`, for binaries built with the Swift SDK (`plugin-binary` → `swift-plugin-binary`); see [Swift plugins](swift-plugin.en.md). |
-| `remote` | `name`, `language`, `dial`, `listen`, `instances`, `transport` | A runtime on another machine, written whole in one entry: `dial` has rutis dial it, `listen` waits for it to connect in, `listen` + `instances` makes each connection an instance; see [Remote runtimes](#remote-runtimes) below. With none of them, it is connected through a node row with `"runtime": "<name>"` (the form before 0.19), see [Connect nodes](nodes.en.md). |
+| `remote` | `name`, `language`, `dial`, `listen`, `instances` | A runtime on another machine, written whole in one entry: `dial` has rutis dial it, `listen` waits for it to connect in, `listen` + `instances` makes each connection an instance; see [Remote runtimes](#remote-runtimes) below. With none of them, it is connected through a node row with `"runtime": "<name>"` (the form before 0.19), see [Connect nodes](nodes.en.md). |
 
 If a runtime package is missing, startup fails and prints an installation command. When the Python environment does not exist (the `.venv/bin/python` that `python` names has not been created) or its interpreter lacks the `rutis` package, the error gives the commands that create the environment and install the `rutis` of this host's version (`uv venv <environment>` and `uv pip install --python <interpreter> rutis==<version>`, or `python3 -m venv` and pip); with no environment at all and only a `python3` without `rutis`, it gives the commands that create `<project>/.venv`, which the host then uses by itself.
 
@@ -546,9 +546,8 @@ One `remote` entry describes a remote runtime whole; no node row is needed:
 }
 ```
 
-- Token: `RUTIS_TOKEN_<NAME>` (the runtime's name in upper case, `-` as `_`), else `RUTIS_TOKEN`. With `dial` it is presented; with `listen` it admits the runtime connecting in, and without one the host does not start.
-- `transport`: optional, `websocket` by default. A host's own way of connecting (a relay, QUIC, …) implements `Transport`, which the Rust program embedding rutis-host mounts (`Embedding`'s `transports`), and `transport` names it; one runtime and many both use it. On another transport, `listen` names that transport's own listener; no listener of that name is needed in `listen`.
-- Refused at startup: `dial` with `listen` (`dial and listen both set`), `dial` with `instances` (`dial and instances both set`), `instances` without `listen`, `transport` without `dial` or `listen`, a `transport` the host does not have, a `listen` listener that does not exist, and a node row with `"runtime"` for the same runtime (`link row <id> connects it too`).
+- Token: `RUTIS_TOKEN_<NAME>` (the runtime's name in upper case, `-` as `_`). With `dial` it is presented; with `listen` it admits the runtime connecting in, and without one the host does not start.
+- Refused at startup: `dial` with `listen` (`dial and listen both set`), `dial` with `instances` (`dial and instances both set`), `instances` without `listen`, a `listen` listener that does not exist, and a node row with `"runtime"` for the same runtime (`link row <id> connects it too`).
 - One runtime's `listen` takes part in the same-token check as a listening node row does (#702, #726): two entries that would accept one token stop the host at startup.
 - When the remote side does not contain a row's plugin, only that row fails (`runtime <name>: this connection does not contain plugin <plugin>`); the other rows are not affected, and adding such a row is not refused.
 - How the connections change: [What `run` prints](#what-run-prints); their state now: `connections` in [Seeing the current state](#seeing-the-current-state).
@@ -573,7 +572,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 }
 ```
 
-- A runtime connecting presents the token `RUTIS_TOKEN_<NAME>` (the runtime's name in uppercase, `-` written as `_`; `RUTIS_TOKEN` when that is not set) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
+- A runtime connecting presents a token equal to `RUTIS_TOKEN_<NAME>` on the rutis side (the runtime's name in uppercase, `-` written as `_`) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
 - Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
 - The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`runtime <name>: this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
 - The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
@@ -607,15 +606,14 @@ Do not put credentials in the file; they are read from the environment when a li
 
 | Environment variable | Purpose |
 | --- | --- |
-| `RUTIS_TOKEN` | Token presented when connecting to other nodes and checked when accepting connections. |
-| `RUTIS_TOKEN_<NODE>` | Token for a specific node (uppercase, with `-` written as `_`); takes precedence over `RUTIS_TOKEN`. For a runtime that connects in (`listen` / `instances`), by the runtime's name: every connection presents this one token. |
+| `RUTIS_TOKEN_<NODE>` | Token presented when connecting to that node and checked when it connects in (the node's name in uppercase, with `-` written as `_`). For a runtime that connects in (`listen` / `instances`), by the runtime's name: every connection presents this one token. The host side reads only these per-name variables, never a bare `RUTIS_TOKEN`. |
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 
-On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own; listening peer rows must, on different listeners too (they share the host's one identity; a row with an identity or transport of its own counts when the other uses the host's), disabled ones included (enabling one would clash). When two would accept the same token (say neither has its own and both fall back to `RUTIS_TOKEN`), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the `RUTIS_TOKEN_<name>` to set:
+On one listener, each entry that accepts connections with these variables (a listening peer row, a runtime that connects in) must accept a token of its own; listening peer rows must, on different listeners too (they share the host's one identity; a row with an identity or transport of its own counts when the other uses the host's), disabled ones included (enabling one would clash). When two would accept the same token (two `RUTIS_TOKEN_<name>` variables set to one value), a connection could not tell which it is for, so `run`, `check` and a configuration reload fail before starting, naming both entries and the two variables, one of which needs another value:
 
 ```
-rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 The environment cannot be changed from outside the process, so these tokens cannot be revoked while it runs: to cut off a peer or a runtime that connects in, change the token and restart `rutis-host`, which drops every connection. Cutting off one identity at runtime takes the identity layer's revocation hook; see [Connect Nodes](nodes.en.md#security).

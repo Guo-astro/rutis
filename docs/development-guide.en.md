@@ -108,7 +108,7 @@ When an event has multiple listeners, define execution order, whether dispatch w
 | `parallel` | Starts listeners in registration order, runs them concurrently and waits for all | Returns `()` on success; on failures `ListenersFailed`, in registration order |
 | `serial` | Calls listeners one by one in registration order; stops at the first result or error | Returns the first result; `None` and `Some(false)` are no result |
 | `waterfall` | Listeners call later stages through `call.next()` and can process the returned result | Returns the outermost listener's result |
-| `bail_sync` / `waterfall_sync` | As `serial` / `waterfall`, synchronously | An async listener fails them with `AsyncListener` |
+| `bail_sync` | As `serial`, synchronously | An async listener fails them with `AsyncListener` |
 
 These mechanisms can support state notifications, request dispatch, plugin collaboration, and middleware processing. For example, multiple listeners can handle one state change independently, or a request can pass through handlers until one returns a result. The event and handler together define the specific use.
 

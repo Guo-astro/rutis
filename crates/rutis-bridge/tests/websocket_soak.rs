@@ -15,10 +15,10 @@ use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
 use rutis_bridge::{
-    peer_key, Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, Peer,
-    Retry, StaticIdentity,
+    peer_key, Accepting, Credential, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig,
+    LinkPlugin, Peer, Registrations, Retry, StaticIdentity,
 };
 use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
@@ -78,18 +78,14 @@ async fn relinking_over_and_over_holds_nothing_more() {
     };
 
     let main = Ctx::root().unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     main.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))
         .unwrap();
     main.plugin(IdentityPlugin::new(
@@ -97,20 +93,43 @@ async fn relinking_over_and_over_holds_nothing_more() {
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "websocket", "main", "public").retry(quick.clone()),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations,
+                listener: "public".into(),
+                local: id("main"),
+            },
+        )
+        .retry(quick.clone()),
     ));
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
 
     let mac = Ctx::root().unwrap();
-    (&mac.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     mac.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("main"), "websocket", "mac", &address).retry(quick),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            Arc::new(move |credential: Option<Credential>| {
+                let address = address.clone();
+                Box::pin(async move {
+                    websocket::dial(
+                        &address,
+                        &rutis_bridge::protocol(),
+                        credential.as_ref(),
+                        &Trust::default(),
+                        &Limits::default(),
+                    )
+                    .await
+                })
+            }),
+        )
+        .retry(quick),
     ));
     mac.plugin(ImportPlugin::new(id("main"), ["clock"]));
 

@@ -74,7 +74,7 @@ bail 按注册 / prepend 顺序返回第一个 Some；waterfall 的 `SyncNext::c
 
 同步终点是本地 `FnOnce`，可以借用栈变量或 MutexGuard，不要求 Send / 'static。监听器仍要求 Send + Sync + 'static。总线在用户回调期间不持框架锁，但回调不得再次取得调用者已经持有的同一个业务 Mutex。
 
-可运行例子：[sync_decision.rs](../crates/rutis/examples/sync_decision.rs)。调用方持锁读旧值，在终点生成候选值，监听器改写返回值，调用方校验后仍在同一个临界区内提交：`cargo run -p rutis --example sync_decision`。
+可运行例子：[sync_decision.rs](https://github.com/arcships/rutis/blob/v0.18.0/crates/rutis/examples/sync_decision.rs)。调用方持锁读旧值，在终点生成候选值，监听器改写返回值，调用方校验后仍在同一个临界区内提交：`cargo run -p rutis --example sync_decision`。
 
 普通错误原样返回。监听器 / 终点 panic 被捕获，报告一次 ErrorSink，并通过 `CordisError::SyncEventPanicked` 返回；ErrorSink 自己的 panic 也被隔离。投递尝试观察器沿用原契约，panic 报告后继续；`DispatchMode` 枚举新增 `BailSync` / `WaterfallSync` 两个值。
 
