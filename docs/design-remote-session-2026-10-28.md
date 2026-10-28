@@ -193,7 +193,7 @@ pub enum Close { Done, Replaced, Rejected(String) }
 ```
 
 - 沿用 `Sender` / `Receiver` / `Closer` 三分：发送与接收各在一个线程，关闭在任何线程。按消息、同步阻塞，与 `rpc.rs` 的 `open(channel, dispatch)` 现在的用法相同。
-- **id 一律来自握手**：会话协议只留 endpoint 格式（协议版本 3），双方都在握手里报自己的 id。删掉 compat 格式：`rpc.rs` 的 `Format::Compat`（`rpc.rs:1208`）与 `COMPAT_CAPABILITIES`、调用 id 的 `rust:` / `node:` 前缀、`PROTOCOL = 2` 的本机握手、`link.rs:361` 的 `compat` 与 `name_far_end`。本机运行时由 `rutis-host/spawn` 用 `--id <运行时名>` 起，握手里就报这个名字。运行时期望的控制方（它的 `--peer`）仍由现有的握手检查（`rpc.rs:2482` 的 `Handshake::IdentityMismatch`）核对。
+- **id 一律来自握手**：会话协议只留 endpoint 格式，双方都在握手里报自己的 id。endpoint 协议版本从 3 升到 4：0.18 的运行时与节点也说 endpoint 版本 3，只删 compat 挡不住它们；升到 4 后，0.18 连上时在握手里被拒，消息照协议现有的写法说明升级哪一端（`rpc.rs:1277` 的 `version_mismatch`）。删掉 compat 格式：`rpc.rs` 的 `Format::Compat`（`rpc.rs:1208`）与 `COMPAT_CAPABILITIES`、调用 id 的 `rust:` / `node:` 前缀、`PROTOCOL = 2` 的本机握手、`link.rs:361` 的 `compat` 与 `name_far_end`。本机运行时由 `rutis-host/spawn` 用 `--id <运行时名>` 起，握手里就报这个名字。运行时期望的控制方（它的 `--peer`）仍由现有的握手检查（`rpc.rs:2482` 的 `Handshake::IdentityMismatch`）核对。
 - 各语言运行时的本机模式改为 endpoint 格式（逐个核实过现状）：
 
   | 运行时 | 现在 | 要改的 |
@@ -375,7 +375,7 @@ connections:
 | 对面不含行要的插件 | `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`（#768） |
 | 对面的服务本地已有同名 | `office:weather: weather is provided here by row weather: not registered from office` |
 | 对面缺行约定 | `the gpu runtime lacks rows.v2 and hosts: a runtime speaking the row contract is required`（去掉现在的"for Node, @arcships/rutis-runtime 0.3.0 or later"） |
-| 0.18 的宿主或运行时 | 握手时按协议版本拒绝（`the far end speaks protocol 2, this side 3: upgrade the far end`），不重试 |
+| 0.18 的运行时或节点连上 0.19 | 握手时拒绝，不重试：`the far end speaks protocol 3, this side 4: upgrade the far end (<实现> <版本>)`；0.19 的运行时遇到 0.18 的宿主时，各 SDK 同样拒绝并说明升级宿主 |
 | 0.18 的远程写法（`runtimes.remote`、`rutis-bridge/peer` 行及其字段） | 没有专门的提示：`runtimes.remote` 是 rutis-host 配置不认识的字段，`rutis-bridge/peer` 是不认识的插件名，按 0.18 的规则报错 |
 | 对面运行插件时抛出 | 远程插件 `<id>:<插件>` 失败，按 0.18 §4.2 打印对面的错误 |
 
@@ -506,7 +506,7 @@ connections:
    | `rutis_bridge::ConnectError` | `rutis-host/dial` 内部 |
 
 4. **应用（Kotlin、Swift）**：插件的配置写进 `RutisApp`，应用连上后自己装插件（决定 2）；rutis 一侧 `instanced` 分组里的 `<运行时>:<插件>` 行删掉。宿主上"每台设备一份"的行（`py:coach`）不再支持，按决定 3 改：放到设备上，或由它自己按设备区分。
-5. **一起升级**：0.19 的宿主与 0.18 及更早的运行时、SDK 不能相遇（compat 格式删掉，握手时按协议版本拒绝）；宿主与各语言运行时、SDK 要一起升到 0.19。跨版本保证只在不含不兼容改动的相邻版本之间成立。
+5. **一起升级**：0.19 在握手时拒绝 0.18 及更早的宿主、运行时与 SDK（endpoint 协议版本 4 对 3），并提示升级哪一端；宿主与各语言运行时、SDK 要一起升到 0.19。跨版本保证只在不含不兼容改动的相邻版本之间成立。
 6. **token**：宿主一侧只认 `RUTIS_TOKEN_<名字>`；只设了 `RUTIS_TOKEN` 的宿主改为按名字设。运行时一侧的 `RUTIS_TOKEN` 不变。
 7. **`ServiceCatalog::share_registered_only` 删除**：Rust 嵌入里调用它的，去掉这一行（0.12 起默认按名字共享）。
 8. **持久化样本**：0.8–0.18 的样本里有 `runtimes.remote`、`rutis-bridge/peer` 行与 `peer:` 行，0.19 不再读。样本里删掉这些写法（期望同步），加 `rejected/` 用例，错误是 0.18 规则给出的原样文字（不认识的字段、不认识的插件名）；guarantees 里持久化样本那一条写明 0.19 的这一处例外。
@@ -527,7 +527,7 @@ connections:
 | `.agents/skills/rutis-remote-plugin/SKILL.md` 与 `references/nodes.md`、`rutis-json.md`、`plugin-api.md` | 同指南；"实现 Transport 挂到 Embedding.transports"改为"交出一条 Channel / 写连接插件"，加 `sessions.open` 的最小例子 |
 | `.agents/skills/rutis-new-runtime/references/plugin-api.md` | 让已有运行时远程可用的一节：运行时一侧不变，rutis 一侧写 `rutis-host/dial` / `listen` 的行 |
 | `docs/migration-0.19.md` / `.en.md` | §十一 |
-| `docs/guarantees.md` / `.en.md` | `bridge/cross-version-meetings` 收窄为只在不含不兼容改动的相邻版本之间成立，写明 0.19 与 0.18 不保证相遇、宿主与各语言运行时要一起升到 0.19；`events/old-peer-refused` 同步（0.18 及更早都在握手时被拒）；删：`bridge/revocation-closes-only-its-connections`、`bridge/revocation-refuses-reconnects`、`host/env-tokens-not-revocable`、`events/link-export-import`、`events/node-config`、`events/no-multi-hop`；`host/remote-runtimes` 换成三个连接插件的一行；删 `loader/runtime-connection-instances`；`loader/peer-rows` 改写为 `<id>:<插件>` 行经 `run`；`events/node-links` 改写为"对面的监听器是本端总线上的条目"；`bridge/dial-out-rules` 里 4003 的来源改为 listen 与握手检查；新增 listen 的顶替顺序一行；持久化样本一行写明 0.19 例外；每行的测试名随测试改；§15 计数重算 |
+| `docs/guarantees.md` / `.en.md` | `bridge/cross-version-meetings` 收窄为只在不含不兼容改动的相邻版本之间成立，写明 0.19 在握手时拒绝 0.18 并提示升级、宿主与各语言运行时要一起升到 0.19；`events/old-peer-refused` 同步（0.18 及更早都在握手时被拒）；删：`bridge/revocation-closes-only-its-connections`、`bridge/revocation-refuses-reconnects`、`host/env-tokens-not-revocable`、`events/link-export-import`、`events/node-config`、`events/no-multi-hop`；`host/remote-runtimes` 换成三个连接插件的一行；删 `loader/runtime-connection-instances`；`loader/peer-rows` 改写为 `<id>:<插件>` 行经 `run`；`events/node-links` 改写为"对面的监听器是本端总线上的条目"；`bridge/dial-out-rules` 里 4003 的来源改为 listen 与握手检查；新增 listen 的顶替顺序一行；持久化样本一行写明 0.19 例外；每行的测试名随测试改；§15 计数重算 |
 | `specs/remote-lease/`（README 两份、两个 `.tla`、配置、`expected.txt`） | 随吊销与 Registration 删掉：吊销动作、注册代次与移交复核，性质 `RevokedStaysOut`、`RevocationScoped`、`NoStaleHandOver`，配置 `access-revoke-same`、`access-revoke-distinct`、`access-mut-revoke-cuts-all`、`access-mut-route-by-id`、`access-mut-no-gen-check`、`access-registration`，`RemoteLease.tla` 里的吊销远端；`access-mut-accept-before-release` 留作 listen 顶替顺序的变异。listen 的新代码写出来后按它建一个最小模型（同 id 顶替：先卸旧再接新），替换 `AccessPoint.tla` |
 | `crates/rutis-bridge/README.md`、`lib.rs` 的模块说明、根 `README` | 模块介绍改为 Channel、session、底层函数 |
 | 旧设计稿 `design-remote-runtime-consistency-2026-10-26.md` / `.en.md` | 头部加一行"被 [远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) 取代" |
@@ -574,7 +574,7 @@ connections:
 
 **S2b 删 compat 格式**（一个 PR，闭环）
 - 宿主切到 endpoint：起本机运行时的代码传 `--id`、用 endpoint 格式。
-- 删并闭环：`Format::Compat`、`COMPAT_CAPABILITIES`、`rust:` / `node:` 前缀、`PROTOCOL = 2`、`link.rs` 的 `compat` 与 `name_far_end`、`runtime/process.rs:919` 的 compat；六种 SDK 里的 compat 路径（Node `session.mjs` 与 `runner.mjs` 的 `--format`、Bun `main.ts` 的 `--format`、Python `peer.py` 与 `__main__.py`、Go `peer` 包与 `serve.go`、Swift `Serve.swift`、Kotlin `Peer.kt` 的 compat 与 `compatOrigin`、`Sessions.kt`），各自的测试；fuzz 目标；`runtime_conformance`；cross_version e2e 里与 0.18 相遇的场景（0.19 与 0.18 不保证相遇）；guarantees `bridge/cross-version-meetings` 收窄、`events/old-peer-refused` 同步；各语言运行时指南与 `rutis-new-runtime` 的 `runtime-contract.md`；《迁移到 0.19》§十一 第 5 条。
+- 删并闭环：`Format::Compat`、`COMPAT_CAPABILITIES`、`rust:` / `node:` 前缀、`PROTOCOL = 2`、`link.rs` 的 `compat` 与 `name_far_end`、`runtime/process.rs:919` 的 compat；六种 SDK 里的 compat 路径（Node `session.mjs` 与 `runner.mjs` 的 `--format`、Bun `main.ts` 的 `--format`、Python `peer.py` 与 `__main__.py`、Go `peer` 包与 `serve.go`、Swift `Serve.swift`、Kotlin `Peer.kt` 的 compat 与 `compatOrigin`、`Sessions.kt`），各自的测试；fuzz 目标；`runtime_conformance`；`ENDPOINT_PROTOCOL` 从 3 升到 4（`session/mod.rs:18`）与六种 SDK 各自的协议版本号（Node、Bun、Python、Go、Swift、Kotlin 的版本常量与握手检查）同步升到 4，各自的版本不符测试；cross_version e2e 里与 0.18 相遇的场景改为断言 0.19 在握手时拒绝 0.18 并提示升级；guarantees `bridge/cross-version-meetings` 收窄、`events/old-peer-refused` 同步；各语言运行时指南与 `rutis-new-runtime` 的 `runtime-contract.md`；《迁移到 0.19》§十一 第 5 条。
 - 完成：`grep -i compat` 在 `crates/rutis-bridge/src/session` 与六种 SDK 的会话代码下无结果；全部运行时测试在 endpoint 格式上通过。
 - 依赖：R1–R6 全部合并。
 
