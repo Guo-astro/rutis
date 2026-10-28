@@ -3,17 +3,16 @@
 (* Runtimes dialing out to a rutis access point: the listener's            *)
 (* registration and its generation, hand-over, admission of a self-        *)
 (* declared id, takeover by a newer connection of the same id (one         *)
-(* instance per id), the access point stopping and starting again          *)
-(* (registration revoked and renewed), and revocation of one id or of the  *)
-(* shared token.                                                           *)
+(* instance per id), and the access point stopping and starting again     *)
+(* (registration revoked and renewed).                                     *)
 (*                                                                         *)
 (* Design: docs/design-remote-plugins-2026-10-03.md §3.2 (registrations,   *)
 (* generation re-checked at hand-over); docs/design-remote-runtime-dial-   *)
-(* 2026-10-14.md §四 (connection = instance), §五 (identity layer,          *)
-(* revocation hook #273), §六 (dial and retry rules, takeover by id).       *)
+(* 2026-10-14.md §四 (connection = instance), §五 (identity layer), §六     *)
+(* (dial and retry rules, takeover by id).                                 *)
 (* Implementation modelled: crates/rutis-bridge/src/registration.rs         *)
-(* (`route`, `hand_over`), access_point.rs (`Shared::connection`, slots),   *)
-(* identity.rs (`Revocable`, `Revocations`); the dialers:                   *)
+(* (`route`, `hand_over`), access_point.rs (`Shared::connection`, slots);   *)
+(* the dialers:                                                            *)
 (* python/rutis/rutis/dialing.py `keep_dialing` (and its Go, Node, Bun      *)
 (* twins). README.md next to this file lists the simplifications.          *)
 (*                                                                         *)
@@ -34,17 +33,14 @@ CONSTANTS
     Faults,       \* what the environment may do: "lose" (no greeting in
                   \* time, lost connection, failed dial), "stop" (a runtime
                   \* stops), "registration" (the access point stops and
-                  \* starts again), "revoke" (an id, or the shared token)
-    RevokeCheck,  \* TRUE: the access point checks the revocation right
-                  \* before it accepts (the fix); FALSE: access_point.rs before it
+                  \* starts again)
     Mutation      \* "none", or a deliberate bug (README, "Mutations")
 
 ASSUME SameId \in BOOLEAN
 ASSUME MaxConns \in Nat \ {0} /\ MaxCalls \in Nat /\ MaxRegs \in Nat \ {0}
-ASSUME Faults \subseteq {"lose", "stop", "registration", "revoke"}
-ASSUME RevokeCheck \in BOOLEAN
+ASSUME Faults \subseteq {"lose", "stop", "registration"}
 ASSUME Mutation \in {"none", "acceptBeforeRelease", "routeById", "noGenCheck",
-                     "revokeCutsAll", "stopKeepsRetry"}
+                     "stopKeepsRetry"}
 
 \* The id a dialer greets with: its own name, or one shared by all.
 IdOf(d) == IF SameId THEN "one" ELSE d
@@ -56,8 +52,6 @@ NoConn == <<"none", 0>>
 VARIABLES
     reg,        \* generation of the access point's registration; 0: none
     regs,       \* registrations made so far
-    revokedIds, \* ids revoked (`Revocations::revoke`)
-    revokedAll, \* everything revoked (`revoke_all`: the shared token)
     dst,        \* dst[d]: "connecting" | "greeting" | "ready" | "waiting" | "stopped"
     dcur,       \* dcur[d]: number of d's current connection, 0 before the first
     ndial,      \* ndial[d]: connections d made
@@ -73,10 +67,10 @@ VARIABLES
     applied,    \* calls the access point applied: [inst, by]
     ghost       \* observations for the invariants
 
-vars == <<reg, regs, revokedIds, revokedAll, dst, dcur, ndial, calls, dstopped,
+vars == <<reg, regs, dst, dcur, ndial, calls, dstopped,
           ds, toD, toAP, apc, order, lock, inst, applied, ghost>>
 dialer == <<dst, dcur, ndial, calls, dstopped, ds>>
-env == <<reg, regs, revokedIds, revokedAll>>
+env == <<reg, regs>>
 
 \* apc[k].st: "none"; "routed" (has a ticket of generation gen, not handed
 \* over); "admitted" (handed over, greeted, its id admitted); "accepting"
@@ -88,7 +82,6 @@ Ended == [st |-> "ended", gen |-> 0, closed |-> FALSE]
 Pos(k) == CHOOSE p \in 1..Len(order) : order[p] = k
 Forget(ks) == order' = SelectSeq(order, LAMBDA x : x \notin ks)
 St(k) == apc[k].st
-Revoked(i) == revokedAll \/ i \in revokedIds
 DCur(d) == <<d, dcur[d]>>
 
 \* Whether each side still reads k.
@@ -106,8 +99,7 @@ CloseD(k) ==
 
 \* Dial: the transport routes the upgrade by its credential
 \* (`Registrations::route`): nothing registered on the listener is
-\* retryable; a revoked shared token is refused (403, an authentication
-\* failure); otherwise the connection gets a ticket of the current
+\* retryable; otherwise the connection gets a ticket of the current
 \* registration generation.
 DoDial(d) ==
     /\ dst[d] = "connecting"
@@ -116,7 +108,7 @@ DoDial(d) ==
            k == <<d, n>>
        IN /\ ndial' = [ndial EXCEPT ![d] = n]
           /\ ghost' = [ghost EXCEPT !.dialAfterStop = @ \/ dstopped[d]]
-          /\ IF reg = 0 \/ revokedAll
+          /\ IF reg = 0
              THEN /\ dst' = [dst EXCEPT ![d] = "waiting"]
                   /\ UNCHANGED <<dcur, calls, ds, apc>>
              ELSE /\ dcur' = [dcur EXCEPT ![d] = n]
@@ -208,18 +200,15 @@ EndAP(k) ==
 
 \* `Registrations::hand_over`, under the registry lock: deliver only to the
 \* registration the ticket was routed to (same generation); otherwise the
-\* connection is closed. The routing identity of an access point revokes
-\* nothing; the access point then greets it, and the admission admits the
-\* id its hello names (`Admitting`): a revoked id is rejected (4003).
+\* connection is closed. The access point then greets it, and the
+\* admission admits the id its hello names (`Admitting`).
 \* noGenCheck: deliver to whatever is registered now. (Hand-over and the
 \* greeting are one step: the access point stopping in between is the same
-\* as stopping just after, which `TakeSlot` handles. rutis' own hello goes
-\* out when the session opens, before the admission, so a rejected dialer
-\* may first see "connected"; the model sends it after the admission.)
+\* as stopping just after, which `TakeSlot` handles.)
 HandOver(k) ==
     /\ St(k) = "routed"
-    /\ IF \/ reg = apc[k].gen /\ ~Revoked(Id(k))
-          \/ Mutation = "noGenCheck" /\ reg /= 0 /\ ~Revoked(Id(k))
+    /\ IF \/ reg = apc[k].gen
+          \/ Mutation = "noGenCheck" /\ reg /= 0
        THEN /\ apc' = [apc EXCEPT ![k] = [st |-> "admitted", gen |-> reg, closed |-> FALSE]]
             /\ order' = Append(order, k)
             /\ SendD(k, "hello")
@@ -263,21 +252,14 @@ TakeSlot(k) ==
     /\ UNCHANGED <<env, dialer, applied, ghost>>
 
 \* `Accept::accept`: the instance is created, the runtime mounted on the
-\* session. RevokeCheck: a revoked id is rejected here instead (4003).
+\* session.
 Accept(k) ==
     LET i == Id(k) IN
     /\ St(k) = "accepting"
     /\ lock' = [lock EXCEPT ![i] = NoConn]
-    /\ IF RevokeCheck /\ Revoked(i)
-       THEN /\ apc' = [apc EXCEPT ![k] = Ended]
-            /\ EndAP(k)
-            /\ Forget({k})
-            /\ UNCHANGED <<inst, ghost>>
-       ELSE /\ apc' = [apc EXCEPT ![k].st = "live"]
-            /\ inst' = [inst EXCEPT ![i] = k]
-            /\ ghost' = [ghost EXCEPT !.revokedAccept = @ \/ Revoked(i)]
-            /\ UNCHANGED <<toD, toAP, order>>
-    /\ UNCHANGED <<env, dialer, applied>>
+    /\ apc' = [apc EXCEPT ![k].st = "live"]
+    /\ inst' = [inst EXCEPT ![i] = k]
+    /\ UNCHANGED <<env, dialer, toD, toAP, order, applied, ghost>>
 
 \* acceptBeforeRelease: the new instance is accepted, then (ReleaseLate)
 \* the old one released.
@@ -287,8 +269,7 @@ AcceptEarly(k) ==
     /\ apc' = [apc EXCEPT ![k].st = "live"]
     /\ inst' = [inst EXCEPT ![i] = k]
     /\ lock' = [lock EXCEPT ![i] = NoConn]
-    /\ ghost' = [ghost EXCEPT !.revokedAccept = @ \/ Revoked(i)]
-    /\ UNCHANGED <<env, dialer, toD, toAP, order, applied>>
+    /\ UNCHANGED <<env, dialer, toD, toAP, order, applied, ghost>>
 
 ReleaseLate(k) ==
     /\ St(k) = "live"
@@ -317,31 +298,27 @@ APRecv(k) ==
             /\ UNCHANGED applied
     /\ UNCHANGED <<env, dialer, toD, order, lock, inst, ghost>>
 
-\* A live connection ends: its session closed, its access point stopped,
-\* or its id revoked (`revoked(&id)`). Under the slot's lock, if it is
-\* still current: closed, then released. revokeCutsAll: any revocation
-\* wakes every connection and ends it.
+\* A live connection ends: its session closed, or its access point
+\* stopped. Under the slot's lock, if it is still current: closed, then
+\* released.
 EndLive(k) ==
-    LET i == Id(k)
-        cause == apc[k].closed \/ reg /= apc[k].gen \/ Revoked(i)
-    IN
+    LET i == Id(k) IN
     /\ St(k) = "live"
     /\ lock[i] = NoConn
     /\ inst[i] = k
-    /\ cause \/ (Mutation = "revokeCutsAll" /\ (revokedAll \/ revokedIds /= {}))
+    /\ apc[k].closed \/ reg /= apc[k].gen
     /\ apc' = [apc EXCEPT ![k] = Ended]
     /\ inst' = [inst EXCEPT ![i] = NoConn]
     /\ EndAP(k)
-    /\ ghost' = [ghost EXCEPT !.wrongCut = @ \/ ~cause]
     /\ Forget({k})
-    /\ UNCHANGED <<env, dialer, lock, applied>>
+    /\ UNCHANGED <<env, dialer, lock, applied, ghost>>
 
 \* The access point stops: its registration is revoked (dropped).
 StopAP ==
     /\ "registration" \in Faults
     /\ reg /= 0
     /\ reg' = 0
-    /\ UNCHANGED <<regs, revokedIds, revokedAll, dialer, toD, toAP, apc,
+    /\ UNCHANGED <<regs, dialer, toD, toAP, apc,
                    order, lock, inst, applied, ghost>>
 
 \* It starts again: a new registration, a new generation.
@@ -351,29 +328,12 @@ StartAP ==
     /\ regs < MaxRegs
     /\ regs' = regs + 1
     /\ reg' = regs + 1
-    /\ UNCHANGED <<revokedIds, revokedAll, dialer, toD, toAP, apc, order,
-                   lock, inst, applied, ghost>>
-
-RevokeId(i) ==
-    /\ "revoke" \in Faults
-    /\ i \notin revokedIds
-    /\ revokedIds' = revokedIds \cup {i}
-    /\ UNCHANGED <<reg, regs, revokedAll, dialer, toD, toAP, apc, order,
-                   lock, inst, applied, ghost>>
-
-RevokeAll ==
-    /\ "revoke" \in Faults
-    /\ ~revokedAll
-    /\ revokedAll' = TRUE
-    /\ UNCHANGED <<reg, regs, revokedIds, dialer, toD, toAP, apc, order,
-                   lock, inst, applied, ghost>>
+    /\ UNCHANGED <<dialer, toD, toAP, apc, order, lock, inst, applied, ghost>>
 
 (***************************************************************************)
 Init ==
     /\ reg = 1
     /\ regs = 1
-    /\ revokedIds = {}
-    /\ revokedAll = FALSE
     /\ dst = [d \in Dialers |-> "connecting"]
     /\ dcur = [d \in Dialers |-> 0]
     /\ ndial = [d \in Dialers |-> 0]
@@ -387,8 +347,7 @@ Init ==
     /\ lock = [i \in Ids |-> NoConn]
     /\ inst = [i \in Ids |-> NoConn]
     /\ applied = {}
-    /\ ghost = [dialAfterStop |-> FALSE, staleHandOver |-> FALSE,
-                revokedAccept |-> FALSE, wrongCut |-> FALSE]
+    /\ ghost = [dialAfterStop |-> FALSE, staleHandOver |-> FALSE]
 
 Dialer(d) ==
     \/ DoDial(d) \/ DialFails(d) \/ Retry(d) \/ SendCall(d) \/ Lose(d)
@@ -399,8 +358,7 @@ Rutis ==
     \/ \E k \in Conns :
           \/ HandOver(k) \/ TakeSlot(k) \/ Accept(k) \/ AcceptEarly(k) \/ ReleaseLate(k) \/ APRecv(k)
           \/ EndLive(k)
-    \/ StopAP \/ StartAP \/ RevokeAll
-    \/ \E i \in Ids : RevokeId(i)
+    \/ StopAP \/ StartAP
 
 Next == Rutis \/ \E d \in Dialers : Dialer(d)
 
@@ -424,13 +382,6 @@ OldCallsStayOld == \A a \in applied : a.inst = a.by
 \* A handshake routed to a registration that was revoked since (the access
 \* point stopped, perhaps started again) never completes hand-over.
 NoStaleHandOver == ~ghost.staleHandOver
-
-\* A revoked id (or every id, once the token is revoked) is never accepted
-\* again: no instance is created for it.
-RevokedStaysOut == ~ghost.revokedAccept
-
-\* A connection ends for a revocation only if its own id is revoked.
-RevocationScoped == ~ghost.wrongCut
 
 \* A stopped runtime never dials again and keeps no connection open.
 StoppedStaysDown ==
