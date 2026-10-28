@@ -19,8 +19,8 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.17.2")
-    ksp("io.github.arcships:rutis-ksp:0.17.2")
+    implementation("io.github.arcships:rutis:0.18.0")
+    ksp("io.github.arcships:rutis-ksp:0.18.0")
 }
 ```
 
@@ -65,6 +65,8 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   ```
 
   Each copy runs in the application's process; when the application dials in, it mounts only in that connection's instance (or deeper). It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+
+- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the config is validated against it before it is decoded, and a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
 
 ### Objects with methods
 
@@ -204,7 +206,7 @@ Battery optimization:
 
 ## 7. Testing
 
-- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device.
+- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device. On what it loads, `loaded.on(name) { args -> ... }` listens as the host does, at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
 - The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each an instance; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
 
 ## 8. Acceptance on real devices

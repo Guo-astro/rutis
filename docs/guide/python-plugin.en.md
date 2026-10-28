@@ -39,7 +39,7 @@ class Weather:
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("llm"), config.get("city", "Oslo")))
+    ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
     return lambda: None                   # Cleanup may be async; returning nothing is also fine
 
 
@@ -47,9 +47,11 @@ plugin = define_plugin(
     apply,
     inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
     provides={"weather": Weather},        # What it provides: check knows before running
-    config={"type": "object", "properties": {"city": {"type": "string"}}},
+    config={"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}},
 )
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`Oslo` when the row has no `city`) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)). `load` and `update` in `rutis.testing` do the same, raising a `BindingError` with code `bad-config`; extra keys are written on stderr.
 
 You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
 
@@ -121,6 +123,69 @@ uv run python -m unittest discover -s tests
 ```
 
 `load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
+
+The testing tool's whole interface (from the docstrings of `rutis/testing.py`):
+
+| Parameter of `load(plugin, *, …)` | What it does |
+| --- | --- |
+| `config` | The plugin's config; with a `config` declaration, defaults are filled in and it is validated |
+| `services` | The services the plugin `inject`s, by name |
+| `strict` | Values follow cross-process rules (default `True`) |
+| `bus` | Share events with the plugins on the same `Bus` (default: one of its own) |
+| `scope` | The scope path it is loaded in (`t1/s1`; default the root) |
+| `row` | Its row name on the bus (default the plugin's declared name, else its module's) |
+| `runtime` | What listener descriptors give as `runtime` (default `"python"`) |
+| `deadline` | How many seconds unloading waits for running listeners (default `RUTIS_SHUTDOWN_TIMEOUT`, 10) |
+
+| Member of `Loaded` (`async with load(...) as t`) | What it does |
+| --- | --- |
+| `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's public methods, all async |
+| `t.methods(name)` | The methods rutis sees: `{"today": "async"}` |
+| `t.provided()` | The names of the services the plugin provides now |
+| `t.on(name, listener, *, prepend=False, global_=False)` | Listen as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; returns the function that stops it, and without it, it stops when the plugin unloads |
+| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row and scope |
+| `t.filter(predicate)` | The five methods, delivering only to the listeners `predicate(descriptor)` keeps |
+| `t.reported` | The failures nobody received (listeners failing in an `emit`, filters) |
+| `await t.update(config)` | Change the config as a host's `rows.update` does: unload, then run again with the new config |
+| `await t.unload()` | Unload as the runtime does: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
+
+`Bus(scopes=...)`: a bus for tests; the plugins on the same `bus` hear each other, and `scopes` names the group of a scope path. It has `reported`, `listeners(name)` (the descriptors a filter sees) and `emitter(row=..., strict=...)` (emit as a given row). `Reported`: one failure nobody received, with the fields `kind` (`"listener"` or `"filter"`), `name`, `row` and `error`. `PluginTestError`: the plugin did something a host would refuse or that would fail across processes; a subclass of `AssertionError`.
+
+To check that the plugin emits an event, listen with `t.on` into a list:
+
+<!-- example: python-en file=weather/tests/test_asked.py order=2 -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import load
+
+
+def apply(ctx, config):
+    class Weather:
+        async def today(self):
+            ctx.emit("weather/asked", config["city"])
+            return "sunny"
+
+    ctx.provide("weather", Weather())
+
+
+asking = define_plugin(apply)
+
+
+class Asked(unittest.TestCase):
+    def test_each_call_emits_weather_asked(self):
+        async def go():
+            async with load(asking, config={"city": "Oslo"}) as t:
+                asked = []
+                off = t.on("weather/asked", asked.append)
+                await t.service("weather").today()
+                self.assertEqual(asked, ["Oslo"])
+                off()
+
+        asyncio.run(go())
+```
 
 ### Events
 
@@ -276,6 +341,17 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ uv run rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
@@ -318,7 +394,7 @@ Install the plugin in the Python environment used to run Python plugins (the int
 
 ```bash
 uv venv                                                         # creates .venv
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-weather   # the runtime (the host's version) and the plugin
+uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # the runtime (the host's version) and the plugin
 ```
 
 ```json

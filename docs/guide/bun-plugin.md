@@ -78,6 +78,8 @@ test('greets through events', async () => {
 })
 ```
 
+测试要确认插件发出了某个事件，用 `t.on(name, listener, options)` 像宿主一样在根作用域监听，与 [TypeScript 插件：测试](typescript-plugin.md#3-测试) 相同：插件发出的、测试自己发出的都送到，返回撤销函数。
+
 ### 带方法的对象
 
 类的实例、有函数属性的普通对象按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
@@ -118,6 +120,17 @@ bunx --bun rutis-host dev
 - `bun:<npm 名或子路径>` 从 `project` 的 `node_modules` 解析，`bun:./路径` 相对于 `project`。行名 `bun:sqlite` 指项目里的模块 `sqlite`，不是 Bun 的内置模块 `bun:sqlite`。
 - `runtimes.bun` 的字段：`project`（默认 `.`）、`runtime`（`@arcships/rutis-bun` 的位置，默认项目里装的）、`program`（Bun 可执行文件，默认 `PATH` 上的 `bun`）。
 - 可以和 `runtimes.node`、`runtimes.py` 同时配置；服务按名字跨运行时共享。
+
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ bunx --bun rutis-host call greeter.hello '"Ada"' '"en"'
+"Hello, Ada!"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
 
 ### 调试
 

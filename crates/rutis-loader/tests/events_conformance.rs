@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::runtimes::{repo, COLD};
+use common::runtimes::{repo, rows_stage, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
@@ -50,7 +50,7 @@ use rutis_bridge::runtime::testing::events::{
 use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_loader::report::{EntryStatus, RowState};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RowEvent, ServiceCatalog,
 };
@@ -569,7 +569,7 @@ impl Host {
         let loader = plugin.handle();
         root.plugin(plugin).await.unwrap();
         for resolver in resolvers {
-            root.plugin(RuntimeRowsPlugin::new(resolver));
+            rows_stage(&root, resolver).await;
         }
         let node = rust_participant::Node::start(&root, log.clone()).await;
         let host = Host {

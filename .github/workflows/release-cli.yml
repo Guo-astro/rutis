@@ -1,7 +1,7 @@
 # rutis-cli 二进制发布:tag cli-v* 触发 → 4 targets 构建 → tar.gz + sha256 → GitHub Release。
 # 产物名:rutis-cli-<version>-<target>.tar.gz(含二进制 + README + LICENSE)。
-# musl 目标在 rust-musl-cross 容器内构建,自带工具链,不依赖 runner 的 apt
-#(ubuntu-24.04 runner 的 apt-get 已连续挂死两次,不再赌它)。
+# musl 目标在 runner 本机用 zig 链接(cargo-zigbuild),不用容器,也不依赖
+# runner 的 apt:任何 Linux runner 都能构建,有没有 Docker 都行。
 
 name: release rutis-cli
 
@@ -21,14 +21,12 @@ jobs:
           - { os: macos-14, target: aarch64-apple-darwin }
           - { os: macos-14, target: x86_64-apple-darwin }
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, container: messense/rust-musl-cross:x86_64-musl }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, zig: true }
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
 
       - name: install rust toolchain
-        if: matrix.container == ''
         uses: dtolnay/rust-toolchain@1.98.1
         with:
           target: ${{ matrix.target }}
@@ -37,11 +35,21 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: add musl target (container)
-        if: matrix.container != ''
-        run: rustup target add ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        if: matrix.zig
+        with:
+          python-version: '3.12'
+
+      - name: zig
+        if: matrix.zig
+        run: python -m pip install cargo-zigbuild==0.24.0 ziglang==0.15.2
 
       - name: build
+        if: matrix.zig
+        run: cargo zigbuild --release -p rutis-cli --target ${{ matrix.target }}
+
+      - name: build
+        if: ${{ !matrix.zig }}
         run: cargo build --release -p rutis-cli --target ${{ matrix.target }}
 
       - name: package

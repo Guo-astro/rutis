@@ -202,6 +202,19 @@ def _function(function: Callable, where: str) -> Callable:
     return call
 
 
+def _listener(listener: Callable, where: str) -> Callable:
+    """A test's listener heard from another process: its arguments and
+    what it returns or raises cross; an `async def` stays one."""
+    crossed = _function(listener, where)
+    if not inspect.iscoroutinefunction(listener):
+        return crossed
+
+    async def call(*args: Any) -> Any:
+        return await crossed(*args)
+
+    return call
+
+
 class _Reference:
     """An object with behaviour, used from the other process."""
 
@@ -474,6 +487,8 @@ class Loaded:
         self.runtime = runtime
         self._deadline = deadline
         self._emitter = Emitter(_send(bus._bus, row, strict))
+        # The test's own listeners (`on`), withdrawn when it unloads.
+        self._listening: list = []
 
     # ── Events, as the plugin's row emits them ───────────────────
 
@@ -508,6 +523,38 @@ class Loaded:
     def reported(self) -> list[Reported]:
         """The failures nobody received on this plugin's bus."""
         return self.bus.reported
+
+    def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
+        """Listen to the event `name` as the host does, at the root scope,
+        until the returned function is called or the plugin unloads: the
+        plugin's emissions of `name` reach `listener`, and so do the test's
+        own. Strict, its arguments and what it returns cross as from another
+        process. `listener` may be `async`; `prepend` and `global_` as
+        `ctx.on`."""
+        def callback() -> Callable:
+            if not callable(listener):
+                raise PluginTestError("on needs a listener function")
+            return _listener(listener, f"listener of {name}") if self._strict else listener
+
+        bus = self.bus._bus
+        entry = self._listen(name, None, "test", callback, [], prepend, global_)
+        self._listening.append(entry)
+
+        def off() -> None:
+            bus.withdraw(entry)
+            if entry in self._listening:
+                self._listening.remove(entry)
+
+        return off
+
+    def _listen(self, name: str, row: Any, plugin: str, callback: Callable[[], Callable],
+                scope: Any, prepend: bool, global_: bool) -> Any:
+        # What `ctx.on` and `t.on` share: refuse an unloaded plugin and an
+        # internal name, then register the listener `callback` gives.
+        if self._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        reserved(name, listening=True)
+        return self.bus._bus.add(name, row, plugin, callback(), scope, prepend, global_)  # type: ignore[arg-type]
 
     # ── Services ─────────────────────────────────────────────────
 
@@ -574,7 +621,12 @@ class Loaded:
         one."""
         if self._unloaded:
             raise PluginTestError("the plugin is unloaded")
-        await self.unload()
+        # The test's own listeners stay.
+        listening, self._listening = self._listening, []
+        try:
+            await self.unload()
+        finally:
+            self._listening = listening
         self._unloaded = False
         self.bus._rows.add(self.row)
         await self._apply(config)
@@ -590,6 +642,9 @@ class Loaded:
         self._unloaded = True
         bus = self.bus._bus
         bus.withdraw_row(self.row)
+        for entry in self._listening:
+            bus.withdraw(entry)
+        self._listening.clear()
         self._provided.clear()
         try:
             await bus.stop(self.row, shutdown_deadline() if self._deadline is None else self._deadline)
@@ -639,12 +694,9 @@ class _Context(sdk.Context):
 
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
         loaded = self._loaded
-        if loaded._unloaded:
-            raise PluginTestError("the plugin is unloaded")
-        reserved(name, listening=True)
         bus = loaded.bus._bus
         plugin = loaded._plugin.name or loaded.row
-        entry = bus.add(name, loaded.row, plugin, listener, loaded.scope, prepend, global_)
+        entry = loaded._listen(name, loaded.row, plugin, lambda: listener, loaded.scope, prepend, global_)
         entry.runtime = loaded.runtime
 
         def off() -> None:

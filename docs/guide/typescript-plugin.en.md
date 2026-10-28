@@ -30,7 +30,7 @@ The generated `src/index.ts` is a `greeter` that uses no service, `test/index.te
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city?: string
+  city: string
 }
 
 interface Llm {
@@ -48,13 +48,15 @@ class Weather {
 export default definePlugin<Config>({
   inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
   provides: { weather: { today: 'async' } },      // What it provides: check knows before running; only declared methods are callable
-  config: { type: 'object', properties: { city: { type: 'string' } } },  // Configuration JSON Schema
+  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // Configuration JSON Schema
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
+    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
     return () => {}                                // Cleanup; ctx.effect(cleanup) also works, or return nothing
   },
 })
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`city` is `Oslo` when the row leaves it out) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); the testing tool does the same.
 
 The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
@@ -165,6 +167,37 @@ test('plugins hear each other', async () => {
 
 The `t` that `load(plugin)` returns has the five methods and `filter` too, emitting from that plugin's scope. For a plugin in another language listening to an event a TypeScript plugin emits, see [Python plugins: events](python-plugin.en.md#events).
 
+To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; the options are those of `ctx.on` (`prepend`, `global`); it returns the function that stops it, and without it, it stops when the row unloads. Every row `host()` loads has it, on their one bus.
+
+<!-- example: typescript-en file=weather/test/asked.test.ts order=2 -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { load } from '@arcships/rutis/testing'
+
+const asking = definePlugin({
+  apply(ctx, config: { city: string }) {
+    ctx.provide('weather', {
+      async today() {
+        ctx.emit('weather/asked', config.city)
+        return 'sunny'
+      },
+    })
+  },
+})
+
+test('each call emits weather/asked', async () => {
+  const t = await load(asking, { config: { city: 'Oslo' } })
+  const asked: string[] = []
+  const off = t.on('weather/asked', (city: string) => { asked.push(city) })
+  await t.service('weather').today()
+  assert.deepEqual(asked, ['Oslo'])
+  off()
+  await t.unload()
+})
+```
+
 ## 4. Run in a local host
 
 <!-- example: typescript-en run until="weather: running" order=99 -->
@@ -196,6 +229,17 @@ export default definePlugin({
 
 The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins to run. `npx rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem. It is suitable for CI.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ npx rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` opens the Node runtime process's own inspector, on `127.0.0.1:9229`:
@@ -223,7 +267,7 @@ Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `
 
 Before publishing, give the package a name of your own: short names such as `weather` and `greeter` were taken on npm long ago. Use a scoped name: change `name` in `package.json`, for example to `"@your-name/weather"` (the scope is your npm user or organization; the first publish of a public scoped package needs `--access public`, which the template's workflow passes). A host's row names the plugin by this package name.
 
-Declare a version range such as `"@arcships/rutis": "^0.17.2"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
+Declare a version range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
 
 ## 6. Use from a host
 

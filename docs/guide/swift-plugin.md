@@ -205,6 +205,8 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 规则（waterfall、失败、作用域、过滤、取消、保留名）在各语言相同：见 [插件 API：事件](plugin-api.md#事件) 和 [Go 指南的表](go-plugin.md#事件)。在 Swift 里，监听器的 Task 在它的行卸载时被取消，`parallel`、`serial`、`waterfall`、`bail` 的发出方放弃时也被取消；监听器一律按同步监听器调用，所以 `bail` 在任何地方都能到达 Swift 监听器。
 
+配置先按 `@RutisConfig` 的 Schema 补默认值、校验，再解码：配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。可选属性（`T?`）和带字面量初值的 `var`（`var units = "metric"`，还有数字、布尔值以及它们的数组和字典）不必填，字面量就是默认值；其他初值不算默认值，这个属性仍必填。自己写 `static let rutisSchema` 的类型按它校验；没有 `@RutisConfig` 的普通 `Decodable` 结构体只解码（`String` 这类基本类型、原始值为 `String` 的 `CaseIterable` 枚举仍按由类型得出的 Schema 校验）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
+
 ## 3. 测试
 
 `RutisTest` 不需要宿主，但插件在它真实的运行时里运行，值经真实的会话（内存里的一对 socket）传递；测试一方就是宿主：
@@ -240,6 +242,17 @@ rutis-host dev
 ```
 
 `dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建先打印 `weather: building`，完成后打印 `weather: built in 12.3s`：第一次要编译依赖（包括 SDK 的宏），可能要几分钟。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）；它们的文件变化时只重新加载这些行，不重新构建，Swift 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
+
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
 
 ## 5. 系统权限
 

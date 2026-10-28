@@ -447,7 +447,7 @@ enum BadArgument {
     },
     /// Argument `argument` (from 1) an object with methods (from the
     /// runtime `from`, when known), which a Rust service does not take: it
-    /// takes data and functions (#687 §九).
+    /// takes data and functions.
     Object {
         argument: usize,
         expected: String,

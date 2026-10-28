@@ -9,7 +9,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{layer, row_state, Probe};
+use common::runtimes::{layer, row_state, rows_stage, Probe};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, TypeKey,
 };
@@ -246,6 +246,22 @@ async fn volatile_changes_reach_cordis_in_place() {
     assert!(report.failures.is_empty(), "{report:?}");
     probe.wait_for("t: start 1").await;
     probe.wait_for("g: start 1").await;
+    // A change goes in place only to a running row (the forward to Cordis
+    // listens from when the row runs; a change before that would be lost,
+    // so it restarts the row instead), and `start` is
+    // recorded inside `apply`, before the row runs in rutis (`rows.load`
+    // returns once the Cordis fiber settled). `reconcile` does not wait
+    // for that when the rows wait for the runtime's rows stage
+    // (`RuntimeRows`), so wait here: a change to a row still loading is an
+    // ordinary update, a restart.
+    until(
+        || {
+            row_state(&loader, "t") == Some(FiberState::Active)
+                && row_state(&loader, "g") == Some(FiberState::Active)
+        },
+        "t and g running in rutis",
+    )
+    .await;
     assert_eq!(
         loader.get("t").unwrap().schema.unwrap()["properties"]["level"]["x-volatile"],
         true
@@ -315,7 +331,8 @@ async fn interop_loader(probe: &Probe) -> (Ctx, Loader, FiberView) {
 }
 
 /// The runtime, the loader and the rows' second stage, with `shared` as
-/// the catalog's shared names. Waits for the loader only.
+/// the catalog's shared names. Waits for the loader and for the rows'
+/// stage (so for the runtime too).
 async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberView) {
     let mut catalog = ServiceCatalog::new();
     for name in shared {
@@ -332,7 +349,7 @@ async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberV
     let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
+    rows_stage(root, resolver).await;
     (loader, runtime)
 }
 
@@ -1028,7 +1045,7 @@ async fn mount_by_name(root: &Ctx) -> (Loader, FiberView) {
     let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
+    rows_stage(root, resolver).await;
     (loader, runtime)
 }
 

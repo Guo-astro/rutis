@@ -35,6 +35,7 @@ fn scribble(value: &mut Value) {
     }
 }
 
+/// guarantee: sdk/config-schema (the shared case list, Rust's column)
 #[test]
 fn every_case_of_the_shared_list_passes() {
     let mut failures = Vec::new();

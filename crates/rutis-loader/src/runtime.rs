@@ -21,7 +21,9 @@
 //!   to Cordis, which commits it in place and emits `loader/volatile-update`
 //!   to the plugin, as dsh's loader does.
 //! - **Python** (feature `python`, [`RuntimeResolver::modules`]): a row named
-//!   `py:<module>` loads that module as a leaf plugin.
+//!   `py:<module>` loads that module as a leaf plugin. A Node runtime named
+//!   otherwise takes rows `<runtime name>:<npm name or file>` the same way,
+//!   for a process per plugin.
 //! - **Go** (feature `go`, [`GoResolver`](go::GoResolver), [`GoRuntimes`](go::GoRuntimes)): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
 //!   per binary, started when a row uses it. What compiled languages share
@@ -76,15 +78,16 @@ use rutis_bridge::session::Site;
 use rutis_bridge::session::{host_key, CallerRow, HostDispatch};
 use serde_json::{json, Map, Value};
 
+use crate::resolver::Resolved;
 use crate::resolver::{Build, ScopedFactory};
-use crate::{
-    volatile_key, Loader, LoaderError, Resolved, Resolver, ServiceCatalog, VolatileUpdate,
-};
+use crate::volatile::{volatile_key, VolatileUpdate};
+use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 
 /// Runtimes started from a binary that carries its own manifest.
 #[cfg(feature = "binary")]
 pub mod binary;
 mod connections;
+mod discover;
 /// Go runtimes: binaries built with the Go SDK.
 #[cfg(feature = "go")]
 pub mod go;
@@ -218,9 +221,18 @@ impl RuntimeResolver {
         }
     }
 
-    /// Rows of a runtime that loads plugins by module name, such as a
-    /// Python runtime (`rutis_bridge::runtime::LocalRuntime::python`): a row named
-    /// `<runtime name>:<module>` (`py:weather.plugin`) loads `<module>`.
+    /// Rows named after their runtime: a row `<runtime name>:<plugin>`
+    /// loads `<plugin>` into that runtime. For a Python runtime
+    /// (`rutis_bridge::runtime::LocalRuntime::python`) the plugin is a
+    /// module (`py:weather.plugin`); for a Node runtime, an npm name or a
+    /// file, as [`RuntimeResolver::node`] takes them (`wordcount:wordcount-plugin`).
+    ///
+    /// One process per plugin (or per group of plugins): a
+    /// `LocalRuntime` of its own for each, named
+    /// (`LocalRuntime::named`), each with a resolver of this kind; rows
+    /// with the same prefix share that runtime's process. It asks the
+    /// runtime at every resolution, as for Python, rather than caching by
+    /// the package's `version`.
     pub fn modules(runtime: RuntimeHandle) -> Self {
         let prefix = format!("{}:", runtime.name());
         Self::with_naming(runtime, Naming::Modules { prefix })
@@ -360,24 +372,51 @@ impl Resolver for RuntimeResolver {
                     ))),
                 }));
             };
-            let described = process.describe_row(&entry).await;
+            let described = match self.runtime.is_remote() {
+                // As for a runtime that comes in many times: a plugin the
+                // runtime does not contain fails the row, unavailable, and
+                // is read again when the runtime runs again.
+                true => match discover::describe(&process, &entry).await {
+                    discover::Described::Found(found) => Ok(found),
+                    discover::Described::Missing => {
+                        self.offline.lock().unwrap().remove(name);
+                        self.described
+                            .lock()
+                            .unwrap()
+                            .insert(name.to_owned(), process.connection().tag().to_owned());
+                        let plugin = entry.to_string_lossy();
+                        let why = discover::missing(self.runtime.name(), &plugin);
+                        return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
+                    }
+                    discover::Described::Failed(message) => Err(LoaderError::Resolve {
+                        name: name.to_owned(),
+                        message,
+                    }),
+                },
+                false => process
+                    .describe_row(&entry)
+                    .await
+                    .map_err(|error| match error {
+                        // The runtime looked and found no such plugin.
+                        rutis_bridge::session::Error::Remote { name: kind, .. }
+                            if kind == "NotFound" =>
+                        {
+                            LoaderError::NotFound {
+                                name: name.to_owned(),
+                            }
+                        }
+                        error => LoaderError::Resolve {
+                            name: name.to_owned(),
+                            message: error.to_string(),
+                        },
+                    }),
+            };
             if described.is_err() && !marked_before {
                 // Resolved with the runtime, if to an error: not again,
                 // unless it was waiting to be (a restart may help).
                 self.offline.lock().unwrap().remove(name);
             }
-            let described = described.map_err(|error| match error {
-                // The runtime looked and found no such plugin.
-                rutis_bridge::session::Error::Remote { name: kind, .. } if kind == "NotFound" => {
-                    LoaderError::NotFound {
-                        name: name.to_owned(),
-                    }
-                }
-                error => LoaderError::Resolve {
-                    name: name.to_owned(),
-                    message: error.to_string(),
-                },
-            })?;
+            let described = described?;
             // A leaf runtime has no dependency resolution of its own: every
             // service its plugins inject waits in rutis. In Cordis, only the
             // shared names do; the others resolve natively.
@@ -430,8 +469,45 @@ impl Resolver for RuntimeResolver {
 }
 
 /// Declarations not known, and why.
-pub(crate) fn unknown(why: String) -> crate::Declarations {
+pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
     Arc::new(move |_: &Value| Err(why.clone()))
+}
+
+/// The resolution of a row `name` whose runtime does not contain its plugin
+/// `entry`: the row fails with `why`, alone, and an edit adding it is not
+/// refused.
+fn unavailable_resolved(name: &str, entry: &Path, why: crate::error::Unavailable) -> Resolved {
+    Resolved {
+        factory: Arc::new(UnavailableFactory {
+            name: name.to_owned(),
+            why: why.clone(),
+        }),
+        schema: None,
+        meta: json!({ "source": "runtime", "entry": entry }),
+        foreign_scope: true,
+        scoped: None,
+        declares: Some(unknown(why.0)),
+    }
+}
+
+/// The factory of a row whose plugin its runtime does not contain.
+struct UnavailableFactory {
+    name: String,
+    why: crate::error::Unavailable,
+}
+
+impl PluginFactory<Value> for UnavailableFactory {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn validate_config(&self, _config: &Value) -> Result<(), Error> {
+        Err(self.why.clone().into_error())
+    }
+
+    fn build(&self, _config: &Value) -> Result<Box<dyn DynPlugin>, Error> {
+        Err(self.why.clone().into_error())
+    }
 }
 
 /// The resolution of a row `name` whose plugin `entry` runs in the runtime
@@ -446,7 +522,7 @@ pub(crate) fn leaf_resolved(
     catalog: &ServiceCatalog,
     meta: Value,
 ) -> Resolved {
-    let declared = crate::Declared {
+    let declared = crate::resolver::Declared {
         requires: gated.clone(),
         provides: described.provides.keys().cloned().collect(),
         announces: described.announces,
@@ -822,9 +898,15 @@ impl DynPlugin for JsRow {
                     // The runtime's process ended while the row loaded:
                     // not the row's failure, whichever row's code ended it.
                     // The row waits for its runtime, as the others in it do
-                    // (#682).
+                    // (#682). Only a named runtime's row: nothing ends the
+                    // wait of a row on a connection, which does not come
+                    // back (a runtime connection's instance waits for this
+                    // load before it can end with its connection), nor of
+                    // a copy of a definition. They fail at once.
                     if let Some(ended) = process.connection().close_reason() {
-                        return wait_for_the_runtime(ctx, ended).await;
+                        if matches!(self.runtime, RowRuntime::Named(_)) {
+                            return wait_for_the_runtime(ctx, ended).await;
+                        }
                     }
                     return Err(error);
                 }
@@ -929,6 +1011,11 @@ impl JsRow {
                 .is_some_and(|origin| origin == process.connection().tag())
             {
                 continue;
+            }
+            // From outside the runtime: only what the host lets it use
+            // (`LocalRuntime::allowed_services`).
+            if let Some(runtime) = runtime {
+                runtime.may_use(name).map_err(failed)?;
             }
             let label = label_of(&isolate, name);
             let lease = process

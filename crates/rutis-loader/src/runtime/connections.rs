@@ -1,6 +1,5 @@
 //! Runtimes that dial in: each connection an access point admits is an
-//! instance of one `instanced` group
-//! (`docs/design-remote-runtime-dial-2026-10-14.md` §四).
+//! instance of one `instanced` group.
 //!
 //! [`RuntimeInstances`] is both halves. As the access point's
 //! [`Accept`] ([`RuntimeInstances::accept`]) it mounts a runtime on each
@@ -34,19 +33,17 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, DynPlugin, ErrorKind, InstanceId, PluginFactory};
 use rutis::{Ctx, Error};
-use rutis_bridge::runtime::{Mount, Process, RowSchema};
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::host_key;
 use rutis_bridge::{Accept, Accepted, PeerId, Release};
 use serde_json::{json, Value};
 
+use super::discover::Described;
 use super::{unknown, JsFactory, RowRuntime};
+use crate::error::Unavailable;
+use crate::resolver::Resolved;
 use crate::resolver::{Build, ScopedFactory};
-use crate::{Loader, LoaderError, Resolved, Resolver, ServiceCatalog, Unavailable};
-
-/// What the rows of a runtime need from it (as for a runtime rutis mounts
-/// itself): describing plugins, exporting their services, leasing host
-/// services.
-const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
+use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 
 /// One runtime connection, the value of its instance ([`Build::value`]).
 #[derive(Clone)]
@@ -65,15 +62,6 @@ struct Connected {
     announced: Mutex<BTreeSet<String>>,
     /// Rebuilds the copies whose keys a new announced name changes.
     rekeying: Arc<dyn Fn() + Send + Sync>,
-}
-
-#[derive(Clone)]
-enum Described {
-    Found(RowSchema),
-    /// The connection does not contain the plugin.
-    Missing,
-    /// Asking the runtime failed: why.
-    Failed(String),
 }
 
 impl RuntimeConnection {
@@ -143,20 +131,7 @@ impl RuntimeConnection {
         if self.inner.described.lock().unwrap().contains_key(plugin) {
             return;
         }
-        let described = match self.inner.process.plugins() {
-            Some(plugins) => match plugins.get(plugin) {
-                Some(found) => Described::Found(found.clone()),
-                None => Described::Missing,
-            },
-            None => match self.inner.process.describe_row(Path::new(plugin)).await {
-                Ok(found) => Described::Found(found),
-                // The runtime looked and found no such plugin.
-                Err(rutis_bridge::session::Error::Remote { name, .. }) if name == "NotFound" => {
-                    Described::Missing
-                }
-                Err(error) => Described::Failed(error.to_string()),
-            },
-        };
+        let described = super::discover::describe(&self.inner.process, Path::new(plugin)).await;
         self.inner
             .described
             .lock()
@@ -298,10 +273,7 @@ impl RuntimeInstances {
         let described = match connection.described(plugin) {
             Some(Described::Found(described)) => described,
             Some(Described::Missing) => {
-                return Err(Unavailable(format!(
-                    "this connection does not contain plugin {plugin}"
-                ))
-                .into_error())
+                return Err(super::discover::missing(&inner.runtime, plugin).into_error())
             }
             Some(Described::Failed(error)) => {
                 return Err(Unavailable(format!(
@@ -517,17 +489,9 @@ impl Accept for AcceptInstances {
             let process = Process::over(accepted.runtime_session(), Mount::default())
                 .await
                 .map_err(|error| format!("mounting the {runtime} runtime: {error}"))?;
-            let missing: Vec<&str> = ROW_FEATURES
-                .iter()
-                .copied()
-                .filter(|feature| !process.supports(feature))
-                .collect();
-            if !missing.is_empty() {
-                return Err(format!(
-                    "the {runtime} runtime lacks {}: a runtime speaking the row contract is required",
-                    missing.join(" and ")
-                ));
-            }
+            process
+                .check_rows(runtime)
+                .map_err(|error| error.to_string())?;
             let connection = RuntimeConnection {
                 inner: Arc::new(Connected {
                     runtime: runtime.clone(),

@@ -19,8 +19,8 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.17.2")
-    ksp("io.github.arcships:rutis-ksp:0.17.2")
+    implementation("io.github.arcships:rutis:0.18.0")
+    ksp("io.github.arcships:rutis-ksp:0.18.0")
 }
 ```
 
@@ -65,6 +65,8 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   ```
 
   每一份在应用的进程里运行；应用连进来时，它只能挂在这个连接所在的实例里（或更里面）。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`；替身交回时插件拿到的也是原来那个。参数或返回值要直接是 `Plugin`（或 `Plugin?`），`List<Plugin>` 这类放在集合或数据类里的插件定义不支持，要交几个就调用几次。规则见 [插件 API](plugin-api.md#插件定义)。
+
+- 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；解码之前先按它校验，配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。有默认参数或可空的字段不必填；默认参数由 kotlinx 解码时补上（Schema 里看不到）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
 
 ### 带方法的对象
 
@@ -204,7 +206,7 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 ## 7. 测试
 
-- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。
+- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。装载出来的 `loaded.on(name) { args -> ... }` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
 - 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各成实例；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
 
 ## 8. 真机验收清单

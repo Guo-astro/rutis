@@ -23,18 +23,46 @@ use tokio::task::JoinHandle;
 
 use crate::runtime::{Mount, Process};
 
-/// What the rows of a runtime need from it: describing plugins, exporting
-/// their services (`rows.v2`) and leasing host services (`hosts`). Static
-/// mounts use neither, so only [`RuntimePlugin`] checks them.
-const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
-
 /// The service a running runtime provides.
 pub struct Runtime {
     process: Arc<Process>,
     hosts: Arc<HashMap<String, Value>>,
+    allowed: Option<Arc<[String]>>,
+    name: String,
 }
 
 impl Runtime {
+    /// Whether its plugins may use `service`, one from outside the runtime
+    /// ([`LocalRuntime::allowed_services`](crate::runtime::LocalRuntime::allowed_services)):
+    /// if not, the error a row using it fails with, `uses llm, which the
+    /// host does not let runtime wordcount use (allowed: tools, notes)`
+    /// (code `unavailable`, data `{service, reason}`).
+    pub fn may_use(&self, service: &str) -> Result<(), crate::session::Error> {
+        let Some(allowed) = &self.allowed else {
+            return Ok(());
+        };
+        if allowed.iter().any(|allowed| allowed == service) {
+            return Ok(());
+        }
+        let runtime = &self.name;
+        let listed = match allowed.is_empty() {
+            true => "none".to_owned(),
+            false => allowed.join(", "),
+        };
+        Err(crate::session::Error::binding(
+            crate::session::code::UNAVAILABLE,
+            format!(
+                "uses {service}, which the host does not let runtime {runtime} use \
+                 (allowed: {listed})"
+            ),
+            Some(serde_json::json!({
+                "service": service,
+                "reason": format!("the host does not let runtime {runtime} use it"),
+            })),
+        )
+        .graphed())
+    }
+
     pub fn process(&self) -> &Arc<Process> {
         &self.process
     }
@@ -212,6 +240,13 @@ pub struct RuntimePlugin {
     announcing: Arc<std::sync::atomic::AtomicBool>,
     /// The processes a local runtime started, for its process id.
     processes: Option<crate::transport::local::Processes>,
+    /// The host's limit on calls into it, and whether a call over it ends
+    /// the process (a local runtime's, `LocalRuntime::call_limit`).
+    limit: Option<(std::time::Duration, bool)>,
+    /// Why the host ended the process of this generation, once it did.
+    ended_by_host: Arc<Mutex<Option<String>>>,
+    /// The services from outside it its plugins may use, when limited.
+    allowed: Option<Arc<[String]>>,
 }
 
 impl RuntimePlugin {
@@ -287,6 +322,9 @@ impl RuntimePlugin {
             starts: Arc::default(),
             announcing: Arc::default(),
             processes: None,
+            limit: None,
+            ended_by_host: Arc::default(),
+            allowed: None,
         }
     }
 
@@ -295,6 +333,49 @@ impl RuntimePlugin {
     pub(crate) fn processes(mut self, processes: crate::transport::local::Processes) -> Self {
         self.processes = Some(processes);
         self
+    }
+
+    /// Limit each call into the runtime's plugin code to `limit`; with
+    /// `kill`, a call over it also ends the process
+    /// ([`LocalRuntime::call_limit`](crate::runtime::LocalRuntime::call_limit)).
+    pub(crate) fn call_limit(mut self, limit: std::time::Duration, kill: bool) -> Self {
+        self.limit = Some((limit, kill));
+        self
+    }
+
+    /// Let its plugins use only `names` of the services from outside it
+    /// ([`LocalRuntime::allowed_services`](crate::runtime::LocalRuntime::allowed_services)).
+    pub(crate) fn allowed_services(mut self, names: Vec<String>) -> Self {
+        self.allowed = Some(names.into());
+        self
+    }
+
+    /// The host's limit, set on the session of a generation that started.
+    fn limit_calls(&self, process: &Process) {
+        let Some((limit, kill)) = self.limit else {
+            return;
+        };
+        let ended: Option<crate::session::rpc::limits::Ended> = match (kill, &self.processes) {
+            (true, Some(processes)) => {
+                let (processes, reason) = (processes.clone(), self.ended_by_host.clone());
+                Some(Arc::new(move |what: &str| {
+                    let mut reason = reason.lock().unwrap();
+                    if reason.is_none() {
+                        *reason = Some(format!("ended by the host: {what}"));
+                    }
+                    drop(reason);
+                    processes.kill();
+                }))
+            }
+            _ => None,
+        };
+        process
+            .connection()
+            .limit_calls(crate::session::rpc::limits::CallLimit {
+                runtime: self.runtime.clone(),
+                limit,
+                ended,
+            });
     }
 
     /// A runtime that runs elsewhere: its session is `RuntimeSession#<name>`,
@@ -381,6 +462,7 @@ impl DynPlugin for RuntimePlugin {
             self.starts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.state.send_replace(RuntimeState::Starting);
+            *self.ended_by_host.lock().unwrap() = None;
             // The runtime may hang before it answers; dispose or restart
             // cancels this generation.
             let start = async {
@@ -425,22 +507,13 @@ impl DynPlugin for RuntimePlugin {
             // Rows need both, so a runtime without them fails here, once,
             // rather than every row failing on its own later. The process is
             // dropped, which ends it.
-            let missing: Vec<&str> = ROW_FEATURES
-                .iter()
-                .copied()
-                .filter(|feature| !process.supports(feature))
-                .collect();
-            if !missing.is_empty() {
-                let error = crate::runtime::Error::refused(format!(
-                    "the {} runtime lacks {}: @arcships/rutis-runtime 0.3.0 or later \
-                     (or a runtime speaking its row contract) is required",
-                    self.runtime,
-                    missing.join(" and ")
-                ));
+            if let Err(error) = process.check_rows(&self.runtime) {
                 self.state
                     .send_replace(RuntimeState::Down(error.to_string()));
                 return Err(error.into());
             }
+
+            self.limit_calls(&process);
 
             // Registered before the service, so cleanup withdraws the service
             // (dependent plugins unload first) before the process ends.
@@ -448,6 +521,7 @@ impl DynPlugin for RuntimePlugin {
             let watcher: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::default();
             let owner = process.clone();
             let state = self.state.clone();
+            let by_host = self.ended_by_host.clone();
             let stop_watching = watcher.clone();
             let registered = ctx.effect(move || {
                 async move {
@@ -465,7 +539,7 @@ impl DynPlugin for RuntimePlugin {
                     // both follow the same end, in either order. The
                     // process still ended on its own, and says so.
                     if owner.connection().close_reason().is_some() {
-                        state.send_replace(RuntimeState::Down(ended_status(&owner)));
+                        state.send_replace(RuntimeState::Down(ended_status(&owner, &by_host)));
                         return Ok(());
                     }
                     state.send_replace(RuntimeState::Idle);
@@ -489,6 +563,8 @@ impl DynPlugin for RuntimePlugin {
                 Arc::new(Runtime {
                     process: process.clone(),
                     hosts: self.hosts.clone(),
+                    allowed: self.allowed.clone(),
+                    name: self.runtime.clone(),
                 }),
             );
             let disposer = match provided {
@@ -507,6 +583,7 @@ impl DynPlugin for RuntimePlugin {
                 process,
                 self.state.clone(),
                 service,
+                self.ended_by_host.clone(),
             )));
             Ok(Effect::Done)
         })
@@ -518,16 +595,21 @@ async fn watch_exit(
     process: Arc<Process>,
     state: Arc<watch::Sender<RuntimeState>>,
     service: Arc<Mutex<Option<Disposer>>>,
+    by_host: Arc<Mutex<Option<String>>>,
 ) {
     process.closed().await;
-    state.send_replace(RuntimeState::Down(ended_status(&process)));
+    state.send_replace(RuntimeState::Down(ended_status(&process, &by_host)));
     withdraw(&service).await;
 }
 
 /// How the process of a session that ended went: a process started here
 /// says how it ended; a session through a link ends with its channel's
-/// reason (for a local runtime, the same).
-fn ended_status(process: &Process) -> String {
+/// reason (for a local runtime, the same). A process the host ended
+/// says why the host did.
+fn ended_status(process: &Process, by_host: &Mutex<Option<String>>) -> String {
+    if let Some(reason) = by_host.lock().unwrap().clone() {
+        return reason;
+    }
     match (process.exit_status(), process.connection().close_reason()) {
         (Some(status), _) => format!("runtime process {status}"),
         (None, Some(reason)) => format!("runtime ended: {reason}"),

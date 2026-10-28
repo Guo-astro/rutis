@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 // Participant is a row's configuration: a listener, or an emitter.
@@ -311,11 +312,11 @@ func (r *row) does(ctx context.Context, raw json.RawMessage, args []any) (any, e
 	if err := json.Unmarshal(raw, &does); err != nil {
 		return nil, fmt.Errorf("conformance-events: does %s: %w", raw, err)
 	}
-	next := func() rutis.Next {
+	next := func() advanced.Next {
 		if len(args) == 0 {
 			return nil
 		}
-		next, _ := args[len(args)-1].(rutis.Next)
+		next, _ := args[len(args)-1].(advanced.Next)
 		return next
 	}
 	if v, ok := does["returns"]; ok {
@@ -381,7 +382,7 @@ func (r *row) does(ctx context.Context, raw json.RawMessage, args []any) (any, e
 		return nil, nil
 	}
 	if _, ok := does["calls"]; ok {
-		fn, ok := first(args).(*rutis.Function)
+		fn, ok := first(args).(*advanced.Function)
 		if !ok {
 			return nil, fmt.Errorf("conformance-events: %s needs a function, got %T", r.p.Label, first(args))
 		}
@@ -432,10 +433,10 @@ var Plugin = rutis.Define(rutis.Plugin[Participant]{
 		} else {
 			var options []rutis.ListenOption
 			if p.Options.Prepend {
-				options = append(options, rutis.Prepend())
+				options = append(options, advanced.Prepend())
 			}
 			if p.Options.Global {
-				options = append(options, rutis.Global())
+				options = append(options, advanced.Global())
 			}
 			c.On(p.Name, r.listen, options...)
 		}
