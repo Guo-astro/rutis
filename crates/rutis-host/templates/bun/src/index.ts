@@ -1,7 +1,10 @@
 import { definePlugin } from '@arcships/rutis'
 
+// Each part below is a step of the Bun plugin guide:
+// https://github.com/arcships/rutis/blob/main/docs/guide/bun-plugin.en.md
+
 export interface Config {
-  // Filled from the schema's default when the row leaves it out.
+  // Filled from the schema's default when the row leaves it out (step 4).
   greeting: string
 }
 
@@ -14,19 +17,14 @@ class Greeter {
 }
 
 export default definePlugin<Config>({
-  // Services this plugin uses: `inject: ['llm']`, then `ctx.use('llm')`.
+  // Services this plugin uses: `inject: ['translate']`, then
+  // `ctx.use('translate')` (step 3).
   inject: [],
-  // What it provides, so that `rutis-host check` (and `check --strict` in a
-  // host's CI) knows it before the plugin runs. A declared service offers
-  // only the methods listed here: add each new one. 'sync' makes a method
-  // synchronous for its callers.
+  // The services it provides, with their methods (step 2).
   provides: { greeter: { hello: 'async' } },
-  // The JSON Schema of its config: rutis fills its defaults and validates
-  // the row's config with it before apply.
+  // The JSON Schema of its config (step 4).
   config: { type: 'object', properties: { greeting: { type: 'string', default: 'Hello' } } },
   apply(ctx, config) {
     ctx.provide('greeter', new Greeter(config.greeting))
-    // Return a cleanup, or use ctx.effect(cleanup), when the plugin holds
-    // anything to release.
   },
 })
