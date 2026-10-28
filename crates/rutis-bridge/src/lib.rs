@@ -67,7 +67,7 @@ pub use events::LinkEventsPlugin;
 pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
 pub use identity::{
     admission_key, fingerprint, identity_key, Admission, AdmissionPlugin, Credential, Identity,
-    IdentityPlugin, Presented, Rejection, Revocable, Revocations, SharedToken, StaticIdentity,
+    IdentityPlugin, Presented, Rejection, SharedToken, StaticIdentity,
 };
 pub use link::{protocol, Connect, Dialer, Failure, LinkConfig, LinkPlugin, LinkState, Retry};
 pub use peer::{family, peer_key, Handler, Offered, Offers, Peer};

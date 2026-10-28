@@ -17,10 +17,6 @@
 //! share a listener as long as no credential is accepted by two of them
 //! (such a connection is refused as ambiguous, 403) and no linked peer
 //! there has the access point's name (the second registration fails).
-//!
-//! An admission that revokes ([`Revocable`](crate::Revocable)) closes the
-//! connection of a revoked id, or all of them when everything is revoked;
-//! it then rejects the id (close code 4003), or the credential (403).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -289,7 +285,6 @@ impl Identity for Routing {
 enum Ending {
     Closed,
     Stopped,
-    Revoked,
 }
 
 /// The current connection of one id.
@@ -411,25 +406,6 @@ impl Shared {
                 generation: old.generation,
             });
         }
-        // Revoked since its hello was admitted (while it waited for the
-        // slot or for the old connection's release): rejected before
-        // anything is set up for it (#210).
-        let revoked = self
-            .admission
-            .revocations()
-            .is_some_and(|revocations| revocations.is_revoked(&id));
-        if revoked {
-            drop(current);
-            closer.close(crate::channel::Close::Rejected(
-                crate::identity::NOT_ACCEPTED.into(),
-            ));
-            session.close(Error::Transport(format!("{id}: identity revoked")));
-            operations.detach();
-            self.forget(&id, slot);
-            return self.emit(AccessEvent::Rejected {
-                reason: crate::identity::NOT_ACCEPTED.into(),
-            });
-        }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let peer = Arc::new(Peer::new(
             id.clone(),
@@ -462,17 +438,9 @@ impl Shared {
             generation,
         });
 
-        // Revoking the id (or everything the admission accepts) closes this
-        // connection alone (#273); its later connections are refused by
-        // the admission.
-        let revoked: BoxFuture<'static, ()> = match self.admission.revocations() {
-            Some(revocations) => Box::pin(revocations.revoked(&id)),
-            None => Box::pin(std::future::pending()),
-        };
         let ending = tokio::select! {
             _ = session.closed() => Ending::Closed,
             _ = stopping.wait_for(|stopped| *stopped) => Ending::Stopped,
-            () = revoked => Ending::Revoked,
         };
         let mut current = slot.lock().await;
         // Unless a newer connection took over, and released this one.
@@ -483,17 +451,11 @@ impl Shared {
             let ended = current.take().expect("checked");
             let reason = match ending {
                 Ending::Stopped => "the access point stopped".to_owned(),
-                Ending::Revoked => format!("{id}: identity revoked"),
                 Ending::Closed => session.close_reason().map_or_else(
                     || "the connection ended".to_owned(),
                     |error| error.to_string(),
                 ),
             };
-            if let Ending::Revoked = ending {
-                // Closed before the release: calls in flight fail at once,
-                // as when the network drops.
-                session.close(Error::Transport(reason.clone()));
-            }
             ended.live.end(&reason).await;
             self.emit(AccessEvent::Disconnected {
                 id: id.clone(),
