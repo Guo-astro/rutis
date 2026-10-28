@@ -170,9 +170,9 @@ async fn a_python_row_calls_the_same_service() {
     fixture.root.shutdown().await.unwrap();
 }
 
-/// The command that writes rows/services.d.ts, rows/services.py and
-/// rows/services.contract.json, from the repository's root.
-const TYPES: &str = "rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --python examples/marked-services/rows/services.py --contract examples/marked-services/rows/services.contract.json";
+/// The command that writes rows/services.d.ts and rows/services.py, from
+/// the repository's root.
+const TYPES: &str = "rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --python examples/marked-services/rows/services.py";
 
 /// rows/services.d.ts is what `rutis-host types` writes for this crate,
 /// and the rows written against it pass `tsc --strict`.
@@ -217,23 +217,6 @@ fn the_declarations_are_current_and_pass_tsc_strict() {
         "tsc --strict:\n{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// rows/services.contract.json, the contract description the testing
-/// tools read, is what `rutis-host types --contract` writes for this crate.
-#[test]
-fn the_contract_description_is_current() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("services.contract.json");
-    rutis_bridge::build::Exports::new()
-        .contract(&file)
-        .write(here())
-        .unwrap();
-    assert_eq!(
-        std::fs::read_to_string(here().join("rows/services.contract.json")).unwrap(),
-        std::fs::read_to_string(&file).unwrap(),
-        "rows/services.contract.json is stale: run `{TYPES}`"
     );
 }
 

@@ -306,10 +306,8 @@ impl Reference {
                 let connection = import.connection()?;
                 let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection.request_sync_within(
-                        Operation::Call(import.id, None, args),
-                        deadline.as_ref(),
-                    )
+                    connection
+                        .request_sync(Operation::Call(import.id, None, args), deadline.as_ref())
                 })
             }
             ReferenceInner::Home(_) => Err(not_callable()),
@@ -349,7 +347,8 @@ impl Reference {
             .connection()
             .and_then(|connection| {
                 forwarded(&connection, || {
-                    connection.request_sync(Operation::Call(import.id, Some(method.into()), args))
+                    connection
+                        .request_sync(Operation::Call(import.id, Some(method.into()), args), None)
                 })
             })
             .map_err(|error| import.gone(error))
@@ -370,7 +369,7 @@ impl Reference {
         let import = self.remote_object()?;
         let connection = import.connection()?;
         forwarded(&connection, || {
-            connection.request_sync(Operation::Get(import.id, property.into()))
+            connection.request_sync(Operation::Get(import.id, property.into()), None)
         })
     }
     pub async fn wait_async(&self) -> Reply {
@@ -394,7 +393,7 @@ impl Reference {
                 let connection = import.connection()?;
                 let deadline = self.deadline(&connection);
                 forwarded(&connection, || {
-                    connection.request_sync_within(
+                    connection.request_sync(
                         Operation::Await(import.id, import.origin.clone()),
                         deadline.as_ref(),
                     )
@@ -1706,7 +1705,7 @@ impl Connection {
         }
     }
     pub fn invoke(&self, target: &str, method: &str, args: Value) -> Reply {
-        self.request_sync(Operation::Invoke(target.into(), method.into(), args))
+        self.request_sync(Operation::Invoke(target.into(), method.into(), args), None)
     }
     pub async fn invoke_async(&self, target: &str, method: &str, args: Value) -> Reply {
         self.request_async(Operation::Invoke(target.into(), method.into(), args))
@@ -1955,9 +1954,12 @@ impl Connection {
         }
         Ok(id)
     }
-    fn request_sync(&self, call: Operation) -> Reply {
+    /// Send `call` and wait for its reply, running the calls that arrive
+    /// meanwhile. Past `deadline` (if any), the far end is told to cancel it
+    /// and a late reply is discarded.
+    fn request_sync(&self, call: Operation, deadline: Option<&limits::Deadline>) -> Reply {
         let (sender, receiver) = mpsc::channel();
-        self.send(
+        let id = self.send(
             call,
             Waiting::Sync {
                 sender,
@@ -1965,8 +1967,26 @@ impl Connection {
             },
         )?;
         loop {
-            match receiver.recv().map_err(transport)? {
-                Message::Reply(result) => return result,
+            let message = match deadline {
+                None => receiver.recv().map_err(transport)?,
+                Some(deadline) => match receiver.recv_timeout(deadline.left()) {
+                    Ok(message) => message,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.cancel(&id);
+                        return Err(deadline.ran_out());
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(transport(mpsc::RecvError))
+                    }
+                },
+            };
+            match message {
+                Message::Reply(result) => {
+                    return match deadline {
+                        Some(deadline) => deadline.carry(result),
+                        None => result,
+                    }
+                }
                 Message::Invoke(incoming) => {
                     let _pumping = Pumping::enter();
                     let _runtime = LentRuntime::enter(&self.0.executor);

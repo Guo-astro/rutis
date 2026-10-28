@@ -150,7 +150,7 @@ impl Connection {
             );
             let result = {
                 let _path = PathGuard::enter(forwarded);
-                target.request_sync_within(operation, deadline.as_ref())
+                target.request_sync(operation, deadline.as_ref())
             };
             self.respond(id, result.map_err(|error| import.gone(error)));
             drop(flight);

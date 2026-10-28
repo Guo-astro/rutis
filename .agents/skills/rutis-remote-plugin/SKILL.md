@@ -140,24 +140,23 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 
 ```json
 {
-  "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
+  "runtimes": { "remote": [{ "name": "gpu", "language": "python", "dial": "wss://gpu.example.com:7443/rutis" }] },
   "rows": [
-    { "id": "gpu", "name": "rutis-bridge/peer",
-      "config": { "peer": "gpu", "dial": "wss://gpu.example.com:7443/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder", "config": { "model": "small" } }
   ]
 }
 ```
 
 - `language`: `python` / `py` / `go` / `swift` / `node` / `bun`.
-- The link row must have `"runtime": "<name>"`; without it the other side is not treated as a runtime and `<name>:*` rows never become ready.
+- One entry describes the runtime whole: `dial: <address>` (rutis dials it), `listen: <listener>` (it dials in; its `--id` is the runtime's name), or `listen` + `instances` (many, step 4b). Not `dial` with `listen`, nor `dial` with `instances`. Optional `transport` (default `websocket`) names a transport the embedding Rust program mounts.
+- The form before 0.19 (only `name` and `language`, plus a `rutis-bridge/peer` row with `"runtime": "<name>"`) still works; do not write both for one runtime (the host refuses to start).
 - Rows are named `<runtime name>:<plugin>`; the plugin is resolved on the remote machine.
 
 ## 6. Verify
 
 - `rutis-host check`: remote runtimes are not contacted during checking; services that might come from them are reported as such, not as failures.
-- `rutis-host run`: expect `<link row id>: link connected`, then `<row id>: running`.
-- `link refused: auth-rejected` means the token or certificate is wrong; `link stopped: incompatible` means the protocol or address form is wrong, or `runtime` is missing.
+- `rutis-host run`: expect `runtime <name>: link connected` (`<link row id>: link connected` for the old link row; `runtime <name>: connected <id>` per connection with `instances`), then `<row id>: running`. `rutis-host status` lists them under `connections:`.
+- `link refused: auth-rejected` means the token or certificate is wrong; `link stopped: incompatible` means the protocol or address form is wrong, or the far end is not a runtime. A row failing with `runtime <name>: this connection does not contain plugin <plugin>` names a plugin the remote side does not have.
 - Stop the remote process: those rows stop, and so do the rows using their services; when it comes back rutis reconnects and loads them again.
 
 ## 7. What not to do

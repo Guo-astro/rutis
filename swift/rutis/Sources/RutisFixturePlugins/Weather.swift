@@ -88,13 +88,13 @@ let weatherSamples: [String: () throws -> Any?] = [
     },
     "swift/value-int-keys": { [2: "b", 1: "a"] as [Int: String] },
     "swift/value-set": { Set(["b", "a"]) },
-    "swift/value-bigint": { Rutis.BigInt("-123456789012345678901")! },
+    "swift/value-bigint": { Rutis.Advanced.BigInt("-123456789012345678901")! },
     "swift/big-int": { UInt64.max },
     "swift/value-constructed": {
         [
-            Rutis.DateTime(year: 2026, month: 10, day: 15, hour: 14, minute: 30, second: 5, nanosecond: 250_000_000),
-            Rutis.CalendarDate(year: 2026, month: 10, day: 15),
-            Rutis.TimeOfDay(hour: 14, minute: 30, second: 5, nanosecond: 250_000_000),
+            Rutis.Advanced.DateTime(year: 2026, month: 10, day: 15, hour: 14, minute: 30, second: 5, nanosecond: 250_000_000),
+            Rutis.Advanced.CalendarDate(year: 2026, month: 10, day: 15),
+            Rutis.Advanced.TimeOfDay(hour: 14, minute: 30, second: 5, nanosecond: 250_000_000),
             Decimal(string: "-12.34")!,
             UUID(uuidString: "0F8FAD5B-D9CB-469F-A165-70867728950E")!,
         ] as [Any]

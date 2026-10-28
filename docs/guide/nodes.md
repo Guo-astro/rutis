@@ -97,19 +97,43 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 ```json
 {
   "id": "main",
-  "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
+  "runtimes": { "remote": [{ "name": "gpu", "language": "python", "dial": "wss://gpu.example.com:7443/rutis" }] },
   "rows": [
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com:7443/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder" }
   ]
 }
 ```
 
+`runtimes.remote` 的一条写全一个远程运行时，谁主动连、一台还是多台各由一个字段决定：
+
+| 写法 | 含义 |
+| --- | --- |
+| `dial: <地址>` | 一台，rutis 去连；对方的 `--id` 是运行时名 |
+| `listen: <监听器>` | 一台，等它连进来；对方的 `--id` 是运行时名 |
+| `listen` + `instances: <分组>` | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
+| 都不写 | 不起连接，由一条带 `runtime` 的节点行或嵌入的程序提供会话 |
+
+`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 照旧：`RUTIS_TOKEN_<名字>`，没有时用 `RUTIS_TOKEN`。可选的 `transport` 选传输，默认 `websocket`；宿主自己的连接方式（中继、QUIC 等）实现一个 `Transport`，由嵌入 rutis-host 的程序挂上，`transport` 写它的名字（[rutis-host](rutis-host.md#runtimes)）。
+
+0.19 之前的写法——`runtimes.remote` 只写 `name` 与 `language`，另写一条带 `"runtime": "gpu"` 的 `rutis-bridge/peer` 行——照常可用（见[迁移到 0.19](../migration-0.19.md)）。
+
+`run` 打印连接的变化，前缀是 `runtime <名>`：
+
+```text
+runtime gpu: link connected
+runtime gpu: link down (gpu.example.com:7443: Connection refused); retrying in 2.1s
+runtime worker: connected worker-1
+runtime worker: disconnected worker-1 (connection lost)
+runtime worker: refused (the worker runtime lacks rows.v2 and hosts: …)
+```
+
+`rutis-host status` 的 `connections:` 一节给出当前状态。远端不含某行的插件时，只有这一行失败（`runtime gpu: this connection does not contain plugin embedder`），其他行不受影响。
+
 远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`；Bun 运行时也一样：在那台机器的 Bun 项目里执行 `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <名字> --peer <控制方> .`（插件从这个目录解析，行名 `<运行时名>:<模块>`），`language` 写 `bun`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。每种远程运行时（Python、Node、Bun、Go 或 Swift 二进制）开始监听后都在 stderr 上打印一行实际绑定的地址：`rutis: listening on <地址>`。端口写 0（`listen:ws://127.0.0.1:0/rutis`）时由系统挑一个空闲端口，脚本和测试从这一行读出来；不要先找一个空闲端口再传给它，运行时绑定之前别的进程可能已经占了这个端口。Python 运行时会话结束时还打印一行 `rutis: session ended (<原因>); waiting for a controller`（原因如 `heartbeat timeout`、`connection lost`、`closed (1001): …`），被新连接接替时打印 `rutis: session ended (replaced by a new connection)`。
 
 ### 连进来的运行时
 
-运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变，或者数量会变（多台设备、扩缩容的 worker）时用这种方式。rutis 一侧在 `runtimes.remote` 的条目里写 `listen`（接入的监听器）和 `instances`（一个 `instanced` 分组），不写节点行：
+运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变，或者数量会变（多台设备、扩缩容的 worker）时用这种方式。只有一台时在 `runtimes.remote` 的条目里只写 `listen`（接入的监听器），运行时的 `--id` 写运行时名；数量会变时再加 `instances`（一个 `instanced` 分组）。都不写节点行：
 
 ```json
 {

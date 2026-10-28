@@ -42,7 +42,6 @@ pub struct Exports {
     declared_python: Vec<(String, String)>,
     typescript: Option<PathBuf>,
     python: Option<PathBuf>,
-    contract: Option<PathBuf>,
 }
 
 impl Exports {
@@ -89,26 +88,13 @@ impl Exports {
         self
     }
 
-    /// Write the contract description to `path` (relative to the package's
-    /// `Cargo.toml`): a JSON file the testing tools of
-    /// `@arcships/rutis` and `rutis` read (their `contract` option), to fail
-    /// a test where these services would refuse the call. It describes the
-    /// types only, is read by the testing tools of the same major version,
-    /// and is written only when it changes.
-    pub fn contract(mut self, path: impl AsRef<Path>) -> Self {
-        self.contract = Some(path.as_ref().to_owned());
-        self
-    }
-
-    /// Write the files named with [`Exports::typescript`],
-    /// [`Exports::python`] and [`Exports::contract`], and have Cargo run the
-    /// build script again
-    /// when a source it read changes.
+    /// Write the files named with [`Exports::typescript`] and
+    /// [`Exports::python`], and have Cargo run the build script again when a
+    /// source it read changes.
     pub fn generate(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        if self.typescript.is_none() && self.python.is_none() && self.contract.is_none() {
+        if self.typescript.is_none() && self.python.is_none() {
             return Err(
-                "nothing to generate: name a file with .typescript(path), .python(path) or .contract(path)"
-                    .into(),
+                "nothing to generate: name a file with .typescript(path) or .python(path)".into(),
             );
         }
         println!("cargo:rerun-if-changed=build.rs");
@@ -138,10 +124,9 @@ impl Exports {
     }
 
     /// What `rutis-host types` does: generate for the crate in
-    /// `crate_dir`, write the files named with [`Exports::typescript`],
-    /// [`Exports::python`] and [`Exports::contract`] (relative to the
-    /// current directory), and
-    /// return the TypeScript declarations.
+    /// `crate_dir`, write the files named with [`Exports::typescript`] and
+    /// [`Exports::python`] (relative to the current directory), and return
+    /// the TypeScript declarations.
     pub fn write(
         self,
         crate_dir: impl AsRef<Path>,
@@ -174,7 +159,6 @@ impl Exports {
         let files = [
             (&self.typescript, &generated.typescript),
             (&self.python, &generated.python),
-            (&self.contract, &generated.contract),
         ];
         for (path, text) in files {
             let Some(path) = path else { continue };
@@ -206,7 +190,6 @@ impl Exports {
             thrown: BTreeMap::new(),
             warnings: Vec::new(),
             cyclic: HashMap::new(),
-            contract_types: BTreeMap::new(),
             py_declarations: Vec::new(),
             py_names: HashSet::new(),
             py_classes: HashSet::new(),
@@ -242,7 +225,6 @@ impl Exports {
             }
         }
         let mut services_ts = String::new();
-        let mut services_contract = serde_json::Map::new();
         let mut names: HashMap<String, String> = HashMap::new();
         for (module, index, ident, name) in generator.marked_types()? {
             if let Some(first) = names.insert(name.clone(), ident.clone()) {
@@ -250,9 +232,8 @@ impl Exports {
                     "the service name {name} is given twice: {first} and {ident} are both marked #[rutis::service] with it"
                 ));
             }
-            let (interface, methods) = generator.service(module, index, &ident)?;
+            let interface = generator.service(module, index, &ident)?;
             services_ts.push_str(&format!("  {}: {interface}\n", ts_key(&name)));
-            services_contract.insert(name, serde_json::json!({ "methods": methods }));
         }
         let mut typescript = String::from(
             "// Generated from the service declarations; do not edit.\n\n\
@@ -294,20 +275,11 @@ impl Exports {
              #: `message` its Display, `data` its serde value.\n\
              RustError = rutis.RemoteError\n{body}"
         );
-        let contract = serde_json::json!({
-            "version": CONTRACT_VERSION,
-            "services": services_contract,
-            "types": generator.contract_types,
-        });
-        let mut contract =
-            serde_json::to_string_pretty(&contract).expect("a contract description is JSON");
-        contract.push('\n');
         let mut warnings = std::mem::take(&mut generator.sources.warnings);
         warnings.extend(generator.warnings);
         Ok(Generated {
             typescript,
             python,
-            contract,
             warnings,
         })
     }
@@ -318,19 +290,12 @@ pub(super) struct Generated {
     pub(super) typescript: String,
     /// The Python module.
     pub(super) python: String,
-    /// The contract description, as JSON.
-    pub(super) contract: String,
     pub(super) warnings: Vec<String>,
 }
 
-/// The format version of the contract description, which the testing
-/// tools of the same major version read. It is their internal format, not
-/// a published one.
-const CONTRACT_VERSION: u32 = 1;
-
 // ── Types ───────────────────────────────────────────────────────
 
-/// A type as it crosses: its TypeScript, and its contract description.
+/// A type as it crosses, for its TypeScript and its Python.
 #[derive(Clone, Debug)]
 enum Ty {
     Unit,
@@ -340,9 +305,6 @@ enum Ty {
     Int(String),
     Float,
     Str,
-    /// A string in TypeScript and in the contract, with its Python type
-    /// given: a tagged value that crosses as text (`rutis_bridge::DateTime`).
-    Text(String),
     Json,
     Option(Box<Ty>),
     Array(Box<Ty>),
@@ -355,7 +317,7 @@ enum Ty {
     /// A plugin definition.
     Definition,
     /// Its TypeScript and its Python are given: a type the application
-    /// declared, or one whose form the contract does not describe.
+    /// declared, or one written as given text.
     Ts(String, String),
 }
 
@@ -366,7 +328,7 @@ impl Ty {
             Ty::Bool => "boolean".into(),
             Ty::Int(_) if self.big() => "number | bigint".into(),
             Ty::Int(_) | Ty::Float => "number".into(),
-            Ty::Str | Ty::Text(_) => "string".into(),
+            Ty::Str => "string".into(),
             Ty::Json => "unknown".into(),
             Ty::Option(inner) => format!("{} | null", inner.ts()),
             Ty::Array(inner) => match inner.as_ref() {
@@ -410,7 +372,6 @@ impl Ty {
             Ty::Int(_) => "int".into(),
             Ty::Float => "float".into(),
             Ty::Str => "str".into(),
-            Ty::Text(py) => py.clone(),
             Ty::Json | Ty::Param(_) => "typing.Any".into(),
             Ty::Option(inner) => match inner.as_ref() {
                 Ty::Unit | Ty::Option(_) => inner.py(),
@@ -442,51 +403,6 @@ impl Ty {
             other => other.ts(),
         }
     }
-
-    /// Its contract description (§六 of the design): what the testing
-    /// tools check an argument against. A type whose form is not certain
-    /// is `any`, which every value passes.
-    fn contract(&self) -> serde_json::Value {
-        use serde_json::json;
-        match self {
-            Ty::Unit => json!({ "kind": "null" }),
-            Ty::Bool => json!({ "kind": "bool" }),
-            Ty::Int(name) => {
-                let (min, max) = int_range(name);
-                json!({ "kind": "int", "min": min, "max": max })
-            }
-            Ty::Float => json!({ "kind": "float" }),
-            Ty::Str | Ty::Text(_) => json!({ "kind": "string" }),
-            Ty::Option(inner) => json!({ "kind": "option", "of": inner.contract() }),
-            Ty::Array(inner) => json!({ "kind": "list", "of": inner.contract() }),
-            Ty::Tuple(items) => {
-                json!({ "kind": "tuple", "items": items.iter().map(Ty::contract).collect::<Vec<_>>() })
-            }
-            Ty::Record(value) => json!({ "kind": "map", "values": value.contract() }),
-            Ty::Named(name, args) if args.is_empty() => json!({ "kind": "ref", "name": name }),
-            Ty::Definition => json!({ "kind": "plugin" }),
-            Ty::Json | Ty::Named(..) | Ty::Param(_) | Ty::Ts(..) => json!({ "kind": "any" }),
-        }
-    }
-}
-
-/// The range of a Rust integer primitive, as text (a JSON number cannot
-/// hold every 64-bit value exactly). `usize` and `isize` are 64 bits.
-fn int_range(name: &str) -> (String, String) {
-    let (min, max): (i128, u128) = match name {
-        "u8" => (0, u8::MAX.into()),
-        "u16" => (0, u16::MAX.into()),
-        "u32" => (0, u32::MAX.into()),
-        "u64" | "usize" => (0, u64::MAX.into()),
-        "u128" => (0, u128::MAX),
-        "i8" => (i8::MIN.into(), i8::MAX as u128),
-        "i16" => (i16::MIN.into(), i16::MAX as u128),
-        "i32" => (i32::MIN.into(), i32::MAX as u128),
-        "i128" => (i128::MIN, i128::MAX as u128),
-        // i64, isize
-        _ => (i64::MIN.into(), i64::MAX as u128),
-    };
-    (min.to_string(), max.to_string())
 }
 
 /// Where a type is written: its module, and what its generic parameters
@@ -524,7 +440,6 @@ struct Declared {
 /// A method of a service, as each output writes it.
 struct Method {
     typescript: String,
-    contract: serde_json::Value,
     python: String,
 }
 
@@ -551,8 +466,6 @@ struct Generator<'a> {
     warnings: Vec<String>,
     /// Whether a type alias refers to itself, by alias.
     cyclic: HashMap<(usize, usize), bool>,
-    /// The contract descriptions of the declared types, by name.
-    contract_types: BTreeMap<String, serde_json::Value>,
     /// The Python declarations, in order.
     py_declarations: Vec<String>,
     /// The names of the Python module's helper declarations.
@@ -857,11 +770,11 @@ impl Generator<'_> {
                 "Instant" => Ok(Ty::Ts("Date".into(), "datetime.datetime".into())),
                 "BigInt" => Ok(Ty::Ts("bigint".into(), "int".into())),
                 "Bytes" => Ok(Ty::Ts("Uint8Array".into(), "bytes".into())),
-                "DateTime" => Ok(Ty::Text("datetime.datetime".into())),
-                "Date" => Ok(Ty::Text("datetime.date".into())),
-                "TimeOfDay" => Ok(Ty::Text("datetime.time".into())),
-                "Decimal" => Ok(Ty::Text("decimal.Decimal".into())),
-                "Uuid" => Ok(Ty::Text("uuid.UUID".into())),
+                "DateTime" => Ok(Ty::Ts("string".into(), "datetime.datetime".into())),
+                "Date" => Ok(Ty::Ts("string".into(), "datetime.date".into())),
+                "TimeOfDay" => Ok(Ty::Ts("string".into(), "datetime.time".into())),
+                "Decimal" => Ok(Ty::Ts("string".into(), "decimal.Decimal".into())),
+                "Uuid" => Ok(Ty::Ts("string".into(), "uuid.UUID".into())),
                 "ValueMap" => {
                     let (key, value) =
                         (self.arg(scope, args, 0, ty)?, self.arg(scope, args, 1, ty)?);
@@ -897,7 +810,6 @@ impl Generator<'_> {
             self.declarations.len(),
             self.named.clone(),
             self.names.clone(),
-            self.contract_types.clone(),
             self.py_declarations.len(),
             self.py_names.clone(),
             self.py_classes.clone(),
@@ -907,10 +819,9 @@ impl Generator<'_> {
             self.declarations.truncate(snapshot.0);
             self.named = snapshot.1;
             self.names = snapshot.2;
-            self.contract_types = snapshot.3;
-            self.py_declarations.truncate(snapshot.4);
-            self.py_names = snapshot.5;
-            self.py_classes = snapshot.6;
+            self.py_declarations.truncate(snapshot.3);
+            self.py_names = snapshot.4;
+            self.py_classes = snapshot.5;
         }
         declared
     }
@@ -983,15 +894,6 @@ impl Generator<'_> {
             None => self.py_struct(&name, &body, &py_docs),
         };
         self.py_declarations.push(py_declaration);
-        let contract = match &item {
-            _ if !ts_params.is_empty() || !derives(&attrs, "Deserialize") || serde.asymmetric => {
-                serde_json::json!({ "kind": "any" })
-            }
-            Item::Struct(_) => body.contract(serde.deny_unknown_fields),
-            Item::Enum(item) => self.enum_contract(&scope, item, &serde)?,
-            _ => unreachable!(),
-        };
-        self.contract_types.insert(name.clone(), contract);
         let docs = jsdoc(&attrs, "");
         let declaration = match body {
             Body::Object {
@@ -1065,15 +967,11 @@ impl Generator<'_> {
                 }
                 let mut fields = Vec::new();
                 let mut flattened = Vec::new();
-                let mut asymmetric = false;
                 for field in &named.named {
                     if !self.sources_enabled(scope, &field.attrs) {
                         continue;
                     }
                     let attrs = SerdeAttrs::of(&field.attrs)?;
-                    if attrs.asymmetric {
-                        asymmetric = true;
-                    }
                     if attrs.skip {
                         continue;
                     }
@@ -1099,11 +997,7 @@ impl Generator<'_> {
                         ty,
                     });
                 }
-                Ok(Body::Object {
-                    fields,
-                    flattened,
-                    loose: asymmetric,
-                })
+                Ok(Body::Object { fields, flattened })
             }
         }
     }
@@ -1166,7 +1060,6 @@ impl Generator<'_> {
                 let merged = Body::Object {
                     fields,
                     flattened: flattened.clone(),
-                    loose: true,
                 };
                 alternatives.push(format!(
                     "{}{}",
@@ -1420,33 +1313,6 @@ impl Generator<'_> {
         Ok(variants)
     }
 
-    /// The contract description of an enum: the names of an enum of unit
-    /// variants written as their names; any other enum is `any`.
-    fn enum_contract(
-        &self,
-        scope: &Scope,
-        item: &syn::ItemEnum,
-        serde: &SerdeAttrs,
-    ) -> Result<serde_json::Value> {
-        let any = serde_json::json!({ "kind": "any" });
-        if serde.tag.is_some() || serde.untagged {
-            return Ok(any);
-        }
-        let mut names = Vec::new();
-        for (variant, name) in self.variants(scope, item, serde)? {
-            if !matches!(variant.fields, syn::Fields::Unit) {
-                return Ok(any);
-            }
-            names.push(name);
-        }
-        for variant in &item.variants {
-            if SerdeAttrs::of(&variant.attrs)?.asymmetric {
-                return Ok(any);
-            }
-        }
-        Ok(serde_json::json!({ "kind": "enum", "names": names }))
-    }
-
     // ── Methods ──────────────────────────────────────────────────
 
     /// The `#[rutis::service]` name of the type at `module`/`index`, when
@@ -1545,14 +1411,9 @@ impl Generator<'_> {
 
     /// The TypeScript interface of the marked service type at
     /// `module`/`index`: the methods of its `#[rutis::service]` blocks,
-    /// without their `#[service(skip)]` ones. Returns the interface's name
-    /// and the contract descriptions of its methods.
-    fn service(
-        &mut self,
-        module: usize,
-        index: usize,
-        ident: &str,
-    ) -> Result<(String, serde_json::Value)> {
+    /// without their `#[service(skip)]` ones, and its Python `Protocol`.
+    /// Returns the interface's name.
+    fn service(&mut self, module: usize, index: usize, ident: &str) -> Result<String> {
         let interface = self.unique(ident);
         let item = self.sources.item(module, index).clone();
         let item_attrs = match &item {
@@ -1561,7 +1422,6 @@ impl Generator<'_> {
             _ => Vec::new(),
         };
         let mut methods_ts = String::new();
-        let mut methods_contract = serde_json::Map::new();
         let mut methods_py = String::new();
         let mut seen = HashSet::new();
         for candidate in self.sources.crate_modules(module) {
@@ -1643,14 +1503,8 @@ impl Generator<'_> {
                                 }
                                 methods_py.push_str(&declared.python);
                             }
-                            methods_contract
-                                .insert(js, serde_json::json!({ "params": declared.contract }));
                         }
                         Err(reason) => {
-                            // The service still has it: callable, with its
-                            // arguments not checked.
-                            methods_contract
-                                .insert(js.clone(), serde_json::json!({ "params": null }));
                             seen.remove(&js);
                             self.warnings.push(format!(
                                 "{location}: {ident}::{rust_name} is not exported: {reason}"
@@ -1684,11 +1538,11 @@ impl Generator<'_> {
         self.py_declarations.push(format!(
             "class {interface}(typing.Protocol):\n{py_docs}{separator}{body}"
         ));
-        Ok((interface, serde_json::Value::Object(methods_contract)))
+        Ok(interface)
     }
 
-    /// One method's TypeScript and Python signatures and the contract
-    /// descriptions of its parameters, or why it cannot be declared.
+    /// One method's TypeScript and Python signatures, or why it cannot be
+    /// declared.
     fn method(&mut self, scope: &Scope, method: &syn::ImplItemFn) -> Result<Method> {
         let sig = &method.sig;
         if sig.unsafety.is_some() {
@@ -1722,7 +1576,6 @@ impl Generator<'_> {
             }
         }
         let mut params_ts = Vec::new();
-        let mut params_contract = Vec::new();
         let mut params_py = Vec::new();
         let mut count = 0;
         for input in sig.inputs.iter().skip(1) {
@@ -1756,7 +1609,6 @@ impl Generator<'_> {
                     return Err("it takes a mutable reference".into());
                 }
                 params_ts.push(format!("{js}: {DEFINITION_TS}"));
-                params_contract.push(Ty::Definition.contract());
                 params_py.push(format!("{py_name}: {}", Ty::Definition.py()));
                 count += 1;
                 continue;
@@ -1783,11 +1635,6 @@ impl Generator<'_> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ));
-                params_contract.push(serde_json::json!({
-                    "kind": "function",
-                    "params": callback.args.iter().map(Ty::contract).collect::<Vec<_>>(),
-                    "result": callback.ok.contract(),
-                }));
                 count += 1;
                 continue;
             }
@@ -1796,7 +1643,6 @@ impl Generator<'_> {
             }
             let ty = self.ty(scope, &input.ty)?;
             params_ts.push(format!("{js}: {}", ty.ts()));
-            params_contract.push(ty.contract());
             params_py.push(format!("{py_name}: {}", ty.py()));
             count += 1;
         }
@@ -1864,7 +1710,6 @@ impl Generator<'_> {
                 params_ts.join(", "),
                 ok.returned()
             ),
-            contract: serde_json::Value::Array(params_contract),
             python: py,
         })
     }
@@ -2239,12 +2084,10 @@ impl Generator<'_> {
 }
 
 enum Body {
-    /// The fields of an object, and the types flattened into it; `loose`
-    /// when a field is read under another name than it is written.
+    /// The fields of an object, and the types flattened into it.
     Object {
         fields: Vec<Field>,
         flattened: Vec<Ty>,
-        loose: bool,
     },
     Alias(Ty),
 }
@@ -2269,38 +2112,6 @@ impl Body {
                 .chain(flattened.iter().map(Ty::ts))
                 .collect::<Vec<_>>()
                 .join(" & "),
-        }
-    }
-
-    /// The contract description of a struct of this body: its fields
-    /// as serde reads them, with no others when `deny_unknown_fields`.
-    fn contract(&self, deny_unknown_fields: bool) -> serde_json::Value {
-        match self {
-            Body::Alias(alias) => alias.contract(),
-            Body::Object {
-                fields,
-                flattened,
-                loose,
-            } => {
-                if *loose || !flattened.is_empty() {
-                    return serde_json::json!({ "kind": "any" });
-                }
-                let fields: Vec<serde_json::Value> = fields
-                    .iter()
-                    .map(|field| {
-                        serde_json::json!({
-                            "name": field.key,
-                            "type": field.ty.contract(),
-                            "optional": field.optional,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "kind": "struct",
-                    "fields": fields,
-                    "denyUnknown": deny_unknown_fields,
-                })
-            }
         }
     }
 }
@@ -2752,39 +2563,27 @@ struct SerdeAttrs {
     skip: bool,
     skip_if: bool,
     flatten: bool,
-    deny_unknown_fields: bool,
-    /// Read (deserialized) otherwise than written: under another name, by
-    /// another function or type, or skipped one way only. Its contract
-    /// description is `any`.
-    asymmetric: bool,
 }
 
 impl SerdeAttrs {
     fn of(attrs: &[syn::Attribute]) -> Result<Self> {
         let mut found = Self::default();
-        let mut asymmetric = false;
         for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
             attr.parse_nested_meta(|meta| {
                 let key = meta.path.get_ident().map(ToString::to_string).unwrap_or_default();
                 // `rename = "x"` or `rename(serialize = "x", ...)`.
-                let mut text = |meta: &syn::meta::ParseNestedMeta| -> syn::Result<Option<String>> {
+                let text = |meta: &syn::meta::ParseNestedMeta| -> syn::Result<Option<String>> {
                     if meta.input.peek(syn::Token![=]) {
                         return Ok(Some(meta.value()?.parse::<syn::LitStr>()?.value()));
                     }
                     let mut serialized = None;
-                    let mut deserialized = None;
                     meta.parse_nested_meta(|inner| {
                         let value = inner.value()?.parse::<syn::LitStr>()?.value();
                         if inner.path.is_ident("serialize") {
                             serialized = Some(value);
-                        } else if inner.path.is_ident("deserialize") {
-                            deserialized = Some(value);
                         }
                         Ok(())
                     })?;
-                    if serialized != deserialized {
-                        asymmetric = true;
-                    }
                     Ok(serialized)
                 };
                 match key.as_str() {
@@ -2798,13 +2597,6 @@ impl SerdeAttrs {
                     "flatten" => found.flatten = true,
                     "skip" | "skip_serializing" => {
                         found.skip = true;
-                        found.asymmetric |= key == "skip_serializing";
-                        skip_value(&meta)?;
-                    }
-                    "deny_unknown_fields" => found.deny_unknown_fields = true,
-                    "alias" | "other" | "skip_deserializing" | "deserialize_with" | "from"
-                    | "try_from" => {
-                        found.asymmetric = true;
                         skip_value(&meta)?;
                     }
                     "default" => {
@@ -2826,7 +2618,6 @@ impl SerdeAttrs {
             })
             .map_err(|error| error.to_string())?;
         }
-        found.asymmetric |= asymmetric;
         Ok(found)
     }
 }
@@ -3035,12 +2826,11 @@ mod tests {
                 lib("dep", "dep_crate", dir.path().join("dep/lib.rs")),
                 lib("rutis", "rutis", dir.path().join("none.rs")),
                 lib("serde", "serde", dir.path().join("none.rs")),
-                lib("bridge", "rutis_bridge", dir.path().join("none.rs")),
                 lib("other", "other_crate", dir.path().join("other/lib.rs")),
             ],
             "resolve": { "root": "host", "nodes": [
                 { "id": "host", "deps": [{ "name": "dep_crate", "pkg": "dep" }, { "name": "rutis", "pkg": "rutis" }], "features": [] },
-                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }, { "name": "rutis_bridge", "pkg": "bridge" }], "features": ["extra"] },
+                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }], "features": ["extra"] },
                 { "id": "other", "deps": [{ "name": "rutis", "pkg": "rutis" }], "features": [] },
             ] },
         });
@@ -3181,152 +2971,6 @@ mod tests {
         assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
         assert!(ts.contains("read(): Promise<string>"), "{ts}");
         assert!(!ts.contains("unmarked") && !ts.contains("reset"), "{ts}");
-    }
-
-    /// The contract description names each service's methods and what
-    /// each parameter takes; what it cannot be sure of is `any`.
-    #[test]
-    fn tagged_text_values_are_strings_in_the_contract() {
-        let source = r#"
-use rutis_bridge::session::{self as s, DateTime};
-
-pub struct Clock;
-
-#[rutis::service]
-impl Clock {
-    pub fn set(&self, at: DateTime, day: s::Date, time: s::TimeOfDay, price: s::Decimal, id: s::Uuid) {}
-}
-"#;
-        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
-        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
-        let contract: serde_json::Value = serde_json::from_str(&generated.contract).unwrap();
-        let string = serde_json::json!({ "kind": "string" });
-        assert_eq!(
-            contract["services"]["clock"]["methods"]["set"]["params"],
-            serde_json::json!([string, string, string, string, string])
-        );
-        assert!(generated.typescript.contains(
-            "set(at: string, day: string, time: string, price: string, id: string): Promise<void>"
-        ), "{}", generated.typescript);
-        assert!(generated.python.contains(
-            "at: datetime.datetime, day: datetime.date, time: datetime.time, price: decimal.Decimal, id: uuid.UUID"
-        ), "{}", generated.python);
-    }
-
-    #[test]
-    fn the_contract_describes_what_each_parameter_takes() {
-        let source = r#"
-use std::collections::HashMap;
-use rutis::host::BoxFuture;
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Item { pub item_name: String, #[serde(default)] pub done: bool, pub note: Option<String> }
-
-#[derive(Serialize, Deserialize)]
-pub struct Open { pub name: String }
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Level { Low, High }
-
-#[derive(Serialize, Deserialize)]
-pub enum Shape { Dot, Line(u8) }
-
-#[derive(Serialize, Deserialize)]
-pub struct Flat { #[serde(flatten)] pub open: Open }
-
-#[derive(Serialize, Deserialize)]
-pub struct Aliased { #[serde(alias = "nm")] pub name: String }
-
-#[derive(Serialize, Deserialize)]
-pub struct Page<T> { pub items: Vec<T> }
-
-pub struct Board;
-
-#[rutis::service]
-impl Board {
-    pub fn put(&self, ctx: &rutis::Ctx, item: Item, open: Open, level: Level, count: i8, ratio: f32) {}
-    pub fn more(&self, tags: Vec<String>, pair: (u16, bool), map: HashMap<String, u64>, note: Option<String>) {}
-    pub fn loose(&self, shape: Shape, flat: Flat, aliased: Aliased, page: Page<u8>) {}
-    pub fn each(&self, visit: impl Fn(Item, u32) -> BoxFuture<'static, rutis::Result<String>> + Send) {}
-    pub fn load(&self, def: rutis::Definition) {}
-    pub fn odd(&self, it: std::sync::mpsc::Sender<u8>) {}
-}
-"#;
-        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
-        assert_eq!(generated.warnings.len(), 1, "{:?}", generated.warnings);
-        let contract: serde_json::Value = serde_json::from_str(&generated.contract).unwrap();
-        assert_eq!(contract["version"], 1);
-        let methods = &contract["services"]["board"]["methods"];
-        let int =
-            |min: &str, max: &str| serde_json::json!({ "kind": "int", "min": min, "max": max });
-        // The calling row's context is not a parameter.
-        assert_eq!(
-            methods["put"]["params"],
-            serde_json::json!([
-                { "kind": "ref", "name": "Item" },
-                { "kind": "ref", "name": "Open" },
-                { "kind": "ref", "name": "Level" },
-                int("-128", "127"),
-                { "kind": "float" },
-            ])
-        );
-        assert_eq!(
-            methods["more"]["params"],
-            serde_json::json!([
-                { "kind": "list", "of": { "kind": "string" } },
-                { "kind": "tuple", "items": [int("0", "65535"), { "kind": "bool" }] },
-                { "kind": "map", "values": int("0", "18446744073709551615") },
-                { "kind": "option", "of": { "kind": "string" } },
-            ])
-        );
-        assert_eq!(
-            methods["loose"]["params"],
-            serde_json::json!([
-                { "kind": "ref", "name": "Shape" },
-                { "kind": "ref", "name": "Flat" },
-                { "kind": "ref", "name": "Aliased" },
-                { "kind": "any" },
-            ])
-        );
-        assert_eq!(
-            methods["each"]["params"],
-            serde_json::json!([{
-                "kind": "function",
-                "params": [{ "kind": "ref", "name": "Item" }, int("0", "4294967295")],
-                "result": { "kind": "string" },
-            }])
-        );
-        assert_eq!(
-            methods["load"]["params"],
-            serde_json::json!([{ "kind": "plugin" }])
-        );
-        // A method the generator cannot declare is still the service's: its
-        // arguments are not checked.
-        assert_eq!(methods["odd"], serde_json::json!({ "params": null }));
-        let types = &contract["types"];
-        assert_eq!(
-            types["Item"],
-            serde_json::json!({
-                "kind": "struct",
-                "fields": [
-                    { "name": "itemName", "type": { "kind": "string" }, "optional": false },
-                    { "name": "done", "type": { "kind": "bool" }, "optional": true },
-                    { "name": "note", "type": { "kind": "option", "of": { "kind": "string" } }, "optional": true },
-                ],
-                "denyUnknown": true,
-            })
-        );
-        assert_eq!(types["Open"]["denyUnknown"], false);
-        assert_eq!(
-            types["Level"],
-            serde_json::json!({ "kind": "enum", "names": ["low", "high"] })
-        );
-        for any in ["Shape", "Flat", "Aliased", "Page"] {
-            assert_eq!(types[any], serde_json::json!({ "kind": "any" }), "{any}");
-        }
     }
 
     const PY_SOURCE: &str = r#"

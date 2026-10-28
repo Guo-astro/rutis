@@ -39,10 +39,10 @@ struct ServiceMacroTests {
         let code = squeezed(out)
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"today\", \"unit\", \"each\", \"reset\"] }")), "\(out)")
         expect(code.contains(squeezed("let a0 = try args.decode(0, as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
-        expect(code.contains(squeezed("return try Rutis.encode(try await self.today(a0, days: a1))")), "\(out)")
-        expect(code.contains(squeezed("return try Rutis.encode(self.unit())")), "\(out)")
+        expect(code.contains(squeezed("return try Rutis._Generated.encode(try await self.today(a0, days: a1))")), "\(out)")
+        expect(code.contains(squeezed("return try Rutis._Generated.encode(self.unit())")), "\(out)")
         expect(code.contains(squeezed("let a0: (String) async throws -> String = try args.function(0)")), "\(out)")
-        expect(code.contains(squeezed("self.reset()\nreturn try Rutis.encode(())")), "\(out)")
+        expect(code.contains(squeezed("self.reset()\nreturn try Rutis._Generated.encode(())")), "\(out)")
         expect(!code.contains("\"hidden\"") && !code.contains("\"make\""), "\(out)")
         expect(code.contains(squeezed("extension Weather: RutisExportable {}")), "\(out)")
     }
@@ -56,7 +56,7 @@ struct ServiceMacroTests {
         """)
         expect(diagnostics.isEmpty, "\(diagnostics)")
         expect(squeezed(out).contains(squeezed("nonisolated func rutisMethods()")), "\(out)")
-        expect(squeezed(out).contains(squeezed("return try Rutis.encode(await self.add(a0))")), "\(out)")
+        expect(squeezed(out).contains(squeezed("return try Rutis._Generated.encode(await self.add(a0))")), "\(out)")
     }
 
     func aThrowingMethodIsLocated() {
@@ -73,9 +73,9 @@ struct ServiceMacroTests {
         """, file: "/src/Bank/Account.swift")
         expect(diagnostics.isEmpty, "\(diagnostics)")
         let code = squeezed(out)
-        expect(code.contains(squeezed("return try Rutis.encode(self.balance())")), "\(out)")
-        expect(code.contains(squeezed("return try Rutis.encode(try await Rutis.located(\"Account.withdraw\", \"Bank/Account.swift\", 7) { try await self.withdraw(a0) })")), "\(out)")
-        expect(code.contains(squeezed("try await Rutis.located(\"Account.close\", \"Bank/Account.swift\", 8) { try self.close() }")), "\(out)")
+        expect(code.contains(squeezed("return try Rutis._Generated.encode(self.balance())")), "\(out)")
+        expect(code.contains(squeezed("return try Rutis._Generated.encode(try await Rutis._Generated.located(\"Account.withdraw\", \"Bank/Account.swift\", 7) { try await self.withdraw(a0) })")), "\(out)")
+        expect(code.contains(squeezed("try await Rutis._Generated.located(\"Account.close\", \"Bank/Account.swift\", 8) { try self.close() }")), "\(out)")
     }
 
     func overloadsAreAnError() {
@@ -113,10 +113,10 @@ struct ClientMacroTests {
         let code = squeezed(out)
         expect(code.contains(squeezed("public struct LLMProxy: LLM, RutisProxy {")), "\(out)")
         expect(code.contains(squeezed("public static var rutisMethodNames: [String] { [\"ask\", \"each\"] }")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis.encode(question), try Rutis.encode(model)], as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
-        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis.export(f)], as: (Void).self, object: rutisObjectProxy((Void).self))")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"ask\", [try Rutis._Generated.encode(question), try Rutis._Generated.encode(model)], as: (String).self, object: rutisObjectProxy((String).self))")), "\(out)")
+        expect(code.contains(squeezed("try await rutisClient.call(\"each\", [Rutis._Generated.export(f)], as: (Void).self, object: rutisObjectProxy((Void).self))")), "\(out)")
         // An object of another process received as `any LLM` is its proxy (#687).
-        expect(code.contains(squeezed("public func rutisObjectProxy(_: (any LLM).Type) -> ((Rutis.Client) -> any LLM)? { { LLMProxy(rutisClient: $0) } }")), "\(out)")
+        expect(code.contains(squeezed("public func rutisObjectProxy(_: (any LLM).Type) -> ((Rutis.Advanced.Client) -> any LLM)? { { LLMProxy(rutisClient: $0) } }")), "\(out)")
     }
 
     func aMethodMustBeAsyncThrows() {
@@ -163,7 +163,7 @@ struct ConfigMacroTests {
                                       ("path", "String", ##"#"C:\path"#"##), ("ratio", "Double", "-1.5"), ("count", "Int", "5"),
                                       ("weights", "[String: Int]", #"["a": 1]"#)]
         {
-            let expected = ".init(\"\(name)\", .of((\(type)).self), required: true, description: nil, default: Rutis.Schema.literal(\(literal) as \(type)))"
+            let expected = ".init(\"\(name)\", .of((\(type)).self), required: true, description: nil, default: Rutis._Generated.Schema.literal(\(literal) as \(type)))"
             expect(code.contains(squeezed(expected)), "\(name): \(out)")
         }
         expect(code.contains(squeezed(".init(\"made\", .of((String).self), required: true, description: nil)")), "\(out)")

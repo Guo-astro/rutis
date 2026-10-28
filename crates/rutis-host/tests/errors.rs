@@ -328,9 +328,10 @@ async fn a_runtime_that_dials_in_without_what_it_needs() {
     let group = r#"{ "id": "phone", "group": true, "instanced": true, "config": [] }"#;
     let both = r#", "listen": "public", "instances": "phone""#;
     let cases = [
+        // `listen` alone is one runtime (0.19): it needs its token too.
         (
-            config(r#", "listen": "public""#, group),
-            "remote runtime phone: listen needs instances: name the instanced group each connection is an instance of",
+            config(r#", "listen": "public""#, ""),
+            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
         ),
         (
             config(r#", "instances": "phone""#, group),

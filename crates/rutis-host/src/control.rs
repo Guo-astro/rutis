@@ -1,17 +1,21 @@
 //! `rutis-host status`: a host started by `run` or `dev` answers it on a
 //! local socket that only its user can open (design §5.3). The socket
-//! answers `status` with [`Loader::status`] as printed, which changes
-//! nothing; and `call` (`rutis-host call`, try-and-test design §4), which
-//! `dev` accepts and `run` only with `--allow-call`. The format on the
+//! answers `status` with [`Loader::status`] as printed (and the remote
+//! runtimes' connections), which changes nothing; and `call` (`rutis-host
+//! call`, try-and-test design §4), which `dev` accepts and `run` only with
+//! `--allow-call`. The format on the
 //! socket is rutis-host's own: both ends are the same rutis-host. It sits in
 //! the system's runtime directory
 //! (`$XDG_RUNTIME_DIR`, else the temporary directory), in a directory of
 //! the user's own, named after the configuration's path, so nothing is
 //! written into the project. Not on Windows in 0.18.
 
+use rutis_loader::Loader;
 use std::path::{Path, PathBuf};
 
-use rutis_loader::Loader;
+/// What the socket answers `status` with: the loader's status
+/// ([`rutis_loader::Loader::status`], as printed), and what the host adds.
+pub type Report = std::sync::Arc<dyn Fn() -> String + Send + Sync>;
 
 /// What a host and `rutis-host status` agree to name a configuration by:
 /// the configuration file `target` names (a directory's `rutis.json` when
@@ -118,8 +122,13 @@ impl Drop for Serving {
 /// cannot (another host answers for the same configuration, the directory
 /// is not the user's own): the host runs on without it.
 #[cfg(unix)]
-pub fn serve(target: &Path, loader: Loader, calls: Option<rutis::Ctx>) -> Result<Serving, String> {
-    serve_in(&base(), target, loader, calls)
+pub fn serve(
+    target: &Path,
+    loader: Loader,
+    report: Report,
+    calls: Option<rutis::Ctx>,
+) -> Result<Serving, String> {
+    serve_in(&base(), target, loader, report, calls)
 }
 
 /// [`serve`] under the runtime directory `base`.
@@ -128,6 +137,7 @@ fn serve_in(
     base: &Path,
     target: &Path,
     loader: Loader,
+    report: Report,
     calls: Option<rutis::Ctx>,
 ) -> Result<Serving, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -170,9 +180,9 @@ fn serve_in(
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
-            let (loader, calls) = (loader.clone(), calls.clone());
+            let (loader, report, calls) = (loader.clone(), report.clone(), calls.clone());
             tokio::spawn(async move {
-                let _ = answer(stream, &loader, calls.as_ref()).await;
+                let _ = answer(stream, &loader, &report, calls.as_ref()).await;
             });
         }
     });
@@ -189,6 +199,7 @@ const REQUEST_LIMIT: u64 = 16 << 20;
 async fn answer(
     stream: tokio::net::UnixStream,
     loader: &Loader,
+    report: &Report,
     calls: Option<&rutis::Ctx>,
 ) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -201,7 +212,7 @@ async fn answer(
     )
     .await;
     let reply = match (read, request.trim_end_matches('\n')) {
-        (Ok(Ok(_)), "status") => loader.status().to_string(),
+        (Ok(Ok(_)), "status") => report(),
         (Ok(Ok(_)), call) if call.starts_with("call ") => {
             let reply = match (serde_json::from_str(&call["call ".len()..]), calls) {
                 (Err(error), _) => Err(format!("this call cannot be read: {error}")),
@@ -335,6 +346,7 @@ async fn call_in(
 pub fn serve(
     _target: &Path,
     _loader: Loader,
+    _report: Report,
     _calls: Option<rutis::Ctx>,
 ) -> Result<Serving, String> {
     Err("rutis-host status is not available on Windows".into())
@@ -382,14 +394,20 @@ mod tests {
 
         let base = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let loader = || {
-            rutis_loader::LoaderPlugin::new(
+        let loader = || -> (Loader, Report) {
+            let loader = rutis_loader::LoaderPlugin::new(
                 rutis_loader::Chain::new(),
                 rutis_loader::LoaderOptions::default(),
             )
-            .handle()
+            .handle();
+            let status = loader.clone();
+            (
+                loader,
+                std::sync::Arc::new(move || status.status().to_string()),
+            )
         };
-        let serving = serve_in(base.path(), project.path(), loader(), None).unwrap();
+        let (handle, report) = loader();
+        let serving = serve_in(base.path(), project.path(), handle, report, None).unwrap();
         let said = status_in(base.path(), project.path()).await.unwrap();
         assert_eq!(said, rutis_loader::status::Status::default().to_string());
 
@@ -420,7 +438,8 @@ mod tests {
             )
         );
 
-        let second = serve_in(base.path(), project.path(), loader(), None);
+        let (handle, report) = loader();
+        let second = serve_in(base.path(), project.path(), handle, report, None);
         assert!(
             second
                 .as_ref()

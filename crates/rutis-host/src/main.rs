@@ -9,7 +9,7 @@
 //!                                  call a service of a running host
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
-//! rutis-host types [crate dir] [-o file] [--python file] [--contract file]
+//! rutis-host types [crate dir] [-o file] [--python file]
 //! ```
 
 use std::collections::HashSet;
@@ -77,13 +77,12 @@ usage:
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
-  rutis-host types [dir] [-o file] [--python file] [--contract file]
+  rutis-host types [dir] [-o file] [--python file]
                                               write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
                                               dir (default .) and the crates it uses (to stdout,
                                               or to file); --python also writes their Python
-                                              types, --contract the contract description the
-                                              testing tools check calls against
+                                              types
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
@@ -149,22 +148,18 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
     })
 }
 
-/// `rutis-host types [dir] [-o file] [--python file] [--contract file]`:
-/// the declarations of the marked Rust services, their Python types and
-/// their contract description, as `build::Exports` writes them.
+/// `rutis-host types [dir] [-o file] [--python file]`: the declarations of
+/// the marked Rust services and their Python types, as `build::Exports`
+/// writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
     let mut output = None;
-    let mut contract = None;
     let mut python = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
             "--python" => python = Some(args.next().ok_or("--python needs a file")?.to_owned()),
-            "--contract" => {
-                contract = Some(args.next().ok_or("--contract needs a file")?.to_owned())
-            }
             other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
@@ -182,9 +177,6 @@ fn types(args: &[String]) -> Result<(), String> {
     }
     if let Some(file) = &python {
         exports = exports.python(file);
-    }
-    if let Some(file) = &contract {
-        exports = exports.contract(file);
     }
     let typescript = exports.write(&dir).map_err(|error| error.to_string())?;
     if output.is_none() {
@@ -257,7 +249,12 @@ pub(crate) fn answer_status(
     host: &host::Host,
     calls: bool,
 ) -> Option<control::Serving> {
-    match control::serve(target, host.loader.clone(), calls.then(|| host.root())) {
+    match control::serve(
+        target,
+        host.loader.clone(),
+        host.status_report(),
+        calls.then(|| host.root()),
+    ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
         Err(why) => {

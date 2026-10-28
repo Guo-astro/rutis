@@ -231,6 +231,8 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 ### Calling a method
 
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+
 While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
 
 ```console
