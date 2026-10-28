@@ -492,7 +492,7 @@ fn check_name(_: &str) -> std::result::Result<(), String> {
 | --- | --- |
 | 插件代码里的 `io::Error`、解析错误、自己的 thiserror 错误类型 | 直接 `?` |
 | 只有一段文字，或别的库返回 `Result<_, String>` | `Error::msg("…")`、`.map_err(Error::msg)?` |
-| 插件代码里遇到 `anyhow::Error` | 打开 rutis 的 `anyhow` feature，`.map_err(Error::from_anyhow)?`。`anyhow::Error` 不实现 `std::error::Error`，写不成 `?` |
+| 插件代码里遇到 `anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))?`。`anyhow::Error` 不实现 `std::error::Error`，写不成 `?` |
 | 自己的 thiserror 错误类型包住 rutis 的错误 | `#[error(transparent)] Rutis(#[from] rutis::Error)` 或 `#[source] cause: rutis::Error` |
 
 插件代码里的错误报到宿主时包在 `PluginFailed` 里，带着原来的错误作为 source。宿主怎样区分 rutis 自己的失败，见 [在 Rust 应用里嵌入：宿主看到的错误](rust-host.md#宿主看到的错误)。

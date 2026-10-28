@@ -158,10 +158,6 @@ impl Value {
         }
         value
     }
-    #[cfg(all(unix, feature = "cordis"))]
-    pub(crate) fn control_future(future: impl Future<Output = Reply> + Send + 'static) -> Self {
-        Self::future_inner(future, false)
-    }
     fn future_inner(future: impl Future<Output = Reply> + Send + 'static, business: bool) -> Self {
         // Made while a session's call is dispatched: what it calls in other
         // sessions, however long after, is on that session's behalf, with
@@ -1620,23 +1616,6 @@ impl Connection {
         drop(incoming);
         drop(awaiting);
         self.0.background.lock().unwrap().take();
-    }
-    /// Create an owned async result on this connection's shared executor.
-    ///
-    /// Adapter code must establish that the factory and Future can progress
-    /// independently of the caller's executor: `Send` alone is insufficient.
-    /// Create timers/tasks inside the factory, not on the caller's runtime.
-    /// Arbitrary captured runtime handles or lifecycle tasks are not migrated.
-    pub fn independent_future<F, Fut>(&self, factory: F) -> Result<Value, Error>
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Reply> + Send + 'static,
-    {
-        Ok(Value::future_on(
-            async move { factory().await },
-            true,
-            self.background()?,
-        ))
     }
     fn background(&self) -> Result<Executor, Error> {
         let mut background = self.0.background.lock().unwrap();
