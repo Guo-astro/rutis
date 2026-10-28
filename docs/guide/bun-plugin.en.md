@@ -78,6 +78,8 @@ test('greets through events', async () => {
 })
 ```
 
+To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope, as in [TypeScript plugins: testing](typescript-plugin.en.md#3-test): the plugin's emissions and the test's own reach it, and it returns the function that stops it.
+
 ### Objects with methods
 
 A class instance, or a plain object with function-valued properties, goes to another language by reference: the far end gets a proxy whose calls reach the original object here. An object another process passes here is a proxy too:

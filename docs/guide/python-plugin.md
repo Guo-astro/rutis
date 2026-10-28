@@ -124,6 +124,69 @@ uv run python -m unittest discover -s tests
 
 `load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制（dataclass 变成 dict），函数和带方法的对象按引用传递，`sync` 方法不能返回协程。只在同一进程里才成立的写法，在这里就会失败。
 
+测试工具的全部接口（取自 `rutis/testing.py` 的文档字符串）：
+
+| `load(plugin, *, …)` 的参数 | 作用 |
+| --- | --- |
+| `config` | 插件的配置；有 `config` 声明时补默认值并校验 |
+| `services` | 插件 `inject` 的服务，按名字给 |
+| `strict` | 值按跨进程的规则传递（默认 `True`） |
+| `bus` | 与同一个 `Bus` 上的插件共用事件（默认自己一个） |
+| `scope` | 加载到哪个作用域路径（`t1/s1`，默认根） |
+| `row` | 在总线上的行名（默认插件声明的名字，否则模块名） |
+| `runtime` | 监听器描述里的 `runtime`（默认 `"python"`） |
+| `deadline` | 卸载时等正在运行的监听器多少秒（默认 `RUTIS_SHUTDOWN_TIMEOUT`，10） |
+
+| `Loaded`（`async with load(...) as t`）的成员 | 作用 |
+| --- | --- |
+| `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的公开方法，都按 async |
+| `t.methods(name)` | rutis 看到的方法：`{"today": "async"}` |
+| `t.provided()` | 插件现在提供的服务名 |
+| `t.on(name, listener, *, prepend=False, global_=False)` | 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；返回撤销函数，不撤销时随插件卸载撤掉 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行和作用域发出事件 |
+| `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
+| `t.reported` | 没人接收的失败（`emit` 里出错的监听器、过滤函数） |
+| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行 |
+| `await t.unload()` | 像运行时那样卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
+
+`Bus(scopes=...)`：一条测试用的总线，同一个 `bus` 上的插件互相听得到；`scopes` 给作用域路径起组名。它的 `reported`、`listeners(name)`（过滤函数看到的描述）、`emitter(row=..., strict=...)`（以某一行的身份发出）。`Reported`：没人接收的一次失败，字段 `kind`（`"listener"` 或 `"filter"`）、`name`、`row`、`error`。`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事，是 `AssertionError` 的子类。
+
+测试要确认插件发出了某个事件，用 `t.on` 加一个列表：
+
+<!-- example: python file=weather/tests/test_asked.py order=2 -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import load
+
+
+def apply(ctx, config):
+    class Weather:
+        async def today(self):
+            ctx.emit("weather/asked", config["city"])
+            return "sunny"
+
+    ctx.provide("weather", Weather())
+
+
+asking = define_plugin(apply)
+
+
+class Asked(unittest.TestCase):
+    def test_each_call_emits_weather_asked(self):
+        async def go():
+            async with load(asking, config={"city": "Oslo"}) as t:
+                asked = []
+                off = t.on("weather/asked", asked.append)
+                await t.service("weather").today()
+                self.assertEqual(asked, ["Oslo"])
+                off()
+
+        asyncio.run(go())
+```
+
 ### 事件
 
 `ctx.on(name, listener)` 监听事件；`ctx.emit`、`await ctx.parallel`、`await ctx.serial`、`await ctx.waterfall`、`ctx.bail` 是发出的五种方式。监听器自动登记给宿主，什么都不用声明：发出方在同一个进程、另一种语言的运行时、宿主里还是相连的节点上，结果都一样。完整的规则见 [插件 API：事件](plugin-api.md#事件)。

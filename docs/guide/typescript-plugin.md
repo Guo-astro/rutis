@@ -167,6 +167,37 @@ test('plugins hear each other', async () => {
 
 `load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。别的语言的插件监听 TypeScript 插件发出的事件，写法见 [Python 插件：事件](python-plugin.md#事件)。
 
+测试要确认插件发出了某个事件，用 `t.on(name, listener, options)` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；选项与 `ctx.on` 相同（`prepend`、`global`）；返回撤销函数，不撤销时随这一行卸载撤掉。`host()` 装载的每一行都有它，共用一条总线。
+
+<!-- example: typescript file=weather/test/asked.test.ts order=2 -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { load } from '@arcships/rutis/testing'
+
+const asking = definePlugin({
+  apply(ctx, config: { city: string }) {
+    ctx.provide('weather', {
+      async today() {
+        ctx.emit('weather/asked', config.city)
+        return 'sunny'
+      },
+    })
+  },
+})
+
+test('each call emits weather/asked', async () => {
+  const t = await load(asking, { config: { city: 'Oslo' } })
+  const asked: string[] = []
+  const off = t.on('weather/asked', (city: string) => { asked.push(city) })
+  await t.service('weather').today()
+  assert.deepEqual(asked, ['Oslo'])
+  off()
+  await t.unload()
+})
+```
+
 ## 4. 在本地宿主里运行
 
 <!-- example: typescript run until="weather: running" order=99 -->
