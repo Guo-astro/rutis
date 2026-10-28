@@ -166,7 +166,7 @@ day := advanced.DateOf(time.Now())
 | TypeScript | `import { datetime } from '@arcships/rutis'` | 编辑器划线，悬停：`'datetime' is deprecated. Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes.` |
 | Python | `from rutis import AggregateError`，在 pytest 里跑 | `DeprecationWarning: AggregateError moved in 0.19: import it from rutis.advanced. The old name is removed when the plugin API version changes.` |
 | Go | `rutis.DateOf(t)`，跑 `staticcheck` | `SA1019: rutis.DateOf is deprecated: moved in 0.19: use advanced.DateOf.` |
-| Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`，附修改建议 |
+| Swift | `let d: Rutis.DateTime` | `error: 'DateTime' is not a member type of enum 'Rutis.Rutis'` |
 | Kotlin | `RutisFormat.encode(…)` | `w: 'RutisFormat' is deprecated. Moved in 0.19: use arcships.rutis.advanced.RutisFormat.`；IDE 一键替换并补上导入 |
 
 **rutis 的贡献者加了一个公开名字，没有更新快照**：CI 失败，输出差异和改法，例如：

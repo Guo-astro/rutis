@@ -166,7 +166,7 @@ day := advanced.DateOf(time.Now())
 | TypeScript | `import { datetime } from '@arcships/rutis'` | strike-through in the editor; hover: `'datetime' is deprecated. Moved in 0.19: import it from '@arcships/rutis/advanced'. Removed when the plugin API version changes.` |
 | Python | `from rutis import AggregateError`, run under pytest | `DeprecationWarning: AggregateError moved in 0.19: import it from rutis.advanced. The old name is removed when the plugin API version changes.` |
 | Go | `rutis.DateOf(t)`, run `staticcheck` | `SA1019: rutis.DateOf is deprecated: moved in 0.19: use advanced.DateOf.` |
-| Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`, with a fix-it |
+| Swift | `let d: Rutis.DateTime` | `error: 'DateTime' is not a member type of enum 'Rutis.Rutis'` |
 | Kotlin | `RutisFormat.encode(…)` | `w: 'RutisFormat' is deprecated. Moved in 0.19: use arcships.rutis.advanced.RutisFormat.`; the IDE replaces it in one click and adds the import |
 
 **A rutis contributor adds a public name without updating the snapshot**: CI fails and prints the difference and the fix, for example:

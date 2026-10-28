@@ -187,32 +187,6 @@ RutisProxy.rutisMake(_:)  swift.type.method
 RutisProxy.rutisMethodNames  swift.type.property
 RutisService()  swift.macro
 rutisObjectProxy(_:)  swift.func
-## Rutis (deprecated: moved to Rutis.Advanced or Rutis._Generated in 0.19)
-Rutis.Arguments  swift.typealias
-Rutis.BigInt  swift.typealias
-Rutis.CalendarDate  swift.typealias
-Rutis.Client  swift.typealias
-Rutis.DateTime  swift.typealias
-Rutis.Emitter  swift.typealias
-Rutis.Encoded  swift.typealias
-Rutis.Listener  swift.typealias
-Rutis.Method  swift.typealias
-Rutis.MethodKind  swift.typealias
-Rutis.Next  swift.typealias
-Rutis.RemoteFunction  swift.typealias
-Rutis.Schema  swift.typealias
-Rutis.Scope  swift.typealias
-Rutis.Shape  swift.typealias
-Rutis.TimeOfDay  swift.typealias
-Rutis.encode(_:)  swift.type.method
-Rutis.export(_:)  swift.type.method
-Rutis.export(_:)  swift.type.method
-Rutis.implementation  swift.type.property
-Rutis.located(_:_:_:_:)  swift.type.method
-Rutis.manifest(_:)  swift.type.method
-Rutis.pluginAPI  swift.type.property
-Rutis.sdkVersion  swift.type.property
-Rutis.serveArgs(_:_:)  swift.type.method
 
 ## RutisTest
 Loaded  swift.class

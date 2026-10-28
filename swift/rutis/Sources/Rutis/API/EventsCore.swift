@@ -100,7 +100,7 @@ extension Rutis.Advanced {
     }
 }
 
-/// A parameter type built from a `next` function (Rutis.Next).
+/// A parameter type built from a `next` function (Rutis.Advanced.Next).
 protocol NextConstructible {
     static func make(from value: Value) -> Any?
 }
