@@ -41,61 +41,13 @@ test('greets', async () => {
 
 ### 事件
 
-与 TypeScript 插件相同（[TypeScript 插件：事件](typescript-plugin.md#事件)）：`ctx.on` 监听，`ctx.emit` / `ctx.parallel` / `ctx.serial` / `ctx.waterfall` / `ctx.bail` 发出，`ctx.filter` 挑选监听器。监听器自动登记给宿主，Node、Python、Go 插件和宿主里的 Rust 代码发出的事件同样到达 Bun 里的监听器，反过来也一样。卸载时这一行的 `ctx.signal` 被中止，正在运行的监听器被等待。
-
-```ts
-import { definePlugin } from '@arcships/rutis'
-
-export default definePlugin({
-  apply(ctx) {
-    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))   // 没有结果时返回 undefined
-    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
-    ctx.provide('greeter', {
-      async hello(name: string, lang: string) {
-        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
-        const text = await ctx.waterfall<string>('greeting/format', `${word}, ${name}`, (text: string) => text)
-        ctx.emit('greeting/said', name)                                               // 立即返回
-        return text
-      },
-    })
-  },
-})
-```
-
-测试用同一个测试工具，`bun test` 照常运行；几个插件共享一条总线用 `host()`：
-
-```ts
-import { expect, test } from 'bun:test'
-import { host } from '@arcships/rutis/testing'
-import plugin from '../src/index.ts'
-
-test('greets through events', async () => {
-  const h = host()
-  const t = await h.load(plugin)
-  expect(await t.service('greeter').hello('Ada', 'sv')).toBe('Hej, Ada!')
-  expect(await h.serial('greeting/pick', 'en')).toBeUndefined()
-  await h.unload()
-})
-```
+与 TypeScript 插件相同（[TypeScript 插件：事件](typescript-plugin.md#事件)）：`ctx.on` 监听，`ctx.emit` 发出。监听器自动登记给宿主，Node、Python、Go 插件和宿主里的 Rust 代码发出的事件同样到达 Bun 里的监听器，反过来也一样。其余发出方式和一个完整的例子见 [插件 API：事件](plugin-api.md#bun)。
 
 测试要确认插件发出了某个事件，用 `t.on(name, listener, options)` 像宿主一样在根作用域监听，与 [TypeScript 插件：测试](typescript-plugin.md#3-测试) 相同：插件发出的、测试自己发出的都送到，返回撤销函数。
 
 ### 带方法的对象
 
-类的实例、有函数属性的普通对象按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
-
-```ts
-const cache = await ctx.use('store').cache()
-await cache.set('a', 1)          // 方法都是异步调用，调用的是对方的原对象
-const value = await cache.get('a')
-```
-
-- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用），没有数据字段：要数据，让方法返回它。`console.log` 显示 `[remote object]`。
-- 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象。
-- 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
-- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。
-- 数组、对象里的 `undefined` 到了对方是 `null`；只有作为整个参数或整个返回值时保留。
-- 同一个运行时里的行拿到的是对象本身（方法照常同步、字段可读）。测试工具的严格模式按跨进程的样子给代理。
+类的实例、有函数属性的普通对象按引用交给别的语言，对方拿到代理：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
 
 ## 3. 在宿主里运行
 

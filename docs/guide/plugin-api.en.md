@@ -94,8 +94,19 @@ In Node, `waterfall` returns a Promise whenever a listener is outside the proces
 The same waterfall listener in the five languages:
 
 ```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Format(pub String);
+# impl Event for Format {
+#     const NAME: &'static str = "greeting/format";
+#     type Value = String;
+# }
+# fn demo(ctx: &Ctx) -> rutis::Result {
 // Format: impl Event, Value = String
 ctx.on::<Format>(|_, call| async move { Ok(call.next().await?.map(|text| format!("{text}!"))) })?;
+# Ok(())
+# }
 ```
 
 ```ts
@@ -120,7 +131,473 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 })
 ```
 
-Each language's guide has a complete example: [TypeScript](typescript-plugin.en.md#events), [Bun](bun-plugin.en.md#events), [Python](python-plugin.en.md#events), [Go](go-plugin.en.md#events), [Cordis](cordis.en.md#events), [Rust](rust-plugin.en.md#events).
+### Examples
+
+One complete example per language, each doing the same thing: the plugin answers `greeting/pick` and adds a link to the `greeting/format` waterfall; the `greeter` it provides takes the first result with `serial`, lets other plugins (in any language) rewrite the greeting with `waterfall`, and notifies with `emit`. For Cordis plugins, see [Cordis](cordis.en.md#events).
+
+#### TypeScript
+
+The example is a test file; run it in a project `rutis-host new` made:
+
+<!-- example: plugin-api-ts-en run -->
+```bash
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
+npm install
+```
+
+The two plugins `greeter` and `shout` share one bus on the test tool's `host()`: `shout` is a link of the waterfall and listens to the notification.
+
+<!-- example: plugin-api-ts-en file=greeter/test/events.test.ts -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { host } from '@arcships/rutis/testing'
+
+const greeter = definePlugin({
+  apply(ctx) {
+    // undefined / null / false is "no result": serial asks the next listener
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        // every argument is the event's; `with` gives the terminal, the innermost end of the chain
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
+        ctx.emit('greeting/said', name)                  // returns at once, waits for no listener
+        return text
+      },
+    })
+  },
+})
+
+const said: string[] = []
+const shout = definePlugin({
+  apply(ctx) {
+    // a waterfall listener gets next last: it runs the rest of the chain
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.on('greeting/said', (name: string) => { said.push(name) })
+  },
+})
+
+test('plugins hear each other', async () => {
+  const h = host()
+  const t = await h.load(greeter)
+  await h.load(shout)
+  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
+  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
+  assert.deepEqual(said, ['Ada', 'Bo'])
+  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // the test can emit too
+  await h.unload()
+})
+```
+
+<!-- example: plugin-api-ts-en run -->
+```bash
+npm test
+```
+
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `h.reported` / `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are an `AggregateError` in registration order.
+- `waterfall` returns a Promise whenever a listener is in another process, so always `await` it. `bail` is a synchronous `serial`; an `async` listener fails it with `AsyncListener`.
+- `ctx.filter(d => d.row === 'audit').parallel(...)` delivers only to the listeners the filter keeps; `ctx.on(name, fn, { prepend: true })` goes first, `{ global: true }` is exempt from filters.
+- Scopes: `h.load(plugin, { scope: 't1/s1' })` loads a plugin into an instance; its listeners carry the scope as a descriptor, and a listener receives every event of the name on the root bus, whatever the emitter's instance.
+- On unload the plugin's `ctx.signal` is aborted and its running listeners are waited for (up to the shutdown deadline) before the cleanups run.
+- The `t` that `load(plugin)` returns has the five methods and `filter` too, emitting from that plugin's scope.
+
+#### Bun
+
+The same SDK and test tool as TypeScript; tests run with `bun test`. Events emitted by Node, Python and Go plugins and by Rust code in the host reach listeners in Bun too, and the other way round.
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  apply(ctx) {
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))   // undefined when there is no result
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
+        ctx.emit('greeting/said', name)                                               // returns at once
+        return text
+      },
+    })
+  },
+})
+```
+
+`host()` puts several plugins on one bus:
+
+```ts
+import { expect, test } from 'bun:test'
+import { host } from '@arcships/rutis/testing'
+import plugin from '../src/index.ts'
+
+test('greets through events', async () => {
+  const h = host()
+  const t = await h.load(plugin)
+  expect(await t.service('greeter').hello('Ada', 'sv')).toBe('Hej, Ada!')
+  expect(await h.serial('greeting/pick', 'en')).toBeUndefined()
+  await h.unload()
+})
+```
+
+#### Python
+
+The example is a test file; run it in a project `rutis-host new` made:
+
+<!-- example: plugin-api-py-en run -->
+```bash
+uvx rutis-host new greeter --lang python
+cd greeter
+uv sync
+```
+
+The two plugins `greeter` and `shout` are on one `Bus`:
+
+<!-- example: plugin-api-py-en file=greeter/tests/test_events.py -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import Bus, load
+
+
+def greeter_apply(ctx, config):
+    # None or False is "no result": serial asks the next listener
+    ctx.on("greeting/pick", lambda lang: "Hej" if lang == "sv" else None)
+
+    class Greeter:
+        async def hello(self, name, lang):
+            word = await ctx.serial("greeting/pick", lang) or "Hello"
+            # terminal: the innermost end of the chain, given the event's arguments
+            text = await ctx.waterfall("greeting/format", f"{word}, {name}", terminal=lambda text: text)
+            ctx.emit("greeting/said", name)      # returns at once, waits for no listener
+            return text
+
+    ctx.provide("greeter", Greeter())
+
+
+greeter = define_plugin(greeter_apply)
+said = []
+
+
+def shout_apply(ctx, config):
+    async def exclaim(text, next):           # a waterfall listener gets next last
+        return f"{await next()}!"
+
+    ctx.on("greeting/format", exclaim)
+    ctx.on("greeting/said", said.append)
+
+
+shout = define_plugin(shout_apply)
+
+
+class Events(unittest.TestCase):
+    def test_plugins_hear_each_other(self):
+        async def go():
+            bus = Bus()                          # plugins on one bus hear each other
+            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+                self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
+                self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
+                self.assertEqual(said, ["Ada", "Bo"])
+                self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # the test can emit too
+
+        asyncio.run(go())
+```
+
+<!-- example: plugin-api-py-en run -->
+```bash
+uv run python -m unittest discover -s tests
+```
+
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.advanced.AggregateError` whose `errors` are in registration order.
+- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.advanced.AsyncListener`.
+- `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
+- Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives every event of the name on the root bus.
+- On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
+
+#### Go
+
+```go
+off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
+	return nil, nil // nil and false are no result; anything else is one
+}, advanced.Prepend()) // options: advanced.Prepend(), advanced.Global()
+
+err := ctx.Emit(callerCtx, "session/created", id)          // returns at once; err only for a refused emission
+err = ctx.Parallel(callerCtx, "session/created", id)        // waits for all; *advanced.AggregateError in registration order
+value, err := ctx.Serial(callerCtx, "config/resolve", key)   // the first result
+value, err = ctx.Bail(callerCtx, "config/resolve", key)      // Serial as a synchronous call
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal may be nil; terminal is a rutis.Terminal, func(ctx context.Context, args ...any) (any, error), called with the event's arguments
+value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
+```
+
+The complete example:
+
+```go
+package greeter
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
+)
+
+type Greeter struct{ ctx *rutis.Ctx }
+
+func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
+	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // the first result; nil when none
+	if err != nil {
+		return "", err
+	}
+	if word == nil {
+		word = "Hello"
+	}
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
+		return args[0], nil // the terminal: the innermost end of the chain
+	}, fmt.Sprintf("%v, %s", word, name))
+	if err != nil {
+		return "", err
+	}
+	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // returns at once
+		return "", err
+	}
+	return text.(string), nil
+}
+
+var Plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name: "greeter",
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
+			if args[0] == "sv" {
+				return "Hej", nil
+			}
+			return nil, nil // no result: the next listener goes on
+		})
+		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+			next := args[len(args)-1].(advanced.Next) // waterfall: next is the last argument
+			inner, err := next(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return fmt.Sprintf("%v!", inner), nil
+		})
+		ctx.Provide("greeter", &Greeter{ctx: ctx})
+		return nil
+	},
+})
+```
+
+Its test is in [the Go test tool](#the-go-test-tool).
+
+| Topic | Rule |
+| --- | --- |
+| Waterfall | The listener gets `next` (a `advanced.Next`, `func(context.Context) (any, error)`) as its last argument; calling it runs the rest of the chain, not calling it vetoes the rest; a second call fails with `WaterfallNext`. The outermost value is returned as it is |
+| Failures | A failing `Emit` listener never reaches the emitter or the other listeners: it is reported where the listener runs (`rutis: listener of <name> in row <row> failed: …` on stderr). `Parallel` runs all and returns an `*advanced.AggregateError` (even for one failure); `Serial`, `Bail` and `Waterfall` stop at the first error and return it |
+| Scope | Events are delivered by name on one bus; `ctx.Scope()` is a descriptor for filters, not a delivery rule |
+| Filter | `Filter(keep)` asks `keep` once per listener, in registration order, before any runs, with its `rutis.Listener` (`Name`, `Prefix`, `Plugin`, `Row`, `Runtime`, `Node`, `Scope`, `Global`); `keep` returns `(bool, error)`: an error it returns (or a panic) fails the dispatch before any listener runs, with that error (`Emit` does not return it but reports a line `rutis: filter of <name> from row <row> failed: …`); listeners registered with `advanced.Global()` skip filters |
+| Context | A listener's `ctx` is the emitter's (its call chain), cancelled when the row unloads, and when the emitter of a `Parallel`, `Serial`, `Waterfall` or `Bail` gives up; an `Emit` listener is not cancelled when the emitter gives up. Unloading waits for running listeners, at most `RUTIS_SHUTDOWN_TIMEOUT` |
+| Names | `internal/*` is the runtime's own; `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to but not emitted (`ReservedEvent`) |
+
+Pass on the context your caller gave you, as with service calls. `errors.Is(err, advanced.ErrWaterfallNext)` (and `ErrReservedEvent`, `ErrAsyncListener`, `ErrBinding`) matches an error of that name from any process.
+
+#### Swift
+
+A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored); in a waterfall its last parameter is a `Rutis.Advanced.Next<R>`.
+
+```swift
+let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }   // options: prepend:, global:
+
+try ctx.emit("session/created", id)                                   // returns at once; throws only for a refused emission
+try await ctx.parallel("session/created", id)                         // waits for all; a RutisError named AggregateError
+let value = try await ctx.serial("config/resolve", key, as: String.self)   // the first result (anything but nil and false)
+let first = try await ctx.bail("config/resolve", key, as: String.self)     // serial as a synchronous call
+let text = try await ctx.waterfall("chat/reply", message, as: String.self) { (message: String) in message }   // the terminal: the end of the chain
+let some = try await ctx.filter { $0.row == "chat" }.serial("config/resolve", key, as: String.self)
+```
+
+The complete example:
+
+```swift
+import Rutis
+
+@RutisService
+public final class Greeter: @unchecked Sendable {
+    let ctx: Rutis.Ctx
+    init(ctx: Rutis.Ctx) { self.ctx = ctx }
+
+    public func hello(_ name: String, _ lang: String) async throws -> String {
+        let word = try await ctx.serial("greeting/pick", lang, as: String.self) ?? "Hello"
+        let text = try await ctx.waterfall("greeting/format", "\(word), \(name)", as: String.self) { (text: String) in text }
+        try ctx.emit("greeting/said", name)
+        return text ?? ""
+    }
+}
+
+public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
+    ctx.on("greeting/pick") { (lang: String) -> String? in lang == "sv" ? "Hej" : nil }   // nil: the next listener goes on
+    ctx.on("greeting/format") { (text: String, next: Rutis.Advanced.Next<String>) in
+        (try await next() ?? text) + "!"                                                // next runs the rest of the chain
+    }
+    ctx.provide("greeter", Greeter(ctx: ctx))
+})
+```
+
+The rules (waterfall, failures, scope, filter, cancellation, reserved names) are those of the Go table above. In Swift, a listener's Task is cancelled when its row unloads, and when the emitter of a `parallel`, `serial`, `waterfall` or `bail` gives up; every listener is called as a synchronous one, so `bail` reaches Swift listeners anywhere.
+
+#### Rust
+
+How to write an event type, `ctx.on` and `ctx.emit`: [write a Rust plugin: events](rust-plugin.en.md#events). A listener reads the dispatch's mode from `call.mode()`; `on_sync` registers a synchronous listener; `listen::<E>()` gives a name, a prefix and options:
+
+```rust
+use rutis::events::Mode;
+use rutis::{Ctx, Event, Plugin, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct Created(pub String, pub u32);
+
+impl Event for Created {
+    const NAME: &'static str = "session/created";
+    type Value = String; // what serial, bail and waterfall return
+}
+
+struct Audit;
+
+impl Plugin for Audit {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.on::<Created>(|event, call| async move {
+            if call.mode() == Mode::Waterfall {
+                let inner = call.next().await?; // middleware: run the rest of the chain first
+                return Ok(inner.map(|text| format!("[{text}]")));
+            }
+            Ok(Some(format!("audited {}", event.0))) // Ok(None) is no result
+        })?;
+        ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
+        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
+            println!("{}", call.name()); // a prefix listener: the actual name
+            Ok(None)
+        })?;
+        Ok(())
+    }
+}
+```
+
+The five ways to send, and filters:
+
+```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+# async fn demo(ctx: &Ctx) -> rutis::Result {
+ctx.emit(Created("s1".into(), 3))?;                         // returns at once
+ctx.parallel(Created("s1".into(), 3)).await?;               // waits for all
+let first = ctx.serial(Created("s1".into(), 3)).await?;     // the first result
+let out = ctx
+    .waterfall(Created("s1".into(), 3))
+    .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) }) // optional
+    .await?;
+let quick = ctx.bail(Created("s1".into(), 3))?;             // synchronous
+let from_python = ctx
+    .filter(|l| l.runtime.as_deref() == Some("py"))
+    .serial(Created("s1".into(), 3))
+    .await?;
+# let _ = (first, out, quick, from_python);
+# Ok(())
+# }
+```
+
+| Topic | Rule |
+| --- | --- |
+| Listener | A closure taking `(Arc<E>, Call<E>)`, a synchronous one `(Arc<E>, SyncCall<'_, E>)`; it returns `Result<Option<E::Value>>`, where `Ok(None)` and `Ok(Some(false))` are no result. The compiler infers the parameter types, and `?` works on any error inside. The closure is called many times: clone what moves into `async move` inside the closure first |
+| `call` | `mode()` is this dispatch's mode; `name()` the dispatched name; `next()`, in a `waterfall` only (elsewhere `WaterfallNext`), runs the rest of the chain, and not calling it vetoes the rest; `ctx()` is the `Ctx` that registered the listener, and what is registered on it belongs to this plugin |
+| Sync and async | Every mode can call an `on_sync` listener, but it cannot call `next` in an async `waterfall`; `bail` cannot call an `on` listener (`AsyncListener`) |
+| Names | Registered and sent under `E::NAME`. `listen::<E>().name(n)` listens under another name; `.prefix(p)` hears every name under the prefix, each decoded as `E`, and an event of another shape fails that call with `EventValue` |
+| Sending | `emit`, `parallel`, `serial`, `waterfall` and `bail` take an `E` or an `Arc<E>`; `waterfall` returns a builder: `.terminal(…)` first if wanted, then `.await`; without a terminal, the last `next()` gets `None`. `ctx.filter(keep)` gives the same five methods, `keep` seeing each listener's `ListenerInfo` |
+| Failures | An `emit` listener's failure does not reach the emitter; it is reported to the host. `parallel` runs every listener and returns `ListenersFailed` (in registration order, also for a single failure); `serial`, `bail` and `waterfall` stop at the first error and return it |
+| Unload | When the plugin stops its listeners are withdrawn; running calls see `call.ctx().cancelled()`, and the unload waits for them, at most until the shutdown deadline. Dropping a `parallel`, `serial` or `waterfall` future cancels that dispatch |
+| Reserved names | `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to, not sent (`ReservedEvent`) |
+
+`once`, `prepend`, `global`:
+
+```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+# fn demo(ctx: &Ctx) -> rutis::Result {
+ctx.listen::<Created>().once().on(|_, _| async move { Ok(None) })?;    // called at most once
+ctx.listen::<Created>().prepend().on_sync(|_, _| Ok(None))?;           // before this name's existing listeners
+ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // filters skip it
+# Ok(())
+# }
+```
+
+Options chain, ending with `.on(…)` or `.on_sync(…)`. An event type with no fixed name (the value decides it) has an empty `NAME` and overrides `fn name(&self) -> &str` to return the value's name; listen to it with `.name(…)`.
+
+#### Across languages
+
+A TypeScript plugin emits, a Python plugin listens, nothing to change. The host's `rutis.json`:
+
+```json
+{
+  "runtimes": { "node": { "project": "web" }, "py": { "project": "plugins" } },
+  "rows": [
+    { "id": "sessions", "name": "sessions" },
+    { "id": "audit", "name": "py:audit" }
+  ]
+}
+```
+
+The TypeScript plugin `sessions` in `web/` emits the event, and asks others for a quota with `serial`:
+
+```ts
+ctx.provide('sessions', {
+  async create(user: string) {
+    const quota = (await ctx.serial<number>('session/quota', user)) ?? 1
+    const id = crypto.randomUUID()
+    await ctx.parallel('session/created', id, user, quota)   // waits for every listener, in any language
+    return id
+  },
+})
+```
+
+`plugins/audit.py` answers the quota and records the creation:
+
+```python
+import sys
+
+from rutis import define_plugin
+
+
+def apply(ctx, config):
+    ctx.on("session/quota", lambda user: 10 if user == "ada" else None)
+
+    async def created(session_id, user, quota):
+        print(f"session {session_id} for {user}, quota {quota}", file=sys.stderr)
+
+    ctx.on("session/created", created)
+
+
+plugin = define_plugin(apply)
+```
+
+Arguments cross processes as in [passing values](#passing-values); an error a Python listener raises is an error of the same name on the TypeScript side (in `parallel`, a child of the `AggregateError`).
 
 ### Scope
 
@@ -360,7 +837,84 @@ Objects inside arrays and dictionaries each go by reference too. A received obje
 - Lifetime is that of a function reference: the sender lets the object go once the receiver no longer holds the proxy, or the receiver's process exits. An object does not follow its row: after the row that passed it unloads, it can still be called.
 - Once the sender's runtime has exited or disconnected, calls on its objects fail with `peer-gone` (`a call on an object from py failed: runtime py exited`), and only those calls fail.
 - An end older than 0.18 does not take objects: a call that would hand it one fails with `bad-value` (`… an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`), and the session goes on. Upgrade that end.
-- The details for each language are in its guide: [TypeScript](typescript-plugin.en.md#objects-with-methods), [Bun](bun-plugin.en.md#objects-with-methods), [Python](python-plugin.en.md#objects-with-methods), [Go](go-plugin.en.md#objects-with-methods), [Swift](swift-plugin.en.md#objects-with-methods), [Swift app](swift-app.en.md#objects-with-methods), [Kotlin app](kotlin-app.en.md#objects-with-methods), [Rust](rust-plugin.en.md#serve-a-service-to-other-languages).
+
+#### Handing over and receiving objects in each language
+
+**TypeScript, Bun**: a class instance, or a plain object with function-valued properties, is handed over by reference. An object another process passes here is a proxy:
+
+```ts
+const cache = await ctx.use('store').cache()
+await cache.set('a', 1)          // every method is an asynchronous call of the far end's object
+const value = await cache.get('a')
+```
+
+- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it). `console.log` shows `[remote object]`.
+- `undefined` inside an array or object arrives as `null`; only a whole argument or a whole result keeps it.
+
+**Python**: `dict`, `list`, `tuple` and dataclasses are copied; an instance of any other class is handed over by reference:
+
+```python
+cache = await ctx.use("store").cache()
+await cache.set("a", 1)          # every method is async, a call of the far end's object
+value = await cache.get("a")
+```
+
+- Every public name on a proxy is a method (as with `ctx.use`). Its `repr` is `<remote object>`. One object passed several times is one proxy on the far end (`is`).
+- `undefined` (sent by JavaScript) inside a list or dict is `None` here, at any depth.
+
+**Go**: structs, slices and maps are data and are copied; to hand an object over by reference, write `rutis.Ref(v)`. For an object another process passes, write the parameter's type as a struct of function fields (as for a `ctx.Use` target, the field names matching the methods by the same rule), or as `any` or `*advanced.Service`:
+
+```go
+type Cache struct {
+	Get func(ctx context.Context, key string) (any, error)
+	Set func(ctx context.Context, key string, value any) error
+}
+
+func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
+	if err := cache.Set(ctx, "a", 1); err != nil {
+		return nil, err
+	}
+	return cache.Get(ctx, "a")
+}
+```
+
+- A function field's call blocks; its first parameter is a `context.Context`. A struct with a field that is not a function, or a parameter of another type, fails the call with `bad-argument`: `warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`.
+- `any` receives a `*advanced.Service`, the type `ctx.Use` gives: `Call(ctx, method, result, args...)`. An object has no method table, so `Methods()` returns `nil`, and a method it lacks is answered `no-method` by the object's own process.
+- Only a `*advanced.Service` keeps its identity: one object received several times is one `*advanced.Service`, and handed back to its process it is the original there. A struct of function fields is data: handed over, each field becomes a new function reference; to hand over the object itself, make the parameter `any`.
+- An object's methods may be called concurrently.
+
+**Swift**: `Codable` structs and classes are copied; an instance of a `@RutisService` type is handed over by reference. For an object another process passes, type the parameter with a `@RutisClient` protocol, or as `Any`:
+
+```swift
+/// How to use an object another process passes: declared at file level.
+@RutisClient
+protocol Cache {
+    func get(_ key: String) async throws -> Int?
+    func set(_ key: String, _ value: Int) async throws
+}
+
+@RutisService
+final class Warmer: @unchecked Sendable {
+    func warm(_ cache: any Cache) async throws -> Int? {
+        try await cache.set("a", 1)          // every method is async, a call of the far end's object
+        return try await cache.get("a")
+    }
+
+    /// When you do not know what arrives, take Any: an object is a Rutis.Advanced.Client, called by name.
+    func peek(_ value: Any) async throws -> Int? {
+        guard let cache = value as? Rutis.Advanced.Client else { return nil }
+        return try await cache.call("get", values: ["a"], as: Int?.self)
+    }
+}
+```
+
+- A parameter typed with a `@RutisClient` protocol (`any Cache`) gets that protocol's proxy, the same kind of proxy as `ctx.use("cache", CacheProxy.self)`; so does the result of a `@RutisClient` method. A parameter typed `Any` gets a `Rutis.Advanced.Client`: `try await client.call("get", [Rutis._Generated.encode("a")], as: Int?.self)` or `call("get", values: ["a"], as: Int?.self)`. Objects inside arrays and dictionaries, and in event arguments, arrive through `Any` as `Rutis.Advanced.Client`; `[any Cache]` is not supported in 0.18.
+- Only a `@RutisClient` protocol declared at file level receives objects: the `rutisObjectProxy` overload the macro generates for it is visible to Swift only at file scope. A `@RutisClient` protocol nested in another type still works with `ctx.use`, but a parameter typed with it does not take an object (`bad-argument`). An optional parameter or result (`(any Cache)?`) does not take an object in 0.18 either; write `any Cache`.
+- A parameter of a data type (a `Codable` type, `String` and so on) fails the call with `bad-argument`: `warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`.
+- A received proxy or `Rutis.Advanced.Client` passed on sends the original object.
+- Objects cannot go to an end older than 0.18: connected directly to one, the call fails with `bad-value` (`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`), and the session goes on.
+
+Swift apps, Kotlin apps and Rust: [Swift app](swift-app.en.md#objects-with-methods), [Kotlin app](kotlin-app.en.md#objects-with-methods), [Rust plugin](rust-plugin.en.md#serve-a-service-to-other-languages).
 
 #### The same process versus across processes
 
@@ -409,12 +963,113 @@ export default definePlugin({
 })
 ```
 
-- What can be handed over: the result of `definePlugin` in Node and Bun; Cordis plugins in Node (functions, classes, objects with `apply`); the result of Python's `define_plugin`; the result of Go's `rutis.Define` (`*rutis.Definition`, the type a client's function field takes); the result of `Rutis.define` in Swift and Kotlin (a client's parameter type is `Rutis.Definition`, `Plugin`; see [Swift plugin](swift-plugin.en.md#handing-a-plugin-to-a-service), [Kotlin application](kotlin-app.en.md#2-writing-a-plugin)).
+- What can be handed over: the result of `definePlugin` in Node and Bun; Cordis plugins in Node (functions, classes, objects with `apply`); the result of Python's `define_plugin`; the result of Go's `rutis.Define` (`*rutis.Definition`, the type a client's function field takes); the result of `Rutis.define` in Swift and Kotlin (a client's parameter type is `Rutis.Definition`, `Plugin`; see [handing over plugin definitions in each language](#handing-over-plugin-definitions-in-each-language) below, [Kotlin application](kotlin-app.en.md#2-writing-a-plugin)).
 - A plugin definition an application that dials in hands over (`RutisApp` in Swift and Kotlin) mounts only in that connection's instance, or deeper.
 - The receiver is Rust: a parameter or return type `rutis::Definition`, mounted with `ctx.plugin(def.at(&ctx, config)?)`; see [Rust host](rust-host.en.md#receive-plugin-definitions). Other parameter types are unchanged: a data parameter that receives a plugin definition fails the call.
 - Each copy runs in the runtime that defined it, isolated by the instance that mounts it, and gated on its `inject`.
 - A plugin definition belongs to the current generation of the row that handed it over: when that row unloads, reloads or ends, every copy mounted from it ends first, and is cleaned up, before the row unloads. Mounting it afterwards fails. When the runtime's process exits, its copies end too.
 - A plugin definition only goes back to the runtime that defined it; it cannot be handed on to a third runtime (that call fails).
+
+#### Handing over plugin definitions in each language
+
+Python: hand the result of `define_plugin(...)` over as an ordinary argument; each copy runs in this process:
+
+```python
+async def apply(ctx, config):
+    pool = await open_pool()
+
+    def session(ctx, config):
+        ctx.provide("gitStatus", GitStatus(pool, config["depth"]))
+
+    ctx.use("parts").register("session", define_plugin(session, inject=["history"]))
+```
+
+Go: the result of `rutis.Define(...)` is a `*rutis.Definition`, the type a function field's parameter takes; a definition only handed over may leave out `Name`:
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* use pool directly */ return nil },
+}))
+```
+
+Swift: in a `@RutisClient` protocol, the parameter or result type is `Rutis.Definition`:
+
+```swift
+@RutisClient
+protocol Parts {
+    func register(_ scope: String, _ part: Rutis.Definition) async throws
+}
+
+let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
+    let pool = try await openPool()
+    let status = Rutis.define(Plugin(name: "git_status", inject: ["history"], config: StatusConfig.self) { ctx, config in
+        ctx.provide("gitStatus", GitStatus(pool: pool, depth: config.depth))
+    })
+    try await ctx.use("parts", PartsProxy.self).register("session", status)
+})
+```
+
+The parameter or result must be a `Rutis.Definition` (or `Rutis.Definition?`) itself. Plugin definitions inside an array, a dictionary or a struct (such as `[Rutis.Definition]`) are not supported: make one call per definition.
+
+Rust: a `Plugin` is an instance: its config is in its fields, and handing it to `ctx.plugin` uses it up. To hand a plugin elsewhere, to be mounted there many times (one per session, say), use `rutis::Definition`: `Definition::new(ctx, build)` makes a definition, whose `build` gets the `ctx` where a copy mounts and that copy's config, and returns a `Plugin`; the mounting side writes `ctx.plugin(def.at(&ctx, config)?)`.
+
+```rust
+use std::sync::{Arc, Mutex};
+use rutis::{Ctx, Definition, Plugin, Result};
+
+/// One per session; `depth` comes from its own config.
+struct Part {
+    depth: u32,
+}
+
+impl Plugin for Part {
+    type Deps = ();
+
+    async fn apply(&self, _: &Ctx, _: ()) -> Result {
+        println!("depth {}", self.depth);
+        Ok(())
+    }
+}
+
+/// Hands a definition of `Part` to whoever mounts parts (here just a list).
+struct Git {
+    parts: Arc<Mutex<Vec<Definition>>>,
+}
+
+impl Plugin for Git {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        let pool = Arc::new(String::from("pool")); // prepared in apply
+        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
+            let _pool = pool.clone();
+            Ok(Part { depth })
+        });
+        self.parts.lock().unwrap().push(definition);
+        Ok(())
+    }
+}
+
+/// The mounting side: each mount is one copy, with its own config.
+fn mount(at: &Ctx, definition: &Definition) -> Result {
+    at.plugin(definition.at(at, 3u32)?);
+    Ok(())
+}
+# fn main() {}
+```
+
+- A definition made in Rust belongs to the current generation of the plugin that made it: when that plugin unloads, restarts or ends, every copy mounted from it ends first, and is cleaned up, before the plugin's own cleanups run; then `at` fails and `ended()` completes.
+- It can only be mounted inside the instance of the plugin that made it, or deeper.
+- A plugin definition another language hands over is a `Definition` too, mounted the same way. A definition made in Rust cannot be handed to another language.
+
+In tests, a definition a test double receives can be loaded as it is; see each language's test tool: [Python](#the-python-test-tool), [Go](#the-go-test-tool), [Swift](#the-swift-test-tool).
 
 ### Where the test tool differs from a real runtime
 
@@ -432,6 +1087,133 @@ The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) an
 | Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (TypeScript `host()` with `scope`, Python `Bus` and `scope=`, Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
 
 The ten values cross by the same rules on both sides, so they are not a difference. Nor are objects with methods: in strict mode the test tool of every language hands them over as a proxy shaped as across processes (methods only, every call asynchronous), as a real runtime does. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
+
+## Test tools
+
+Each language's plugin guide shows loading a plugin with its test tool, getting a service, listening to the events the plugin emits, and unloading. This section is the rest of the interface. Where a test tool differs from a real runtime is [above](#where-the-test-tool-differs-from-a-real-runtime).
+
+### Strict mode
+
+The TypeScript, Bun and Python test tools run the plugin in the test's process, in strict mode by default: values follow cross-process rules, data is copied (a Python dataclass becomes a dict), functions and objects with methods are passed by reference (what is handed over is a proxy: methods only, every call asynchronous), and a method declared `sync` cannot return a Promise / coroutine. Code that works only within one process fails here. `strict: false` (Python `strict=False`) turns it off, and values then skip the rules of [passing values](#passing-values).
+
+Go's `rutistest` and Swift's `RutisTest` run the plugin in its real runtime, values crossing a real session, with no such switch: what works only within one process (passing a struct as an object, sharing a class instance that is not a `@RutisService`, relying on shared memory) fails in the test, as it would in a host.
+
+### The TypeScript and Bun test tool
+
+`@arcships/rutis/testing`, the same one under Bun:
+
+| Name | What it does |
+| --- | --- |
+| `load(plugin, { config, services, strict, scope, deadline, runtime })` | Loads one plugin without a host, as the one row of a `host()` of its own. `scope` is the scope path (`t1/s1`, the root by default); `deadline` is how many milliseconds unloading waits for running listeners (default `RUTIS_SHUTDOWN_TIMEOUT` seconds, else 10 000); `runtime` is what listener descriptors give as `runtime` (default `'node'`, `'bun'` under Bun) |
+| `host({ services, strict, scopes, deadline, runtime })` | Several plugins sharing one event bus, as the rows of one real runtime (always dispatched in process). `services` go to every row that injects them; `scopes` names the group of a scope path: `{ t1: 'tenant', 't1/s1': 'session' }` (default: the path's last part) |
+| `h.load(plugin, { config, services, scope, row })` | Loads another row on the `host()`; `services` are this row's only; `row` is its name (default `row1`, `row2`, ...) |
+| `h.at(scope)` | Emits as the test from the scope path `scope`: the five methods and `filter` |
+| The five methods on `h`, `h.filter`, `h.reported`, `h.unload()` | Emit at the root; the failures nobody received; unload every row, latest first |
+
+The `t` that `load` and `h.load` return:
+
+| Member | What it does |
+| --- | --- |
+| `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's methods, all async |
+| `t.methods(name)` | The methods rutis sees: `{ today: 'async' }` |
+| `t.provided()` | The names of the services the plugin provides now |
+| `t.on(name, listener, options)` | Listen as the host does, at the root scope; see the language guides |
+| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from this plugin's row and scope |
+| `t.filter(keep)` | The five methods, delivering only to the listeners `keep(descriptor)` keeps |
+| `t.reported` | The failures nobody received: `{ line, event, row, plugin, error, filter }`, where `line` is the line a runtime writes on stderr |
+| `await t.update(config)` | Change the config as a host's `rows.update` does: unload, then run again with the new config, its listeners registered anew, after the existing ones |
+| `await t.unload()` | Withdraw the listeners and services, abort `ctx.signal`, wait for the running listeners, then run the cleanups, latest first |
+| `t.row`, `t.host` | The row's name; the `host()` it is on |
+
+`PluginTestError`: the plugin did something a host would refuse or that would fail across processes. For what a runtime refuses too, it carries the same `code` (`not-declared`, `unavailable`, `no-method`) and `data`.
+
+### The Python test tool
+
+`rutis.testing`:
+
+| Parameter of `load(plugin, *, …)` | What it does |
+| --- | --- |
+| `config` | The plugin's config; with a `config` declaration, defaults are filled in and it is validated |
+| `services` | The services the plugin `inject`s, by name |
+| `strict` | Values follow cross-process rules (default `True`) |
+| `bus` | Share events with the plugins on the same `Bus` (default: one of its own) |
+| `scope` | The scope path it is loaded in (`t1/s1`; default the root) |
+| `row` | Its row name on the bus (default the plugin's declared name, else its module's) |
+| `runtime` | What listener descriptors give as `runtime` (default `"python"`) |
+| `deadline` | How many seconds unloading waits for running listeners (default `RUTIS_SHUTDOWN_TIMEOUT`, 10) |
+
+| Member of `Loaded` (`async with load(...) as t`) | What it does |
+| --- | --- |
+| `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's public methods, all async |
+| `t.methods(name)` | The methods rutis sees: `{"today": "async"}` |
+| `t.provided()` | The names of the services the plugin provides now |
+| `t.on(name, listener, *, prepend=False, global_=False)` | Listen as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; returns the function that stops it, and without it, it stops when the plugin unloads |
+| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row and scope |
+| `t.filter(predicate)` | The five methods, delivering only to the listeners `predicate(descriptor)` keeps |
+| `t.reported` | The failures nobody received (listeners failing in an `emit`, filters) |
+| `await t.update(config)` | Change the config as a host's `rows.update` does: unload, then run again with the new config |
+| `await t.unload()` | Unload as the runtime does: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
+
+`Bus(scopes=...)`: a bus for tests; the plugins on the same `bus` hear each other, and `scopes` names the group of a scope path. It has `reported`, `listeners(name)` (the descriptors a filter sees) and `emitter(row=..., strict=...)` (emit as a given row). `Reported`: one failure nobody received, with the fields `kind` (`"listener"` or `"filter"`), `name`, `row` and `error`. `PluginTestError`: the plugin did something a host would refuse or that would fail across processes; a subclass of `AssertionError`.
+
+A plugin definition a test double receives can be passed to `load` as it is.
+
+### The Go test tool
+
+`github.com/arcships/rutis/go/rutis/rutistest`. The test side is the host of the bus:
+
+| Name | What it does |
+| --- | --- |
+| `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail`, `Filter` | Emit from the row's scope |
+| `loaded.On(name, fn, options...)` | Listen as the host does: the plugin's emissions of that name then go through the test side, as they go through rutis; the options are `advanced.Prepend()`, `advanced.Global()`; returns the function that stops it |
+| `loaded.Load(config, options...)` | Load another row in the same runtime |
+| `loaded.Update(config)` | Change a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails) |
+| `loaded.Reported()` | What the runtime reported of failed `Emit` listeners |
+| `loaded.Provided()`, `loaded.Scope()`, `loaded.Unload()` | The names of the services the plugin provides now; the row's scope chain; unload |
+| `loaded.Service(name)` | `Call(ctx, method, &result, args...)`, `Methods()`, and `Bind(&target)`, which fills a struct of function fields as `ctx.Use` does |
+| Options of `Load`, `TryLoad` and `loaded.Load` | `rutistest.InScope("t1/s1", groups...)` loads into a scope; `InChain(chain...)` into a scope chain (outermost first); `Row(key)` names the row (default `test`, then `test-2`, `test-3`, ...); `RuntimeName(name)` is the runtime's name in descriptors (default `go`; only `Load`'s counts: every row is in the one runtime) |
+
+A test of [the Go `greeter` above](#go):
+
+```go
+func TestEvents(t *testing.T) {
+	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
+	said := make(chan any, 1)
+	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
+		said <- args[0] // the test side listens as the host does
+		return nil, nil
+	})
+	var text string
+	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Hej, Ada!" || <-said != "Ada" {
+		t.Fatalf("got %q", text)
+	}
+	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // the test emits too
+	if err != nil || word != nil {
+		t.Fatalf("got %v, %v", word, err)
+	}
+}
+```
+
+A plugin definition the plugin hands to a test double (the double's method takes a `*rutis.Definition`) can be passed to `rutistest.Load` as it is: like rutis mounting a copy, it loads another row in the runtime that defined it, with what the plugin's `Apply` prepared; the `services` given then are that copy's own, as the services of the instance it is in, and so are the services it declares in `Provides`: several copies of one definition can be loaded at once when they provide only declared services (an undeclared service's name is not known in advance and is not isolated). Descriptors and reported lines call a copy's row by the id of its origin row. A definition belongs to the row that handed it over (as an argument, as the result of a service it provides, or in an event it emitted): when that row unloads or is updated (a restart), its copies unload first, and loading the definition fails from then on. A copy's config is fixed when it is mounted: `Update` and `Load` on a copy fail. A definition without a `Name` can also be passed to `rutistest.Load` directly.
+
+### The Swift test tool
+
+`RutisTest`:
+
+| Name | What it does |
+| --- | --- |
+| `loaded.emit`, `parallel`, `serial`, `waterfall`, `bail` | Emit from the row's scope |
+| `loaded.on(name, prepend:, global:) { ... }` | Listen as the host does |
+| `loaded.load(config:row:scope:)` | Load another row; the scope is `RutisTest.scope("t1/s1")` |
+| `loaded.update(config:)` | Change a row's config as rutis does |
+| `loaded.reported` | What the runtime reported of failed `emit` listeners |
+| `loaded.provided`, `loaded.row`, `loaded.scope`, `loaded.unload()`, `loaded.close()` | The names of the services the plugin provides now; the row's name; its scope; unload the row; end the test's host |
+| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` is the runtime's name in descriptors |
+
+A test double receives the plugin definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
 
 ## Synchronous calls and reentrancy
 
@@ -469,6 +1251,10 @@ To see how long a call has been waiting, use `rutis-host status` (it lists the c
 ## Cancellation
 
 When the caller abandons an async call (for example, on timeout), the call is cancelled: a Python coroutine is cancelled, a Go method's `context.Context` is cancelled, and a JavaScript method receives an abort when the caller supplied an `AbortSignal` (Rust bindings pass one when calling Cordis methods). Without either mechanism, the callee runs to completion and its result is discarded.
+
+- **Swift**: a caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation.
+- **Rust**: dropping the call's future cancels it.
+- How a dispatch of an event is cancelled: [events: lifecycle](#lifecycle).
 
 ## Versions
 
