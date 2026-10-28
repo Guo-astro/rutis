@@ -11,9 +11,7 @@
 //!   merely claims;
 //! - hand-over re-checks the generation under the same lock revocation
 //!   takes, so a handshake that began before a revocation cannot complete
-//!   after it; and re-checks that the identity has not revoked the far end
-//!   since it was routed ([`Revocations`](crate::Revocations), #273): such
-//!   a handshake is refused as an authentication failure.
+//!   after it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -196,10 +194,8 @@ impl Registrations {
     }
 
     /// Hand `channel` to the registration `ticket` was routed to, if it is
-    /// still that same registration and its identity has not revoked the
-    /// far end since; otherwise give the channel back to be closed. A
-    /// revoked far end's channel is first closed as rejected (WebSocket
-    /// close code 4003: an authentication failure to the dialer).
+    /// still that same registration; otherwise give the channel back to be
+    /// closed.
     pub fn hand_over(&self, ticket: &Ticket, channel: Channel) -> Result<(), Channel> {
         let table = self.table.lock().unwrap();
         match table
@@ -207,14 +203,6 @@ impl Registrations {
             .get(&(ticket.listener.clone(), ticket.peer.clone()))
         {
             Some(entry) if entry.generation == ticket.generation => {
-                let revoked = entry
-                    .identity
-                    .revocations()
-                    .is_some_and(|revocations| revocations.is_revoked(&ticket.peer));
-                if revoked {
-                    channel.closer.rejected(crate::identity::NOT_ACCEPTED);
-                    return Err(channel);
-                }
                 (entry.deliver)(channel);
                 Ok(())
             }
@@ -368,42 +356,5 @@ mod tests {
         assert!(from_mac.try_recv().is_err());
         assert!(!registry.listens("nowhere"));
         assert!(registry.listens("public"));
-    }
-
-    /// guarantee: bridge/revocation-refuses-reconnects
-    #[test]
-    fn a_ticket_from_before_an_identity_revocation_cannot_hand_over_after_it() {
-        let registry = Registrations::new();
-        let revocations = crate::Revocations::new();
-        let identity = Arc::new(crate::Revocable::new(
-            StaticIdentity::new(id("main"))
-                .accept_token("mac-token", id("mac"))
-                .accept_token("pi-token", id("pi")),
-            revocations.clone(),
-        ));
-        let (mut mac, from_mac) = registration("mac", "mac-token");
-        mac.identity = identity.clone();
-        let _mac = registry.register(&id("main"), mac).unwrap();
-        let (mut pi, from_pi) = registration("pi", "pi-token");
-        pi.identity = identity;
-        let _pi = registry.register(&id("main"), pi).unwrap();
-
-        let late = registry
-            .route("public", Presented::Bearer("mac-token"))
-            .unwrap();
-        let other = registry
-            .route("public", Presented::Bearer("pi-token"))
-            .unwrap();
-        revocations.revoke(&id("mac"));
-        assert!(registry.hand_over(&late, channel()).is_err());
-        assert!(from_mac.try_recv().is_err());
-        // Later connections: refused as a wrong credential is.
-        assert_eq!(
-            registry.route("public", Presented::Bearer("mac-token")),
-            Err(Refusal::Unauthenticated)
-        );
-        // Another far end on the same listener is untouched.
-        assert!(registry.hand_over(&other, channel()).is_ok());
-        assert!(from_pi.try_recv().is_ok());
     }
 }
