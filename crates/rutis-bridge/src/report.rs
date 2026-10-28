@@ -22,6 +22,17 @@ pub const MAX_LINES: usize = MAX_FRAMES + crate::exports::MAX_RETHROWN + 2;
 /// tab written as escapes (a NUL in a log makes `grep` take it for binary),
 /// and at most [`MAX_TEXT`] bytes, the cut marked.
 pub fn printable(text: &str) -> String {
+    escaped(text, true)
+}
+
+/// A name from the far end (a service, a method, an event) put in a
+/// [`headline`]: [`printable`], with a newline or a tab escaped too, so the
+/// headline stays one line.
+fn one_line(name: &str) -> String {
+    escaped(name, false)
+}
+
+fn escaped(text: &str, keep_lines: bool) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_TEXT) + 16);
     for c in text.chars() {
         if out.len() >= MAX_TEXT {
@@ -29,7 +40,7 @@ pub fn printable(text: &str) -> String {
             return out;
         }
         match c {
-            '\n' | '\t' => out.push(c),
+            '\n' | '\t' if keep_lines => out.push(c),
             c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
             c => out.push(c),
         }
@@ -130,20 +141,29 @@ pub fn headline(error: &ErrorKind) -> Option<String> {
             if text.starts_with(&format!("{service}.{method}"))
                 || text.starts_with(&format!("{service} ")) =>
         {
-            text
+            printable(&text)
         }
-        ("call", Some(service), Some(method), _) => {
-            format!("call to {service}.{method} failed: {text}")
-        }
+        ("call", Some(service), Some(method), _) => format!(
+            "call to {}.{} failed: {}",
+            one_line(service),
+            one_line(method),
+            printable(&text)
+        ),
         // A config that does not match its schema says so itself
         // (`config: units should be …`), not `failed in apply:`.
-        ("apply", ..) if thrown.code() == Some(crate::session::code::BAD_CONFIG) => text,
-        ("apply", ..) => format!("failed in apply: {text}"),
-        ("cleanup", ..) => format!("failed in cleanup: {text}"),
-        ("listener", _, _, Some(event)) => format!("listener of {event} failed: {text}"),
+        ("apply", ..) if thrown.code() == Some(crate::session::code::BAD_CONFIG) => {
+            printable(&text)
+        }
+        ("apply", ..) => format!("failed in apply: {}", printable(&text)),
+        ("cleanup", ..) => format!("failed in cleanup: {}", printable(&text)),
+        ("listener", _, _, Some(event)) => format!(
+            "listener of {} failed: {}",
+            one_line(event),
+            printable(&text)
+        ),
         _ => return None,
     };
-    Some(printable(&line))
+    Some(line)
 }
 
 /// `error` as printed: its [`headline`] (or its own text when there is
@@ -240,6 +260,36 @@ mod tests {
             ),
         ] {
             assert_eq!(report(&with(site.clone())), expected, "{site}");
+        }
+    }
+
+    /// A name from the far end with a newline in it, or one long enough to
+    /// be cut, leaves the headline one line ending with the error's text
+    /// (nightly fuzz, error_graph).
+    #[test]
+    fn names_from_the_far_end_stay_on_the_headline() {
+        let long = "m".repeat(MAX_TEXT);
+        for (site, starts) in [
+            (
+                json!({ "row": "w", "doing": "call", "service": "r", "method": "a\nb\tc" }),
+                "call to r.a\\u{a}b\\u{9}c failed: ",
+            ),
+            (
+                json!({ "row": "w", "doing": "call", "service": "r", "method": long }),
+                "call to r.mmm",
+            ),
+            (
+                json!({ "row": "w", "doing": "listener", "event": "a\nb" }),
+                "listener of a\\u{a}b failed: ",
+            ),
+        ] {
+            let printed = report(&remote(json!({
+                "root": { "type": "reference", "value": 0 },
+                "nodes": [{ "type": "error", "name": "KeyError", "message": "'region'", "site": site }]
+            })));
+            let first = printed.lines().next().unwrap();
+            assert!(first.starts_with(starts), "{printed}");
+            assert!(first.ends_with("KeyError: 'region'"), "{printed}");
         }
     }
 
