@@ -173,6 +173,13 @@ fn call_in_a_dev_project_says_what_it_did() {
             "{args:?}"
         );
     };
+    // "running" is printed before the row has finished loading; wait for
+    // the first call to go through.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while call(&["forecast.today", "\"Oslo\""], dir, runtime).0 != Some(0) {
+        assert!(std::time::Instant::now() < deadline, "weather never loaded");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     ok(&["forecast.today", "\"Oslo\""], "\"sunny in Oslo\"\n");
     ok(
         &["forecast.week", "{\"days\": 2}"],
