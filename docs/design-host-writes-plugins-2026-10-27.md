@@ -71,7 +71,7 @@ rutis 照这个做：同一个名字、同样的方法形状、同样谁都能�
 | `remove` | 已有：卸载这一行，每项清理执行一次；运行时进程不因此退出（它可能还有别的行） | 不变 |
 | 改动存下 | 已有：`Persist`；**rutis-host 缺可编辑层** | 补：`rutis-host run` 把 `rutis.json` 的 `rows` 作为可编辑层，带一个 `Persist` 把行写回 `rutis.json`。写文件用 #805 的 `rutis-host add` 已有的写回（只改 `rows`，其他字段与键的顺序原样），不另写一份。写回后宿主把写出的内容记为"上次读到的"，`--watch-config` 不把它当作变化 |
 | 文件在宿主读过之后被改过（手改、`rutis-host add`） | 已有：`persist_queue` 的冲突处理 | 不变：`Persist::load` 读回文件里的 `rows`，loader 对账后重做这次改动。`rows` 以外的字段变了的，照旧要 SIGUSR1 或重启宿主才生效（[运行中改配置](guide/rutis-host.md#运行中改配置)） |
-| 在一行自己的 `apply` 里调用 `create` / `reload` / `remove` | loader 的操作等所有行的 `apply` 结束 | 一行在自己的 `apply` 里调 `loader` 的 `create` / `remove` / `reload` 会等到它自己的 `apply` 结束，所以会卡住；在 `apply` 返回后再调用（例如在服务方法或事件里）。不加报错或检查；#771 H3b 改成不卡住 |
+| 在一行自己的 `apply` 里调用 `create` / `reload` / `remove` | loader 的操作等所有行的 `apply` 结束 | 一行在自己的 `apply` 里调 `loader` 的 `create` / `remove` / `reload` 会等到它自己的 `apply` 结束，所以会卡住；`loader` 的方法在 `apply` 返回后调用（服务方法、事件里）；在 `apply` 里挂子插件用 `ctx.plugin`（Rust；Node 里的 Cordis 插件），它属于这一行，随这一行卸载。不加报错或检查 |
 | `rutis-host dev` | 读 `rutis.dev.json` | 不给可编辑层：`dev` 是开发一个插件项目，加、删行改 `rutis.dev.json`。在 `dev` 下 `create` / `remove` 得到 §七 的"没有可编辑的配置"错误；`reload`、`status` 照常 |
 
 ## 六、本地目录的插件怎样加载
@@ -92,7 +92,7 @@ rutis 照这个做：同一个名字、同样的方法形状、同样谁都能�
 
 ### 插件作者
 
-正常时（Python；TypeScript、Go 只是写法不同）。调用放在服务方法里，不放在 `apply` 里（§五）：
+正常时（Python；TypeScript、Go 只是写法不同）。`loader` 的方法在 `apply` 返回后调用（服务方法、事件里），这里放在服务方法 `step` 里；在 `apply` 里挂子插件用 `ctx.plugin`（§五）：
 
 ```python
 class Maker:

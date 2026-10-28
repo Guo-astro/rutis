@@ -71,7 +71,7 @@ rutis does the same: the same name, the same method shapes, usable by anyone; wi
 | `remove` | Exists: unloads the row, each cleanup runs once; the runtime process does not exit because of it (it may have other rows) | Unchanged |
 | Changes stored | Exists: `Persist`; **rutis-host lacks an editable layer** | Added: `rutis-host run` uses the `rows` of `rutis.json` as the editable layer, with a `Persist` that writes rows back to `rutis.json`. It writes with the writer #805's `rutis-host add` already has (only `rows` change; other fields and key order stay), not a second one. After writing, the host records what it wrote as "last read", so `--watch-config` does not count it as a change |
 | The file changed after the host read it (by hand, by `rutis-host add`) | Exists: `persist_queue`'s conflict handling | Unchanged: `Persist::load` reads the file's `rows` back, the loader reconciles and redoes the edit. Changes to fields other than `rows` still need SIGUSR1 or a restart ([Changing the configuration while it runs](guide/rutis-host.en.md#changing-the-configuration-while-it-runs)) |
-| `create` / `reload` / `remove` called in a row's own `apply` | The loader's operations wait for every row's `apply` to end | A row calling `loader`'s `create` / `remove` / `reload` in its own `apply` waits until its own `apply` ends, so it hangs; call them after `apply` returns (in a service method or an event, say). No error or check added; #771 H3b makes it not hang |
+| `create` / `reload` / `remove` called in a row's own `apply` | The loader's operations wait for every row's `apply` to end | A row calling `loader`'s `create` / `remove` / `reload` in its own `apply` waits until its own `apply` ends, so it hangs; `loader`'s methods are called after `apply` returns (in a service method or an event); to mount child plugins in `apply`, use `ctx.plugin` (Rust; Cordis plugins in Node), which belong to the row and are unloaded with it. No error or check added |
 | `rutis-host dev` | Reads `rutis.dev.json` | No editable layer: `dev` develops one plugin project, and rows are added or removed in `rutis.dev.json`. Under `dev`, `create` / `remove` get §7's "no editable configuration" error; `reload` and `status` work |
 
 ## 6. How a plugin in a local directory loads
@@ -92,7 +92,7 @@ Roles affected: **plugin authors** (writing a plugin that manages plugins, an ag
 
 ### Plugin authors
 
-When it works (Python; TypeScript and Go differ only in spelling). The calls go in a service method, not in `apply` (§5):
+When it works (Python; TypeScript and Go differ only in spelling). `loader`'s methods are called after `apply` returns (in a service method or an event), here in the service method `step`; to mount child plugins in `apply`, use `ctx.plugin` (§5):
 
 ```python
 class Maker:
