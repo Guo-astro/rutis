@@ -109,7 +109,7 @@ jobs:
                   install=true ;;
               esac
               case "$f" in
-                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-dev/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
+                crates/rutis-cli/build.rs|crates/rutis-cli/src/*|crates/rutis-cli/Cargo.toml|crates/rutis-dylib/*|crates/rutis-dylib-meta/*|crates/rutis-dylib-launcher/*|crates/rutis-sdk/*|crates/rutis-xtask/*|tools/*dylib*|tools/build-dylib-bundle.sh|tools/test-sdk-bundle.sh|tools/lib/*|tests/dylib-fixtures/*)
                   dylib=true ;;
               esac
               case "$f" in
@@ -281,12 +281,14 @@ jobs:
   # #341). Report only, like `cordis-latest`: the job never fails the run,
   # `report` does not wait for it; a failure shows as a warning and its
   # logs are uploaded.
-  netem:
-    needs: plan
-    if: needs.plan.outputs.run == 'true'
-    uses: ./.github/workflows/netem.yml
-    with:
-      report-only: true
+  # Paused: the Linux runners may have no Docker. Run it by hand
+  # (`gh workflow run netem.yml`) on a runner that has Docker.
+  # netem:
+  #   needs: plan
+  #   if: needs.plan.outputs.run == 'true'
+  #   uses: ./.github/workflows/netem.yml
+  #   with:
+  #     report-only: true
 
   # A failure opens an issue, or comments on the nightly issue still open (as
   # release.yml's `report`).

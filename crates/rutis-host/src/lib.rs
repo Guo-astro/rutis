@@ -4,6 +4,7 @@
 //! It is public for the binary and its tests, not as an API: it changes with
 //! the binary, without a semver promise.
 
+pub mod call;
 pub mod config;
 pub mod control;
 pub mod host;
@@ -20,8 +21,8 @@ pub mod status;
 #[macro_export]
 macro_rules! outln {
     ($($arg:tt)*) => {
-        ::rutis_bridge::transport::local::write_line(
-            ::rutis_bridge::transport::local::OutputStream::Stdout,
+        ::rutis_bridge::pipe::write_line(
+            ::rutis_bridge::pipe::OutputStream::Stdout,
             &::std::format!($($arg)*),
         )
     };
@@ -31,8 +32,8 @@ macro_rules! outln {
 #[macro_export]
 macro_rules! errln {
     ($($arg:tt)*) => {
-        ::rutis_bridge::transport::local::write_line(
-            ::rutis_bridge::transport::local::OutputStream::Stderr,
+        ::rutis_bridge::pipe::write_line(
+            ::rutis_bridge::pipe::OutputStream::Stderr,
             &::std::format!($($arg)*),
         )
     };

@@ -83,7 +83,7 @@ In short:
 | Call chain | It travels with the Task (`@TaskLocal`): plugin code passes no context. Tasks a plugin starts with `ctx.spawn { ... }` carry it and are cancelled at unload; the unload waits for them at most until the shutdown deadline it shares with the listeners, so a Task that ignores cancellation does not hold it |
 | Concurrency | Every incoming call runs in a Task of its own: provided objects must be safe for concurrent use |
 | Cancellation | A caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation |
-| Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay`, `Rutis.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference (see [Objects with methods](#objects-with-methods)); a parameter of type `Any` receives native values, and an object of another process as a `Rutis.Client` |
+| Values | Data (`Codable` structs, arrays, dictionaries, numbers, strings) is copied, by the SDK's own encoder and decoder; `Date`, `Data`, `Decimal`, `UUID`, `Set`, dictionaries whose keys are not `String`, and `Rutis.Advanced.DateTime`, `Rutis.Advanced.CalendarDate`, `Rutis.Advanced.TimeOfDay`, `Rutis.Advanced.BigInt` cross as their own values (table below); integers beyond ±(2^53−1) (`Int64`, `UInt64`, ...) cross as big integers by themselves; instances of `@RutisService` types and closures cross by reference (see [Objects with methods](#objects-with-methods)); a parameter of type `Any` receives native values, and an object of another process as a `Rutis.Advanced.Client` |
 | Errors | A thrown error crosses with its type's name (`QuotaError`), its message (`LocalizedError`'s `errorDescription`, else its description), and the stored properties `code` and `data` when it has them, which the caller reads as its error's `code` and `data`. An error received is a `RutisError` (`name`, `message`, `code`, `data`, `errors`, `cause`), matched by `name` |
 | `fatalError`, `try!`, a force unwrap | Not catchable in Swift: the runtime process ends, its rows stop, and the host does what `restart` says ([When a runtime ends](rutis-host.en.md#when-a-runtime-ends)) |
 
@@ -92,11 +92,11 @@ How Swift values cross ([Passing values](plugin-api.en.md#passing-values)):
 | Value | Swift |
 | --- | --- |
 | Point in time | `Date`, truncated to the microsecond |
-| Local date and time, date, time of day | `Rutis.DateTime`, `Rutis.CalendarDate`, `Rutis.TimeOfDay` (Swift has no such types) |
+| Local date and time, date, time of day | `Rutis.Advanced.DateTime`, `Rutis.Advanced.CalendarDate`, `Rutis.Advanced.TimeOfDay` (Swift has no such types) |
 | Binary data | `Data` |
 | Map | A `Dictionary` whose keys are not `String`; sent with its keys sorted, so one value is always sent the same way |
 | Set | `Set`, sent sorted |
-| Big integer | `Rutis.BigInt`, or an integer type that holds it |
+| Big integer | `Rutis.Advanced.BigInt`, or an integer type that holds it |
 | Decimal | `Decimal`: at most 38 digits, and trailing zeros are not kept (`1.10` arrives as `1.1`); declare the parameter `String` to keep the text as it was sent |
 | UUID | `UUID` |
 
@@ -144,26 +144,26 @@ final class Warmer: @unchecked Sendable {
         return try await cache.get("a")
     }
 
-    /// When you do not know what arrives, take Any: an object is a Rutis.Client, called by name.
+    /// When you do not know what arrives, take Any: an object is a Rutis.Advanced.Client, called by name.
     func peek(_ value: Any) async throws -> Int? {
-        guard let cache = value as? Rutis.Client else { return nil }
+        guard let cache = value as? Rutis.Advanced.Client else { return nil }
         return try await cache.call("get", values: ["a"], as: Int?.self)
     }
 }
 ```
 
-- A parameter typed with a `@RutisClient` protocol (`any Cache`) gets that protocol's proxy, the same kind of proxy as `ctx.use("cache", CacheProxy.self)`; so does the result of a `@RutisClient` method. A parameter typed `Any` gets a `Rutis.Client`: `try await client.call("get", [Rutis.encode("a")], as: Int?.self)` or `call("get", values: ["a"], as: Int?.self)`. Objects inside arrays and dictionaries, and in event arguments, arrive through `Any` as `Rutis.Client`; `[any Cache]` is not supported in 0.18.
+- A parameter typed with a `@RutisClient` protocol (`any Cache`) gets that protocol's proxy, the same kind of proxy as `ctx.use("cache", CacheProxy.self)`; so does the result of a `@RutisClient` method. A parameter typed `Any` gets a `Rutis.Advanced.Client`: `try await client.call("get", [Rutis._Generated.encode("a")], as: Int?.self)` or `call("get", values: ["a"], as: Int?.self)`. Objects inside arrays and dictionaries, and in event arguments, arrive through `Any` as `Rutis.Advanced.Client`; `[any Cache]` is not supported in 0.18.
 - Only a `@RutisClient` protocol declared at file level receives objects: the `rutisObjectProxy` overload the macro generates for it is visible to Swift only at file scope. A `@RutisClient` protocol nested in another type still works with `ctx.use`, but a parameter typed with it does not take an object (`bad-argument`). An optional parameter or result (`(any Cache)?`) does not take an object in 0.18 either; write `any Cache`.
 - A parameter of a data type (a `Codable` type, `String` and so on) fails the call with `bad-argument`: `warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`.
 - A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
-- One object passed several times is one proxy here; a received proxy or `Rutis.Client` passed on sends the original object, and passed back to its process it is the original there.
+- One object passed several times is one proxy here; a received proxy or `Rutis.Advanced.Client` passed on sends the original object, and passed back to its process it is the original there.
 - An object does not follow its row: after the row that passed it unloads, it can still be called. An on-demand Swift runtime stops `idle` seconds after its last row unloads, and its objects held elsewhere do not keep it running; calls on them then fail with `peer-gone`: `a call on an object from swift-plugin-binary failed: runtime swift-plugin-binary stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`. Once the far end's runtime has exited, calls fail with `peer-gone` too.
 - Objects cannot go to an end older than 0.18: connected directly to one, the call fails with `bad-value` (`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`), and the session goes on.
 - Rows in the same runtime get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
 
 ### Events
 
-Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result. A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored); in a waterfall its last parameter is a `Rutis.Next<R>`.
+Every listener on a host, in any language and any process, is on one event bus ([design](../design-events-2026-10-18.en.md)): where an event is emitted and where its listeners are does not change the result. A listener's parameters are the event's arguments, decoded by their types (missing ones `nil`, extra ones ignored); in a waterfall its last parameter is a `Rutis.Advanced.Next<R>`.
 
 ```swift
 let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }   // options: prepend:, global:
@@ -196,7 +196,7 @@ public final class Greeter: @unchecked Sendable {
 
 public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
     ctx.on("greeting/pick") { (lang: String) -> String? in lang == "sv" ? "Hej" : nil }   // nil: the next listener goes on
-    ctx.on("greeting/format") { (text: String, next: Rutis.Next<String>) in
+    ctx.on("greeting/format") { (text: String, next: Rutis.Advanced.Next<String>) in
         (try await next() ?? text) + "!"                                                // next runs the rest of the chain
     }
     ctx.provide("greeter", Greeter(ctx: ctx))
@@ -242,6 +242,19 @@ rutis-host dev
 ```
 
 `dev` builds the package's executable product with `swift build` and runs each of its plugins as the runtime `swift-weather`; a change to the sources, `Package.swift` or `Package.resolved` rebuilds it and restarts only that runtime, and a failed build keeps the old one running (the compiler's errors are printed). Each build says `weather: building`, then `weather: built in 12.3s`: the first one compiles the dependencies, the SDK's macros among them, and can take minutes. Each build is copied to `.rutis/swift/<product>-<n>`, a new file each time. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). When their files change, only those rows reload, without a rebuild, and the Swift runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Swift binary with its platform, SDK, plugin API and plugins; a binary built with an SDK older than rutis 0.13 cannot run, and `check` says to rebuild it.
+
+### Calling a method
+
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ## 5. System access
 
@@ -291,7 +304,7 @@ A host names a Swift plugin directory in `rutis.json` and puts binaries there:
 }
 ```
 
-Download the binary from a release into the directory (a downloaded binary is quarantined: `rutis-host check` says so, and `xattr -d com.apple.quarantine <file>` clears it once you trust it). The host finds `swift:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `swift-<binary name>:<plugin>`. The settings are those of `runtimes.go`: a binary starts when a row first uses it and stops after `idle` seconds (60) without one, `"start": "eager"` starts all and keeps them running, `restart` (`no` by default, `on-failure`, `exit`) applies to each runtime on its own, and a replaced binary takes effect when its runtime restarts. Running Swift binaries needs no Swift toolchain. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`SwiftResolver`, `SwiftRuntimes` in rutis-loader).
+Download the binary from a release into the directory (a downloaded binary is quarantined: `rutis-host check` says so, and `xattr -d com.apple.quarantine <file>` clears it once you trust it). The host finds `swift:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `swift-<binary name>:<plugin>`. The settings are those of `runtimes.go`: a binary starts when a row first uses it and stops after `idle` seconds (60) without one, `"start": "eager"` starts all and keeps them running, `restart` (`no` by default, `on-failure`, `exit`) applies to each runtime on its own, and a replaced binary takes effect when its runtime restarts. Running Swift binaries needs no Swift toolchain. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`BinaryResolver<Swift>`, `BinaryRuntimes<Swift>` in rutis-loader).
 
 ## 8. Run it on another machine
 

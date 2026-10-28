@@ -5,13 +5,15 @@
 //!
 //! The package managers run as commands (npm, bun, uv or pip, go), their
 //! output shown as it is; what a runtime lacks is installed with the
-//! plugin. The records ([`Installed`]) are the caller's to keep. What a
+//! plugin. The records ([`Installed`]) are the caller's to keep, and so is
+//! checking that what was installed is a plugin (`check`'s rows). What a
 //! package manager installed is not undone when a later step fails: the
 //! error says how to uninstall it.
 
 use std::path::{Path, PathBuf};
 
 use rutis_bridge::runtime::RowSchema;
+use serde::Deserialize;
 
 use crate::config::{venv_python, DEFAULT_PYTHON};
 use crate::languages::python::venv_of;
@@ -28,44 +30,53 @@ use tools::{io_error, Run, Tools};
 /// crate's, which is the host's.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Where each language's plugins are installed: `None` for a language not
-/// installed. Relative paths are taken from the current directory.
-#[derive(Clone, Debug, Default)]
+/// Where each language's plugins are installed.
+#[derive(Clone, Debug)]
 pub struct Places {
     /// Where relative local paths in references are from (the directory of
-    /// the configuration that names them); the current directory when
-    /// `None`.
-    pub base: Option<PathBuf>,
+    /// the configuration that names them).
+    pub base: PathBuf,
     /// The Node project: its `package.json` (made with `npm init -y` when
     /// missing) and `node_modules`.
-    pub node: Option<PathBuf>,
+    pub node: PathBuf,
+    /// The Node runtime package the configuration names
+    /// (`runtimes.node.runtime`): when there, none is installed.
+    pub node_runtime: Option<PathBuf>,
     /// The Bun project.
-    pub bun: Option<PathBuf>,
+    pub bun: PathBuf,
+    /// The Bun runtime package the configuration names, as for Node.
+    pub bun_runtime: Option<PathBuf>,
     /// The Python environment, created (with the `rutis` package) when
     /// missing; or an interpreter, used as it is.
-    pub python: Option<PathBuf>,
-    /// The directory of Go binaries, created when missing.
-    pub go: Option<PathBuf>,
-    /// The directory of Swift binaries, created when missing.
-    pub swift: Option<PathBuf>,
+    pub python: PathBuf,
+    /// The directory of Go binaries, created when missing; or why there is
+    /// none (`runtimes.go` declared without a `dir`).
+    pub go: Result<PathBuf, String>,
+    /// The directory of Swift binaries, as for Go.
+    pub swift: Result<PathBuf, String>,
 }
 
-/// One installed plugin: its record (`from`, what a configuration keeps
-/// under the plugin's row name, [`Installed::row_name`]), its name and
-/// its language.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One installed plugin: its record (`installed.<row name>` in
+/// `rutis.json`: `from` only, [`Installed::row_name`] its key), its name
+/// and its language.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Installed {
-    /// The plugin's name: its row name without the language prefix.
+    /// The plugin's name: its row name without the language prefix. Not
+    /// recorded: the key says it ([`Installed::of_row`]).
+    #[serde(skip)]
     pub name: String,
     /// The reference it was installed from, without a version
     /// (`npm:@ana/wordcount`, `pypi:bo-llm`, a Go module path, a local
     /// path). The plugins of one package have the same.
     pub from: String,
     /// The runtime it runs in: `node`, `bun`, `py`, `go` or `swift`. Not
-    /// recorded: the row name says it.
+    /// recorded: the key's prefix says it.
+    #[serde(skip)]
     pub language: String,
     /// The version just installed, when known; not recorded (the package
     /// manager's own files keep it).
+    #[serde(skip)]
     pub version: Option<String>,
 }
 
@@ -108,6 +119,15 @@ fn is_local_name(name: &str) -> bool {
     reference::is_local(name)
 }
 
+/// What [`Installer::add`] installed: its plugins, and the command that
+/// uninstalls the package (for messages when they turn out not to be
+/// plugins).
+#[derive(Clone, Debug)]
+pub struct Added {
+    pub plugins: Vec<Installed>,
+    pub uninstall: String,
+}
+
 /// What [`Installer::upgrade`] did: the package's version before, and its
 /// plugins now (with the version installed).
 #[derive(Clone, Debug)]
@@ -121,9 +141,6 @@ pub struct Upgraded {
 pub enum Error {
     /// A package manager ran and failed (its own output was shown).
     Failed(String),
-    /// [`Places`] has no place for the language (`node`, `bun`, `py`, `go`
-    /// or `swift`) of what was to be installed.
-    NoPlace(String),
     /// Anything else.
     Other(String),
 }
@@ -132,14 +149,8 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Failed(text) | Error::Other(text) => f.write_str(text),
-            Error::NoPlace(key) => write!(f, "no place to install {} plugins into", title_of(key)),
         }
     }
-}
-
-/// A language's title by its key (`Go` for `go`).
-fn title_of(key: &str) -> String {
-    Lang::of_key(key).map_or_else(|| key.to_owned(), |lang| lang.title().to_owned())
 }
 
 /// Installs plugins into [`Places`].
@@ -199,9 +210,6 @@ impl Lang {
 struct Package {
     plugins: Vec<Installed>,
     uninstall: String,
-    /// Where it is: the place (Node, Bun), the interpreter (Python), the
-    /// binaries (Go, Swift).
-    at: Vec<PathBuf>,
 }
 
 impl Installer {
@@ -222,10 +230,10 @@ impl Installer {
         self
     }
 
-    /// Install the package `reference` names, with what its runtime lacks,
-    /// and describe each plugin in it: one record per plugin.
-    pub async fn add(&self, reference: &str) -> Result<Vec<Installed>, Error> {
-        let reference = Reference::parse(reference, &self.core.base())?;
+    /// Install the package `reference` names, with what its runtime lacks:
+    /// one record per plugin in it.
+    pub async fn add(&self, reference: &str) -> Result<Added, Error> {
+        let reference = Reference::parse(reference, &self.core.places.base)?;
         // An npm package's plugin is the package, in Node or Bun: refused
         // before npm runs.
         if let Source::Npm { package, .. } = &reference.source {
@@ -241,19 +249,13 @@ impl Installer {
         }
         let package = {
             let (core, reference) = (self.core.clone(), reference.clone());
-            blocking(move || core.install(&reference, lang, &core.places, false)).await?
+            blocking(move || core.install(&reference, lang, false)).await?
         };
-        for plugin in &package.plugins {
-            self.free(
-                &[plugin.row_name()],
-                &reference.from,
-                Some(&package.uninstall),
-            )?;
-        }
-        self.core
-            .describe(lang, &package, &self.core.places)
-            .await?;
-        Ok(package.plugins)
+        self.free_after(&package)?;
+        Ok(Added {
+            plugins: package.plugins,
+            uninstall: package.uninstall,
+        })
     }
 
     /// Install the newest version of the package `plugin` is in (or
@@ -264,33 +266,52 @@ impl Installer {
         version: Option<&str>,
     ) -> Result<Upgraded, Error> {
         let lang = self.core.lang_of(plugin)?;
-        let text = match version {
-            Some(version) => format!("{}@{version}", plugin.from),
-            None => plugin.from.clone(),
-        };
-        let reference = Reference::parse(&text, &self.core.base())?;
+        let mut reference = Reference::parse(&plugin.from, &self.core.places.base)?;
+        if let Some(version) = version {
+            if let Source::Local(_) = reference.source {
+                return Err(Error::Other(format!(
+                    "{} is a local path, which has no versions: upgrade it without @{version}",
+                    plugin.from
+                )));
+            }
+            reference = Reference::parse(
+                &format!("{}@{version}", plugin.from),
+                &self.core.places.base,
+            )?;
+        }
         let (core, plugin) = (self.core.clone(), plugin.clone());
         let (before, package) = blocking(move || {
             let before = core.version_of(lang, &plugin);
-            let package = core.install(&reference, lang, &core.places, true)?;
+            let package = core.install(&reference, lang, true)?;
             Ok((before, package))
         })
         .await?;
-        self.core
-            .describe(lang, &package, &self.core.places)
-            .await?;
+        self.free_after(&package)?;
         Ok(Upgraded {
             before,
             plugins: package.plugins,
         })
     }
 
-    /// Uninstall the package `plugin` is in: what was uninstalled, as its
+    /// Uninstall the package `plugins` are in (all of its plugins: a
+    /// binary serving any of them is deleted): what was uninstalled, as its
     /// package manager names it, or `None` when it was no longer there.
-    pub async fn remove(&self, plugin: &Installed) -> Result<Option<String>, Error> {
-        let lang = self.core.lang_of(plugin)?;
-        let (core, plugin) = (self.core.clone(), plugin.clone());
-        blocking(move || core.remove(lang, &plugin)).await
+    pub async fn remove(&self, plugins: &[Installed]) -> Result<Option<String>, Error> {
+        let Some(first) = plugins.first() else {
+            return Ok(None);
+        };
+        let lang = self.core.lang_of(first)?;
+        let (core, plugins) = (self.core.clone(), plugins.to_vec());
+        blocking(move || core.remove(lang, &plugins)).await
+    }
+
+    /// Refuse a plugin of `package`, just installed, whose row name another
+    /// package's record has; the package stays installed.
+    fn free_after(&self, package: &Package) -> Result<(), Error> {
+        for plugin in &package.plugins {
+            self.free(&[plugin.row_name()], &plugin.from, Some(&package.uninstall))?;
+        }
+        Ok(())
     }
 
     /// Refuse each of `rows` another package's record has: two records
@@ -343,14 +364,6 @@ async fn blocking<T: Send + 'static>(
 }
 
 impl Core {
-    fn base(&self) -> PathBuf {
-        self.places
-            .base
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default()
-    }
-
     fn lang_of(&self, plugin: &Installed) -> Result<Lang, Error> {
         Lang::of_key(&plugin.language).ok_or_else(|| {
             Error::Other(format!(
@@ -370,8 +383,8 @@ impl Core {
                 let spec = npm_spec(package, version.as_deref());
                 let run = Run::new("npm").args(["view", spec.as_str(), "--json"]);
                 let text = self.tools.output(&run)?;
-                let manifest: serde_json::Value =
-                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                let manifest: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|error| Error::Other(format!("{}: {error}", run.shown())))?;
                 // Several versions match a range: the last is the newest.
                 let manifest = match manifest {
                     serde_json::Value::Array(mut all) => all.pop().unwrap_or_default(),
@@ -440,32 +453,26 @@ impl Core {
 
     // ── 2–3. Install, and find the plugins ─────────────────────
 
-    /// Install what `reference` names into `places`, with what the
-    /// runtime lacks; `upgrade`: to its newest version (or the one named).
-    fn install(
-        &self,
-        reference: &Reference,
-        lang: Lang,
-        places: &Places,
-        upgrade: bool,
-    ) -> Result<Package, Error> {
-        let place = |place: &Option<PathBuf>| {
-            place
-                .clone()
-                .ok_or_else(|| Error::NoPlace(lang.key().to_owned()))
-        };
+    /// Install what `reference` names, with what the runtime lacks;
+    /// `upgrade`: to its newest version (or the one named).
+    fn install(&self, reference: &Reference, lang: Lang, upgrade: bool) -> Result<Package, Error> {
+        let places = &self.places;
         match lang {
-            Lang::Node => self.install_js(reference, lang, &place(&places.node)?, upgrade),
-            Lang::Bun => self.install_js(reference, lang, &place(&places.bun)?, upgrade),
-            Lang::Python => self.install_python(reference, &place(&places.python)?, upgrade),
-            Lang::Go | Lang::Swift => {
-                let dir = place(match lang {
-                    Lang::Go => &places.go,
-                    _ => &places.swift,
-                })?;
-                self.install_binary(reference, lang, &dir)
-            }
+            Lang::Node => self.install_js(reference, lang, &places.node, upgrade),
+            Lang::Bun => self.install_js(reference, lang, &places.bun, upgrade),
+            Lang::Python => self.install_python(reference, &places.python, upgrade),
+            Lang::Go | Lang::Swift => self.install_binary(reference, lang, &self.binary_dir(lang)?),
         }
+    }
+
+    /// The directory of `lang`'s binaries (Go, Swift).
+    fn binary_dir(&self, lang: Lang) -> Result<PathBuf, Error> {
+        match lang {
+            Lang::Go => &self.places.go,
+            _ => &self.places.swift,
+        }
+        .clone()
+        .map_err(Error::Other)
     }
 
     /// Node and Bun: the package into the project `project`.
@@ -487,16 +494,22 @@ impl Core {
             Source::Local(path) => path.display().to_string(),
             _ => unreachable!("only npm packages and local paths are Node or Bun"),
         };
+        let places = &self.places;
         let (runtime_package, runtime_there) = match lang {
             Lang::Node => (
                 "@arcships/rutis-runtime",
-                crate::languages::node::runtime_package(None, project).is_some(),
+                crate::languages::node::runtime_package(places.node_runtime.as_deref(), project)
+                    .is_some(),
             ),
             _ => (
                 "@arcships/rutis-bun",
-                project
-                    .join("node_modules/@arcships/rutis-bun/package.json")
-                    .exists(),
+                [
+                    places.bun_runtime.clone(),
+                    Some(project.join("node_modules/@arcships/rutis-bun")),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|package| package.join("package.json").exists()),
             ),
         };
         let runtime = format!("{runtime_package}@{VERSION}");
@@ -563,7 +576,6 @@ impl Core {
                 version,
             }],
             uninstall,
-            at: vec![project.to_owned()],
         })
     }
 
@@ -629,11 +641,7 @@ impl Core {
                 "{distribution} has no rutis.plugins entry point: it is not a plugin; it stays installed: {uninstall}"
             )));
         }
-        Ok(Package {
-            plugins,
-            uninstall,
-            at: vec![python.interpreter.clone()],
-        })
+        Ok(Package { plugins, uninstall })
     }
 
     /// Go and Swift: the binary into `dir`.
@@ -726,116 +734,7 @@ impl Core {
                 reference.from
             )));
         }
-        Ok(Package {
-            plugins,
-            uninstall,
-            at: binaries,
-        })
-    }
-
-    // ── 4. Describe ─────────────────────────────────────────────
-
-    /// What each plugin of `package` declares, its runtime started on
-    /// `places` as a host's would be; a plugin that cannot be described
-    /// fails, saying how to uninstall the package.
-    async fn describe(
-        &self,
-        lang: Lang,
-        package: &Package,
-        places: &Places,
-    ) -> Result<Vec<RowSchema>, Error> {
-        let not_plugin =
-            |why: String| Error::Other(format!("{why}; it stays installed: {}", package.uninstall));
-        match lang {
-            Lang::Go | Lang::Swift => {
-                let mut schemas = Vec::new();
-                for plugin in &package.plugins {
-                    let schema = package
-                        .at
-                        .iter()
-                        .find_map(|binary| {
-                            let dir = binary.parent()?;
-                            manifest_of(lang, &binaries_in(lang, dir), binary)
-                                .ok()?
-                                .get(&plugin.name)
-                                .cloned()
-                        })
-                        .ok_or_else(|| {
-                            not_plugin(format!("{}: no binary serves it", plugin.name))
-                        })?;
-                    schemas.push(schema);
-                }
-                Ok(schemas)
-            }
-            _ => {
-                let names: Vec<String> = package
-                    .plugins
-                    .iter()
-                    .map(|plugin| plugin.name.clone())
-                    .collect();
-                let described = self
-                    .describe_running(lang, &package.at[0], &names, places)
-                    .await
-                    .map_err(not_plugin)?;
-                described
-                    .into_iter()
-                    .zip(&names)
-                    .map(|(schema, name)| {
-                        schema.map_err(|why| not_plugin(format!("{name}: {why}")))
-                    })
-                    .collect()
-            }
-        }
-    }
-
-    /// Start the runtime of `lang` at `at` and describe `names` in it.
-    async fn describe_running(
-        &self,
-        lang: Lang,
-        at: &Path,
-        names: &[String],
-        places: &Places,
-    ) -> Result<Vec<Result<RowSchema, String>>, String> {
-        let modules = || names.iter().map(PathBuf::from).collect::<Vec<_>>();
-        let (runtime, entries): (rutis_bridge::runtime::LocalRuntime, Vec<PathBuf>) = match lang {
-            Lang::Node => {
-                let anchor = at.join("package.json");
-                let package =
-                    crate::languages::node::runtime_package(None, at).ok_or_else(|| {
-                        format!("the Node runtime is not installed in {}", at.display())
-                    })?;
-                let entries = names
-                    .iter()
-                    .map(|name| {
-                        rutis_loader::internal::resolve_entry(&anchor, name)
-                            .ok_or_else(|| format!("{name} is not installed in {}", at.display()))
-                    })
-                    .collect::<Result<_, _>>()?;
-                (
-                    rutis_bridge::runtime::LocalRuntime::node(package, anchor),
-                    entries,
-                )
-            }
-            Lang::Bun => (
-                rutis_bridge::runtime::LocalRuntime::bun(
-                    at.join("node_modules/@arcships/rutis-bun"),
-                    at,
-                ),
-                modules(),
-            ),
-            Lang::Python => {
-                let mut python = rutis_bridge::runtime::LocalRuntime::python(
-                    places.base.clone().unwrap_or_else(|| PathBuf::from(".")),
-                )
-                .interpreter(at);
-                if let Some(source) = std::env::var_os("RUTIS_PYTHON_PATH") {
-                    python = python.python_path(source);
-                }
-                (python, modules())
-            }
-            Lang::Go | Lang::Swift => unreachable!("binaries are described by their manifests"),
-        };
-        describe_in(runtime, entries).await
+        Ok(Package { plugins, uninstall })
     }
 
     // ── Upgrade and remove ──────────────────────────────────────
@@ -843,38 +742,34 @@ impl Core {
     /// The version of the package `plugin` is in, as installed now.
     fn version_of(&self, lang: Lang, plugin: &Installed) -> Option<String> {
         match lang {
-            Lang::Node => js_version(self.places.node.as_deref()?, &plugin.name),
-            Lang::Bun => js_version(self.places.bun.as_deref()?, &plugin.name),
+            Lang::Node => js_version(&self.places.node, &plugin.name),
+            Lang::Bun => js_version(&self.places.bun, &plugin.name),
             Lang::Python => {
-                let python = self.python_at(self.places.python.as_deref()?);
+                let python = self.python_at(&self.places.python);
                 self.python_query(&python, "plugin", &plugin.name)
                     .ok()??
                     .version
             }
-            Lang::Go | Lang::Swift => {
-                let dir = match lang {
-                    Lang::Go => self.places.go.as_deref()?,
-                    _ => self.places.swift.as_deref()?,
-                };
-                binaries_serving(lang, dir, &plugin.name)
-                    .into_iter()
-                    .find_map(|(_, schema)| schema.version)
-            }
+            Lang::Go | Lang::Swift => binaries_serving(
+                lang,
+                &self.binary_dir(lang).ok()?,
+                std::slice::from_ref(&plugin.name),
+            )
+            .into_iter()
+            .find_map(|(_, schema)| schema.version),
         }
     }
 
-    fn remove(&self, lang: Lang, plugin: &Installed) -> Result<Option<String>, Error> {
-        let place = |place: &Option<PathBuf>| {
-            place
-                .clone()
-                .ok_or_else(|| Error::NoPlace(lang.key().to_owned()))
-        };
+    fn remove(&self, lang: Lang, plugins: &[Installed]) -> Result<Option<String>, Error> {
+        // One package: Node and Bun's one plugin is it, and Python finds it
+        // by any of its entry points.
+        let plugin = &plugins[0];
         match lang {
             Lang::Node | Lang::Bun => {
-                let project = place(match lang {
+                let project = match lang {
                     Lang::Node => &self.places.node,
                     _ => &self.places.bun,
-                })?;
+                };
                 if !project.join("node_modules").join(&plugin.name).exists() {
                     return Ok(None);
                 }
@@ -882,11 +777,11 @@ impl Core {
                     Lang::Node => Run::new("npm").args(["uninstall", plugin.name.as_str()]),
                     _ => Run::new("bun").args(["remove", plugin.name.as_str()]),
                 };
-                self.tools.run(&run.cwd(&project))?;
+                self.tools.run(&run.cwd(project))?;
                 Ok(Some(plugin.name.clone()))
             }
             Lang::Python => {
-                let python = self.python_at(&place(&self.places.python)?);
+                let python = self.python_at(&self.places.python);
                 let Some(found) = self.python_query(&python, "plugin", &plugin.name)? else {
                     return Ok(None);
                 };
@@ -894,14 +789,12 @@ impl Core {
                 Ok(Some(found.name))
             }
             Lang::Go | Lang::Swift => {
-                let dir = place(match lang {
-                    Lang::Go => &self.places.go,
-                    _ => &self.places.swift,
-                })?;
-                let binaries: Vec<PathBuf> = binaries_serving(lang, &dir, &plugin.name)
-                    .into_iter()
-                    .map(|(path, _)| path)
-                    .collect();
+                let names: Vec<String> = plugins.iter().map(|plugin| plugin.name.clone()).collect();
+                let binaries: Vec<PathBuf> =
+                    binaries_serving(lang, &self.binary_dir(lang)?, &names)
+                        .into_iter()
+                        .map(|(path, _)| path)
+                        .collect();
                 if binaries.is_empty() {
                     return Ok(None);
                 }
@@ -1094,13 +987,10 @@ fn npm_spec(package: &str, version: Option<&str>) -> String {
     }
 }
 
-/// Bun when the package depends on `@arcships/rutis-bun` (its dependencies
-/// or devDependencies: the template's plugin has it there), else Node.
+/// Bun when the package depends on `@arcships/rutis-bun`, as a project
+/// that runs in Bun does; else Node.
 fn js_lang(manifest: &serde_json::Value) -> Lang {
-    let bun = ["dependencies", "devDependencies"]
-        .iter()
-        .any(|field| !manifest[field]["@arcships/rutis-bun"].is_null());
-    match bun {
+    match crate::languages::bun::depends_on_runtime(manifest) {
         true => Lang::Bun,
         false => Lang::Node,
     }
@@ -1174,11 +1064,12 @@ type Plugins = std::collections::BTreeMap<String, RowSchema>;
 /// them (`BinaryResolver::binaries`): each with its plugins, or why it has
 /// none.
 fn binaries_in(lang: Lang, dir: &Path) -> Vec<(PathBuf, Result<Plugins, String>)> {
-    use rutis_loader::runtime::binary::Binaries;
+    use rutis_loader::runtime::binary::{Binaries, BinaryResolver};
+    use rutis_loader::runtime::{go::Go, swift::Swift};
     let binaries = Binaries::new().dir(dir);
     let found = match lang {
-        Lang::Go => rutis_loader::runtime::go::GoResolver::new(binaries).binaries(),
-        Lang::Swift => rutis_loader::runtime::swift::SwiftResolver::new(binaries).binaries(),
+        Lang::Go => BinaryResolver::<Go>::new(binaries).binaries(),
+        Lang::Swift => BinaryResolver::<Swift>::new(binaries).binaries(),
         _ => Vec::new(),
     };
     found
@@ -1208,46 +1099,17 @@ fn manifest_of(
     }
 }
 
-/// The binaries in `dir` serving the plugin `name`, with its schema.
-fn binaries_serving(lang: Lang, dir: &Path, name: &str) -> Vec<(PathBuf, RowSchema)> {
+/// The binaries in `dir` serving any of the plugins `names`, each with
+/// the schema of the first it serves.
+fn binaries_serving(lang: Lang, dir: &Path, names: &[String]) -> Vec<(PathBuf, RowSchema)> {
     binaries_in(lang, dir)
         .into_iter()
-        .filter_map(|(path, plugins)| Some((path, plugins.ok()?.get(name)?.clone())))
+        .filter_map(|(path, plugins)| {
+            let plugins = plugins.ok()?;
+            let schema = names.iter().find_map(|name| plugins.get(name))?.clone();
+            Some((path, schema))
+        })
         .collect()
-}
-
-/// Start `runtime`, describe each of `entries` in it, and stop it.
-async fn describe_in(
-    runtime: rutis_bridge::runtime::LocalRuntime,
-    entries: Vec<PathBuf>,
-) -> Result<Vec<Result<RowSchema, String>>, String> {
-    use rutis::host::CtxHost;
-    let root = rutis::Ctx::root().map_err(|error| error.to_string())?;
-    let handle = runtime.handle();
-    let started = root.plugin(runtime).await;
-    let result = match handle.ready().await {
-        Some(process) => {
-            let mut described = Vec::new();
-            for entry in &entries {
-                described.push(
-                    process
-                        .describe_row(entry)
-                        .await
-                        .map_err(|error| error.to_string()),
-                );
-            }
-            Ok(described)
-        }
-        None => Err(match (handle.state(), started) {
-            (rutis_bridge::runtime::RuntimeState::Down(why), _) => {
-                format!("the {} runtime did not start: {why}", handle.name())
-            }
-            (_, Err(error)) => format!("the {} runtime did not start: {error}", handle.name()),
-            _ => format!("the {} runtime did not start", handle.name()),
-        }),
-    };
-    let _ = root.shutdown().await;
-    result
 }
 
 #[cfg(test)]

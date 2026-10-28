@@ -22,12 +22,14 @@ installed @your-name/weather 1.2.0 (node) into /home/me/app
 weather (@your-name/weather): cannot run: nothing provides llm
   version: "1.2.0"
   inject: ["llm"]
-  provides: none declared (it may provide more once it runs)
+  provides: {}
   config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
+  llm: add a row that provides it, or import it from a peer (import: ["llm"])
 rutis.json: added row weather, runtimes.node
 installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
 llm (py:llm): ok
   version: "0.3.0"
+  inject: []
   provides: {"llm":{"complete":"async"}}
 rutis.json: added row llm, runtimes.py
 ```
@@ -148,7 +150,7 @@ a running host keeps the old versions until it restarts
 
 失败时包管理器已经装上的包留在原处，和直接运行 npm、uv 一样；出错文字写明卸掉它的命令。
 
-**只装信任的插件。** `add`、`upgrade` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
+**只装信任的插件。** `add`、`upgrade` 运行包管理器，可能执行包里的安装脚本；`add` 还导入插件代码来检查它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
 
 ### 不用 add 时
 
@@ -175,12 +177,13 @@ a running host keeps the old versions until it restarts
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
+| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`run` 和 `dev` 都接受（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
-| `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
+| `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
 ## run 打印什么
 
@@ -240,6 +243,15 @@ rutis-host: listening on <监听器名> <地址:端口>
 - 输出里不会出现 token 或其他凭据。
 - 等待时间整秒写成 `30s`，否则保留一位小数。
 - 状态每 200 毫秒检查一次，只打印变化：和上一行一样的不再打印（例如每 30 秒一次的同一个拒绝只打印一次）；持续不到 200 毫秒的状态可能不打印。拨号方还没有结果（正在连接）、监听方还没有对端连进来时不打印。
+
+`runtimes.remote` 自己连接的远程运行时（`dial`、`listen`、`listen` + `instances`）的连接以 `runtime <名字>` 开头打印：
+
+| 输出 | 含义 |
+| --- | --- |
+| `runtime <名字>: link connected` 等 | 一台（`dial`、`listen`）：它的 link 的状态，各行与上表节点行的相同，只是前缀是 `runtime <名字>`（旧写法的节点行仍用行 id） |
+| `runtime <名字>: connected <id>` | 多台：一条连接接入，成为一个实例 |
+| `runtime <名字>: disconnected <id> (<原因>)` | 多台：这条连接断开（或被同一 id 的新连接接管），它的实例关闭 |
+| `runtime <名字>: refused (<原因>)` | 多台：一条连接在成为实例前被拒绝，例如运行时不支持行的约定（`lacks rows.v2 and hosts`）；token 不对的连接在握手时就被拒绝，不打印 |
 
 在 `emit` 里失败的监听器（发出方不等待，所以没有别人知道）在它运行的地方往 stderr 打一行：宿主自己的是 `rutis: listener of <name> in row <row> failed: <ErrorName>: <message>`，运行时的由运行时打同样的一行；宿主没能送达的调用写明去了哪里（`in runtime <name>`、`in node <peer>`）。`emit` 的过滤函数失败打 `rutis: filter of <name> from row <row> failed: …`（挂载方式加载的插件写作 `from the mount`）。
 
@@ -312,9 +324,8 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 
 - Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
 - Schema 要运行时才知道的行（没连上的远端运行时、对端不在的 `peer:` 行）写 `config not checked: its schema is known only when it runs`，这不是警告。
-- 0.18 以前的 SDK 构建的 Go 二进制，清单里把没有 `omitempty` 的字段都列为 `required`；`check` 忽略它们的 `required`（其余照常检查）。
 
-`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。0.18 以前的 SDK 构建的运行时加载行时不检查配置；`check` 照样检查它们。
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。
 
 ## 停止与退出码
 
@@ -395,6 +406,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 | `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）、`<Go 或 Swift 运行时> restarted`，或者 `<行> restarted`：它用到的、随这次变化重启的行（`llm` 重新加载、`greeter` 用到 `llm` 时，打印 `caller: restarted (greeter restarted)`）。写出的原因一定是这一行用到的行；不知道它用到哪些行时（依赖在运行时内部，Cordis 行之间），不写原因：`<行 id>: restarted`。这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
 | `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
+| `rutis-host dev: services: forecast (weather), llm (llm)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`；没有服务时写 `rutis-host dev: services: none`。每次都打印，不和上次比较；此外服务有变化（例如运行时在行启动之后才提供服务）时也照实再打印一次。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
 
 ## 运行时结束时
@@ -439,17 +451,56 @@ runtimes:
   py: running (pid 4243)
 calls:
   caller → slow.wait  42s
+connections:
+  gpu: link connected
+  worker: worker-1, worker-2
 ```
 
 - `rows`：每一行（实例里的行每个实例一份，写 `<行> in <分组> #<编号>`）的状态：`running`、`starting`、`stopped`、`disabled`，说不出在等什么的等待行写 `waiting`；等待的行写在等什么（和 `run` 的等待行同样的话）；失败的行写失败的第一行。运行时退出时，它的行马上显示为在等这个运行时。
 - `services`：每个服务的名字和提供它的行；宿主（Rust）提供的写 `host`。
 - `runtimes`：每个运行时的状态（`running`、`starting`、`down`、`stopped`），退出的写怎样退出，本机运行时写进程号。
 - `calls`：调用了一个行的服务、还没返回的调用：谁调用（不在行里发起的写 `host`）、哪个服务的哪个方法、已经多久；被调用的行名和服务名不同时写 `(row <行>)`。看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」，没有方法名）；进程内的 Rust 插件发起的调用记为 `host`。
+- `connections`：`runtimes.remote` 自己连接的远程运行时（没有时不出现这一节）。一台写它的 link 的状态（同 `run` 的 link 行；还没连上时写 `connecting` 或 `waiting for it to connect`），多台写现在连着的 id（没有时写 `none connected`）。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
-`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），只回答 `status` 这一个请求，什么都不改。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
 
 停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
+
+## 调用一个服务
+
+`run` 或 `dev` 运行时，另开一个终端，用 `rutis-host call` 调一个服务的方法，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call forecast.today '"Oslo"'
+"sunny in Oslo"
+$ rutis-host call forecast.week '{"days": 3}'
+{
+  "days": 3,
+  ...
+}
+```
+
+- `<服务>.<方法>` 在最后一个 `.` 处拆开（服务名可以带点）。每个参数是一个 JSON 值：`3`、`true`、`null`、`'"Oslo"'`、`'{"days": 3}'`、`'[1, 2]'`；字符串要带引号，不是 JSON 的参数报错，不猜成字符串。日期、二进制、Map 这类 JSON 写不出的值不能从命令行传：要试这样的方法，在测试里调用。
+- 找宿主与 `rutis-host status` 相同：当前目录的 `rutis.json`（插件项目里是 `dev` 运行的那个项目），或者 `--config <rutis.json | 目录>` 指定的。它只连正在运行的宿主，不启动新的。
+- 调用的是根作用域按名字看到的那个服务，哪种语言、哪个运行时或节点提供的都可以，与 [在 Rust 里按名字调用服务](rust-host.md#在-rust-里按名字调用服务) 相同。调用不来自任何行：`rutis-host status` 里记为 `host → forecast.today (row weather)  3s`。
+- 结果打印成两格缩进的 JSON，没有结果是 `null`。JSON 没有的值用它的文字：时间点、日期、大整数、Decimal、UUID 写成字符串（如 `"2026-10-27"`），二进制、Map、Set、引用写它是什么（如 `"<a map>"`）；只给人看，不保证能原样再传回去。
+- 不设时限，一直等到结果；Ctrl-C 结束 `call`（退出码 130），宿主丢弃这次调用。
+- 出错时把错误写到标准错误并以 1 退出：
+
+| 情况 | 输出 |
+| --- | --- |
+| 参数不是 JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
+| 没写方法 | `rutis-host: name a method, as forecast.<method>` |
+| 没有这个服务 | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| 提供它的行没在运行 | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
+| 没有这个方法 | `rutis-host: forecast has no method tomorow (methods: today, week)` |
+| 参数类型不对 | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
+| 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
+| 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
+| 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
+
+`run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
 
 ## 输出
 
@@ -541,7 +592,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
-| `remote` | `name`、`language`、`listen`、`instances` | 别的机器上的运行时：经 `rows` 里 `"runtime": "<name>"` 的节点行连接，见 [连接节点](nodes.md)；或写 `listen` 与 `instances`，由运行时连进来，见下 |
+| `remote` | `name`、`language`、`dial`、`listen`、`instances` | 别的机器上的运行时，一条写全：`dial` 由 rutis 去连，`listen` 等它连进来，`listen` + `instances` 每条连接一个实例，见下面的[远程运行时](#远程运行时)；都不写时经 `rows` 里 `"runtime": "<name>"` 的节点行连接（0.19 之前的写法），见 [连接节点](nodes.md) |
 
 缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
 
@@ -556,6 +607,42 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 这样启用的运行时按默认设置起不来时（例如没有 `package.json`、没装 `@arcships/rutis-runtime`，或 Python 环境里没有 `rutis`），宿主不退出：stderr 写一条告警，说明原因和该怎么做（`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`），它的行和以前一样失败（`unresolved: no plugin named …`），其他行照常运行。在 `runtimes` 里写明的运行时起不来时，仍然启动失败。
 
 `node`、`py`、`bun`、`go`、`swift` 的 `restart`（`"no"` 默认、`"on-failure"`、`"exit"`）决定运行时进程自己结束时怎么办（`go`、`swift` 是其每个运行时各自的），见 [运行时结束时](#运行时结束时)。
+
+#### 远程运行时
+
+`remote` 的一条写全一个远程运行时，不用另写节点行：
+
+| `dial` | `listen` | `instances` | 含义 |
+| --- | --- | --- | --- |
+| 地址 | — | — | 一台，rutis 去连；运行时的 `--id` 是 `name` |
+| — | 监听器 | — | 一台，等它连进来；运行时的 `--id` 是 `name` |
+| — | 监听器 | 分组 | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
+| — | — | — | 不起连接：由带 `"runtime": "<name>"` 的节点行或嵌入的程序提供会话 |
+
+```json
+{
+  "id": "main",
+  "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
+  "runtimes": { "remote": [
+    { "name": "gpu",    "language": "python", "dial": "wss://gpu.example.com:7443/rutis" },
+    { "name": "mac",    "language": "swift",  "listen": "public" },
+    { "name": "worker", "language": "python", "listen": "public", "instances": "worker" }
+  ] },
+  "rows": [
+    { "id": "embedder", "name": "gpu:embedder" },
+    { "id": "calendar", "name": "mac:calendar" },
+    { "id": "worker", "group": true, "instanced": true, "config": [
+      { "id": "chunker", "name": "worker:chunker" }
+    ] }
+  ]
+}
+```
+
+- token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`）。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
+- 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
+- 一台的 `listen` 与监听的节点行一样，参与同一 token 的检查（#702、#726）：两个条目会接受同一个 token 时启动报错。
+- 远端不含某一行的插件时，只有这一行失败（`runtime <name>: this connection does not contain plugin <插件>`），其他行不受影响，新增这样的行也不会被拒绝。
+- 连接的变化见 [run 打印什么](#run-打印什么)，当前状态见 [查看当前状态](#查看当前状态) 的 `connections`。
 
 #### 连进来的运行时
 
@@ -577,11 +664,11 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 }
 ```
 
-- 运行时连接时出示 token `RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`；没有时用 `RUTIS_TOKEN`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
+- 运行时连接时出示 token（与 rutis 一侧的 `RUTIS_TOKEN_<NAME>` 相同，运行时名大写，`-` 写作 `_`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
 - 每条连接是分组的一个实例：连进来时创建，断开时关闭。同一个 id 的新连接接管旧连接：旧实例关闭后再创建新实例。
 - 分组里的 `<name>:<插件>` 行在每个实例里运行在该实例的连接上。连接里没有这个插件时，这一行只在这个实例里失败（`runtime <name>: this connection does not contain plugin <插件>`），不影响其他实例；新增这样的行也不会因此被拒绝。
 - 连接上的插件提供的服务是它所在实例自己的：多条连接带同名插件互不冲突，同一实例里的行（任何语言）按名字用到的是本连接的服务。实例外的行用不到它们，需要时把使用者放进这个分组。
-- 不需要另写节点行。`listen` 与 `instances` 要同时写；监听器、分组不存在，分组不是 `instanced`，或者没有 token，启动时报错。
+- 不需要另写节点行。`instances` 要和 `listen` 一起写（只写 `listen` 是一台）；监听器、分组不存在，分组不是 `instanced`，或者没有 token，启动时报错。
 - `<name>:` 行只能放在这个分组里；放在别处时这一行失败。
 
 Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主的 id> <项目>` 连进来，Go 插件二进制用 `<二进制> dial:wss://… --id <id> --peer <本宿主的 id> <项目>`，Node、Bun 运行时同样以 `dial:` 连进来；命令见 [连接节点](nodes.md#连进来的运行时)。
@@ -627,15 +714,14 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `RUTIS_TOKEN` | 连接其他节点时出示的、以及接受其他节点连入时核对的 token |
-| `RUTIS_TOKEN_<节点>` | 只对某个节点（大写，`-` 写作 `_`），优先于 `RUTIS_TOKEN`；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token |
+| `RUTIS_TOKEN_<节点>` | 连接这个节点时出示的、以及它连入时核对的 token（节点名大写，`-` 写作 `_`）；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token。宿主一侧只读按名字的变量，不读单独的 `RUTIS_TOKEN` |
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（两个 `RUTIS_TOKEN_<名字>` 设成了同一个值），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、哪两个变量要换一个值：
 
 ```
-rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。

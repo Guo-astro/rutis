@@ -5,15 +5,15 @@ import Foundation
 // Everything else crosses as a native type: Date (instant), Data (bytes),
 // Dictionary (map), Set (set), Decimal (decimal), UUID (uuid).
 //
-//	| tag      | Swift                  | text on the wire                     |
-//	| instant  | Date                   | 2026-10-15T03:22:15.123456Z          |
-//	| datetime | Rutis.DateTime         | 2026-10-15T14:30:05.25, no time zone |
-//	| date     | Rutis.CalendarDate     | 2026-10-15                           |
-//	| time     | Rutis.TimeOfDay        | 14:30:05.25, 24-hour, no time zone   |
-//	| bytes    | Data                   | base64 (RFC 4648 §4, padded)         |
-//	| bigint   | Rutis.BigInt           | decimal integer, at most 4300 digits |
-//	| decimal  | Decimal                | decimal, no exponent, zeros kept     |
-//	| uuid     | UUID                   | lowercase 8-4-4-4-12 hex             |
+//	| tag      | Swift                       | text on the wire                     |
+//	| instant  | Date                        | 2026-10-15T03:22:15.123456Z          |
+//	| datetime | Rutis.Advanced.DateTime     | 2026-10-15T14:30:05.25, no time zone |
+//	| date     | Rutis.Advanced.CalendarDate | 2026-10-15                           |
+//	| time     | Rutis.Advanced.TimeOfDay    | 14:30:05.25, 24-hour, no time zone   |
+//	| bytes    | Data                        | base64 (RFC 4648 §4, padded)         |
+//	| bigint   | Rutis.Advanced.BigInt       | decimal integer, at most 4300 digits |
+//	| decimal  | Decimal                     | decimal, no exponent, zeros kept     |
+//	| uuid     | UUID                        | lowercase 8-4-4-4-12 hex             |
 
 /// The most digits a bigint or decimal may have: Python's default limit on
 /// integer text.
@@ -102,22 +102,22 @@ struct TextCursor {
 
     var end: Bool { at == bytes.count }
 
-    mutating func date() -> Rutis.CalendarDate? {
+    mutating func date() -> Rutis.Advanced.CalendarDate? {
         guard let year = digits(4), byte("-"), let month = digits(2), byte("-"), let day = digits(2) else { return nil }
-        let date = Rutis.CalendarDate(year: year, month: month, day: day)
+        let date = Rutis.Advanced.CalendarDate(year: year, month: month, day: day)
         return date.isValid ? date : nil
     }
 
-    mutating func time() -> Rutis.TimeOfDay? {
+    mutating func time() -> Rutis.Advanced.TimeOfDay? {
         guard let hour = digits(2), byte(":"), let minute = digits(2), byte(":"), let second = digits(2),
               let nanosecond = fraction() else { return nil }
-        let time = Rutis.TimeOfDay(hour: hour, minute: minute, second: second, nanosecond: nanosecond)
+        let time = Rutis.Advanced.TimeOfDay(hour: hour, minute: minute, second: second, nanosecond: nanosecond)
         return time.isValid ? time : nil
     }
 
-    mutating func dateTime() -> Rutis.DateTime? {
+    mutating func dateTime() -> Rutis.Advanced.DateTime? {
         guard let date = date(), byte("T"), let time = time() else { return nil }
-        return Rutis.DateTime(date: date, time: time)
+        return Rutis.Advanced.DateTime(date: date, time: time)
     }
 }
 
@@ -135,7 +135,7 @@ private func pad(_ value: Int, _ width: Int) -> String {
     return text.count >= width ? text : String(repeating: "0", count: width - text.count) + text
 }
 
-extension Rutis {
+extension Rutis.Advanced {
     /// A calendar date without a time zone (tag `date`), years 0001–9999.
     /// Swift has no such type; it converts to and from DateComponents.
     public struct CalendarDate: Hashable, Comparable, Sendable, Codable, CustomStringConvertible, LosslessStringConvertible {
@@ -491,8 +491,8 @@ package struct Instant: Hashable, Sendable, CustomStringConvertible {
             rest += 86400
         }
         let (y, m, d) = civilFromDays(days)
-        let time = Rutis.TimeOfDay(hour: Int(rest / 3600), minute: Int(rest % 3600 / 60), second: Int(rest % 60), nanosecond: nanoseconds)
-        return "\(Rutis.CalendarDate(year: y, month: m, day: d))T\(time)Z"
+        let time = Rutis.Advanced.TimeOfDay(hour: Int(rest / 3600), minute: Int(rest % 3600 / 60), second: Int(rest % 60), nanosecond: nanoseconds)
+        return "\(Rutis.Advanced.CalendarDate(year: y, month: m, day: d))T\(time)Z"
     }
 
     /// Reads RFC 3339 in UTC, with an optional fraction of 1–9 digits.

@@ -45,9 +45,9 @@ let weather = Rutis.define(Plugin(
 Rutis.serve(weather)
 ```
 
-- `swift build` 生成二进制；`<二进制> --rutis-manifest` 打印它提供的插件。`rutis-host` 按 `runtimes.swift` 运行它（行名 `swift:<插件>`），Rust 宿主用 rutis-loader 的 `SwiftResolver` / `SwiftRuntimes`。
+- `swift build` 生成二进制；`<二进制> --rutis-manifest` 打印它提供的插件。`rutis-host` 按 `runtimes.swift` 运行它（行名 `swift:<插件>`），Rust 宿主用 rutis-loader 的 `BinaryResolver<Swift>` / `BinaryRuntimes<Swift>`。
 - 插件代码不传任何上下文参数：调用链随 Task 传递。每个进来的调用一个 Task；同步调用挂起 Task，不占线程。
-- 值：SDK 自己的编码器与解码器，由 `Codable` 驱动（不用 `JSONEncoder`）。`Date`、`Data`、`Decimal`、`UUID`、`Set` 和键不是 `String` 的字典按 rutis 的带标记的值跨进程；`Rutis.DateTime`、`Rutis.CalendarDate`、`Rutis.TimeOfDay`、`Rutis.BigInt` 是 Swift 没有的类型。`@RutisService` 类型的实例与闭包按引用。
+- 值：SDK 自己的编码器与解码器，由 `Codable` 驱动（不用 `JSONEncoder`）。`Date`、`Data`、`Decimal`、`UUID`、`Set` 和键不是 `String` 的字典按 rutis 的带标记的值跨进程；`Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`、`Rutis.Advanced.BigInt` 是 Swift 没有的类型。`@RutisService` 类型的实例与闭包按引用。
 - 错误带着名字（类型名）、信息、`code` 与 `data`（同名存储属性）跨进程；收到的错误是 `RutisError`，按 `name` 匹配。
 - 事件：`ctx.on`、`emit`、`parallel`、`serial`、`waterfall`、`bail`、`filter`（见[插件 API](../docs/guide/plugin-api.md#事件)）。
 - 测试：`RutisTest`（产品 `RutisTest`）让插件经真实的内存会话运行，测试一方是它的宿主：

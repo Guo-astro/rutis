@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use rutis::host::{BoxFuture, FiberView};
 use rutis::Ctx;
+use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
-use rutis_bridge::transport::local::Processes;
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Resolver, ServiceCatalog};
 use serde_json::Value;
@@ -27,7 +27,7 @@ use crate::config::{HostConfig, Restart, Runtimes};
 use crate::host::Error;
 
 mod binary;
-mod bun;
+pub(crate) mod bun;
 mod go;
 pub(crate) mod node;
 pub(crate) mod python;

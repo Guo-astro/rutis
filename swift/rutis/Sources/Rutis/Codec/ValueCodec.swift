@@ -134,7 +134,7 @@ package enum ValueCodec {
         default:
             // A class instance is passed by reference once marked, copied once
             // Codable (#687 §八).
-            if value is Rutis.Client {
+            if value is Rutis.Advanced.Client {
                 throw ValueError("a client of a service used by name cannot be passed on: pass the object it came from, or a function")
             }
             if type(of: value) is AnyClass {
@@ -153,7 +153,7 @@ package enum ValueCodec {
         switch value {
         case let value as Value: return value
         case is Void: return .undefined
-        case let encoded as Rutis.Encoded: return encoded.value
+        case let encoded as Rutis._Generated.Encoded: return encoded.value
         case let bool as Bool: return .data(.bool(bool))
         case let string as String: return .data(.string(string))
         case let int as Int: return integer(int)
@@ -173,13 +173,13 @@ package enum ValueCodec {
         case let uuid as UUID: return .uuid(uuid.uuidString.lowercased())
         case let decimal as Decimal: return .decimal(try TagText.decimal(decimal))
         case let url as URL: return .data(.string(url.absoluteString))
-        case let value as Rutis.DateTime: return .dateTime(value)
-        case let value as Rutis.CalendarDate: return .date(value)
-        case let value as Rutis.TimeOfDay: return .time(value)
-        case let value as Rutis.BigInt: return .bigint(value)
-        case let function as Rutis.RemoteFunction: return function.value
+        case let value as Rutis.Advanced.DateTime: return .dateTime(value)
+        case let value as Rutis.Advanced.CalendarDate: return .date(value)
+        case let value as Rutis.Advanced.TimeOfDay: return .time(value)
+        case let value as Rutis.Advanced.BigInt: return .bigint(value)
+        case let function as Rutis.Advanced.RemoteFunction: return function.value
         // An object of another process, handed on: that object again (#687).
-        case let client as Rutis.Client where client.object != nil: return .remoteObject(client.object!)
+        case let client as Rutis.Advanced.Client where client.object != nil: return .remoteObject(client.object!)
         case let proxy as any RutisProxy where proxy.rutisClient.object != nil: return .remoteObject(proxy.rutisClient.object!)
         // A plugin definition crosses as one (a `plugin` reference), to be
         // mounted by what receives it (plugin values, R1).
@@ -200,7 +200,7 @@ package enum ValueCodec {
     static func integer(_ value: some BinaryInteger) -> Value {
         if value <= 9_007_199_254_740_991, value >= -9_007_199_254_740_991 { return .data(.int(value)) }
         // Beyond ±(2^53−1): a bigint, by itself (design V6).
-        return .bigint(Rutis.BigInt(value))
+        return .bigint(Rutis.Advanced.BigInt(value))
     }
 
     static func number(_ value: Double) throws -> Value {
@@ -238,8 +238,8 @@ package enum ValueCodec {
     /// Whether `decodeAny` takes `type`: Any, Decodable types, Optionals of
     /// them, and the session's own.
     static func decodes(_ type: Any.Type) -> Bool {
-        if type == Any.self || type == Value.self || type == Rutis.RemoteFunction.self || type == Rutis.Definition.self
-            || type == Rutis.Client.self || type is Decodable.Type { return true }
+        if type == Any.self || type == Value.self || type == Rutis.Advanced.RemoteFunction.self || type == Rutis.Definition.self
+            || type == Rutis.Advanced.Client.self || type is Decodable.Type { return true }
         if let optional = type as? OptionalProtocol.Type { return decodes(optional.wrappedType) }
         return false
     }
@@ -258,10 +258,10 @@ package enum ValueCodec {
         if let decodable = type as? Decodable.Type {
             return try ValueDecoderImpl(value, codingPath: codingPath).decodeExistential(decodable)
         }
-        if type == Rutis.Client.self, case let .remoteObject(far) = value { return Rutis.Client.of(far) }
-        if type == Rutis.RemoteFunction.self {
-            if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
-            if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
+        if type == Rutis.Advanced.Client.self, case let .remoteObject(far) = value { return Rutis.Advanced.Client.of(far) }
+        if type == Rutis.Advanced.RemoteFunction.self {
+            if case let .remoteFunction(far) = value { return Rutis.Advanced.RemoteFunction(far) }
+            if case let .function(function) = value { return Rutis.Advanced.RemoteFunction(local: function) }
         }
         if type == Rutis.Definition.self {
             switch value {
@@ -278,7 +278,7 @@ package enum ValueCodec {
     /// A received value as Swift's own: numbers as Int or Double, objects as
     /// [String: Any?], lists as [Any?], maps as [AnyHashable: Any?], sets as
     /// Set<AnyHashable>, the tagged values as their types, functions as
-    /// Rutis.RemoteFunction; nil for null and undefined.
+    /// Rutis.Advanced.RemoteFunction; nil for null and undefined.
     package static func native(_ value: Value) -> Any? {
         switch value {
         case .undefined: return nil
@@ -311,10 +311,10 @@ package enum ValueCodec {
                 if let e = native(element) as? AnyHashable { out.insert(e) }
             }
             return out
-        case let .remoteFunction(far): return Rutis.RemoteFunction(far)
-        case let .remoteObject(far): return Rutis.Client.of(far)
+        case let .remoteFunction(far): return Rutis.Advanced.RemoteFunction(far)
+        case let .remoteObject(far): return Rutis.Advanced.Client.of(far)
         case .remoteFuture: return nil
-        case let .function(function): return Rutis.RemoteFunction(local: function)
+        case let .function(function): return Rutis.Advanced.RemoteFunction(local: function)
         case let .object(object): return (object as? ServiceObject)?.service ?? object
         case let .plugin(definition): return definition
         case let .remotePlugin(far): return far.local
@@ -339,7 +339,7 @@ package enum ValueCodec {
     }
 }
 
-extension Rutis {
+extension Rutis._Generated {
     /// A value encoded for the session: what generated code passes as an
     /// argument or returns as a result.
     public struct Encoded: @unchecked Sendable {
@@ -352,7 +352,9 @@ extension Rutis {
     public static func encode<T>(_ value: T) throws -> Encoded {
         Encoded(try ValueCodec.encode(value))
     }
+}
 
+extension Rutis.Advanced {
     /// A function of another process, received where a value of type `Any`
     /// was expected.
     public final class RemoteFunction: @unchecked Sendable {

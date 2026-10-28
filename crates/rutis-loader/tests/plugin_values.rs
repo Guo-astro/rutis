@@ -44,7 +44,9 @@ use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
 #[cfg(feature = "go")]
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+#[cfg(feature = "go")]
+use rutis_loader::runtime::go::Go;
 #[cfg(any(
     feature = "node",
     feature = "bun",
@@ -446,9 +448,9 @@ async fn fixture(lang: Lang) -> Fixture {
         #[cfg(feature = "go")]
         Lang::Go => {
             let go = Arc::new(
-                GoResolver::new(GoBinaries::new().file(go_binary())).with_catalog(&catalog),
+                BinaryResolver::<Go>::new(Binaries::new().file(go_binary())).with_catalog(&catalog),
             );
-            let runtimes = GoRuntimes::new(go.clone(), dir.path()).idle(None);
+            let runtimes = BinaryRuntimes::<Go>::new(go.clone(), dir.path()).idle(None);
             let start: Start = Box::new(move |root: &Ctx| {
                 root.plugin(runtimes);
             });
@@ -456,7 +458,8 @@ async fn fixture(lang: Lang) -> Fixture {
         }
         #[cfg(all(feature = "swift", target_os = "macos"))]
         Lang::Swift => {
-            use rutis_loader::runtime::swift::{SwiftBinaries, SwiftResolver, SwiftRuntimes};
+            use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+            use rutis_loader::runtime::swift::Swift;
             let plugins = dir.path().join("plugins");
             std::fs::create_dir_all(&plugins).unwrap();
             std::fs::copy(
@@ -465,9 +468,9 @@ async fn fixture(lang: Lang) -> Fixture {
             )
             .unwrap();
             let swift = Arc::new(
-                SwiftResolver::new(SwiftBinaries::new().dir(&plugins)).with_catalog(&catalog),
+                BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins)).with_catalog(&catalog),
             );
-            let runtimes = SwiftRuntimes::new(swift.clone(), dir.path()).eager();
+            let runtimes = BinaryRuntimes::<Swift>::new(swift.clone(), dir.path()).eager();
             let start: Start = Box::new(move |root: &Ctx| {
                 root.plugin(runtimes);
             });
@@ -776,6 +779,58 @@ mod node {
         fixture.root.shutdown().await.unwrap();
     }
 
+    /// Hands over a definition whose config `n` is an integer.
+    const STRICT: &str = r#"
+import { definePlugin } from 'PLUGIN'
+export default definePlugin({
+  inject: ['parts', 'probe'],
+  async apply(ctx) {
+    const probe = ctx.use('probe')
+    await ctx.use('parts').register('strict', definePlugin({
+      config: { type: 'object', properties: { n: { type: 'integer' } } },
+      apply(ctx, config) { probe.record(`strict ${JSON.stringify(config)}`) },
+    }))
+  },
+})
+"#;
+
+    /// guarantee: sdk/config-schema (plugin values)
+    ///
+    /// A copy of a plugin definition whose config does not match the
+    /// schema it declares is refused by the bridge, before anything is
+    /// sent to the runtime: `def.at` itself fails with the config error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_config_of_a_plugin_value_is_refused_by_the_bridge() {
+        let fixture = fixture(Lang::Node).await;
+        let sdk = repo()
+            .join("node/rutis/src/index.mjs")
+            .canonicalize()
+            .unwrap();
+        let sdk = url::Url::from_file_path(&sdk).unwrap();
+        fixture
+            .add("strict", &STRICT.replace("PLUGIN", sdk.as_str()))
+            .await;
+        let definition = COLD
+            .eventually(|| fixture.parts.of("strict").pop(), "the strict definition")
+            .await;
+        let refused = match definition.at(&fixture.root, json!({ "n": "A" })) {
+            Ok(_) => panic!("a config that does not match its schema was accepted"),
+            Err(error) => error,
+        };
+        let refused = refused.into_kind();
+        let config = rutis::ConfigError::of(&refused).expect("a config error");
+        assert_eq!(
+            config.lines(),
+            ["config: n should be an integer, got \"A\""]
+        );
+        assert!(!fixture
+            .probe
+            .lines()
+            .iter()
+            .any(|line| line.starts_with("strict")));
+        fixture.root.shutdown().await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dead_process_ends_its_copies() {
         super::a_dead_process_ends_its_copies(Lang::Node).await
@@ -976,8 +1031,11 @@ mod kotlin {
 mod dialed_in {
     use super::*;
     use common::runtimes::id;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
-    use rutis_bridge::{AccessPointConfig, AccessPointPlugin, AdmissionPlugin, SharedToken};
+    use rutis_bridge::websocket::{Limits, ListenerConfig};
+    use rutis_bridge::{
+        Accepting, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Registrations,
+        SharedToken,
+    };
     use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
     use rutis_test_support::{scaled, HANG_GUARD};
     use tokio::io::AsyncBufReadExt;
@@ -1070,20 +1128,14 @@ mod dialed_in {
         root.provide(Parts::default()).unwrap();
         let parts = root.get::<Parts>().unwrap();
 
-        let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-            "public",
-            ([127, 0, 0, 1], 0).into(),
-            id("main"),
-        )))
+        let registrations = Registrations::new();
+        let listener = rutis_bridge::websocket::listen(
+            &ListenerConfig::new("public", ([127, 0, 0, 1], 0).into()),
+            &Limits::default(),
+            rutis_bridge::websocket::admit_registered(registrations.clone(), "public"),
+        )
         .unwrap();
-        let transport = websocket.clone();
-        (&root.plugin(websocket)).await.unwrap();
-        let port = transport
-            .transport()
-            .unwrap()
-            .local_addr("public")
-            .unwrap()
-            .port();
+        let port = listener.local_addr().port();
         (&root.plugin(AdmissionPlugin::new(
             "phone",
             SharedToken::new(id("main"), "shared"),
@@ -1127,9 +1179,17 @@ mod dialed_in {
         let report = loader.reconcile(rows(&[]), None).await.unwrap();
         assert!(report.failures.is_empty(), "{report:?}");
         let access = AccessPointPlugin::new(
-            AccessPointConfig::new(id("phone"), "websocket", "phone", "public")
-                .require("runtime")
-                .handshake(scaled(HANG_GUARD)),
+            AccessPointConfig::new(
+                id("phone"),
+                "phone",
+                Accepting {
+                    registrations,
+                    listener: "public".into(),
+                    local: id("main"),
+                },
+            )
+            .require("runtime")
+            .handshake(scaled(HANG_GUARD)),
         )
         .accept(instances.accept(loader.clone(), root.clone()));
         (&root.plugin(access)).await.unwrap();

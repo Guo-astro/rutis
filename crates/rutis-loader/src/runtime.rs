@@ -21,14 +21,18 @@
 //!   to Cordis, which commits it in place and emits `loader/volatile-update`
 //!   to the plugin, as dsh's loader does.
 //! - **Python** (feature `python`, [`RuntimeResolver::modules`]): a row named
-//!   `py:<module>` loads that module as a leaf plugin.
-//! - **Go** (feature `go`, [`GoResolver`](go::GoResolver), [`GoRuntimes`](go::GoRuntimes)): a row named
+//!   `py:<module>` loads that module as a leaf plugin. A Node runtime named
+//!   otherwise takes rows `<runtime name>:<npm name or file>` the same way,
+//!   for a process per plugin.
+//! - **Go** (feature `go`, [`BinaryResolver`](binary::BinaryResolver)`<`[`Go`](go::Go)`>`,
+//!   [`BinaryRuntimes`](binary::BinaryRuntimes)`<Go>`): a row named
 //!   `go:<plugin>` runs the plugin in the Go binary that has it, one runtime
 //!   per binary, started when a row uses it. What compiled languages share
 //!   (feature `binary`, which theirs enable) is [`BinaryResolver`](binary::BinaryResolver) and
 //!   [`BinaryRuntimes`](binary::BinaryRuntimes); a language names itself with a
 //!   [`BinaryLanguage`](binary::BinaryLanguage).
-//! - **Swift** (feature `swift`, [`SwiftResolver`](swift::SwiftResolver), [`SwiftRuntimes`](swift::SwiftRuntimes)): a
+//! - **Swift** (feature `swift`, `BinaryResolver<`[`Swift`](swift::Swift)`>`,
+//!   `BinaryRuntimes<Swift>`): a
 //!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
 //!   it, as Go does.
 
@@ -43,9 +47,7 @@
 //!   it into its runtime while it runs, in a scope of the row's own, so the
 //!   service sees which row calls it (`rutis_bridge::session::caller_row`).
 //!   In a leaf runtime (Python) every injected name does; in Cordis the
-//!   names the catalog shares, which are all of them unless it shares only
-//!   those registered as shared ([`ServiceCatalog::share_registered_only`]),
-//!   the others then left to Cordis;
+//!   names the catalog shares, which are all of them;
 //! - the services the plugin declares it provides are published from the
 //!   row's own fiber, so Rust plugins and other runtimes' rows can inject
 //!   them. So are the ones it provides without declaring them, which a
@@ -219,9 +221,18 @@ impl RuntimeResolver {
         }
     }
 
-    /// Rows of a runtime that loads plugins by module name, such as a
-    /// Python runtime (`rutis_bridge::runtime::LocalRuntime::python`): a row named
-    /// `<runtime name>:<module>` (`py:weather.plugin`) loads `<module>`.
+    /// Rows named after their runtime: a row `<runtime name>:<plugin>`
+    /// loads `<plugin>` into that runtime. For a Python runtime
+    /// (`rutis_bridge::runtime::LocalRuntime::python`) the plugin is a
+    /// module (`py:weather.plugin`); for a Node runtime, an npm name or a
+    /// file, as [`RuntimeResolver::node`] takes them (`wordcount:wordcount-plugin`).
+    ///
+    /// One process per plugin (or per group of plugins): a
+    /// `LocalRuntime` of its own for each, named
+    /// (`LocalRuntime::named`), each with a resolver of this kind; rows
+    /// with the same prefix share that runtime's process. It asks the
+    /// runtime at every resolution, as for Python, rather than caching by
+    /// the package's `version`.
     pub fn modules(runtime: RuntimeHandle) -> Self {
         let prefix = format!("{}:", runtime.name());
         Self::with_naming(runtime, Naming::Modules { prefix })

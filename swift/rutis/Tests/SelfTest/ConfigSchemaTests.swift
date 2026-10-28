@@ -11,8 +11,8 @@ struct SchemaWeather: Decodable, RutisConfigurable {
     var city: String
     var units: String
 
-    static var rutisSchema: Rutis.Schema {
-        Rutis.Schema(json: #"{"type":"object","required":["city"],"properties":{"city":{"type":"string"},"units":{"enum":["metric","imperial"],"default":"metric"}}}"#)
+    static var rutisSchema: Rutis._Generated.Schema {
+        Rutis._Generated.Schema(json: #"{"type":"object","required":["city"],"properties":{"city":{"type":"string"},"units":{"enum":["metric","imperial"],"default":"metric"}}}"#)
     }
 }
 
@@ -32,8 +32,8 @@ struct LiteralWeather: Decodable {
 struct LooseDays: Decodable, RutisConfigurable {
     var days: Int
 
-    static var rutisSchema: Rutis.Schema {
-        Rutis.Schema(json: #"{"type":"object","properties":{"days":{}}}"#)
+    static var rutisSchema: Rutis._Generated.Schema {
+        Rutis._Generated.Schema(json: #"{"type":"object","properties":{"days":{}}}"#)
     }
 }
 

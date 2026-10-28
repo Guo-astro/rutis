@@ -71,11 +71,11 @@ env:
   # a test that starts nothing and opens nothing belongs in PURE_TESTS_*. A
   # name here without its file fails the `lint` job.
   PURE_TESTS_BRIDGE: >-
-    link memory_mux memory_plugin memory_session multihop node
+    link memory_mux memory_session multihop node
     node_conformance
   PURE_TESTS_LOADER: >-
     check instance_peers instance_services instances lifecycle loader
-    migration_example overlay patch_parity peer_rows regressions scope
+    migration_example patch_parity peer_rows regressions reload scope
   # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
   # tests of runtime and event behavior that is the same on Linux, where the
   # `rust` job runs them with every runtime's features. What is platform
@@ -172,7 +172,6 @@ jobs:
               - crates/rutis-dylib-meta/**
               - crates/rutis-dylib-launcher/**
               - crates/rutis-sdk/**
-              - crates/rutis-dev/**
               - crates/rutis-xtask/**
               - tools/*dylib*
               - tools/build-dylib-bundle.sh
@@ -223,6 +222,8 @@ jobs:
             swift:
               - Package.swift
               - swift/**
+              - tools/public-api-swift.sh
+              - tools/public-api-check.sh
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
               - crates/rutis-loader/src/runtime/swift.rs
@@ -488,9 +489,6 @@ jobs:
           # The Go debugging test fails instead of skipping without dlv.
           RUTIS_TEST_DELVE: required
         run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
-      # The `anyhow` feature's conversions (the error table of #617).
-      - name: cargo test (rutis, anyhow feature)
-        run: cargo test -p rutis --features anyhow --test author_api
 
       # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
       # #179), 1000 iterations of each scheduler (well under a second); the
@@ -1104,6 +1102,10 @@ jobs:
         run: |
           swift build
           swift run RutisSelfTest
+      # The public API of Rutis and RutisTest against
+      # swift/rutis/public-api.txt (SDK entry design §6, #692).
+      - name: public API of the Swift SDK
+        run: tools/public-api-swift.sh
       # The library for iOS (design §13: its core is iOS too), when this
       # toolchain has the iOS SDK (Xcode).
       - name: iOS build of the library

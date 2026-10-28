@@ -1,6 +1,5 @@
 //! Links inside instances: each instance's link exports and imports that
-//! instance's services. Two applications in one process, over the memory
-//! transport.
+//! instance's services. Two applications in one process, linked in memory.
 #![cfg(feature = "peer")]
 
 mod common;
@@ -11,9 +10,8 @@ use common::runtimes::{id, NoConfig, Title};
 use rutis::host::{CtxHost, Key};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, host_key_in, HostDispatch, Reply, Value as RpcValue};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
-use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
-use rutis_loader::peer::{register_peer_node, PeerResolver};
+use rutis_bridge::{Accepting, Connect, Credential, IdentityPlugin, Registrations, StaticIdentity};
+use rutis_loader::peer::{register_peer_node, Address, PeerResolver, Reach};
 use rutis_loader::report::EntryStatus;
 use rutis_loader::resolve::Build;
 use rutis_loader::{
@@ -75,11 +73,27 @@ struct Nodes {
     mac: Ctx,
 }
 
-async fn main_node(transport: &Arc<MemoryTransport>, rows: Value) -> (Ctx, Loader) {
+/// How a node's `rutis-bridge/peer` rows reach their peers in this
+/// process: listening on `registrations` as `local`, or dialing them.
+fn reach(registrations: &Registrations, local: &str) -> Reach {
+    let (registrations, local) = (registrations.clone(), id(local));
+    Arc::new(move |_, address| {
+        Ok(match address {
+            Address::Listen(listener) => Connect::Listen(Accepting {
+                registrations: registrations.clone(),
+                listener: listener.into(),
+                local: local.clone(),
+            }),
+            Address::Dial(listener) => Connect::Dial(rutis_bridge::memory::dialer(
+                registrations.clone(),
+                listener,
+            )),
+        })
+    })
+}
+
+async fn main_node(transport: &Registrations, rows: Value) -> (Ctx, Loader) {
     let main = Ctx::root().unwrap();
-    (&main.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
@@ -94,7 +108,7 @@ async fn main_node(transport: &Arc<MemoryTransport>, rows: Value) -> (Ctx, Loade
                 .unwrap_or_default(),
         })
     });
-    let peers = Arc::new(PeerResolver::new());
+    let peers = Arc::new(PeerResolver::new(reach(transport, "main")));
     register_peer_node(&mut builtins, peers.clone());
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared_instance("tools", "session");
@@ -113,15 +127,14 @@ async fn main_node(transport: &Arc<MemoryTransport>, rows: Value) -> (Ctx, Loade
 }
 
 async fn nodes() -> Nodes {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let (main, loader) = main_node(
         &transport,
         json!([
             { "id": "session", "group": true, "instanced": true, "config": [
                 { "id": "tools", "name": "tools" },
                 { "id": "link", "name": "rutis-bridge/peer", "config": {
-                    "peer": "mac", "transport": "memory", "identity": "main",
+                    "peer": "mac", "identity": "main",
                     "listen": "main-in", "export": ["tools"], "import": ["clock"]
                 } }
             ] }
@@ -132,15 +145,15 @@ async fn nodes() -> Nodes {
     let mac = Ctx::root().unwrap();
     mac.provide_at(host_key("clock"), Arc::new(Fixed(json!(7))))
         .unwrap();
-    (&mac.plugin(MemoryPlugin::with_transport(transport)))
-        .await
-        .unwrap();
     mac.plugin(IdentityPlugin::new(
         "mac",
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
     ));
     let mut builtins = Builtins::new();
-    register_peer_node(&mut builtins, Arc::new(PeerResolver::new()));
+    register_peer_node(
+        &mut builtins,
+        Arc::new(PeerResolver::new(reach(&transport, "mac"))),
+    );
     let plugin = LoaderPlugin::new(Chain::new().with(builtins), LoaderOptions::default());
     let mac_loader = plugin.handle();
     (&mac.plugin(plugin)).await.unwrap();
@@ -148,7 +161,7 @@ async fn nodes() -> Nodes {
         .reconcile(
             layer(json!([
                 { "id": "link", "name": "rutis-bridge/peer", "config": {
-                    "peer": "main", "transport": "memory", "identity": "mac",
+                    "peer": "main", "identity": "mac",
                     "dial": "main-in", "import": ["tools"], "export": ["clock"]
                 } }
             ])),
@@ -222,18 +235,18 @@ fn failure(loader: &Loader, id: &str) -> String {
 /// guarantee: loader/instance-links
 #[tokio::test(flavor = "multi_thread")]
 async fn links_refuse_what_their_place_cannot_do() {
-    let transport = Arc::new(MemoryTransport::default());
+    let transport = Registrations::new();
     let (main, loader) = main_node(
         &transport,
         json!([
             { "id": "session", "group": true, "instanced": true, "config": [
                 { "id": "rows-link", "name": "rutis-bridge/peer", "config": {
-                    "peer": "mac", "transport": "memory", "identity": "main",
+                    "peer": "mac", "identity": "main",
                     "listen": "main-in", "rows": true
                 } }
             ] },
             { "id": "global-link", "name": "rutis-bridge/peer", "config": {
-                "peer": "mac", "transport": "memory", "identity": "main",
+                "peer": "mac", "identity": "main",
                 "listen": "main-in", "export": ["tools"]
             } }
         ]),

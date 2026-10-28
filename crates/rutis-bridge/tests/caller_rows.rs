@@ -183,7 +183,7 @@ async fn a_runtime_without_scopes_shares_the_lease_and_names_no_row() {
         }
     }
 
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
     let runtime = Arc::new(OldRuntime::default());
     let old = Connection::open_with(b, runtime.clone(), endpoint("old")).unwrap();

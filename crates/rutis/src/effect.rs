@@ -21,59 +21,17 @@ pub enum Effect {
     Many(Vec<Effect>),
 }
 
-/// Whether an owned cleanup record is waiting or currently being drained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EffectPhase {
-    Live,
-    Draining,
-}
-
-/// Read-only cleanup ownership tree. Child phases follow their owning record;
-/// the tree does not track which individual leaf is currently executing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct EffectMeta {
-    pub label: String,
-    pub phase: EffectPhase,
-    pub children: Vec<EffectMeta>,
-}
-
-impl EffectMeta {
-    fn set_phase(&mut self, phase: EffectPhase) {
-        self.phase = phase;
-        for child in &mut self.children {
-            child.set_phase(phase);
-        }
-    }
-}
-
 impl Effect {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Done => "done",
-            Self::Disposer(_) => "disposer",
-            Self::AsyncDisposer(_) => "async disposer",
-            Self::Many(_) => "many",
-        }
-    }
-
-    fn into_cleanups(self, label: String, out: &mut Vec<Cleanup>) -> EffectMeta {
-        let mut children = Vec::new();
+    fn into_cleanups(self, out: &mut Vec<Cleanup>) {
         match self {
             Effect::Done => {}
             Effect::Disposer(f) => out.push(Cleanup::Sync(f)),
             Effect::AsyncDisposer(f) => out.push(Cleanup::Async(f)),
             Effect::Many(v) => {
-                for (index, effect) in v.into_iter().enumerate() {
-                    let child_label = format!("{index}: {}", effect.kind());
-                    children.push(effect.into_cleanups(child_label, out));
+                for effect in v {
+                    effect.into_cleanups(out);
                 }
             }
-        }
-        EffectMeta {
-            label,
-            phase: EffectPhase::Live,
-            children,
         }
     }
 }
@@ -108,7 +66,8 @@ pub(crate) enum Origin {
 pub(crate) struct EffectRecord {
     /// `crate::sync`: a shuttle mutex in the shuttle models (#179).
     st: crate::sync::Mutex<EffectState>,
-    metadata: EffectMeta,
+    /// What the Stuck hint calls it ([`Origin::Other`]).
+    label: String,
     origin: Origin,
     notify: Notify,
     owner: Option<Weak<FiberInner>>,
@@ -128,10 +87,10 @@ impl EffectRecord {
         owner: Weak<FiberInner>,
     ) -> Arc<Self> {
         let mut cleanups = Vec::new();
-        let metadata = effect.into_cleanups(label, &mut cleanups);
+        effect.into_cleanups(&mut cleanups);
         Arc::new(Self {
             st: crate::sync::Mutex::new(EffectState::Live(cleanups)),
-            metadata,
+            label,
             origin,
             notify: Notify::new(),
             owner: Some(owner),
@@ -141,18 +100,7 @@ impl EffectRecord {
     /// Where it came from and its label, while its cleanups run.
     pub(crate) fn draining(&self) -> Option<(&Origin, &str)> {
         matches!(&*self.st.lock().unwrap(), EffectState::Draining)
-            .then_some((&self.origin, self.metadata.label.as_str()))
-    }
-
-    pub(crate) fn snapshot(&self) -> Option<EffectMeta> {
-        let phase = match &*self.st.lock().unwrap() {
-            EffectState::Live(_) => EffectPhase::Live,
-            EffectState::Draining => EffectPhase::Draining,
-            EffectState::Done(_) => return None,
-        };
-        let mut metadata = self.metadata.clone();
-        metadata.set_phase(phase);
-        Some(metadata)
+            .then_some((&self.origin, self.label.as_str()))
     }
 
     /// Runs the cleanups. The first caller moves them into a separate task;

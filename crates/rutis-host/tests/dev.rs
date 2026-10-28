@@ -288,13 +288,20 @@ fn the_dev_loop(lang: &Lang) {
     let own = dir.path().join(lang.own);
     let runtime = lang.runtime;
     let mut host = Host::start(&["dev", "."], dir.path());
+    // Once running, the services and their rows (#670).
+    let services = "rutis-host dev: services: llm (llm), weather (weather)";
     expect(
         &mut host,
-        &["weather: running", "llm: running", "caller: running"],
+        &[
+            "weather: running",
+            "llm: running",
+            "caller: running",
+            services,
+        ],
     );
 
     // 1. The own plugin's file: it reloads, its user restarts, llm (which
-    // it uses) does not.
+    // it uses) does not; then the services again.
     edit(&own, &(lang.source)("weather", "v2"));
     let reloaded = format!("weather: reloaded ({} changed)", lang.own);
     expect(
@@ -303,6 +310,7 @@ fn the_dev_loop(lang: &Lang) {
             "plugin weather v2 applied city=Oslo in *",
             &reloaded,
             "caller: restarted (weather reloaded)",
+            services,
         ],
     );
 
@@ -317,6 +325,7 @@ fn the_dev_loop(lang: &Lang) {
             "rutis-host: reloaded rutis.dev.json (1 row changed)",
             "weather: updated (its row in rutis.dev.json changed)",
             "caller: restarted (weather updated)",
+            services,
         ],
     );
     signal(&host, libc::SIGUSR1, false);
@@ -575,4 +584,51 @@ fn dev_follows_a_bun_project() {
 #[test]
 fn dev_follows_a_python_project() {
     the_dev_loop(&PYTHON);
+}
+
+/// A project whose rows provide nothing: its services line says `none`
+/// (#670).
+#[test]
+fn dev_says_when_no_service_is_provided() {
+    let dir = tempfile::tempdir().unwrap();
+    common::process::dev_project(dir.path());
+    let mut host = Host::start(&["dev", "."], dir.path());
+    host.wait_line(|line| (line == "rutis-host dev: services: none").then_some(()));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+/// A service provided after its row settled, as one a runtime registers
+/// late: the services line is printed again once it is there (#771 X2).
+#[test]
+fn dev_says_the_services_again_when_they_change() {
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path(), &NODE);
+    // The project's own plugin, whose service comes a while after its
+    // apply returned.
+    edit(
+        &dir.path().join(NODE.own),
+        &format!(
+            "import {{ definePlugin }} from '{}'\n\
+             export default definePlugin({{\n\
+               apply(ctx) {{\n\
+                 setTimeout(() => ctx.provide('late', {{ now: async () => 'ok' }}), 1500)\n\
+               }},\n\
+             }})\n",
+            sdk()
+        ),
+    );
+    let dev = json!({ "rows": [{ "id": "weather" }] });
+    std::fs::write(dir.path().join("rutis.dev.json"), dev.to_string()).unwrap();
+    let mut host = Host::start(&["dev", "."], dir.path());
+    fn services(line: &str) -> Option<&str> {
+        line.strip_prefix("rutis-host dev: services: ")
+    }
+    let first = host.wait_line(|line| services(line).map(str::to_owned));
+    assert!(!first.contains("late"), "{first}");
+    host.wait_line(|line| services(line)?.contains("late (weather)").then_some(()));
+    signal(&host, libc::SIGINT, true);
+    let (status, stderr, _) = host.exit();
+    assert_eq!(status.code(), Some(0), "{stderr}");
 }

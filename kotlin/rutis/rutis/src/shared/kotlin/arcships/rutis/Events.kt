@@ -1,31 +1,8 @@
 package arcships.rutis
 
 import arcships.rutis.internal.Native
-
-/**
- * One loader instance (a group copy, such as a tenant or a session) of a
- * scope chain, outermost first.
- */
-data class Scope(val id: String, val group: String)
-
-/**
- * What the bus says of a listener, as a filter predicate sees it; null for
- * absent values: [row] for a listener of no row, [runtime] for one of the
- * host, [node] for one of this node.
- */
-data class Listener(
-    val name: String,
-    val prefix: Boolean = false,
-    val plugin: String,
-    val row: String? = null,
-    val runtime: String? = null,
-    val node: String? = null,
-    val scope: List<Scope> = emptyList(),
-    val global: Boolean = false,
-)
-
-/** The rest of a waterfall: a waterfall listener gets it last, and calls it at most once. */
-typealias Next = suspend () -> Any?
+import arcships.rutis.advanced.Next
+import arcships.rutis.advanced.RutisFormat
 
 /**
  * A listener's arguments: the event's arguments as native values (`Any?`
@@ -56,29 +33,4 @@ class EventArgs internal constructor(
             return EventArgs(values, raw, next)
         }
     }
-}
-
-/**
- * Emits events, filtered: [Ctx.filter] makes one. Its five methods are those
- * of [Ctx].
- */
-interface Emitter {
-    /** Starts every listener of `name` and returns at once; a listener's failure is reported where it is. */
-    fun emit(name: String, vararg args: Any?)
-
-    /** Starts every listener of `name` and waits for all; failures are an `AggregateError` in registration order. */
-    suspend fun parallel(name: String, vararg args: Any?)
-
-    /** Runs the listeners of `name` one at a time and returns the first result (anything but null and false). */
-    suspend fun serial(name: String, vararg args: Any?): Any?
-
-    /**
-     * Calls the outermost listener of `name`, which gets `next` last: `next`
-     * runs the rest, the innermost [terminal] (called with the arguments;
-     * none: no result). Returns the outermost listener's value as it is.
-     */
-    suspend fun waterfall(name: String, vararg args: Any?, terminal: (suspend (EventArgs) -> Any?)? = null): Any?
-
-    /** [serial] as a synchronous call, blocking this thread (a wait cycle fails with `SyncWaitCycle`). */
-    fun bail(name: String, vararg args: Any?): Any?
 }

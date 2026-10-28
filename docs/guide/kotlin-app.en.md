@@ -93,7 +93,7 @@ class Warmer {
 ```
 
 - A parameter typed with a `@RutisClient` interface gets the KSP-generated proxy, the same kind as `ctx.use<Cache>("cache")`: `suspend` methods suspend, plain methods block (and cannot be called on the main thread). So does the result of a `@RutisClient` method.
-- A parameter typed `Any?` gets an `arcships.rutis.RemoteObject`: `suspend fun call(method, vararg args)` suspends, `fun callBlocking(method, vararg args)` blocks, and arguments and results are ordinary Kotlin values; `release()` gives the reference back now instead of when it is collected. Objects inside lists and maps, and in event arguments, arrive through `Any?` as `RemoteObject`; interface types inside collections, such as `List<Cache>`, are not supported.
+- A parameter typed `Any?` gets an `arcships.rutis.advanced.RemoteObject`: `suspend fun call(method, vararg args)` suspends, `fun callBlocking(method, vararg args)` blocks, and arguments and results are ordinary Kotlin values; `release()` gives the reference back now instead of when it is collected. Objects inside lists and maps, and in event arguments, arrive through `Any?` as `RemoteObject`; interface types inside collections, such as `List<Cache>`, are not supported.
 - A parameter of a data type (a `@Serializable` class, `String` and so on) fails the call with `bad-argument`: `argument 1 should be a Point, got an object (an object is received only as a @RutisClient interface or Any?)`.
 - A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
 - One object passed several times is one proxy here; a received proxy or `RemoteObject` passed on sends the original object, and passed back to its process it is the original there.
@@ -206,7 +206,7 @@ Battery optimization:
 
 ## 7. Testing
 
-- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device.
+- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device. On what it loads, `loaded.on(name) { args -> ... }` listens as the host does, at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
 - The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each an instance; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
 
 ## 8. Acceptance on real devices

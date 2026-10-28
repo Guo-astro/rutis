@@ -15,7 +15,8 @@ use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
@@ -116,7 +117,7 @@ struct Fixture {
     root: Ctx,
     loader: Loader,
     probe: Probe,
-    go: rutis_loader::runtime::go::GoRuntimesHandle,
+    go: rutis_loader::runtime::binary::BinaryRuntimesHandle<rutis_loader::runtime::go::Go>,
     js: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -162,7 +163,7 @@ async fn fixture() -> Fixture {
     let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
     let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
     let go = Arc::new(
-        GoResolver::new(GoBinaries::new().file(go_binary()))
+        BinaryResolver::<Go>::new(Binaries::new().file(go_binary()))
             .with_catalog(&catalog)
             .reserve(["node", "py"]),
     );
@@ -182,7 +183,7 @@ async fn fixture() -> Fixture {
     root.plugin(plugin).await.unwrap();
     rows_stage(&root, node_rows).await;
     rows_stage(&root, python_rows).await;
-    let runtimes = GoRuntimes::new(go, dir.path()).idle(None);
+    let runtimes = BinaryRuntimes::<Go>::new(go, dir.path()).idle(None);
     let go = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     Fixture {

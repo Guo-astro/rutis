@@ -269,8 +269,7 @@ impl Inner {
                     continue;
                 }
             };
-            // The filled copy for the rows the loader fills; other
-            // runtimes' SDKs fill their own.
+            // The filled copy, for the rows of every runtime.
             let purpose = match warnings.as_deref_mut() {
                 Some(warnings) => super::config_step::Purpose::Check { warnings },
                 None => super::config_step::Purpose::Run {
@@ -309,19 +308,12 @@ impl Inner {
     /// Apply one edit in memory: rewrite the editable layer, dry-run,
     /// reconcile, and roll back if rows newly fail. Nothing is persisted.
     pub(super) async fn commit(self: &Arc<Self>, edit: &Edit) -> Result<(), LoaderError> {
-        let (layers, overlays, editable, before) = {
+        let (layers, editable, before) = {
             let state = self.state.lock().unwrap();
             let editable = state.editable.ok_or(LoaderError::NoEditableLayer)?;
-            (
-                state.layers.clone(),
-                state.overlays.clone(),
-                editable,
-                Self::failures(&state),
-            )
+            (state.layers.clone(), editable, Self::failures(&state))
         };
-        // Overlays sit above the editable layer: their rows are not owned.
-        let composed: Vec<Layer> = layers.iter().chain(&overlays).cloned().collect();
-        let patches = apply_edit(&composed, editable, edit)?;
+        let patches = apply_edit(&layers, editable, edit)?;
         let mut next = layers.clone();
         next[editable].patches = patches;
         if !matches!(
@@ -329,8 +321,7 @@ impl Inner {
             Edit::Remove { .. } | Edit::SetDisabled { disabled: true, .. }
         ) {
             if let Some(id) = edit.id() {
-                let next_composed: Vec<Layer> = next.iter().chain(&overlays).cloned().collect();
-                self.dry_run(&next_composed, id, None).await?;
+                self.dry_run(&next, id, None).await?;
             }
         }
         {

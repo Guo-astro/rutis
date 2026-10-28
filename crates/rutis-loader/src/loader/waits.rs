@@ -436,9 +436,9 @@ fn unexported(root: &rutis::Ctx, name: &str) -> Option<String> {
 
 /// The name of `known` closest to `name` (the rule shared with config
 /// keys, config schema design §6.1).
-pub(crate) use rutis::internal::config::closest;
+pub(crate) use rutis::config::closest;
 #[cfg(test)]
-use rutis::internal::config::distance;
+use rutis::config::distance;
 
 #[cfg(test)]
 mod tests {

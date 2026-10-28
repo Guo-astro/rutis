@@ -48,7 +48,7 @@ enum Via {
     /// A socket path the runtime dials. Not on Windows: no Unix sockets.
     DialBack,
     /// A loopback address the runtime dials, presenting a token
-    /// (`Handover::Loopback` of the local transport, as `LocalRuntime`
+    /// (`Handover::Loopback` of `pipe::spawn`, as `LocalRuntime`
     /// starts runtimes): the only handover on Windows.
     Loopback,
     WebSocket,
@@ -161,37 +161,27 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
     (process, entry)
 }
 
-/// Start the runtime with `Handover::Loopback` through the local transport,
-/// on every platform, and attach.
+/// Start the runtime with `Handover::Loopback` through `pipe::spawn`, on
+/// every platform, and attach.
 async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
-    use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
-    use rutis_bridge::{Dial, Transport};
+    use rutis_bridge::pipe::{self, Handover, Processes, Spawn};
 
-    let mut spawn = Spawn::new(launcher.program, PeerId::new("runtime").unwrap());
+    let mut spawn = Spawn::new(launcher.program);
     spawn.args = launcher.args;
     spawn.env = launcher.env;
     spawn.cwd = launcher.cwd;
     spawn.handover = Handover::Loopback;
     spawn.trailing = vec![anchor.into()];
-    let transport = LocalTransport::default();
-    transport.spawner("runtime", spawn);
-    let channel = transport
-        .dial(&Dial::address("spawn:runtime"))
-        .await
-        .unwrap();
-    assert_eq!(channel.info.transport, "tcp", "a loopback channel");
+    let channel = pipe::spawn(&spawn, &Processes::default()).await.unwrap();
     let format = rutis_bridge::session::Format::Compat;
-    let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
-    // The transport ends its processes when dropped: keep it for the test.
-    std::mem::forget(transport);
-    process
+    Process::attach(channel, on_bus(ctx), format).await.unwrap()
 }
 
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
 async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
     use rutis_bridge::channel::PeerId;
-    use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
+    use rutis_bridge::websocket::{Limits, Trust};
+    use rutis_bridge::Credential;
     use tokio::io::AsyncBufReadExt;
 
     let mut command = tokio::process::Command::new(&launcher.program);
@@ -224,30 +214,15 @@ async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process>
         while let Ok(Some(_)) = lines.next_line().await {}
         let _ = child.wait().await;
     });
-    let transport = rutis_bridge::transport::websocket::WebSocketTransport::start(
-        rutis_bridge::transport::websocket::Config::new(),
+    let channel = rutis_bridge::websocket::dial(
+        &address,
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&Credential::Bearer("controller-token".into())),
+        &Trust::default(),
+        &Limits::default(),
     )
+    .await
     .unwrap();
-    let runtime = PeerId::new("runtime").unwrap();
-    let identity: Arc<dyn Identity> =
-        Arc::new(StaticIdentity::new(PeerId::new("main").unwrap()).present(
-            runtime.clone(),
-            Credential::Bearer("controller-token".into()),
-        ));
-    let channel = transport
-        .dial(
-            &Dial::address(address)
-                .peer(runtime)
-                .identity(identity)
-                .protocol(format!(
-                    "rutis.{}",
-                    rutis_bridge::session::ENDPOINT_PROTOCOL
-                )),
-        )
-        .await
-        .unwrap();
-    // The transport's threads must outlive the channel: leak it for the test.
-    std::mem::forget(transport);
     let format = rutis_bridge::session::Format::Endpoint(
         rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
             .expect(PeerId::new("runtime").unwrap()),

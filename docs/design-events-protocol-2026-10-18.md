@@ -151,7 +151,7 @@
 
 `mode` 是 `emit`、`parallel`、`serial`、`waterfall`、`bail` 之一。`args` 是值的 `list`（第十节）。`filter`（第六节）与 `terminal`（仅 `waterfall`）是可选的函数引用。`rutis/*` 在发送之前就被拒绝（第十一节）。回复按方式而定（§5.4）。
 
-**`events.call`**（宿主 → 运行时，或经连接节点 → 节点），`target` 为空的 `invoke`；`bail` 与 `waterfall-sync` 为同步调用（按 `sync-wait` 规则带 `sync: true`）：
+**`events.call`**（宿主 → 运行时，或经连接节点 → 节点），`target` 为空的 `invoke`；`bail` 为同步调用（按 `sync-wait` 规则带 `sync: true`）：
 
 ```json
 [{ "listener": "7", "dispatch": "d1042", "own": false, "name": "session/created", "mode": "waterfall", "args": [ … ], "next": <函数引用>, "signal": {"type":"signal"} }]
@@ -162,11 +162,11 @@
 | `listener` | 接收方的条目 id（它自己 `events.on` 的 id；经连接时为它通告的 id） |
 | `dispatch` | 宿主选定的 id，在宿主内唯一；同一次分发的每个调用相同 |
 | `own` | 这次分发来自同一会话的 `events.dispatch` 时为 `true` |
-| `mode` | `emit`、`parallel`、`serial`、`waterfall`、`bail`、`waterfall-sync`（只有 Rust 发出 `waterfall-sync`） |
-| `next` | 仅 `waterfall` / `waterfall-sync`：不带参数的函数引用，返回链上其余部分的结果 |
+| `mode` | `emit`、`parallel`、`serial`、`waterfall`、`bail`（0.19 删除了 `waterfall-sync`） |
+| `next` | 仅 `waterfall`：不带参数的函数引用，返回链上其余部分的结果 |
 | `signal` | 现有的 `signal` 值：宿主取消这次调用时它被中止（§5.7） |
 
-接收方的运行时以事件参数调用监听器，`waterfall` / `waterfall-sync` 时把 `next` 追加为最后一个参数。它原样回复监听器的返回值（"有没有结果"由分发方判断），或以 `throw` 回复监听器的错误。`emit` 方式下，监听器结束后无论如何都回复 `undefined`；失败在它这一侧报告（§5.6）。
+接收方的运行时以事件参数调用监听器，`waterfall` 时把 `next` 追加为最后一个参数。它原样回复监听器的返回值（"有没有结果"由分发方判断），或以 `throw` 回复监听器的错误。`emit` 方式下，监听器结束后无论如何都回复 `undefined`；失败在它这一侧报告（§5.6）。
 
 对未知或已撤下的 id 的 `events.call`，以 `throw` `BindingError` 回复，信息为 `listener <id> of <name> is withdrawn`。
 
@@ -185,11 +185,10 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 | `serial` | 一次开始一个，逐个等待 | 第一个有结果的返回值；监听器的错误原样抛出并停止其余；都没有结果时 `undefined` |
 | `waterfall` | 带 `next` 调用第一个条目；条目 *i* 的 `next` 调用条目 *i+1*（跳过已撤下的）；最后一个的 `next` 以事件参数调用 `terminal`，没有终态时得到 `undefined` | 最外层监听器的返回值，**原样**（不做"有没有结果"的归一，`false` 仍是 `false`）。没有条目时：终态的值，或 `undefined`。不调 `next` 的监听器否决其余 |
 | `bail` | 同 `serial`，每个调用都是同步的（`sync: true`） | 同 `serial`，同步 |
-| `waterfall-sync` | 同 `waterfall`，同步，`next` 同步调用 | 同 `waterfall`，同步（只有 Rust 发出方） |
 
-`next` 的规则：不带参数；第二次调用、在它的分发结束或被取消之后调用，这次调用以 `WaterfallNext` 失败（第十一节）。`waterfall` 中，接收方的运行时给监听器的 `next` 返回 Promise / 可等待对象 / Go 的阻塞调用；`waterfall-sync` 中同步调用这个引用。
+`next` 的规则：不带参数；第二次调用、在它的分发结束或被取消之后调用，这次调用以 `WaterfallNext` 失败（第十一节）。`waterfall` 中，接收方的运行时给监听器的 `next` 返回 Promise / 可等待对象 / Go 的阻塞调用。
 
-同步方式与监听器种类：`bail` / `waterfall-sync` 中，`async` 种类的条目不被调用，这次分发以 `AsyncListener` 失败。`any` 种类的条目被调用；如果它返回 Promise / thenable / 可等待对象，监听器所在的运行时丢弃它（Python 协程被关闭；Promise 的拒绝被捕获并忽略），这次调用以 `AsyncListener` 失败。Go 的监听器是 `sync`。Rust：`on` 的条目是 `async`，`on_sync` 的是 `sync`。每个同步调用都像同步服务调用一样参加等待环检测（`SyncWaitCycle`）。
+同步方式与监听器种类：`bail` 中，`async` 种类的条目不被调用，这次分发以 `AsyncListener` 失败。`any` 种类的条目被调用；如果它返回 Promise / thenable / 可等待对象，监听器所在的运行时丢弃它（Python 协程被关闭；Promise 的拒绝被捕获并忽略），这次调用以 `AsyncListener` 失败。Go 的监听器是 `sync`。Rust：`on` 的条目是 `async`，`on_sync` 的是 `sync`。每个同步调用都像同步服务调用一样参加等待环检测（`SyncWaitCycle`）。
 
 ### 5.5 emit 的顺序
 
@@ -282,7 +281,7 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 | `name` | 何时 | 信息（确切；`<…>` 填入） |
 | --- | --- | --- |
 | `AggregateError` | `parallel` 有失败 | `<n> listeners of <name> failed`；子错误按登记顺序：线上，错误图的根是名为 `AggregateError` 的 `error` 节点，其 `errors` 引用各子错误的节点（每个子错误自己的图并入其中），与 JavaScript 编码 `AggregateError` 的方式相同 |
-| `AsyncListener` | `bail` / `waterfall-sync` 遇到异步监听器 | `listener of <name> in <监听器> is asynchronous and cannot run in a synchronous <bail\|waterfall-sync>`；`<监听器>` 是 `row <行>`、`runtime <运行时>`、`node <对端>` 或 `plugin <插件>`，取描述里第一个有值的 |
+| `AsyncListener` | `bail` 遇到异步监听器 | `listener of <name> in <监听器> is asynchronous and cannot run in a synchronous bail`；`<监听器>` 是 `row <行>`、`runtime <运行时>`、`node <对端>` 或 `plugin <插件>`，取描述里第一个有值的 |
 | `WaterfallNext` | `next` 调用两次 / 结束后 / 取消后 / 不在 waterfall 中（Rust）/ Rust 同步监听器在异步 waterfall 中 | `next of <name> was already called` · `next of <name> was called after its waterfall ended` · `next is available only in a waterfall (this is <mode>)` · `a synchronous listener cannot call next in an asynchronous waterfall; register it with on` · `next of <name> was called off the thread of its waterfall`（Rust：别处监听器的同步 `next` 不在分发它的线程上调用） |
 | `ReservedEvent` | 发出 `rutis/*`（任何方式、任何语言，由发出的 API 同步拒绝） | `rutis/* events are emitted by rutis only: <name>` |
 | `SyncWaitCycle` | 一次同步调用会使等待成环 | 同服务调用 |
@@ -408,7 +407,7 @@ pub enum ListenerKind { Sync, Async, Any }
 /// (a runtime session, a node link). Same table, positions, name delivery,
 /// filter (by its `ListenerInfo`) and `global` as any entry.
 pub trait RemoteListener: Send + Sync + 'static {
-    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail / waterfall-sync (AsyncListener)
+    fn kind(&self) -> ListenerKind;   // `Async`: never called by bail (AsyncListener)
     /// Called in registration order when the call starts (for `emit`, before
     /// the dispatch resolves); dropping the future cancels the call (§5.7).
     fn call<'a>(&'a self, call: RemoteCall<'a>) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
@@ -431,7 +430,7 @@ impl EventBus {
     /// batch filter (§6 selector), terminal, origin, `framework` (`rutis/*`).
     /// For `emit` it resolves once every call started.
     pub fn dispatch<'a>(&self, ctx: &'a Ctx, d: Dispatch) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
-    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail, waterfall-sync
+    pub fn dispatch_sync(&self, ctx: &Ctx, d: Dispatch) -> Result<Option<Value>, CordisError>;   // bail
     /// Call one entry by id outside a dispatch (a node running the other node's `events.call`, §9).
     pub fn invoke_entry<'a>(&self, ctx: &'a Ctx, id: u64, call: EntryCall) -> BoxFuture<'a, Result<Option<Value>, CordisError>>;
     pub fn invoke_entry_sync(&self, ctx: &Ctx, id: u64, call: EntryCall) -> Result<Option<Value>, CordisError>;
@@ -662,11 +661,6 @@ impl EventBus {
       "vary": ["a", "b", "e"],
       "steps": [ { "emit": { "from": "X", "mode": "waterfall", "args": [] }, "expect": { "throws": { "name": "BErr" }, "log": ["a", "b"] } } ] },
 
-    { "case": "waterfall-sync/chain", "rule": "5.4 waterfall-sync", "name": "t/wfs", "tool": false,
-      "listeners": [ { "label": "a", "at": "X", "does": { "next": "a" } }, { "label": "b", "at": "Y", "does": { "next": "b" } } ],
-      "vary": ["a", "b"],
-      "steps": [ { "emit": { "from": "host", "mode": "waterfall-sync", "args": [], "terminal": "t" }, "expect": { "returns": "abt", "log": ["a", "b", "terminal"] } } ] },
-
     { "case": "bail/first-result", "rule": "5.4 bail", "name": "t/bail",
       "listeners": [
         { "label": "a", "at": "Y", "does": { "returns": null } },
@@ -880,7 +874,7 @@ impl EventBus {
 7. **登记顺序**是宿主接受的顺序，用位置表示；`prepend` 取最小的位置；`rows.load` 等这一行的 `events.on` 都得到回复；宿主在回复 `events.on` 之前排好推送。
 8. **宿主撤下一行的条目**于发出 `rows.unload` 或收到 `rows.ended` 时；运行时立即拒绝这一行的调用。
 9. **先快照，每次开始前再检查存活**：已撤下的条目静默跳过；已经发出的调用以 `BindingError`（`listener <id> of <name> is withdrawn`）或传输错误失败一次。
-10. **监听器种类** `sync` / `async` / `any`：`bail` / `waterfall-sync` 从不调用已声明为异步的条目；`any` 条目看它的返回值判断。
+10. **监听器种类** `sync` / `async` / `any`：`bail` 从不调用已声明为异步的条目；`any` 条目看它的返回值判断。
 11. **`parallel` 总是抛出 `AggregateError`**，只有一个失败也如此（同 Cordis）。
 12. **`waterfall` 原样返回最外层的值**；没有条目时为终态的值或没有结果；`next` 不带参数；终态收到事件参数；Cordis 插件的终态是 Cordis 必需的最后一个参数；叶子插件用 `waterfall.with(terminal)` 给出（2026-10-19 修订：它的参数可以是函数，最后一个分不清），其他语言可选。
 13. **过滤在按名字取出的快照上、在任何调用之前执行**；`global` 条目不经过滤；过滤函数抛出时整次分发失败（`emit` 中报告）。

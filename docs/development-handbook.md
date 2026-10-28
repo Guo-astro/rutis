@@ -95,10 +95,9 @@ cargo run -p rutis --example development_workflow
 | 创建方式 | 适用情况 | 重新加载时的行为 |
 |---|---|---|
 | `ctx.plugin(plugin)` | 配置由插件对象持有 | 在同一个对象上再次执行 `apply` |
-| `ctx.plugin_from(build, config)` | 运行期间需要更新配置 | 调用 `build` 从当前配置创建新的插件对象 |
-| `ctx.plugin_with(factory, config)` | 依赖由工厂在运行时列出（`host::PluginFactory`） | 根据当前配置创建新的插件对象 |
+| `ctx.plugin_with(factory, config)` | 运行期间需要更新配置（实现 `host::PluginFactory`） | 调用工厂的 `build` 从当前配置创建新的插件对象 |
 
-插件的依赖写在 `type Deps` 中；`plugin_from` 的依赖取自 `build` 返回的插件类型的 `Deps`；工厂写在 `PluginFactory::injects()` 中；按名字依赖服务的插件实现 `host::DynPlugin`，写在 `DynPlugin::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
+插件的依赖写在 `type Deps` 中；工厂写在 `PluginFactory::injects()` 中；按名字依赖服务的插件实现 `host::DynPlugin`，写在 `DynPlugin::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
 
 创建资源的代码放在 `apply` 中。这样，每次重新加载都会取得当前依赖，创建所需资源，并登记新的清理函数。
 
@@ -258,7 +257,7 @@ fn index(ctx: &Ctx, path: String) -> rutis::Result {
 | `parallel` | 并发调用监听器，等待全部完成 | 成功返回 `()`；失败汇总为 `ListenersFailed`（只有一个失败时也是），按注册顺序排列 |
 | `serial` | 按注册顺序逐个调用，遇到结果或错误时结束 | 返回首个结果；`None` 和 `Some(false)` 视为没有结果 |
 | `waterfall` | 监听器通过 `call.next()` 调用后续处理，并可处理其返回结果 | 返回最外层监听器的结果 |
-| `bail` / `waterfall_sync` | 与 `serial` / `waterfall` 相同，但在调用方线程内同步执行（`waterfall_sync` 是宿主层的方法） | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
+| `bail` | 与 `serial` 相同，但在调用方线程内同步执行 | 监听器需用 `on_sync` 注册；遇到异步监听器返回 `AsyncListener` 错误 |
 
 监听器的返回类型为 `rutis::Result<Option<E::Value>>`。例如，事件定义 `type Value = String`，serial 监听器就用 `Ok(Some(title))` 返回标题，用 `Ok(None)` 交给下一位处理者。
 
@@ -330,18 +329,23 @@ fn backend(label: &String) -> rutis::Result<BackendPlugin> {
 }
 ```
 
-宿主用构造函数注册插件，之后提交新配置：
+宿主实现 `host::PluginFactory`，在 `build` 里调用构造函数，用 `plugin_with` 注册，之后提交新配置：
 
 ```rust,ignore
-let backend = root.plugin_from(backend, String::from("local"));
+struct BackendFactory;
+impl PluginFactory<String> for BackendFactory {
+    fn build(&self, label: &String) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(backend(label)?))
+    }
+}
+
+let backend = root.plugin_with(BackendFactory, String::from("local"));
 backend.update(String::from("remote")).await?;
 ```
 
-依赖在运行时才确定的插件实现 `host::PluginFactory`，用 `plugin_with(factory, config)` 注册，更新的规则相同。
-
 一次更新分为两步：
 
-1. **预检查。** 执行构造函数（工厂为 `validate_config` 和 `build`）和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
+1. **预检查。** 执行工厂的 `validate_config`、`build` 和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
 2. **重新加载。** 保存新配置，清理旧实例，依赖就绪后再次构造和加载插件。消费者随服务变化重新加载。
 
 构造函数（以及工厂的 `build`）只负责构造对象，网络连接、任务启动等操作放在 `apply` 中。首次加载也需要的校验写在构造函数或插件的 `validate` 中；工厂的 `validate_config` 用于更新预检查。
@@ -419,9 +423,9 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 
 ### 处理错误
 
-生命周期操作和等待型事件的错误通过返回值处理。错误类型是 `rutis::Error`，`?` 能把任何标准错误转成它；要区分 rutis 自己的失败时用 `err.kind()`，它返回 `Option<&ErrorKind>`，来自插件代码的错误是 `None`。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。ErrorSink、`take_cleanup_errors()`，以及等待 `FiberView`、`dispose()`、`shutdown()` 得到的错误，是共享的 `Arc<ErrorKind>`。
+生命周期操作和等待型事件的错误通过返回值处理。错误类型是 `rutis::Error`，`?` 能把任何标准错误转成它；要区分 rutis 自己的失败时用 `err.kind()`，它返回 `Option<&ErrorKind>`，来自插件代码的错误是 `None`。emit 中监听器的错误（以 `ListenerFailed` 包装）以及重载期间的清理错误进入 ErrorSink；默认输出到 stderr，宿主可用 `Ctx::root_with_sink` 接入自己的日志。ErrorSink，以及等待 `FiberView`、`dispose()`、`shutdown()` 得到的错误，是共享的 `Arc<ErrorKind>`。
 
-提前释放 effect 时，先处理 `Disposer::dispose()` 的结果。长寿命插件还可定期调用 `take_cleanup_errors()`，取走并处理已完成的历史清理错误。后台任务的错误由任务所有者观察和报告。
+提前释放 effect 时，先处理 `Disposer::dispose()` 的结果；同一个错误之后在终态卸载时进入结果，在重载时交给 ErrorSink。后台任务的错误由任务所有者观察和报告。
 
 ### 验证关键过程
 

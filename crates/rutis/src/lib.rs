@@ -25,8 +25,8 @@
 //! ```
 //!
 //! The root holds what plugin authors use. Applications embedding rutis
-//! also use [`host`]; the hidden `internal` module is for rutis's own
-//! crates.
+//! also use [`host`], and [`config`] for checking a config against its
+//! schema; the hidden `internal` module is for rutis's own crates.
 //!
 //! The five concepts:
 //! 1. Plugin: the unit of assembly; one `apply` provides services, listeners
@@ -34,15 +34,15 @@
 //! 2. Fiber: the lifecycle container; a six-state machine with dependency
 //!    gating, cascading unload and exactly-once cleanup.
 //! 3. Services: a registry keyed by type, with isolate scopes.
-//! 4. Event bus: one listener table, by name and scope, with six dispatch
-//!    modes (emit, parallel, serial, waterfall, bail, waterfall-sync).
+//! 4. Event bus: one listener table, by name and scope, with five dispatch
+//!    modes (emit, parallel, serial, waterfall, bail).
 //! 5. Dependency-driven reload: when a provider unloads, its consumers are
 //!    evicted and load again automatically.
 
 #![allow(clippy::type_complexity)]
 
 mod bus;
-mod config;
+pub mod config;
 mod ctx;
 mod definition;
 mod deps;
@@ -53,13 +53,13 @@ pub mod events;
 mod fiber;
 mod future;
 pub mod host;
-mod intercept;
 pub mod internal;
 mod key;
 mod plugin;
 mod registry;
 mod service;
 mod sync;
+mod writer;
 
 pub use config::{ConfigError, ConfigIssue, PathSegment};
 pub use ctx::Ctx;

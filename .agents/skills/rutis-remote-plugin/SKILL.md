@@ -45,7 +45,7 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 Details in `references/plugin-api.md`. The essentials:
 
 - Write a leaf plugin with the language's SDK: declare `inject` (service names it uses) and a config schema; in `apply(ctx, config)` use `ctx.use` / `ctx.provide` / `ctx.effect`. What `ctx.provide` provides reaches rutis by itself (its public methods, all `async`); `provides` is optional, to mark methods `sync` and let `rutis-host check` know before running what the plugin provides. The current plugin API version is 3 (rutis 0.13: events with `ctx.on` and the five ways to emit, `emit` / `parallel` / `serial` / `waterfall` / `bail`, plus `filter`).
-- A service of the host application's Rust code is used the same way, `ctx.use(name)`, once the host marks its type `#[rutis::service]` and provides it (from rutis 0.15; no binding to write on either side). An unmarked Rust service is not reachable: a row waiting for it is reported with the fix by the host (`Loader::waiting_for`).
+- A service of the host application's Rust code is used the same way, `ctx.use(name)`, once the host marks its type `#[rutis::service]` and provides it (from rutis 0.15; no binding to write on either side). An unmarked Rust service is not reachable: a row waiting for it is reported with the fix by the host (`Loader::waits`).
 - The plugin does **not** decide when it runs, does not reconnect, does not probe whether the other side is up: it is applied when all its services are ready, stops when any is withdrawn, and starts again when it returns. A remote disconnect is, to the plugin, an ordinary stop.
 - Values follow the cross-process rules: JSON-compatible data is copied; dates and times, binary data, maps, sets, big integers, decimals and UUIDs are copied and arrive as each language's own types (integers beyond ±(2^53−1) cross as big integers automatically); functions and objects go by reference; nesting at most 64 levels. Never assume the same process.
 - Do not hold locks while calling other services: your service may be called again in the middle of your own synchronous call. Prefer `async` methods for calls that cross runtimes and may cross each other.
@@ -140,24 +140,23 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 
 ```json
 {
-  "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
+  "runtimes": { "remote": [{ "name": "gpu", "language": "python", "dial": "wss://gpu.example.com:7443/rutis" }] },
   "rows": [
-    { "id": "gpu", "name": "rutis-bridge/peer",
-      "config": { "peer": "gpu", "dial": "wss://gpu.example.com:7443/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder", "config": { "model": "small" } }
   ]
 }
 ```
 
 - `language`: `python` / `py` / `go` / `swift` / `node` / `bun`.
-- The link row must have `"runtime": "<name>"`; without it the other side is not treated as a runtime and `<name>:*` rows never become ready.
+- One entry describes the runtime whole: `dial: <address>` (rutis dials it), `listen: <listener>` (it dials in; its `--id` is the runtime's name), or `listen` + `instances` (many, step 4b). Not `dial` with `listen`, nor `dial` with `instances`. The connection is over WebSocket.
+- The form before 0.19 (only `name` and `language`, plus a `rutis-bridge/peer` row with `"runtime": "<name>"`) still works; do not write both for one runtime (the host refuses to start).
 - Rows are named `<runtime name>:<plugin>`; the plugin is resolved on the remote machine.
 
 ## 6. Verify
 
 - `rutis-host check`: remote runtimes are not contacted during checking; services that might come from them are reported as such, not as failures.
-- `rutis-host run`: expect `<link row id>: link connected`, then `<row id>: running`.
-- `link refused: auth-rejected` means the token or certificate is wrong; `link stopped: incompatible` means the protocol or address form is wrong, or `runtime` is missing.
+- `rutis-host run`: expect `runtime <name>: link connected` (`<link row id>: link connected` for the old link row; `runtime <name>: connected <id>` per connection with `instances`), then `<row id>: running`. `rutis-host status` lists them under `connections:`.
+- `link refused: auth-rejected` means the token or certificate is wrong; `link stopped: incompatible` means the protocol or address form is wrong, or the far end is not a runtime. A row failing with `runtime <name>: this connection does not contain plugin <plugin>` names a plugin the remote side does not have.
 - Stop the remote process: those rows stop, and so do the rows using their services; when it comes back rutis reconnects and loads them again.
 
 ## 7. What not to do

@@ -335,10 +335,10 @@ impl RuntimeInstances {
                 host_key(name).instance(instance).erase()
             })),
         );
-        // The schema is known per connection: the loader warns of extra
-        // keys once per row, instance and value; the runtime's SDK fills
-        // and validates.
-        Ok(Arc::new(Warning {
+        // The schema is known per connection: the loader fills and
+        // validates the config by it, and warns of extra keys once per row,
+        // instance and value.
+        Ok(Arc::new(Checking {
             loader: self.inner.loader.lock().unwrap().clone(),
             // The row's id; its plugin's name only where the copy's row is
             // not known.
@@ -361,7 +361,7 @@ impl RuntimeInstances {
 }
 
 /// A copy's factory on a connection, through the loader's config step.
-struct Warning {
+struct Checking {
     loader: Option<crate::loader::WeakLoader>,
     row: String,
     instance: String,
@@ -370,7 +370,7 @@ struct Warning {
     factory: Arc<dyn PluginFactory<Value>>,
 }
 
-impl Warning {
+impl Checking {
     fn step(&self, config: &Value) -> Result<Value, Error> {
         match &self.loader {
             Some(loader) => loader
@@ -387,7 +387,7 @@ impl Warning {
     }
 }
 
-impl PluginFactory<Value> for Warning {
+impl PluginFactory<Value> for Checking {
     fn name(&self) -> &str {
         self.factory.name()
     }

@@ -94,7 +94,7 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
     var pending: CompletableFuture<Result<Any?>>? = null
     var reported = 0
 
-    fun scopeOf(path: String?): List<arcships.rutis.Scope> {
+    fun scopeOf(path: String?): List<arcships.rutis.advanced.Scope> {
         if (path == null || path == "" || path == "root") return emptyList()
         val segments = path.split("/")
         return RutisTest.scope(path, *segments.indices.map { groups[segments.subList(0, it + 1).joinToString("/")] ?: segments[it] }.toTypedArray())

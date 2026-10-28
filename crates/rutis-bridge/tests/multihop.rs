@@ -12,10 +12,9 @@ use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    Credential, ExportPlugin, Identity, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin,
-    Retry, StaticIdentity,
+    Accepting, Credential, ExportPlugin, Identity, IdentityPlugin, ImportPlugin, LinkConfig,
+    LinkPlugin, Registrations, Retry, StaticIdentity,
 };
 use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
@@ -61,11 +60,8 @@ impl HostDispatch for Clock {
     }
 }
 
-async fn node(transport: &Arc<MemoryTransport>, identity: StaticIdentity) -> Ctx {
+async fn node(identity: StaticIdentity) -> Ctx {
     let root = Ctx::root().unwrap();
-    (&root.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     let name = identity.local().to_string();
     root.plugin(IdentityPlugin::new(&name, identity));
     root
@@ -73,48 +69,70 @@ async fn node(transport: &Arc<MemoryTransport>, identity: StaticIdentity) -> Ctx
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdrawals() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("a-in", id("a"));
+    let transport = Registrations::new();
 
     // a: accepts b and c on one listener; imports from b, exports to c.
     let a = node(
-        &transport,
         StaticIdentity::new(id("a"))
             .accept_token("b-token", id("b"))
             .accept_token("c-token", id("c")),
     )
     .await;
     a.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("b"), "memory", "a", "a-in").retry(quick()),
+        LinkConfig::listen(
+            id("b"),
+            "a",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "a-in".into(),
+                local: id("a"),
+            },
+        )
+        .retry(quick()),
     ));
     a.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("c"), "memory", "a", "a-in").retry(quick()),
+        LinkConfig::listen(
+            id("c"),
+            "a",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "a-in".into(),
+                local: id("a"),
+            },
+        )
+        .retry(quick()),
     ));
     a.plugin(ImportPlugin::new(id("b"), ["clock"]));
     a.plugin(ExportPlugin::new(id("c"), ["clock"]));
 
     // b: owns the clock.
-    let b = node(
-        &transport,
-        StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())),
-    )
-    .await;
+    let b =
+        node(StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())))
+            .await;
     let provided = b
         .provide_at(host_key("clock"), Arc::new(Clock(Default::default())))
         .unwrap();
     b.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("a"), "memory", "b", "a-in").retry(quick()),
+        LinkConfig::dial(
+            id("a"),
+            "b",
+            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
+        )
+        .retry(quick()),
     ));
     b.plugin(ExportPlugin::new(id("a"), ["clock"]));
 
     // c: uses it, two links away.
-    let c = node(
-        &transport,
-        StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())),
-    )
-    .await;
+    let c =
+        node(StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())))
+            .await;
     c.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("a"), "memory", "c", "a-in").retry(quick()),
+        LinkConfig::dial(
+            id("a"),
+            "c",
+            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
+        )
+        .retry(quick()),
     ));
     c.plugin(ImportPlugin::new(id("a"), ["clock"]));
 

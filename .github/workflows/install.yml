@@ -261,9 +261,10 @@ jobs:
         # Three at a time: two of them compile Rust (the plugin, the host).
         run: cargo test --locked -p rutis-e2e --test devx -- --ignored --test-threads=3
       # The guides install from the registries, so their examples run once
-      # the version is published.
+      # the version is published. darwin-arm64 runs only the Swift guides'
+      # examples (Swift plugins build only on macOS), Linux the others.
       - name: the guides' examples
-        if: env.RUTIS_E2E_SOURCE == 'registry' && runner.os == 'Linux'
+        if: env.RUTIS_E2E_SOURCE == 'registry' && (runner.os == 'Linux' || matrix.platform == 'darwin-arm64')
         env:
           RUTIS_E2E_DIR: ${{ env.RUTIS_E2E_DIR || format('{0}/e2e', runner.temp) }}
         run: cargo test --locked -p rutis-e2e --test doc_examples -- --ignored

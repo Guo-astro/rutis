@@ -268,10 +268,10 @@ async fn a_provided_marked_type_is_served_by_name() {
     );
     let error = call(&calendar, "io", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("Error"));
-    // rutis's own error keeps its 0.16 name on the wire, its kind the code.
+    // rutis's own error is thrown as `Error`, its kind the code.
     let error = call(&calendar, "closed", json!([])).await.unwrap_err();
     assert_eq!(error.code(), Some("Closed"));
-    assert!(error.to_string().starts_with("CordisError: "), "{error}");
+    assert!(error.to_string().starts_with("Error: "), "{error}");
     call(&calendar, "add", json!([entry])).await.unwrap();
     call(&calendar, "add", json!([entry])).await.unwrap();
     let error = call(&calendar, "add", json!([entry])).await.unwrap_err();
@@ -722,40 +722,6 @@ async fn a_provide_refused_for_its_native_slot_serves_nothing() {
     let error = root.provide(greeter("refused")).unwrap_err();
     assert!(matches!(&*error, ErrorKind::ServiceExists(_)), "{error}");
     assert!(served(&root, "greeter").is_none());
-    root.shutdown().await.unwrap();
-}
-
-/// Calls by name read the service through the strict read path: read
-/// interceptors deny or replace it, as for Rust readers.
-#[tokio::test]
-async fn calls_by_name_go_through_read_interceptors() {
-    use rutis::internal::ServiceIntercept;
-    use std::sync::atomic::{AtomicU8, Ordering};
-    let root = Ctx::root().unwrap();
-    root.provide(greeter("native")).unwrap();
-    let service = served(&root, "greeter").unwrap();
-    let policy = Arc::new(AtomicU8::new(0));
-    let read = policy.clone();
-    root.intercept_require_as::<Greeter>(TypeKey::of::<Greeter>(), move |_| {
-        match read.load(Ordering::SeqCst) {
-            0 => ServiceIntercept::Continue,
-            1 => ServiceIntercept::Replace(Arc::new(greeter("replaced"))),
-            _ => ServiceIntercept::Deny,
-        }
-    })
-    .unwrap();
-    assert_eq!(
-        call(&service, "text", json!([])).await.unwrap(),
-        json!("native")
-    );
-    policy.store(1, Ordering::SeqCst);
-    assert_eq!(
-        call(&service, "text", json!([])).await.unwrap(),
-        json!("replaced")
-    );
-    policy.store(2, Ordering::SeqCst);
-    let error = call(&service, "text", json!([])).await.unwrap_err();
-    assert!(error.to_string().contains("not available"), "{error}");
     root.shutdown().await.unwrap();
 }
 

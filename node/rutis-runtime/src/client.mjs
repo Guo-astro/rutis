@@ -11,7 +11,7 @@ export class Process {
 
   // `ended`: an Int32Array on a SharedArrayBuffer whose first element the
   // I/O worker sets to 1 once the channel ends, whatever this thread does.
-  constructor(executable, { channel, dispatch, settled, endpoint, inline, requires, holds, report, owner, within, ended } = {}) {
+  constructor({ channel, dispatch, settled, endpoint, inline, requires, holds, report, owner, within, ended } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -35,7 +35,7 @@ export class Process {
     })
     this.#port.on('message', message => this.#receive(message))
     this.#worker = new Worker(new URL('./io-worker.mjs', import.meta.url), {
-      workerData: { executable, channel, port: port2, signal: this.#signal, ended }, transferList: [port2],
+      workerData: { channel, port: port2, signal: this.#signal, ended }, transferList: [port2],
     })
     this.#worker.on('error', error => this.#session.close(error))
     this.#exited = new Promise(resolve => this.#worker.once('exit', code => {
@@ -45,27 +45,15 @@ export class Process {
     }))
   }
   #receive(message) {
-    if (message?.ready) { this.pid = message.pid; this.#session.start(); return }
+    if (message?.ready) { this.#session.start(); return }
     if (message?.closed) { this.#session.close(hostGone(message.closed)); return }
     this.#session.receive(message)
-  }
-  static async launch(executable, config) {
-    const process = new Process(executable)
-    try {
-      await process.#session.ready
-      await process.callAsync('', 'mount', { config })
-      return process
-    } catch (error) {
-      process.#port.postMessage({ abort: true })
-      await process.#exited
-      throw error
-    }
   }
   // `endpoint` ({ local, expected? }) selects the endpoint format;
   // `options`: the session's `inline`, `requires`, `holds`, `report`,
   // `owner` and `within`.
   static async connect(channel, dispatch, settled, endpoint, options = {}) {
-    const process = new Process(undefined, { channel, dispatch, settled, endpoint, ...options })
+    const process = new Process({ channel, dispatch, settled, endpoint, ...options })
     try { await process.#session.ready; return process }
     catch (error) { process.#port.postMessage({ abort: true }); await process.#exited; throw error }
   }
@@ -84,13 +72,4 @@ export class Process {
   closed() { return this.#exited }
   // End this side: the far end sees the channel end.
   end() { this.#port.postMessage({ end: true }) }
-  async dispose() {
-    this.#port.postMessage({ dispose: true })
-    try { await this.callAsync('', 'dispose', null) }
-    finally {
-      this.#session.close(new Error('plugin has been disposed'))
-      this.#port.postMessage({ end: true })
-      await this.#exited
-    }
-  }
 }

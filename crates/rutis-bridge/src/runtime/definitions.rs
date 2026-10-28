@@ -87,7 +87,7 @@ impl Source for Foreign {
                 self.plugin.name
             ))
         })?;
-        mounter.mount(at, &self.plugin, config)
+        mounter.mount(at, &self.plugin, checked(&self.plugin.schema, config)?)
     }
 
     fn encode(&self) -> Result<&dyn erased_serde::Serialize, String> {
@@ -171,6 +171,21 @@ pub fn returned(
         };
         read(process, reference, owner).await
     })
+}
+
+/// A copy's `config` against the schema its definition declares, before it
+/// is loaded (config schema design §2.2): the filled copy, or the config
+/// error, which the caller of `ctx.plugin` gets. A Cordis plugin's config is
+/// Cordis's to check (§2.3), and one without a schema is passed as it is.
+fn checked(schema: &RowSchema, config: Value) -> Result<Value, rutis::Error> {
+    let Some(declared) = schema.config.as_ref().filter(|_| !schema.cordis) else {
+        return Ok(config);
+    };
+    let checked = rutis::config::check(declared, Some(&config));
+    match checked.error() {
+        Some(error) => Err(error.into_error()),
+        None => Ok(checked.config),
+    }
 }
 
 fn failed(message: String) -> rutis::Error {

@@ -60,8 +60,8 @@ func same(_ a: RutisExportable?, _ b: RutisExportable?) -> Bool {
 final class Provided {
     let row: String
     let value: RutisExportable
-    let shape: Rutis.Shape?
-    init(row: String, value: RutisExportable, shape: Rutis.Shape?) {
+    let shape: Rutis.Advanced.Shape?
+    init(row: String, value: RutisExportable, shape: Rutis.Advanced.Shape?) {
         self.row = row
         self.value = value
         self.shape = shape
@@ -114,7 +114,7 @@ final class Row: @unchecked Sendable {
     let config: Value
     let exports: [String: [String: String]]
     let isolate: [String: String]
-    let scope: [Rutis.Scope]
+    let scope: [Rutis.Advanced.Scope]
     /// Its runtime's: where its lines go, how long its listeners may take.
     let settings: Events.Settings
     var cleanups: [() async throws -> Void] = []
@@ -143,7 +143,7 @@ final class Row: @unchecked Sendable {
     private var letGo: [Int: Event] = [:]
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
-         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope],
+         exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
          settings: Events.Settings = Events.Settings())
     {
         self.settings = settings
@@ -384,8 +384,8 @@ final class Runtime: @unchecked Sendable {
 
     /// `definition`, unless it needs a newer plugin API than this runtime's.
     func supported(_ definition: Rutis.Definition) throws -> Rutis.Definition {
-        if definition.api > Rutis.pluginAPI {
-            throw RutisError(name: "Error", message: "plugin \(definition.name) needs plugin API \(definition.api); this runtime supports \(Rutis.pluginAPI)")
+        if definition.api > Rutis.Advanced.pluginAPI {
+            throw RutisError(name: "Error", message: "plugin \(definition.name) needs plugin API \(definition.api); this runtime supports \(Rutis.Advanced.pluginAPI)")
         }
         return definition
     }
@@ -517,7 +517,7 @@ final class Runtime: @unchecked Sendable {
 
     /// Loads the row `key` running the plugin `entry` names in this binary.
     func load(key: String, name: String?, entry: String, config: Value, exports: [String: [String: String]],
-              isolate: [String: String], scope: [Rutis.Scope]) async throws
+              isolate: [String: String], scope: [Rutis.Advanced.Scope]) async throws
     {
         try await load(key: key, name: name, entry: entry, definition: try definition(entry), config: config,
                        exports: exports, isolate: isolate, scope: scope)
@@ -527,7 +527,7 @@ final class Runtime: @unchecked Sendable {
     /// this binary, or a plugin definition this runtime handed over (a
     /// copy, `entry` its name).
     func load(key: String, name: String?, entry: String, definition: Rutis.Definition, config: Value,
-              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Scope]) async throws
+              exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope]) async throws
     {
         let name = (name?.isEmpty ?? true) ? key : name!
         let row = Row(key: key, name: name, entry: entry, definition: definition, config: config, exports: exports,
@@ -668,11 +668,11 @@ final class Runtime: @unchecked Sendable {
         guard let body = table[method], entry.methods?.contains(method) ?? true else {
             throw Refusal.noMethod(callee, entry.methods ?? Set(table.keys))
         }
-        return try await body(Rutis.Arguments(args, callee: callee)).value
+        return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
     }
 
     private func argument<T: Decodable>(_ args: [Value], _ index: Int, _ type: T.Type = T.self) throws -> T {
-        try Rutis.Arguments(args).decode(index, as: T.self)
+        try Rutis._Generated.Arguments(args).decode(index, as: T.self)
     }
 
     func control(_ method: String, _ args: [Value]) async throws -> Value {
@@ -688,7 +688,7 @@ final class Runtime: @unchecked Sendable {
                 ("services", .object([])),
                 ("features", .array(runtimeFeatures.map(JSON.string))),
                 ("plugins", .object(definitions.keys.sorted().map { ($0, definitions[$0]!.described) })),
-                ("implementation", .object([("name", .string(Rutis.implementation)), ("version", .string(Rutis.sdkVersion))])),
+                ("implementation", .object([("name", .string(Rutis.Advanced.implementation)), ("version", .string(Rutis.Advanced.sdkVersion))])),
                 ("engine", .object([("name", .string("swift")), ("version", .string(swiftVersion))])),
             ]))
         case "events.elsewhere", "events.call":
@@ -723,7 +723,7 @@ final class Runtime: @unchecked Sendable {
             let exports: [String: [String: String]] = (try argument(args, 5, [String: [String: String]]?.self)) ?? [:]
             // The seventh, from rutis 0.13: the row's scope chain and its id.
             struct Placed: Decodable {
-                var scope: [Rutis.Scope]?
+                var scope: [Rutis.Advanced.Scope]?
                 var id: String?
             }
             let placed = (try argument(args, 6, Placed?.self)) ?? Placed()
@@ -787,7 +787,7 @@ final class Runtime: @unchecked Sendable {
     // ── Using services ───────────────────────────────────────────────
 
     /// The service `name` as `row` uses it: by its own id.
-    func client(_ row: Row, _ name: String) throws -> (Rutis.Client, RutisExportable?) {
+    func client(_ row: Row, _ name: String) throws -> (Rutis.Advanced.Client, RutisExportable?) {
         guard row.definition.inject.contains(name) else {
             throw RutisError(name: RutisError.Name.bindingError,
                              message: "service \(name) is not available to this plugin, which does not declare it in inject: add '\(name)' to its inject",
@@ -803,15 +803,15 @@ final class Runtime: @unchecked Sendable {
             } else {
                 for method in table.keys { methods[method] = "async" }
             }
-            let client = Rutis.Client(name: name, methods: methods) { method, args, _ in
+            let client = Rutis.Advanced.Client(name: name, methods: methods) { method, args, _ in
                 let callee = Refusal.Callee(service: name, method: method)
                 guard let body = table[method] else { throw Refusal.noMethod(callee, methods.keys) }
-                return try await body(Rutis.Arguments(args, callee: callee)).value
+                return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
             }
             return (client, local.value)
         }
         if let host {
-            let client = Rutis.Client(name: name, methods: host) { [weak self] method, args, sync in
+            let client = Rutis.Advanced.Client(name: name, methods: host) { [weak self] method, args, sync in
                 guard let session = self?.session else { throw RutisError.hostGone() }
                 let value = try await session.call(target: "host:" + id, method: method, args: args, sync: sync)
                 return try await settle(value)
@@ -823,7 +823,7 @@ final class Runtime: @unchecked Sendable {
     }
 }
 
-extension Rutis {
+extension Rutis.Advanced {
     /// A service used by name: calls its methods across the session (or on
     /// the provider's object, when it is in this process).
     public final class Client: @unchecked Sendable {
@@ -862,19 +862,19 @@ extension Rutis {
             return client
         }
 
-        /// Calls `method` with `args` (encoded by `Rutis.encode` /
-        /// `Rutis.export`) and decodes its result into `R`. A method the
+        /// Calls `method` with `args` (encoded by `Rutis._Generated.encode` /
+        /// `Rutis._Generated.export`) and decodes its result into `R`. A method the
         /// service declares `sync` is a synchronous call (the far end hears
         /// so); the Task waits without holding a thread.
-        public func call<R>(_ method: String, _ args: [Encoded], as type: R.Type = R.self) async throws -> R {
+        public func call<R>(_ method: String, _ args: [Rutis._Generated.Encoded], as type: R.Type = R.self) async throws -> R {
             try await call(method, args, as: type, object: nil)
         }
 
         /// `call(_:_:as:)` whose result, an object of another process, is
         /// made into `R` by `object` (a @RutisClient protocol's proxy,
         /// `rutisObjectProxy`).
-        public func call<R>(_ method: String, _ args: [Encoded], as type: R.Type = R.self,
-                            object proxy: ((Rutis.Client) -> R)?) async throws -> R
+        public func call<R>(_ method: String, _ args: [Rutis._Generated.Encoded], as type: R.Type = R.self,
+                            object proxy: ((Rutis.Advanced.Client) -> R)?) async throws -> R
         {
             // An object has no method table: one it lacks is its process's
             // to say (no-method).
@@ -889,7 +889,7 @@ extension Rutis {
 
         /// Calls `method` with `args` of any type, its result as `R`.
         public func call<R>(_ method: String, values args: [Any?], as type: R.Type = R.self) async throws -> R {
-            try await call(method, try args.map { Encoded(try ValueCodec.encodeAny($0 as Any)) }, as: type)
+            try await call(method, try args.map { Rutis._Generated.Encoded(try ValueCodec.encodeAny($0 as Any)) }, as: type)
         }
     }
 }
@@ -902,14 +902,14 @@ public protocol RutisProxy {
     /// The methods the proxy calls.
     static var rutisMethodNames: [String] { get }
     /// A proxy calling `client`.
-    static func rutisMake(_ client: Rutis.Client) -> Service
+    static func rutisMake(_ client: Rutis.Advanced.Client) -> Service
     /// The client it calls: handed on, a proxy of another process's object
     /// is that object again (#687).
-    var rutisClient: Rutis.Client { get }
+    var rutisClient: Rutis.Advanced.Client { get }
 }
 
 /// How a parameter or result of type `T` takes an object of another
-/// process: nil, it takes none (and `Any` takes a `Rutis.Client`).
+/// process: nil, it takes none (and `Any` takes a `Rutis.Advanced.Client`).
 /// `@RutisClient` adds an overload for its protocol, which makes its proxy;
 /// the macros call this, and the overload wins (#687 §四).
-public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Client) -> T)? { nil }
+public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Advanced.Client) -> T)? { nil }

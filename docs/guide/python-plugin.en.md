@@ -122,7 +122,70 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
+
+The testing tool's whole interface (from the docstrings of `rutis/testing.py`):
+
+| Parameter of `load(plugin, *, …)` | What it does |
+| --- | --- |
+| `config` | The plugin's config; with a `config` declaration, defaults are filled in and it is validated |
+| `services` | The services the plugin `inject`s, by name |
+| `strict` | Values follow cross-process rules (default `True`) |
+| `bus` | Share events with the plugins on the same `Bus` (default: one of its own) |
+| `scope` | The scope path it is loaded in (`t1/s1`; default the root) |
+| `row` | Its row name on the bus (default the plugin's declared name, else its module's) |
+| `runtime` | What listener descriptors give as `runtime` (default `"python"`) |
+| `deadline` | How many seconds unloading waits for running listeners (default `RUTIS_SHUTDOWN_TIMEOUT`, 10) |
+
+| Member of `Loaded` (`async with load(...) as t`) | What it does |
+| --- | --- |
+| `t.service(name)` | The service the plugin provides, as rutis sees it: its declared methods, or, undeclared, the object's public methods, all async |
+| `t.methods(name)` | The methods rutis sees: `{"today": "async"}` |
+| `t.provided()` | The names of the services the plugin provides now |
+| `t.on(name, listener, *, prepend=False, global_=False)` | Listen as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; returns the function that stops it, and without it, it stops when the plugin unloads |
+| `t.emit`, `t.parallel`, `t.serial`, `t.waterfall`, `t.bail` | Emit from the plugin's row and scope |
+| `t.filter(predicate)` | The five methods, delivering only to the listeners `predicate(descriptor)` keeps |
+| `t.reported` | The failures nobody received (listeners failing in an `emit`, filters) |
+| `await t.update(config)` | Change the config as a host's `rows.update` does: unload, then run again with the new config |
+| `await t.unload()` | Unload as the runtime does: withdraw listeners and services, cancel and wait for running listeners, then run the cleanups, latest first (done when the `async with` block exits) |
+
+`Bus(scopes=...)`: a bus for tests; the plugins on the same `bus` hear each other, and `scopes` names the group of a scope path. It has `reported`, `listeners(name)` (the descriptors a filter sees) and `emitter(row=..., strict=...)` (emit as a given row). `Reported`: one failure nobody received, with the fields `kind` (`"listener"` or `"filter"`), `name`, `row` and `error`. `PluginTestError`: the plugin did something a host would refuse or that would fail across processes; a subclass of `AssertionError`.
+
+To check that the plugin emits an event, listen with `t.on` into a list:
+
+<!-- example: python-en file=weather/tests/test_asked.py order=2 -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import load
+
+
+def apply(ctx, config):
+    class Weather:
+        async def today(self):
+            ctx.emit("weather/asked", config["city"])
+            return "sunny"
+
+    ctx.provide("weather", Weather())
+
+
+asking = define_plugin(apply)
+
+
+class Asked(unittest.TestCase):
+    def test_each_call_emits_weather_asked(self):
+        async def go():
+            async with load(asking, config={"city": "Oslo"}) as t:
+                asked = []
+                off = t.on("weather/asked", asked.append)
+                await t.service("weather").today()
+                self.assertEqual(asked, ["Oslo"])
+                off()
+
+        asyncio.run(go())
+```
 
 ### Events
 
@@ -182,8 +245,8 @@ class Events(unittest.TestCase):
         asyncio.run(go())
 ```
 
-- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.AggregateError` whose `errors` are in registration order.
-- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.AsyncListener`.
+- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are a `rutis.advanced.AggregateError` whose `errors` are in registration order.
+- `bail` is a synchronous `serial`: an `async def` listener (or a function returning a coroutine) fails it with `rutis.advanced.AsyncListener`.
 - `ctx.filter(lambda d: d["row"] == "audit")` returns an object with the five methods that delivers only to the listeners the filter keeps; `ctx.on(name, fn, prepend=True)` goes first, `global_=True` is exempt from filters.
 - Scopes: `load(plugin, bus=bus, scope="t1/s1")` loads a plugin into an instance (`Bus(scopes={"t1": "tenant"})` names the groups); a listener receives every event of the name on the root bus; a scope is only a descriptor for filters.
 - On unload, the tasks of running listeners are cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`) before the cleanups run. When the emitter gives up (its task is cancelled), the listeners in progress are cancelled too.
@@ -278,6 +341,19 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
 
+### Calling a method
+
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ uv run rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
@@ -310,7 +386,7 @@ The entry point in `pyproject.toml` lets the host find the plugin by name:
 weather = "weather"
 ```
 
-Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; while the plugin API version stays, `rutis` removes or changes no name plugins import ([plugin API: versions](plugin-api.en.md#versions)).
+Depend on `rutis` with a lower bound only: `rutis>=0.17` (`rutis-host new` writes its own version). The plugin and the Python runtime are the same `rutis` package, installed in the host's one environment; with an upper bound (`<0.18`), installing the plugin downgrades rutis, or a later upgrade of rutis fails to resolve. Whether the runtime can load the plugin is decided by the plugin API version: `define_plugin` tags the plugin with the plugin API version it uses, a host runtime older than that refuses it with a clear message, and a newer one loads it; a release of `rutis` that removes or moves a name plugins import says so in its migration guide, and plugins upgrade together with the host ([plugin API: versions](plugin-api.en.md#versions)).
 
 Before publishing, give the distribution a name of your own: a short name such as `weather` is most likely taken on PyPI. Change `name` in `pyproject.toml`, for example to `your-name-weather`; the entry point name (`weather` above) stays, and a host's row is still `py:weather`.
 
@@ -328,3 +404,22 @@ uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # t
 ```
 
 See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+
+### Types from the host
+
+A Rust host can give the Python types of its services (the module `rutis-host types --python` writes; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations)), usually in the plugin template. Annotate what `ctx.use` returns with them, and the editor and pyright check the calls before anything runs; without the annotation it runs the same:
+
+```python
+from deskmate_types import Notes  # the host's module (written by rutis-host types --python deskmate_types.py)
+
+
+def apply(ctx, config):
+    notes: Notes = ctx.use("notes")
+    ...
+```
+
+A call that does not match, as pyright reports it:
+
+```text
+error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of type "str" in function "put"
+```

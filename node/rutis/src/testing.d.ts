@@ -1,4 +1,5 @@
-import type { Emitter, ListenerDescriptor, Plugin } from './index.js'
+import type { Plugin } from './index.js'
+import type { Emitter, Listener, ListenerDescriptor, ListenerOptions } from './advanced.js'
 
 export declare class PluginTestError extends Error {
   /** For a refusal a runtime makes too: its code (`not-declared`, `unavailable`, `no-method`). */
@@ -39,6 +40,11 @@ export interface Loaded extends TestEmitter {
   provided(): string[]
   /** What `emit` listeners reported on the host. */
   readonly reported: Reported[]
+  /**
+   * Listen to the event `name` as the host does, at the root scope: the plugin's emissions of `name` reach `listener`, and so do the test's own.
+   * Strict, its arguments and what it returns cross as from another process. Returns the function that stops it; without it, it stops when the row unloads.
+   */
+  on(name: string, listener: Listener, options?: ListenerOptions): () => void
   /** Change the row's config, as a host's `rows.update`: the row unloads (as `unload`) and applies again with `config` under the same key, so its listeners register again, after every existing one. */
   update(config: unknown): Promise<void>
   /** Withdraw its listeners and services, abort its `ctx.signal` and wait for its running listeners, then run the cleanups, latest first. */

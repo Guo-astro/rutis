@@ -52,8 +52,7 @@ impl PluginFactory<EntryConfig> for EntryFactory {
 }
 
 impl EntryFactory {
-    /// `config` through the loader's config step: the filled copy for the
-    /// rows the loader fills, as it is for others.
+    /// `config` through the loader's config step: the filled copy.
     fn filled(&self, config: &EntryConfig) -> Result<Value, Error> {
         let Some(loader) = self.loader.upgrade() else {
             return Ok(config.value.clone());
@@ -163,6 +162,7 @@ impl LoaderPlugin {
                     rekey_pending: Default::default(),
                     warned: Default::default(),
                     config_warnings: Mutex::new(super::config_step::standard_error()),
+                    followers: Arc::default(),
                     state: Mutex::new(State::default()),
                 }),
             },
@@ -217,6 +217,11 @@ impl DynPlugin for LoaderPlugin {
                 })
             };
             rutis::host::CtxHost::name_keys_with(ctx, &namer);
+            // One listener for the loader's rows, registered on the root: it
+            // outlives this fiber while the rows stop (`Followers`). Last of
+            // the fallible steps, so a failure above leaves nothing behind on
+            // the root; no row can be followed before `attach`.
+            self.loader.inner.followers.listen(ctx)?;
             let token = self.loader.inner.next_token();
             self.loader.inner.attach(None, token, ctx);
             let weak = Arc::downgrade(&self.loader.inner);
@@ -229,6 +234,8 @@ impl DynPlugin for LoaderPlugin {
                 if let Some(inner) = weak.upgrade() {
                     inner.detach(None, token);
                     // Instances live in the loader's tree: they go with it.
+                    // Their rows still stop, and say so: the listener is on
+                    // the root and leaves with the loader's `Inner`.
                     inner.state.lock().unwrap().instances.clear();
                 }
                 Ok(())

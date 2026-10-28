@@ -160,7 +160,7 @@ fn decode<C: ::rutis::serde::de::DeserializeOwned>(
     value: &ConfigValue,
     schema: bool,
 ) -> rutis::Result<C> {
-    rutis::internal::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
+    rutis::config::decode(value, schema).map_err(rutis::ConfigError::into_error)
 }
 
 /// Export a plugin and a static, pre-dlopen identity blob from a plugin

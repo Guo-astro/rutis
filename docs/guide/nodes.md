@@ -22,7 +22,7 @@
 }
 ```
 
-两端用同一个 token：拨号方出示 `RUTIS_TOKEN`（或 `RUTIS_TOKEN_OFFICE`），监听方用它核对来者是 `main`。
+两端用同一个 token：拨号方（`main`）出示 `RUTIS_TOKEN_OFFICE`，监听方（`office`）用 `RUTIS_TOKEN_MAIN` 核对来者是 `main`，两个变量设成同一个值。
 
 - `dial` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。
 - 自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
@@ -97,19 +97,43 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 ```json
 {
   "id": "main",
-  "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
+  "runtimes": { "remote": [{ "name": "gpu", "language": "python", "dial": "wss://gpu.example.com:7443/rutis" }] },
   "rows": [
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com:7443/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder" }
   ]
 }
 ```
 
+`runtimes.remote` 的一条写全一个远程运行时，谁主动连、一台还是多台各由一个字段决定：
+
+| 写法 | 含义 |
+| --- | --- |
+| `dial: <地址>` | 一台，rutis 去连；对方的 `--id` 是运行时名 |
+| `listen: <监听器>` | 一台，等它连进来；对方的 `--id` 是运行时名 |
+| `listen` + `instances: <分组>` | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
+| 都不写 | 不起连接，由一条带 `runtime` 的节点行或嵌入的程序提供会话 |
+
+`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。连接走 WebSocket。
+
+0.19 之前的写法——`runtimes.remote` 只写 `name` 与 `language`，另写一条带 `"runtime": "gpu"` 的 `rutis-bridge/peer` 行——照常可用（见[迁移到 0.19](../migration-0.19.md)）。
+
+`run` 打印连接的变化，前缀是 `runtime <名>`：
+
+```text
+runtime gpu: link connected
+runtime gpu: link down (gpu.example.com:7443: Connection refused); retrying in 2.1s
+runtime worker: connected worker-1
+runtime worker: disconnected worker-1 (connection lost)
+runtime worker: refused (the worker runtime lacks rows.v2 and hosts: …)
+```
+
+`rutis-host status` 的 `connections:` 一节给出当前状态。远端不含某行的插件时，只有这一行失败（`runtime gpu: this connection does not contain plugin embedder`），其他行不受影响。
+
 远程 Python 运行时的行名是 `<运行时名>:<模块>`，模块在远程机器上解析。Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析），`language` 写 `node`；Bun 运行时也一样：在那台机器的 Bun 项目里执行 `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <名字> --peer <控制方> .`（插件从这个目录解析，行名 `<运行时名>:<模块>`），`language` 写 `bun`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。每种远程运行时（Python、Node、Bun、Go 或 Swift 二进制）开始监听后都在 stderr 上打印一行实际绑定的地址：`rutis: listening on <地址>`。端口写 0（`listen:ws://127.0.0.1:0/rutis`）时由系统挑一个空闲端口，脚本和测试从这一行读出来；不要先找一个空闲端口再传给它，运行时绑定之前别的进程可能已经占了这个端口。Python 运行时会话结束时还打印一行 `rutis: session ended (<原因>); waiting for a controller`（原因如 `heartbeat timeout`、`connection lost`、`closed (1001): …`），被新连接接替时打印 `rutis: session ended (replaced by a new connection)`。
 
 ### 连进来的运行时
 
-运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变，或者数量会变（多台设备、扩缩容的 worker）时用这种方式。rutis 一侧在 `runtimes.remote` 的条目里写 `listen`（接入的监听器）和 `instances`（一个 `instanced` 分组），不写节点行：
+运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变，或者数量会变（多台设备、扩缩容的 worker）时用这种方式。只有一台时在 `runtimes.remote` 的条目里只写 `listen`（接入的监听器），运行时的 `--id` 写运行时名；数量会变时再加 `instances`（一个 `instanced` 分组）。都不写节点行：
 
 ```json
 {
@@ -124,7 +148,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 }
 ```
 
-每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。没有声明就提供的服务（自动投到 rutis 的）也一样：只有本实例里的行看得到，实例外的行和别的实例都看不到。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
+每条连接出示同一个 token（rutis 一侧是 `RUTIS_TOKEN_WORKER`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。没有声明就提供的服务（自动投到 rutis 的）也一样：只有本实例里的行看得到，实例外的行和别的实例都看不到。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
 
 Python 运行时用 `dial:` 连进来：
 
@@ -173,6 +197,6 @@ Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android �
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
 - Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。拨出（`dial:wss://`）由一个线程完成连接的全部读写，不受影响。
 - 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
-- `rutis-host` 的 token 来自环境变量，运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`（重启会断开所有连接）。运行中只切断一个身份是身份层的吊销钩子（rutis-bridge 的 `Revocations`，[设计](../design-remote-runtime-dial-2026-10-14.md#五身份层)），给将来的管理服务和嵌入 rutis 的 Rust 程序用：只断开以这个身份接受的连接，进行中的调用以传输错误失败，之后的连接与 token 不对时一样被拒（403，或关闭码 4003），每 30 秒重试。
+- `rutis-host` 的 token 来自环境变量，运行中不能换：换 token 要重启 `rutis-host`（重启会断开所有连接）。断开现有连接靠停掉那一行：连接这个对端或接受这些运行时的那一行停掉，它的连接随之关闭，进行中的调用以传输错误失败。
 - `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
 - 节点只按名字共享 `export` 里列出的服务和事件；事件还要对端在 `import` 里列出。

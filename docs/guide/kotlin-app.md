@@ -93,7 +93,7 @@ class Warmer {
 ```
 
 - 参数类型写 `@RutisClient` 接口时拿到 KSP 生成的代理，和 `ctx.use<Cache>("cache")` 是同一种：`suspend` 方法挂起，普通方法阻塞（不能在主线程上调用）。`@RutisClient` 方法的返回值也一样。
-- 参数写 `Any?` 时拿到 `arcships.rutis.RemoteObject`：`suspend fun call(method, vararg args)` 挂起，`fun callBlocking(method, vararg args)` 阻塞，参数和结果都是普通的 Kotlin 值；`release()` 立即交还引用，不等它被回收。列表、map 里的对象和事件参数里的对象，经 `Any?` 拿到 `RemoteObject`；`List<Cache>` 这类集合里的接口类型不支持。
+- 参数写 `Any?` 时拿到 `arcships.rutis.advanced.RemoteObject`：`suspend fun call(method, vararg args)` 挂起，`fun callBlocking(method, vararg args)` 阻塞，参数和结果都是普通的 Kotlin 值；`release()` 立即交还引用，不等它被回收。列表、map 里的对象和事件参数里的对象，经 `Any?` 拿到 `RemoteObject`；`List<Cache>` 这类集合里的接口类型不支持。
 - 参数类型是数据（`@Serializable` 类、`String` 等）时，这次调用以 `bad-argument` 失败：`argument 1 should be a Point, got an object (an object is received only as a @RutisClient interface or Any?)`。
 - 代理上没有数据字段：要数据，让方法返回它。调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`。
 - 同一个对象交出几次，这里拿到同一个代理；把收到的代理或 `RemoteObject` 再交出去，发出的是原来那个对象，交回原来的进程，那边拿到的是原对象。
@@ -206,7 +206,7 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 ## 7. 测试
 
-- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。
+- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。装载出来的 `loaded.on(name) { args -> ... }` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
 - 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各成实例；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
 
 ## 8. 真机验收清单

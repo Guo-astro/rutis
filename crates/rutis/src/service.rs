@@ -110,14 +110,12 @@ pub struct Entry {
 
 /// Read the marked service `provision` provided at `key` through `ctx`, by
 /// the strict read path ([`CtxInternal::require_provided_as`](crate::internal::CtxInternal::require_provided_as)): `check()` applies,
-/// read interceptors apply with `actor` (the calling row) as the reader,
 /// and a read that finds another binding than the one provided (the slot
 /// provided again, by another build after a swap, say) is refused.
 pub type Resolve = fn(
     ctx: &Ctx,
     key: &TypeKey,
     provision: &Provision,
-    actor: Option<&Ctx>,
 ) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
 /// The native binding a marked service was provided as: the entry by name
@@ -191,9 +189,8 @@ impl Entry {
         ctx: &Ctx,
         key: &TypeKey,
         provision: &Provision,
-        actor: Option<&Ctx>,
     ) -> Result<Arc<dyn Any + Send + Sync>, String> {
-        (self.resolve)(ctx, key, provision, actor)
+        (self.resolve)(ctx, key, provision)
     }
     /// Call `method`, one of [`Entry::methods`].
     pub fn invoke(
@@ -1019,9 +1016,9 @@ pub trait FailCordis {
 }
 impl FailCordis for &&&&Failure<'_, Error> {
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
-        // thrown under the name it had in 0.16, as every language reads it
+        // thrown as `Error`, its code the kind's variant
         let code = debug_ident(&format!("{:?}", self.0));
-        wire.failure("CordisError", &code, self.0.to_string(), None)
+        wire.failure("Error", &code, self.0.to_string(), None)
     }
 }
 
@@ -1517,7 +1514,6 @@ mod tests {
         _: &Ctx,
         _: &TypeKey,
         _: &Provision,
-        _: Option<&Ctx>,
     ) -> Result<Arc<dyn Any + Send + Sync>, String> {
         Err("unused".into())
     }
