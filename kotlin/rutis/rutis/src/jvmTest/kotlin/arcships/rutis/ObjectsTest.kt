@@ -24,6 +24,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import arcships.rutis.generated.rutisObject
+import arcships.rutis.generated.ObjectProxy
+import arcships.rutis.advanced.RemoteObject
+import arcships.rutis.generated.Tables
 
 /** An object with methods of the test's side. */
 @RutisService

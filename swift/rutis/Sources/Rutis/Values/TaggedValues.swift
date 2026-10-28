@@ -102,22 +102,22 @@ struct TextCursor {
 
     var end: Bool { at == bytes.count }
 
-    mutating func date() -> Rutis.CalendarDate? {
+    mutating func date() -> Rutis.Advanced.CalendarDate? {
         guard let year = digits(4), byte("-"), let month = digits(2), byte("-"), let day = digits(2) else { return nil }
-        let date = Rutis.CalendarDate(year: year, month: month, day: day)
+        let date = Rutis.Advanced.CalendarDate(year: year, month: month, day: day)
         return date.isValid ? date : nil
     }
 
-    mutating func time() -> Rutis.TimeOfDay? {
+    mutating func time() -> Rutis.Advanced.TimeOfDay? {
         guard let hour = digits(2), byte(":"), let minute = digits(2), byte(":"), let second = digits(2),
               let nanosecond = fraction() else { return nil }
-        let time = Rutis.TimeOfDay(hour: hour, minute: minute, second: second, nanosecond: nanosecond)
+        let time = Rutis.Advanced.TimeOfDay(hour: hour, minute: minute, second: second, nanosecond: nanosecond)
         return time.isValid ? time : nil
     }
 
-    mutating func dateTime() -> Rutis.DateTime? {
+    mutating func dateTime() -> Rutis.Advanced.DateTime? {
         guard let date = date(), byte("T"), let time = time() else { return nil }
-        return Rutis.DateTime(date: date, time: time)
+        return Rutis.Advanced.DateTime(date: date, time: time)
     }
 }
 
@@ -135,7 +135,7 @@ private func pad(_ value: Int, _ width: Int) -> String {
     return text.count >= width ? text : String(repeating: "0", count: width - text.count) + text
 }
 
-extension Rutis {
+extension Rutis.Advanced {
     /// A calendar date without a time zone (tag `date`), years 0001–9999.
     /// Swift has no such type; it converts to and from DateComponents.
     public struct CalendarDate: Hashable, Comparable, Sendable, Codable, CustomStringConvertible, LosslessStringConvertible {
@@ -491,8 +491,8 @@ package struct Instant: Hashable, Sendable, CustomStringConvertible {
             rest += 86400
         }
         let (y, m, d) = civilFromDays(days)
-        let time = Rutis.TimeOfDay(hour: Int(rest / 3600), minute: Int(rest % 3600 / 60), second: Int(rest % 60), nanosecond: nanoseconds)
-        return "\(Rutis.CalendarDate(year: y, month: m, day: d))T\(time)Z"
+        let time = Rutis.Advanced.TimeOfDay(hour: Int(rest / 3600), minute: Int(rest % 3600 / 60), second: Int(rest % 60), nanosecond: nanoseconds)
+        return "\(Rutis.Advanced.CalendarDate(year: y, month: m, day: d))T\(time)Z"
     }
 
     /// Reads RFC 3339 in UTC, with an optional fraction of 1–9 digits.

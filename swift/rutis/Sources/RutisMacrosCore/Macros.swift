@@ -138,13 +138,13 @@ public struct ServiceMacro: MemberMacro, ExtensionMacro {
             // A method that throws: where it is declared crosses with what it
             // throws (Swift errors carry no stack, #677 §4.4).
             if throwing, let typeName, let site = context.location(of: function.funcKeyword, at: .afterLeadingTrivia, filePathMode: .fileID) {
-                call = "try await Rutis.located(\"\(typeName).\(name)\", \(site.file), \(site.line)) { \(call) }"
+                call = "try await Rutis._Generated.located(\"\(typeName).\(name)\", \(site.file), \(site.line)) { \(call) }"
             }
             if let output = function.signature.returnClause, trimmed(output.type) != "Void", trimmed(output.type) != "()" {
-                lines.append("return try Rutis.encode(\(call))")
+                lines.append("return try Rutis._Generated.encode(\(call))")
             } else {
                 lines.append(call)
-                lines.append("return try Rutis.encode(())")
+                lines.append("return try Rutis._Generated.encode(())")
             }
             methods.append(Method(name: name, body: lines.joined(separator: "\n")))
         }
@@ -169,7 +169,7 @@ public struct ServiceMacro: MemberMacro, ExtensionMacro {
         let table = entries.isEmpty ? "[:]" : "[\n" + entries.joined(separator: ",\n") + "\n]"
         return [
             "\(raw: access)static var rutisMethodNames: [String] { [\(raw: names)] }",
-            "\(raw: access)\(raw: isolation)func rutisMethods() -> [String: Rutis.Method] {\n\(raw: table)\n}",
+            "\(raw: access)\(raw: isolation)func rutisMethods() -> [String: Rutis._Generated.Method] {\n\(raw: table)\n}",
         ]
     }
 
@@ -228,9 +228,9 @@ public struct ClientMacro: PeerMacro {
                             failed = true
                             continue
                         }
-                        arguments.append("Rutis.export(\(value))")
+                        arguments.append("Rutis._Generated.export(\(value))")
                     } else {
-                        arguments.append("try Rutis.encode(\(value))")
+                        arguments.append("try Rutis._Generated.encode(\(value))")
                     }
                 }
                 // The parameters as declared, each given a usable name.
@@ -266,7 +266,7 @@ public struct ClientMacro: PeerMacro {
         let objectProxy: [DeclSyntax] = context.lexicalContext.isEmpty ? ["""
         /// An object of another process received as `any \(raw: name)` is its
         /// proxy (#687).
-        \(raw: access)func rutisObjectProxy(_: (any \(raw: name)).Type) -> ((Rutis.Client) -> any \(raw: name))? {
+        \(raw: access)func rutisObjectProxy(_: (any \(raw: name)).Type) -> ((Rutis.Advanced.Client) -> any \(raw: name))? {
             { \(raw: name)Proxy(rutisClient: $0) }
         }
         """] : []
@@ -274,9 +274,9 @@ public struct ClientMacro: PeerMacro {
         \(raw: access)struct \(raw: name)Proxy: \(raw: name), RutisProxy {
             \(raw: access)typealias Service = any \(raw: name)
             \(raw: access)static var rutisMethodNames: [String] { [\(raw: names.joined(separator: ", "))] }
-            \(raw: access)static func rutisMake(_ client: Rutis.Client) -> any \(raw: name) { \(raw: name)Proxy(rutisClient: client) }
-            \(raw: access)let rutisClient: Rutis.Client
-            \(raw: access)init(rutisClient: Rutis.Client) { self.rutisClient = rutisClient }
+            \(raw: access)static func rutisMake(_ client: Rutis.Advanced.Client) -> any \(raw: name) { \(raw: name)Proxy(rutisClient: client) }
+            \(raw: access)let rutisClient: Rutis.Advanced.Client
+            \(raw: access)init(rutisClient: Rutis.Advanced.Client) { self.rutisClient = rutisClient }
         \(raw: methods.joined(separator: "\n"))
         }
         """] + objectProxy
@@ -329,13 +329,13 @@ public struct ConfigMacro: ExtensionMacro {
                 // A literal initial value is the default; any other initial
                 // value is not, and the property stays required.
                 let literal = binding.initializer.map(\.value).flatMap { isLiteral($0) ? $0 : nil }
-                let defaulted = literal.map { ", default: Rutis.Schema.literal(\($0.trimmed) as \(trimmed(typeSyntax)))" } ?? ""
+                let defaulted = literal.map { ", default: Rutis._Generated.Schema.literal(\($0.trimmed) as \(trimmed(typeSyntax)))" } ?? ""
                 properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted)\(defaulted))")
             }
         }
         return [try ExtensionDeclSyntax("""
         extension \(type.trimmed): RutisConfigurable {
-            \(raw: access)static var rutisSchema: Rutis.Schema {
+            \(raw: access)static var rutisSchema: Rutis._Generated.Schema {
                 .object([\(raw: properties.joined(separator: ", "))])
             }
         }

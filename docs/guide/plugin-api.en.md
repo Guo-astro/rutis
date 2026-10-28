@@ -36,7 +36,7 @@ An error that crossed a session and is thrown on crosses again with its whole er
 
 Cleanups run in reverse registration order: the function returned by `apply` runs first, followed by functions registered with `ctx.effect`.
 
-In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*rutis.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
+In Go: `ctx.Use(name, &target)` binds the service to a struct of function fields (or a `*advanced.Service`); `ctx.Provide(name, value)`; `ctx.Effect(func(context.Context) error)`; `ctx.Go(task)` runs a goroutine stopped at unload. `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads.
 
 In Kotlin: `ctx.use<I>(name)` uses the service through the `@RutisClient` interface `I` (the provider's own object when one in this process implements `I`); `ctx.provide(name, obj)` takes an instance of a `@RutisService` class, whose method table the KSP processor generates at compile time; `ctx.effect { }`; `ctx` is a coroutine scope cancelled when the plugin unloads, and coroutines started with `ctx.launch { }` are cancelled and waited for then. A received error is a `RutisException`, matched by `name`.
 
@@ -77,17 +77,19 @@ Each language has the five modes, written the language's own way:
 
 | | Rust (`rutis`) | Node / Bun leaf plugin (`@arcships/rutis`) | Cordis plugin (in the Node runtime) | Python (`rutis`) | Go (`rutis`) | Swift (`Rutis`) | Kotlin（`arcships.rutis`） |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Listen | `ctx.on::<E>(listener)`; a synchronous listener `ctx.on_sync::<E>(..)`; options and prefixes `ctx.listen::<E>().prefix(p)` / `.name(n)` / `.once()` / `.prepend()` / `.global()`, then `.on(..)` → `Disposer` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (args...) in ... }` → `() -> Void` | `ctx.on(name, prepend = false, global = false) { args -> }` → `() -> Unit` |
-| Listener | a closure `\|event: Arc<E>, call: Call<E>\|` returning `Result<Option<E::Value>>`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `rutis.Next` (`func(context.Context) (any, error)`) | a closure of any parameters, decoded by their types; in a waterfall the last one is a `Rutis.Next<R>` (`async throws -> R?`) | `suspend (EventArgs) -> Any?`; in a waterfall `args.next` (`suspend () -> Any?`) is the last argument |
+| Listen | `ctx.on::<E>(listener)`; a synchronous listener `ctx.on_sync::<E>(..)`; options and prefixes `ctx.listen::<E>().prefix(p)` / `.name(n)` / `.once()` / `.prepend()` / `.global()`, then `.on(..)` → `Disposer` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis's own `ctx.on(name, fn, options?)` → `() => boolean`; `ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), advanced.Prepend(), advanced.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (args...) in ... }` → `() -> Void` | `ctx.on(name, prepend = false, global = false) { args -> }` → `() -> Unit` |
+| Listener | a closure `\|event: Arc<E>, call: Call<E>\|` returning `Result<Option<E::Value>>`, with `call.mode()`, `call.next()`; an `on_sync` closure gets a `SyncCall` | `(...args[, next]) => value \| Promise` | The same | `fn(*args[, next])`, may be `async def` | `fn(ctx, args...)`; in a waterfall the last argument is a `advanced.Next` (`func(context.Context) (any, error)`) | a closure of any parameters, decoded by their types; in a waterfall the last one is a `Rutis.Advanced.Next<R>` (`async throws -> R?`) | `suspend (EventArgs) -> Any?`; in a waterfall `args.next` (`suspend () -> Any?`) is the last argument |
 | `emit` | `ctx.emit(e)`, `e` an `E` or `Arc<E>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error` (refusals only) | `try ctx.emit(name, args...)` (refusals only) | `ctx.emit(name, *args)` (throws only when refused) |
 | `parallel` | `ctx.parallel(e).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` | `ctx.parallel(name, *args)` (suspends) |
 | `serial` | `ctx.serial(e).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` | `ctx.serial(name, *args): Any?` (suspends) |
 | `waterfall` | `ctx.waterfall(e).terminal(t).await` (`.terminal` optional) | `ctx.waterfall(name, ...args)`; with a terminal `ctx.waterfall.with(terminal)(name, ...args)` (every argument is the event's, functions too) | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)` (`terminal` a `rutis.Terminal`, `func(ctx, args ...any) (any, error)`, or `nil`) | `try await ctx.waterfall(name, args..., as: R.self) { terminal }` | `ctx.waterfall(name, *args, terminal = { args -> })` (suspends) |
 | `bail` | `ctx.bail(e)`; a host's `ctx.waterfall_sync(e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)` (synchronous on the wire) | `ctx.bail(name, *args): Any?` (blocks its thread) |
-| Filter | `ctx.filter(\|info\| ..)`, then the same five methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Listener) in ... }` → `Rutis.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
+| Filter | `ctx.filter(\|info\| ..)`, then the same five methods | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`, `c.rutis` is the descriptor | `ctx.filter(lambda d: ...)` → an object with the five methods | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Advanced.Listener) in ... }` → `Rutis.Advanced.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
 | Scope | `ctx.scope()` | the descriptor's `scope` | `ctx.rutis.scope` | the descriptor's `scope` | `ctx.Scope()` | `ctx.scope` | `ctx.scope` |
 | Unload signal | a listener is called with the `ctx` that registered it: `ctx.cancelled()` | `ctx.signal` | `ctx.signal` | the listener's task is cancelled | the listener's `ctx` is cancelled | the listener's Task is cancelled | the listener's coroutine is cancelled |
-| `parallel` failures | `ErrorKind::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError` (`errors`) | `*rutis.AggregateError` (`Errors`) | `RutisError` named `AggregateError` (`errors`) | `RutisException` (`name == "AggregateError"`, `errors`) |
+| `parallel` failures | `ErrorKind::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.advanced.AggregateError` (`errors`) | `*advanced.AggregateError` (`Errors`) | `RutisError` named `AggregateError` (`errors`) | `RutisException` (`name == "AggregateError"`, `errors`) |
+
+Names with `advanced` in them are in each language's advanced submodule (0.19, #692): Go `github.com/arcships/rutis/go/rutis/advanced`, Python `rutis.advanced`, Swift `Rutis.Advanced`, Kotlin `arcships.rutis.advanced`, JavaScript and TypeScript `@arcships/rutis/advanced`.
 
 In Node, `waterfall` returns a Promise whenever a listener is outside the process, so always `await` it. In Go, pass the `ctx` you received when emitting from a plugin method (it carries the call chain), and `ctx` itself in `Apply`. Rust's emitting methods are on `Ctx`, named as in the other languages.
 
@@ -112,7 +114,7 @@ ctx.on("greeting/format", exclaim)
 
 ```go
 ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-	inner, err := args[len(args)-1].(rutis.Next)(ctx)
+	inner, err := args[len(args)-1].(advanced.Next)(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +157,7 @@ Cordis plugins use Cordis's own way: in `ctx.emit(thisArg, name, ...)` (and the 
 
 ### `prepend` and `global`
 
-Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `ctx.listen::<E>().prepend()` (also `.global()`, `.once()`), then `.on(..)` / `.on_sync(..)`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, rutis.Prepend(), rutis.Global())`.
+Every language has these two listener options: `prepend` puts the listener before every listener of the name registered so far (the host decides the one registration order everyone sees); `global` exempts it from filters. Rust: `ctx.listen::<E>().prepend()` (also `.global()`, `.once()`), then `.on(..)` / `.on_sync(..)`; Node / Bun: `ctx.on(name, fn, { prepend: true })` (for a Cordis plugin, Cordis's own options); Python: `ctx.on(name, fn, prepend=True, global_=True)`; Go: `ctx.On(name, fn, advanced.Prepend(), advanced.Global())`.
 
 ### Lifecycle
 
@@ -206,14 +208,14 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 
 | Name | When | In each language |
 | --- | --- | --- |
-| `AggregateError` | `parallel` had failures; children in registration order, message `<n> listeners of <name> failed` | JS `AggregateError` (`errors`); Python `rutis.AggregateError` (`errors`); Go `*rutis.AggregateError` (`Errors`); Rust `ErrorKind::ListenersFailed` |
-| `AsyncListener` | `bail` / `waterfall_sync` met an asynchronous listener | JS an `Error` named `AsyncListener`; Python `rutis.AsyncListener`; Go `rutis.ErrAsyncListener`; Rust `ErrorKind::AsyncListener` |
-| `WaterfallNext` | `next` called twice, after the dispatch ended or was cancelled; in Rust, `call.next()` outside a waterfall, or by a synchronous listener in an asynchronous waterfall | JS `WaterfallNext`; Python `rutis.WaterfallNext`; Go `rutis.ErrWaterfallNext`; Rust `ErrorKind::WaterfallNext` |
-| `ReservedEvent` | Emitting `rutis/*`, refused synchronously by the emitting API | JS `ReservedEvent`; Python `rutis.ReservedEvent`; Go `rutis.ErrReservedEvent`; Rust `ErrorKind::ReservedEvent` |
-| `SyncWaitCycle` | A synchronous call (`bail`) would close a cycle of waits | As for service calls: Python `rutis.SyncWaitCycle`; Go `rutis.ErrSyncWaitCycle` |
+| `AggregateError` | `parallel` had failures; children in registration order, message `<n> listeners of <name> failed` | JS `AggregateError` (`errors`); Python `rutis.advanced.AggregateError` (`errors`); Go `*advanced.AggregateError` (`Errors`); Rust `ErrorKind::ListenersFailed` |
+| `AsyncListener` | `bail` / `waterfall_sync` met an asynchronous listener | JS an `Error` named `AsyncListener`; Python `rutis.advanced.AsyncListener`; Go `advanced.ErrAsyncListener`; Rust `ErrorKind::AsyncListener` |
+| `WaterfallNext` | `next` called twice, after the dispatch ended or was cancelled; in Rust, `call.next()` outside a waterfall, or by a synchronous listener in an asynchronous waterfall | JS `WaterfallNext`; Python `rutis.advanced.WaterfallNext`; Go `advanced.ErrWaterfallNext`; Rust `ErrorKind::WaterfallNext` |
+| `ReservedEvent` | Emitting `rutis/*`, refused synchronously by the emitting API | JS `ReservedEvent`; Python `rutis.advanced.ReservedEvent`; Go `advanced.ErrReservedEvent`; Rust `ErrorKind::ReservedEvent` |
+| `SyncWaitCycle` | A synchronous call (`bail`) would close a cycle of waits | As for service calls: Python `rutis.advanced.SyncWaitCycle`; Go `advanced.ErrSyncWaitCycle` |
 | `BindingError` | A transport failure, a withdrawn listener, a refused frame | Python `rutis.BindingError`; Go `rutis.ErrBinding`; Rust `ErrorKind::ListenerWithdrawn` or a transport error |
 
-In Go, check with `errors.Is(err, rutis.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
+In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
 
 **Match a listener's error by its name, not its class.** Where it arrives depends on where the listener runs: from another process it arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`; when every listener is in the emitter's process (the fast path), the listener's own error object may arrive. The test tools give a plugin's own emitters the crossed form (in strict mode), so a test catches a match by class; that the fast path keeps the original is not a guarantee.
 
@@ -248,7 +250,7 @@ Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `ruti
 
 ## Plugins in one runtime share its process
 
-The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance.
+The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance. A host can put a plugin in a process of its own, limit the time of calls into it and the services it may use: the plugin gets ordinary errors, `timeout` for a call over the limit and `unavailable` for a service the host does not let it use (see [Build a host open to plugins](open-host.en.md#3-keep-plugins-in-check)).
 
 When a service method holds the runtime for 5 seconds in one go (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
 
@@ -347,9 +349,9 @@ Objects inside arrays and dictionaries each go by reference too. A received obje
 | --- | --- | --- |
 | JS (Node, Bun) | Nothing to declare | A proxy: `await cache.get('a')` |
 | Python | Nothing to declare | A proxy: `await cache.get("a")` |
-| Go | A parameter whose type is a struct of function fields (as for a `ctx.Use` target); or `any` | Function fields that call the methods (blocking); `any` receives `*rutis.Service` |
-| Swift | A parameter typed with a `@RutisClient` protocol (`any Cache`); or `Any` | The protocol's proxy; `Any` receives `Rutis.Client` |
-| Kotlin | A parameter typed with a `@RutisClient` interface; or `Any?` | The interface's proxy; `Any?` receives `RemoteObject` |
+| Go | A parameter whose type is a struct of function fields (as for a `ctx.Use` target); or `any` | Function fields that call the methods (blocking); `any` receives `*advanced.Service` |
+| Swift | A parameter typed with a `@RutisClient` protocol (`any Cache`); or `Any` | The protocol's proxy; `Any` receives `Rutis.Advanced.Client` |
+| Kotlin | A parameter typed with a `@RutisClient` interface; or `Any?` | The interface's proxy; `Any?` receives `RemoteObject` (`arcships.rutis.advanced`) |
 | Rust | Hand-written `HostDispatch` | `rutis_bridge::session::Reference` (`call_method`, `call_method_async`), `ObjectRef` in Cordis bindings; a `#[rutis::service]` parameter does not take objects (`bad-argument`) |
 
 - One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there, and passed to a third process it is still the same object.
@@ -365,25 +367,25 @@ Objects inside arrays and dictionaries each go by reference too. A received obje
 - **In the same process** (rows of the same runtime) the receiver gets the object itself: methods stay synchronous and fields stay readable.
 - **Across processes** there are only methods, and every call is asynchronous. Code that reads a field or relies on a synchronous result works in one process and fails across processes; the test tool's strict mode hands out proxies shaped as across processes, so it fails in tests first.
 - **Idle stop**: an on-demand runtime (Go, Swift) stops `idle` seconds after its last row unloads. Its objects held elsewhere do not keep it running. After it stops, calls on them fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
-- **Identity**: one object received several times is one proxy, and handed back home it is the original object, in every language (Go: only through `*rutis.Service`).
+- **Identity**: one object received several times is one proxy, and handed back home it is the original object, in every language (Go: only through `*advanced.Service`).
 
 ### The ten values
 
 | Value | JS (Node, Bun) | Python | Go | Kotlin | Rust (`rutis-bridge`) | Swift |
 | --- | --- | --- | --- | --- | --- | --- |
 | Point in time | `Date` | `datetime` with a time zone (received in UTC) | `time.Time` (received in UTC) | `java.time.Instant`, `kotlin.time.Instant` (received as `java.time.Instant`) | `Instant` | `Date` (to the microsecond) |
-| Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `rutis.DateTime` | `LocalDateTime` | `DateTime` | `Rutis.DateTime` |
-| Date | String `"2026-10-15"` | `date` | `rutis.Date` | `LocalDate` | `Date` | `Rutis.CalendarDate` |
-| Time of day | String `"14:30:05"` | `time` without a time zone | `rutis.TimeOfDay` | `LocalTime` | `TimeOfDay` | `Rutis.TimeOfDay` |
+| Local date and time | String `"2026-10-15T14:30:05"` | `datetime` without a time zone | `advanced.DateTime` | `LocalDateTime` | `DateTime` | `Rutis.Advanced.DateTime` |
+| Date | String `"2026-10-15"` | `date` | `advanced.Date` | `LocalDate` | `Date` | `Rutis.Advanced.CalendarDate` |
+| Time of day | String `"14:30:05"` | `time` without a time zone | `advanced.TimeOfDay` | `LocalTime` | `TimeOfDay` | `Rutis.Advanced.TimeOfDay` |
 | Binary data | `Uint8Array` (`Buffer`, `ArrayBuffer`, `DataView` can be sent too) | `bytes` (`bytearray`, `memoryview` can be sent too) | `[]byte` | `ByteArray` | `Vec<u8>` (`Bytes` in generated code) | `Data` |
 | Map | `Map` | `dict` with a key that is not a string (received as a subclass of `dict`) | A map whose keys are not strings (`map[any]any` decoded into `any`) | a `Map` whose keys are not strings | `Vec<(Value, Value)>` (`ValueMap` in generated code) | A `Dictionary` whose keys are not `String` (`[AnyHashable: Any?]` decoded into `Any`) |
 | Set | `Set` | `set` (`frozenset` can be sent too) | `map[K]struct{}`, or a slice (a slice decoded into `any`) | `Set` | `Vec<Value>` (`ValueSet` in generated code) | `Set` |
-| Big integer | `bigint` | `int` (received as a subclass of `int`) | `*big.Int`, or an integer type that holds it | `BigInteger`, or an integer type that holds it | `BigInt`, or an integer type that holds it | `Rutis.BigInt`, or an integer type that holds it |
-| Decimal | String `"12.30"` | `Decimal` | `rutis.Decimal` | `BigDecimal` (its scale kept) | `Decimal` | `Decimal` (38 digits, no trailing zeros; declare `String` for the text) |
-| UUID | String (lowercase) | `UUID` | `rutis.UUID` | `java.util.UUID`, `kotlin.uuid.Uuid` | `Uuid` | `UUID` |
+| Big integer | `bigint` | `int` (received as a subclass of `int`) | `*big.Int`, or an integer type that holds it | `BigInteger`, or an integer type that holds it | `BigInt`, or an integer type that holds it | `Rutis.Advanced.BigInt`, or an integer type that holds it |
+| Decimal | String `"12.30"` | `Decimal` | `advanced.Decimal` | `BigDecimal` (its scale kept) | `Decimal` | `Decimal` (38 digits, no trailing zeros; declare `String` for the text) |
+| UUID | String (lowercase) | `UUID` | `advanced.UUID` | `java.util.UUID`, `kotlin.uuid.Uuid` | `Uuid` | `UUID` |
 
 - Plugins write their language's native code; rutis does the conversion. A received big integer or map is, in Python, a subclass of `int` or `dict`, used as usual; passed on as it is, it is still a big integer or map.
-- JS has no type for local date-times, dates, times of day, decimals or UUIDs: they arrive as plain strings, their content complete, and `===` works as usual. Passed on from JS as they are, such values lose their type (a `date` sent by Python comes back through JS as a `str`). To create one of these five values from nothing in JS, or to pass one on as its type, use the constructors of `@arcships/rutis`: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; a plain string is still a string. Go can also decode these five values into a `string`.
+- JS has no type for local date-times, dates, times of day, decimals or UUIDs: they arrive as plain strings, their content complete, and `===` works as usual. Passed on from JS as they are, such values lose their type (a `date` sent by Python comes back through JS as a `str`). To create one of these five values from nothing in JS, or to pass one on as its type, use the constructors of `@arcships/rutis/advanced`: `rutis.datetime('2026-10-15T14:30')`, `rutis.date('2026-10-15')`, `rutis.time('14:30')`, `rutis.decimal('1.10')`, `rutis.uuid('…')`; a plain string is still a string. Go can also decode these five values into a `string`.
 - Integers: an integer beyond ±(2^53−1) (absolute value above 9007199254740991; Python `int`, Go `int64` / `uint64`, Rust integers) crosses as a big integer automatically, with nothing special to write; JS receives it as a `bigint`, and within range still as a `number`. A received big integer decodes into a declared integer type that holds it; one that does not hold it fails the call. `bool` is not affected.
 - Times: years 0001–9999. A local date and time has no time zone and crosses as it is, with no zone guessed and no conversion to a point in time. A point in time is truncated toward negative infinity to the receiver's precision: milliseconds in JS, microseconds in Python, nanoseconds in Go and Rust; Python also truncates local date-times and times of day to the microsecond.
 - A decimal keeps its trailing zeros (`1.10` is not `1.1`) and uses no exponent; NaN and infinities cannot cross. Big integers and decimals have at most 4300 digits.

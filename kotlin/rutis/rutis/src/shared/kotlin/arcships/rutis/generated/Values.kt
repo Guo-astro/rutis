@@ -1,4 +1,4 @@
-package arcships.rutis
+package arcships.rutis.generated
 
 import arcships.rutis.internal.Native
 import arcships.rutis.internal.peer.Decimal
@@ -54,89 +54,7 @@ import kotlin.time.toJavaInstant
 import kotlin.time.toKotlinInstant
 import kotlin.uuid.toJavaUuid
 import kotlin.uuid.toKotlinUuid
-
-/**
- * The value layer: a kotlinx-serialization format between Kotlin values and
- * the values a session carries (docs/design-value-types-2026-10-15.md),
- * driven by the serializers the compiler generates. Every value is checked
- * on its way: points in time, binary data, maps with keys that are not
- * strings, sets, big integers, decimals and UUIDs cross as their tagged
- * values, never as text or numbers; an integer beyond ±(2^53−1) crosses as a
- * `bigint`.
- *
- * | Kotlin | crosses as |
- * | --- | --- |
- * | `java.time.Instant`, `kotlin.time.Instant` | `instant` |
- * | `LocalDateTime` / `LocalDate` / `LocalTime` | `datetime` / `date` / `time` |
- * | `ByteArray` | `bytes` |
- * | `Map` with keys that are not strings | `map` |
- * | `Set` | `set` |
- * | `BigInteger` | `bigint` |
- * | `BigDecimal` | `decimal`, its scale kept |
- * | `java.util.UUID`, `kotlin.uuid.Uuid` | `uuid` |
- *
- * Fields of these JDK types in a `@Serializable` class are marked
- * `@Contextual` (kotlinx's rule); [serializersModule] has their serializers.
- */
-object RutisFormat {
-    /** The serializers of the JDK types the format takes, and of `Any` (decoded natively). */
-    val serializersModule: SerializersModule = SerializersModule {
-        contextual(Instant::class, JdkSerializers.InstantSerializer)
-        contextual(LocalDateTime::class, JdkSerializers.LocalDateTimeSerializer)
-        contextual(LocalDate::class, JdkSerializers.LocalDateSerializer)
-        contextual(LocalTime::class, JdkSerializers.LocalTimeSerializer)
-        contextual(BigInteger::class, JdkSerializers.BigIntegerSerializer)
-        contextual(BigDecimal::class, JdkSerializers.BigDecimalSerializer)
-        contextual(UUID::class, JdkSerializers.UuidSerializer)
-        contextual(Any::class, AnySerializer)
-    }
-
-    /** `value` as a session value. */
-    fun <T> encode(serializer: SerializationStrategy<T>, value: T): Any? {
-        var result: Any? = null
-        ValueEncoder { result = it }.encodeSerializableValue(serializer, value)
-        return result
-    }
-
-    /** A session value as a `T`. */
-    fun <T> decode(deserializer: DeserializationStrategy<T>, value: Any?): T =
-        ValueDecoder(value).decodeSerializableValue(deserializer)
-
-    /** The serializer of `T`, the JDK types and `Any` included. */
-    inline fun <reified T> serializer(): KSerializer<T> = serializersModule.serializer()
-}
-
-/** `Any`: decoded as the value's native Kotlin form, encoded by what the value is. */
-object AnySerializer : KSerializer<Any> {
-    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("arcships.rutis.Any", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: Any) {
-        if (encoder !is ValueEncoder) throw ValueException("Any is encoded by RutisFormat only")
-        encoder.put(Native.fromNative(value))
-    }
-
-    override fun deserialize(decoder: Decoder): Any {
-        if (decoder !is ValueDecoder) throw ValueException("Any is decoded by RutisFormat only")
-        return Native.toNative(decoder.value) ?: throw ValueException("null where a value was expected")
-    }
-}
-
-/** The serializers of JDK types, as text outside RutisFormat (their wire text). */
-object JdkSerializers {
-    private abstract class Text<T : Any>(name: String, val format: (T) -> String, val parse: (String) -> T) : KSerializer<T> {
-        override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor(name, PrimitiveKind.STRING)
-        override fun serialize(encoder: Encoder, value: T) = encoder.encodeString(format(value))
-        override fun deserialize(decoder: Decoder): T = parse(decoder.decodeString())
-    }
-
-    val InstantSerializer: KSerializer<Instant> = object : Text<Instant>("java.time.Instant", ::formatInstant, ::parseInstant) {}
-    val LocalDateTimeSerializer: KSerializer<LocalDateTime> = object : Text<LocalDateTime>("java.time.LocalDateTime", ::formatDateTime, ::parseDateTime) {}
-    val LocalDateSerializer: KSerializer<LocalDate> = object : Text<LocalDate>("java.time.LocalDate", ::formatDate, ::parseDate) {}
-    val LocalTimeSerializer: KSerializer<LocalTime> = object : Text<LocalTime>("java.time.LocalTime", ::formatTime, ::parseTime) {}
-    val BigIntegerSerializer: KSerializer<BigInteger> = object : Text<BigInteger>("java.math.BigInteger", { it.toString() }, ::BigInteger) {}
-    val BigDecimalSerializer: KSerializer<BigDecimal> = object : Text<BigDecimal>("java.math.BigDecimal", { it.toPlainString() }, { BigDecimal(parseDecimal(it).text) }) {}
-    val UuidSerializer: KSerializer<UUID> = object : Text<UUID>("java.util.UUID", ::formatUuid, { parseUuid(it.lowercase()) }) {}
-}
+import arcships.rutis.advanced.RutisFormat
 
 private const val SET = "kotlin.collections.LinkedHashSet"
 private const val HASH_SET = "kotlin.collections.HashSet"

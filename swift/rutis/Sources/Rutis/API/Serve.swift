@@ -21,7 +21,7 @@ extension Rutis {
     /// until the session ends. Plugins are registered only here.
     public static func serve(_ plugins: Definition...) -> Never {
         do {
-            try serveArgs(Array(CommandLine.arguments.dropFirst()), plugins)
+            try serveArguments(Array(CommandLine.arguments.dropFirst()), plugins)
             exit(0)
         } catch {
             if (error as? Refused)?.said != true {
@@ -31,12 +31,11 @@ extension Rutis {
         }
     }
 
-    /// `serve` with the arguments given, returning instead of exiting: for
-    /// binaries with commands of their own.
-    public static func serveArgs(_ args: [String], _ plugins: [Definition]) throws {
+    /// `Advanced.serveArgs`.
+    static func serveArguments(_ args: [String], _ plugins: [Definition]) throws {
         try check(plugins)
         if args == ["--rutis-manifest"] {
-            FileHandle.standardOutput.write(Data(manifest(plugins).utf8 + [0x0A]))
+            FileHandle.standardOutput.write(Data(manifestText(plugins).utf8 + [0x0A]))
             return
         }
         let (channel, endpoint, project) = try parse(args)
@@ -173,12 +172,12 @@ extension Rutis {
         }
     }
 
-    /// What `plugins` declare, as `--rutis-manifest` prints it.
-    public static func manifest(_ plugins: [Definition]) -> String {
+    /// `Advanced.manifest`.
+    static func manifestText(_ plugins: [Definition]) -> String {
         JSONWriter.string(.object([
             ("manifest", .int(1)),
-            ("sdk", .string(sdkVersion)),
-            ("pluginApi", .int(pluginAPI)),
+            ("sdk", .string(Advanced.sdkVersion)),
+            ("pluginApi", .int(Advanced.pluginAPI)),
             ("runtime", .string(marker)),
             ("platform", .string(platform)),
             ("plugins", .object(plugins.sorted { $0.name < $1.name }.map { ($0.name, $0.described) })),
@@ -235,6 +234,19 @@ extension Rutis {
 }
 
 /// A one-shot result a thread can block on.
+extension Rutis.Advanced {
+    /// `Rutis.serve` with the arguments given, returning instead of
+    /// exiting: for binaries with commands of their own.
+    public static func serveArgs(_ args: [String], _ plugins: [Rutis.Definition]) throws {
+        try Rutis.serveArguments(args, plugins)
+    }
+
+    /// What `plugins` declare, as `--rutis-manifest` prints it.
+    public static func manifest(_ plugins: [Rutis.Definition]) -> String {
+        Rutis.manifestText(plugins)
+    }
+}
+
 final class ResultEvent: @unchecked Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
     private let box = ErrorBox()

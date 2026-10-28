@@ -243,7 +243,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waiting_for(&entry)` 列出这一行等的名字，并说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
 - **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。重新构建不用换版本号：同一插件的两次构建类型的 `TypeId` 相同，每个值按提供它的那次构建的代码对外，两次构建可以同时加载。去掉标注的构建，它的值不再按名字对外；名字以最新的构建为准。宿主要链接 `rutis-bridge`。
 - **没链接 rutis-bridge**：按名字对外和重名检查都由它做。程序没链接它时，标注的类型只按类型提供，第一次提供时错误汇集收到一次 `ErrorKind::NotServedByName`（默认写 `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`）。
-- **TypeScript 声明**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature）。调用本身不需要声明。
+- **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
 
 完整示例：[`examples/marked-services`](../../examples/marked-services)。
 
@@ -509,6 +509,19 @@ let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), 
     .stdout(Stdio::Null);
 ```
 
+### 本机运行时的选项
+
+管住第三方插件时用，都默认关，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
+
+| `LocalRuntime` 的方法 | 作用 |
+| --- | --- |
+| `.call_limit(时限)` | 进入这个运行时里插件代码的调用（按名字调用它的行的服务、调用它交出的函数）超过时限就取消，调用方收到错误码 `timeout`（`data`：`{runtime, limit, service?, method?}`，`limit` 为毫秒）。同一运行时里插件之间的调用不受限 |
+| `.kill_on_timeout()` | 与 `call_limit` 一起用：超时后再结束运行时的进程，状态为 `down (ended by the host: …)`；重启用运行时 fiber 的 `restart()` |
+| `.allowed_services([..])` | 插件只能用这些来自运行时之外的服务；`inject` 里有别的时这一行启动失败（错误码 `unavailable`）。同一运行时里的行互相提供的不受限 |
+| `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
+
+每个插件一个进程：每个插件一个 `named` 的运行时，行用 `RuntimeResolver::modules`，写 `<运行时名>:<npm 名或文件>`（Node、Python 都这样）。
+
 ### Go 运行时
 
 Go 插件是编译好的二进制，一个二进制一个运行时（features：`rutis-loader` 的 `go`）。`GoResolver` 读二进制的清单（`<二进制> --rutis-manifest`），把 `go:<插件>` 路由到含有它的二进制；`GoRuntimes` 在有行用到时启动它，空闲后停下：
@@ -651,14 +664,17 @@ off.dispose().await?;
 
 ## 导出服务：参考
 
-Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_bridge::build::Exports`（构建依赖开 `exports` feature）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
+Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明和 Python 类型由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_bridge::build::Exports`（构建依赖开 `exports` feature）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
 
 | `Exports` | 作用 |
 | --- | --- |
 | `.typescript(file)` | 声明写到 `file`（相对 `Cargo.toml`），内容变了才写 |
+| `.python(file)` | Python 类型写到 `file`（相对 `Cargo.toml`），内容变了才写 |
 | `.declared(path, typescript)` | 生成器推不出时，`path` 处 Rust 类型对应的 TypeScript 类型 |
-| `.generate()` | 在 `build.rs` 里写出声明（要先给 `.typescript(…)`），源码变了 Cargo 会重新运行它 |
-| `.declarations(crate 目录)` | 不在构建脚本里时，返回声明的内容（`rutis-host types` 用的就是它） |
+| `.declared_python(path, python)` | 同一个 `path` 的 Python 类型（要先有 `.declared`）；不给时写 `typing.Any` 并警告 |
+| `.generate()` | 在 `build.rs` 里写出给了的文件（至少给 `.typescript(…)`、`.python(…)` 之一），源码变了 Cargo 会重新运行它 |
+| `.write(crate 目录)` | 不在构建脚本里时，写出给了的文件（相对当前目录），返回声明的内容（`rutis-host types` 用的就是它） |
+| `.declarations(crate 目录)` | 不在构建脚本里时，返回声明的内容 |
 
 ### 源码从哪来
 
@@ -709,11 +725,26 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 `rutis-host types` 和 `.typescript(…)` 写出的文件包含每个服务类型的接口、它用到的数据类型、`RustError`、各 `<Name>Thrown` 类型，以及按名字列出服务的 `Services`：`ctx.use<Services['calendar']>('calendar')`。它能通过 `tsc --strict`（两个示例都会检查）。写出的文件要提交：Rust 一侧变了，`build.rs` 会改写它；用 `rutis-host types` 的，再运行一次。
 
+宿主把插件交给别人（或别的团队）用 Python 写时，同时写出 Python 类型，和插件模板一起给出：
+
+```sh
+rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
+```
+
+`build.rs` 里同样是 `Exports::new().typescript(…).python(…)`。
+
+**Python 类型**（Python 3.10 起）：服务是 `typing.Protocol`，结构体是 `TypedDict`（可省略的字段放进 `total=False` 的父类；字段名不是标识符时用函数式写法），只有名字的枚举是 `Literal`，带数据的枚举是 `TypedDict` 的联合，`Option<T>` 是 `T | None`，`Vec<T>`、`HashMap<String, T>`、元组是 `list`、`dict[str, T]`、`tuple`，整数、浮点是 `int`、`float`，`serde_json::Value` 是 `Any`，回调是 `Callable[[A], R | Awaitable[R]]`，`rutis::Definition` 是 `rutis.Plugin`，错误类型 `<Name>Thrown` 是 `rutis.RemoteError` 的别名、`<Name>ThrownCode` 是它的错误码 `Literal`。泛型结构体在 Python 里不带类型参数（3.10 的 `TypedDict` 不能是泛型），参数是 `Any`。插件作者写 `notes: Notes = ctx.use("notes")`，由编辑器或 pyright 检查调用，不写也照样运行（见 [Python 插件：宿主给的类型](python-plugin.md#宿主给的类型)）。它能通过 pyright 的严格模式（`examples/marked-services` 会检查），同样要提交。`.declared` 的类型没有 Python 版本时写 `Any` 并警告：
+
+```text
+$ rutis-host types . --python types/deskmate.py
+warning: notes::Text has no Python type: declare it with .declared_python (written as Any)
+```
+
 ### 限制
 
 - 生成器看不到宏写出的东西：宏（derive 除外）写出的类型、`impl` 块或方法找不到。服务类型必须是具体的 struct 或 enum（不能是泛型，不能是 trait 对象）。
 - 取 `&mut self`、返回借用、函数参数取引用（`Fn(&A)`）、除函数以外的泛型参数、除 `Fn` 以外的 `impl Trait`、不返回 `Result` 的 future 的函数参数，这样的方法绑定不了：宏报编译错误（见[上文](#在类型上标注-rutisservice)），生成器写声明时也跳过它并给出警告。
-- 数据类型需要生成器能读懂的 serde derive：手写的 `Serialize`、`#[serde(with / serialize_with / into / remote)]`，或者不读源码的 crate 的类型（`std`、`serde_json`、`chrono`、`uuid`、`url` 和带标签的值除外）需要 `.declared(path, typescript)`；在那之前声明里没有用到它的方法（调用不受影响），警告里写明类型。
+- 数据类型需要生成器能读懂的 serde derive：手写的 `Serialize`、`#[serde(with / serialize_with / into / remote)]`，或者不读源码的 crate 的类型（`std`、`serde_json`、`chrono`、`uuid`、`url` 和带标签的值除外）需要 `.declared(path, typescript)`；在那之前声明里没有用到它的方法（调用不受影响），警告里写明类型。写 Python 类型时，再用 `.declared_python(path, python)` 给出它的 Python 类型。
 - `#[cfg]` 按上面的规则求值；生成器看不到的 `cfg` 视为关闭。
 - 方法的 future 必须是 `Send`（否则编译失败）。
 - 宏只看到 `impl` 块本身，类型上的判断（是不是 `Result`、错误怎么取 `code`、参数是不是函数）交给展开后的具体代码，所以类型别名照样识别。异步方法写成 `async fn`，或返回 `BoxFuture<'_, T>`、`Pin<Box<dyn Future<Output = T> + Send>>`、`impl Future<Output = T>`；返回 future 的别名是编译错误。`&Ctx` 参数按名字 `Ctx` 识别。

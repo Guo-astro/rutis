@@ -46,17 +46,17 @@ jobs:
           node - <<'EOF' >> "$GITHUB_OUTPUT"
           const wanted = JSON.parse(process.env.PLATFORMS)
           const binaries = [
-            { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', container: 'messense/rust-musl-cross:x86_64-musl', npm: 'linux-x64' },
-            { os: 'ubuntu-24.04', target: 'aarch64-unknown-linux-musl', container: 'messense/rust-musl-cross:aarch64-musl', npm: 'linux-arm64' },
+            { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-musl', zig: true, npm: 'linux-x64' },
+            { os: 'ubuntu-24.04', target: 'aarch64-unknown-linux-musl', zig: true, npm: 'linux-arm64' },
             { os: 'macos-14', target: 'x86_64-apple-darwin', npm: 'darwin-x64' },
             { os: 'macos-14', target: 'aarch64-apple-darwin', npm: 'darwin-arm64' },
             { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', npm: 'win32-x64', exe: '.exe' },
           ]
-          // ring's assembly needs __ARM_ARCH, which the GCC of the default
-          // (manylinux2014) aarch64 cross image does not define.
+          // Linux wheels are linked by zig against the given glibc, without a
+          // container: any Linux runner builds them, Docker or not.
           const wheels = [
-            { os: 'ubuntu-24.04', target: 'x86_64', manylinux: 'auto', npm: 'linux-x64' },
-            { os: 'ubuntu-24.04', target: 'aarch64', manylinux: '2_28', npm: 'linux-arm64' },
+            { os: 'ubuntu-24.04', target: 'x86_64-unknown-linux-gnu', artifact: 'x86_64', manylinux: '2014', npm: 'linux-x64' },
+            { os: 'ubuntu-24.04', target: 'aarch64-unknown-linux-gnu', artifact: 'aarch64', manylinux: '_2_28', npm: 'linux-arm64' },
             { os: 'macos-14', target: 'x86_64-apple-darwin', npm: 'darwin-x64' },
             { os: 'macos-14', target: 'aarch64-apple-darwin', npm: 'darwin-arm64' },
             { os: 'windows-2025', target: 'x86_64-pc-windows-msvc', npm: 'win32-x64' },
@@ -75,17 +75,24 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.binaries) }}
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
-        if: matrix.container == ''
         with:
           targets: ${{ matrix.target }}
-      - name: add the target (container)
-        if: matrix.container != ''
-        run: rustup target add ${{ matrix.target }}
-      - run: cargo build --locked --release -p rutis-host --target ${{ matrix.target }}
+      # Linux: a static musl binary linked by zig, on the runner itself (no
+      # container, so no Docker needed).
+      - uses: actions/setup-python@v5
+        if: matrix.zig
+        with:
+          python-version: '3.12'
+      - name: zig
+        if: matrix.zig
+        run: python -m pip install cargo-zigbuild==0.24.0 ziglang==0.15.2
+      - if: matrix.zig
+        run: cargo zigbuild --locked --release -p rutis-host --target ${{ matrix.target }}
+      - if: ${{ !matrix.zig }}
+        run: cargo build --locked --release -p rutis-host --target ${{ matrix.target }}
       - name: stage
         shell: bash
         env:
@@ -122,14 +129,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Linux: zig links against the manylinux glibc on the runner itself,
+      # with no container (no Docker needed).
+      - uses: actions/setup-python@v5
+        if: matrix.manylinux
+        with:
+          python-version: '3.12'
+      - name: zig
+        if: matrix.manylinux
+        run: python -m pip install ziglang==0.15.2
       - uses: PyO3/maturin-action@v1
+        if: matrix.manylinux
+        with:
+          maturin-version: v1.15.0
+          target: ${{ matrix.target }}
+          container: 'off'
+          args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels --zig --compatibility manylinux${{ matrix.manylinux }}
+      - uses: PyO3/maturin-action@v1
+        if: ${{ !matrix.manylinux }}
         with:
           target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --locked --manifest-path crates/rutis-host/Cargo.toml --out wheels
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{ matrix.artifact || matrix.target }}
           path: wheels/
 
   # The npm tarballs and the rutis Python package. The platform packages are

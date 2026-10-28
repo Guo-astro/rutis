@@ -120,6 +120,10 @@ pub mod code {
     /// A row's config does not match its plugin's schema (config schema
     /// design §5.2); its message is `config: <problem>`, one line each.
     pub const BAD_CONFIG: &str = "bad-config";
+    /// A call into a runtime did not finish within the limit the host set
+    /// for it (`LocalRuntime::call_limit`); data `{runtime, limit,
+    /// service?, method?}`, `limit` in milliseconds.
+    pub const TIMEOUT: &str = "timeout";
 }
 
 impl Error {

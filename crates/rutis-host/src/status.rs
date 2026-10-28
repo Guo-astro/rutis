@@ -93,6 +93,22 @@ fn seconds(wait: Duration) -> String {
     }
 }
 
+/// A link's state against what was shown of it before (`shown`: whether it
+/// was ready, and the line last printed): what to keep for next time, and
+/// the line to print when it says something new. Node rows and the remote
+/// runtimes `runtimes.remote` connects both print their links this way.
+fn link_change(
+    shown: Option<(bool, Option<String>)>,
+    state: &LinkState,
+) -> ((bool, Option<String>), Option<String>) {
+    let (was_ready, printed) = shown.unwrap_or_default();
+    let ready = matches!(state, LinkState::Ready { .. });
+    match describe_link(state, was_ready) {
+        Some(line) if printed.as_ref() != Some(&line) => ((ready, Some(line.clone())), Some(line)),
+        _ => ((ready, printed), None),
+    }
+}
+
 /// One line for a link's state, after `was_ready` (whether the state
 /// last seen was `Ready`); `None` for states not printed (not started,
 /// dialing, a listener waiting for its first connection). The detail in
@@ -167,11 +183,170 @@ pub fn describe_runtime(state: Runtime<'_>, was_down: bool) -> Option<String> {
     }
 }
 
+/// The remote runtimes that `runtimes.remote` connects itself
+/// (`dial`, `listen`, `listen` + `instances`): their lines as they change,
+/// and their part of `rutis-host status`
+/// (`docs/design-remote-runtime-consistency-2026-10-26.md` §五).
+#[derive(Clone, Default)]
+pub struct Connections {
+    inner: Arc<std::sync::Mutex<Connected>>,
+}
+
+#[derive(Default)]
+struct Connected {
+    runtimes: Vec<(String, Connection)>,
+    /// The lines of instances' connections not printed yet: printed by
+    /// [`follow`], the oldest dropped past [`UNPRINTED`] when nothing
+    /// prints them.
+    lines: std::collections::VecDeque<String>,
+}
+
+/// How many lines of connections wait for [`follow`] at most.
+const UNPRINTED: usize = 256;
+
+#[derive(Clone)]
+enum Connection {
+    /// One runtime over a link: rutis dials it (`dials`), or it dials in.
+    Link {
+        state: tokio::sync::watch::Receiver<LinkState>,
+        dials: bool,
+    },
+    /// Many, each connection an instance: the ids connected now.
+    Instances(Vec<String>),
+}
+
+impl Connections {
+    /// The runtime `name`, connected over the link whose state is `state`.
+    pub fn link(&self, name: &str, state: tokio::sync::watch::Receiver<LinkState>, dials: bool) {
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .runtimes
+            .push((name.to_owned(), Connection::Link { state, dials }));
+    }
+
+    /// The runtime `name`, whose connections come in through an access
+    /// point, each an instance: its events from now on make its lines.
+    pub fn instances(
+        &self,
+        name: &str,
+        mut events: tokio::sync::broadcast::Receiver<rutis_bridge::AccessEvent>,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .runtimes
+            .push((name.to_owned(), Connection::Instances(Vec::new())));
+        let (connections, name) = (self.clone(), name.to_owned());
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match events.recv().await {
+                    Ok(event) => connections.heard(&name, event),
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// What `event` changes for the runtime `name`, and its line.
+    fn heard(&self, name: &str, event: rutis_bridge::AccessEvent) {
+        use rutis_bridge::AccessEvent;
+        let mut inner = self.inner.lock().unwrap();
+        let Some(Connection::Instances(ids)) = inner
+            .runtimes
+            .iter_mut()
+            .find(|(runtime, _)| runtime == name)
+            .map(|(_, connection)| connection)
+        else {
+            return;
+        };
+        let line = match event {
+            AccessEvent::Connected { id, .. } => {
+                ids.push(id.to_string());
+                format!("connected {id}")
+            }
+            AccessEvent::Replaced { id, .. } => {
+                // The newer connection's `connected` follows.
+                if let Some(at) = ids.iter().position(|known| *known == id.as_str()) {
+                    ids.remove(at);
+                }
+                format!("disconnected {id} (a newer connection of {id} took over)")
+            }
+            AccessEvent::Disconnected { id, reason, .. } => {
+                if let Some(at) = ids.iter().position(|known| *known == id.as_str()) {
+                    ids.remove(at);
+                }
+                format!("disconnected {id} ({reason})")
+            }
+            AccessEvent::Rejected { .. } => "refused (auth-rejected)".to_owned(),
+            AccessEvent::Failed { reason } => format!("refused ({reason})"),
+        };
+        if inner.lines.len() == UNPRINTED {
+            inner.lines.pop_front();
+        }
+        inner.lines.push_back(format!("runtime {name}: {line}"));
+    }
+
+    /// The lines of instances' connections since the last call.
+    fn take_lines(&self) -> Vec<String> {
+        self.inner.lock().unwrap().lines.drain(..).collect()
+    }
+
+    /// Each runtime over a link and its link's state now.
+    fn links(&self) -> Vec<(String, LinkState)> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .runtimes
+            .iter()
+            .filter_map(|(name, connection)| match connection {
+                Connection::Link { state, .. } => Some((name.clone(), state.borrow().clone())),
+                Connection::Instances(_) => None,
+            })
+            .collect()
+    }
+
+    /// Their part of `rutis-host status`, `connections:` with a line per
+    /// runtime; nothing when `runtimes.remote` connects none:
+    ///
+    /// ```text
+    /// connections:
+    ///   gpu: link connected
+    ///   mac: waiting for it to connect
+    ///   worker: worker-1, worker-2
+    /// ```
+    pub fn status(&self) -> String {
+        let inner = self.inner.lock().unwrap();
+        if inner.runtimes.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("connections:\n");
+        for (name, connection) in &inner.runtimes {
+            let line = match connection {
+                Connection::Link { state, dials } => {
+                    let state = state.borrow().clone();
+                    match describe_link(&state, false) {
+                        Some(line) => line,
+                        None if *dials => "connecting".to_owned(),
+                        None => "waiting for it to connect".to_owned(),
+                    }
+                }
+                Connection::Instances(ids) if ids.is_empty() => "none connected".to_owned(),
+                Connection::Instances(ids) => ids.join(", "),
+            };
+            out.push_str(&format!("  {name}: {line}\n"));
+        }
+        out
+    }
+}
+
 /// What [`follow`] watches: the rows, their links and the runtimes.
 #[derive(Clone)]
 pub struct Followed {
     pub loader: Loader,
     pub peers: Arc<PeerResolver>,
+    /// The remote runtimes `runtimes.remote` connects itself.
+    pub connections: Connections,
     /// The local runtimes (`node`, `py`, `bun`) by name.
     pub runtimes: Vec<(String, RuntimeHandle)>,
     /// The compiled languages' runtimes (Go, Swift), those the
@@ -205,6 +380,9 @@ pub struct Shown {
     /// Per runtime: the last line printed for it, and how many times it
     /// had started then.
     runtimes: BTreeMap<String, (String, u64)>,
+    /// Per remote runtime over a link of its own: whether its link was
+    /// last seen ready, and the last line printed for it.
+    remote_links: BTreeMap<String, (bool, Option<String>)>,
 }
 
 impl Shown {
@@ -224,6 +402,21 @@ impl Shown {
             .iter()
             .any(|(_, state, _)| matches!(state, RuntimeState::Down(_) | RuntimeState::Starting));
         out.extend(self.row_changes(&followed.loader, &followed.peers, &runtime, any_away));
+        out.extend(self.connection_changes(&followed.connections));
+        out
+    }
+
+    /// The lines for the remote runtimes `runtimes.remote` connects: each
+    /// link's state as it changes (`runtime gpu: link connected`), and each
+    /// instance's connection as it comes and goes.
+    fn connection_changes(&mut self, connections: &Connections) -> Vec<String> {
+        let mut out = Vec::new();
+        for (name, state) in connections.links() {
+            let (shown, line) = link_change(self.remote_links.remove(&name), &state);
+            out.extend(line.map(|line| format!("runtime {name}: {line}")));
+            self.remote_links.insert(name, shown);
+        }
+        out.extend(connections.take_lines());
         out
     }
 
@@ -288,17 +481,9 @@ impl Shown {
             };
             if let Some(link) = link {
                 let state = link.borrow().clone();
-                let (was_ready, printed) = self.links.remove(&key).unwrap_or_default();
-                let line = describe_link(&state, was_ready);
-                let printed = match line {
-                    Some(line) if printed.as_ref() != Some(&line) => {
-                        lines.push((key.clone(), line.clone()));
-                        Some(line)
-                    }
-                    _ => printed,
-                };
-                let ready = matches!(state, LinkState::Ready { .. });
-                links.insert(key.clone(), (ready, printed));
+                let (shown, line) = link_change(self.links.remove(&key), &state);
+                lines.extend(line.map(|line| (key.clone(), line)));
+                links.insert(key.clone(), shown);
             }
             let line = match pending(entry) {
                 true => describe_waits(&waits.next().unwrap_or_default(), runtime),

@@ -303,7 +303,7 @@ rutis-host dev
 
 `dev` builds `cmd/weather` and runs each of its plugins as the runtime `go-weather`; a change to `.go` files, `go.mod` or `go.sum` rebuilds it and restarts only that runtime, and a failed build keeps the old one running.
 
-In `rutis.dev.json`, the row with the plugin's id (here `weather`) has no `name`: it gives the plugin itself its configuration; the other rows are plugins that run with it. The other services the plugin needs are such rows, Python or TypeScript plugins, their languages under `runtimes`. For example a fake `llm` in Python, in the project's `dev/`:
+In `rutis.dev.json`, the row with the plugin's id (here `weather`) has no `name`: it gives the plugin itself its configuration; the other rows are plugins that run with it. The other services the plugin needs are such rows: a fake can be written in any language (a Python, TypeScript or Bun plugin, which `dev` runs), its language under `runtimes`, such as a row `./dev/fake-llm.ts`. For example a fake `llm` in Python, in the project's `dev/`:
 
 ```json
 {
@@ -341,6 +341,19 @@ uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # the version of 
 The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project` (here `dev`), and that environment needs `rutis`; `dev/` holds no Go code, so `go build ./...` is not affected. In TypeScript it is the same: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row named `./dev/fake-llm.ts`.
 
 When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
+
+### Calling a method
+
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ### Debugging
 

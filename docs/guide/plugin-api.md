@@ -36,7 +36,7 @@ TypeScript / JavaScript 插件（`@arcships/rutis`）、Python 插件（`rutis`�
 
 清理按注册的相反顺序运行：`apply` 返回的清理函数最先，然后是 `ctx.effect` 注册的。
 
-Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*rutis.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
+Go 里：`ctx.Use(name, &target)` 把服务绑定到函数字段的结构体（或 `*advanced.Service`）；`ctx.Provide(name, value)`；`ctx.Effect(func(context.Context) error)`；`ctx.Go(task)` 起一个卸载时停下的 goroutine。`*rutis.Ctx` 是插件卸载时取消的 `context.Context`。
 
 Kotlin 里：`ctx.use<I>(name)` 经 `@RutisClient` 接口 `I` 使用服务（同进程提供者实现了 `I` 时就是对象本身）；`ctx.provide(name, obj)` 的 `obj` 是 `@RutisService` 类的实例，方法表由 KSP 处理器在编译期生成；`ctx.effect { }`；`ctx` 是插件卸载时取消的协程作用域，`ctx.launch { }` 起的协程卸载时取消并等待。收到的错误是 `RutisException`，按 `name` 匹配。
 
@@ -77,17 +77,19 @@ Rust 宿主另有 `waterfall_sync`（`rutis::host`）：同步的 `waterfall`，
 
 | | Rust（`rutis`） | Node / Bun 叶子插件（`@arcships/rutis`） | Cordis 插件（Node 运行时里） | Python（`rutis`） | Go（`rutis`） | Swift（`Rutis`） | Kotlin（`arcships.rutis`） |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 监听 | `ctx.on::<E>(listener)`；同步监听器 `ctx.on_sync::<E>(..)`；选项与前缀 `ctx.listen::<E>().prefix(p)` / `.name(n)` / `.once()` / `.prepend()` / `.global()`，再 `.on(..)` → `Disposer` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), rutis.Prepend(), rutis.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (参数...) in ... }` → `() -> Void` | `ctx.on(name, prepend = false, global = false) { args -> }` → `() -> Unit` |
-| 监听器 | 闭包 `\|event: Arc<E>, call: Call<E>\|`，返回 `Result<Option<E::Value>>`；`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `rutis.Next`（`func(context.Context) (any, error)`） | 任意参数的闭包，按声明类型解码；waterfall 中最后一个参数是 `Rutis.Next<R>`（`async throws -> R?`） | `suspend (EventArgs) -> Any?`；waterfall 中最后一个参数是 `args.next`（`suspend () -> Any?`） |
+| 监听 | `ctx.on::<E>(listener)`；同步监听器 `ctx.on_sync::<E>(..)`；选项与前缀 `ctx.listen::<E>().prefix(p)` / `.name(n)` / `.once()` / `.prepend()` / `.global()`，再 `.on(..)` → `Disposer` | `ctx.on(name, fn, { prepend, global }?)` → `() => void` | Cordis 自己的 `ctx.on(name, fn, options?)` → `() => boolean`；`ctx.once` | `ctx.on(name, fn, *, prepend=False, global_=False)` → `Callable[[], None]` | `ctx.On(name, func(ctx context.Context, args ...any) (any, error), advanced.Prepend(), advanced.Global())` → `func()` | `ctx.on(name, prepend:, global:) { (参数...) in ... }` → `() -> Void` | `ctx.on(name, prepend = false, global = false) { args -> }` → `() -> Unit` |
+| 监听器 | 闭包 `\|event: Arc<E>, call: Call<E>\|`，返回 `Result<Option<E::Value>>`；`call.mode()`、`call.next()`；`on_sync` 的闭包收到 `SyncCall` | `(...args[, next]) => 值 \| Promise` | 同左 | `fn(*args[, next])`，可以是 `async def` | `fn(ctx, args...)`；waterfall 中最后一个参数是 `advanced.Next`（`func(context.Context) (any, error)`） | 任意参数的闭包，按声明类型解码；waterfall 中最后一个参数是 `Rutis.Advanced.Next<R>`（`async throws -> R?`） | `suspend (EventArgs) -> Any?`；waterfall 中最后一个参数是 `args.next`（`suspend () -> Any?`） |
 | `emit` | `ctx.emit(e)`，`e` 是 `E` 或 `Arc<E>` | `ctx.emit(name, ...args): void` | `ctx.emit([thisArg,] name, ...args)` | `ctx.emit(name, *args) -> None` | `ctx.Emit(ctx, name, args...) error`（只报拒绝） | `try ctx.emit(name, args...)`（只报拒绝） | `ctx.emit(name, *args)`（只报拒绝） |
 | `parallel` | `ctx.parallel(e).await` | `await ctx.parallel(name, ...args)` | `await ctx.parallel([thisArg,] name, ...args)` | `await ctx.parallel(name, *args)` | `ctx.Parallel(ctx, name, args...) error` | `try await ctx.parallel(name, args...)` | `ctx.parallel(name, *args)`（挂起） |
 | `serial` | `ctx.serial(e).await -> Option<E::Value>` | `await ctx.serial(name, ...args)` | `await ctx.serial([thisArg,] name, ...args)` | `await ctx.serial(name, *args)` | `ctx.Serial(ctx, name, args...) (any, error)` | `try await ctx.serial(name, args..., as: R.self)` | `ctx.serial(name, *args): Any?`（挂起） |
 | `waterfall` | `ctx.waterfall(e).terminal(t).await`（`.terminal` 可省略） | `ctx.waterfall(name, ...args)`；有终态时 `ctx.waterfall.with(terminal)(name, ...args)`（参数都是事件的，函数也是） | `ctx.waterfall([thisArg,] name, ...args, terminal)` | `await ctx.waterfall(name, *args, terminal=None)` | `ctx.Waterfall(ctx, name, terminal, args...) (any, error)`（`terminal` 是 `rutis.Terminal`，即 `func(ctx, args ...any) (any, error)`，或 `nil`） | `try await ctx.waterfall(name, args..., as: R.self) { 终态 }` | `ctx.waterfall(name, *args, terminal = { args -> })`（挂起） |
 | `bail` | `ctx.bail(e)`；宿主的 `ctx.waterfall_sync(e, terminal)` | `ctx.bail(name, ...args)` | `ctx.bail([thisArg,] name, ...args)` | `ctx.bail(name, *args)` | `ctx.Bail(ctx, name, args...) (any, error)` | `try await ctx.bail(name, args..., as: R.self)`（线上同步） | `ctx.bail(name, *args): Any?`（阻塞本线程） |
-| 过滤 | `ctx.filter(\|info\| ..)`，之后同样的五个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Listener) in ... }` → `Rutis.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
+| 过滤 | `ctx.filter(\|info\| ..)`，之后同样的五个方法 | `ctx.filter(d => boolean)` → `{ emit, parallel, serial, waterfall, bail }` | `thisArg[Context.filter] = c => boolean`，`c.rutis` 是描述 | `ctx.filter(lambda d: ...)` → 带这五个方法的对象 | `ctx.Filter(func(rutis.Listener) (bool, error)) *rutis.Emitter` | `ctx.filter { (l: Rutis.Advanced.Listener) in ... }` → `Rutis.Advanced.Emitter` | `ctx.filter { d -> Boolean }` → `Emitter` |
 | 作用域 | `ctx.scope()` | 描述的 `scope` | `ctx.rutis.scope` | 描述的 `scope` | `ctx.Scope()` | `ctx.scope` | `ctx.scope` |
 | 卸载信号 | 监听器以登记它的 `ctx` 被调用，`ctx.cancelled()` | `ctx.signal` | `ctx.signal` | 监听器的任务被取消 | 监听器的 `ctx` 被取消 | 监听器的 Task 被取消 | 监听器的协程被取消 |
-| `parallel` 的失败 | `ErrorKind::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.AggregateError`（`errors`） | `*rutis.AggregateError`（`Errors`） | 名为 `AggregateError` 的 `RutisError`（`errors`） | `RutisException`（`name == "AggregateError"`，`errors`） |
+| `parallel` 的失败 | `ErrorKind::ListenersFailed` | `AggregateError` | `AggregateError` | `rutis.advanced.AggregateError`（`errors`） | `*advanced.AggregateError`（`Errors`） | 名为 `AggregateError` 的 `RutisError`（`errors`） | `RutisException`（`name == "AggregateError"`，`errors`） |
+
+表里带 `advanced` 的名字在各语言的 advanced 子模块里（0.19 起，#692）：Go `github.com/arcships/rutis/go/rutis/advanced`，Python `rutis.advanced`，Swift `Rutis.Advanced`，Kotlin `arcships.rutis.advanced`，JavaScript 与 TypeScript `@arcships/rutis/advanced`。
 
 Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise，所以总是 `await` 它。Go 在插件方法里发出时传收到的 `ctx`（带着调用链），在 `Apply` 里传 `ctx` 本身。Rust 的发出方法在 `Ctx` 上，与其他语言同名。
 
@@ -112,7 +114,7 @@ ctx.on("greeting/format", exclaim)
 
 ```go
 ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-	inner, err := args[len(args)-1].(rutis.Next)(ctx)
+	inner, err := args[len(args)-1].(advanced.Next)(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +157,7 @@ Cordis 插件用 Cordis 自己的写法：`ctx.emit(thisArg, name, ...)`（以�
 
 ### `prepend` 与 `global`
 
-所有语言都有这两个监听器选项：`prepend` 让监听器排在这个名字已有的全部监听器之前（各处一致的"登记顺序"由宿主决定）；`global` 让它不受过滤。Rust：`ctx.listen::<E>().prepend()`（还有 `.global()`、`.once()`），再 `.on(..)` / `.on_sync(..)`；Node / Bun：`ctx.on(name, fn, { prepend: true })`（Cordis 插件就是 Cordis 自己的选项）；Python：`ctx.on(name, fn, prepend=True, global_=True)`；Go：`ctx.On(name, fn, rutis.Prepend(), rutis.Global())`。
+所有语言都有这两个监听器选项：`prepend` 让监听器排在这个名字已有的全部监听器之前（各处一致的"登记顺序"由宿主决定）；`global` 让它不受过滤。Rust：`ctx.listen::<E>().prepend()`（还有 `.global()`、`.once()`），再 `.on(..)` / `.on_sync(..)`；Node / Bun：`ctx.on(name, fn, { prepend: true })`（Cordis 插件就是 Cordis 自己的选项）；Python：`ctx.on(name, fn, prepend=True, global_=True)`；Go：`ctx.On(name, fn, advanced.Prepend(), advanced.Global())`。
 
 ### 生命周期
 
@@ -206,14 +208,14 @@ Rust 的类型化事件以 `Event::NAME` 作为跨语言的名字，参数按 se
 
 | 名字 | 何时 | 各语言 |
 | --- | --- | --- |
-| `AggregateError` | `parallel` 有失败；子错误按登记顺序，信息 `<n> listeners of <name> failed` | JS `AggregateError`（`errors`）；Python `rutis.AggregateError`（`errors`）；Go `*rutis.AggregateError`（`Errors`）；Rust `ErrorKind::ListenersFailed` |
-| `AsyncListener` | `bail` / `waterfall_sync` 遇到异步监听器 | JS 名为 `AsyncListener` 的 `Error`；Python `rutis.AsyncListener`；Go `rutis.ErrAsyncListener`；Rust `ErrorKind::AsyncListener` |
-| `WaterfallNext` | `next` 调两次、在分发结束或取消后调用；Rust 在 waterfall 之外调用 `call.next()`，或同步监听器在异步 waterfall 里调用它 | JS `WaterfallNext`；Python `rutis.WaterfallNext`；Go `rutis.ErrWaterfallNext`；Rust `ErrorKind::WaterfallNext` |
-| `ReservedEvent` | 发出 `rutis/*`，发出的 API 同步拒绝 | JS `ReservedEvent`；Python `rutis.ReservedEvent`；Go `rutis.ErrReservedEvent`；Rust `ErrorKind::ReservedEvent` |
-| `SyncWaitCycle` | 一次同步调用（`bail`）会使等待成环 | 同服务调用：Python `rutis.SyncWaitCycle`；Go `rutis.ErrSyncWaitCycle` |
+| `AggregateError` | `parallel` 有失败；子错误按登记顺序，信息 `<n> listeners of <name> failed` | JS `AggregateError`（`errors`）；Python `rutis.advanced.AggregateError`（`errors`）；Go `*advanced.AggregateError`（`Errors`）；Rust `ErrorKind::ListenersFailed` |
+| `AsyncListener` | `bail` / `waterfall_sync` 遇到异步监听器 | JS 名为 `AsyncListener` 的 `Error`；Python `rutis.advanced.AsyncListener`；Go `advanced.ErrAsyncListener`；Rust `ErrorKind::AsyncListener` |
+| `WaterfallNext` | `next` 调两次、在分发结束或取消后调用；Rust 在 waterfall 之外调用 `call.next()`，或同步监听器在异步 waterfall 里调用它 | JS `WaterfallNext`；Python `rutis.advanced.WaterfallNext`；Go `advanced.ErrWaterfallNext`；Rust `ErrorKind::WaterfallNext` |
+| `ReservedEvent` | 发出 `rutis/*`，发出的 API 同步拒绝 | JS `ReservedEvent`；Python `rutis.advanced.ReservedEvent`；Go `advanced.ErrReservedEvent`；Rust `ErrorKind::ReservedEvent` |
+| `SyncWaitCycle` | 一次同步调用（`bail`）会使等待成环 | 同服务调用：Python `rutis.advanced.SyncWaitCycle`；Go `advanced.ErrSyncWaitCycle` |
 | `BindingError` | 传输错误、已撤下的监听器、被拒绝的帧 | Python `rutis.BindingError`；Go `rutis.ErrBinding`；Rust `ErrorKind::ListenerWithdrawn` 或传输错误 |
 
-Go 用 `errors.Is(err, rutis.ErrWaterfallNext)` 等判断，任何进程里同名的错误都匹配。监听器自己抛出的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
+Go 用 `errors.Is(err, advanced.ErrWaterfallNext)` 等判断，任何进程里同名的错误都匹配。监听器自己抛出的错误带着名字、信息与错误图跨边界，与任何调用的错误相同。
 
 **按名字匹配监听器的错误，不按类。** 收到的是什么取决于监听器在哪里运行：来自别的进程时，它是本语言的远端错误（TypeScript：同一内置类的 `Error`，或带那个 `name` 的普通 `Error`；Python：`rutis.RemoteError`，rutis 自己的名字是对应的类；Go：`*rutis.RemoteError`，先 `errors.As` 再看 `Name`），带着它的 `name`、`message` 和 `code`；所有监听器都在发出方进程里时（快速路径），可能收到监听器自己的错误对象。测试工具让插件自己的发出方法收到跨进程后的形式（严格模式下），所以按类匹配会在测试里失败；快速路径保留原对象这一点不作保证。
 
@@ -248,7 +250,7 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 ## 同一运行时里的插件共用一个进程
 
-同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。
+同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。宿主可以把插件放进单独的进程，并给调用设时限、限定能用的服务：插件收到的是普通的错误，超时的调用是 `timeout`，宿主不让用的服务是 `unavailable`（见[做一个开放插件的宿主](open-host.md#3-管住插件)）。
 
 一个服务方法一口气占住运行时 5 秒（固定，0.18 起，#678）时，运行时在 stderr 写一次是哪一行的哪个方法、这期间其他行都在等、怎么改，例如：
 
@@ -347,9 +349,9 @@ logging.basicConfig(level=logging.INFO)
 | --- | --- | --- |
 | JS（Node、Bun） | 不用声明 | 代理：`await cache.get('a')` |
 | Python | 不用声明 | 代理：`await cache.get("a")` |
-| Go | 参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样）；或写 `any` | 调用各个方法的函数字段（阻塞）；`any` 收到 `*rutis.Service` |
-| Swift | 参数类型写 `@RutisClient` 协议（`any Cache`）；或写 `Any` | 这个协议的代理；`Any` 收到 `Rutis.Client` |
-| Kotlin | 参数类型写 `@RutisClient` 接口；或写 `Any?` | 这个接口的代理；`Any?` 收到 `RemoteObject` |
+| Go | 参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样）；或写 `any` | 调用各个方法的函数字段（阻塞）；`any` 收到 `*advanced.Service` |
+| Swift | 参数类型写 `@RutisClient` 协议（`any Cache`）；或写 `Any` | 这个协议的代理；`Any` 收到 `Rutis.Advanced.Client` |
+| Kotlin | 参数类型写 `@RutisClient` 接口；或写 `Any?` | 这个接口的代理；`Any?` 收到 `RemoteObject`（`arcships.rutis.advanced`） |
 | Rust | 手写的 `HostDispatch` | `rutis_bridge::session::Reference`（`call_method`、`call_method_async`），Cordis 绑定里是 `ObjectRef`；`#[rutis::service]` 的参数不收对象（`bad-argument`） |
 
 - 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象；交给第三个进程，仍是同一个对象。
@@ -365,25 +367,25 @@ logging.basicConfig(level=logging.INFO)
 - **同一个进程**（同一个运行时里的行）拿到的是对象本身：方法照旧是同步的，字段可以读。
 - **跨进程**只有方法，每次调用都是异步的。读字段、依赖同步结果的写法在同一个进程里成立、跨进程就失败；测试工具的严格模式按跨进程的样子交出代理，在测试里先失败。
 - **空闲停止**：按需启动的运行时（Go、Swift）在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行。停下后对这些对象的调用以 `peer-gone` 失败：`a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`。要一直可用，让交出它们的行保持加载，或者把运行时设成 `eager`。
-- **身份**：同一个对象收到几次是同一个代理，交回原来的进程是原对象，各语言都一样（Go 只有 `*rutis.Service` 如此）。
+- **身份**：同一个对象收到几次是同一个代理，交回原来的进程是原对象，各语言都一样（Go 只有 `*advanced.Service` 如此）。
 
 ### 十种值
 
 | 值 | JS（Node、Bun） | Python | Go | Kotlin | Rust（`rutis-bridge`） | Swift |
 | --- | --- | --- | --- | --- | --- | --- |
 | 时间点 | `Date` | 带时区的 `datetime`（收到为 UTC） | `time.Time`（收到为 UTC） | `java.time.Instant`、`kotlin.time.Instant`（收到为 `java.time.Instant`） | `Instant` | `Date`（到微秒） |
-| 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `rutis.DateTime` | `LocalDateTime` | `DateTime` | `Rutis.DateTime` |
-| 日期 | 字符串 `"2026-10-15"` | `date` | `rutis.Date` | `LocalDate` | `Date` | `Rutis.CalendarDate` |
-| 时刻 | 字符串 `"14:30:05"` | 无时区的 `time` | `rutis.TimeOfDay` | `LocalTime` | `TimeOfDay` | `Rutis.TimeOfDay` |
+| 本地日期时间 | 字符串 `"2026-10-15T14:30:05"` | 无时区的 `datetime` | `advanced.DateTime` | `LocalDateTime` | `DateTime` | `Rutis.Advanced.DateTime` |
+| 日期 | 字符串 `"2026-10-15"` | `date` | `advanced.Date` | `LocalDate` | `Date` | `Rutis.Advanced.CalendarDate` |
+| 时刻 | 字符串 `"14:30:05"` | 无时区的 `time` | `advanced.TimeOfDay` | `LocalTime` | `TimeOfDay` | `Rutis.Advanced.TimeOfDay` |
 | 二进制 | `Uint8Array`（也可发 `Buffer`、`ArrayBuffer`、`DataView`） | `bytes`（也可发 `bytearray`、`memoryview`） | `[]byte` | `ByteArray` | `Vec<u8>`（生成代码里是 `Bytes`） | `Data` |
 | Map | `Map` | 键不是字符串的 `dict`（收到的是 `dict` 的子类） | 键不是字符串的 map（解码到 `any` 时是 `map[any]any`） | 键不是字符串的 `Map` | `Vec<(Value, Value)>`（生成代码里是 `ValueMap`） | 键不是 `String` 的 `Dictionary`（解码进 `Any` 时为 `[AnyHashable: Any?]`） |
 | Set | `Set` | `set`（也可发 `frozenset`） | `map[K]struct{}`，或切片（解码到 `any` 时是切片） | `Set` | `Vec<Value>`（生成代码里是 `ValueSet`） | `Set` |
-| 大整数 | `bigint` | `int`（收到的是 `int` 的子类） | `*big.Int`，或放得下的整数类型 | `BigInteger`，或放得下的整数类型 | `BigInt`，或放得下的整数类型 | `Rutis.BigInt`，或放得下它的整数类型 |
-| Decimal | 字符串 `"12.30"` | `Decimal` | `rutis.Decimal` | `BigDecimal`（保留标度） | `Decimal` | `Decimal`（38 位，不保留末尾零；要文本时声明 `String`） |
-| UUID | 字符串（小写） | `UUID` | `rutis.UUID` | `java.util.UUID`、`kotlin.uuid.Uuid` | `Uuid` | `UUID` |
+| 大整数 | `bigint` | `int`（收到的是 `int` 的子类） | `*big.Int`，或放得下的整数类型 | `BigInteger`，或放得下的整数类型 | `BigInt`，或放得下的整数类型 | `Rutis.Advanced.BigInt`，或放得下它的整数类型 |
+| Decimal | 字符串 `"12.30"` | `Decimal` | `advanced.Decimal` | `BigDecimal`（保留标度） | `Decimal` | `Decimal`（38 位，不保留末尾零；要文本时声明 `String`） |
+| UUID | 字符串（小写） | `UUID` | `advanced.UUID` | `java.util.UUID`、`kotlin.uuid.Uuid` | `Uuid` | `UUID` |
 
 - 插件只写本语言原生的代码，转换由 rutis 做。收到的大整数、Map 在 Python 里是 `int`、`dict` 的子类，照常使用；原样转发时仍是大整数、Map。
-- JS 没有本地日期时间、日期、时刻、Decimal、UUID 的类型，收到的是普通字符串，内容完整，`===` 照常可用。这样的值经 JS 原样转发时类型不保留（Python 发出的 `date` 经 JS 转发回来是 `str`）。要在 JS 里凭空创建这五种值，或以原类型转发，用 `@arcships/rutis` 的构造函数：`rutis.datetime('2026-10-15T14:30')`、`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 也可以把这五种值解码进 `string`。
+- JS 没有本地日期时间、日期、时刻、Decimal、UUID 的类型，收到的是普通字符串，内容完整，`===` 照常可用。这样的值经 JS 原样转发时类型不保留（Python 发出的 `date` 经 JS 转发回来是 `str`）。要在 JS 里凭空创建这五种值，或以原类型转发，用 `@arcships/rutis/advanced` 的构造函数：`rutis.datetime('2026-10-15T14:30')`、`rutis.date('2026-10-15')`、`rutis.time('14:30')`、`rutis.decimal('1.10')`、`rutis.uuid('…')`；普通字符串照旧是字符串。Go 也可以把这五种值解码进 `string`。
 - 整数：超出 ±(2^53−1)（即绝对值大于 9007199254740991）的整数（Python `int`、Go `int64` / `uint64`、Rust 整数）自动按大整数传，不需要特殊写法；JS 收到时是 `bigint`，范围内仍是 `number`。收到的大整数放得下时可以解码进声明的整数类型，放不下时这次调用失败。`bool` 不受影响。
 - 时间：年份 0001–9999。本地日期时间没有时区，原样传递，不猜时区，也不转成时间点。时间点按接收方的精度向负无穷截断：JS 到毫秒，Python 到微秒，Go、Rust 到纳秒；Python 的本地日期时间和时刻同样截断到微秒。
 - Decimal 保留末尾零（`1.10` 与 `1.1` 不同），不用指数；NaN、无穷不能跨进程。大整数、Decimal 至多 4300 位。

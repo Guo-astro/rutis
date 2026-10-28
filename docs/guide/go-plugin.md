@@ -303,7 +303,7 @@ rutis-host dev
 
 `dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。
 
-`rutis.dev.json` 里，和插件 id 相同的那一行（这里是 `weather`）不写 `name`，它给插件本身加配置；其他行是一起运行的插件。插件需要的其他服务就写成这样的行，可以是 Python 或 TypeScript 插件，同时在 `runtimes` 里写上它们的语言。例如用 Python 写一个假的 `llm`，放在项目的 `dev/` 里：
+`rutis.dev.json` 里，和插件 id 相同的那一行（这里是 `weather`）不写 `name`，它给插件本身加配置；其他行是一起运行的插件。插件需要的其他服务就写成这样的行：假依赖可以用任何语言写（`dev` 能运行的 Python、TypeScript、Bun 插件），同时在 `runtimes` 里写上它们的语言，例如加一行 `./dev/fake-llm.ts`。例如用 Python 写一个假的 `llm`，放在项目的 `dev/` 里：
 
 ```json
 {
@@ -341,6 +341,19 @@ uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # 和你的 rutis
 Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找解释器，那个环境里要装 `rutis`；`dev/` 下没有 Go 代码，`go build ./...` 不受影响。用 TypeScript 写也一样：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行名写 `./dev/fake-llm.ts`。
 
 这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
+
+### 调用一个方法
+
+`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: weather (weather), llm (llm)`。
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
 
 ### 调试
 

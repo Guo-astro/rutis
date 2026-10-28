@@ -14,9 +14,10 @@ use rutis_bridge::transport::websocket::{
     Config, ListenerConfig, ServerTls, Trust, WebSocketPlugin,
 };
 use rutis_bridge::{
-    AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity, IdentityPlugin,
-    PeerId, Presented, SharedToken,
+    transport_key, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Identity,
+    IdentityPlugin, LinkConfig, PeerId, Presented, SharedToken, Transport,
 };
+use rutis_bridge::{Features, PeerPlugin};
 use rutis_loader::peer::{register_peer_node, PeerResolver};
 use rutis_loader::runtime::binary::RuntimeEnd;
 use rutis_loader::runtime::{RuntimeInstances, RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
@@ -24,7 +25,7 @@ use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 
-use crate::config::{token, HostConfig, Restart};
+use crate::config::{token, Connect, HostConfig, Restart};
 use crate::errln;
 use crate::languages::{self, BinaryHost, Mount, LANGUAGES};
 
@@ -58,6 +59,8 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
+    /// The remote runtimes `runtimes.remote` connects itself.
+    connections: crate::status::Connections,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
     supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
@@ -91,6 +94,10 @@ pub struct Embedding {
     /// environment. A host with one of its own does not change it on
     /// [`Host::reload`].
     pub identity: Option<IdentityPlugin>,
+    /// Transports besides WebSocket and the local one (a relay, QUIC, an
+    /// in-process one for tests), each provided as `Transport#<kind>`: a
+    /// `runtimes.remote` entry uses one by naming its kind in `transport`.
+    pub transports: Vec<Arc<dyn Transport>>,
 }
 
 pub type Error = String;
@@ -148,10 +155,30 @@ impl Host {
         config.check_runtime_names()?;
         config.check_dialing_runtimes()?;
         config.check_listener_tokens(embedding.identity.is_none())?;
-        // The token of each runtime that dials in, before anything starts.
-        let mut dialing = Vec::new();
+        // Each runtime's transport is one the host has.
         for remote in &config.runtimes.remote {
-            if remote.dials_in()?.is_some() && token(&remote.name).is_none() {
+            let kind = remote.transport();
+            let known = ["websocket", "local"].contains(&kind)
+                || embedding.transports.iter().any(|t| t.kind() == kind);
+            if !known {
+                return Err(format!(
+                    "remote runtime {}: no transport {kind}: the host has websocket, and \
+                     those the program embedding it adds",
+                    remote.name
+                ));
+            }
+        }
+        // The token of each runtime that dials in, before anything starts:
+        // with the host's identity, one runtime's too.
+        let mut dialing = Vec::new();
+        let mut linked = Vec::new();
+        for remote in &config.runtimes.remote {
+            let needs = match remote.connect()? {
+                Connect::Instances { .. } => true,
+                Connect::Listen(_) => embedding.identity.is_none(),
+                _ => false,
+            };
+            if needs && token(&remote.name).is_none() {
                 return Err(format!(
                     "remote runtime {}: set RUTIS_TOKEN_{} (or RUTIS_TOKEN): the token its \
                      runtimes present when they dial in",
@@ -207,6 +234,10 @@ impl Host {
                 .collect(),
             None => Vec::new(),
         };
+        for transport in &embedding.transports {
+            root.provide_at(transport_key(transport.kind()), transport.clone())
+                .map_err(|error| format!("the {} transport: {error}", transport.kind()))?;
+        }
         let accepted = match embedding.identity {
             Some(identity) => {
                 root.plugin(identity);
@@ -278,8 +309,30 @@ impl Host {
             if let Some((listen, group)) = remote.dials_in()? {
                 let instances = RuntimeInstances::new(&remote.name, group, &catalog);
                 mount.chain = std::mem::take(&mut mount.chain).with(instances.clone());
-                dialing.push((remote.name.clone(), listen.to_owned(), instances));
+                dialing.push((
+                    remote.name.clone(),
+                    listen.to_owned(),
+                    remote.transport().to_owned(),
+                    instances,
+                ));
                 continue;
+            }
+            // One runtime over a link of its own, which the host makes as
+            // a link row's (`docs/design-remote-runtime-consistency-2026-10-26.md`
+            // §四); else a link row's, or an embedding's, session.
+            let id = || link_peer(&remote.name);
+            match remote.connect()? {
+                Connect::Dial(address) => linked.push((
+                    remote.name.clone(),
+                    LinkConfig::dial(id()?, remote.transport(), "host", address),
+                    true,
+                )),
+                Connect::Listen(listen) => linked.push((
+                    remote.name.clone(),
+                    LinkConfig::listen(id()?, remote.transport(), "host", listen),
+                    false,
+                )),
+                Connect::Instances { .. } | Connect::Elsewhere => {}
             }
             let runtime = RuntimePlugin::remote(&remote.name);
             let handle = runtime.handle();
@@ -320,10 +373,29 @@ impl Host {
         for rows in &resolvers {
             root.plugin(RuntimeRowsPlugin::new(rows.clone()));
         }
+        let connections = crate::status::Connections::default();
+        // A link per runtime `runtimes.remote` connects one at a time,
+        // carrying its session: the composition a link row with `runtime`
+        // mounts.
+        for (name, link, dials) in linked {
+            let features = Features {
+                runtime: Some(name.clone()),
+                ..Features::default()
+            };
+            let peer = PeerPlugin::new(link.require("runtime"), features)?;
+            let handle = peer.handle();
+            (&root.plugin(peer))
+                .await
+                .map_err(|error| format!("remote runtime {name}: {error}"))?;
+            let state = handle
+                .link_state()
+                .expect("an applied composition has its link");
+            connections.link(&name, state, dials);
+        }
         // An access point per runtime that dials in: no link row, the
         // connections come and go with their instances.
         let local = PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?;
-        for (name, listen, instances) in dialing {
+        for (name, listen, transport, instances) in dialing {
             let token = token(&name).expect("checked above");
             root.plugin(AdmissionPlugin::new(
                 &name,
@@ -332,9 +404,10 @@ impl Host {
             let id = PeerId::new(name.clone())
                 .map_err(|error| format!("remote runtime {name}: {error}"))?;
             let access = AccessPointPlugin::new(
-                AccessPointConfig::new(id, "websocket", &name, &listen).require("runtime"),
+                AccessPointConfig::new(id, &transport, &name, &listen).require("runtime"),
             )
             .accept(instances.accept(loader.clone(), root.clone()));
+            connections.instances(&name, access.events());
             (&root.plugin(access))
                 .await
                 .map_err(|error| format!("remote runtime {name}: {error}"))?;
@@ -368,6 +441,7 @@ impl Host {
             config: config.clone(),
             accepted,
             restarts,
+            connections,
             supervisors: Mutex::default(),
         })
     }
@@ -874,6 +948,12 @@ impl Host {
         (stopping, waiting)
     }
 
+    /// The host's root, as Rust embedding has it: what `rutis-host call`
+    /// calls from.
+    pub fn root(&self) -> Ctx {
+        self.root.clone()
+    }
+
     /// The service `name` as rutis sees it (what a row provides).
     #[allow(dead_code)]
     pub fn service(&self, name: &str) -> Option<Arc<dyn rutis_bridge::session::HostDispatch>> {
@@ -894,9 +974,17 @@ impl Host {
         crate::status::Followed {
             loader: self.loader.clone(),
             peers: self.peers.clone(),
+            connections: self.connections.clone(),
             runtimes: self.runtimes.clone(),
             binaries: self.binaries.clone(),
         }
+    }
+
+    /// What `rutis-host status` answers: the loader's status, then the
+    /// connections of the remote runtimes `runtimes.remote` connects.
+    pub fn status_report(&self) -> crate::control::Report {
+        let (loader, connections) = (self.loader.clone(), self.connections.clone());
+        Arc::new(move || format!("{}{}", loader.status(), connections.status()))
     }
 
     /// Forget what the runtimes' resolvers cached, so changed plugins are
@@ -1157,8 +1245,14 @@ pub fn row_changes(
         .collect()
 }
 
-/// The peers of `config`'s peer rows that listen: their links are
-/// accepted with their tokens.
+/// The id of the remote runtime `name`'s link: the runtime greets as it.
+fn link_peer(name: &str) -> Result<PeerId, Error> {
+    PeerId::new(name.to_owned()).map_err(|error| format!("remote runtime {name}: {error}"))
+}
+
+/// The peers of `config`'s peer rows that listen, and of the remote
+/// runtimes that dial in one at a time: their links are accepted with
+/// their tokens.
 fn listening_peers(config: &HostConfig) -> Result<Vec<PeerId>, Error> {
     config
         .peers()
@@ -1495,8 +1589,10 @@ mod tests {
                 remote: vec![RemoteRuntime {
                     name: remote.into(),
                     language: "python".into(),
+                    dial: None,
                     listen: None,
                     instances: None,
+                    transport: None,
                 }],
                 ..Runtimes::default()
             },

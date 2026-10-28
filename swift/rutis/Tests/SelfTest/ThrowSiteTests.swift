@@ -54,7 +54,7 @@ struct ThrowSiteTests {
         let stored = middle.received!.graph
         let (host, runtime) = try await pairOfPeers { _, method, args in
             guard let body = middle.rutisMethods()[method] else { throw RutisError(name: "Error", message: "no \(method)") }
-            return try await body(Rutis.Arguments(args)).value
+            return try await body(Rutis._Generated.Arguments(args)).value
         }
         defer {
             host.close()
@@ -110,7 +110,7 @@ struct ThrowSiteTests {
         let account = Account()
         let (host, runtime) = try await pairOfPeers { _, method, args in
             guard let body = account.rutisMethods()[method] else { throw RutisError(name: "Error", message: "no \(method)") }
-            return try await body(Rutis.Arguments(args)).value
+            return try await body(Rutis._Generated.Arguments(args)).value
         }
         defer {
             host.close()
@@ -137,7 +137,7 @@ struct ThrowSiteTests {
         let account = Account()
         let (host, runtime) = try await pairOfPeers { _, method, args in
             guard let body = account.rutisMethods()[method] else { throw RutisError(name: "Error", message: "no \(method)") }
-            return try await body(Rutis.Arguments(args)).value
+            return try await body(Rutis._Generated.Arguments(args)).value
         }
         defer {
             host.close()
@@ -158,7 +158,7 @@ struct ThrowSiteTests {
     /// Thrown in process, the error is the one the method threw.
     func inProcessTheErrorIsUnchanged() async throws {
         do {
-            _ = try await Account().rutisMethods()["withdraw"]!(Rutis.Arguments([.data(.int(1))]))
+            _ = try await Account().rutisMethods()["withdraw"]!(Rutis._Generated.Arguments([.data(.int(1))]))
             XCTFail("expected an error")
         } catch {
             XCTAssertTrue(error is Overdrawn, "\(error)")

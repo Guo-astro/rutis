@@ -114,7 +114,7 @@ Issue：[#692](https://github.com/arcships/rutis/issues/692)（属于 [#663](htt
 | TypeScript / Bun | 手写的 `.d.ts` 本身（`src/index.d.ts`、`src/advanced.d.ts`、`src/testing.d.ts`） | `node/rutis/test/public-api.test.mjs`：`package.json` 的 `exports` 只有 `.`、`./advanced`、`./testing`；导入每个入口，运行时的导出名与对应 `.d.ts` 里 `export` 的名字相同（按行读，不用编译器） | `js-py`（`npm test`） | 改 `.d.ts` |
 | Python | `python/rutis/public-api.txt` | `python/rutis/tests/test_public_api.py`：`rutis`、`rutis.advanced`、`rutis.testing` 的 `__all__`，其中每个类的公开成员与 `inspect.signature`；`dir()` 里的公开名字都在 `__all__` 里或是子模块 | `js-py` | `RUTIS_PUBLIC_API_WRITE=1` 跑这个测试 |
 | Go | `go/rutis/public-api.txt` | `go/rutis/public_api_test.go`：标准库 `go/parser`、`go/doc` 列出 `rutis`、`rutis/advanced`、`rutis/rutistest` 的导出声明、方法与签名、Deprecated 标记（golden 文件） | `runtimes-go` | `go test -run TestPublicAPI -update` |
-| Swift | `swift/rutis/public-api.txt` | `tools/public-api-swift.sh`：`swift package dump-symbol-graph --minimum-access-level public`，用 `jq`（macOS 15 起系统自带）把 `Rutis`、`RutisTest` 的符号写成排好序的一行一个声明 | `runtimes-swift` | `tools/public-api-swift.sh --write` |
+| Swift | `swift/rutis/public-api.txt` | `tools/public-api-swift.sh`：`swift package dump-symbol-graph --minimum-access-level public`，用 `jq`（macOS 15 起系统自带）把 `Rutis`、`RutisTest` 的符号写成排好序的一行一个：路径（含参数标签）和种类。不记声明原文，因为不同版本的编译器写法不同（Swift 6.3 写 `any Encoder`，6.4 写 `Encoder`） | `runtimes-swift` | `tools/public-api-swift.sh --write` |
 | Kotlin | `kotlin/rutis/rutis/api/` | Kotlin 官方的 Binary Compatibility Validator，`apiCheck` 挂在 `check` 上（Kotlin Gradle 插件 2.2 自带的 ABI 校验还是实验性的，不用） | `runtimes-kotlin` | `./gradlew apiDump` |
 | Rust | `crates/rutis/public-api.txt` | 不变（`tools/public-api.sh`） | `public-api` | 不变 |
 

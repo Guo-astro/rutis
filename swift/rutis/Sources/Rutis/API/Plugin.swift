@@ -24,14 +24,14 @@ public struct Plugin<Config: Decodable> {
     /// The services it uses: it runs only while all are there.
     public var inject: [String]
     /// The services it provides and their methods (optional).
-    public var provides: [String: Rutis.Shape]
+    public var provides: [String: Rutis.Advanced.Shape]
     /// Its version, if its author gives one (the manifest's `version`).
     public var version: String?
     /// Starts the plugin. An error fails the load; the cleanups registered
     /// so far run.
     public var apply: (Rutis.Ctx, Config) async throws -> Void
 
-    public init(name: String, inject: [String] = [], provides: [String: Rutis.Shape] = [:], version: String? = nil,
+    public init(name: String, inject: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:], version: String? = nil,
                 config _: Config.Type, apply: @escaping (Rutis.Ctx, Config) async throws -> Void)
     {
         self.name = name
@@ -44,7 +44,7 @@ public struct Plugin<Config: Decodable> {
 
 extension Plugin where Config == Rutis.NoConfig {
     /// A plugin without configuration.
-    public init(name: String, inject: [String] = [], provides: [String: Rutis.Shape] = [:], version: String? = nil,
+    public init(name: String, inject: [String] = [], provides: [String: Rutis.Advanced.Shape] = [:], version: String? = nil,
                 apply: @escaping (Rutis.Ctx) async throws -> Void)
     {
         self.init(name: name, inject: inject, provides: provides, version: version, config: Rutis.NoConfig.self) { ctx, _ in
@@ -56,7 +56,7 @@ extension Plugin where Config == Rutis.NoConfig {
 /// A configuration type that gives its JSON Schema: `@RutisConfig` derives
 /// it from the stored properties, or write `static let rutisSchema`.
 public protocol RutisConfigurable {
-    static var rutisSchema: Rutis.Schema { get }
+    static var rutisSchema: Rutis._Generated.Schema { get }
 }
 
 extension Rutis {
@@ -66,7 +66,9 @@ extension Rutis {
         public init(from _: Decoder) throws {}
         public func encode(to _: Encoder) throws {}
     }
+}
 
+extension Rutis.Advanced {
     /// Whether a method is called synchronously (the caller waits) or
     /// asynchronously.
     public enum MethodKind: String, Sendable {
@@ -103,7 +105,9 @@ extension Rutis {
             return Shape(kinds: kinds, known: T.rutisMethodNames, type: String(describing: T.self))
         }
     }
+}
 
+extension Rutis._Generated {
     /// A configuration's JSON Schema.
     public struct Schema: @unchecked Sendable {
         package let json: JSON
@@ -270,13 +274,13 @@ extension Rutis {
     public final class Definition: @unchecked Sendable {
         public let name: String
         let inject: [String]
-        let provides: [String: Shape]
+        let provides: [String: Rutis.Advanced.Shape]
         package let schema: JSON
         let version: String?
         let api: Int
         let apply: (Ctx, Value) async throws -> Void
 
-        init(name: String, inject: [String], provides: [String: Shape], schema: JSON, version: String?, api: Int,
+        init(name: String, inject: [String], provides: [String: Rutis.Advanced.Shape], schema: JSON, version: String?, api: Int,
              apply: @escaping (Ctx, Value) async throws -> Void)
         {
             self.name = name
@@ -329,7 +333,7 @@ extension Rutis {
             (schema, validates) = (.null, false)
         } else if let configurable = C.self as? RutisConfigurable.Type {
             (schema, validates) = (configurable.rutisSchema.json, true)
-        } else if case var .object(fields) = Schema.of(C.self).json, !fields.isEmpty {
+        } else if case var .object(fields) = Rutis._Generated.Schema.of(C.self).json, !fields.isEmpty {
             // An optional config type takes no config too.
             if C.self is OptionalProtocol.Type, let index = fields.firstIndex(where: { $0.0 == "type" }), case let .string(type) = fields[index].1 {
                 fields[index].1 = .array([.string(type), .string("null")])
@@ -339,11 +343,11 @@ extension Rutis {
             }
             (schema, validates) = (.object(fields), true)
         } else {
-            (schema, validates) = (Schema.anyObject.json, false)
+            (schema, validates) = (Rutis._Generated.Schema.anyObject.json, false)
         }
         let apply = plugin.apply
         return Definition(name: plugin.name, inject: plugin.inject, provides: plugin.provides, schema: schema,
-                          version: plugin.version, api: pluginAPI)
+                          version: plugin.version, api: Rutis.Advanced.pluginAPI)
         { ctx, config in
             // Defaults filled and the config validated against the schema
             // before decoding (config schema design §2.2); a decoder error
