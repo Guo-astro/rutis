@@ -331,7 +331,8 @@ async fn interop_loader(probe: &Probe) -> (Ctx, Loader, FiberView) {
 }
 
 /// The runtime, the loader and the rows' second stage, with `shared` as
-/// the catalog's shared names. Waits for the loader only.
+/// the catalog's shared names. Waits for the loader and for the rows'
+/// stage (so for the runtime too).
 async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberView) {
     let mut catalog = ServiceCatalog::new();
     for name in shared {

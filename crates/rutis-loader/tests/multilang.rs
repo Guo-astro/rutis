@@ -410,8 +410,9 @@ async fn injected_services_gate_the_plugin() {
         .await
         .unwrap();
     let fiber = |id: &str| loader.get(id).unwrap().plugin.unwrap();
-    // A row resolved before its runtime ran (the runtimes start alongside
-    // the loader here) is resolved again once it runs, and its new injects
+    // A row resolved before its runtime ran is resolved again once it
+    // runs (the fixture waits for the runtimes now, so here the rows
+    // resolve with them; the check still allows both), and its new injects
     // replace its fiber: the new resolution shows first, then the old fiber
     // goes and, once it is gone, the new one comes. So wait for the new
     // fiber, not for the injects (#342, as #316). A row resolved with its

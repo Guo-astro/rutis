@@ -15,7 +15,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{layer, rows_stage, COLD};
+use common::runtimes::{layer, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{caller_row, host_key, native_error, HostDispatch, Reply, Value};
@@ -211,6 +211,7 @@ export default definePlugin({{
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
+    use common::runtimes::rows_stage;
     use rutis_bridge::runtime::LocalRuntime;
     use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
@@ -253,6 +254,7 @@ async fn node_rows_are_callers() {
 #[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
+    use common::runtimes::rows_stage;
     use rutis_bridge::runtime::LocalRuntime;
     use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
@@ -353,6 +355,7 @@ async fn swift_rows_are_callers() {
 #[cfg(all(unix, feature = "bun"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
+    use common::runtimes::rows_stage;
     use rutis_bridge::runtime::LocalRuntime;
     use rutis_loader::runtime::RuntimeResolver;
     use rutis_loader::Chain;
