@@ -246,6 +246,20 @@ async fn volatile_changes_reach_cordis_in_place() {
     assert!(report.failures.is_empty(), "{report:?}");
     probe.wait_for("t: start 1").await;
     probe.wait_for("g: start 1").await;
+    // A change goes in place only to a running row, and `start` is
+    // recorded inside `apply`, before the row runs in rutis (`rows.load`
+    // returns once the Cordis fiber settled). `reconcile` does not wait
+    // for that when the rows wait for the runtime's rows stage
+    // (`RuntimeRows`), so wait here: a change to a row still loading is an
+    // ordinary update, a restart.
+    until(
+        || {
+            row_state(&loader, "t") == Some(FiberState::Active)
+                && row_state(&loader, "g") == Some(FiberState::Active)
+        },
+        "t and g running in rutis",
+    )
+    .await;
     assert_eq!(
         loader.get("t").unwrap().schema.unwrap()["properties"]["level"]["x-volatile"],
         true
