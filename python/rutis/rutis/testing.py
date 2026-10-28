@@ -205,16 +205,12 @@ def _function(function: Callable, where: str) -> Callable:
 def _listener(listener: Callable, where: str) -> Callable:
     """A test's listener heard from another process: its arguments and
     what it returns or raises cross; an `async def` stays one."""
+    crossed = _function(listener, where)
     if not inspect.iscoroutinefunction(listener):
-        return _function(listener, where)
+        return crossed
 
     async def call(*args: Any) -> Any:
-        crossed = [_cross(arg, f"{where} argument {i + 1}") for i, arg in enumerate(args)]
-        try:
-            result = await listener(*crossed)
-        except Exception as error:
-            raise _crossed_error(error) from error
-        return _cross(result, where)
+        return await crossed(*args)
 
     return call
 
@@ -535,14 +531,13 @@ class Loaded:
         own. Strict, its arguments and what it returns cross as from another
         process. `listener` may be `async`; `prepend` and `global_` as
         `ctx.on`."""
-        if self._unloaded:
-            raise PluginTestError("the plugin is unloaded")
-        reserved(name, listening=True)
-        if not callable(listener):
-            raise PluginTestError("on needs a listener function")
+        def callback() -> Callable:
+            if not callable(listener):
+                raise PluginTestError("on needs a listener function")
+            return _listener(listener, f"listener of {name}") if self._strict else listener
+
         bus = self.bus._bus
-        callback = _listener(listener, f"listener of {name}") if self._strict else listener
-        entry = bus.add(name, None, "test", callback, [], prepend, global_)  # type: ignore[arg-type]
+        entry = self._listen(name, None, "test", callback, [], prepend, global_)
         self._listening.append(entry)
 
         def off() -> None:
@@ -551,6 +546,15 @@ class Loaded:
                 self._listening.remove(entry)
 
         return off
+
+    def _listen(self, name: str, row: Any, plugin: str, callback: Callable[[], Callable],
+                scope: Any, prepend: bool, global_: bool) -> Any:
+        # What `ctx.on` and `t.on` share: refuse an unloaded plugin and an
+        # internal name, then register the listener `callback` gives.
+        if self._unloaded:
+            raise PluginTestError("the plugin is unloaded")
+        reserved(name, listening=True)
+        return self.bus._bus.add(name, row, plugin, callback(), scope, prepend, global_)  # type: ignore[arg-type]
 
     # ── Services ─────────────────────────────────────────────────
 
@@ -690,12 +694,9 @@ class _Context(sdk.Context):
 
     def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]:
         loaded = self._loaded
-        if loaded._unloaded:
-            raise PluginTestError("the plugin is unloaded")
-        reserved(name, listening=True)
         bus = loaded.bus._bus
         plugin = loaded._plugin.name or loaded.row
-        entry = bus.add(name, loaded.row, plugin, listener, loaded.scope, prepend, global_)
+        entry = loaded._listen(name, loaded.row, plugin, lambda: listener, loaded.scope, prepend, global_)
         entry.runtime = loaded.runtime
 
         def off() -> None:

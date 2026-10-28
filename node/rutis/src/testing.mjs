@@ -383,6 +383,16 @@ function internal(name) {
   if (name.startsWith('internal/')) throw new PluginTestError(internalMessage(name))
 }
 
+// What `ctx.on` and `t.on` share: refuse an unloaded row, a listener that is
+// not a function and an internal name, then register `listener` (as
+// `callback` turns it) with the entry's other fields.
+function listen(bus, row, name, listener, options, fields, callback = () => listener) {
+  if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
+  if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
+  internal(name)
+  return bus.on({ name, callback: callback(), prepend: options?.prepend, global: options?.global, ...fields })
+}
+
 // A scope path (`t1/s1`; `root` or nothing for the root) as the chain a
 // host gives a row (protocol §3): each instance's id is its path, its group
 // `groups[path]` or the path's last part.
@@ -525,11 +535,8 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
         /** Aborted when the row unloads, while its listeners are waited for. */
         get signal() { return row.abort.signal },
         on(name, listener, options) {
-          if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
-          if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
-          internal(name)
           // Named by the plugin's declared name, else its row's id (§4.2).
-          const entry = bus.on({ name, callback: listener, prepend: options?.prepend, global: options?.global, row: key, plugin: plugin.name ?? key, scope: row.chain })
+          const entry = listen(bus, row, name, listener, options, { row: key, plugin: plugin.name ?? key, scope: row.chain })
           return () => { bus.off(entry) }
         },
         ...emitters(bus, key, false, undefined, strict),
@@ -647,11 +654,8 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
        * process. Options as `ctx.on`: `prepend`, `global`.
        */
       on(name, listener, options) {
-        if (row.unloaded) throw new PluginTestError('the plugin is unloaded')
-        if (typeof listener !== 'function') throw new PluginTestError('on needs a listener function')
-        internal(name)
-        const callback = strict ? cross(listener, undefined, new Set(), false, 0, `listener of ${name}`) : listener
-        const entry = bus.on({ name, callback, kind: kindOf(listener), prepend: options?.prepend, global: options?.global, row: null, plugin: 'test', scope: [] })
+        const entry = listen(bus, row, name, listener, options, { kind: kindOf(listener), row: null, plugin: 'test', scope: [] },
+          () => strict ? cross(listener, undefined, new Set(), false, 0, `listener of ${name}`) : listener)
         mine.push(entry)
         listening.push(entry)
         return () => { withdraw(entry) }
