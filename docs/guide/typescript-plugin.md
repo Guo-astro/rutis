@@ -62,24 +62,11 @@ export default definePlugin<Config>({
 
 `provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了的服务按声明：只有声明的方法能调用，加方法时也加到这里；`'sync'` 把方法标成同步。不写也能运行：`ctx.provide` 提供的服务照样自动对外，方法取对象上的函数，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
-插件本身也是一个值：把 `definePlugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，用的是你在 `apply` 里准备好的东西。见 [插件 API](plugin-api.md#插件定义)。
+插件本身也是一个值，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
 
 ### 带方法的对象
 
-类的实例、有函数属性的普通对象按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
-
-```ts
-const cache = await ctx.use('store').cache()
-await cache.set('a', 1)          // 方法都是异步调用，调用的是对方的原对象
-const value = await cache.get('a')
-```
-
-- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用），没有数据字段：要数据，让方法返回它。`console.log` 显示 `[remote object]`。
-- 同一个对象交出几次，对方拿到同一个代理；代理交回原来的进程，那边拿到的是原对象。
-- 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
-- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。
-- 数组、对象里的 `undefined` 到了对方是 `null`；只有作为整个参数或整个返回值时保留。
-- 同一个运行时里的行拿到的是对象本身（方法照常同步、字段可读）。测试工具的严格模式按跨进程的样子给代理。
+类的实例、有函数属性的普通对象按引用交给别的语言，对方拿到代理：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
 
 ## 3. 测试
 
@@ -107,65 +94,11 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
+`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认是严格模式，值按跨进程的规则传递，见 [插件 API：严格模式](plugin-api.md#严格模式)；测试工具的其余接口见 [插件 API：TypeScript 与 Bun 的测试工具](plugin-api.md#typescript-与-bun-的测试工具)。
 
 ### 事件
 
-`ctx.on(name, listener)` 监听事件；`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail` 是发出的五种方式。监听器自动登记给宿主，什么都不用声明：发出方是同一个进程里的另一个插件、另一种语言的插件、宿主里的 Rust 代码还是相连的节点，结果都一样。完整的规则见 [插件 API：事件](plugin-api.md#事件)。
-
-下面两个插件在测试工具的 `host()` 上共享一条总线：`greeter` 用 `serial` 取第一个结果、用 `waterfall` 让别的插件改写问候语、用 `emit` 通知；`shout` 是 waterfall 的一环，并监听通知。
-
-<!-- example: typescript file=weather/test/events.test.ts order=2 -->
-```ts
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
-import { definePlugin } from '@arcships/rutis'
-import { host } from '@arcships/rutis/testing'
-
-const greeter = definePlugin({
-  apply(ctx) {
-    // 返回 undefined / null / false 是"没有结果"，serial 接着问下一个监听器
-    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
-    ctx.provide('greeter', {
-      async hello(name: string, lang: string) {
-        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
-        // 参数都是事件的；终态用 `with` 给出：链的最里面
-        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
-        ctx.emit('greeting/said', name)                  // 立即返回，不等监听器
-        return text
-      },
-    })
-  },
-})
-
-const said: string[] = []
-const shout = definePlugin({
-  apply(ctx) {
-    // waterfall 的监听器最后一个参数是 next：执行链上其余部分
-    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
-    ctx.on('greeting/said', (name: string) => { said.push(name) })
-  },
-})
-
-test('plugins hear each other', async () => {
-  const h = host()
-  const t = await h.load(greeter)
-  await h.load(shout)
-  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
-  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
-  assert.deepEqual(said, ['Ada', 'Bo'])
-  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // 测试自己也能发出
-  await h.unload()
-})
-```
-
-- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `h.reported` / `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
-- `waterfall` 只要有监听器在别的进程就返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
-- `ctx.filter(d => d.row === 'audit').parallel(...)` 只送达过滤函数留下的监听器；`ctx.on(name, fn, { prepend: true })` 排到最前，`{ global: true }` 不受过滤。
-- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，它的监听器把作用域作为描述带上；监听器收到这个 root 总线上的所有同名事件，与发出方在哪个实例无关。作用域只是描述，供过滤使用。
-- 卸载时插件的 `ctx.signal` 被中止，正在运行的监听器被等待（最多到关闭截止时间），然后才运行清理。
-
-`load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。别的语言的插件监听 TypeScript 插件发出的事件，写法见 [Python 插件：事件](python-plugin.md#事件)。
+`ctx.on(name, listener)` 监听事件，`ctx.emit(name, ...args)` 发出事件。监听器自动登记给宿主，什么都不用声明：发出方是同一个进程里的另一个插件、另一种语言的插件、宿主里的 Rust 代码还是相连的节点，结果都一样。其余发出方式（`parallel`、`serial`、`waterfall`、`bail`）、过滤与作用域见 [插件 API：事件](plugin-api.md#事件)。
 
 测试要确认插件发出了某个事件，用 `t.on(name, listener, options)` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；选项与 `ctx.on` 相同（`prepend`、`global`）；返回撤销函数，不撤销时随这一行卸载撤掉。`host()` 装载的每一行都有它，共用一条总线。
 
@@ -273,17 +206,7 @@ npm publish --access public   # 先运行 prepack：tsc 生成 dist/
 
 ## 6. 被宿主使用
 
-宿主把插件包装进它的 Node 项目（和 `@arcships/rutis-runtime` 同一处），然后在配置里加一行，行名就是包名：
-
-```bash
-npm install @your-name/weather
-```
-
-```json
-{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
-```
-
-见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 已有的 Cordis 插件
 

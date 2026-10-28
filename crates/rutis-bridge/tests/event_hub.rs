@@ -222,33 +222,6 @@ fn answer(value: Option<&'static str>, heard: Arc<Mutex<Vec<Vec<Value>>>>) -> im
     }
 }
 
-/// guarantee: events/v2-required
-///
-/// A far end that does not declare `events-v2` is refused right after the
-/// handshake, with the message of events protocol §2.2 naming it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_without_events_v2_is_refused() {
-    within("refused", async {
-        let mut old = Endpoint::rust(id("rt"));
-        old.capabilities
-            .retain(|capability| capability != "events-v2");
-        old.implementation.name = "old-runtime".into();
-        old.implementation.version = "0.12.1".into();
-        let error = rig_with(Ctx::root().unwrap(), old)
-            .await
-            .err()
-            .expect("refused");
-        assert!(
-            error.to_string().contains(
-                "incompatible session: the far end (old-runtime 0.12.1) does not declare \
-                 events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later"
-            ),
-            "{error}"
-        );
-    })
-    .await;
-}
-
 /// guarantee: events/presence
 ///
 /// The runtime hears the names with listeners elsewhere first (before

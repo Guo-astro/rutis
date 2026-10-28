@@ -156,16 +156,6 @@ impl Connection {
         let _ = self.0.end.set(how.to_owned());
     }
 
-    /// An object from `source` goes only to a far end that declared
-    /// `objects`: any other (older than rutis 0.18) cannot call its methods,
-    /// and would end the session on it.
-    pub(super) fn object_refused(&self, source: &str) -> Error {
-        let far = self.far_name();
-        Error::Value(format!(
-            "an object from {source} cannot cross to {far}: {far} does not take objects (older than rutis 0.18); upgrade it"
-        ))
-    }
-
     /// Encode a call's arguments (`args`, a list of them as a rule), each
     /// nested at most [`MAX_DEPTH`] deep: a value error says which argument
     /// of `call`. With the references they grant, given back on failure.

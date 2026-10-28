@@ -136,7 +136,7 @@ func (l *listener) run(caller context.Context, mode events.Mode, args []any, nex
 	if l.row.ctx.Err() != nil {
 		cancel()
 	}
-	if mode.Waterfall() {
+	if mode == events.ModeWaterfall {
 		args = append(args[:len(args):len(args)], next)
 	} else {
 		args = append([]any(nil), args...)
@@ -399,7 +399,7 @@ func (e *Emitter) dispatch(ctx context.Context, name string, mode events.Mode, a
 	case events.ModeParallel:
 		return nil, d.Parallel(ctx, args)
 	case events.ModeWaterfall:
-		return d.Waterfall(ctx, mode, args, terminal)
+		return d.Waterfall(ctx, args, terminal)
 	default:
 		return d.Serial(ctx, mode, args)
 	}
@@ -500,7 +500,6 @@ func (rt *runtimeState) dispatchViaHost(ctx context.Context, r *row, name string
 	if err != nil {
 		return nil, err
 	}
-	rt.warnChainless(ctx)
 	value, err := wait()
 	if err != nil {
 		return nil, peer.Aggregated(err)
@@ -667,13 +666,13 @@ func (rt *runtimeState) eventCall(ctx context.Context, args []any) func() (any, 
 		return func() (any, error) { return nil, <-done }
 	}
 	var next events.Next
-	if m.Waterfall() {
+	if m == events.ModeWaterfall {
 		remote, ok := record["next"].(*peer.RemoteFunction)
 		if !ok {
 			return failed(fmt.Errorf("events.call: a %s needs next", mode))
 		}
 		next = func(ctx context.Context) (any, error) {
-			value, err := remote.Call(ctx, []any{}, m == events.ModeWaterfallSync)
+			value, err := remote.Call(ctx, []any{}, false)
 			if err != nil {
 				return nil, err
 			}

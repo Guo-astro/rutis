@@ -2,7 +2,7 @@
 
 [English](design-host-writes-plugins-2026-10-27.en.md) · [中文](design-host-writes-plugins-2026-10-27.md)
 
-状态：定稿，未实现。日期：2026-10-27；2026-10-28 修订：按 [远程连接：只留一个会话插件](design-remote-session-2026-10-28.md)（#811）与 [0.19 平台清理](design-platform-cleanup-2026-10-28.md)（#813）对照改写——排期改为 0.19 内实现、拆成三个 PR；去掉已删除的 `share_by_name` / `share_registered_only`、#683 的 `allowed_services`、`run --allow-call`、嵌入 `Installer`；写回 `rutis.json` 复用 #805 的写回；`status()` 按 0.19 的快照；补"开发者看到什么"的各角色与错误。2026-10-29 修订（H3）：§七 的文字按实现逐字改正——错误码是 Rust 服务通用的 `Error`；没给 `id` 时生成 8 位十六进制；Python 的语法错误、`apply` 失败、找不到模块按运行时实际的写法；Python 重载时 `apply` 失败的行从此跑新代码并失败（与 `dev` 相同），不装回旧版本；`reload` 成功不另打终端行（调用方要能在行之外调用，例如 `rutis-host call`，所以方法不取调用方的行）。基准：`main` `212ac7ce`。排期：0.19。
+状态：已实现（0.19，#771 的 H2–H4；S1 是 `tests/e2e/tests/host_writes_plugin.rs`）。日期：2026-10-27；2026-10-28 修订：按 [远程连接：只留一个会话插件](design-remote-session-2026-10-28.md)（#811）与 [0.19 平台清理](design-platform-cleanup-2026-10-28.md)（#813）对照改写——排期改为 0.19 内实现、拆成三个 PR；去掉已删除的 `share_by_name` / `share_registered_only`、#683 的 `allowed_services`、`run --allow-call`、嵌入 `Installer`；写回 `rutis.json` 复用 #805 的写回；`status()` 按 0.19 的快照；补"开发者看到什么"的各角色与错误。2026-10-29 修订（H3）：§七 的文字按实现逐字改正——错误码是 Rust 服务通用的 `Error`；没给 `id` 时生成 8 位十六进制；Python 的语法错误、`apply` 失败、找不到模块按运行时实际的写法；Python 重载时 `apply` 失败的行从此跑新代码并失败（与 `dev` 相同），不装回旧版本；`reload` 成功不另打终端行（调用方要能在行之外调用，例如 `rutis-host call`，所以方法不取调用方的行）。2026-10-29 修订（H2）：写回时把 loader 的这次编辑套在文件里原样的 `rows` 上再写出（插件文件的相对路径、节点行的身份按文件里的写法，不写宿主运行时补全的样子）；SIGUSR1 与 `--watch-config` 的重新读取从 loader 正在运行的行算起（含插件加、删的行），被拒绝时换回的也是它们。基准：`main` `212ac7ce`。排期：0.19。
 Issue：[#185](https://github.com/arcships/rutis/issues/185)（含并入的 [#693](https://github.com/arcships/rutis/issues/693)）；实施跟踪 [#771](https://github.com/arcships/rutis/issues/771) 的 H1–H4。取代 [#505](https://github.com/arcships/rutis/pull/505) 的草案。
 与 0.18 的关系：状态用 [0.18 的诊断](design-diagnostics-2026-10-26.md) §五 的 `Loader::status()`，出错文字按它 §四；不加结构。
 
@@ -206,6 +206,6 @@ row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})   // 在服
 | --- | --- | --- | --- |
 | H2 | rutis-host 的可编辑层：`run` 把 `rutis.json` 的 `rows` 作为可编辑层，`Persist` 用 #805 的写回；`dev` 不给；出错文字 `this host keeps no editable configuration, …` 与写回失败一行 | 加、删行后文件逐字节正确、键顺序不变；`--watch-config` 不把写回当作变化；外部改了文件后再改，按冲突处理合并；重启后照常；rutis-host.md "运行中改配置"一节写明 | P2（#805） |
 | H3 | rutis-loader 的 `LoaderService` 与 4 个方法，`LoaderPlugin` 提供它；§七 出错文字（替换 `no editable layer`、`no entry`、`apply failed, rolled back` 的旧说法，所有使用方同一个 PR 改完）；`cannot reload` 的文字由 loader 写出，`dev` 改用它 | Node、Python、Go 各一个测试：`inject` 后按同一套调用 `create` / `reload` / `remove` / `status`，逐字比较 §七 插件作者表的每一行；"没有可编辑的配置""写回失败"两行各一个端到端测试；保证表加 `loader/service` | CL5、CL17（含 C2）、CL21、CL23 |
-| H4 | S1（§八）；rutis-host.md 与 plugin-api.md 加"用 `loader` 管理插件"一节（中英）；《迁移到 0.19》的一句；关闭 #185 | Linux、macOS 通过，进 nightly | H2、H3；与 G3、G5 改同一批文档，不并行 |
+| H4 | S1（§八）；rutis-host.md 与 plugin-api.md 加"用 `loader` 管理插件"一节（中英）；《迁移到 0.19》的一句；关闭 #185 | Linux、macOS 通过，进 nightly（已完成：`tests/e2e/tests/host_writes_plugin.rs`，跑在 `ci.yml` 的 `e2e`、`network-macos`，每晚的完整运行也跑） | H2、H3；与 G3、G5 改同一批文档，不并行 |
 
 H1 是本次修订（只改两份设计稿，在 #771 加 H2–H4 行）。

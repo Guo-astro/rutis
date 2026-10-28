@@ -11,6 +11,7 @@ use tokio::time::Instant;
 use rutis_host::config::{read_text, HostConfig};
 use rutis_host::errln;
 use rutis_host::host::Host;
+use rutis_host::rows_file::Seen;
 
 /// How often `--watch-config` reads the file.
 const POLL: Duration = Duration::from_millis(100);
@@ -26,17 +27,21 @@ pub struct Triggers {
     #[cfg(unix)]
     usr1: Option<tokio::signal::unix::Signal>,
     watch: Option<Watch>,
+    seen: Seen,
 }
 
 impl Triggers {
     /// Listen for SIGUSR1 (Unix), and watch `path` when `watch`; the file's
-    /// content now is what the host started with.
-    pub fn listen(path: &Path, watch: bool) -> Result<Self, String> {
+    /// content now is what the host started with. `seen` is shared with
+    /// what writes the file back (`rutis_host::rows_file::RowsFile`):
+    /// content it wrote is no change either.
+    pub fn listen(path: &Path, watch: bool, seen: Seen) -> Result<Self, String> {
         Ok(Self {
             #[cfg(unix)]
             usr1: crate::stop::unix_signal(tokio::signal::unix::SignalKind::user_defined1())
                 .map_err(|error| format!("cannot listen for SIGUSR1: {error}"))?,
-            watch: watch.then(|| Watch::new(path)),
+            watch: watch.then(|| Watch::new(path, seen.clone())),
+            seen,
         })
     }
 
@@ -65,8 +70,8 @@ impl Triggers {
     /// The file was read as `text` for a reload: the watch takes it as
     /// seen, so the same content does not trigger again.
     pub fn read(&mut self, text: &str) {
+        *self.seen.lock().unwrap() = Some(text.to_owned());
         if let Some(watch) = &mut self.watch {
-            watch.seen = Some(text.to_owned());
             watch.settling = None;
         }
     }
@@ -75,17 +80,18 @@ impl Triggers {
 /// `--watch-config`: the file's content, read every [`POLL`].
 struct Watch {
     path: PathBuf,
-    /// The content the host runs (or refused), last read.
-    seen: Option<String>,
+    /// The content the host runs (or refused), last read or written.
+    seen: Seen,
     /// Content other than `seen`, and since when it is the same.
     settling: Option<(String, Instant)>,
 }
 
 impl Watch {
-    fn new(path: &Path) -> Self {
+    fn new(path: &Path, seen: Seen) -> Self {
+        *seen.lock().unwrap() = std::fs::read_to_string(path).ok();
         Self {
             path: path.to_owned(),
-            seen: std::fs::read_to_string(path).ok(),
+            seen,
             settling: None,
         }
     }
@@ -99,7 +105,7 @@ impl Watch {
             let Ok(now) = std::fs::read_to_string(&self.path) else {
                 continue;
             };
-            if Some(&now) == self.seen.as_ref() {
+            if Some(&now) == self.seen.lock().unwrap().as_ref() {
                 self.settling = None;
                 continue;
             }
@@ -160,7 +166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rutis.json");
         std::fs::write(&path, "one").unwrap();
-        let mut watch = Watch::new(&path);
+        let mut watch = Watch::new(&path, Seen::default());
         // The same content, touched: nothing.
         std::fs::write(&path, "one").unwrap();
         assert!(
@@ -175,7 +181,7 @@ mod tests {
         let started = Instant::now();
         watch.changed().await;
         assert!(started.elapsed() >= SETTLE, "{:?}", started.elapsed());
-        watch.seen = Some("two".into());
+        *watch.seen.lock().unwrap() = Some("two".into());
         assert!(
             tokio::time::timeout(Duration::from_secs(5), watch.changed())
                 .await
@@ -191,7 +197,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rutis.json");
         std::fs::write(&path, "one").unwrap();
-        let mut watch = Watch::new(&path);
+        let mut watch = Watch::new(&path, Seen::default());
         std::fs::remove_file(&path).unwrap();
         assert!(
             tokio::time::timeout(Duration::from_secs(5), watch.changed())
