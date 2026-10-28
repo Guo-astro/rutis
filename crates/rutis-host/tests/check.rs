@@ -833,10 +833,11 @@ fn sharing_a_listener(dir: &Path) {
     write(dir, &[("rutis.json", &config.to_string())]);
 }
 
-/// Both falling back to RUTIS_TOKEN, the link row and the runtime would
-/// accept the same token on one listener, and a connection presenting it
-/// is refused as ambiguous: check (and run, which starts the same way)
-/// fails at once, naming both and the variable to set (#702).
+/// With the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, the link
+/// row and the runtime would accept the same token on one listener, and a
+/// connection presenting it is refused as ambiguous: check (and run, which
+/// starts the same way) fails at once, naming both and the variables to
+/// change (#702).
 /// risk: A6
 /// guarantee: host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
@@ -846,20 +847,24 @@ async fn check_refuses_two_entries_accepting_one_token_on_a_listener() {
     let checked = check(
         dir.path(),
         &["rutis.json"],
-        &[("RUTIS_TOKEN", Path::new("shared"))],
+        &[
+            ("RUTIS_TOKEN_MAIN", Path::new("shared")),
+            ("RUTIS_TOKEN_PHONE", Path::new("shared")),
+        ],
     )
     .await;
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: listener public: link row main and remote runtime phone both accept \
-         RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
-         RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own\n"
+        "rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote \
+         runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection \
+         presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE \
+         another value\n"
     );
     assert_eq!(checked.status, 1);
 }
 
-/// The same listener, the runtime with a token of its own: check passes.
+/// The same listener, each with a token of its own: check passes.
 /// risk: A6
 /// guarantee: host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
@@ -870,7 +875,7 @@ async fn check_passes_entries_with_tokens_of_their_own_on_a_listener() {
         dir.path(),
         &["rutis.json"],
         &[
-            ("RUTIS_TOKEN", Path::new("shared")),
+            ("RUTIS_TOKEN_MAIN", Path::new("main-token")),
             ("RUTIS_TOKEN_PHONE", Path::new("phone-token")),
         ],
     )
@@ -896,9 +901,10 @@ fn link_rows_on_two_listeners(dir: &Path, disabled: bool) {
 }
 
 /// Listening link rows share the host's one identity, which answers a
-/// token with one of them: on different listeners, both falling back to
-/// RUTIS_TOKEN, one would never connect. check fails at once, naming both
-/// rows, both listeners and the variable to set (#726).
+/// token with one of them: on different listeners, with the same value in
+/// RUTIS_TOKEN_MAC and RUTIS_TOKEN_PI, one would never connect. check fails
+/// at once, naming both rows, both listeners and the variables to change
+/// (#726).
 /// risk: A6
 /// guarantee: host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
@@ -908,15 +914,19 @@ async fn check_refuses_link_rows_accepting_one_token_on_different_listeners() {
     let checked = check(
         dir.path(),
         &["rutis.json"],
-        &[("RUTIS_TOKEN", Path::new("shared"))],
+        &[
+            ("RUTIS_TOKEN_MAC", Path::new("shared")),
+            ("RUTIS_TOKEN_PI", Path::new("shared")),
+        ],
     )
     .await;
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: listeners public and private: link row mac and link row pi both \
-         accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
-         RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own\n"
+        "rutis-host: listeners public and private: link row mac accepts RUTIS_TOKEN_MAC \
+         and link row pi accepts RUTIS_TOKEN_PI, the same token, so a connection \
+         presenting it cannot be told apart: give RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI \
+         another value\n"
     );
     assert_eq!(checked.status, 1);
 }
@@ -931,14 +941,18 @@ async fn check_refuses_a_disabled_link_row_accepting_the_same_token() {
     let checked = check(
         dir.path(),
         &["rutis.json"],
-        &[("RUTIS_TOKEN", Path::new("shared"))],
+        &[
+            ("RUTIS_TOKEN_MAC", Path::new("shared")),
+            ("RUTIS_TOKEN_PI", Path::new("shared")),
+        ],
     )
     .await;
     assert_eq!(
         checked.stderr,
-        "rutis-host: listeners public and private: link row mac and link row pi (disabled) \
-         both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set \
-         RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI to a token of its own\n"
+        "rutis-host: listeners public and private: link row mac accepts RUTIS_TOKEN_MAC \
+         and link row pi (disabled) accepts RUTIS_TOKEN_PI, the same token, so a \
+         connection presenting it cannot be told apart: give RUTIS_TOKEN_MAC or \
+         RUTIS_TOKEN_PI another value\n"
     );
     assert_eq!(checked.status, 1);
 }

@@ -545,7 +545,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 }
 ```
 
-- token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`），没有时用 `RUTIS_TOKEN`。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
+- token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`）。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
 - `transport`：可选，默认 `websocket`。宿主自己的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 的 `transports`），`transport` 写它的名字；一台、多台都用它。用别的传输时，`listen` 写那个传输自己的监听器名，不需要在 `listen` 里有同名的监听器。
 - 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`transport` 没有 `dial` 或 `listen`、`transport` 不是宿主有的、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
 - 一台的 `listen` 与监听的节点行一样，参与同一 token 的检查（#702、#726）：两个条目会接受同一个 token 时启动报错。
@@ -572,7 +572,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 }
 ```
 
-- 运行时连接时出示 token `RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`；没有时用 `RUTIS_TOKEN`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
+- 运行时连接时出示 token（与 rutis 一侧的 `RUTIS_TOKEN_<NAME>` 相同，运行时名大写，`-` 写作 `_`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
 - 每条连接是分组的一个实例：连进来时创建，断开时关闭。同一个 id 的新连接接管旧连接：旧实例关闭后再创建新实例。
 - 分组里的 `<name>:<插件>` 行在每个实例里运行在该实例的连接上。连接里没有这个插件时，这一行只在这个实例里失败（`runtime <name>: this connection does not contain plugin <插件>`），不影响其他实例；新增这样的行也不会因此被拒绝。
 - 连接上的插件提供的服务是它所在实例自己的：多条连接带同名插件互不冲突，同一实例里的行（任何语言）按名字用到的是本连接的服务。实例外的行用不到它们，需要时把使用者放进这个分组。
@@ -606,15 +606,14 @@ Python 运行时用 `python -m rutis dial:wss://… --id <id> --peer <本宿主�
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `RUTIS_TOKEN` | 连接其他节点时出示的、以及接受其他节点连入时核对的 token |
-| `RUTIS_TOKEN_<节点>` | 只对某个节点（大写，`-` 写作 `_`），优先于 `RUTIS_TOKEN`；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token |
+| `RUTIS_TOKEN_<节点>` | 连接这个节点时出示的、以及它连入时核对的 token（节点名大写，`-` 写作 `_`）；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token。宿主一侧只读按名字的变量，不读单独的 `RUTIS_TOKEN` |
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（两个 `RUTIS_TOKEN_<名字>` 设成了同一个值），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、哪两个变量要换一个值：
 
 ```
-rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。
