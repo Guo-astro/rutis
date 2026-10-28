@@ -15,6 +15,7 @@
 //! unloaded.
 
 mod greet;
+mod open;
 mod rows;
 mod run;
 mod services;
@@ -79,6 +80,15 @@ impl Session {
         }
     }
 
+    /// The root plugin serving the service `sessions` to plugins of every
+    /// language: `sessions.open(far)` mounts a session below the calling
+    /// row, on a channel made of `far = { send, close }` and the returned
+    /// `near = { receive, end }` (`docs/design-remote-session-2026-10-28.md`
+    /// §5.2). The caller declares `sessions` in its `inject`. The host
+    /// mounts it once, on its root.
+    pub fn service() -> impl DynPlugin {
+        open::Sessions
+    }
 
     /// Greet the far end on `channel` as the [`LocalId`] `ctx` sees, waiting
     /// at most 10 s for its greeting. Registers nothing: mount the result
