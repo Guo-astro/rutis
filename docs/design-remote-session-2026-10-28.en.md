@@ -2,11 +2,11 @@
 
 [中文](design-remote-session-2026-10-28.md)
 
-Status: draft, not implemented. Date: 2026-10-28. Base: `main` `3d19634f`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-28. Base: `main` `3d19634f`. Scheduled: 0.19.
 Issue: [#695](https://github.com/arcships/rutis/issues/695) (implemented by [#696](https://github.com/arcships/rutis/issues/696) loader, [#698](https://github.com/arcships/rutis/issues/698) rutis-host). Basis: the two 2026-10-28 comments on #695.
 Relation to earlier designs: replaces the implementation part of [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md) (the "inside rutis-host" column of §4, §5, §7, §8); its "a missing plugin is always `Unavailable`" stays, and the `runtimes.remote` syntax goes (§6). The [decision record](decision-remote-runtime-consistency-2026-10-26.en.md)'s "no new handover interface, do not rewrite links and access points" is overturned by this design; see §1 for why.
 
-Out of scope: the session protocol (unchanged); the session side of each language runtime and SDK (unchanged); opening up authentication (a host's own credentials belong in its own connection plugin, with no interface in the core); revocation while running (see `Revocations` in §8); the loader's row model and `instanced` groups themselves.
+Out of scope: the session protocol's frames (unchanged; only the compat format goes, §3); language runtimes and SDKs change only where §3 and §13 say; opening up authentication (a host's own credentials belong in its own connection plugin, with no interface in the core); revocation while running (see `Revocations` in §8); the loader's row model and `instanced` groups themselves.
 
 ## 1. Today
 
@@ -85,7 +85,7 @@ connection plugin (rutis-host/dial, rutis-host/listen, rutis-host/spawn, or anyo
 - **Connection plugin → session**: `ctx.plugin(Session::new(channel))`. The Channel closes, the session unloads; the session unloads, the Channel closes.
 - **Session → remote plugins**: far plugins come from two sources, both registered as `<id>:<plugin>` and unloaded when they end or the session unloads:
   - this end has it run: a row `<connection row>:<plugin>`, for which the loader finds the session and calls `run`;
-  - plugins already running at the far end and providing services (when the far end is a rutis node).
+  - plugins the far end installs itself and that provide services (when the far end is a rutis node, or a device app installing its own plugins).
 - **Services**: visible everywhere on both sides through the session. What a far plugin `inject`s is borrowed from this end (as local runtimes do today); what the far end provides is `provide`d here by its remote plugin. Same names follow the kernel's rule: the later registration is refused. Services that came over a session are not sent back over the same session.
 - **Events**: one flat bus. The far end's listeners are entries on this end's bus, as runtimes' are today.
 - **Remote plugins ↔ local plugins**: as for any plugin (`inject` / `provide`); every lifecycle is the kernel's own.
@@ -132,8 +132,8 @@ rutis-host
  ├─ rutis-host/dial   gpu       ── websocket::dial ────▶ Channel ─▶ session gpu
  │                                                                         └─ gpu:embedder (run)
  ├─ rutis-host/listen phone     ── websocket::listen ──▶ one Channel per connection
- │     ├─ session phone-1   ── instance phones #1: phone:health (run), py:coach
- │     └─ session phone-2   ── instance phones #2: phone:health (run), py:coach
+ │     ├─ session phone-1   └─ phone-1:health (installed by the device)
+ │     └─ session phone-2   └─ phone-2:health
  ├─ rutis-host/dial   office    ── websocket::dial ────▶ Channel ─▶ session office
  │                                                                         └─ office:clock (provided by office)
  └─ a TS plugin relay an agent wrote while running ── sessions.open(far) ──▶ session (id from the far end)
@@ -141,7 +141,7 @@ rutis-host
 
 Local runtimes, remote runtimes, devices and nodes all have the same shape; there is no node- or remote-runtime-specific code.
 
-### 2.6 Decisions on the two open items
+### 2.6 Decisions on node links and configuration
 
 **Decision 1: node links drop `export` and `import`.** Services are visible everywhere on both sides through the session, same names by the kernel's rule; events are a flat bus. This is how Cordis and today's runtimes work, and nodes need no code of their own. A host that does not want the far end to see some services uses `isolate` on its own rows; that is the host's business, not a rule of remote connections.
 
@@ -159,8 +159,16 @@ Every use in [Connecting nodes](guide/nodes.en.md) and the tests, checked:
 
 - Plugins already running at the far end are configured there.
 - When this end decides what the far end runs and with what configuration, it writes a row `<connection row>:<plugin>` with `config`, and the loader calls `run`.
-- How apps get configuration today ([App integration](design-app-integration-2026-10-14.en.md) D2, D6; Kotlin and Swift `RutisApp`): the app only reports the plugins it carries (`plugins` in the `mount` reply); which one loads and with what configuration comes from the rows of an `instanced` group in the rutis configuration, and the SDK `apply`s only when a `rows.v2` start request arrives. That is `run`.
-- Migration: **apps and SDKs do not change.** A `phone:health` row in the `instanced` group becomes one `run("health", config)` in each app connection's instance; the local rows using it (`py:coach`) stay in the same instance.
+- How apps get configuration today ([App integration](design-app-integration-2026-10-14.en.md) D2, D6; Kotlin and Swift `RutisApp`): the app only reports the plugins it carries (`plugins` in the `mount` reply); which one loads and with what configuration comes from the rows of an `instanced` group in the rutis configuration, and the SDK `apply`s only when a `rows.v2` start request arrives. The host no longer creates an instance per connection (decision 3), so this no longer works for many devices.
+- Instead: the app on the device installs the plugins it carries itself, configured in the app (each plugin in `RutisApp` may carry a configuration; without one, the schema's defaults); once connected it reports the services they provide with the existing `services.announce` frame (which nodes already use), and the host registers them as `<id>:<plugin>`. This is a 0.19 change to the Kotlin and Swift SDKs (§13 A1, A2); D2 and D6 of the app integration design are rewritten along.
+- Runtimes the host connects one at a time (the language runtimes behind `rutis-host/spawn`, `dial` and one-runtime `listen`) still get rows `<connection row>:<plugin>` written by the host, through `run`.
+
+**Decision 3: telling devices apart is the business of the plugins on the devices.**
+
+- `rutis-host/listen` creates just one session per connection it lets through, and the far plugins register as ordinary plugins `<id>:<plugin>`; the services they provide are visible everywhere, with same names conflicting by the kernel's rule (the later one is refused, saying why). The host creates no instance per connection.
+- Logic that must run once per device goes on the device; a plugin on the host that handles many devices tells them apart itself, or the plugins on the devices use different service names. The platform does no isolation for plugins.
+- The loader's existing `instanced` groups stay a general feature; remote connections no longer use them specially.
+- 0.18's "one `py:coach` on the host per device" (the example in the Swift and Kotlin app guides) is not supported in 0.19. The ways to change it: move coach onto the device (a plugin in the app), or have coach tell devices apart itself (for example, the device plugins provide their service as `health-<device>`, and coach looks it up by name).
 
 ## 3. Channel
 
@@ -230,9 +238,9 @@ A connection plugin waits for the session to unload through the kernel handle `c
 
 - `rutis-host/spawn` and `rutis-host/dial` have one Channel at a time: the new one starts only after the old one unloaded, so nothing is replaced.
 - Replacement happens only inside `rutis-host/listen`. listen keeps its own connections by id; once a new connection with the same id finishes its handshake:
-  1. the old session unloads (remote plugins in reverse, every cleanup finished), and its instance is removed;
+  1. the old session unloads (remote plugins in reverse, every cleanup finished);
   2. the old Channel is `close(Replaced)` (4002);
-  3. an instance is created for the new connection, and its rows start `run`ning.
+  3. the new session starts registering the far plugins.
 - A new connection has no remote plugin before its handshake is done (remote plugins only come from `run` and from services the far end provides, both after step 3), so a connection whose handshake fails never affects the old one.
 - TLA: the mutation `access-mut-accept-before-release` moves "accept the new connection" before "release the old one" and the model finds a counterexample; listen's order 1, 2 → 3 is the order it guards.
 - The host keeps no names: spawn, dial and one-runtime listen are named by their row id (which the loader already requires to be unique); two entries with the same token on one listener are a start-up error (#702).
@@ -305,7 +313,7 @@ The three plugins live in rutis-host (not in rutis-bridge), on plain functions i
 | --- | --- | --- |
 | `rutis-host/spawn` | `pipe::spawn` starts a local runtime process with `--id <runtime name>` and mounts a session; restarts it by `restart` when it exits | the existing fields of `runtimes.*` |
 | `rutis-host/dial` | `websocket::dial`, mounts a session; after the session unloads, backs off by the `ConnectError` category and reconnects | `address`; the token is only `RUTIS_TOKEN_<row id>`; `RUTIS_CA` |
-| `rutis-host/listen` | `websocket::listen`: compares the token at upgrade (401 / 403 unchanged); one runtime: one session at a time; many: one session and one instance per connection (§4.2) | `listener`; for many, `group` (below); tokens as dial |
+| `rutis-host/listen` | `websocket::listen`: compares the token at upgrade (401 / 403 unchanged); one session per connection let through, same-id replacement (§4.2) | `listener`; tokens as dial |
 
 - The host side accepts only `RUTIS_TOKEN_<name>`, with no fallback to the shared `RUTIS_TOKEN` (the fallback at `config.rs:912` and the "who shares `RUTIS_TOKEN`" check from `config.rs:969` go); `RUTIS_TOKEN` on the runtime side is unchanged. One port dispatching to several entries by token (what `Registrations` does today) and `RUTIS_TOKEN_<name>` stay, because they have users (Swift and Kotlin apps and every language's dialler connect this way); the dispatching code lives in `rutis-host/listen`.
 - `runtimes.node` / `py` / `go` / `swift` / `bun` and the other local runtimes are still shorthand for `rutis-host/spawn` rows, unchanged.
@@ -322,20 +330,12 @@ The three plugins live in rutis-host (not in rutis-bridge), on plain functions i
     { "id": "embedder", "name": "gpu:embedder" },
     { "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
     { "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } },
-    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public", "group": "phones" } },
-    { "id": "phones", "group": true, "instanced": true, "config": [
-      { "id": "health", "name": "phone:health" },
-      { "id": "coach", "name": "py:coach", "inject": ["health"] }
-    ] }
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
 
-**Many devices (checked in the code)**: listen creates an instance per connection with the loader's existing `create_instance`. What works directly and what has to be added:
-
-- Works directly: `Loader::create_instance(ctx, group)` takes no operation lock, so a plugin can call it from its `apply` and afterwards; the parent is found by walking up from `ctx` (`instances.rs:83`); `.with(value)` hands a value to the factories of the rows in the instance (`Build::value`), which is how `AcceptInstances` hands the connection in today (`connections.rs:529`); `remove_instance` closes it. listen creates the instance with `.with(SessionHandle)`, and the `phone:health` row in it takes this instance's session from that value and calls `run`; being a row of the instance, the services it provides are visible in that instance only, by the existing instance service rules.
-- Does not work: "listen placed inside the `instanced` group". An `instanced` group is not spawned by reconcile; its rows run only when an instance is created (`instances.rs:3`), so a listen inside it would never start to create the first instance.
-- The smallest addition: listen sits beside the group, and one config field, `group`, says which `instanced` group it creates instances of. It is the only thing listen needs to know about the group; nothing else is added.
+After the `phone` row, the plugins installed on each device that connects register as `<device id>:<plugin>` (`phone-1:health`); devices need not be listed in rutis.json.
 
 ## 7. What developers see
 
@@ -403,7 +403,7 @@ The old forms are removed in 0.19, not deprecated, with no dedicated conversion 
 | `RuntimeSession`, `runtime_session_key`, `RuntimeAccessPlugin` | rutis-bridge `runtime/` | the service-shaped handover | loader; tests |
 | `RuntimePlugin::remote` | rutis-bridge `runtime/plugin.rs` | remote and local go through the same session | rutis-host; loader; tests |
 | `LocalRuntime` | rutis-bridge `runtime/local.rs` | starting processes moves to `rutis-host/spawn` | rutis-host; tests |
-| `RuntimeInstances`, `AcceptInstances`, `RuntimeConnection` | loader `runtime/connections.rs` | listen uses `create_instance` + `with` directly | rutis-host; loader tests; rutis-migrate's name table |
+| `RuntimeInstances`, `AcceptInstances`, `RuntimeConnection` | loader `runtime/connections.rs` | decision 3: the host creates no instance per connection | rutis-host; loader tests; rutis-migrate's name table |
 | `LinkState`, `AccessEvent`, the remote part of `RuntimeState` | bridge, rutis-host `status.rs` | become "runtime state + whether the session is connected" | rutis-host's output code |
 | `ChannelInfo`, `Closer::replaced`, `Closer::rejected` | rutis-bridge `channel/mod.rs` | §3 | carriers; tests |
 | `ConnectError` (out of `channel`) | rutis-bridge `channel/mod.rs` | goes inside `rutis-host/dial` | carriers and dial |
@@ -450,15 +450,15 @@ Line counts are `wc -l` on `3d19634f` (including in-file unit tests); "public it
 | rutis-host `host.rs` | 2089 | 27 | 1650 |
 | `config.rs` | 1434 | 42 | 1100 |
 | `status.rs` | 979 | 18 | 780 |
-| new `connect.rs` (spawn, dial, listen) | — | — | 650 |
-| **rutis-host subtotal** | **4502** | **87** | **4180** |
-| **Total** | **18753** | **441** | **about 11370** |
+| new `connect.rs` (spawn, dial, listen) | — | — | 600 |
+| **rutis-host subtotal** | **4502** | **87** | **4130** |
+| **Total** | **18753** | **441** | **about 11320** |
 
 - This table counts `session/rpc.rs` and `catalog.rs` too, which the previous version did not (removing compat and `share_registered_only` touches them).
 - Names exported at the rutis-bridge root: 59 now, about 7 after (`Channel`, `Close`, `PeerId`, `Session`, `SessionHandle`, `RowHandle`, `thrown`), estimated.
 - The session's public API: four names, `Session::new`, `SessionHandle::id`, `SessionHandle::run`, `sessions.open`.
 - Lifecycle paths go from 4 to 1, handover shapes from 2 to 1, admission, replacement and state each from 3 copies to 1 (replacement only in listen); nodes and remote runtimes have no code of their own.
-- Each language runtime's entry points (after removing compat, estimated): Node `runner.mjs` 1162 → 1140, `session.mjs` 810 → 740; Bun `main.ts` 203 → 195; Python `__main__.py` 352 → 340, `peer.py` 1903 → 1820; Go `serve.go` 295 → 270; Swift `Serve.swift` 263 → 240; Kotlin `Peer.kt` 1438 → 1360, jvm `Serve.kt` 217 → 205.
+- Each language runtime's entry points (after removing compat, estimated): Node `runner.mjs` 1162 → 1140, `session.mjs` 810 → 740; Bun `main.ts` 203 → 195; Python `__main__.py` 352 → 340, `peer.py` 1903 → 1820; Go `serve.go` 295 → 270; Swift `Serve.swift` 263 → 240; Kotlin `Peer.kt` 1438 → 1360, jvm `Serve.kt` 217 → 205. The Kotlin and Swift SDKs gain apps installing their own plugins and `services.announce` (A1, A2), about 150 more lines each.
 - Tests: files testing only removed interfaces are deleted or rewritten, about 5500 lines (`access_point.rs` 584, `revocation.rs` 798, `link.rs` 547, `fault_links.rs` 959, `memory_mux.rs` 730, `runtime_instances.rs` 703, `peer_rows.rs` 556, most of `node.rs` 1011, the `runtimes.remote` part of `remote_runtimes.rs`, …), estimated.
 
 ## 10. What happens to the merged PRs
@@ -477,7 +477,7 @@ Line counts are `wc -l` on `3d19634f` (including in-file unit tests); "public it
 
 ## 11. Compatibility and *Migrating to 0.19*
 
-No compatibility. Unchanged are only: the endpoint format of the session protocol; app code (Kotlin and Swift apps change no code, but are rebuilt with the 0.19 SDK); rutis.json `format` stays 1; the syntax of `runtimes.node` / `py` / `go` / `swift` / `bun` and the other local runtimes.
+No compatibility. Unchanged are only: the endpoint format of the session protocol; rutis.json `format` stays 1; the syntax of `runtimes.node` / `py` / `go` / `swift` / `bun` and the other local runtimes.
 
 The "Remote runtimes" section of *Migrating to 0.19* is rewritten to give only the new syntax and the mapping:
 
@@ -487,7 +487,7 @@ The "Remote runtimes" section of *Migrating to 0.19* is rewritten to give only t
    | --- | --- |
    | a `runtimes.remote` entry + a `rutis-bridge/peer` row with `runtime`, `dial` | one row `{ "id": "gpu", "name": "rutis-host/dial", "config": { "address": "<address>" } }` |
    | the same, `listen` | one `rutis-host/listen` row, `"listener": "<listener>"` |
-   | `listen` + `instances` in `runtimes.remote` | one `rutis-host/listen` row, `"group": "<instanced group>"` |
+   | `listen` + `instances` in `runtimes.remote`, and the rows in the `instanced` group | one `rutis-host/listen` row; the remote plugin rows in the group go, and the app installs its plugins itself (decision 2); rows one per device on the host (`py:coach`) change per decision 3 |
    | a `rutis-bridge/peer` link row with `dial` / `listen` | the same two rows |
    | `export`, `import` (services and events) | nothing: services are visible on both sides, events are one bus |
    | `host: true` + `rows: true` + a row `peer:office/scanner` | a row `office:scanner` |
@@ -499,18 +499,19 @@ The "Remote runtimes" section of *Migrating to 0.19* is rewritten to give only t
    | 0.18 | 0.19 |
    | --- | --- |
    | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote` | `Session::new(websocket::dial(...)?)` in a connection plugin, rows `<name>:<plugin>` |
-   | `AccessPointPlugin` + `RuntimeInstances` | `rutis-host/listen`, or a connection plugin of your own + `create_instance(...).with(handle)` |
+   | `AccessPointPlugin` + `RuntimeInstances` | `rutis-host/listen`, or a connection plugin of your own |
    | `ExportPlugin` / `ImportPlugin` / `HostPlugin` | not needed |
    | `Identity` / `Admission` / `Revocations` | the connection plugin's own authentication; ids come from the handshake |
    | `Transport` | `websocket::dial` / `websocket::listen` / `pipe::spawn` give a `Channel` directly |
    | `Closer::replaced()` / `rejected(r)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` |
    | `rutis_bridge::ConnectError` | inside `rutis-host/dial` |
 
-4. **Upgrade together**: a 0.19 host cannot meet 0.18 or earlier runtimes and SDKs (compat is gone; the handshake refuses by protocol version); hosts and every language runtime and SDK move to 0.19 together. The cross-version guarantee holds only between adjacent releases with no incompatible change.
-5. **Tokens**: the host side accepts only `RUTIS_TOKEN_<name>`; a host that set only `RUTIS_TOKEN` sets one per name. `RUTIS_TOKEN` on the runtime side is unchanged.
-6. **`ServiceCatalog::share_registered_only` is removed**: a Rust embedding calling it drops the call (sharing by name is the default since 0.12).
-7. **Persisted samples**: the 0.8–0.18 samples contain `runtimes.remote`, `rutis-bridge/peer` rows and `peer:` rows, which 0.19 no longer reads. Those parts are taken out of the samples (expectations along), `rejected/` cases are added whose errors are exactly what the 0.18 rules say (an unknown field, an unknown plugin name), and the guarantee row for persisted samples states this 0.19 exception.
-8. **Output**: connection status lines become §7's (prefixed with the row id, connected / disconnected); `status`'s `connections:` lists the remote plugins after each connection.
+4. **Apps (Kotlin, Swift)**: plugin configuration goes into `RutisApp`, and the app installs its plugins itself once connected (decision 2); the `<runtime>:<plugin>` rows in the rutis-side `instanced` group go. Rows one per device on the host (`py:coach`) are no longer supported; change them per decision 3: move them onto the device, or have them tell devices apart themselves.
+5. **Upgrade together**: a 0.19 host cannot meet 0.18 or earlier runtimes and SDKs (compat is gone; the handshake refuses by protocol version); hosts and every language runtime and SDK move to 0.19 together. The cross-version guarantee holds only between adjacent releases with no incompatible change.
+6. **Tokens**: the host side accepts only `RUTIS_TOKEN_<name>`; a host that set only `RUTIS_TOKEN` sets one per name. `RUTIS_TOKEN` on the runtime side is unchanged.
+7. **`ServiceCatalog::share_registered_only` is removed**: a Rust embedding calling it drops the call (sharing by name is the default since 0.12).
+8. **Persisted samples**: the 0.8–0.18 samples contain `runtimes.remote`, `rutis-bridge/peer` rows and `peer:` rows, which 0.19 no longer reads. Those parts are taken out of the samples (expectations along), `rejected/` cases are added whose errors are exactly what the 0.18 rules say (an unknown field, an unknown plugin name), and the guarantee row for persisted samples states this 0.19 exception.
+9. **Output**: connection status lines become §7's (prefixed with the row id, connected / disconnected); `status`'s `connections:` lists the remote plugins after each connection.
 
 ## 12. Documents to change with it
 
@@ -519,14 +520,15 @@ The "Remote runtimes" section of *Migrating to 0.19* is rewritten to give only t
 | `docs/guide/nodes.md` / `.en.md` | rewrite: remote runtimes and nodes are both `rutis-host/dial` / `rutis-host/listen` rows; the `export` / `import` / `host` / `rows` / `runtime` table and the list rules of "Events between nodes" go, replaced by "services are visible on both sides, events are one bus"; "Running plugins on another node" becomes `office:scanner`; "implement a `Transport`" becomes "write a connection plugin"; the revocation hook in "Security" goes, replaced by "existing connections are cut by stopping their row" |
 | `docs/guide/rutis-host.md` / `.en.md` | the `runtimes.remote` section goes, replaced by rows of the three connection plugins; the start-up error list along; delete `Embedding`'s `transports` and `identity`; "What run prints" per §7 |
 | `docs/guide/rust-host.md` / `.en.md` | the `PeerPlugin`, `RuntimePlugin::remote` example becomes a connection plugin + `Session::new` |
-| `docs/guide/swift-app.md`, `kotlin-app.md` (both languages) | the rutis-side configuration becomes `rutis-host/listen` + `group` and `rutis-host/dial`; the app code is unchanged |
+| `docs/guide/swift-app.md`, `kotlin-app.md` (both languages) | the rutis side becomes `rutis-host/listen` and `rutis-host/dial` rows; the app configures its plugins in `RutisApp` and installs them itself; the "one `py:coach` per device" example goes, replaced by decision 3's two ways |
+| `docs/design-app-integration-2026-10-14.md` / `.en.md` | D2 and D6 rewritten: the plugins on a device are installed and configured by the app; "one instance per connection" in §5 goes |
 | `docs/guide/open-host.md`, `rust-host.md` (both languages) and §9 of `design-host-writes-plugins-2026-10-27.md` | remove the mentions of `share_registered_only` |
 | each language runtime's guide (`typescript-plugin`, `bun-plugin`, `python-plugin`, `go-plugin`, `swift-plugin`, `kotlin-app`) and `.agents/skills/rutis-new-runtime/references/runtime-contract.md` | local start-up arguments always carry `--id`; the endpoint format only; compat and `--format` gone |
 | `docs/guide/cordis.md`, `plugin-api.md`, `bun-plugin.md` and others mentioning nodes, `peer:` or `runtimes.remote` | rewritten in the new syntax at each place |
 | `.agents/skills/rutis-remote-plugin/SKILL.md` and `references/nodes.md`, `rutis-json.md`, `plugin-api.md` | as the guides; "implement Transport and add it to Embedding.transports" becomes "hand over a Channel / write a connection plugin", with a minimal `sessions.open` example |
 | `.agents/skills/rutis-new-runtime/references/plugin-api.md` | the section on making an existing runtime work remotely: nothing changes on the runtime side; on the rutis side, a `rutis-host/dial` / `listen` row |
 | `docs/migration-0.19.md` / `.en.md` | §11 |
-| `docs/guarantees.md` / `.en.md` | narrow `bridge/cross-version-meetings` to hold only between adjacent releases with no incompatible change, stating that 0.19 and 0.18 are not guaranteed to meet and that hosts and every language runtime move to 0.19 together; `events/old-peer-refused` along (0.18 and earlier are refused in the handshake); remove `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`, `host/env-tokens-not-revocable`, `events/link-export-import`, `events/node-config`, `events/no-multi-hop`; replace `host/remote-runtimes` with a row for the three connection plugins; rewrite `loader/runtime-connection-instances` as listen + `group`; rewrite `loader/peer-rows` as `<id>:<plugin>` rows through `run`; rewrite `events/node-links` as "the far end's listeners are entries on this end's bus"; in `bridge/dial-out-rules` the source of 4003 becomes listen and the handshake check; a new row: listen's replacement order; the persisted-sample row states the 0.19 exception; every row's test names follow the tests; §15 recounted |
+| `docs/guarantees.md` / `.en.md` | narrow `bridge/cross-version-meetings` to hold only between adjacent releases with no incompatible change, stating that 0.19 and 0.18 are not guaranteed to meet and that hosts and every language runtime move to 0.19 together; `events/old-peer-refused` along (0.18 and earlier are refused in the handshake); remove `bridge/revocation-closes-only-its-connections`, `bridge/revocation-refuses-reconnects`, `host/env-tokens-not-revocable`, `events/link-export-import`, `events/node-config`, `events/no-multi-hop`; replace `host/remote-runtimes` with a row for the three connection plugins; remove `loader/runtime-connection-instances`; rewrite `loader/peer-rows` as `<id>:<plugin>` rows through `run`; rewrite `events/node-links` as "the far end's listeners are entries on this end's bus"; in `bridge/dial-out-rules` the source of 4003 becomes listen and the handshake check; a new row: listen's replacement order; the persisted-sample row states the 0.19 exception; every row's test names follow the tests; §15 recounted |
 | `specs/remote-lease/` (both READMEs, both `.tla`, configs, `expected.txt`) | removed with revocation and Registration: the revocation actions, registration generations and the hand-over re-check, the properties `RevokedStaysOut`, `RevocationScoped`, `NoStaleHandOver`, the configs `access-revoke-same`, `access-revoke-distinct`, `access-mut-revoke-cuts-all`, `access-mut-route-by-id`, `access-mut-no-gen-check`, `access-registration`, and the revoked far end in `RemoteLease.tla`; `access-mut-accept-before-release` stays as the mutation for listen's replacement order. Once listen's new code is written, a minimal model is built from it (same-id replacement: unload the old before accepting the new), replacing `AccessPoint.tla` |
 | `crates/rutis-bridge/README.md`, the module docs in `lib.rs`, the root `README` | describe Channel, session and the carrier functions |
 | the old design `design-remote-runtime-consistency-2026-10-26.md` / `.en.md` | a header line: "replaced by [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md)" |
@@ -540,8 +542,9 @@ Add first, delete after; after each PR merges, main works and CI passes.
 | S1 rutis-bridge: Channel and carrier functions | `Close`, `close(Close)`; remove `ChannelInfo`; add `websocket::dial`, `websocket::listen`, `pipe::spawn`, `memory::pair` (the existing `Transport` implementations call them) | existing tests pass with unchanged cases (only the `close` calls change); new unit tests: the three `Close`s on the three carriers (4002, 4003, stdin closed) | — |
 | S2 rutis-bridge: the session plugin | `Session::new`, `SessionHandle::{id, run}`; remote plugins `<id>:<plugin>`; services visible on both sides (borrowed and provided) and the far end's listeners on this end's bus (the runtime's existing code, extended to rutis-node far ends); the `sessions` service and `open(far)`; the old links / access points untouched | tests: the four endings; two rutis kernels over a memory Channel using each other's services, a same-named one refused by the kernel's rule, events reaching both ways; Node and Python test plugins run `run` through `sessions.open` | S1 |
 | R1–R6 language runtimes: endpoint format locally | one PR per language (Node, Bun, Python, Go, Swift, Kotlin), per the table in §3: local channels also build an endpoint from `--id`; compat stays for now, so they still run under a host not yet changed | each language's existing tests pass; new test: a local channel gives the name from `--id` in its handshake | — |
+| A1, A2 Kotlin and Swift SDKs: apps install their own plugins | plugins in `RutisApp` may carry a configuration; once connected the app installs its plugins itself and reports their services with `services.announce`; no more waiting for `rows.v2` | each SDK's existing tests rewritten for the new behaviour; new test: two devices connect to one listen, each one's plugins register as `<id>:<plugin>`, and a same-named service from the later one is refused, saying why | — |
 | S2b local runtimes on the endpoint format, compat removed | the host code starting local runtimes passes `--id` and uses the endpoint format; remove `Format::Compat`, `COMPAT_CAPABILITIES`, the `rust:` / `node:` prefixes, `PROTOCOL = 2`, `compat` in `link.rs`; every language removes its compat path and `--format` | every runtime test and `runtime_conformance` pass on the endpoint format; fuzz targets move to endpoint; `grep -i compat` finds nothing in `crates/rutis-bridge/src/session` or the runtimes' session code | R1–R6, S1 |
-| S3 rutis-loader: one resolver | rows `<name>:<plugin>` look up the session by connection row and call `run`; in an instance they take that instance's session from `Build::value`; the old path stays alongside | `remote_modes.rs`'s cases run on sessions: spawn, dial, listen, listen + `group` give word-for-word the same missing-plugin text; existing instance-service cases pass | S2 |
-| S4 rutis-host: three connection plugins | `rutis-host/spawn`, `dial`, `listen` (schemas with `additionalProperties: false`; listen's token dispatch, same-id replacement, instances for `group`); `runtimes.*` expand into spawn; remove `runtimes.remote`, `Embedding.transports`, `Embedding.identity` (folding in the drop-transport branch) and the host side's `RUTIS_TOKEN` fallback; state becomes two items, §7's output; persisted samples and `rejected/` cases | `remote_runtimes.rs`, `dial_in.rs`, `kotlin.rs` pass end to end in the new syntax; nodes end to end (two rutis-hosts using each other's services, events, `office:scanner`); `dial_conformance` passes against `rutis-host/listen` for every language (4002, 4003 as before); the `persisted` test passes; the e2e `fixture-host` builds; #702's token-check cases pass | S3, S2b |
+| S3 rutis-loader: one resolver | rows `<name>:<plugin>` look up the session by connection row and call `run`; the old path stays alongside | `remote_modes.rs`'s cases run on sessions: spawn, dial, one-runtime listen give word-for-word the same missing-plugin text | S2 |
+| S4 rutis-host: three connection plugins | `rutis-host/spawn`, `dial`, `listen` (schemas with `additionalProperties: false`; listen's token dispatch, same-id replacement); `runtimes.*` expand into spawn; remove `runtimes.remote`, `Embedding.transports`, `Embedding.identity` (folding in the drop-transport branch) and the host side's `RUTIS_TOKEN` fallback; state becomes two items, §7's output; persisted samples and `rejected/` cases | `remote_runtimes.rs`, `dial_in.rs`, `kotlin.rs` pass end to end in the new syntax (many devices rewritten per decision 3); nodes end to end (two rutis-hosts using each other's services, events, `office:scanner`); `dial_conformance` passes against `rutis-host/listen` for every language (4002, 4003 as before); the `persisted` test passes; the e2e `fixture-host` builds; #702's token-check cases pass | S3, S2b, A1, A2 |
 | S5 removal | remove everything in §8 (including `share_registered_only`) and the tests that test only it; remove the cross_version e2e scenarios meeting 0.18 (0.19 and 0.18 are not guaranteed to meet); remove the revocation and Registration parts of the TLA models and the configs listed in §12; build the minimal model from S4's listen code | `grep` for the §8 names under `crates/` finds nothing; `cargo test --workspace` and clippy pass; the new model and `access-mut-accept-before-release` run, `expected.txt` updated | S4 |
 | S6 documents | everything in §12; *Migrating to 0.19* per §11 | both languages say the same; the docs no longer promise `Transport`, `Embedding.transports`, `Revocations`, `export` / `import`, `rutis-bridge/peer` or `runtimes.remote`; every test name in the guarantees exists | S5 (behaviour visible with S4 can go into the guides with S4) |
