@@ -2,7 +2,6 @@ import ts from 'typescript'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join, relative, resolve } from 'node:path'
-import { refuseRemoved } from './events.mjs'
 
 const keywords = new Set('as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while'.split(' '))
 function ident(name) {
@@ -40,13 +39,9 @@ function locate(pluginPath) {
 // members get one `Config` field each, named by `name`.
 // `options.provide` lists Cordis services the rutis application provides to
 // the plugins; their interface comes from the plugins' Context declarations.
-// `options.events` and `options.emits` were removed in rutis 0.13 (#464):
-// Cordis listeners register themselves on the logical bus, and plugins emit
-// with Cordis's own methods; either is refused, saying so.
 // `options.root` is the npm project: the runtime and plugins are then
 // addressed relative to it, found at run time through `npm_root`.
 export function generate(plugins, nodePackage, options = {}) {
-  refuseRemoved(options)
   const { provide = [], root } = options
   const single = !Array.isArray(plugins)
   const group = (single ? [{ path: plugins }] : plugins).map(plugin => ({ ...plugin, ...locate(plugin.path) }))
@@ -1029,9 +1024,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   try {
     const [nodePackage, ...rest] = process.argv.slice(2)
     const provide = rest.filter(arg => arg.startsWith('--provide=')).map(arg => arg.slice('--provide='.length))
-    // Removed in rutis 0.13 (#464), refused as the options are.
-    const removed = rest.find(arg => /^--(event|emit)=/.test(arg))
-    if (removed) refuseRemoved({ [removed.startsWith('--event=') ? 'events' : 'emits']: true })
     const root = rest.find(arg => arg.startsWith('--root='))?.slice('--root='.length)
     const members = rest.filter(arg => !/^--(provide|root)=/.test(arg))
     const plugins = members.length === 1 && !members[0].includes('=')

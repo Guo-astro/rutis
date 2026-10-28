@@ -358,68 +358,45 @@ func TestACallBeforeTheHandshakeEndsTheSession(t *testing.T) {
 	}
 }
 
-func TestSynchronousCallsSayTheyWaitToAFarEndThatAsked(t *testing.T) {
+func TestSynchronousCallsSayTheyWait(t *testing.T) {
 	// A frame as the far end reads it, `sync` included.
 	type seen struct {
 		frame
 		Sync json.RawMessage `json:"sync"`
 	}
-	formats := []struct {
-		name     string
-		options  Options
-		hello    string
-		declares string
-	}{
-		{
-			"endpoint",
-			Options{Endpoint: &Endpoint{Local: "go", Expected: "main"}, Capabilities: []string{"signals", "reentrant-sync", "sync-wait"}},
-			`{"op":"hello","version":4,"endpoint":"main","capabilities":%s}`,
-			`["signals","reentrant-sync","sync-wait"]`,
-		},
-	}
-	for _, format := range formats {
-		for _, declared := range []string{`["sync-wait"]`, `[]`} {
-			a, b := net.Pipe()
-			runtime, _ := New(NewLines(a), format.options)
-			far := NewLines(b)
-			calls := make(chan seen, 2)
-			go func() {
-				var hello seen
-				message, _ := far.Recv()
-				_ = json.Unmarshal(message, &hello)
-				calls <- hello
-				_ = far.Send([]byte(fmt.Sprintf(format.hello, declared)))
-				for {
-					message, err := far.Recv()
-					if err != nil {
-						return
-					}
-					var f seen
-					_ = json.Unmarshal(message, &f)
-					calls <- f
-					_ = far.Send([]byte(`{"op":"return","id":` + string(f.ID) + `,"value":{"type":"undefined"}}`))
-				}
-			}()
-			_ = runtime.Start()
-			testwait.Within(t, "the handshake", runtime.Ready())
-			if hello := <-calls; string(hello.Capabilities) != format.declares {
-				t.Fatalf("%s: the hello declares %s", format.name, hello.Capabilities)
+	a, b := net.Pipe()
+	defer b.Close()
+	defer a.Close()
+	runtime, _ := New(NewLines(a), Options{Endpoint: &Endpoint{Local: "go", Expected: "main"}, Capabilities: []string{"reentrant-sync"}})
+	far := NewLines(b)
+	calls := make(chan seen, 2)
+	go func() {
+		_, _ = far.Recv() // its hello
+		_ = far.Send([]byte(`{"op":"hello","version":4,"endpoint":"main","capabilities":[]}`))
+		for {
+			message, err := far.Recv()
+			if err != nil {
+				return
 			}
-			for _, sync := range []bool{true, false} {
-				if _, err := runtime.Call(context.Background(), "host:x", "m", nil, sync); err != nil {
-					t.Fatal(err)
-				}
-				want := ""
-				if sync && declared != `[]` {
-					want = "true"
-				}
-				if got := (<-calls).Sync; string(got) != want {
-					t.Fatalf("%s, declared %s, sync %v: the call says sync %q", format.name, declared, sync, got)
-				}
-			}
-			runtime.Close(nil)
-			a.Close()
-			b.Close()
+			var f seen
+			_ = json.Unmarshal(message, &f)
+			calls <- f
+			_ = far.Send([]byte(`{"op":"return","id":` + string(f.ID) + `,"value":{"type":"undefined"}}`))
+		}
+	}()
+	_ = runtime.Start()
+	defer runtime.Close(nil)
+	testwait.Within(t, "the handshake", runtime.Ready())
+	for _, sync := range []bool{true, false} {
+		if _, err := runtime.Call(context.Background(), "host:x", "m", nil, sync); err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if sync {
+			want = "true"
+		}
+		if got := (<-calls).Sync; string(got) != want {
+			t.Fatalf("sync %v: the call says sync %q", sync, got)
 		}
 	}
 }

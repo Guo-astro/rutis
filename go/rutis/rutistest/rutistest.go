@@ -335,11 +335,11 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// As a host does: the names with listeners elsewhere before the mount
-	// (none yet), and services the plugin does not declare are announced.
+	// (none yet).
 	if _, err := session.Call(ctx, "", "events.elsewhere", []any{map[string]any{"add": []any{}}}, false); err != nil {
 		t.Fatalf("rutistest: events.elsewhere: %v", err)
 	}
-	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"announce": true, "runtime": h.runtime}}, false); err != nil {
+	if _, err := session.Call(ctx, "", "mount", []any{map[string]any{"runtime": h.runtime}}, false); err != nil {
 		t.Fatalf("rutistest: mount: %v", err)
 	}
 	// Registered first: the runtime ends with the test also when the
@@ -992,7 +992,7 @@ func (i *invocation) call(ctx context.Context, mode events.Mode, args []any, nex
 	if i.fn != nil {
 		return i.local(ctx, mode, args, next)
 	}
-	value, err := i.h.session.Call(ctx, "", "events.call", []any{i.record(mode, args, next)}, mode == events.ModeBail || mode == events.ModeWaterfallSync)
+	value, err := i.h.session.Call(ctx, "", "events.call", []any{i.record(mode, args, next)}, mode == events.ModeBail)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,7 +1009,7 @@ func (i *invocation) local(ctx context.Context, mode events.Mode, args []any, ne
 		}
 		plain = append(plain, value)
 	}
-	if mode.Waterfall() {
+	if mode == events.ModeWaterfall {
 		plain = append(plain, advanced.Next(func(ctx context.Context) (any, error) {
 			value, err := next(ctx)
 			if err != nil {
@@ -1094,8 +1094,8 @@ func run(ctx context.Context, d *events.Dispatch, mode events.Mode, args []any, 
 		return nil, d.Emit(ctx, args)
 	case events.ModeParallel:
 		return nil, d.Parallel(ctx, args)
-	case events.ModeWaterfall, events.ModeWaterfallSync:
-		return d.Waterfall(ctx, mode, args, terminal)
+	case events.ModeWaterfall:
+		return d.Waterfall(ctx, args, terminal)
 	}
 	return d.Serial(ctx, mode, args)
 }
@@ -1135,7 +1135,7 @@ func (h *harness) dispatchFromRuntime(ctx context.Context, args []any) (any, err
 		}
 	}
 	m := events.Mode(mode)
-	if !m.Valid() || m == events.ModeWaterfallSync {
+	if !m.Valid() {
 		return nil, fmt.Errorf("events.dispatch: unknown mode %s", mode)
 	}
 	// A plugin definition among the arguments belongs to the emitting row.

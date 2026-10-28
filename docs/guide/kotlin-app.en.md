@@ -98,7 +98,6 @@ class Warmer {
 - A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
 - One object passed several times is one proxy here; a received proxy or `RemoteObject` passed on sends the original object, and passed back to its process it is the original there.
 - An object does not follow its row: after the row that passed it unloads, it can still be called. Objects the application hands over live in its process: after the application calls `stop()` or disconnects, calls on them elsewhere fail with `peer-gone`; once the far end's process has exited, calls here fail with `peer-gone` too.
-- Objects cannot go to an end older than 0.18: the call fails with `bad-value`, the error says to upgrade, and the session goes on.
 - In the same process you get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
 
 ## 3. Connecting to rutis

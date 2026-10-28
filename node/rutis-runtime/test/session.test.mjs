@@ -324,29 +324,6 @@ test('objects with behaviour cross as live object references', async () => {
   peer.close()
 })
 
-// objects-case(node): no-objects-declared
-test('an object reference goes only to a far end that declared objects', async () => {
-  for (const [capabilities, expected] of [[['signals'], 'throw'], [['objects'], 'return']]) {
-    const sent = []
-    const session = new Session({
-      dispatch: () => ({ today() { return 'monday' } }),
-      send: line => sent.push(JSON.parse(line)),
-      pump: () => {},
-      endpoint: { local: 'node', expected: 'main' },
-    })
-    session.start()
-    session.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities })
-    await session.ready
-    session.receive({ op: 'invoke', id: 'main:1', path: [], target: 'svc', method: 'get', args: data([]) })
-    await Promise.resolve()
-    const reply = sent.at(-1)
-    assert.equal(reply.op, expected, JSON.stringify(reply))
-    if (expected === 'throw') assert.equal(reply.error.message, 'svc.get: the result cannot be sent: an object with methods cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18')
-    else assert.equal(reply.value.value.kind, 'object')
-    session.close()
-  }
-})
-
 // Q6.2.3, risk P3: a frame of the wrong shape, or naming a call or reference
 // this side does not have, ends the session; the cases of rutis-bridge's
 // `malformed_and_dangling_frames_close_the_session`.

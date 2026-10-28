@@ -371,7 +371,7 @@ func (r *eventRun) emit(raw json.RawMessage) outcome {
 		request["cancel"] = spec.Cancel
 	}
 	method := "dispatch"
-	if spec.Mode == "bail" || spec.Mode == "waterfall-sync" {
+	if spec.Mode == "bail" {
 		method = "dispatchSync"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
