@@ -242,8 +242,6 @@ incompatible session: the far end speaks protocol 2, this side 4: upgrade the fa
 
 一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。只有这个插件失败：其他插件（同一运行时里的也一样）继续用原来的提供者。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
 
-0.12 的运行时被比 0.12 旧的宿主挂载时，宿主不接收没有声明的服务，它们只在本进程里可见；插件提供这样的服务时，运行时按名字只在 stderr 提示一次：`rutis: service <名字> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`。在 `provides` 里声明它，或者升级 rutis-host。
-
 宿主停止时卸载所有插件，每个清理执行一次，然后运行时进程退出。宿主没有卸载就没了（被强制结束、崩溃）时，运行时发现和宿主的连接断开，自己卸载所有插件，然后退出进程；插件留下的定时器、套接字、线程、goroutine 不会让它继续运行。
 
 清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
