@@ -1,6 +1,7 @@
 package arcships.rutis
 
 import arcships.rutis.internal.RuntimeState
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.MemoryChannel
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
@@ -113,8 +114,8 @@ class PluginValuesTest {
                 }
                 else -> throw IllegalArgumentException("no $method")
             }
-        }))
-        val host = Peer(b, Options(host = true))
+        }, endpoint = Endpoint("kotlin", "main")))
+        val host = Peer(b, Options(endpoint = Endpoint("main", "kotlin"), plugins = true))
         runtime.start()
         host.start()
         host.readyFuture.get(5, TimeUnit.SECONDS)

@@ -4,26 +4,25 @@
 // functions and objects, as before; the receiver decides they are plugins.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { Session } from '../src/session.mjs'
+import { Session, ENDPOINT_PROTOCOL } from '../src/session.mjs'
 import { VALUE_CAPABILITIES } from '../src/values.mjs'
 import { definePlugin } from '../../rutis/src/index.mjs'
 
-const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
 
-// A compat session whose far end declared `capabilities`.
+// A session (as `node`) whose far end (`rust`) declared `capabilities`.
 function harness(capabilities, dispatch = () => {}) {
   const sent = [], incoming = []
   let fault
   const peer = new Session({
+    endpoint: { local: 'node' },
     dispatch,
     send: line => sent.push(JSON.parse(line)),
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
     abort: error => { fault = error },
   })
   peer.start()
-  peer.receive({ op: 'hello', version: PROTOCOL, capabilities: [...VALUE_CAPABILITIES, 'events-v2', ...capabilities] })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'rust', capabilities: ['objects', ...VALUE_CAPABILITIES, 'events-v2', ...capabilities] })
   return { peer, sent, incoming, fault: () => fault }
 }
 

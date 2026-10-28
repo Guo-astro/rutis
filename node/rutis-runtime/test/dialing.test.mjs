@@ -38,7 +38,7 @@ test('waits read short', () => {
 
 test('a session ends as an authentication failure, incompatible, or retryable', () => {
   assert.equal(sessionFailure(4003), AUTH_REJECTED)
-  const mismatch = (() => { try { greetingOf({ op: 'hello', version: 3, endpoint: 'other' }, { local: 'pixel', expected: 'main' }) } catch (error) { return error } })()
+  const mismatch = (() => { try { greetingOf({ op: 'hello', version: 4, endpoint: 'other' }, { local: 'pixel', expected: 'main' }) } catch (error) { return error } })()
   assert.match(mismatch.message, /^endpoint mismatch/)
   assert.equal(sessionFailure(undefined, mismatch), AUTH_REJECTED)
   const newer = (() => { try { greetingOf({ op: 'hello', version: 9, endpoint: 'main' }, { local: 'pixel' }) } catch (error) { return error } })()
@@ -47,7 +47,7 @@ test('a session ends as an authentication failure, incompatible, or retryable', 
   // Being replaced, and anything else, is retryable.
   assert.equal(sessionFailure(4002), RETRYABLE)
   assert.equal(sessionFailure(1001, new Error('the access point did not greet in time')), RETRYABLE)
-  assert.deepEqual(greetingOf({ op: 'hello', version: 3, endpoint: 'main', capabilities: ['x'] }, { local: 'pixel', expected: 'main' }).capabilities, ['x'])
+  assert.deepEqual(greetingOf({ op: 'hello', version: 4, endpoint: 'main', capabilities: ['x'] }, { local: 'pixel', expected: 'main' }).capabilities, ['x'])
 })
 
 test('what retrying cannot fix is refused before dialing', () => {

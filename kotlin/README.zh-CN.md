@@ -99,7 +99,7 @@ rutis.state     // StateFlow<RutisState>：Stopped(reason) / Connecting(retrying
 
 ## 桌面测试入口
 
-jvm target 上，`Rutis.serve(args, plugins…)` 把插件作为 rutis 运行时运行：`<channel> <project>`，通道是 Unix socket 路径（`unix:<path>` 或裸路径）或 `tcp:127.0.0.1:<port>`（先发 `RUTIS_CHANNEL_TOKEN`）。Rust 一致性测试经 rutis-bridge 的通用 `Launcher` 以 `java -jar` 启动它（不在 rutis-host 里配置本地 Kotlin 运行时）。
+jvm target 上，`Rutis.serve(args, plugins…)` 把插件作为 rutis 运行时运行：`<channel> --id <id> <project>`，以 `<id>` 握手；通道是 Unix socket 路径（`unix:<path>` 或裸路径）或 `tcp:127.0.0.1:<port>`（先发 `RUTIS_CHANNEL_TOKEN`）。Rust 一致性测试经 rutis-bridge 的通用 `Launcher` 以 `java -jar` 启动它（不在 rutis-host 里配置本地 Kotlin 运行时）。
 
 远程通道与其他语言相同（[连接节点](../docs/guide/nodes.md)）：`dial:wss://… --id <id> --peer <rutis 的 id>` 拨出到 rutis 的接入点并保持连接，`listen:wss://… --id <id>` 等 rutis 拨入；`RUTIS_TOKEN`、`RUTIS_CA`（拨出时额外信任的 CA）、`RUTIS_CERT` / `RUTIS_KEY`（监听 `wss://` 的证书与私钥，PEM：PKCS#8、PKCS#1 或 SEC1），重连规则与状态行同 [拨出与动态接入](../docs/design-remote-runtime-dial-2026-10-14.md) §六，SIGTERM / Ctrl-C 卸载全部行后以 0 退出。rutis 一侧 `runtimes.remote[].language` 写 `kotlin`（或 `kt`）。拨出用 OkHttp，监听用 SDK 自带的 WebSocket 服务端；两者都在共用源码里，Android 应用用的是同一份代码。
 

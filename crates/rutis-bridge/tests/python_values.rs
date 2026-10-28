@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::session::{Connection, Endpoint, Error, Format, Value};
+use rutis_bridge::session::{Connection, Endpoint, Error, Value};
 use serde_json::json;
 
 fn id(s: &str) -> PeerId {
@@ -54,8 +54,8 @@ async fn python() -> (Connection, tokio::process::Child) {
     }
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
     let channel = rutis_bridge::pipe::framed(reader, stream, closer);
-    let format = Format::Endpoint(Endpoint::rust(id("main")).expect(id("python")));
-    let connection = Connection::open_with(channel, Arc::new(Nothing), format).unwrap();
+    let format = Endpoint::rust(id("main")).expect(id("python"));
+    let connection = Connection::open(channel, Arc::new(Nothing), format).unwrap();
     connection.ready().await.unwrap();
     (connection, child)
 }

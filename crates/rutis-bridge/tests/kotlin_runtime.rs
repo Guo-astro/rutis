@@ -85,6 +85,7 @@ async fn a_host_without_events_v2_is_refused() {
     let mut child = tokio::process::Command::new(&launcher.program)
         .args(&launcher.args)
         .arg(format!("tcp:{address}"))
+        .args(["--id", "kotlin"])
         .arg(dir.path())
         .env("RUTIS_CHANNEL_TOKEN", TOKEN)
         .stderr(std::process::Stdio::piped())
@@ -99,7 +100,13 @@ async fn a_host_without_events_v2_is_refused() {
     stream.read_exact(&mut presented).await.unwrap();
     assert_eq!(presented, format!("{TOKEN}\n").as_bytes());
     stream
-        .write_all(b"{\"op\":\"hello\",\"version\":2,\"capabilities\":[\"sync-wait\"]}\n")
+        .write_all(
+            format!(
+                "{{\"op\":\"hello\",\"version\":{},\"endpoint\":\"main\",\"capabilities\":[\"sync-wait\"]}}\n",
+                rutis_bridge::session::ENDPOINT_PROTOCOL
+            )
+            .as_bytes(),
+        )
         .await
         .unwrap();
     let mut stderr = String::new();

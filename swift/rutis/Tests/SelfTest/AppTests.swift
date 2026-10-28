@@ -157,7 +157,7 @@ struct AppTests {
     /// Connections that send no upgrade request are dropped after the
     /// deadline, those beyond the cap at once; then a real upgrade works.
     func silentConnectionsAreDropped() throws {
-        let listener = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.3", token: "secret",
+        let listener = try WebSocketListener("ws://127.0.0.1:0/rutis", protocol: "rutis.\(endpointProtocol)", token: "secret",
                                              identity: { throw ChannelError("no TLS") }, upgradeTimeout: 0.5, maxUpgrading: 2)
         let address = try listener.start { socket in socket.close() }
         defer { listener.stop() }
@@ -338,7 +338,7 @@ private func closedWithin(_ fd: Int32, _ seconds: Double) -> Bool {
 private func sendUpgrade(_ fd: Int32) -> String {
     let request = "GET /rutis HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n" +
-        "Sec-WebSocket-Protocol: rutis.3\r\nAuthorization: Bearer secret\r\n\r\n"
+        "Sec-WebSocket-Protocol: rutis.\(endpointProtocol)\r\nAuthorization: Bearer secret\r\n\r\n"
     _ = Array(request.utf8).withUnsafeBytes { send(fd, $0.baseAddress, $0.count, 0) }
     var head: [UInt8] = []
     var byte: UInt8 = 0

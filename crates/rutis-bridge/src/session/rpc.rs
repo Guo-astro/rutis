@@ -17,7 +17,7 @@ use tokio::sync::{oneshot, watch, Notify};
 
 use crate::channel::PeerId;
 pub use crate::session::protocol::Implementation;
-use crate::session::protocol::{Frame, Kind, WireValue, VERSION};
+use crate::session::protocol::{Frame, Kind, WireValue};
 use crate::session::values::{
     base64_decode, base64_encode, check_keys, holds_beyond_safe, BigInt, Date, DateTime, Decimal,
     Instant, TimeOfDay, Uuid,
@@ -904,53 +904,15 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-uuid",
 ];
 /// The event protocol of rutis 0.13 (#464): mandatory, declared by every
-/// endpoint in both formats; a far end that does not declare it is refused
+/// endpoint; a far end that does not declare it is refused
 /// right after the handshake (`docs/design-events-protocol-2026-10-18.md`
 /// §2).
 pub const EVENTS_CAPABILITY: &str = "events-v2";
 /// Plugin definitions as values (`plugin` references,
 /// `docs/design-plugin-values-2026-10-25.md` §5): a side declaring it takes
-/// them. Rust declares it in both formats; the runtimes send one only to a
+/// them. Rust declares it; the runtimes send one only to a
 /// far end that did.
 pub const PLUGINS_CAPABILITY: &str = "plugins";
-
-/// What this side declares in a compat-format handshake: it marks its
-/// synchronous waits, and takes such marks (#228); it takes every tagged
-/// value (#308); it speaks the event protocol of 0.13 (#464).
-const COMPAT_CAPABILITIES: [&str; 13] = [
-    "sync-wait",
-    EVENTS_CAPABILITY,
-    PLUGINS_CAPABILITY,
-    "value-instant",
-    "value-datetime",
-    "value-date",
-    "value-time",
-    "value-bytes",
-    "value-map",
-    "value-set",
-    "value-bigint",
-    "value-decimal",
-    "value-uuid",
-];
-/// What a compat-format handshake may declare that means anything here; any
-/// other capability there is ignored, as before the format had any.
-const COMPAT_DECLARED: [&str; 15] = [
-    "objects",
-    "sync-wait",
-    EVENTS_CAPABILITY,
-    "sync-stack",
-    "reentrant-sync",
-    "value-instant",
-    "value-datetime",
-    "value-date",
-    "value-time",
-    "value-bytes",
-    "value-map",
-    "value-set",
-    "value-bigint",
-    "value-decimal",
-    "value-uuid",
-];
 
 struct Import {
     peer: Weak<SessionState>,
@@ -1187,19 +1149,8 @@ pub trait Dispatch: Send + Sync + 'static {
     /// its test hooks (feature `testing`).
     fn replied(&self, _peer: &Connection, _method: &str) {}
 }
-/// How a session identifies itself and its calls.
-#[derive(Clone, Debug, Default)]
-pub enum Format {
-    /// Protocol 2, as local runtimes speak it: this side calls as `rust:`,
-    /// the far end as `node:`, and the handshake carries only the version.
-    #[default]
-    Compat,
-    /// The endpoint format ([`crate::session::ENDPOINT_PROTOCOL`]): each side names
-    /// itself in the handshake and calls as `<endpoint id>:<n>`.
-    Endpoint(Endpoint),
-}
-
-/// This side of an endpoint-format session.
+/// This side of a session: each side names itself in the handshake and
+/// calls as `<endpoint id>:<n>`.
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub local: PeerId,
@@ -1247,7 +1198,7 @@ impl Endpoint {
     }
 }
 
-/// What the far end said of itself in an endpoint-format handshake.
+/// What the far end said of itself in its handshake.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Greeting {
     pub endpoint: PeerId,
@@ -1331,21 +1282,16 @@ struct SessionState {
     /// Unique among processes ([`next_tag`]); marks this session's call
     /// ids in chains forwarded to other sessions (see [`rebase`]).
     tag: String,
-    format: Format,
-    /// The far end of a compat-format session as whoever started it named
-    /// it ([`Connection::name_far_end`]), for messages.
-    named: std::sync::OnceLock<String>,
+    endpoint: Endpoint,
     /// How the far end went, once this side knows ([`Connection::ending`],
     /// or what closed the session): shared with the imports, whose calls
     /// say it after the session is gone.
     end: Arc<std::sync::OnceLock<String>>,
-    /// This side's call ids: `rust:` or `<endpoint>:`.
+    /// This side's call ids: `<endpoint>:`.
     local_prefix: String,
-    /// The far end's: `node:`, or `<endpoint>:` once it greeted.
+    /// The far end's: `<endpoint>:` once it greeted.
     remote_prefix: std::sync::OnceLock<String>,
     greeting: std::sync::OnceLock<Greeting>,
-    /// What the far end declared in a compat-format handshake, if anything.
-    compat_capabilities: std::sync::OnceLock<Vec<String>>,
     writer: Mutex<Box<dyn Sender>>,
     closer: Arc<dyn Closer>,
     calls: Mutex<Calls>,
@@ -1400,59 +1346,36 @@ impl Connection {
     pub(crate) fn executor(&self) -> Handle {
         self.0.executor.clone()
     }
-    /// Start a session on `channel`: sends `hello` and reads frames on a
-    /// thread of its own. When the channel ends, the session closes with
-    /// `peer disconnected` (a normal end) or the channel's reason.
-    pub fn open(channel: Channel, dispatch: Arc<dyn Dispatch>) -> Result<Self, Error> {
-        Self::open_with(channel, dispatch, Format::Compat)
-    }
-
-    /// [`Connection::open`] in `format`. In the endpoint format the session
-    /// is ready only once the far end greeted with the endpoint this side
-    /// expects (if it expects one); otherwise [`Connection::ready`] fails
-    /// with [`Error::Handshake`].
-    pub fn open_with(
+    /// Start a session on `channel` as `endpoint`: sends `hello` and reads
+    /// frames on a thread of its own. The session is ready only once the far
+    /// end greeted with the endpoint this side expects (if it expects one);
+    /// otherwise [`Connection::ready`] fails with [`Error::Handshake`]. When
+    /// the channel ends, the session closes with `peer disconnected` (a
+    /// normal end) or the channel's reason.
+    pub fn open(
         channel: Channel,
         dispatch: Arc<dyn Dispatch>,
-        format: Format,
+        endpoint: Endpoint,
     ) -> Result<Self, Error> {
         let Channel {
             sender,
             mut receiver,
             closer,
         } = channel;
-        let (local_prefix, remote_prefix, hello) = match &format {
-            Format::Compat => (
-                "rust:".to_owned(),
-                std::sync::OnceLock::from("node:".to_owned()),
-                // Older runtimes ignore capabilities in a compat handshake.
-                Frame::Hello {
-                    version: VERSION,
-                    endpoint: None,
-                    implementation: None,
-                    capabilities: Some(COMPAT_CAPABILITIES.map(String::from).to_vec()),
-                },
-            ),
-            Format::Endpoint(endpoint) => (
-                format!("{}:", endpoint.local),
-                std::sync::OnceLock::new(),
-                Frame::Hello {
-                    version: crate::session::ENDPOINT_PROTOCOL,
-                    endpoint: Some(endpoint.local.to_string()),
-                    implementation: Some(endpoint.implementation.clone()),
-                    capabilities: Some(endpoint.capabilities.clone()),
-                },
-            ),
+        let local_prefix = format!("{}:", endpoint.local);
+        let hello = Frame::Hello {
+            version: crate::session::ENDPOINT_PROTOCOL,
+            endpoint: Some(endpoint.local.to_string()),
+            implementation: Some(endpoint.implementation.clone()),
+            capabilities: Some(endpoint.capabilities.clone()),
         };
         let peer = Self(Arc::new(SessionState {
             tag: next_tag(),
-            format,
-            named: std::sync::OnceLock::new(),
+            endpoint,
             end: Arc::default(),
             local_prefix,
-            remote_prefix,
+            remote_prefix: std::sync::OnceLock::new(),
             greeting: std::sync::OnceLock::new(),
-            compat_capabilities: std::sync::OnceLock::new(),
             closer,
             writer: Mutex::new(sender),
             calls: Mutex::new(Calls::default()),
@@ -1519,30 +1442,19 @@ impl Connection {
         self.0.calls.lock().unwrap().closed.clone()
     }
 
-    /// What the far end said of itself (endpoint format), once it greeted.
+    /// What the far end said of itself, once it greeted.
     pub fn greeting(&self) -> Option<&Greeting> {
         self.0.greeting.get()
     }
 
-    /// Whether the far end declared `capability`: in the endpoint format,
-    /// any; in the compat format, only those of [`COMPAT_DECLARED`] (older
-    /// far ends declare nothing there).
+    /// Whether the far end declared `capability` (nothing before it greeted).
     pub fn supports(&self, capability: &str) -> bool {
-        let declared = match self.greeting() {
-            Some(greeting) => &greeting.capabilities,
-            None => match self.0.compat_capabilities.get() {
-                Some(capabilities) => capabilities,
-                None => return false,
-            },
-        };
-        declared.iter().any(|c| c == capability)
+        self.greeting()
+            .is_some_and(|greeting| greeting.capabilities.iter().any(|c| c == capability))
     }
     /// Whether this side declared `capability` in its handshake.
     fn declares(&self, capability: &str) -> bool {
-        match &self.0.format {
-            Format::Compat => COMPAT_CAPABILITIES.contains(&capability),
-            Format::Endpoint(endpoint) => endpoint.capabilities.iter().any(|c| c == capability),
-        }
+        self.0.endpoint.capabilities.iter().any(|c| c == capability)
     }
     /// After the handshake: what the far end does while it waits
     /// synchronously, for the wait-cycle check ([`waits`]).
@@ -2179,11 +2091,6 @@ impl Connection {
                 *origin = rebase(origin, chain, self.tag());
             }
         }
-        // Runtimes before #225 accept only their own ids in a compat-format
-        // origin, as for relays; the object keeps its whole chain here.
-        if let (Format::Compat, WireValue::Reference { origin, .. }) = (&self.0.format, &mut wire) {
-            origin.retain(|entry| !entry.contains('/'));
-        }
         Ok(wire)
     }
     /// Decode every one of `values`, even past a value error (so each
@@ -2373,7 +2280,7 @@ impl Connection {
     fn remote_prefix(&self) -> &str {
         self.0.remote_prefix.get().map_or("\0", String::as_str)
     }
-    /// Check the far end's handshake against this session's format.
+    /// Check the far end's handshake against this side's endpoint.
     fn greet(
         &self,
         version: u32,
@@ -2382,28 +2289,7 @@ impl Connection {
         capabilities: Option<Vec<String>>,
     ) -> Result<(), Error> {
         let incompatible = |reason: String| Error::Handshake(Handshake::Incompatible(reason));
-        let Format::Endpoint(local) = &self.0.format else {
-            if version != VERSION || endpoint.is_some() {
-                return Err(incompatible(version_mismatch(
-                    version,
-                    VERSION,
-                    implementation.as_ref(),
-                )));
-            }
-            let capabilities: Vec<String> = capabilities
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| COMPAT_DECLARED.contains(&c.as_str()))
-                .collect();
-            if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
-                return Err(incompatible(without_events(
-                    "a runtime older than rutis 0.13",
-                )));
-            }
-            let _ = self.0.compat_capabilities.set(capabilities);
-            self.record_profile();
-            return Ok(());
-        };
+        let local = &self.0.endpoint;
         if version != crate::session::ENDPOINT_PROTOCOL {
             return Err(incompatible(version_mismatch(
                 version,

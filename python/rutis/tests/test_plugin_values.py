@@ -9,6 +9,7 @@ import json
 import socket
 
 import background
+from support import LOCAL, hello
 
 from rutis import define_plugin
 from rutis.peer import Peer
@@ -34,10 +35,10 @@ class SessionTests(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(ours, lambda target, method, args: None)
+        peer = Peer(ours, lambda target, method, args: None, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2, "capabilities": capabilities})
+        peer._receive(hello(capabilities))
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -66,9 +67,9 @@ class SessionTests(background.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "did not declare the capability plugins"):
             peer.call("test", "register", [define_plugin(part)])
         self.assertEqual(peer._exports, {}, "nothing was granted")
-        peer._deliver({"op": "return", "id": "node:2", "value": {"type": "data", "value": 7}})
+        peer._deliver({"op": "return", "id": "py:2", "value": {"type": "data", "value": 7}})
         self.assertEqual(peer.call("test", "good", [1]), 7)
-        self.assertEqual((await read())["id"], "node:2")
+        self.assertEqual((await read())["id"], "py:2")
         self.assertIsNone(peer.closed_error)
 
     async def test_back_home_it_is_the_same_value(self):

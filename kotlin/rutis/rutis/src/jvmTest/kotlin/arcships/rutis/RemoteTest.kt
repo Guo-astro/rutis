@@ -82,12 +82,12 @@ class RemoteTest {
     @Test
     fun aProtocolRefusalSaysWhichEndToUpgrade() {
         assertEquals(
-            "this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (the Kotlin SDK io.github.arcships:rutis)",
-            protocolRefusal("rutis.3", listOf("rutis.4")),
+            "this endpoint speaks rutis.4, the dialer offered rutis.5: upgrade this endpoint (the Kotlin SDK io.github.arcships:rutis)",
+            protocolRefusal("rutis.4", listOf("rutis.5")),
         )
-        assertEquals("this endpoint speaks rutis.3, the dialer offered rutis.2: upgrade the dialer", protocolRefusal("rutis.3", listOf("rutis.2")))
-        assertEquals("this endpoint speaks rutis.3, the dialer offered rutis.2, rutis.4", protocolRefusal("rutis.3", listOf("rutis.2", "rutis.4")))
-        assertEquals("this endpoint speaks rutis.3", protocolRefusal("rutis.3", listOf("chat")))
+        assertEquals("this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer", protocolRefusal("rutis.4", listOf("rutis.3")))
+        assertEquals("this endpoint speaks rutis.4, the dialer offered rutis.3, rutis.5", protocolRefusal("rutis.4", listOf("rutis.3", "rutis.5")))
+        assertEquals("this endpoint speaks rutis.4", protocolRefusal("rutis.4", listOf("chat")))
     }
 
     private fun resource(name: String): String = javaClass.getResource("/tls/$name")!!.readText()

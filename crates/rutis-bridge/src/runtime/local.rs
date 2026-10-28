@@ -1,10 +1,9 @@
 //! Local language runtimes: a process this machine starts, a link to it,
 //! and the runtime plugin running its rows, composed. Its session comes the
 //! way a remote runtime's does (`RuntimeSession#<name>` from a link), only
-//! started here: [`crate::pipe::spawn`] starts it on an inherited socket,
-//! the
-//! link speaks the compat protocol with it and does not reconnect, since a
-//! local runtime process is not restarted.
+//! started here: [`crate::pipe::spawn`] starts it on an inherited socket
+//! with `--id <name>`, the endpoint it greets as, and the link does not
+//! reconnect, since a local runtime process is not restarted.
 //!
 //! When the process ends, its link stops, its session and then the runtime
 //! plugin go, and the runtime's state says how it ended. Restarting the
@@ -126,8 +125,8 @@ impl LocalRuntime {
         self
     }
 
-    /// A runtime started with `launcher`; it receives its channel and the
-    /// anchor as its last two arguments.
+    /// A runtime started with `launcher`; it receives its channel,
+    /// `--id <name>` and the anchor as its last arguments.
     pub fn launcher(
         name: impl Into<String>,
         launcher: Launcher,
@@ -149,9 +148,9 @@ impl LocalRuntime {
         }
     }
 
-    /// The process to start: the launcher, given its channel and the
-    /// anchor as its last two arguments.
-    fn spawn(&self) -> Spawn {
+    /// The process to start: the launcher, given its channel, `--id` and
+    /// the endpoint it greets as, and the anchor as its last arguments.
+    fn spawn(&self, peer: &PeerId) -> Spawn {
         let mut spawn = Spawn::new(self.launcher.program.clone());
         spawn.args = self.launcher.args.clone();
         spawn.env = self.launcher.env.clone();
@@ -164,7 +163,11 @@ impl LocalRuntime {
             true => Handover::Inherit,
             false => Handover::DialBack,
         };
-        spawn.trailing = vec![OsString::from(&self.anchor)];
+        spawn.trailing = vec![
+            OsString::from("--id"),
+            OsString::from(peer.as_str()),
+            OsString::from(&self.anchor),
+        ];
         spawn
     }
 
@@ -276,7 +279,7 @@ impl DynPlugin for LocalRuntime {
                 kind: kind.clone(),
                 open: Arc::default(),
             };
-            let dialer = carrier.dialer(self.spawn(), self.processes.clone());
+            let dialer = carrier.dialer(self.spawn(&peer), self.processes.clone());
             ctx.plugin(carrier);
             let mut config = LinkConfig::dial(peer.clone(), &kind, dialer).local_runtime();
             if let Some(greeting) = self.greeting {

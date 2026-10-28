@@ -353,7 +353,7 @@ Following [Diagnostics](design-diagnostics-2026-10-26.en.md) §4.5: output never
 gpu: connected
 gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
 gpu: disconnected (auth-rejected: upgrade refused with 403 Forbidden); retrying in 30s
-gpu: disconnected (incompatible: the far end speaks protocol 1, this side 3); stopped
+gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
 phone: connected phone-1
 phone: disconnected phone-1 (connection lost)
 phone: disconnected phone-1 (replaced by a new connection)
@@ -376,7 +376,7 @@ connections:
 | The far end lacks a row's plugin | `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder` (#768) |
 | A far service has the name of a local one | `office:weather: weather is provided here by row weather: not registered from office` |
 | The far end lacks the row contract | `the gpu runtime lacks rows.v2 and hosts: a runtime speaking the row contract is required` (without today's "for Node, @arcships/rutis-runtime 0.3.0 or later") |
-| A 0.18 runtime or node connecting to 0.19 | refused in the handshake, not retried: `the far end speaks protocol 3, this side 4: upgrade the far end (<implementation> <version>)`; a 0.19 runtime meeting a 0.18 host is refused by each SDK the same way, saying to upgrade the host |
+| 0.18 meeting 0.19 | refused in the handshake (on WebSocket, at the subprotocol step), not retried, saying which end to upgrade. A 0.19 host starting a 0.18 local runtime (which speaks the local protocol 2): `incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`; 0.18 dialing a 0.19 listener, the dialer prints `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`; 0.19 dialing a 0.18 listener, the listener answers `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<its package>)` (for example `(PyPI rutis)`). The exception: a 0.18 host starting a 0.19 local runtime passes no `--id`, and the runtime prints only `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` before the handshake and exits |
 | 0.18 remote syntax (`runtimes.remote`, `rutis-bridge/peer` rows and their fields) | no dedicated message: `runtimes.remote` is an unknown rutis-host configuration field and `rutis-bridge/peer` an unknown plugin name, reported by the 0.18 rules |
 | The far end throws while running a plugin | the remote plugin `<id>:<plugin>` fails, printing the far end's error as in 0.18 §4.2 |
 

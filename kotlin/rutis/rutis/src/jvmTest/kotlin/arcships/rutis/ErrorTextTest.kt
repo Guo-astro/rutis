@@ -2,6 +2,7 @@ package arcships.rutis
 
 import arcships.rutis.internal.RuntimeState
 import arcships.rutis.internal.peer.Channel
+import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.encodeError
@@ -90,7 +91,7 @@ class ErrorTextTest {
     @Test
     fun aCallFailsSayingTheHostDisconnected() {
         val ended = EndingChannel()
-        val runtime = Peer(ended, Options(dispatch = { _, _, _ -> null }))
+        val runtime = Peer(ended, Options(dispatch = { _, _, _ -> null }, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         ended.end()
         runtime.closedFuture.get(5, TimeUnit.SECONDS)

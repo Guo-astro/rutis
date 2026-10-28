@@ -25,18 +25,18 @@ import java.io.File
 import java.io.IOException
 import kotlin.system.exitProcess
 
-private const val USAGE = "usage: <program> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
+private const val USAGE = "usage: <program> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 @Volatile
 internal var projectDir: String = ""
 
 /**
  * The desktop entry (jvm target): runs `plugins` as a rutis runtime as the
- * command line says, and exits the process. `<channel> <project>`: the
- * channel is `unix:<path>` (or a bare path) or `tcp:127.0.0.1:<port>`, a
- * local channel rutis made, in the endpoint format when `--id <endpoint>`
- * is given (and `--peer <endpoint>`, the controller's id, when known); or,
- * with `--id`, `dial:<ws or wss address>` to dial a rutis access point and stay connected, or `listen:<ws or wss
+ * command line says, and exits the process. `<channel> --id <endpoint>
+ * <project>`, greeting as `<endpoint>` (and expecting `--peer <endpoint>`,
+ * the controller's id, when given): the channel is `unix:<path>` (or a bare
+ * path) or `tcp:127.0.0.1:<port>`, a local channel rutis made;
+ * `dial:<ws or wss address>` to dial a rutis access point and stay connected, or `listen:<ws or wss
  * address>` to wait for rutis to dial in. `--rutis-manifest` prints what the
  * plugins declare. Exit status 0 when the session ended (or, remotely, the
  * runtime was stopped: SIGTERM, Ctrl-C) and the rows unloaded; 1 when the
@@ -97,14 +97,14 @@ internal fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     if (!network && (channel.startsWith("ws:") || channel.startsWith("wss:"))) {
         throw IllegalArgumentException("a WebSocket channel is listen:<address> or dial:<address>: $channel")
     }
-    // With --id, every channel speaks the endpoint format, greeting as that
-    // id: a runtime, its controller managing its rows.
-    val endpoint = flags["id"]?.let { id ->
-        if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
-        Endpoint(id, flags["peer"], listOf("runtime"))
-    }
+    // Every channel greets as --id: a runtime, its controller managing its rows.
+    val id = flags["id"] ?: throw IllegalArgumentException(
+        if (network) "a network channel needs --id <endpoint>: $channel"
+        else "a local channel needs --id <endpoint>: $channel; a host older than rutis 0.19 started this runtime: upgrade the host"
+    )
+    if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
+    val endpoint = Endpoint(id, flags["peer"], listOf("runtime"))
     if (!network) return serveLocal(channel, endpoint, plugins)
-    if (endpoint == null) throw IllegalArgumentException("a network channel needs --id <endpoint>: $channel")
     val ended = if (channel.startsWith("dial:")) {
         dial(channel.removePrefix("dial:"), endpoint, plugins)
     } else {
@@ -125,7 +125,7 @@ internal fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
 }
 
 /** A local channel rutis made: one session, then the process ends. */
-private fun serveLocal(channel: String, endpoint: Endpoint?, plugins: List<Plugin>): Int {
+private fun serveLocal(channel: String, endpoint: Endpoint, plugins: List<Plugin>): Int {
     val session = RuntimeSession.start(LocalChannels.open(channel), endpoint, plugins)
     session.peer.closedFuture.join()
     val ended = session.end()

@@ -1,6 +1,5 @@
-// Package peer is one session of the rutis protocol: the compat format
-// (version 2) local runtimes speak, and the endpoint format (version 3)
-// network channels speak.
+// Package peer is one session of the rutis protocol (the endpoint format,
+// version 4), on a local or a network channel alike.
 //
 // Every incoming call runs on a goroutine of its own, so a synchronous call
 // blocks only the goroutine that made it and any incoming call can run at
@@ -32,26 +31,21 @@ import (
 )
 
 const (
-	Protocol         = 2
-	EndpointProtocol = 3
+	EndpointProtocol = 4
 	MaxSafe          = 1<<53 - 1
 )
 
 var (
 	endpointID = regexp.MustCompile(`^[a-z0-9-]+$`)
-	// In the compat format, this session's ids are `node:`/`rust:`; another
-	// session's come tagged with it, whatever its format (`s1/node:3`, #225).
-	compatOrigin   = regexp.MustCompile(`^(node|rust|s[0-9]+/[a-z0-9-]+):[1-9][0-9]*$`)
-	endpointOrigin = regexp.MustCompile(`^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$`)
-	sequence       = regexp.MustCompile(`^[1-9][0-9]*$`)
+	// A call id in a reference's origin: this session's, or another
+	// session's tagged with it (`s1/node:3`, #225).
+	originID = regexp.MustCompile(`^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$`)
+	sequence = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
-// What this side declares in the compat format, where older hosts ignore
-// it. `sync-wait`: its synchronous calls say so (`sync: true`), for the
-// host's wait-cycle check (#228). Not `sync-stack`: every incoming call runs
-// on a goroutine of its own. `value-<tag>`: it takes every tagged value
-// (#308). `events-v2`: the event protocol of rutis 0.13 (#464).
-var compatCapabilities = append([]string{"objects", "reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
+// TestCapabilities is what a test session declares, at either end: what
+// every session since rutis 0.13 has, without `signals` and `plugins`.
+var TestCapabilities = append([]string{"objects", "reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
 
 // EventsCapability is the event protocol of rutis 0.13 (#464), which both
 // ends of every 0.13 session declare.
@@ -93,8 +87,8 @@ func (s *Signal) cancel()               { s.once.Do(func() { close(s.done) }) }
 // ValidID reports whether `id` is a valid endpoint id (`[a-z0-9-]+`).
 func ValidID(id string) bool { return endpointID.MatchString(id) }
 
-// Endpoint selects the endpoint format: this side's id, the far end's
-// expected id (if known), and capabilities to declare beyond the session's.
+// Endpoint is this side's id, the far end's expected id (if known), and
+// capabilities to declare beyond the session's.
 type Endpoint struct {
 	Local    string
 	Expected string
@@ -105,23 +99,20 @@ type Endpoint struct {
 type Options struct {
 	// Dispatch serves `invoke`: target "" is a control operation.
 	Dispatch func(ctx context.Context, target, method string, args []any) (any, error)
-	// Endpoint selects the endpoint format; nil speaks compat.
+	// Endpoint is who this side is in the handshake; required.
 	Endpoint *Endpoint
-	// Implementation is sent in the endpoint handshake.
+	// Implementation is sent in the handshake.
 	Implementation map[string]string
-	// Capabilities this side has (endpoint format).
+	// Capabilities this side has.
 	Capabilities []string
-	// Host makes this side the host of a compat session (call ids `rust:`),
-	// for tests that drive a runtime.
-	Host bool
 	// Plugins makes this side take plugin definitions (`plugin`
 	// references), as a host does: it declares the capability `plugins`
-	// (both formats) and decodes the far end's as *RemotePlugin. For tests
-	// that act as the host.
+	// and decodes the far end's as *RemotePlugin. For tests that act as
+	// the host.
 	Plugins bool
 	// Require lists capabilities the far end must declare: the session ends
 	// right after its handshake when it does not, with a *RefusedError
-	// whose reason Refuse gives (both formats).
+	// whose reason Refuse gives.
 	Require []string
 	Refuse  func(capability string) string
 	// Arrive sees each incoming control call (`invoke` with an empty
@@ -139,7 +130,7 @@ type RefusedError struct{ Reason string }
 func (e *RefusedError) Error() string        { return e.Reason }
 func (e *RefusedError) Is(target error) bool { return target == ErrIncompatible }
 
-// Greeting is what the far end said of itself (endpoint format).
+// Greeting is what the far end said of itself.
 type Greeting struct {
 	Endpoint       string
 	Implementation json.RawMessage
@@ -188,7 +179,7 @@ type Peer struct {
 	ref       int64
 	handshake bool
 	greeting  *Greeting
-	// What the far end declared (either format), once it greeted.
+	// What the far end declared, once it greeted.
 	declared []string
 
 	pending map[string]chan result
@@ -227,35 +218,26 @@ func New(channel Channel, opts Options) (*Peer, error) {
 		closed:     make(chan struct{}),
 	}
 	p.base, p.cancelBase = context.WithCancel(context.Background())
-	if opts.Endpoint != nil {
-		if !endpointID.MatchString(opts.Endpoint.Local) {
-			return nil, fmt.Errorf("invalid endpoint id %s", opts.Endpoint.Local)
-		}
-		p.local = opts.Endpoint.Local + ":"
-	} else if opts.Host {
-		p.local = "rust:"
-		p.remote = "node:"
-	} else {
-		p.local = "node:"
-		p.remote = "rust:"
+	if opts.Endpoint == nil {
+		return nil, errors.New("a session needs an endpoint id")
 	}
+	if !endpointID.MatchString(opts.Endpoint.Local) {
+		return nil, fmt.Errorf("invalid endpoint id %s", opts.Endpoint.Local)
+	}
+	p.local = opts.Endpoint.Local + ":"
 	return p, nil
 }
 
 // Start sends the handshake and starts reading.
 func (p *Peer) Start() error {
 	go p.read()
-	hello := map[string]any{"op": "hello"}
-	var capabilities []string
-	if p.opts.Endpoint == nil {
-		hello["version"] = Protocol
-		capabilities = append([]string{}, compatCapabilities...)
-	} else {
-		capabilities = append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
-		hello["version"] = EndpointProtocol
-		hello["endpoint"] = p.opts.Endpoint.Local
-		hello["implementation"] = p.opts.Implementation
+	hello := map[string]any{
+		"op":             "hello",
+		"version":        EndpointProtocol,
+		"endpoint":       p.opts.Endpoint.Local,
+		"implementation": p.opts.Implementation,
 	}
+	capabilities := append(append([]string{}, p.opts.Capabilities...), p.opts.Endpoint.Declare...)
 	if p.opts.Plugins {
 		capabilities = append(capabilities, "plugins")
 	}
@@ -746,7 +728,7 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		}
 		return p.exportValue(v.Value, "plugin", key, grants, origin)
 	case Object:
-		if p.opts.Endpoint != nil && !p.supports("objects") {
+		if !p.supports("objects") {
 			return nil, p.objectRefused(v)
 		}
 		var key any
@@ -982,13 +964,6 @@ func (p *Peer) decodeWith(raw json.RawMessage, d *decoding) (any, error) {
 	return nil, errors.New("invalid wire value")
 }
 
-func (p *Peer) originPattern() *regexp.Regexp {
-	if p.opts.Endpoint == nil {
-		return compatOrigin
-	}
-	return endpointOrigin
-}
-
 func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	var value struct {
 		ID     *json.Number `json:"id"`
@@ -1015,7 +990,7 @@ func (p *Peer) decodeReference(raw json.RawMessage, d *decoding) (any, error) {
 	origin := make([]string, len(value.Origin))
 	for i, item := range value.Origin {
 		text, ok := item.(string)
-		if !ok || !p.originPattern().MatchString(text) {
+		if !ok || !originID.MatchString(text) {
 			return nil, invalid
 		}
 		origin[i] = text
@@ -1550,13 +1525,6 @@ func versionMismatch(f *frame, local int) string {
 func (p *Peer) greet(f *frame) error {
 	var version int
 	_ = json.Unmarshal(f.Version, &version)
-	if p.opts.Endpoint == nil {
-		if version != Protocol || len(f.Endpoint) > 0 {
-			return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, Protocol))
-		}
-		_ = json.Unmarshal(f.Capabilities, &p.declared)
-		return p.required()
-	}
 	if version != EndpointProtocol {
 		return fmt.Errorf("%w: %s", ErrIncompatible, versionMismatch(f, EndpointProtocol))
 	}

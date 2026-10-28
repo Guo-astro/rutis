@@ -1283,6 +1283,11 @@ mod tests {
 
     use super::*;
 
+    /// The endpoint the near ends of these sessions open as.
+    fn rust() -> crate::session::rpc::Endpoint {
+        crate::session::rpc::Endpoint::rust(crate::channel::PeerId::new("rust").unwrap())
+    }
+
     /// Answers every call with nothing.
     struct Quiet;
     impl crate::session::Dispatch for Quiet {
@@ -1303,7 +1308,7 @@ mod tests {
     async fn an_emit_that_panics_does_not_stop_the_next() {
         let root = Ctx::root().unwrap();
         let (near, _far) = crate::memory::pair();
-        let near = Connection::open(near, Arc::new(Quiet)).unwrap();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
         let session = SessionEvents::join(Some(&root), near, "rt".into(), Vec::new()).unwrap();
         let ran = Arc::new(AtomicBool::new(false));
         let run = |run: BoxFuture<'static, ()>| EmitRun::new(run, Arc::default());
@@ -1346,7 +1351,7 @@ mod tests {
         let (near, far) = crate::memory::pair();
         // The far end says nothing: the session stays open, and what the
         // hub tells it waits.
-        let near = Connection::open(near, Arc::new(Quiet)).unwrap();
+        let near = Connection::open(near, Arc::new(Quiet), rust()).unwrap();
         let session =
             SessionEvents::join(Some(&root), near.clone(), "rt".into(), Vec::new()).unwrap();
         session.row_loading("chat", Vec::new(), "chat".into());

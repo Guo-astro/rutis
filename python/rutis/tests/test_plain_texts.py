@@ -16,6 +16,7 @@ import sys
 import unittest
 
 import background
+from support import LOCAL, hello
 
 from rutis import define_plugin
 from rutis.channel import SocketChannel
@@ -102,10 +103,10 @@ class SessionTexts(background.IsolatedAsyncioTestCase):
         theirs.settimeout(10)
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
-        peer = Peer(SocketChannel(ours), dispatch)
+        peer = Peer(SocketChannel(ours), dispatch, endpoint=LOCAL)
         self.addCleanup(peer._channel.close)
         self.addCleanup(peer.close)
-        peer._receive({"op": "hello", "version": 2})
+        peer._receive(hello())
         lines = theirs.makefile("rb")
         self.addCleanup(lines.close)
 
@@ -146,7 +147,7 @@ class SessionTexts(background.IsolatedAsyncioTestCase):
     async def test_a_result_that_is_not_finite_is_answered_with_why(self):
         peer, _theirs, read = self.session(lambda target, method, args: {"t": float("nan")})
         peer._receive(
-            {"op": "invoke", "id": "rust:1", "path": [], "target": "weather", "method": "today",
+            {"op": "invoke", "id": "main:1", "path": [], "target": "weather", "method": "today",
              "args": {"type": "data", "value": []}}
         )
         reply = await read()

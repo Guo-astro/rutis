@@ -87,3 +87,14 @@ func TestALocalChannelRefusesAnInvalidID(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// A local channel speaks the endpoint format only: without --id it is
+// refused before it is opened.
+func TestALocalChannelNeedsAnID(t *testing.T) {
+	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
+	err := advanced.ServeArgs([]string{"unix:/nowhere", t.TempDir()}, plugin)
+	want := "a local channel needs --id <endpoint>: unix:/nowhere; a host older than rutis 0.19 started this runtime: upgrade the host"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v", err)
+	}
+}

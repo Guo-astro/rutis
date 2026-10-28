@@ -135,28 +135,15 @@ fn largest(args: &WireValue) -> Option<usize> {
 
 impl Connection {
     /// The far end, for messages: the endpoint it greeted as, the one this
-    /// side expects or whoever started it named, else `the far end`.
+    /// side expects, else `the far end`.
     pub(super) fn far_name(&self) -> String {
         if let Some(greeting) = self.greeting() {
             return greeting.endpoint.to_string();
         }
-        if let super::Format::Endpoint(super::Endpoint {
-            expected: Some(peer),
-            ..
-        }) = &self.0.format
-        {
+        if let Some(peer) = &self.0.endpoint.expected {
             return peer.to_string();
         }
-        if let Some(name) = self.0.named.get() {
-            return name.clone();
-        }
         "the far end".into()
-    }
-
-    /// Name the far end of a compat-format session, which does not name
-    /// itself: whoever started it knows (a runtime's link).
-    pub(crate) fn name_far_end(&self, name: &str) {
-        let _ = self.0.named.set(name.to_owned());
     }
 
     /// Say how the far end is about to go, before this side ends the

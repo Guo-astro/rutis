@@ -2,12 +2,11 @@
 // message over the limit, fails only that call, on the side that would send
 // it; the session goes on. The cases of node/rutis-runtime's session tests.
 import { expect, test } from 'bun:test'
-import { Session, MAX_MESSAGE, overLimit } from '../src/session.ts'
+import { Session, MAX_MESSAGE, overLimit, ENDPOINT_PROTOCOL } from '../src/session.ts'
 import { decodeError } from '../src/errors.ts'
 
-const PROTOCOL = require('../package.json').rutisProtocol
 const data = (value: unknown) => ({ type: 'data', value })
-const invoke = (id: number, method: string) => ({ op: 'invoke', id: `rust:${id}`, path: [], target: 'test', method, args: data([]) })
+const invoke = (id: number, method: string) => ({ op: 'invoke', id: `main:${id}`, path: [], target: 'test', method, args: data([]) })
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
 function harness(dispatch: (target: string, method: string, args: unknown[]) => unknown, options = {}) {
@@ -19,8 +18,9 @@ function harness(dispatch: (target: string, method: string, args: unknown[]) => 
     send: (line: string) => sent.push(JSON.parse(line)),
     pump: () => peer.receive(incoming.shift()),
     abort: (error: Error) => { fault = error },
+    endpoint: { local: 'bun' },
   })
-  peer.receive({ op: 'hello', version: PROTOCOL })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['objects'] })
   return { peer, sent, incoming, fault: () => fault }
 }
 
@@ -48,10 +48,10 @@ test('a message over the limit fails only its call, either way', async () => {
   peer.receive(invoke(3, 'later'))
   await tick()
   const future = sent.at(-1).value.value.id
-  peer.receive({ op: 'await', id: 'rust:4', path: [], reference: future })
+  peer.receive({ op: 'await', id: 'main:4', path: [], reference: future })
   await tick()
   expect(sent.at(-1).error.message).toMatch(/^test\.later: the result cannot be sent: the message would be/)
-  incoming.push({ op: 'return', id: 'node:2', value: data('fine') })
+  incoming.push({ op: 'return', id: 'bun:2', value: data('fine') })
   expect(peer.invoke('t', 'after', [])).toBe('fine')
   expect(fault()).toBeUndefined()
   peer.close()
@@ -61,7 +61,7 @@ test('a message over the limit fails only its call, either way', async () => {
 test('a plugin definition from the far end fails only the call it came in (#677)', async () => {
   const { peer, sent, fault } = harness(() => 'ok')
   const plugin = { type: 'reference', value: { id: 6, kind: 'plugin', home: false, origin: [] } }
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [plugin] } })
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [plugin] } })
   await tick()
   const reply = sent.find(frame => frame.op === 'throw')
   expect(reply.error.message).toBe('received a plugin definition made in another process, which cannot be used here; pass plain data or a function instead')
@@ -78,7 +78,7 @@ test('an object from the far end is a proxy whose methods call it (#687)', async
   const got: any[] = []
   const { peer, sent, fault } = harness((_, _method, args) => { got.push(...args); return 'ok' })
   const object = { type: 'reference', value: { id: 5, kind: 'object', home: false, origin: [] } }
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object, object] } })
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object, object] } })
   await tick()
   const [cache, again] = got
   expect(cache).toBe(again)
@@ -116,9 +116,9 @@ test('a method an object passed by reference lacks is no-method, saying what it 
     ids[name] = sent.at(-1).value.value.id
   }
   const ask = async (n: number, reference: number, method: string) => {
-    peer.receive({ op: 'call', id: `rust:${n}`, path: [], reference, method, args: data([]) })
+    peer.receive({ op: 'call', id: `main:${n}`, path: [], reference, method, args: data([]) })
     await tick()
-    return sent.find(frame => frame.id === `rust:${n}`)
+    return sent.find(frame => frame.id === `main:${n}`)
   }
   const cases: [number, number, string, string, unknown][] = [
     [3, ids.cache, 'gett', 'Cache has no method gett (methods: get, set)', { object: 'Cache', method: 'gett', methods: ['get', 'set'] }],
@@ -144,7 +144,7 @@ test('an object with methods goes only to a far end that declared objects', asyn
   const sent: any[] = []
   const session = new Session({ dispatch: () => new Counter(), send: (line: string) => sent.push(JSON.parse(line)), pump: () => {}, endpoint: { local: 'bun', expected: 'main' } })
   session.start()
-  session.receive({ op: 'hello', version: 3, endpoint: 'main', capabilities: ['events-v2'] })
+  session.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['events-v2'] })
   await session.ready
   session.receive({ op: 'invoke', id: 'main:1', path: [], target: 'svc', method: 'get', args: data([]) })
   await tick()
@@ -163,10 +163,10 @@ test('undefined is null inside a value, and kept as a whole argument', async () 
   await tick()
   const crossed = { type: 'list', value: [data(1), data(null), data(3)] }
   expect(sent.at(-1).value).toEqual(crossed)
-  incoming.push({ op: 'return', id: 'node:1', value: data(null) })
+  incoming.push({ op: 'return', id: 'bun:1', value: data(null) })
   peer.invoke('t', 'take', [sparse(), undefined])
   expect(sent.at(-1).args.value).toEqual([crossed, { type: 'undefined' }])
-  peer.receive({ op: 'invoke', id: 'rust:2', path: [], target: 't', method: 'record', args: { type: 'list', value: [{ type: 'undefined' }, { type: 'list', value: [data(1), { type: 'undefined' }] }, { type: 'record', value: { a: { type: 'undefined' } } }] } })
+  peer.receive({ op: 'invoke', id: 'main:2', path: [], target: 't', method: 'record', args: { type: 'list', value: [{ type: 'undefined' }, { type: 'list', value: [data(1), { type: 'undefined' }] }, { type: 'record', value: { a: { type: 'undefined' } } }] } })
   await tick()
   expect(got.at(-1)).toEqual([undefined, [1, null], { a: null }])
   expect(got.at(-1).length).toBe(3)
@@ -176,7 +176,7 @@ test('undefined is null inside a value, and kept as a whole argument', async () 
 
 test('an error graph not in its shape fails only its call', () => {
   const { peer, incoming, fault } = harness(() => {})
-  incoming.push({ op: 'throw', id: 'node:1', error: { name: 'ThrownValue', message: 'a string', graph: { root: { type: 'data', value: 'a string' }, nodes: null } } })
+  incoming.push({ op: 'throw', id: 'bun:1', error: { name: 'ThrownValue', message: 'a string', graph: { root: { type: 'data', value: 'a string' }, nodes: null } } })
   let thrown: any
   try { peer.invoke('t', 'm', []) } catch (error) { thrown = error }
   expect([thrown.name, thrown.message]).toEqual(['ThrownValue', 'a string'])
@@ -234,7 +234,7 @@ test('an error answering a call has the caller\'s stack, and a rethrow adds it (
   const { encodeError } = await import('../src/errors.ts')
   const { peer, incoming } = harness(() => {})
   const remote = { name: 'KeyError', message: "'region'", graph: { root: { type: 'reference', value: 0 }, nodes: [{ type: 'error', name: 'KeyError', message: "'region'", stack: 'KeyError: \'region\'\n  File "weather.py", line 31, in tomorrow' }] } }
-  incoming.push({ op: 'throw', id: 'node:1', error: remote })
+  incoming.push({ op: 'throw', id: 'bun:1', error: remote })
   // Not in tail position: JavaScriptCore drops a tail call's frame (and
   // Bun's transpiler turns `const a = f(); return a` into one).
   const asked: string[] = []
@@ -245,7 +245,7 @@ test('an error answering a call has the caller\'s stack, and a rethrow adds it (
   expect(sync.stack).not.toMatch(/src[\\/]session\.ts|weather\.py/)
   function askTheWeather() { const answer = peer.invokeAsync('host:weather', 'tomorrow', []); asked.push('async'); return answer }
   const pending = askTheWeather()
-  peer.receive({ op: 'throw', id: 'node:2', error: remote })
+  peer.receive({ op: 'throw', id: 'bun:2', error: remote })
   const failed: any = await pending.catch((error: unknown) => error)
   expect(failed.stack).toMatch(/^KeyError: 'region'\n\s+at askTheWeather .*bad-values\.test\.ts/)
   const sentNode = encodeError(failed).graph.nodes[0]
@@ -267,9 +267,9 @@ test('an object passed by reference is cancelled through and released by the hos
   peer.receive(invoke(1, 'job')); await tick()
   const id = sent.at(-1).value.value.id
   expect(peer.references().exports).toBe(1)
-  peer.receive({ op: 'call', id: 'rust:2', path: [], reference: id, method: 'run', args: { type: 'list', value: [{ type: 'signal' }] } })
+  peer.receive({ op: 'call', id: 'main:2', path: [], reference: id, method: 'run', args: { type: 'list', value: [{ type: 'signal' }] } })
   await tick()
-  peer.receive({ op: 'cancel', id: 'rust:2' })
+  peer.receive({ op: 'cancel', id: 'main:2' })
   await tick()
   expect(aborted).toBe('AbortError')
   const before = peer.references().exports
@@ -285,7 +285,7 @@ test('a received object nested in data is still a reference', async () => {
   const got: any[] = []
   const { peer, sent, fault } = harness((_, _method, args) => { got.push(...args); return 'ok' })
   const object = { type: 'reference', value: { id: 7, kind: 'object', home: false, origin: [] } }
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object] } })
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'take', args: { type: 'list', value: [object] } })
   await tick()
   peer.invokeAsync('t', 'give', [{ cache: got[0], n: 1 }]).catch(() => {})
   expect(sent.at(-1).args.value[0]).toEqual({ type: 'record', value: { cache: { type: 'reference', value: { id: 7, kind: 'object', home: true, origin: [] } }, n: data(1) } })
@@ -300,7 +300,7 @@ test('a method taken off a received object keeps it', async () => {
   const collect = async () => { for (let i = 0; i < 5; i++) { Bun.gc(true); await new Promise(resolve => setTimeout(resolve, 10)) } }
   let got: any
   const { peer, sent, fault } = harness((_, _method, args) => { got = args[0]; return 'ok' })
-  const take = (id: number) => peer.receive({ op: 'invoke', id: `rust:${id}`, path: [], target: 'test', method: 'take', args: { type: 'list', value: [{ type: 'reference', value: { id, kind: 'object', home: false, origin: [] } }] } })
+  const take = (id: number) => peer.receive({ op: 'invoke', id: `main:${id}`, path: [], target: 'test', method: 'take', args: { type: 'list', value: [{ type: 'reference', value: { id, kind: 'object', home: false, origin: [] } }] } })
   take(1); await tick()
   const inc: any = got.inc; got = undefined
   await collect()

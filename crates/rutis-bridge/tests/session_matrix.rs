@@ -171,10 +171,14 @@ async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Proces
     spawn.env = launcher.env;
     spawn.cwd = launcher.cwd;
     spawn.handover = Handover::Loopback;
-    spawn.trailing = vec![anchor.into()];
+    spawn.trailing = vec!["--id".into(), "runtime".into(), anchor.into()];
     let channel = pipe::spawn(&spawn, &Processes::default()).await.unwrap();
-    let format = rutis_bridge::session::Format::Compat;
-    Process::attach(channel, on_bus(ctx), format).await.unwrap()
+    let main = rutis_bridge::channel::PeerId::new("main").unwrap();
+    let runtime = rutis_bridge::channel::PeerId::new("runtime").unwrap();
+    let endpoint = rutis_bridge::session::Endpoint::rust(main).expect(runtime);
+    Process::attach(channel, on_bus(ctx), endpoint)
+        .await
+        .unwrap()
 }
 
 /// Start the runtime listening on a loopback WebSocket, dial it, attach.
@@ -223,10 +227,8 @@ async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process>
     )
     .await
     .unwrap();
-    let format = rutis_bridge::session::Format::Endpoint(
-        rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
-            .expect(PeerId::new("runtime").unwrap()),
-    );
+    let format = rutis_bridge::session::Endpoint::rust(PeerId::new("main").unwrap())
+        .expect(PeerId::new("runtime").unwrap());
     let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
     assert!(
         process.connection().supports("runtime"),

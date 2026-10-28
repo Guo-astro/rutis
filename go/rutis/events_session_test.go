@@ -458,8 +458,8 @@ func TestAHostOlderThanTheEventProtocolIsRefused(t *testing.T) {
 	defer hostSide.Close()
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
 	done := make(chan error, 1)
-	go func() { done <- advanced.ServeConn(runtimeSide, plugin) }()
-	hello, _ := json.Marshal(map[string]any{"op": "hello", "version": 2, "capabilities": []string{"sync-wait"}})
+	go func() { done <- advanced.ServeConn(runtimeSide, "go", plugin) }()
+	hello, _ := json.Marshal(map[string]any{"op": "hello", "version": 4, "endpoint": "main", "capabilities": []string{"sync-wait"}})
 	go func() {
 		buffer := make([]byte, 4096)
 		for {

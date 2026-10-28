@@ -5,16 +5,14 @@
 // cross-language round trip is crates/rutis-bridge/tests/value_roundtrip.rs.
 import { test } from 'bun:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { Session, CAPABILITIES } from '../src/session.ts'
+import { Session, CAPABILITIES, ENDPOINT_PROTOCOL } from '../src/session.ts'
 import { base64Decode, base64Encode, checkText, instantFromText, instantText, VALUE_CAPABILITIES } from '../src/values.ts'
 
-const PROTOCOL = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).rutisProtocol
 const data = value => ({ type: 'data', value })
 // What the SDK constructors make (@arcships/rutis), without the SDK.
 const constructed = (tag, value) => Object.freeze({ [Symbol.for('rutis.value')]: tag, value })
 
-// A compat session whose far end declared `capabilities`.
+// A session whose far end declared `capabilities`.
 function harness(dispatch = () => {}, capabilities = VALUE_CAPABILITIES) {
   const sent = [], incoming = []
   let fault
@@ -23,22 +21,23 @@ function harness(dispatch = () => {}, capabilities = VALUE_CAPABILITIES) {
     send: line => sent.push(JSON.parse(line)),
     pump: () => { assert.ok(incoming.length, 'sync caller must not strand'); peer.receive(incoming.shift()) },
     abort: error => { fault = error },
+    endpoint: { local: 'bun' },
   })
   peer.start()
-  peer.receive({ op: 'hello', version: PROTOCOL, capabilities })
+  peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities })
   return { peer, sent, incoming, fault: () => fault }
 }
 // The arguments a call on `peer` sends with `args`.
 function sentArgs(args, capabilities) {
   const { peer, sent, incoming } = harness(undefined, capabilities)
-  incoming.push({ op: 'return', id: 'node:1', value: data(null) })
+  incoming.push({ op: 'return', id: 'bun:1', value: data(null) })
   peer.invoke('test', 'm', args)
   return sent.find(frame => frame.op === 'invoke').args.value
 }
 // What `peer` makes of a result `value`.
 function received(value) {
   const { peer, incoming, fault } = harness()
-  incoming.push({ op: 'return', id: 'node:1', value })
+  incoming.push({ op: 'return', id: 'bun:1', value })
   try {
     return peer.invoke('test', 'm', [])
   } finally {
@@ -46,7 +45,7 @@ function received(value) {
   }
 }
 
-test('the session declares every tagged value in both formats', () => {
+test('the session declares every tagged value', () => {
   for (const tag of ['instant', 'datetime', 'date', 'time', 'bytes', 'map', 'set', 'bigint', 'decimal', 'uuid']) {
     assert.ok(CAPABILITIES.includes(`value-${tag}`), tag)
   }
@@ -87,12 +86,12 @@ test('a value the far end did not declare fails only its call', () => {
   }
   // Nothing was sent, and the session goes on.
   assert.equal(sent.filter(frame => frame.op === 'invoke').length, 0)
-  incoming.push({ op: 'return', id: 'node:6', value: data('fine') })
+  incoming.push({ op: 'return', id: 'bun:6', value: data('fine') })
   assert.equal(peer.invoke('test', 'm', ['plain']), 'fine')
   assert.equal(fault(), undefined)
   // A result it did not declare: the caller receives a throw.
   const served = harness(() => new Map([[1, 2]]), [])
-  served.peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'm', args: data([]) })
+  served.peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'm', args: data([]) })
   return Promise.resolve().then(() => {
     const reply = served.sent.at(-1)
     assert.equal(reply.op, 'throw')
@@ -176,8 +175,8 @@ test('a refused call is answered with a throw and releases every reference it ca
   const { peer, sent, fault } = harness(() => ++calls)
   const callback = id => ({ type: 'reference', value: { id, kind: 'function', home: false, origin: [] } })
   // A callback granted twice and one granted once, around a value refused.
-  peer.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'm', args: { type: 'list', value: [callback(7), { type: 'bytes', value: 'not base64' }, callback(7), { type: 'map', value: [[data('k'), callback(8)]] }] } })
-  const reply = sent.find(frame => frame.id === 'rust:1')
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'm', args: { type: 'list', value: [callback(7), { type: 'bytes', value: 'not base64' }, callback(7), { type: 'map', value: [[data('k'), callback(8)]] }] } })
+  const reply = sent.find(frame => frame.id === 'main:1')
   assert.equal(reply.op, 'throw')
   assert.match(reply.error.message, /invalid bytes/)
   assert.deepEqual(sent.filter(frame => frame.op === 'release').sort((a, b) => a.reference - b.reference), [
@@ -188,21 +187,21 @@ test('a refused call is answered with a throw and releases every reference it ca
   assert.equal(calls, 0)
   // A reference this side already holds keeps the grants it had.
   const { peer: holder, sent: holderSent, incoming } = harness()
-  incoming.push({ op: 'return', id: 'node:1', value: callback(9) })
+  incoming.push({ op: 'return', id: 'bun:1', value: callback(9) })
   const kept = holder.invoke('test', 'm', [])
-  holder.receive({ op: 'invoke', id: 'rust:1', path: [], target: 'test', method: 'm', args: { type: 'list', value: [callback(9), { type: 'uuid', value: 'x' }] } })
+  holder.receive({ op: 'invoke', id: 'main:1', path: [], target: 'test', method: 'm', args: { type: 'list', value: [callback(9), { type: 'uuid', value: 'x' }] } })
   assert.deepEqual(holderSent.filter(frame => frame.op === 'release'), [{ op: 'release', reference: 9, count: 1 }])
   assert.deepEqual(holder.references(), { exports: 0, imports: 1 })
   holder.release(kept)
   assert.deepEqual(holderSent.at(-1), { op: 'release', reference: 9, count: 1 })
   // The session goes on.
-  peer.receive({ op: 'invoke', id: 'rust:2', path: [], target: 'test', method: 'm', args: data([]) })
+  peer.receive({ op: 'invoke', id: 'main:2', path: [], target: 'test', method: 'm', args: data([]) })
   await Promise.resolve()
-  assert.deepEqual(sent.at(-1), { op: 'return', id: 'rust:2', value: data(1) })
+  assert.deepEqual(sent.at(-1), { op: 'return', id: 'main:2', value: data(1) })
   assert.equal(fault(), undefined)
   // A refused result releases its references too, and fails the call.
   const { peer: caller, sent: callerSent, incoming: replies, fault: callerFault } = harness()
-  replies.push({ op: 'return', id: 'node:1', value: { type: 'list', value: [callback(3), { type: 'date', value: '2026-13-01' }] } })
+  replies.push({ op: 'return', id: 'bun:1', value: { type: 'list', value: [callback(3), { type: 'date', value: '2026-13-01' }] } })
   assert.throws(() => caller.invoke('test', 'm', []), /invalid date/)
   assert.deepEqual(callerSent.filter(frame => frame.op === 'release'), [{ op: 'release', reference: 3, count: 1 }])
   assert.equal(callerFault(), undefined)
@@ -217,7 +216,7 @@ test('a tagged value not in the protocol\'s shape ends the session', () => {
     { type: 'set', value: 'a' },
   ]) {
     const { peer, incoming, fault } = harness()
-    incoming.push({ op: 'return', id: 'node:1', value })
+    incoming.push({ op: 'return', id: 'bun:1', value })
     assert.throws(() => peer.invoke('test', 'm', []), JSON.stringify(value))
     assert.ok(fault(), JSON.stringify(value))
   }

@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { threadId } from 'node:worker_threads'
 import { Process } from '../../src/client.mjs'
 
-// `<channel> [<endpoint id> [<expected peer>]]`: network channels speak the
-// endpoint format.
+// `<channel> [<endpoint id> [<expected peer>]]`: greets as the id (`node`
+// by default), expecting the far end as the peer when given.
 const [channel, id = 'node', expected] = process.argv.slice(2)
-const endpoint = /^(wss?|listen):/.test(channel) ? { local: id, expected } : undefined
+const endpoint = { local: id, expected }
 const peer = await Process.connect(channel, () => { throw new Error('no root exports') }, undefined, endpoint)
 const owner = threadId
 let timerRan = false, promiseRan = false

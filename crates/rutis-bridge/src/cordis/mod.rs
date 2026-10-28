@@ -19,7 +19,7 @@ pub use crate::runtime::{Host, Mount, Process, Projection};
 pub use crate::session as rpc;
 pub use crate::session::{
     arg, decode, decode_value, native_error, nullable, optional, Error, JsError, ObjectRef,
-    RemoteFunction, PROTOCOL,
+    RemoteFunction, ENDPOINT_PROTOCOL,
 };
 pub use crate::session::{host_key, HostDispatch};
 pub use serde;

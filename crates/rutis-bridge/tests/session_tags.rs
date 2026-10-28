@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rutis_bridge::channel::{Channel, Closer, PeerId};
-use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
+use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Reply, Value};
 use rutis_test_support::{scaled, HANG_GUARD};
 use serde_json::json;
 
@@ -145,8 +145,8 @@ fn channel(stream: TcpStream) -> Channel {
     rutis_bridge::pipe::framed(stream.try_clone().unwrap(), stream, closer)
 }
 
-fn endpoint(name: &str) -> Format {
-    Format::Endpoint(Endpoint::rust(id(name)))
+fn endpoint(name: &str) -> Endpoint {
+    Endpoint::rust(id(name))
 }
 
 fn role(role: Role) {
@@ -160,13 +160,13 @@ fn role(role: Role) {
     // their sessions in the same order.
     let link = Arc::new(std::sync::OnceLock::<Connection>::new());
     let (host_end, rt_end) = rutis_bridge::memory::pair();
-    let host = Connection::open_with(
+    let host = Connection::open(
         host_end,
         Arc::new(Host { link: link.clone() }),
         endpoint("host"),
     )
     .unwrap();
-    let rt = Connection::open_with(rt_end, Arc::new(Runtime(role)), endpoint("rt")).unwrap();
+    let rt = Connection::open(rt_end, Arc::new(Runtime(role)), endpoint("rt")).unwrap();
     let stream = match role {
         Role::B => {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -184,10 +184,10 @@ fn role(role: Role) {
         Role::A => ("a", "b"),
         Role::B => ("b", "a"),
     };
-    let session = Connection::open_with(
+    let session = Connection::open(
         channel(stream),
         Arc::new(Link { host: host.clone() }),
-        Format::Endpoint(Endpoint::rust(id(local)).expect(id(far))),
+        Endpoint::rust(id(local)).expect(id(far)),
     )
     .unwrap();
     link.set(session.clone()).ok();

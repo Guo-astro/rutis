@@ -171,7 +171,7 @@ func TestADialIsClassifiedByItsStatus(t *testing.T) {
 	}
 	_ = accepted
 	failed := dialFailure(t, other, "secret")
-	if failed.failure != incompatible || !strings.Contains(failed.reason, "400: this endpoint speaks rutis.9, the dialer offered rutis.3: upgrade the dialer") {
+	if failed.failure != incompatible || !strings.Contains(failed.reason, "400: this endpoint speaks rutis.9, the dialer offered rutis.4: upgrade the dialer") {
 		t.Fatalf("%v %s", failed.failure, failed.reason)
 	}
 	// Nothing listening: retryable.

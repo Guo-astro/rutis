@@ -185,18 +185,18 @@ async fn node_dialing_rust_is_refused_by_category() {
     let (ca, certificate, key) = pki();
     let (plain, _r) = listen(
         ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
-        "rutis.3",
+        "rutis.4",
     );
     let url = format!("ws://{}/rutis", plain.local_addr());
     assert_eq!(
-        node_dial(&url, "rutis.3", &[("RUTIS_TOKEN", "good")]).await,
+        node_dial(&url, "rutis.4", &[("RUTIS_TOKEN", "good")]).await,
         "connected"
     );
     assert_eq!(
-        node_dial(&url, "rutis.3", &[("RUTIS_TOKEN", "bad")]).await,
+        node_dial(&url, "rutis.4", &[("RUTIS_TOKEN", "bad")]).await,
         "auth-rejected"
     );
-    assert_eq!(node_dial(&url, "rutis.3", &[]).await, "auth-rejected");
+    assert_eq!(node_dial(&url, "rutis.4", &[]).await, "auth-rejected");
     assert_eq!(
         node_dial(&url, "rutis.9", &[("RUTIS_TOKEN", "good")]).await,
         "incompatible"
@@ -209,7 +209,7 @@ async fn node_dialing_rust_is_refused_by_category() {
             key_pem: key.into_bytes(),
             client_ca_pem: None,
         }),
-        "rutis.3",
+        "rutis.4",
     );
     let url = format!("wss://localhost:{}/rutis", secure.local_addr().port());
     let dir = tempfile::tempdir().unwrap();
@@ -219,14 +219,14 @@ async fn node_dialing_rust_is_refused_by_category() {
     assert_eq!(
         node_dial(
             &url,
-            "rutis.3",
+            "rutis.4",
             &[("RUTIS_TOKEN", "good"), ("RUTIS_CA", ca_path)]
         )
         .await,
         "connected"
     );
     assert_eq!(
-        node_dial(&url, "rutis.3", &[("RUTIS_TOKEN", "good")]).await,
+        node_dial(&url, "rutis.4", &[("RUTIS_TOKEN", "good")]).await,
         "auth-rejected"
     );
 }
@@ -236,9 +236,9 @@ async fn rust_dialing_node_is_refused_by_category() {
     let (ca, certificate, key) = pki();
     let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = node_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
-    assert!(dial(&url, Some("good"), "rutis.3", &system).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.4", &system).await.is_ok());
     assert!(matches!(
-        dial(&url, Some("bad"), "rutis.3", &system).await,
+        dial(&url, Some("bad"), "rutis.4", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
@@ -259,9 +259,9 @@ async fn rust_dialing_node_is_refused_by_category() {
         ],
     )
     .await;
-    assert!(dial(&url, Some("good"), "rutis.3", &trusting).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.4", &trusting).await.is_ok());
     assert!(matches!(
-        dial(&url, Some("good"), "rutis.3", &system).await,
+        dial(&url, Some("good"), "rutis.4", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
 }
@@ -273,13 +273,13 @@ async fn rust_dialing_python_is_refused_by_category() {
     let (ca, certificate, key) = pki();
     let (system, trusting) = (Trust::default(), Trust::only(ca.into_bytes()));
     let (_plain, url) = python_listen("ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", "good")]).await;
-    assert!(dial(&url, Some("good"), "rutis.3", &system).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.4", &system).await.is_ok());
     assert!(matches!(
-        dial(&url, Some("bad"), "rutis.3", &system).await,
+        dial(&url, Some("bad"), "rutis.4", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
-        dial(&url, None, "rutis.3", &system).await,
+        dial(&url, None, "rutis.4", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
     assert!(matches!(
@@ -308,9 +308,9 @@ async fn rust_dialing_python_is_refused_by_category() {
         .and_then(|(_, rest)| rest.split('/').next())
         .unwrap();
     let url = format!("wss://localhost:{port}/rutis");
-    assert!(dial(&url, Some("good"), "rutis.3", &trusting).await.is_ok());
+    assert!(dial(&url, Some("good"), "rutis.4", &trusting).await.is_ok());
     assert!(matches!(
-        dial(&url, Some("good"), "rutis.3", &system).await,
+        dial(&url, Some("good"), "rutis.4", &system).await,
         Err(ConnectError::AuthRejected { .. })
     ));
 }

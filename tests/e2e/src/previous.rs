@@ -47,11 +47,11 @@ pub struct Release {
     pub version: String,
 }
 
-/// The first release with the unified events (#464): every endpoint of it
-/// declares `events-v2` and refuses a far end that does not
-/// (`docs/design-events-protocol-2026-10-18.md` §2). The current code
-/// meets a release from it on, and refuses an older one at the handshake.
-pub const EVENTS_V2: &str = "0.13.0";
+/// The first release speaking endpoint protocol 4, the session protocol of
+/// 0.19 (`docs/design-remote-session-2026-10-28.md` §十一 5): the current
+/// code meets a release from it on, and refuses an older one at the
+/// handshake, saying which end to upgrade.
+pub const PROTOCOL_4: &str = "0.19.0";
 
 /// The releases to meet ([module docs](self)); none when the registry is
 /// out of reach outside CI.
@@ -196,15 +196,10 @@ fn parse(version: &str) -> Option<(u64, u64, u64)> {
 }
 
 impl Release {
-    /// Whether this release is older than `version` (`x.y.z`).
-    pub fn older_than(&self, version: &str) -> bool {
-        parse(&self.version) < parse(version)
-    }
-
-    /// Whether it declares `events-v2` ([`EVENTS_V2`]): the current code
-    /// meets it; an older release is refused at the handshake.
-    pub fn declares_events_v2(&self) -> bool {
-        !self.older_than(EVENTS_V2)
+    /// Whether it speaks endpoint protocol 4 ([`PROTOCOL_4`]): the current
+    /// code meets it; an older release is refused at the handshake.
+    pub fn speaks_protocol_4(&self) -> bool {
+        parse(&self.version) >= parse(PROTOCOL_4)
     }
 
     /// Its `@arcships/rutis-runtime` package directory.
@@ -399,34 +394,30 @@ mod tests {
         assert!(choose("0.9.1", &published, true).is_empty());
     }
 
-    /// Around the events release (#464): its gate (the checkout at 0.13.0,
-    /// only older releases) meets 0.12.1 alone, all refused; once 0.13.0 is
-    /// out, the next gate (0.13.1) meets 0.13.0, which declares
-    /// `events-v2`; main at 0.13.0 meets both. A checkout still at 0.12.1
-    /// (the version before the release is cut) meets only 0.12 releases.
+    /// Around the 0.19 release (protocol 4): its gate (the checkout at
+    /// 0.19.0, only older releases) meets 0.18.0 alone, refused; once 0.19.0
+    /// is out, the next gate (0.19.1) meets 0.19.0, which speaks protocol 4;
+    /// main at 0.19.0 meets both.
     #[test]
-    fn the_events_release_meets_older_releases_only_as_refusals() {
-        let before = versions(&["0.11.0", "0.12.0", "0.12.1"]);
-        assert_eq!(choose("0.13.0", &before, true), ["0.12.1"]);
-        assert_eq!(choose("0.13.0", &before, false), ["0.12.1"]);
-        assert_eq!(choose("0.12.1", &before, false), ["0.12.0", "0.12.1"]);
-        assert_eq!(choose("0.12.1", &before, true), ["0.12.0"]);
-        let after = versions(&["0.11.0", "0.12.0", "0.12.1", "0.13.0"]);
-        assert_eq!(choose("0.13.1", &after, true), ["0.13.0"]);
-        assert_eq!(choose("0.13.1", &after, false), ["0.13.0"]);
-        assert_eq!(choose("0.13.0", &after, false), ["0.12.1", "0.13.0"]);
-        assert_eq!(choose("0.13.0", &after, true), ["0.12.1"]);
-        let declares = |version: &str| {
+    fn the_protocol_4_release_meets_older_releases_only_as_refusals() {
+        let before = versions(&["0.17.2", "0.18.0"]);
+        assert_eq!(choose("0.19.0", &before, true), ["0.18.0"]);
+        assert_eq!(choose("0.19.0", &before, false), ["0.18.0"]);
+        let after = versions(&["0.17.2", "0.18.0", "0.19.0"]);
+        assert_eq!(choose("0.19.1", &after, true), ["0.19.0"]);
+        assert_eq!(choose("0.19.0", &after, false), ["0.18.0", "0.19.0"]);
+        assert_eq!(choose("0.19.0", &after, true), ["0.18.0"]);
+        let speaks = |version: &str| {
             Release {
                 version: version.to_owned(),
             }
-            .declares_events_v2()
+            .speaks_protocol_4()
         };
-        for version in ["0.9.1", "0.12.0", "0.12.1"] {
-            assert!(!declares(version), "{version} is refused");
+        for version in ["0.12.1", "0.13.0", "0.17.2", "0.18.0"] {
+            assert!(!speaks(version), "{version} is refused");
         }
-        for version in ["0.13.0", "0.13.1", "0.14.0", "1.0.0"] {
-            assert!(declares(version), "{version} is met");
+        for version in ["0.19.0", "0.19.1", "0.20.0", "1.0.0"] {
+            assert!(speaks(version), "{version} is met");
         }
     }
 }

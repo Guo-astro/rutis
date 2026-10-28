@@ -23,7 +23,7 @@ use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
 use rutis_bridge::channel::{ConnectError, PeerId};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch};
-use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
+use rutis_bridge::session::{Connection, Dispatch, Endpoint, Reply, Value};
 use rutis_bridge::{
     peer_key, Accepting, Credential, Dialer, ExportPlugin, Identity, IdentityPlugin, ImportPlugin,
     LinkConfig, LinkPlugin, LinkState, Peer, Registrations, Retry, StaticIdentity,
@@ -165,16 +165,16 @@ fn nothing() -> Arc<dyn Dispatch> {
 async fn sessions(callee: Arc<dyn Dispatch>) -> (Connection, Connection, Faults) {
     let (near, far) = rutis_bridge::memory::pair();
     let (near, faults) = fault(near);
-    let caller = Connection::open_with(
+    let caller = Connection::open(
         near,
         nothing(),
-        Format::Endpoint(Endpoint::rust(id("caller")).expect(id("callee"))),
+        Endpoint::rust(id("caller")).expect(id("callee")),
     )
     .unwrap();
-    let served = Connection::open_with(
+    let served = Connection::open(
         far,
         callee,
-        Format::Endpoint(Endpoint::rust(id("callee")).expect(id("caller"))),
+        Endpoint::rust(id("callee")).expect(id("caller")),
     )
     .unwrap();
     within("the caller's handshake", caller.ready())
@@ -920,16 +920,16 @@ async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
             Ok(Value::Data(json!(text)))
         }
     }));
-    let caller = Connection::open_with(
+    let caller = Connection::open(
         dialed,
         nothing(),
-        Format::Endpoint(Endpoint::rust(id("caller")).expect(id("callee"))),
+        Endpoint::rust(id("caller")).expect(id("callee")),
     )
     .unwrap();
-    let served = Connection::open_with(
+    let served = Connection::open(
         accepted,
         callee,
-        Format::Endpoint(Endpoint::rust(id("callee")).expect(id("caller"))),
+        Endpoint::rust(id("callee")).expect(id("caller")),
     )
     .unwrap();
     within("the caller's handshake", caller.ready())

@@ -6,16 +6,12 @@
 //! A rutis service a session can call is a [`HostDispatch`], provided under
 //! [`host_key`]`(name)`.
 
-/// Wire protocol version of local runtime sessions. The Node runtime package
-/// declares the version it speaks as `rutisProtocol` in its package.json;
-/// builds check they match.
-pub const PROTOCOL: u32 = 2;
-
-/// The endpoint session format: endpoint ids in the handshake and in call
-/// ids, capabilities, either side calling the other. Network sessions use
-/// it (WebSocket subprotocol `rutis.3`); local runtime sessions keep
-/// [`PROTOCOL`].
-pub const ENDPOINT_PROTOCOL: u32 = 3;
+/// The session protocol version: endpoint ids in the handshake and in call
+/// ids, capabilities, either side calling the other. Every session speaks
+/// it, local runtime processes as network ones (WebSocket subprotocol
+/// `rutis.4`). The Node and Bun runtime packages declare it as
+/// `rutisProtocol` in their package.json; builds check they match.
+pub const ENDPOINT_PROTOCOL: u32 = 4;
 
 mod objects;
 pub(crate) mod protocol;

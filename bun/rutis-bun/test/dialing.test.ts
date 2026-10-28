@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AUTH_REJECTED, Backoff, INCOMPATIBLE, keepDialing, RETRY, retryFrom, RETRYABLE, seconds, sessionFailure, type Retry, type Session } from '../src/dialing.ts'
 import { dialOptions } from '../src/remote.ts'
-import { greetingOf } from '../src/session.ts'
+import { ENDPOINT_PROTOCOL, greetingOf } from '../src/session.ts'
 import { within } from './support.ts'
 
 // Short enough that the loop runs at once; the shape is what is checked.
@@ -43,7 +43,7 @@ test('waits read short', () => {
 
 test('a session ends as an authentication failure, incompatible, or retryable', () => {
   expect(sessionFailure(4003)).toBe(AUTH_REJECTED)
-  const mismatch = refusalOf({ op: 'hello', version: 3, endpoint: 'other' }, { local: 'pixel', expected: 'main' })
+  const mismatch = refusalOf({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'other' }, { local: 'pixel', expected: 'main' })
   expect(mismatch.message).toStartWith('endpoint mismatch')
   expect(sessionFailure(undefined, mismatch)).toBe(AUTH_REJECTED)
   const newer = refusalOf({ op: 'hello', version: 9, endpoint: 'main' }, { local: 'pixel' })
@@ -52,7 +52,7 @@ test('a session ends as an authentication failure, incompatible, or retryable', 
   // Being replaced, and anything else, is retryable.
   expect(sessionFailure(4002)).toBe(RETRYABLE)
   expect(sessionFailure(1001, new Error('the access point did not greet in time'))).toBe(RETRYABLE)
-  expect(greetingOf({ op: 'hello', version: 3, endpoint: 'main', capabilities: ['x'] }, { local: 'pixel', expected: 'main' }).capabilities).toEqual(['x'])
+  expect(greetingOf({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: ['x'] }, { local: 'pixel', expected: 'main' }).capabilities).toEqual(['x'])
 })
 
 test('what retrying cannot fix is refused before dialing', () => {

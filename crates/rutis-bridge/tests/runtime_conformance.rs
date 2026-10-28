@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use rutis_bridge::channel::{Channel, PeerId};
 use rutis_bridge::session::testing::{malformed, session, Fixture};
-use rutis_bridge::session::{Connection, Endpoint, Format};
+use rutis_bridge::session::{Connection, Endpoint};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -37,8 +37,8 @@ impl rutis_bridge::session::Dispatch for Nothing {
     }
 }
 
-fn main_endpoint(far: &str) -> Format {
-    Format::Endpoint(Endpoint::rust(id("main")).expect(id(far)))
+fn main_endpoint(far: &str) -> Endpoint {
+    Endpoint::rust(id("main")).expect(id(far))
 }
 
 async fn run(far: Connection) {
@@ -51,13 +51,13 @@ async fn run(far: Connection) {
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_meets_the_session_contract() {
     let (a, b) = rutis_bridge::memory::pair();
-    let _far = Connection::open_with(
+    let _far = Connection::open(
         b,
         Arc::new(Fixture::default()),
-        Format::Endpoint(Endpoint::rust(id("rust")).expect(id("main"))),
+        Endpoint::rust(id("rust")).expect(id("main")),
     )
     .unwrap();
-    run(Connection::open_with(a, Arc::new(Nothing), main_endpoint("rust")).unwrap()).await;
+    run(Connection::open(a, Arc::new(Nothing), main_endpoint("rust")).unwrap()).await;
 }
 
 /// The channel to the far end: one it dials, framed by `pipe::framed`,
@@ -301,7 +301,7 @@ fn kotlin() -> tokio::process::Command {
 /// The session contract against `command`'s implementation, on `via`.
 async fn contract(command: tokio::process::Command, via: Via, far: &str) {
     let (channel, _child) = connect(command, via).await;
-    run(Connection::open_with(channel, Arc::new(Nothing), main_endpoint(far)).unwrap()).await;
+    run(Connection::open(channel, Arc::new(Nothing), main_endpoint(far)).unwrap()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -425,10 +425,10 @@ async fn rust_ends_the_session_on_malformed_frames() {
         let kept = std::sync::Mutex::new(Vec::new());
         malformed(|| {
             let (a, b) = rutis_bridge::memory::pair();
-            let far = Connection::open_with(
+            let far = Connection::open(
                 b,
                 Arc::new(Fixture::default()),
-                Format::Endpoint(Endpoint::rust(id("rust")).expect(id("main"))),
+                Endpoint::rust(id("rust")).expect(id("main")),
             )
             .unwrap();
             kept.lock().unwrap().push(far);

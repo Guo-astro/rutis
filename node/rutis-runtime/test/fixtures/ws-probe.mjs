@@ -5,7 +5,7 @@
 // Credentials, CA, certificate and key come from RUTIS_* variables.
 import * as websocket from '../../src/channel/websocket.mjs'
 
-const [mode, url, protocol = 'rutis.3'] = process.argv.slice(2)
+const [mode, url, protocol = 'rutis.4'] = process.argv.slice(2)
 const options = { protocol, ...websocket.optionsFromEnvironment() }
 const handlers = { message() {}, closed() {} }
 if (mode === 'dial') {

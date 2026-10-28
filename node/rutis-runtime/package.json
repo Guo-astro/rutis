@@ -15,7 +15,7 @@
     "plugin",
     "runtime"
   ],
-  "rutisProtocol": 2,
+  "rutisProtocol": 4,
   "rutisChannels": [
     "unix",
     "fd"

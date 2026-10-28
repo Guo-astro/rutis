@@ -46,7 +46,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::testing::Fixture;
-use rutis_bridge::session::{Connection, Endpoint, Error, Format, Value, MAX_DEPTH};
+use rutis_bridge::session::{Connection, Endpoint, Error, Value, MAX_DEPTH};
 use serde_json::{json, Number, Value as Json};
 
 fn id(s: &str) -> PeerId {
@@ -67,8 +67,8 @@ impl rutis_bridge::session::Dispatch for Nothing {
     }
 }
 
-fn main_endpoint(far: &str) -> Format {
-    Format::Endpoint(Endpoint::rust(id("main")).expect(id(far)))
+fn main_endpoint(far: &str) -> Endpoint {
+    Endpoint::rust(id("main")).expect(id(far))
 }
 
 // ── Far ends (as in runtime_conformance.rs) ──────────────────────────
@@ -81,14 +81,9 @@ fn rust_far_end() -> (Connection, Connection) {
 /// [`rust_far_end`], greeting as `far` (with its capabilities).
 fn rust_far_end_as(far: Endpoint) -> (Connection, Connection) {
     let (a, b) = rutis_bridge::memory::pair();
-    let far = Connection::open_with(
-        b,
-        Arc::new(Fixture::default()),
-        Format::Endpoint(far.expect(id("main"))),
-    )
-    .unwrap();
+    let far = Connection::open(b, Arc::new(Fixture::default()), far.expect(id("main"))).unwrap();
     (
-        Connection::open_with(a, Arc::new(Nothing), main_endpoint("rust")).unwrap(),
+        Connection::open(a, Arc::new(Nothing), main_endpoint("rust")).unwrap(),
         far,
     )
 }
@@ -103,18 +98,18 @@ async fn far_end(
 
 /// `main` as a far end that takes no objects with methods, as every
 /// runtime is: what the far end would send it fails (#675).
-fn main_without_objects(far: &str) -> Format {
+fn main_without_objects(far: &str) -> Endpoint {
     let mut endpoint = Endpoint::rust(id("main")).expect(id(far));
     endpoint
         .capabilities
         .retain(|capability| capability != "objects");
-    Format::Endpoint(endpoint)
+    endpoint
 }
 
 /// [`far_end`], with this side greeting in `format`.
 async fn far_end_with(
     mut command: tokio::process::Command,
-    format: Format,
+    format: Endpoint,
 ) -> (Connection, tokio::process::Child) {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("roundtrip.sock");
@@ -132,7 +127,7 @@ async fn far_end_with(
     }
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
     let channel = rutis_bridge::pipe::framed(reader, stream, closer);
-    let connection = Connection::open_with(channel, Arc::new(Nothing), format).unwrap();
+    let connection = Connection::open(channel, Arc::new(Nothing), format).unwrap();
     connection.ready().await.unwrap();
     (connection, child)
 }

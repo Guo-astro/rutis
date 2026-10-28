@@ -1,7 +1,6 @@
 //! Objects with methods across runtimes, the host's side (#687, the Rust
 //! column of `objects.expected.json`): the host forwards them between
-//! sessions that declared `objects` (also in the compat format, as the
-//! runtimes start), says where an object came from once its runtime is
+//! sessions that declared `objects`, says where an object came from once its runtime is
 //! gone, refuses one to a far end that takes none, and keeps `undefined`
 //! only as a whole argument or result.
 
@@ -9,17 +8,17 @@ use super::*;
 use crate::session::{host_key, HostDispatch};
 use rutis::host::CtxHost;
 
-/// The far ends of these tests: compat-format runtimes taking objects,
-/// marking their synchronous waits.
+/// The far ends of these tests: runtimes taking objects, marking their
+/// synchronous waits.
 const TAKES_OBJECTS: [&str; 3] = ["objects", "sync-wait", "sync-stack"];
 
-/// Host session `a`, named `name` as a runtime's link names it, whose far
-/// end owns object 3 and gives it as the result of the first call; the far
-/// end and the object's import here.
+/// Host session `a`, whose far end greets as `name`, owns object 3 and
+/// gives it as the result of the first call; the far end and the object's
+/// import here.
 async fn owner(name: &str) -> (Connection, Remote, Value) {
     let (a, far) = connected(Arc::new(NoExports));
-    a.name_far_end(name);
-    let mut far = tokio::task::spawn_blocking(move || Remote::start_declaring(far, &TAKES_OBJECTS))
+    let name = name.to_owned();
+    let mut far = tokio::task::spawn_blocking(move || Remote::start_as(far, &name, &TAKES_OBJECTS))
         .await
         .unwrap();
     a.ready().await.unwrap();
@@ -212,7 +211,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
         let (mut far_a, mut far_b) = (far_a, far_b);
         // A calls B's object synchronously; B, while answering, calls A's.
         far_a.send(Frame::Call {
-            id: "node:1".into(),
+            id: "go-a:1".into(),
             path: vec![],
             reference: relay_in_a,
             method: Some("ping".into()),
@@ -230,7 +229,7 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
         assert_eq!(forwarded["reference"], 3, "{forwarded}");
         let ping = forwarded["id"].as_str().unwrap().to_owned();
         far_b.send(Frame::Call {
-            id: "node:1".into(),
+            id: "go-b:1".into(),
             path: vec![ping.clone()],
             reference: relay_in_b,
             method: Some("pong".into()),
@@ -248,14 +247,14 @@ async fn a_synchronous_cycle_through_objects_is_refused() {
             closing.1.close(Error::Transport("test over".into()));
         }
         assert_eq!(refused["op"], "throw", "{refused}");
-        assert_eq!(refused["id"], "node:1");
+        assert_eq!(refused["id"], "go-b:1");
         assert!(
             refused.to_string().contains("SyncWaitCycle"),
             "the call closing the cycle is refused: {refused}"
         );
         far_b.ret(ping, data(json!("pinged")));
         match far_a.read() {
-            Frame::Return { id, value } if id == "node:1" => {
+            Frame::Return { id, value } if id == "go-a:1" => {
                 assert_eq!(data_of(value), json!("pinged"))
             }
             _ => panic!("A's call answered"),
@@ -690,8 +689,8 @@ impl Dispatch for Keep {
 
 /// The origin of a future made while a call of session `a` was handled is
 /// in `a`'s terms: back to `a` it stays as it is; sent to session `b` it is
-/// rebased, `a`'s ids tagged with `a` (in the compat format, left out), so
-/// `b` never takes one of them for one of its own calls.
+/// rebased, `a`'s ids tagged with `a`, so `b` never takes one of them for
+/// one of its own calls.
 /// guarantee: bridge/object-refs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_future_sent_to_another_session_has_its_origin_rebased() {
@@ -724,11 +723,11 @@ async fn a_future_sent_to_another_session_has_its_origin_rebased() {
     .unwrap();
     assert_eq!(home, ids(&["rust:9", "node:1"]), "back home, as it was");
     let future = held.get().unwrap().clone();
-    // To a session of the endpoint format: tagged.
+    // To another session: tagged.
     let (b, far_b) = endpoint_pair();
     let given = |b: Connection, far_b: Far, future: Value| async move {
         let taker = tokio::task::spawn_blocking(move || {
-            let mut far_b = Remote::start_endpoint(far_b, &["objects"]);
+            let mut far_b = Remote::start_declaring(far_b, &["objects"]);
             let Frame::Invoke { id, args, .. } = far_b.read() else {
                 panic!("invoke expected")
             };
@@ -752,29 +751,6 @@ async fn a_future_sent_to_another_session_has_its_origin_rebased() {
         origin,
         vec![format!("{tag}/rust:9"), format!("{tag}/node:1")]
     );
-    // To a runtime of the compat format, which takes only its own ids:
-    // none of `a`'s.
-    let (c, far_c) = connected(Arc::new(NoExports));
-    let taker = tokio::task::spawn_blocking(move || {
-        let mut far_c = Remote::start_declaring(far_c, &TAKES_OBJECTS);
-        let Frame::Invoke { id, args, .. } = far_c.read() else {
-            panic!("invoke expected")
-        };
-        far_c.ret(id, WireValue::Undefined);
-        let WireValue::List(mut args) = args else {
-            panic!("a list expected")
-        };
-        let WireValue::Reference { origin, .. } = args.remove(0) else {
-            panic!("a future expected")
-        };
-        (far_c, origin)
-    });
-    c.ready().await.unwrap();
-    c.invoke_async("t", "take", Value::List(vec![future]))
-        .await
-        .unwrap();
-    let (_far_c, origin) = taker.await.unwrap();
-    assert!(origin.is_empty(), "{origin:?} holds ids of another session");
     drop(far_a);
 }
 

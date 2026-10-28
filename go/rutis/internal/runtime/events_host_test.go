@@ -112,7 +112,7 @@ func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refus
 	// Each side's hello waits for the other to read (net.Pipe).
 	started := make(chan *session, 1)
 	go func() {
-		s, err := startSession(h.channel, nil, defs)
+		s, err := startSession(h.channel, runnerEndpoint("go", "main"), defs)
 		if err != nil {
 			t.Error(err)
 		}
@@ -124,7 +124,8 @@ func startFakeHostWith(t *testing.T, wrap func(peer.Channel) peer.Channel, refus
 		hostChannel = wrap(hostChannel)
 	}
 	h.host, err = peer.New(hostChannel, peer.Options{
-		Host: true,
+		Endpoint:     &peer.Endpoint{Local: "main"},
+		Capabilities: peer.TestCapabilities,
 		Dispatch: func(_ context.Context, target, method string, _ []any) (any, error) {
 			if target == "" && method == "events.dispatch" {
 				h.mu.Lock()

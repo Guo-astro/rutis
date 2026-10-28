@@ -142,7 +142,7 @@ async fn a_runtime_announces_running_and_down() {
     use rutis_bridge::channel::PeerId;
     use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};
     use rutis_bridge::runtime::{runtime_session_key, RuntimePlugin, RuntimeSession};
-    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Format, Reply, Value};
+    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Reply, Value};
     use rutis_test_support::{eventually, within};
     use serde_json::json;
 
@@ -173,9 +173,9 @@ async fn a_runtime_announces_running_and_down() {
     }
     within("rutis/runtime", async {
         let (a, b) = rutis_bridge::memory::pair();
-        let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
-        let far = Connection::open_with(b, Arc::new(Fake), endpoint("fake")).unwrap();
-        let session = Connection::open_with(a, Arc::new(Fake), endpoint("main")).unwrap();
+        let endpoint = |name| Endpoint::rust(PeerId::new(name).unwrap());
+        let far = Connection::open(b, Arc::new(Fake), endpoint("fake")).unwrap();
+        let session = Connection::open(a, Arc::new(Fake), endpoint("main")).unwrap();
         session.ready().await.unwrap();
         let root = Ctx::root().unwrap();
         let heard = Arc::new(Mutex::new(Vec::new()));

@@ -1,7 +1,8 @@
-"""A local channel given `--id` speaks the endpoint format (#811 R3): the
-runtime greets with an endpoint hello naming that id and declaring
-`runtime`, takes the host as its `--peer`, and the session runs until the
-host ends it. A real runtime process (`python -m rutis`) on a Unix socket."""
+"""A local channel speaks the session protocol as its `--id` (#811 R3): the
+runtime greets with a hello naming that id and declaring `runtime`, takes
+the host as its `--peer`, and the session runs until the host ends it; a
+local channel without `--id` is refused. A real runtime process
+(`python -m rutis`) on a Unix socket."""
 
 import json
 import os
@@ -19,7 +20,7 @@ TIMEOUT = 30
 
 class LocalEndpoint(unittest.TestCase):
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix sockets")
-    def test_a_local_channel_given_id_greets_in_the_endpoint_format_as_that_id(self):
+    def test_a_local_channel_greets_as_its_id(self):
         package = os.path.dirname(os.path.dirname(os.path.abspath(rutis.__file__)))
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "host.sock")
@@ -65,6 +66,20 @@ class LocalEndpoint(unittest.TestCase):
                     child.wait()
                 child.stderr.close()
                 server.close()
+
+    def test_a_local_channel_without_id_is_refused(self):
+        package = os.path.dirname(os.path.dirname(os.path.abspath(rutis.__file__)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "host.sock")
+            done = subprocess.run(
+                [sys.executable, "-m", "rutis", path, directory],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT,
+                env={**os.environ, "PYTHONPATH": package},
+            )
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stderr, f"a local channel needs --id <endpoint>: {path}; a host older than rutis 0.19 started this runtime: upgrade the host\n")
 
 
 if __name__ == "__main__":
