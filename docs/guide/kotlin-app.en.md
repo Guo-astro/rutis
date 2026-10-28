@@ -19,8 +19,8 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.17.2")
-    ksp("io.github.arcships:rutis-ksp:0.17.2")
+    implementation("io.github.arcships:rutis:0.18.0")
+    ksp("io.github.arcships:rutis-ksp:0.18.0")
 }
 ```
 

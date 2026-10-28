@@ -320,7 +320,7 @@ weather = "weather"
 
 ```bash
 uv venv                                                         # 建 .venv
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-weather   # 运行时（宿主的版本）和插件
+uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # 运行时（宿主的版本）和插件
 ```
 
 ```json
