@@ -278,6 +278,17 @@ The row with the same ID as the plugin supplies its configuration; the other row
 
 Only the plugin module itself is reimported. If another imported module changes, restart `rutis-host dev`.
 
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ uv run rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
+
 ### Debugging
 
 `--debug` gives the Python runtime this terminal: a `breakpoint()` in the plugin stops in pdb, where `w` shows the call stack, `p <variable>` a variable, and `c` continues.
