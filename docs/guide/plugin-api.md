@@ -238,6 +238,8 @@ incompatible session: the far end (<name> <version>) does not declare events-v2 
 
 所以 `apply` 里拿到的服务在插件运行期间一直有效，不需要处理"服务中途消失"。
 
+用 `rutis-host` 或 `LoaderPlugin` 的宿主提供服务 `loader`（`create`、`reload`、`remove`、`status`，见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)）。它的方法在 `apply` 返回后调用（服务方法、事件里）：在一行自己的 `apply` 里调用会等到这个 `apply` 结束，所以会卡住。在 `apply` 里挂子插件用 `ctx.plugin`（Rust；Node 里的 Cordis 插件）。
+
 一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。只有这个插件失败：其他插件（同一运行时里的也一样）继续用原来的提供者。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
 
 0.12 的运行时被比 0.12 旧的宿主挂载时，宿主不接收没有声明的服务，它们只在本进程里可见；插件提供这样的服务时，运行时按名字只在 stderr 提示一次：`rutis: service <名字> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`。在 `provides` 里声明它，或者升级 rutis-host。

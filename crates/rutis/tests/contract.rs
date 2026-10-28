@@ -529,30 +529,6 @@ async fn late_provider_activates() {
 }
 
 #[tokio::test]
-async fn check_evicts() {
-    let ctx = Ctx::root().unwrap();
-    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let flag2 = flag.clone();
-    ctx.provide_checked(
-        TypeKey::of::<LlmSvc>(),
-        Arc::new(LlmSvc { n: 1 }),
-        move || flag2.load(Ordering::SeqCst),
-    )
-    .unwrap();
-    let view = ctx.plugin(simple_dep(
-        "checked",
-        vec![TypeKey::of::<LlmSvc>()],
-        move |_ctx: &Ctx| Box::pin(async { Ok(Effect::Done) }),
-    ));
-    (&view).await.expect("loads while check passes");
-    assert_eq!(view.state().state, FiberState::Active);
-    // check() 谓词翻转为 false → 驱逐回 Pending(fiber.ts:689-701 语义)
-    flag.store(false, Ordering::SeqCst);
-    ctx.refresh();
-    reach(&view, FiberState::Pending).await;
-}
-
-#[tokio::test]
 async fn pending_not_failed() {
     let ctx = Ctx::root().unwrap();
     let view = ctx.plugin(simple_dep(
@@ -1207,18 +1183,13 @@ async fn mismatched_service_key_never_satisfies_injection() {
     soon(async { (&consumer).await }).await.unwrap();
     assert_eq!(consumer.state().state, FiberState::Pending);
 
-    for err in [
-        ctx.provide_key(key.clone(), Arc::new(Dep2)).unwrap_err(),
-        ctx.provide_checked(key.clone(), Arc::new(Dep2), || true)
-            .unwrap_err(),
-    ] {
-        let ErrorKind::Validation { issues } = &*err else {
-            panic!("expected a type validation error");
-        };
-        assert!(issues[0].contains("session-1"));
-        assert!(issues[0].contains("Dep1"));
-        assert!(issues[0].contains("Dep2"));
-    }
+    let err = ctx.provide_key(key.clone(), Arc::new(Dep2)).unwrap_err();
+    let ErrorKind::Validation { issues } = &*err else {
+        panic!("expected a type validation error");
+    };
+    assert!(issues[0].contains("session-1"));
+    assert!(issues[0].contains("Dep1"));
+    assert!(issues[0].contains("Dep2"));
     assert_eq!(consumer.state().state, FiberState::Pending);
     assert!(ctx.get_key::<Dep1>(key.clone()).is_none());
 
@@ -2026,31 +1997,6 @@ async fn validate_panic_marks_failed() {
     view.dispose().await.unwrap(); // 句柄仍可用
 }
 
-// #6:check() panic 视为不就绪,refresh 不挂起
-#[tokio::test]
-async fn check_panic_treated_unsatisfied() {
-    let ctx = Ctx::root().unwrap();
-    ctx.provide_checked(TypeKey::of::<LlmSvc>(), Arc::new(LlmSvc { n: 1 }), || {
-        panic!("check boom")
-    })
-    .unwrap();
-    let view = ctx.plugin(simple_dep(
-        "gated",
-        vec![TypeKey::of::<LlmSvc>()],
-        move |_ctx: &Ctx| Box::pin(async { Ok(Effect::Done) }),
-    ));
-    soon(async {
-        // 消费者因 check panic 保持 Pending;refresh 往返不挂起
-        (&view).await.expect("Pending settle is Ok");
-    })
-    .await;
-    ctx.refresh();
-    soon(async { (&view).await })
-        .await
-        .expect("refresh completes");
-    assert_eq!(view.state().state, FiberState::Pending);
-}
-
 // #7:清理闭包调用 panic 与 future poll panic 都被兜住
 #[tokio::test]
 async fn cleanup_panics_contained() {
@@ -2181,48 +2127,6 @@ async fn provider_reload_reactivates() {
         })
     }));
     (&p2).await.expect("P2");
-    soon(async {
-        let mut rx = consumer.watch();
-        loop {
-            if rx.borrow().state == FiberState::Active {
-                break;
-            }
-            rx.changed().await.unwrap();
-        }
-    })
-    .await;
-}
-
-// check() 谓词恢复后消费者重新激活
-#[tokio::test]
-async fn check_recovery_reactivates() {
-    let ctx = Ctx::root().unwrap();
-    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let f1 = flag.clone();
-    ctx.provide_checked(TypeKey::of::<Dep1>(), Arc::new(Dep1), move || {
-        f1.load(Ordering::SeqCst)
-    })
-    .unwrap();
-    let consumer = ctx.plugin(simple_dep(
-        "C",
-        vec![TypeKey::of::<Dep1>()],
-        move |_ctx: &Ctx| Box::pin(async { Ok(Effect::Done) }),
-    ));
-    (&consumer).await.expect("active");
-    flag.store(false, Ordering::SeqCst);
-    ctx.refresh();
-    soon(async {
-        let mut rx = consumer.watch();
-        loop {
-            if rx.borrow().state == FiberState::Pending {
-                break;
-            }
-            rx.changed().await.unwrap();
-        }
-    })
-    .await;
-    flag.store(true, Ordering::SeqCst);
-    ctx.refresh();
     soon(async {
         let mut rx = consumer.watch();
         loop {

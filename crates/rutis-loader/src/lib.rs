@@ -73,9 +73,9 @@ pub mod report {
     pub use crate::error::{Failure, Unavailable};
     pub use crate::framework::RowEventState;
     pub use crate::loader::{
-        CheckReport, Clash, ConfigStatus, CycleLink, EntryInfo, EntryStatus, InstanceInfo, Isolate,
-        LoaderChanged, PendingEditDropped, Provider, ReconcileReport, Requirement, RowCheck,
-        RowInfo, RowStatus, Supply, Unknown, Wait, WaitReason,
+        cannot_reload, CheckReport, Clash, ConfigStatus, CycleLink, EntryInfo, EntryStatus,
+        InstanceInfo, Isolate, LoaderChanged, PendingEditDropped, Provider, ReconcileReport,
+        Requirement, RowCheck, RowInfo, RowStatus, Supply, Unknown, Wait, WaitReason,
     };
 }
 

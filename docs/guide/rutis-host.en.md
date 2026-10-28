@@ -6,25 +6,47 @@
 
 A host for two plugins someone published: a TypeScript plugin, `@your-name/weather` on npm, which uses an `llm` service, and a Python plugin, `your-name-llm` on PyPI, whose entry point `llm` provides it. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
 
-1. Install `rutis-host` and the plugins, in a directory of the host's own:
+1. Install `rutis-host` in a directory of the host's own, then install the two plugins with it:
 
 ```bash
 mkdir app && cd app
-npm init -y                                                # the Node project TypeScript plugins go in
-npm install @arcships/rutis-host @your-name/weather        # rutis-host brings the Node runtime
-uv venv                                                    # .venv: the environment Python plugins run in
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-llm   # the Python runtime at rutis-host's version, and the plugin
+npm init -y && npm install -D @arcships/rutis-host   # rutis-host brings the Node runtime
+npx rutis-host add npm:@your-name/weather            # a plugin from npm: into the Node project here
+npx rutis-host add pypi:your-name-llm                # a plugin from PyPI: .venv created first if missing, with rutis at the same version
 ```
 
-2. Write `rutis.json`: the runtimes to start, and a row per plugin (its `name` is the npm package, or `py:` and the entry point; `config` is the plugin's configuration):
+`add` only needs to know where a plugin comes from (`npm:`, `pypi:`, a Go module path, a local path); it settles the language, the package manager, the environment and the row's name. For each plugin it prints its introduction (version, `inject`, `provides`, config schema) and what `check` says of its row:
+
+```text
+installed @your-name/weather 1.2.0 (node) into /home/me/app
+weather (@your-name/weather): cannot run: nothing provides llm
+  version: "1.2.0"
+  inject: ["llm"]
+  provides: {}
+  config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
+  llm: add a row that provides it, or import it from a peer (import: ["llm"])
+rutis.json: added row weather, runtimes.node
+installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
+llm (py:llm): ok
+  version: "0.3.0"
+  inject: []
+  provides: {"llm":{"complete":"async"}}
+rutis.json: added row llm, runtimes.py
+```
+
+2. `add` wrote `rutis.json`: the runtimes to start, what was installed (`installed`), and a row per plugin (`name` is the row name in its usual form, which `add` writes: the package name for Node, `py:<entry point>` for Python; `config`, the plugin's configuration, added as needed):
 
 ```json
 {
   "format": 1,
   "runtimes": { "node": {}, "py": {} },
+  "installed": {
+    "@your-name/weather": { "from": "npm:@your-name/weather" },
+    "py:llm": { "from": "pypi:your-name-llm" }
+  },
   "rows": [
-    { "id": "llm", "name": "py:llm" },
-    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
+    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } },
+    { "id": "llm", "name": "py:llm" }
   ]
 }
 ```
@@ -53,7 +75,7 @@ On Unix, SIGUSR1 does the same without `--watch-config`; see [Changing the confi
 
 5. Stop it with Ctrl-C: each plugin's cleanup runs, the runtimes exit, and `rutis-host` exits with 0.
 
-A plugin not published yet installs the same way from a file: `npm install ../weather/your-name-weather-0.1.0.tgz` (what `npm pack` makes in the plugin's project), `uv pip install --python .venv/bin/python ../llm` (the plugin's project directory). The other languages: [How a host installs plugins](#how-a-host-installs-plugins).
+A plugin not published yet installs the same way from a file: `npx rutis-host add ../weather/your-name-weather-0.1.0.tgz` (what `npm pack` makes in the plugin's project), `npx rutis-host add ../llm` (the plugin's project directory). The other languages: [How a host installs plugins](#how-a-host-installs-plugins).
 
 ## Installation
 
@@ -68,7 +90,71 @@ The npm distribution includes the Node runtime (`@arcships/rutis-runtime`), and 
 
 ## How a host installs plugins
 
-Each language's plugins go where that language's runtime finds them, and a row names the plugin:
+With `rutis-host add <plugin> [rutis.json]`: say where the plugin comes from, not its language.
+
+| Written | Source | Language |
+| --- | --- | --- |
+| `npm:@ana/wordcount`, `npm:@ana/wordcount@1.2.0` | npm | Bun when the package depends on `@arcships/rutis-bun` (`dependencies` or `devDependencies`), else Node |
+| `pypi:bo-llm`, `pypi:bo-llm@0.3.0` | PyPI | Python |
+| `github.com/bo/netkit/cmd/netkit`, `…@v0.4.1` | Go module | Go |
+| `./plugins/notes` | local directory | by its project file: `package.json` (Bun or Node as above), `pyproject.toml`, `go.mod` |
+| `./wordcount-1.2.0.tgz`, `./bo_llm-0.3.0-py3-none-any.whl` | local package | `.tgz` by the `package.json` inside; `.whl` is Python |
+| `./netkit` | local binary | Go when built with the Go SDK, Swift when built with the Swift SDK |
+
+- The version follows the last `@` (one not at the start): an exact version or a tag; without one, the latest. Local paths start with `./`, `../` or `/`, relative to the directory of `rutis.json`.
+- A name without a source is refused: the same name may be on npm and on PyPI, and a wrong guess installs someone else's package.
+
+  ```text
+  rutis-host: wordcount: say where it comes from: npm:wordcount, pypi:wordcount, a Go module path or a local path
+  ```
+
+What `add` does:
+
+1. It installs into the place the language's runtime uses now: Node and Bun into `runtimes.node.project` and `runtimes.bun.project` (by default the directory of `rutis.json`); Python into the interpreter the host would use (`runtimes.py.python`, else `$VIRTUAL_ENV`, else `<runtimes.py.project>/.venv`); Go and Swift into `runtimes.go.dir` and `runtimes.swift.dir` (`plugins/go` when there is no `runtimes.go`).
+2. What the runtime lacks it sets up: `npm init -y` without a `package.json`; `@arcships/rutis-runtime`, when missing, installed with the plugin (at `rutis-host`'s version); for Bun, `bun add -d` of a missing `@arcships/rutis-bun`; for Python, `uv venv` without an environment (`python3 -m venv` without uv) and the `rutis` package of the same version when missing; for Go and Swift, the directory. Node, Bun, Python and Go themselves are not installed.
+3. It runs the package manager: `npm install`, `bun add`, `uv pip install --python <interpreter>` (`<interpreter> -m pip install` without uv), `GOBIN=<dir> go install <module>@<version>` (`go install ./...` inside a local Go project; a local binary is copied into the directory). Its output shows as it is.
+4. It finds the plugins in the package and describes them: a Node or Bun plugin is the package itself; Python's are the distribution's entry points in the group `rutis.plugins` (a package may have several); Go's and Swift's are the plugins of the binary's manifest.
+5. It writes `rutis.json`: a record per plugin under `installed` (keyed by its row name), a row `{ "id": …, "name": <row name> }` per plugin at the end of `rows`, the row name in its usual form: the package name for Node, `bun:<package>` for Bun, `py:<entry point>` for Python, `go:<plugin>` for Go, `swift:<plugin>` for Swift (the id is the plugin's name, `-2`, `-3` added when it is taken; no row when one of that name is there), and the language under `runtimes` when it is not there (`"node": {}`, `"py": {}`, `"go": { "dir": "plugins/go" }`). The file keeps its keys' order, and is written to a temporary file then renamed.
+6. It checks the new rows as `check` does, and prints what it finds: a service it needs that nothing provides, a required config value missing. `add` still exits with 0: the row is written, and what is missing can be added next.
+
+The file written: the second argument; without one, `rutis.json` here; without `rutis.json`, `rutis.dev.json` (a plugin project); without either, a new `rutis.json`.
+
+`remove` and `upgrade`:
+
+```text
+$ rutis-host remove llm
+uninstalled bo-llm from /app/.venv
+rutis.json: removed row llm
+
+$ rutis-host upgrade
+@ana/wordcount: 1.2.0 → 1.3.0
+bo-llm: 0.3.0 is the latest
+a running host keeps the old versions until it restarts
+```
+
+- `remove <row name, plugin or reference>` uninstalls the package the plugin is in (`npm uninstall`, `bun remove`, `uv pip uninstall`, deleting the binaries whose manifest has it), removes all of that package's records and the rows with those row names (in groups too), and prints each row removed; a package with several plugins goes as a whole, and it says so. `runtimes` stays.
+- `upgrade [<row name, plugin or reference>[@version]]`, without a name, upgrades every record: the newest version from the record's source (or the version given); rows stay. A plugin the new version adds is recorded, and how to add its row is printed; for one it no longer has, the record goes and each row using it prints `<row id>: the new version has no plugin <plugin>`.
+- A running host keeps running the old code until it restarts (reloading a row imports only its own entry module again; an upgrade replaces the whole package). Rows `add` adds join a running host as [Changing the configuration while it runs](#changing-the-configuration-while-it-runs) says, under `run --watch-config` and `dev`; when such a row needs a runtime that is not running yet, the `runtimes.<language>` written is refused, saying to restart.
+
+On errors (on stderr, exit status 1, `rutis.json` unchanged):
+
+| Case | Output |
+| --- | --- |
+| No package manager | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`; for Python with neither uv nor `python3`: `rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| The package manager fails | its own output, then `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
+| Not a plugin | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
+| A local directory it does not recognize | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
+| The row name is another package's | `rutis-host: py:llm is already installed from pypi:other-llm: remove it first` (when known only once installed, followed by the command that uninstalls it) |
+| No Go directory | `rutis-host: runtimes.go has no dir to install into: add one, or remove runtimes.go to use plugins/go` |
+| `remove` of a name not recorded | `rutis-host: llm was not installed by add: uninstall it with the package manager that installed it, and remove its row` |
+
+What the package manager installed before a failure stays, as when npm or uv are run directly; the error gives the command that uninstalls it.
+
+**Install only plugins you trust.** `add` and `upgrade` run the package manager, which may run the package's install scripts, and `add` imports the plugin's code to check it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review.
+
+### Without add
+
+Installing by hand works as before, with the same row names: each language's plugins go where that language's runtime finds them, and a row names the plugin:
 
 | Plugin | Install it with | Into | Row `name` |
 | --- | --- | --- | --- |
@@ -93,6 +179,9 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | `rutis-host status [rutis.json \| directory]` | Asks the `rutis-host` running that configuration (or that `dev` project) what it does now: each row's state and why, each service's provider, the runtimes, the calls not returned yet (see [Seeing the current state](#seeing-the-current-state)); not on Windows. |
 | `rutis-host call [--config <rutis.json \| directory>] <service>.<method> [arguments…]` | Calls a service in the `rutis-host` running that configuration (or that `dev` project), as the host, and prints the result as JSON; `run` and `dev` both accept it (see [Calling a service](#calling-a-service)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
+| `rutis-host add <plugin> [rutis.json]` | Installs a plugin by its source (`npm:`, `pypi:`, a Go module path, a local path) with what its runtime lacks, records it under `installed`, adds its row and prints its introduction (see [How a host installs plugins](#how-a-host-installs-plugins)). |
+| `rutis-host remove <plugin> [rutis.json]` | Uninstalls the package of a plugin `add` installed, and removes its records and rows. |
+| `rutis-host upgrade [<plugin>[@<version>]] [rutis.json]` | Upgrades plugins `add` installed to the newest version (or the one given); a running host uses it once it restarts. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
 | `rutis-host types [directory] [-o file] [--python file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; `--python` writes their Python types too; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations). |
 
@@ -317,7 +406,7 @@ Besides the lines of [`run`](#what-run-prints), `dev` prints:
 | `<row id>: restarted (<other row> reloaded)` | The row uses a service of the other row, and restarted with it. The cause may also be `<row> updated`, `added` or `removed` (by `rutis.dev.json`), `<Go or Swift runtime> restarted`, or `<row> restarted`: a row it uses that restarted with the change (`caller: restarted (greeter restarted)` when `llm` reloaded and `greeter` uses it). The cause named is always a row the row uses; when that is not known (a dependency inside a runtime, between Cordis rows), no cause is named: `<row id>: restarted`. `started` or `stopped` instead of `restarted` when the row was not running before, or is not running now. |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | `rutis.dev.json` was read again; each row that changed follows: `<row id>: updated (its row in rutis.dev.json changed)`, `<row id>: added`, `<row id>: removed`. Refused: `rutis-host: reload rejected: <reason>; nothing changed`. |
 | `runtime <name>: starting again (<files> changed)` | A runtime that was down starts again for the change; `runtime <name>: running` follows when it runs, or `runtime <name>: down (<reason>)` again. When its `restart` starts it again: `runtime <name>: down; its restart starts it again, its rows with the code as it is then (…)`; when it is starting: `runtime <name>: starting; its rows start with the code as it is then (…)`. |
-| `rutis-host dev: services: forecast (weather), llm (llm)` | Once started (every row running or failed), and after each reload, rebuild or reading of `rutis.dev.json`, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host`; none as `rutis-host dev: services: none`. Printed every time, not compared with the last; besides, printed again whenever the services changed (a runtime can provide one after its row started). It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | Once started (every row running or failed), and after each reload, rebuild or reading of `rutis.dev.json`, the services now and the rows providing them (as `services` in `rutis-host status`), by name; one the host provides as `host` (`loader`, which rutis provides itself, say); when no row provides one, `rutis-host dev: services: none`, whatever the host provides. Printed every time, not compared with the last; besides, printed again whenever the services changed (a runtime can provide one after its row started). It starts with `rutis-host dev: `, not in the form `<row>: <state>`, so scripts reading the state lines are not affected; `run` does not print it: use `rutis-host status` |
 | `<project>: building`, `<project>: built in 1.2s`, `<runtime>: rebuilt and restarted` | A Go or Swift project was rebuilt and its runtime restarted on the build. When the build fails: `<project>: the build failed; the last build keeps running`, followed by the compiler's errors; when the new build does not run: `<runtime>: cannot restart: <reason>; the previous build is kept`. |
 
 ## When a runtime ends
@@ -356,6 +445,7 @@ rows:
   slow: running
   caller: starting
 services:
+  loader: host
   slow: slow
 runtimes:
   node: running (pid 4242)
@@ -403,7 +493,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 | --- | --- |
 | An argument that is not JSON | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'` |
 | No method named | `rutis-host: name a method, as forecast.<method>` |
-| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm)` |
+| No such service | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)` |
 | The row providing it is not running | `rutis-host: forecast is not available (row weather waits for its runtime go-weather)` |
 | No such method | `rutis-host: forecast has no method tomorow (methods: today, week)` |
 | An argument of the wrong type | `rutis-host: forecast.today: argument 1 should be a string, got 3` |
@@ -459,8 +549,12 @@ In the Node, Bun and Python runtimes, when a service method holds the runtime fo
   "listen": [
     { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" }
   ],
+  "installed": {
+    "py:summarize": { "from": "pypi:bo-summarize" }
+  },
   "rows": [
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" } },
+    { "id": "summarize", "name": "py:summarize" },
     { "id": "llm", "name": "py:llm_gateway" },
     { "id": "dns", "name": "go:dns" },
     { "id": "calendar", "name": "swift:calendar" },
@@ -583,6 +677,22 @@ A Python runtime connects in with `python -m rutis dial:wss://… --id <id> --pe
 ### `listen`
 
 WebSocket listeners used by other nodes to connect. `cert` and `key` are a TLS certificate and private key in PEM format; they can also be supplied through `RUTIS_CERT` and `RUTIS_KEY` (the file's own come first). They go together: with only one of them the host does not start, rather than listening without TLS. A listener without TLS can bind only to a loopback address.
+
+### `installed`
+
+The plugins `rutis-host add` installed, keyed by the plugin's row name (`@ana/wordcount`, `bun:<package>`, `py:<entry point>`, `go:<plugin>`, `swift:<plugin>`), each with one field:
+
+| Field | Meaning |
+| --- | --- |
+| `from` | The plugin reference without a version (`npm:@ana/wordcount`, `pypi:bo-llm`, a Go module path, a local path): how `remove` and `upgrade` find the package. The plugins of one package have the same. |
+
+The language comes from the key's prefix (none for Node). Records do not change how rows resolve: a row name resolves the same with a record or without. A key in none of these forms is refused:
+
+```text
+rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin
+```
+
+No version is recorded: the package manager's own files keep it (`package.json` and the lock file, the Python environment); `check` shows it. A `rutis-host` older than 0.19 reads a file with `installed` as having an unknown field.
 
 ### `rows`
 

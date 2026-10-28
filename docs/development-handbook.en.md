@@ -133,8 +133,6 @@ Write the services a plugin needs to run in `type Deps`, as a tuple when there a
 
 `get` / `get_at` finds currently visible services and returns `Option<Arc<T>>`; it does not wait for the service and creates no reload relationship, and diagnostics record it as an undeclared access. Automatic reload relationships are established by the dependency declaration (`Deps`, or `DynPlugin::injects()`), so declare every required service there. An `Option<Arc<T>>` in `Deps` is a snapshot taken at load: it does not wait, and its arrival or departure does not reload the plugin.
 
-Services with additional health conditions (a synchronous predicate; when the condition changes, dependencies are rechecked and consumer states adjusted) are provided through `provide_checked` and `refresh` in `rutis::internal`, which only rutis's own crates use, with no stability promise.
-
 ### Choosing a Scope
 
 A service provided by its type is shared within root. One active service binding may exist for a given key and scope; duplicate registration returns `ServiceExists`.
@@ -419,7 +417,7 @@ When a plugin unloads, the framework waits for its listeners' running calls to f
 | Plugin enters Failed | Specific reason in `view.state().error` |
 | Shutdown waits for a long time | Did initialization finish? Does task respond to cancellation? Are cleanup and listener callbacks complete? |
 
-`diagnostics()` reads current state. For services using health predicates (see [Declaring Dependencies](#declaring-dependencies)), call `refresh()` after conditions change and inspect the new check result.
+`diagnostics()` reads current state.
 
 ### Handling Errors
 

@@ -1,7 +1,7 @@
 //! Typed dependencies (#50): one description gives the gate and the reads.
 
 use std::future::IntoFuture;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,7 +10,6 @@ use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, ErrorSink, FiberState, FiberStatusChanged,
     FiberView, Key, TypeKey,
 };
-use rutis::internal::CtxInternal;
 use rutis::{Ctx, Deps, Error, Plugin};
 use rutis_test_support::within;
 use tokio::sync::Notify;
@@ -327,25 +326,6 @@ async fn isolated_scopes_pass_their_own_service() {
     let shared = ctx.plugin(One(seen.clone()));
     soon(&shared).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), [1, 2]);
-}
-
-#[tokio::test]
-async fn a_failing_check_keeps_the_plugin_pending() {
-    let ctx = Ctx::root().unwrap();
-    let healthy = Arc::new(AtomicBool::new(false));
-    let check = healthy.clone();
-    ctx.provide_checked(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
-        check.load(Ordering::SeqCst)
-    })
-    .unwrap();
-    let seen = Seen::default();
-    let view = ctx.plugin(One(seen.clone()));
-    soon(&view).await.unwrap();
-    assert_eq!(view.state().state, FiberState::Pending);
-    healthy.store(true, Ordering::SeqCst);
-    ctx.refresh();
-    reach(&view, FiberState::Active).await;
-    assert_eq!(*seen.lock().unwrap(), [1]);
 }
 
 // ── factories ───────────────────────────────────────────────────
@@ -816,121 +796,6 @@ async fn a_dependency_withdrawn_before_apply_starts_returns_the_plugin_to_pendin
     ctx.provide(Llm(2)).unwrap();
     reach(&view, FiberState::Active).await;
     assert_eq!(*seen.lock().unwrap(), [2]);
-}
-
-/// Requires `Llm` and records nothing; another consumer, whose refresh
-/// evaluates the provider's check.
-struct Bystander(Vec<TypeKey>);
-
-impl DynPlugin for Bystander {
-    fn name(&self) -> &str {
-        "bystander"
-    }
-
-    fn injects(&self) -> Vec<TypeKey> {
-        self.0.clone()
-    }
-
-    fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async { Ok(Effect::Done) })
-    }
-}
-
-/// The first generation waits for `go` before reading its `Llm` the typed
-/// way, then for `hold` before reporting the read.
-struct HeldRead {
-    generations: AtomicUsize,
-    entered: Arc<Notify>,
-    go: Arc<Notify>,
-    read: Arc<Notify>,
-    hold: Arc<Notify>,
-    seen: Seen,
-    injects: Vec<TypeKey>,
-}
-
-impl DynPlugin for HeldRead {
-    fn name(&self) -> &str {
-        "held-read"
-    }
-
-    fn injects(&self) -> Vec<TypeKey> {
-        self.injects.clone()
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async move {
-            let first = self.generations.fetch_add(1, Ordering::SeqCst) == 0;
-            if first {
-                self.entered.notify_one();
-                self.go.notified().await;
-            }
-            let read = <Arc<Llm> as Deps>::resolve(ctx);
-            if first {
-                assert!(matches!(
-                    &read,
-                    Err(error) if matches!(&**error, ErrorKind::InjectUnsatisfied(_))
-                ));
-                self.read.notify_one();
-                self.hold.notified().await;
-            }
-            self.seen.lock().unwrap().push(read?.0);
-            Ok(Effect::Done)
-        })
-    }
-}
-
-#[tokio::test]
-async fn a_check_rejected_after_the_gate_returns_the_plugin_to_pending_even_if_it_recovers() {
-    let ctx = Ctx::root().unwrap();
-    let states = Arc::new(Mutex::new(Vec::new()));
-    let healthy = Arc::new(AtomicBool::new(true));
-    let check = healthy.clone();
-    ctx.provide_checked(TypeKey::of::<Llm>(), Arc::new(Llm(1)), move || {
-        check.load(Ordering::SeqCst)
-    })
-    .unwrap();
-    let bystander = ctx.plugin(Bystander(vec![TypeKey::of::<Llm>()]));
-    soon(&bystander).await.unwrap();
-    let seen = Seen::default();
-    let plugin = HeldRead {
-        generations: AtomicUsize::new(0),
-        entered: Arc::new(Notify::new()),
-        go: Arc::new(Notify::new()),
-        read: Arc::new(Notify::new()),
-        hold: Arc::new(Notify::new()),
-        seen: seen.clone(),
-        injects: vec![TypeKey::of::<Llm>()],
-    };
-    let (entered, go, read, hold) = (
-        plugin.entered.clone(),
-        plugin.go.clone(),
-        plugin.read.clone(),
-        plugin.hold.clone(),
-    );
-    let view = ctx.plugin(plugin);
-    soon(entered.notified()).await;
-    ctx.on::<FiberStatusChanged>(record_states(states.clone()))
-        .unwrap();
-
-    // Same binding, but its check now rejects; the bystander's refresh
-    // records that before the held plugin reads.
-    healthy.store(false, Ordering::SeqCst);
-    ctx.refresh();
-    reach(&bystander, FiberState::Pending).await;
-    go.notify_one();
-    soon(read.notified()).await;
-
-    // The check passes again before the failed read is handled.
-    healthy.store(true, Ordering::SeqCst);
-    ctx.refresh();
-    reach(&bystander, FiberState::Active).await;
-    hold.notify_one();
-
-    reach(&view, FiberState::Active).await;
-    assert!(view.state().error.is_none());
-    assert_eq!(*seen.lock().unwrap(), [1]);
-    let states = states.lock().unwrap().clone();
-    assert!(!states.contains(&FiberState::Failed), "{states:?}");
 }
 
 /// Claims a lost dependency without a failed read.

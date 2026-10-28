@@ -21,17 +21,27 @@ pub use crate::languages::GoDev;
 /// The configuration that runs the plugin project in `dir`, and the id of
 /// its row.
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, None)
+    dev_config_with(dir, None, None)
+}
+
+/// [`dev_config`] with `rutis.dev.json` as `text` says, not as on disk:
+/// what `add` checks before it writes the file.
+pub(crate) fn dev_config_of(dir: &Path, text: &str) -> Result<(HostConfig, String), String> {
+    dev_config_with(dir, None, Some(text))
 }
 
 /// [`dev_config`] for a compiled project whose first build `binary` is
 /// already made: its rows are read from that binary, not from one built
 /// here.
 pub fn dev_config_built(dir: &Path, binary: &Path) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, Some(binary))
+    dev_config_with(dir, Some(binary), None)
 }
 
-fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, String), String> {
+fn dev_config_with(
+    dir: &Path,
+    built: Option<&Path>,
+    dev_text: Option<&str>,
+) -> Result<(HostConfig, String), String> {
     // Absolute, not canonical: on Windows a canonical path is a `\\?\` one,
     // which the runtimes are then given as their project.
     let dir = std::path::absolute(dir)
@@ -58,14 +68,19 @@ fn dev_config_with(dir: &Path, built: Option<&Path>) -> Result<(HostConfig, Stri
         id: "dev".into(),
         runtimes,
         listen: Vec::new(),
+        installed: Default::default(),
         rows,
         warnings: Vec::new(),
     };
     let extra = dir.join("rutis.dev.json");
-    if extra.exists() {
-        // Its rows also run in the project's own runtime, which this sets
-        // up: not a runtime the dev file leaves undeclared.
-        let extra = HostConfig::read_beside(&extra, &config.runtimes)?;
+    // Its rows also run in the project's own runtime, which this sets up:
+    // not a runtime the dev file leaves undeclared.
+    let extra = match dev_text {
+        Some(text) => Some(HostConfig::parse_beside(text, &extra, &config.runtimes)?),
+        None if extra.exists() => Some(HostConfig::read_beside(&extra, &config.runtimes)?),
+        None => None,
+    };
+    if let Some(extra) = extra {
         // The dev file may configure the plugin's own rows.
         let (own, others): (Vec<Value>, Vec<Value>) = extra
             .rows

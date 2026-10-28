@@ -104,7 +104,7 @@ pub fn apply_edit(
                 ));
             }
             if ctx.row(id).is_some() {
-                return Err(LoaderError::InvalidEntry(format!("duplicate id {id:?}")));
+                return Err(LoaderError::RowExists(id.to_owned()));
             }
             ctx.place(&mut patches, entry.clone(), parent.as_deref(), *position)?;
         }

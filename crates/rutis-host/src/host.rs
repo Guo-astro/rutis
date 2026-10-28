@@ -1480,6 +1480,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
+            installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": crate::config::file_url(&entry) })],
             warnings: Vec::new(),
         };
@@ -1520,6 +1521,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
+            installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": "py:greeter" })],
             warnings: Vec::new(),
         };
@@ -1559,6 +1561,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
+            installed: Default::default(),
             rows: vec![json!({ "id": "plain", "name": "py:plain" })],
             warnings: Vec::new(),
         };
@@ -1609,6 +1612,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
+            installed: Default::default(),
             rows: vec![json!({ "id": "greeter", "name": "bun:./greeter.ts" })],
             warnings: Vec::new(),
         };
@@ -1644,6 +1648,7 @@ mod tests {
                 ..Runtimes::default()
             },
             listen: Vec::new(),
+            installed: Default::default(),
             rows: Vec::new(),
             warnings: Vec::new(),
         };
