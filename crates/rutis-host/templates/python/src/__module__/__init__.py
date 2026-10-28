@@ -12,7 +12,8 @@ class Greeter:
 
 
 def apply(ctx, config):
-    ctx.provide("greeter", Greeter(config.get("greeting", "Hello")))
+    # The schema's default is filled in when the row leaves it out.
+    ctx.provide("greeter", Greeter(config["greeting"]))
     # Return a cleanup, or use ctx.effect(cleanup), when the plugin holds
     # anything to release.
 
@@ -25,6 +26,7 @@ plugin = define_plugin(
     # host's CI) knows it before the plugin runs. The class's public methods
     # are the service's: `async def` ones async, the others sync.
     provides={"greeter": Greeter},
-    # The JSON Schema of its config.
+    # The JSON Schema of its config: rutis fills its defaults and validates
+    # the row's config with it before apply.
     config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
 )

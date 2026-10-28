@@ -32,7 +32,7 @@ import arcships.rutis.generated.Tables
 object Rutis {
     /** This SDK's version: the runtime's implementation version (the release train checks it). */
     @Deprecated("Moved in 0.19: use arcships.rutis.advanced.VERSION.", ReplaceWith("VERSION", "arcships.rutis.advanced.VERSION"))
-    const val VERSION: String = "0.17.2"
+    const val VERSION: String = "0.18.0"
 
     /** The plugin API this SDK writes plugins against and its runtime supports. */
     @Deprecated("Moved in 0.19: use arcships.rutis.advanced.PLUGIN_API.", ReplaceWith("PLUGIN_API", "arcships.rutis.advanced.PLUGIN_API"))
