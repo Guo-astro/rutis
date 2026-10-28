@@ -15,6 +15,7 @@
 //! unloaded.
 
 mod greet;
+mod services;
 
 pub(crate) use greet::Greet;
 
@@ -231,6 +232,23 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
     let label = format!("{NAME}/{}", SESSIONS.fetch_add(1, Ordering::Relaxed));
     let scoped = ctx.isolate(peer_key(&far), &label);
     scoped.provide_at(peer_key(&far), peer.clone())?;
+    let failing = |error: Error| failed(error);
+
+    // What the far end provides, every far end: it announces services once
+    // this end offers `services`.
+    let imports = services::Imports::new(&scoped, far.clone(), start.connection.clone());
+    let importing = peer
+        .register("services", Arc::new(services::Importing(imports.clone())))
+        .map_err(failing)?;
+    // What this end provides, to every far end: announced to one that
+    // offers `services`.
+    let exporting = services::Exports::follow(&scoped, peer.clone())?;
+    // A rutis kernel's listeners are entries of this bus, and this bus's of
+    // its: one hop, by every name.
+    let node = start.connection.supports("node");
+    if node {
+        scoped.plugin(crate::LinkEventsPlugin::new(far.clone(), ["*"], ["*"]));
+    }
 
     // The far end leaving unloads the session.
     let leaving = {
@@ -241,10 +259,11 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         })
     };
     *shared.state.lock().unwrap() = Some(Mounted { ctx: scoped });
-    let kept = Mutex::new(Some((start, peer)));
+    let kept = Mutex::new(Some((start, peer, importing, imports)));
     ctx.effect(move || async move {
         leaving.abort();
         shared.state.lock().unwrap().take();
+        let _ = exporting.dispose().await;
         // The far end's plugins here have unloaded (children first): the
         // channel closes last.
         drop(kept.lock().unwrap().take());
