@@ -100,3 +100,13 @@ Kotlin 另有两点：
 - 这些类换了包。单独发布、预先编译好的 Kotlin 插件库要用 0.19 的 SDK 重新编译后，才能和 0.19 的 SDK 放进同一个应用（源代码不用改）。
 
 不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改；0.17.2 的 `rutis-ksp` 生成的代码在 0.19 的 SDK 上照样编译，只有弃用警告。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
+
+## 平台清理（#694）
+
+设计：[0.19 平台清理](design-platform-cleanup-2026-10-28.md)。旧写法在 0.19 直接删，不标弃用：删掉的 Rust API 是编译错误。
+
+### Rust API
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `ctx.plugin_from(\|cfg\| …)` | 实现 `rutis::host::PluginFactory`，`ctx.plugin_with(factory, config)` |
