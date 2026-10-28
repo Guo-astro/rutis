@@ -491,6 +491,8 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 
+插件也能经服务 `loader` 加、删行（`create`、`remove`，见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)）。`run` 把这些改动写回 `rutis.json`：只改 `rows`（加的行写在末尾，只写插件给出的字段，`id` 总是写上；删的行去掉），其他字段与键的顺序不变，写法与 `rutis-host add` 写的一样（两格缩进）。写回的内容不算文件变化，`--watch-config` 不因它重新读。宿主读过文件之后文件又被改过（手改、`rutis-host add`）而还没有重新读时，插件的下一次改动先读回文件里的 `rows` 并照它运行，再在它上面改，然后写回；`rows` 以外的改动照旧要 SIGUSR1 或 `--watch-config` 才生效。写不了文件时行照样加上或删掉，插件收到的错误写明 `<行>: added, but rutis.json could not be written: <原因>`（删时是 `removed`），宿主重启后就没有这一改动。`dev` 不写 `rutis.dev.json`：在 `dev` 下 `create`、`remove` 得到 `this host keeps no editable configuration, so rows cannot be added or removed`。
+
 ## 用 dev 开发插件
 
 `rutis-host dev [目录]` 把目录（默认当前目录）里的插件项目作为几行运行：项目自己的插件（由 `rutis.dev.json` 里同 id 的那一行配置），加上这个文件里的其他行（插件用到的服务的假实现、其他插件）。它每 0.4 秒看一次项目里的文件（不看 `node_modules`、`.venv`、`venv`、`target`、`dist`、`build`、`__pycache__` 和除 `.env` 以外的隐藏文件、目录），跟着变化：
