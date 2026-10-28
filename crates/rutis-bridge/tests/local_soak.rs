@@ -8,8 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use rutis_bridge::channel::PeerId;
-use rutis_bridge::transport::local::{LocalTransport, Spawn};
+use rutis_bridge::pipe::{LocalTransport, Spawn};
 use rutis_bridge::{Dial, Transport};
 
 /// Open file descriptors and threads of this process.
@@ -45,12 +44,12 @@ async fn starting_processes_over_and_over_holds_nothing_more() {
             .unwrap_or(60),
     );
     let transport = LocalTransport::default();
-    let mut echo = Spawn::new("sh", PeerId::new("child").unwrap());
+    let mut echo = Spawn::new("sh");
     echo.args = vec!["-c".into(), r#"read line <&3; echo "$line" >&3"#.into()];
     transport.spawner("echo", echo);
     // Half of them are closed by this side before they answer: they end
     // after the grace period or by themselves.
-    let mut idle = Spawn::new("sh", PeerId::new("idle").unwrap());
+    let mut idle = Spawn::new("sh");
     idle.args = vec!["-c".into(), "read line <&3".into()];
     transport.spawner("idle", idle);
 
@@ -70,7 +69,7 @@ async fn starting_processes_over_and_over_holds_nothing_more() {
         drop(reply.1);
 
         let idle = transport.dial(&Dial::address("spawn:idle")).await.unwrap();
-        idle.closer.close("soak");
+        idle.closer.close(rutis_bridge::Close::Done);
         drop(idle);
         processes += 2;
         if processes == 40 {

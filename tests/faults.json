@@ -52,7 +52,7 @@
       "go": {
         "tests": [
           ["go/rutis/sdk_test.go", "TestAPluginMayUseOnlyWhatItInjects"],
-          ["go/rutis/errors_text_internal_test.go", "TestUseSaysWhyAServiceIsNotThere"]
+          ["go/rutis/internal/runtime/errors_text_internal_test.go", "TestUseSaysWhyAServiceIsNotThere"]
         ]
       },
       "rust": {
@@ -129,7 +129,7 @@
       "go": {
         "tests": [
           ["crates/rutis-loader/tests/fault_texts.rs", "fault_messages_hold_none_of_the_platforms_words"],
-          ["go/rutis/errors_text_internal_test.go", "TestARefusedCallNamesTheServiceMethodAndArgument"]
+          ["go/rutis/internal/runtime/errors_text_internal_test.go", "TestARefusedCallNamesTheServiceMethodAndArgument"]
         ]
       },
       "rust": {
@@ -455,9 +455,9 @@
       },
       "go": {
         "tests": [
-          ["go/rutis/config_internal_test.go", "TestEveryConfigCaseBeforeApply"],
-          ["go/rutis/config_internal_test.go", "TestATypedConfigIsCheckedThenDecoded"],
-          ["go/rutis/config_internal_test.go", "TestAConfigTheTypeDoesNotTakeIsSaidPlainly"],
+          ["go/rutis/internal/runtime/config_internal_test.go", "TestEveryConfigCaseBeforeApply"],
+          ["go/rutis/internal/runtime/config_internal_test.go", "TestATypedConfigIsCheckedThenDecoded"],
+          ["go/rutis/internal/runtime/config_internal_test.go", "TestAConfigTheTypeDoesNotTakeIsSaidPlainly"],
           ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"],
           ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"]
         ]
@@ -495,7 +495,7 @@
       },
       "go": {
         "tests": [
-          ["go/rutis/errors_text_internal_test.go", "TestADuplicateProviderIsNamedByItsRow"]
+          ["go/rutis/internal/runtime/errors_text_internal_test.go", "TestADuplicateProviderIsNamedByItsRow"]
         ]
       },
       "rust": {

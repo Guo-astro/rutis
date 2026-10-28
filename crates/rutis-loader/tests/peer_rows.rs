@@ -14,7 +14,7 @@ use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key, PluginFactory, PluginId,
 };
 use rutis::{Ctx, Error};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Peer,
     Retry, StaticCatalog, StaticIdentity,
@@ -227,7 +227,13 @@ async fn rows_wait_for_the_host_then_run_there_once() {
         "{:?}",
         fibers.map(|fiber| nodes.transitions.of(fiber))
     );
-    let schema = nodes.loader.schema_of("peer:mac/greeter").await.unwrap();
+    let schema = nodes
+        .loader
+        .resolve("peer:mac/greeter")
+        .await
+        .unwrap()
+        .schema
+        .clone();
     assert_eq!(schema.unwrap()["properties"]["text"]["type"], "string");
 
     let missing = eventually(

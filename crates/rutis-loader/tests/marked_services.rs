@@ -15,7 +15,9 @@ use rutis::host::{BoxFuture, CtxHost, FiberState, Key};
 use rutis::{Ctx, Error};
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::report::{Wait, WaitReason};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Builtins, Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
@@ -211,12 +213,6 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
-    fixture_with(false).await
-}
-
-/// `by_name`: the catalog shares every name (the default); otherwise only
-/// those registered, which the marked services need not be.
-async fn fixture_with(by_name: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let py = dir.path().join("py");
     let js = dir.path().join("js");
@@ -249,9 +245,6 @@ async fn fixture_with(by_name: bool) -> Fixture {
     let calendar = root.provide(Calendar::default()).unwrap();
 
     let mut catalog = ServiceCatalog::new();
-    if !by_name {
-        catalog.share_registered_only();
-    }
     catalog.register_shared("probe");
     let node = LocalRuntime::node(
         repo().join("node/rutis-runtime"),
@@ -261,7 +254,7 @@ async fn fixture_with(by_name: bool) -> Fixture {
     let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
     let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
     let go = Arc::new(
-        GoResolver::new(GoBinaries::new().file(go_binary()))
+        BinaryResolver::<Go>::new(Binaries::new().file(go_binary()))
             .with_catalog(&catalog)
             .reserve(["node", "py"]),
     );
@@ -292,7 +285,7 @@ async fn fixture_with(by_name: bool) -> Fixture {
     root.plugin(plugin).await.unwrap();
     rows_stage(&root, node_rows).await;
     rows_stage(&root, python_rows).await;
-    root.plugin(GoRuntimes::new(go, dir.path()).idle(None))
+    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path()).idle(None))
         .await
         .unwrap();
     Fixture {
@@ -431,7 +424,7 @@ async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
 /// told how to serve it.
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
-    let fixture = fixture_with(true).await;
+    let fixture = fixture().await;
     fixture.root.provide(Hidden).unwrap();
     let rows = vec![fixture.js("jh", "js_hidden")];
     fixture.loader.reconcile(layer(rows), None).await.unwrap();
@@ -446,33 +439,30 @@ async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
     // The row may first wait for its runtime (`node`) too, while that
     // starts (#530): what is asserted is the wait once only `hidden` is
     // missing, not the first list.
-    let waits_for_hidden = |waiting: &[String]| {
-        !waiting.is_empty()
-            && waiting
-                .iter()
-                .all(|name| name == "hidden" || name.starts_with("hidden:"))
-    };
-    let waiting = Guard(HANG_GUARD * 3)
+    let waits_for_hidden =
+        |waits: &[Wait]| !waits.is_empty() && waits.iter().all(|wait| wait.service == "hidden");
+    let waits = Guard(HANG_GUARD * 3)
         .eventually_with(
-            || {
-                Some(fixture.loader.waiting_for(&entry()))
-                    .filter(|waiting| waits_for_hidden(waiting))
-            },
+            || Some(fixture.loader.waits(&entry())).filter(|waits| waits_for_hidden(waits)),
             "jh to wait for hidden",
             || {
                 format!(
                     "{:?}, waiting for {:?}",
                     entry(),
-                    fixture.loader.waiting_for(&entry())
+                    fixture.loader.waits(&entry())
                 )
             },
         )
         .await;
-    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waits.len(), 1, "{waits:?}");
     assert!(
-        waiting[0].starts_with("hidden: `hidden` is the Rust service")
-            && waiting[0].ends_with("add #[rutis::service] to its impl"),
-        "{waiting:?}"
+        matches!(
+            &waits[0].reason,
+            WaitReason::Explained(why)
+                if why.starts_with("`hidden` is the Rust service")
+                    && why.ends_with("add #[rutis::service] to its impl")
+        ),
+        "{waits:?}"
     );
     fixture.root.shutdown().await.unwrap();
 }

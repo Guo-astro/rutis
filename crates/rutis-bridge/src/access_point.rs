@@ -226,7 +226,7 @@ impl DynPlugin for AccessPointPlugin {
                     protocol: crate::protocol(),
                     deliver: Box::new(move |channel| {
                         if let Err(refused) = sender.send(channel) {
-                            refused.0.closer.close("the access point stopped");
+                            refused.0.closer.close(crate::channel::Close::Done);
                         }
                     }),
                 })
@@ -339,10 +339,8 @@ impl Shared {
             sender,
             receiver,
             closer,
-            mut info,
         } = channel;
         // Routed by its credential alone: its id comes with its hello.
-        info.peer = None;
         let verdict = Arc::new(OnceLock::new());
         let channel = Channel {
             sender,
@@ -353,7 +351,6 @@ impl Shared {
                 verdict: Some(verdict.clone()),
             }),
             closer: closer.clone(),
-            info,
         };
         let greet = Greet {
             local: self.admission.local().clone(),
@@ -405,8 +402,8 @@ impl Shared {
         if let Some(reason) = superseded {
             drop(current);
             match stopped {
-                true => closer.close(&reason),
-                false => closer.replaced(),
+                true => closer.close(crate::channel::Close::Done),
+                false => closer.close(crate::channel::Close::Replaced),
             }
             session.close(Error::Transport(reason.clone()));
             operations.detach();
@@ -416,7 +413,7 @@ impl Shared {
         // A newer connection takes over: the old one is closed and
         // released before this one is accepted.
         if let Some(old) = current.take() {
-            old.live.closer.replaced();
+            old.live.closer.close(crate::channel::Close::Replaced);
             old.live.end("replaced by a new connection").await;
             self.emit(AccessEvent::Replaced {
                 id: id.clone(),
@@ -432,7 +429,9 @@ impl Shared {
             .is_some_and(|revocations| revocations.is_revoked(&id));
         if revoked {
             drop(current);
-            closer.rejected(crate::identity::NOT_ACCEPTED);
+            closer.close(crate::channel::Close::Rejected(
+                crate::identity::NOT_ACCEPTED.into(),
+            ));
             session.close(Error::Transport(format!("{id}: identity revoked")));
             operations.detach();
             self.forget(&id, slot);
@@ -562,7 +561,8 @@ impl Receiver for Admitting {
         let rejected = admitted.as_ref().err().cloned();
         let _ = verdict.set(admitted);
         if let Some(rejection) = rejected {
-            self.closer.rejected(&rejection.0);
+            self.closer
+                .close(crate::channel::Close::Rejected(rejection.0.clone()));
             return Err(ChannelError::Closed {
                 reason: format!("rejected: {rejection}"),
             });

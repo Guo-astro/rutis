@@ -267,7 +267,7 @@ pub async fn finish(host: &Host, deadline: Duration, signals: &mut Signals) -> S
     for call in host.loader.status().calls {
         errln!("  call not returned: {call}");
     }
-    let processes = rutis_bridge::transport::local::running_processes();
+    let processes = rutis_bridge::pipe::running_processes();
     if !processes.is_empty() {
         errln!("  killing runtime processes {processes:?}");
     }

@@ -50,7 +50,7 @@ async fn run(far: Connection) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_meets_the_session_contract() {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let _far = Connection::open_with(
         b,
         Arc::new(Fixture::default()),
@@ -92,7 +92,7 @@ struct Child(tokio::process::Child, Option<Box<dyn std::any::Any + Send>>);
 /// Shuts the stream down: wakes the channel's reader and writer.
 struct Shut(Box<dyn Fn() + Send + Sync>);
 impl rutis_bridge::channel::Closer for Shut {
-    fn close(&self, _: &str) {
+    fn close(&self, _: rutis_bridge::Close) {
         (self.0)()
     }
 }
@@ -120,7 +120,7 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
                 let _ = shut.shutdown(std::net::Shutdown::Both);
             })));
             (
-                rutis_bridge::transport::local::framed(reader, stream, closer),
+                rutis_bridge::pipe::framed(reader, stream, closer),
                 Child(child, None),
             )
         }
@@ -157,7 +157,7 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
                 let _ = shut.shutdown(std::net::Shutdown::Both);
             })));
             (
-                rutis_bridge::transport::local::framed(reader, stream, closer),
+                rutis_bridge::pipe::framed(reader, stream, closer),
                 Child(child, None),
             )
         }
@@ -169,7 +169,7 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
 /// Start `command` listening on a loopback WebSocket, and dial it.
 #[cfg(feature = "websocket")]
 async fn listening(mut command: tokio::process::Command, far: &str) -> (Channel, Child) {
-    use rutis_bridge::transport::websocket::{Config, WebSocketTransport};
+    use rutis_bridge::websocket::{Config, WebSocketTransport};
     use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
     use tokio::io::AsyncBufReadExt;
 
@@ -435,7 +435,7 @@ async fn rust_ends_the_session_on_malformed_frames() {
     tokio::task::spawn_blocking(|| {
         let kept = std::sync::Mutex::new(Vec::new());
         malformed(|| {
-            let (a, b) = rutis_bridge::transport::memory::pair();
+            let (a, b) = rutis_bridge::memory::pair();
             let far = Connection::open_with(
                 b,
                 Arc::new(Fixture::default()),

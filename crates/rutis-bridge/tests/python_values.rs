@@ -48,12 +48,12 @@ async fn python() -> (Connection, tokio::process::Child) {
     let reader = stream.try_clone().unwrap();
     struct Shut(std::os::unix::net::UnixStream);
     impl rutis_bridge::channel::Closer for Shut {
-        fn close(&self, _: &str) {
+        fn close(&self, _: rutis_bridge::Close) {
             let _ = self.0.shutdown(std::net::Shutdown::Both);
         }
     }
     let closer = Arc::new(Shut(stream.try_clone().unwrap()));
-    let channel = rutis_bridge::transport::local::framed(reader, stream, closer);
+    let channel = rutis_bridge::pipe::framed(reader, stream, closer);
     let format = Format::Endpoint(Endpoint::rust(id("main")).expect(id("python")));
     let connection = Connection::open_with(channel, Arc::new(Nothing), format).unwrap();
     connection.ready().await.unwrap();

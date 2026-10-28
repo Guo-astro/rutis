@@ -23,7 +23,7 @@ use crate::host::CtxHost;
 use crate::intercept::{ServiceInterceptors, ServiceWriter};
 use crate::internal::CtxInternal;
 use crate::key::{InstanceId, Key, ScopeId, TypeKey};
-use crate::plugin::{DynPlugin, Plugin, PluginFactory};
+use crate::plugin::{DynPlugin, PluginFactory};
 use crate::registry::{Binding, CheckFn, Registry, StoredValue, ValueSlot};
 
 pub(crate) struct Shared {
@@ -1416,15 +1416,6 @@ impl crate::host::CtxHost for Ctx {
         key: &Key<T>,
     ) -> Result<Arc<T>, ServiceReadError> {
         self.require_key::<T>(key.erase())
-    }
-
-    fn plugin_from<C, P, B>(&self, build: B, config: C) -> FiberView
-    where
-        C: Send + Sync + 'static,
-        P: Plugin,
-        B: Fn(&C) -> Result<P, Error> + Send + Sync + 'static,
-    {
-        self.plugin_with(crate::plugin::BuildFn::new(build), config)
     }
 
     fn waterfall_sync<E, F>(

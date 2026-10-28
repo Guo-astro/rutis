@@ -495,12 +495,12 @@ impl Inner {
 
     /// The record at `slot` goes because a group above it is going (being
     /// disposed, or already forgotten), not because it disposed itself.
+    /// The loader's own fiber going (disposed or restarted) cancels the
+    /// generation its root context belongs to (#812).
     fn cascading(state: &State, slot: &Slot) -> bool {
-        if state
-            .groups
-            .get(&None)
-            .is_none_or(|root| root.ctx.is_shutting_down())
-        {
+        if state.groups.get(&None).is_none_or(|root| {
+            root.ctx.is_shutting_down() || root.ctx.cancellation_token().is_cancelled()
+        }) {
             return true;
         }
         let mut parent = state.running.get(slot).and_then(|r| r.parent.clone());
@@ -755,7 +755,7 @@ impl Inner {
             let mut state = self.state.lock().unwrap();
             let before = Self::failures(&state);
             let root = state.groups.get(&None).map(|g| g.ctx.clone());
-            state.desired = self.build_desired(&state.composed_layers(), root.as_ref());
+            state.desired = self.build_desired(&state.layers, root.as_ref());
             let names: Vec<String> = state
                 .desired
                 .rows

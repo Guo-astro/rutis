@@ -81,7 +81,7 @@ A plugin does not decide when it runs; the host does. Writing one takes three fa
 | Topic | Rule |
 | --- | --- |
 | `type Deps` | Required; `()` when there are no dependencies, with `_: ()` as the `apply` parameter |
-| `name` | The name in logs and diagnostics of a plugin mounted with `ctx.plugin(p)`, by default the last segment of the type name (`Greeter`); override `fn name(&self) -> &str` to change it. A plugin mounted from its constructor has the name it was mounted under: the name registered with `Builtins::register`, the `id` of `export_plugin!`, the type name for `plugin_from` |
+| `name` | The name in logs and diagnostics of a plugin mounted with `ctx.plugin(p)`, by default the last segment of the type name (`Greeter`); override `fn name(&self) -> &str` to change it. A plugin mounted from its constructor has the name it was mounted under: the name registered with `Builtins::register`, the `id` of `export_plugin!`, the factory's `name()` for `plugin_with` |
 | `validate` | `fn validate(&self) -> Result`, run at load, before `apply`; an error leaves the plugin Failed and `apply` does not run |
 | Configuration | Fields of the struct, plus a `fn new(config: &Config) -> Result<Self>`; whoever mounts the plugin builds it with that, and rebuilds it with it when the configuration changes (see [section 4](#4-used-by-a-host)) |
 | Concurrency | `apply`, listeners and service methods run on tokio and may be called at the same time: the plugin and the services it provides are `Send + Sync` |
@@ -576,7 +576,7 @@ cargo test
 
 ### Compiled into a Rust host
 
-The plugin's configuration is a struct, and a constructor builds the plugin from it:
+The plugin's configuration is a struct, and a constructor builds the plugin from it; the host implements `host::PluginFactory` and calls it in `build`:
 
 ```rust
 use rutis::host::*;
@@ -609,12 +609,25 @@ impl Plugin for Weather {
     }
 }
 
+/// Builds Weather from its config; `update(config)` rebuilds with it too.
+struct WeatherFactory;
+
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+
+    fn build(&self, config: &WeatherConfig) -> Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
     (&weather).await?;
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with Weather::new
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with WeatherFactory
     root.shutdown().await?;
     Ok(())
 }

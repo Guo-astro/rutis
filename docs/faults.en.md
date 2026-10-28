@@ -45,7 +45,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - TypeScript (Node): `crates/rutis-host/tests/waiting.rs` `a_waiting_row_says_what_it_waits_for_and_why`; `crates/rutis-host/tests/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`; `node/rutis-runtime/test/leaf.test.mjs` “a leaf plugin using a service it does not inject is told to declare it”
 - Bun: `bun/rutis-bun/test/runner.test.ts` “a plugin using a service it does not inject is told to declare it”
 - Python: `python/rutis/tests/test_undeclared_use.py` `test_a_service_not_in_inject_is_named_with_the_fix`
-- Go: `go/rutis/sdk_test.go` `TestAPluginMayUseOnlyWhatItInjects`; `go/rutis/errors_text_internal_test.go` `TestUseSaysWhyAServiceIsNotThere`
+- Go: `go/rutis/sdk_test.go` `TestAPluginMayUseOnlyWhatItInjects`; `go/rutis/internal/runtime/errors_text_internal_test.go` `TestUseSaysWhyAServiceIsNotThere`
 - Rust (plugin and embedding): `crates/rutis-loader/tests/waits.rs` `a_misspelt_name_is_waited_for_with_the_name_it_meant`; `crates/rutis-loader/tests/check.rs` `a_disabled_provider_is_named_and_a_misspelt_name_corrected`; `crates/rutis/tests/still_waiting.rs` `a_plugin_waiting_long_for_its_deps_is_reported_once`
 
 ### 2. A service method throws, across languages
@@ -61,7 +61,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - TypeScript (Node): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `node/rutis-runtime/test/texts.test.mjs` “a row that cannot load, or is refused a call, is told in the developer's words”
 - Bun: `bun/rutis-bun/test/errors.test.ts` “the errors this runtime makes have their code, data and text (#677)”; `bun/rutis-bun/test/bad-values.test.ts` “a method an object passed by reference lacks is no-method, saying what it has”
 - Python: `python/rutis/tests/test_plain_texts.py` `test_no_method`; `python/rutis/tests/test_plain_texts.py` `test_too_many_arguments`; `python/rutis/tests/test_plain_texts.py` `test_a_missing_argument`
-- Go: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `go/rutis/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
+- Go: `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `go/rutis/internal/runtime/errors_text_internal_test.go` `TestARefusedCallNamesTheServiceMethodAndArgument`
 - Rust (plugin and embedding): `crates/rutis-loader/tests/fault_texts.rs` `fault_messages_hold_none_of_the_platforms_words`; `crates/rutis-bridge/src/marked.rs` `wrong_calls_name_the_service_method_and_argument`
 
 ### 4. An error in `apply`
@@ -133,7 +133,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - TypeScript (Node): `crates/rutis-host/tests/check.rs` `check_fails_a_config_that_does_not_match_the_schema`; `crates/rutis-host/tests/check.rs` `check_warns_of_extra_config_keys`; `node/rutis-runtime/test/config.test.mjs` “a leaf plugin gets its config filled, and fails its row on a wrong one”
 - Bun: `bun/rutis-bun/test/config.test.ts` “a row's config is filled, and a wrong one fails the row with bad-config”; `bun/rutis-bun/test/config.test.ts` “this copy passes every case of the shared list”
 - Python: `python/rutis/tests/test_config.py` `test_a_bad_config_crosses_with_its_code_and_issues`; `python/rutis/tests/test_config.py` `test_an_extra_key_is_warned_about_once`
-- Go: `go/rutis/config_internal_test.go` `TestEveryConfigCaseBeforeApply`; `go/rutis/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`; `go/rutis/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`; `go/rutis/rutistest/config_test.go` `TestEveryConfigCase`; `go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
+- Go: `go/rutis/internal/runtime/config_internal_test.go` `TestEveryConfigCaseBeforeApply`; `go/rutis/internal/runtime/config_internal_test.go` `TestATypedConfigIsCheckedThenDecoded`; `go/rutis/internal/runtime/config_internal_test.go` `TestAConfigTheTypeDoesNotTakeIsSaidPlainly`; `go/rutis/rutistest/config_test.go` `TestEveryConfigCase`; `go/rutis/rutistest/config_test.go` `TestATypedConfigInTheTestTool`
 - Rust (plugin and embedding): `crates/rutis-loader/tests/config_rows.rs` `a_rust_row_is_filled_and_validated`; `crates/rutis-loader/tests/config_rows.rs` `extra_keys_are_warned_about_once`; `crates/rutis/tests/config_cases.rs` `every_case_of_the_shared_list_passes`
 
 ### 13. Two plugins provide a service of the same name
@@ -141,7 +141,7 @@ The table comes from `tests/faults.json`. When an acceptance test changes (renam
 - TypeScript (Node): `crates/rutis-host/tests/clash.rs` `a_service_provided_after_loading_twice_fails_the_later_row`; `crates/rutis-loader/tests/fault_containment.rs` `node_a_clashing_provide_fails_only_its_row`; `crates/rutis-host/tests/check.rs` `check_fails_on_cycles_and_clashes_and_suggests_misspelt_names`
 - Bun: `crates/rutis-loader/tests/fault_containment.rs` `bun_a_clashing_provide_fails_only_its_row`; `bun/rutis-bun/test/runner.test.ts` “a row that cannot load or provides a taken service is told so plainly (#677)”
 - Python: `crates/rutis-loader/tests/fault_containment.rs` `python_a_clashing_provide_fails_only_its_row`; `python/rutis/tests/test_plain_texts.py` `test_a_service_provided_twice_names_the_row`
-- Go: `go/rutis/errors_text_internal_test.go` `TestADuplicateProviderIsNamedByItsRow`
+- Go: `go/rutis/internal/runtime/errors_text_internal_test.go` `TestADuplicateProviderIsNamedByItsRow`
 - Rust (plugin and embedding): `crates/rutis-loader/tests/check.rs` `rows_declaring_one_service_in_one_scope_clash`; `crates/rutis-bridge/tests/marked_services.rs` `a_second_service_of_the_same_name_is_refused`
 
 ### 14. Seeing what is running now

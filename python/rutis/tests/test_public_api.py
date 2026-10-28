@@ -20,9 +20,6 @@ from typing import ForwardRef
 
 SNAPSHOT = Path(__file__).resolve().parent.parent / "public-api.txt"
 MODULES = ("rutis", "rutis.advanced", "rutis.testing")
-# Names in the root's `__all__` that moved to rutis.advanced in 0.19 (#692);
-# listed in their own section, removed when the plugin API version changes.
-MOVED = "rutis.advanced"
 
 
 def annotation(value) -> str:
@@ -106,18 +103,9 @@ def current() -> str:
     lines = []
     for module_name in MODULES:
         module = importlib.import_module(module_name)
-        names = list(module.__all__)
-        moved = []
-        if module_name == "rutis":
-            advanced = importlib.import_module(MOVED)
-            moved = [name for name in names if name in advanced.__all__]
-            names = [name for name in names if name not in moved]
         lines.append(f"## {module_name}")
-        for name in sorted(names):
+        for name in sorted(module.__all__):
             lines.extend(describe(name, getattr(module, name)))
-        if moved:
-            lines.append(f"## {module_name} (deprecated: moved to {MOVED} in 0.19)")
-            lines.extend(f"{name} -> {MOVED}.{name}" for name in sorted(moved))
         lines.append("")
     return "\n".join(lines)
 
@@ -141,7 +129,7 @@ class PublicApi(unittest.TestCase):
         for module_name in MODULES:
             module = importlib.import_module(module_name)
             for name in dir(module):
-                value = getattr(module, name) if name not in getattr(module, "_MOVED", ()) else None
+                value = getattr(module, name)
                 if name.startswith("_") or name in module.__all__ or isinstance(value, types.ModuleType):
                     continue
                 with self.subTest(module=module_name, name=name):
@@ -150,10 +138,8 @@ class PublicApi(unittest.TestCase):
 
     def test_the_root_names_are_the_plugin_author_s(self):
         import rutis
-        import rutis.advanced
 
-        root = [name for name in rutis.__all__ if name not in rutis.advanced.__all__]
-        self.assertEqual(sorted(root), ["BindingError", "Context", "Plugin", "RemoteError", "define_plugin"])
+        self.assertEqual(sorted(rutis.__all__), ["BindingError", "Context", "Plugin", "RemoteError", "define_plugin"])
 
 
 if __name__ == "__main__":

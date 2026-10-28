@@ -20,7 +20,8 @@ use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::swift::{SwiftBinaries, SwiftResolver, SwiftRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::swift::Swift;
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
@@ -121,7 +122,7 @@ struct Fixture {
     root: Ctx,
     loader: Loader,
     probe: Probe,
-    swift: rutis_loader::runtime::swift::SwiftRuntimesHandle,
+    swift: rutis_loader::runtime::binary::BinaryRuntimesHandle<rutis_loader::runtime::swift::Swift>,
     js: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -167,9 +168,11 @@ async fn fixture() -> Fixture {
     let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
     let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
     let swift = Arc::new(
-        SwiftResolver::new(SwiftBinaries::new().file(swift_binary("RutisMultilang", "multilang")))
-            .with_catalog(&catalog)
-            .reserve(["node", "py"]),
+        BinaryResolver::<Swift>::new(
+            Binaries::new().file(swift_binary("RutisMultilang", "multilang")),
+        )
+        .with_catalog(&catalog)
+        .reserve(["node", "py"]),
     );
     root.plugin(node);
     root.plugin(python);
@@ -187,7 +190,7 @@ async fn fixture() -> Fixture {
     root.plugin(plugin).await.unwrap();
     rows_stage(&root, node_rows).await;
     rows_stage(&root, python_rows).await;
-    let runtimes = SwiftRuntimes::new(swift, dir.path()).idle(None);
+    let runtimes = BinaryRuntimes::<Swift>::new(swift, dir.path()).idle(None);
     let swift = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     Fixture {

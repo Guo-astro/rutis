@@ -253,8 +253,6 @@ pub enum LoaderChanged {
     Reconciled,
     Edited(Edit),
     Reloaded(String),
-    /// An overlay layer was set or removed.
-    Overlay(String),
     /// A row's plugin disposed itself; the row was disabled in the editable
     /// layer (`error` when that edit failed, e.g. no editable layer).
     SelfDisposed {
@@ -414,9 +412,6 @@ struct Inner {
 struct State {
     /// The application's layers, as given to `reconcile`.
     layers: Vec<Layer>,
-    /// Runtime layers composed after the application's (`set_overlay`):
-    /// never persisted, kept across `reconcile`, not editable.
-    overlays: Vec<Layer>,
     editable: Option<usize>,
     version: Version,
     pending: Vec<Edit>,
@@ -532,16 +527,7 @@ struct Running {
 }
 
 impl State {
-    /// The application's layers followed by the overlays.
-    fn composed_layers(&self) -> Vec<Layer> {
-        self.layers.iter().chain(&self.overlays).cloned().collect()
-    }
-
     fn layer_name(&self, index: usize) -> Option<&str> {
-        self.layers
-            .iter()
-            .chain(&self.overlays)
-            .nth(index)
-            .map(|l| l.name.as_str())
+        self.layers.get(index).map(|l| l.name.as_str())
     }
 }

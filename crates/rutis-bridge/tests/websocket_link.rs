@@ -8,7 +8,7 @@ use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{Connection, Value};
-use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
 use rutis_bridge::{
     peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, Peer, StaticIdentity,
 };

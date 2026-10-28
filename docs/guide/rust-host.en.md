@@ -31,13 +31,24 @@ use rutis::host::*;
 use rutis::Ctx;
 use rutis_loader::Builtins;
 
+/// Builds Weather from its config; `update(config)` rebuilds with it too.
+struct WeatherFactory;
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+    fn build(&self, config: &WeatherConfig) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;                       // on the current tokio runtime
     root.plugin(Greeter { lang: "Rust".into() }).await?; // provides Greeting
     root.plugin(Printer).await?;                   // its Deps (Greeting) are there: prints "hello from Rust"
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with Weather::new
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // rebuilt with WeatherFactory
 
     let mut builtins = Builtins::new();            // rutis-loader rows find it by name
     builtins.register("weather", Weather::new);
@@ -86,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Make the root | `Ctx::root()` (the current tokio runtime; an error without one), `Ctx::root_with(handle)`, `Ctx::root_with_sink(handle, sink)` (your own error sink) |
 | Mount a plugin | `root.plugin(p)`: any `Plugin`, or a `host::DynPlugin`; a `Box<dyn DynPlugin>` is one too, for a list of plugins chosen at run time |
-| Mount from configuration | `root.plugin_from(build, config)`: `build` is a `Fn(&C) -> Result<P>`, the dependencies come from `P::Deps`; the returned `FiberView` can `update(config)`, and its name in diagnostics is the plugin's type name. When the dependencies are known only at run time, implement `host::PluginFactory<C>` and use `plugin_with(factory, config)` |
+| Mount from configuration | Implement `host::PluginFactory<C>` and use `root.plugin_with(factory, config)`: each load builds the plugin from the current config with `build`, and the returned `FiberView` can `update(config)`; the dependencies are listed in `injects()`, and its name in diagnostics is `name()` |
 | rutis-loader rows | `Builtins::register(name, build)`: the config is decoded as `C`, its schema generated from `C` (none for `serde_json::Value`); `register_with(name, \|build, config\| …)`: one copy built per instance; `register_raw(name, factory, schema)`: a `PluginFactory<serde_json::Value>` |
 | Read services | `get::<T>()`; by key `get_at(&key)`, provide with `provide_at(key, arc)`, the key a `host::Key<T>` (see [depend on services by name](#depend-on-services-by-name)); `require` / `require_at` are strict reads, of declared dependencies in a `DynPlugin`'s `apply` |
 | Stop | `root.shutdown().await` unloads everything and waits for the cleanups, with no time limit (how long is the host's choice); `shutdown_with_timeout(limit)` bounds the wait, its error naming the plugins and cleanups not finished ([default output](#default-output)); one plugin: `view.dispose()`, `view.restart()`, `view.dispose_with_timeout(limit)` |
@@ -142,7 +153,7 @@ impl DynPlugin for Router {
 ### Errors a host sees
 
 - Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly; with rutis's `anyhow` feature, one returning `anyhow::Result` does too.
-- `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …: 0.16's `CordisError` renamed, the same variants), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
+- `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
 - Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
 
 ```rust,no_run
@@ -240,7 +251,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **What crosses, how errors are thrown**: see the [reference](#exported-services-reference): serde parameters and results, callbacks by reference, the calling row's `&Ctx`, `Err(e)` thrown with `name`, `code`, `message` and `data`.
 - **Errors at compile time**: a public method in a marked block that cannot be bound (`&mut self`, a borrowed result, a mutable reference parameter, a generic parameter that is not a function, …) is a compile error pointing at it; mark one you keep in Rust `#[service(skip)]`.
 - **Name conflicts**: when two types in one scope have the same name, the later `provide` fails, and the error names both; nothing of it is provided, the native service included.
-- **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waiting_for(&entry)` lists what the row waits for and says to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
+- **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waits(&entry)` lists what the row waits for, with the reason `WaitReason::Explained` saying to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
 - **dylib plugins**: a marked type in a dylib (whose crate depends on `rutis-sdk` only and writes `#[rutis_sdk::rutis::service]`, or `use rutis_sdk::rutis::service`) is served once the plugin loads; the host need not know it. On a version swap the old generation's entry point goes with its services and the new one's appears when it provides them. A rebuild needs no new version: two builds of one plugin keep their types' `TypeId`s, and each value is served with the code of the build that provided it, so both can be loaded at once. A build that drops the marker serves its values by name no more, and names are those of the newest build. The host links `rutis-bridge`.
 - **Without rutis-bridge**: serving by name and checking clashes are its work. In a program that does not link it, a marked type is provided by type only, and the first time it is provided the error sink gets one `ErrorKind::NotServedByName` (by default `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`).
 - **Declarations and Python types**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their TypeScript declarations (`Services['calendar']`, the data types, `<Name>Thrown`); add `--python services.py` to write their Python types too. To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency), and `.python(…)` likewise. Calls need neither. See [Declarations](#declarations).
@@ -430,9 +441,8 @@ use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCata
 // Absolute paths: each runtime's process starts in a directory of its own (see below).
 let app = std::env::current_dir()?.join("app");
 
-// Every service name is shared across languages by name, as in rutis-host. To share only the names
-// registered as shared (register_shared, export), call catalog.share_registered_only().
-let mut catalog = ServiceCatalog::new();
+// Every service name is shared across languages by name, as in rutis-host.
+let catalog = ServiceCatalog::new();
 
 // Local Node runtime: the directory containing @arcships/rutis-runtime and the package.json used for resolution.
 // Events need no configuration: listeners in the runtime register themselves on the host's bus (see "Events" below).
@@ -485,12 +495,12 @@ for failure in &report.failures {
 # }
 ```
 
-- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waiting_for(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
+- `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waits(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
 - Configs: for every row with a schema (`Builtins` rows, dylib rows with a `schema:`, rows your own resolver gives a schema with `Resolved::with_schema`, rows of other language runtimes; not Cordis rows), the loader fills the config with defaults and validates it before `build`, and the plugin gets the filled config; a row that does not match fails with `config: …` and is listed in `failures` ([plugin API: configuration](plugin-api.en.md#configuration)). Extra keys are written on stderr by default (`<row>: config: …`), once per row and config value; `Loader::on_config_warning(Arc::new(|row, issue| …))` hands them to you instead.
 - Paths: each runtime's process starts in a directory of its own (Python and Go: their project; Node: the runtime's package), and is given the paths as written. Relative paths would then be read from that directory, not the application's: give absolute ones, as above.
 - A runtime is a plugin. Its process starts with the plugin and exits when the plugin is unloaded. If the process exits unexpectedly, the runtime stops and its rows wait; `RuntimeHandle::state()` reports `Down(reason)`, including why the process ended. The application decides whether to restart it by calling `restart` on the runtime fiber.
 - No row is blamed for its runtime ending: a row that was still loading in it waits for it as the others do, it does not fail. The runtime's `Down` reason says how its process ended, and calls in progress to its rows fail saying so.
-- Runtime processes do not outlive the application. Dropping its tokio runtime kills them. Killed by a signal it does not handle (Ctrl-C, SIGTERM) or by `kill -9`, it leaves runtimes that unload their rows and exit within `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), and end themselves a second after that when a plugin keeps one busy. A `shutdown_with_timeout` may not finish while a plugin keeps its runtime busy (its rows cannot unload): end what is left with `LocalRuntime::processes().kill()`, or every runtime process with `rutis_bridge::transport::local::kill_processes()`, as rutis-host does.
+- Runtime processes do not outlive the application. Dropping its tokio runtime kills them. Killed by a signal it does not handle (Ctrl-C, SIGTERM) or by `kill -9`, it leaves runtimes that unload their rows and exit within `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), and end themselves a second after that when a plugin keeps one busy. A `shutdown_with_timeout` may not finish while a plugin keeps its runtime busy (its rows cannot unload): end what is left with `LocalRuntime::processes().kill()`, or every runtime process with `rutis_bridge::pipe::kill_processes()`, as rutis-host does.
 - A remote runtime (`RuntimePlugin::remote`) whose session ends and comes back has its rows resolved again by the new session before they start, so a plugin upgraded over there brings its new config schema and declarations.
 - For the full row format (groups, `isolate`, `inject`, expressions, imperative updates, and persistence), see the [rutis-loader design](../design-rutis-loader-2026-10-02.en.md).
 - To pick up plugin code changes, call `RuntimeResolver::invalidate_all()` and then `Loader::reload(row)`. Node and Python both reimport only the plugin's entry module.
@@ -512,20 +522,17 @@ let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), 
 
 ### Local runtime options
 
-For keeping third-party plugins in check, all off by default; how to use them is in [Build a host open to plugins: keep plugins in check](open-host.en.md#3-keep-plugins-in-check):
+For keeping third-party plugins in check; how to use them is in [Build a host open to plugins: keep plugins in check](open-host.en.md#3-keep-plugins-in-check):
 
 | `LocalRuntime` method | What it does |
 | --- | --- |
-| `.call_limit(limit)` | A call into the runtime's plugin code (by name, of a service its rows provide, or of a function it handed over) over the limit is cancelled, and its caller gets an error with code `timeout` (`data`: `{runtime, limit, service?, method?}`, `limit` in milliseconds). Calls between plugins of the same runtime are not limited |
-| `.kill_on_timeout()` | With `call_limit`: a call over the limit also ends the runtime's process, whose state is `down (ended by the host: …)`; restart it with `restart()` on the runtime's fiber |
-| `.allowed_services([..])` | Its plugins may use only these of the services from outside the runtime; a row whose `inject` holds another fails to start (code `unavailable`). What rows of the same runtime provide each other is not limited |
 | `.greeting(limit)` | How long the process may take to greet once started, 30 s by default; `Duration::MAX` for no limit (a debugger stopped at the first line) |
 
 A process per plugin: a `named` runtime per plugin, its rows through `RuntimeResolver::modules`, named `<runtime name>:<npm name or file>` (Node and Python alike).
 
 ### Go runtimes
 
-Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis-loader`). `GoResolver` reads binaries' manifests (`<binary> --rutis-manifest`) and routes `go:<plugin>` to the binary that has it; `GoRuntimes` starts a binary's runtime when a row uses it and stops it once idle:
+Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis-loader`). `BinaryResolver<Go>` reads binaries' manifests (`<binary> --rutis-manifest`) and routes `go:<plugin>` to the binary that has it; `BinaryRuntimes<Go>` starts a binary's runtime when a row uses it and stops it once idle:
 
 ```rust,no_run
 # use std::sync::Arc;
@@ -537,15 +544,16 @@ Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis
 # let root = rutis::Ctx::root()?;
 # let catalog = ServiceCatalog::new();
 # let app = std::env::current_dir()?.join("app");
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 
 let go = Arc::new(
-    GoResolver::new(GoBinaries::new().dir(app.join("plugins/go")).file(app.join("bin/netkit")))
+    BinaryResolver::<Go>::new(Binaries::new().dir(app.join("plugins/go")).file(app.join("bin/netkit")))
         .with_catalog(&catalog)
         .reserve(["node", "py"]),              // other runtimes' names, which no Go runtime may take
 );
 // In the loader's Chain: Chain::new().with_shared(go.clone())…; after mounting the loader:
-let go_runtimes = GoRuntimes::new(go, &app).idle(Some(Duration::from_secs(60)));
+let go_runtimes = BinaryRuntimes::<Go>::new(go, &app).idle(Some(Duration::from_secs(60)));
 let control = go_runtimes.handle();            // restart("go-netkit"), runtimes()
 root.plugin(go_runtimes).await?;
 # let _ = control;
@@ -556,7 +564,7 @@ root.plugin(go_runtimes).await?;
 - A runtime is named after its file (`netkit` → `go-netkit`); when two binaries have a plugin of the same name, the row is `go-netkit:<plugin>`.
 - While a process runs, rows resolve from the manifest it started with; a replaced binary takes effect after `control.restart("go-netkit")`.
 - A crashed runtime is not restarted automatically by default. After `control.supervise(RestartPolicy::OnFailure, |end| …)` (`rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd}`), a runtime whose process ended on its own starts again after a wait (1 s, doubling each time up to 30 s, back to 1 s after 60 s of running; after 5 restarts within 5 minutes one more end gives up), each runtime counted on its own; `RestartPolicy::Exit` only reports the end to the callback (`RuntimeEnd::Exit`), for the application to stop. `end.line()` is the line rutis-host prints; `control.unsupervise()` stops supervising, and a restart waiting out its wait does not happen. A runtime that ended before the first `supervise` (it crashed while the application was starting) is handled by `supervise` all the same, only its latest end kept; an application that will not supervise calls `control.unsupervise()` once, and those ends are no longer kept. A binary whose handshake was refused (an old SDK) did not end on its own and is not restarted.
-- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); `GoResolver` is `BinaryResolver<Go>`.
+- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); Go is `L` = `Go`.
 
 - To run one fixed binary, it also works as Python does: `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (rows `<runtime name>:<plugin>`).
 
@@ -582,7 +590,7 @@ rutis has no `tracing` / `log` integration; the host's own logging works as usua
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let root = rutis::Ctx::root()?;
 # let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, WebSocketPlugin};
 use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
 
 let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
@@ -716,7 +724,7 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 | An enum without serde (or `untagged`) | its type name | the variant's Rust name (from its derived `Debug`) | its serde value if it has one |
 | A struct with serde | its type name | the string it serializes to, else its type name | its serde value |
 | `String` | `Error` | `Error` (the string is the `message`) | — |
-| `rutis::Error`, `rutis::host::ErrorKind` | `CordisError` (the name on the wire is unchanged) | the `ErrorKind` variant (`PluginFailed` for an error from plugin code) | — |
+| `rutis::Error`, `rutis::host::ErrorKind` | `Error` (declared as `ErrorThrown`) | the `ErrorKind` variant (`PluginFailed` for an error from plugin code) | — |
 | `rutis_bridge::session::Error` | thrown as it is (a call it forwarded keeps the far end's error) | | |
 | Anything else (`anyhow::Error`, `io::Error`) | its type name | its type name | — |
 
