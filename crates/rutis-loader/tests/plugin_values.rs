@@ -45,6 +45,7 @@ use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
 #[cfg(feature = "go")]
 use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+#[cfg(feature = "go")]
 use rutis_loader::runtime::go::Go;
 #[cfg(any(
     feature = "node",
