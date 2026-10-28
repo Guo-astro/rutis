@@ -337,16 +337,7 @@ impl BinaryRuntime {
     }
 }
 
-/// The interpreter of the virtual environment `venv`.
-pub fn venv_python(venv: &Path) -> PathBuf {
-    match cfg!(windows) {
-        true => venv.join("Scripts").join("python.exe"),
-        false => venv.join("bin").join("python"),
-    }
-}
-
-/// The interpreter used when no environment names one.
-pub const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
+pub use rutis_loader::internal::{venv_python, DEFAULT_PYTHON};
 
 /// `path` as a `file:` URL (percent-encoded, with a drive letter on
 /// Windows); a relative path, which has none, as `file://<path>`.

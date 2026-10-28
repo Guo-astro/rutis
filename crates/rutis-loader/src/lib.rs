@@ -84,7 +84,9 @@ pub mod resolve {
 #[doc(hidden)]
 pub mod internal {
     #[cfg(feature = "install")]
-    pub use crate::install::install_go_module;
+    pub use crate::install::{
+        install_go_module, node_runtime_package, quoted_path, venv_of, venv_python, DEFAULT_PYTHON,
+    };
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
     #[cfg(feature = "peer")]
     pub use crate::peer::{node_schema, REMOVED_EVENTS};
