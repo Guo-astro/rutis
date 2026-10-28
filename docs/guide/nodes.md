@@ -181,6 +181,10 @@ Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android �
 
 已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 成为一个节点，见 [Cordis](cordis.md)。
 
+## 自建连接
+
+自己的连接方式（中继、蓝牙、别的传输）写成一个连接插件：拿到一条能收发二进制消息的连接，交出去成为一个会话。Rust 里交出 `Channel`：`ctx.plugin(rutis_bridge::Session::new(channel))`（见 [写 Rust 宿主：节点](rust-host.md#节点)）；其他语言调服务 `sessions` 的 `open`（见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)）。对面的插件在这里叫 `<对面 id>:<插件>`，要让对面运行一个插件就写行 `<连接行>:<插件>`。
+
 ## 安全
 
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。

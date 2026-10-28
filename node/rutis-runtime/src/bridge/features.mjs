@@ -48,7 +48,9 @@ export const Export = {
               if (offered === sentTo) return
               sentTo = offered
               if (offered === undefined) return
-              link.callAsync('', 'services.announce', [{ name, service: record, shape, version: announced }])
+              // The export list names services, not their plugins: the service's
+              // name stands for its plugin (this path goes with the node rows).
+              link.callAsync('', 'services.announce', [{ name, service: record, shape, version: announced, plugin: name }])
                 .catch(error => process.stderr.write(`rutis-bridge: cannot announce ${name} to ${peer}: ${error.message}\n`))
             })
             one.effect(() => async () => {

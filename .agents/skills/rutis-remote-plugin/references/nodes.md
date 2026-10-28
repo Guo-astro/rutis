@@ -183,6 +183,10 @@ Kotlin plugins usually ship inside an Android application, which dials out to ru
 
 An existing Cordis application can become a node through `@arcships/rutis-runtime/bridge`; see [Cordis](https://github.com/arcships/rutis/blob/main/docs/guide/cordis.en.md).
 
+## Your own connection
+
+Write your own way of connecting (a relay, Bluetooth, another transport) as a connection plugin: take a connection that carries binary messages and hand it over as a session. In Rust, hand over a `Channel`: `ctx.plugin(rutis_bridge::Session::new(channel))`, with the host providing `rutis_bridge::LocalId` in the root ctx (rutis-host does); in other languages, declare `inject: ['sessions']` and call `sessions.open({ send, close })`, then feed incoming messages to the returned `near.receive(bytes)` and call `near.end({ kind: 'done' })` when the connection ends (https://github.com/arcships/rutis/blob/main/docs/guide/plugin-api.en.md#your-own-connection-sessionsopen). The far end's plugins are named `<far id>:<plugin>` here; to have the far end run a plugin, write a row `<connection row>:<plugin>`, which waits while the far end is not there.
+
 ## Security
 
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.

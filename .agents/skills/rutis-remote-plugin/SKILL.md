@@ -136,6 +136,10 @@ await rutis.stop()        // unloads every plugin (latest first), then disconnec
 - A device at a fixed address can listen instead: `RutisApp(plugins:, configs:, listen: "wss://0.0.0.0:7443/rutis", id:, token:, certificate: <SecIdentity>)`, dialed from rutis by a `rutis-host/dial` row (step 5); it installs its own plugins the same way.
 - Guides: https://github.com/arcships/rutis/blob/main/docs/guide/swift-app.en.md, https://github.com/arcships/rutis/blob/main/docs/guide/kotlin-app.en.md
 
+## 4d. Or bring your own connection
+
+When the far end is reached by a way of connecting rutis does not ship (a relay, Bluetooth), write a connection plugin that hands the connection over as a session: in Rust `ctx.plugin(rutis_bridge::Session::new(channel))` (the host provides `rutis_bridge::LocalId` in the root ctx; rutis-host does), in other languages `sessions.open({ send, close })` with `inject: ['sessions']`. Details and a full example: [references/nodes.md](references/nodes.md#your-own-connection). The far end's plugins are then `<far id>:<plugin>` here; rows `<connection row>:<plugin>` run plugins there.
+
 ## 5. Configure the rutis side
 
 Details in `references/rutis-json.md` and `references/nodes.md`.

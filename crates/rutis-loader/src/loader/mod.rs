@@ -46,6 +46,32 @@ pub use plugins::LoaderPlugin;
 pub use service::cannot_reload;
 pub(crate) use service::LoaderService;
 
+/// A [`Loader`] that does not keep it alive.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
+pub(crate) struct WeakLoader(std::sync::Weak<Inner>);
+
+impl Loader {
+    #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
+    pub(crate) fn downgrade(&self) -> WeakLoader {
+        WeakLoader(Arc::downgrade(&self.inner))
+    }
+
+    /// The loader's own context while it is mounted: what plugins of its
+    /// resolvers are mounted under.
+    #[cfg(feature = "runtimes")]
+    pub(crate) fn ctx(&self) -> Option<Ctx> {
+        let state = self.inner.state.lock().unwrap();
+        state.groups.get(&None).map(|group| group.ctx.clone())
+    }
+}
+
+#[cfg(feature = "runtimes")]
+impl WeakLoader {
+    pub(crate) fn upgrade(&self) -> Option<Loader> {
+        self.0.upgrade().map(|inner| Loader { inner })
+    }
+}
 pub use waits::{Wait, WaitReason};
 
 pub struct LoaderOptions {

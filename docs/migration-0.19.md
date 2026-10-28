@@ -109,6 +109,9 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
   | `Process::attach(channel, mount, Format::Endpoint(e))` | `Process::attach(channel, mount, e)` |
   | `session::PROTOCOL`（2）、`cordis::PROTOCOL`；`session::ENDPOINT_PROTOCOL` 为 3 | 删；`session::ENDPOINT_PROTOCOL` 与 `cordis::ENDPOINT_PROTOCOL` 为 4 |
   | `LinkConfig` 的 `compat` | 删 |
+  | 自建连接实现 `Transport` | 交出一条 `Channel`：`ctx.plugin(Session::new(channel))`，或先 `Session::handshake(&ctx, channel).await` 再 `ctx.plugin(greeted)`；其他语言用服务 `sessions` 的 `open` |
+
+- 自己挂 `Session` 的 Rust 嵌入要在根 ctx 提供本端在握手里报的 id：`root.provide(rutis_bridge::LocalId(id))`；没有时会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
 
 - 自建连接：交出一条 `Channel`：写一个连接插件，调 `Session::new(channel)`；其他语言用 `sessions.open`。
 - `rutis-bridge/peer` 行的 `transport` 字段删除：写了它的 rutis.json 在启动时报不认识的字段。
