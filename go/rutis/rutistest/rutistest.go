@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/internal/config"
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/events"
@@ -295,7 +296,7 @@ func Load(t testing.TB, plugin *rutis.Definition, config any, services map[strin
 		scope:       map[string][]rutis.Scope{},
 	}
 	go func() {
-		err := rutis.ServeConn(runtimeSide, plugin)
+		err := advanced.ServeConn(runtimeSide, plugin)
 		// A runtime that ended early reads nothing more: closing its end
 		// fails the test side's writes at once instead of hanging them.
 		runtimeSide.Close()
@@ -782,7 +783,7 @@ type declaration struct {
 }
 
 func describe(t testing.TB, plugin *rutis.Definition, entry string) declaration {
-	data, err := rutis.Manifest(plugin)
+	data, err := advanced.Manifest(plugin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1006,7 +1007,7 @@ func (i *invocation) local(ctx context.Context, mode events.Mode, args []any, ne
 		plain = append(plain, value)
 	}
 	if mode.Waterfall() {
-		plain = append(plain, rutis.Next(func(ctx context.Context) (any, error) {
+		plain = append(plain, advanced.Next(func(ctx context.Context) (any, error) {
 			value, err := next(ctx)
 			if err != nil {
 				return nil, err
@@ -1217,7 +1218,7 @@ func (h *harness) dispatchFromRuntime(ctx context.Context, args []any) (any, err
 // disposer is called or the test ends: the plugin's emissions of `name`
 // reach `fn` (through the test side, as through rutis), and so do the
 // test's own. `fn` gets the arguments as a listener in another process
-// does, and in a waterfall a rutis.Next last. The listener is at the root
+// does, and in a waterfall a advanced.Next last. The listener is at the root
 // scope.
 func (l *Loaded) On(name string, fn func(ctx context.Context, args ...any) (any, error), options ...rutis.ListenOption) func() {
 	l.h.t.Helper()
@@ -1293,7 +1294,7 @@ func (l *Loaded) Emit(ctx context.Context, name string, args ...any) error {
 }
 
 // Parallel runs every listener of `name` and waits for all; failures are
-// a *rutis.AggregateError in registration order.
+// a *advanced.AggregateError in registration order.
 func (l *Loaded) Parallel(ctx context.Context, name string, args ...any) error {
 	_, err := l.emit(ctx, nil, name, events.ModeParallel, args, nil)
 	return err
