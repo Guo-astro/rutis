@@ -3,7 +3,7 @@
 //! every language listen to it; only rutis emits it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use rutis::events::Scope;
 use rutis::host::CtxHost;
@@ -90,7 +90,7 @@ pub(crate) fn follow(
         view: view.clone(),
         last: Mutex::new((0, RowState::Pending)),
         emit: Box::new(emit),
-        followers: followers.clone(),
+        followers: Arc::downgrade(followers),
     });
     // A dispatch selects its listeners before it runs them, so a change
     // emitted before this follower entered the map can still arrive after
@@ -243,7 +243,10 @@ struct Follower {
     /// The `seq` of the latest change seen, and the state said last.
     last: Mutex<(u64, RowState)>,
     emit: Emit,
-    followers: Arc<Followers>,
+    /// The loader's followers, weakly: the map holds the follower, so a
+    /// strong reference here would keep both alive when a `Disposed` is
+    /// never delivered.
+    followers: Weak<Followers>,
 }
 
 impl Follower {
@@ -263,7 +266,9 @@ impl Follower {
         }
         drop(last);
         if fiber == FiberState::Disposed {
-            self.followers.remove(self.view.id);
+            if let Some(followers) = self.followers.upgrade() {
+                followers.remove(self.view.id);
+            }
         }
     }
 }
@@ -273,10 +278,6 @@ mod tests {
     use super::*;
     use rutis::host::{BoxFuture, DynPlugin, Effect};
     use rutis::internal::CtxInternal;
-
-    /// The root is one per process, so a listener count sees the rows of
-    /// every test running: these tests take turns.
-    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn status_listeners(root: &Ctx) -> usize {
         root.events()
@@ -317,7 +318,6 @@ mod tests {
     /// `follow` read the state.
     #[tokio::test]
     async fn changes_are_said_once_in_order() {
-        let _serial = SERIAL.lock().await;
         let (root, followers, view, gate) = mount_row().await;
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
@@ -371,7 +371,6 @@ mod tests {
     /// ([`follow`]'s contract).
     #[tokio::test]
     async fn a_row_that_ends_at_once_still_says_running() {
-        let _serial = SERIAL.lock().await;
         let (root, followers, view, gate) = mount_row().await;
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
@@ -412,7 +411,6 @@ mod tests {
     /// `stopped`, and `stop()` with an empty map withdraws it.
     #[tokio::test]
     async fn a_second_listen_keeps_the_registration() {
-        let _serial = SERIAL.lock().await;
         let root = Ctx::root().unwrap();
         let before = status_listeners(&root);
         let followers = Arc::new(Followers::default());

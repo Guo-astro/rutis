@@ -32,7 +32,6 @@ fn states(events: &Arc<Mutex<Vec<RowEvent>>>, row: &str) -> Vec<RowState> {
 /// group named), a root row at the root.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_announce_their_states_at_their_scopes() {
-    let _serial = SERIAL.lock().await;
     let harness = Harness::new();
     let store = MemStore::default();
     let (root, loader) = mount(harness.resolver(), store.clone()).await;
@@ -114,10 +113,6 @@ fn status_listeners(root: &rutis::Ctx) -> usize {
         .count()
 }
 
-/// The root is one per process, so a listener count sees the loaders of every
-/// test running: these tests take turns.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// guarantee: events/framework (rutis/row)
 ///
 /// The loader follows every row with one `FiberStatusChanged` listener:
@@ -125,7 +120,6 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// stopping leaves it unchanged.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_share_one_status_listener() {
-    let _serial = SERIAL.lock().await;
     let harness = Harness::new();
     let store = MemStore::default();
     let (root, loader) = mount(harness.resolver(), store.clone()).await;
@@ -196,7 +190,6 @@ async fn rows_share_one_status_listener() {
 /// count returns to what it was before the loader.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_stopped_with_the_loader_say_stopped() {
-    let _serial = SERIAL.lock().await;
     let root = rutis::Ctx::root().unwrap();
     let harness = Harness::new();
     let store = MemStore::default();
@@ -268,7 +261,6 @@ async fn rows_stopped_with_the_loader_say_stopped() {
 /// changes through its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_loader_still_listens_once() {
-    let _serial = SERIAL.lock().await;
     let root = rutis::Ctx::root().unwrap();
     let harness = Harness::new();
     let store = MemStore::default();
@@ -315,24 +307,35 @@ async fn a_restarted_loader_still_listens_once() {
     )
     .await;
     assert_eq!(status_listeners(&root), listening);
+    let ran_a = count("a", RowState::Running);
+    let ran_b = count("b", RowState::Running);
     view.restart().await.unwrap();
-    // A restart disposes the rows, and the loader disables a row disposed on
-    // its own; they run again once enabled, through the new registration.
-    assert_eq!(
-        status_listeners(&root),
-        listening,
-        "one listener after the restart"
-    );
-    let started_a = count("a", RowState::Running);
-    let started_b = count("b", RowState::Running);
-    loader.set_disabled("a", false).await.unwrap();
-    loader.set_disabled("b", false).await.unwrap();
+    // The withdrawal of a registration is spawned, so the count settles
+    // rather than changing on the spot; a second registration would stay 2.
+    eventually(
+        || (status_listeners(&root) == listening).then_some(()),
+        "one listener after the restart",
+    )
+    .await;
+    // A restart disposes the rows; the loader disables a row disposed on its
+    // own, and a row it respawned may already run again. Enable whichever is
+    // off, so both run through the new registration.
+    for id in ["a", "b"] {
+        let off = loader
+            .status()
+            .rows
+            .iter()
+            .any(|row| row.id == id && row.state == rutis_loader::status::RowState::Disabled);
+        if off {
+            loader.set_disabled(id, false).await.unwrap();
+        }
+    }
     eventually(
         || {
-            (count("a", RowState::Running) > started_a && count("b", RowState::Running) > started_b)
+            (count("a", RowState::Running) > ran_a && count("b", RowState::Running) > ran_b)
                 .then_some(())
         },
-        "both rows running again",
+        "both rows say running again",
     )
     .await;
     assert_eq!(
