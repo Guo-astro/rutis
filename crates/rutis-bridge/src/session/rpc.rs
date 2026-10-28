@@ -903,10 +903,10 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-decimal",
     "value-uuid",
 ];
-/// The event protocol of rutis 0.13 (#464): mandatory, declared by every
-/// endpoint; a far end that does not declare it is refused
-/// right after the handshake (`docs/design-events-protocol-2026-10-18.md`
-/// §2).
+/// The event protocol of rutis 0.13 (#464), declared by every endpoint
+/// (`docs/design-events-protocol-2026-10-18.md` §2). This side no longer
+/// checks the far end's declaration: an older far end is refused by its
+/// protocol version.
 pub const EVENTS_CAPABILITY: &str = "events-v2";
 /// Plugin definitions as values (`plugin` references,
 /// `docs/design-plugin-values-2026-10-25.md` §5): a side declaring it takes
@@ -1226,15 +1226,6 @@ fn version_mismatch(far: u32, local: u32, implementation: Option<&Implementation
     }
 }
 
-/// Why a far end that does not declare [`EVENTS_CAPABILITY`] is refused
-/// (`docs/design-events-protocol-2026-10-18.md` §2.2): `far` names it.
-fn without_events(far: &str) -> String {
-    format!(
-        "the far end ({far}) does not declare events-v2 (the event protocol of rutis 0.13): \
-         upgrade it to rutis 0.13 or later"
-    )
-}
-
 /// Whether the control operation `method` takes its turn in the session's
 /// ordered stream (events protocol §4.1, §5.5, §7.1): every `events.*`
 /// operation, and `rows.ended`, which changes the same table.
@@ -1464,7 +1455,7 @@ impl Connection {
             waits::Profile {
                 // One thread, one stack: declared, not inferred (a Rust far
                 // end marks its waits but runs each call on its own thread).
-                stacked: self.supports("sync-wait") && self.supports("sync-stack"),
+                stacked: self.supports("sync-stack"),
                 // Not declared: taken as non-reentrant (#228).
                 reentrant: self.supports("reentrant-sync"),
             },
@@ -1706,7 +1697,6 @@ impl Connection {
             })?;
         // Leaves the wait graph if the call is not sent after all.
         let unsent = Unsent(hop.then(|| (self.0.tag.clone(), id.clone())));
-        let sync = synchronous && self.supports("sync-wait");
         if let Operation::Await(_, origin) = &call {
             if let Waiting::Sync { origins, .. } = &mut waiting {
                 *origins = origin.clone();
@@ -1729,7 +1719,7 @@ impl Connection {
                     target: target.clone(),
                     method: method.clone(),
                     args,
-                    sync,
+                    sync: synchronous,
                 };
                 (frame, grants)
             }
@@ -1741,7 +1731,7 @@ impl Connection {
                     reference: *reference,
                     method: method.clone(),
                     args,
-                    sync,
+                    sync: synchronous,
                 };
                 (frame, grants)
             }
@@ -1751,7 +1741,7 @@ impl Connection {
                     path,
                     reference: *reference,
                     property: property.clone(),
-                    sync,
+                    sync: synchronous,
                 },
                 Vec::new(),
             ),
@@ -1760,7 +1750,7 @@ impl Connection {
                     id: id.clone(),
                     path,
                     reference: *reference,
-                    sync,
+                    sync: synchronous,
                 },
                 Vec::new(),
             ),
@@ -2261,15 +2251,6 @@ impl Connection {
                         import
                     }
                 };
-                // Imported first, so dropping it releases it on the far end.
-                if kind == Kind::Plugin && !self.declares(PLUGINS_CAPABILITY) {
-                    drop(import);
-                    return Err(Error::Value(
-                        "received a plugin definition, which this side does not take \
-                         (it did not declare the capability plugins)"
-                            .into(),
-                    ));
-                }
                 Value::Reference(Reference(ReferenceInner::Remote(import)))
             }
         })
@@ -2315,13 +2296,6 @@ impl Connection {
             ))));
         }
         let capabilities = capabilities.unwrap_or_default();
-        if !capabilities.iter().any(|c| c == EVENTS_CAPABILITY) {
-            let named = match &implementation {
-                Some(Implementation { name, version }) => format!("{name} {version}"),
-                None => endpoint.to_string(),
-            };
-            return Err(incompatible(without_events(&named)));
-        }
         let _ = self.0.remote_prefix.set(format!("{endpoint}:"));
         let _ = self.0.greeting.set(Greeting {
             endpoint,

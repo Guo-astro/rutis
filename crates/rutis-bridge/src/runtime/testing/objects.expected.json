@@ -185,7 +185,7 @@
       "go": "no",
       "swift": "yes",
       "kotlin": "yes",
-      "rust": "yes"
+      "rust": "no"
     },
     {
       "id": "declared-type-refuses",

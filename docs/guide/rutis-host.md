@@ -1,81 +1,181 @@
 # rutis-host 与 rutis.json
 
-`rutis-host` 是不需要写 Rust 的宿主：它把内核、插件加载、本机的 Node / Python / Go / Swift 运行时和网络连接组装好，由一份 `rutis.json` 驱动。插件作者用它在本地开发，也可以直接用它部署。需要自定义 Rust 服务的应用见 [在 Rust 应用里嵌入](rust-host.md)。
+`rutis-host` 是不需要写 Rust 的宿主：它把内核、插件加载、本机的 Node / Python / Go / Swift 运行时和网络连接组装好，由一份 `rutis.json` 驱动。这一页写给组装插件的人：装别人写的插件、写 `rutis.json`、运行并试一下；插件作者也用它在本地开发。需要自定义 Rust 服务的应用见 [在 Rust 应用里嵌入](rust-host.md)；在自己的 Rust 产品里开放插件，见 [做一个开放插件的宿主](open-host.md)。
 
 ## 快速上手
 
-给别人发布的两个插件做一个宿主：一个 TypeScript 插件，npm 上的 `@your-name/weather`，它用 `llm` 服务；一个 Python 插件，PyPI 上的 `your-name-llm`，它的入口点 `llm` 提供这个服务。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
+用两个插件组装一个宿主：TypeScript 写的 `greeter` 提供 `greeter` 服务（`hello(name)`）；Python 写的 `welcome` 用这个服务，提供 `welcome` 服务（`everyone(names)`）。插件平常从 npm、PyPI 装（`npm:@your-name/greeter`、`pypi:your-name-welcome`）；这里两个插件项目由 `rutis-host new` 在本地生成、从文件装，所以每一步都能照原样运行。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
 
-1. 在宿主自己的目录里装 `rutis-host`，再用它装两个插件：
+1. 生成两个插件项目。`greeter` 用模板原样，打成 npm 包（`npm pack` 先运行 `prepack`，用 `tsc` 构建）：
 
+<!-- example: rutis-host run -->
 ```bash
-mkdir app && cd app
-npm init -y && npm install -D @arcships/rutis-host   # rutis-host 带着 Node 运行时
-npx rutis-host add npm:@your-name/weather            # npm 上的插件：装进这里的 Node 项目
-npx rutis-host add pypi:your-name-llm                # PyPI 上的插件：没有 .venv 时先建好，装上同版本的 rutis
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
+npm install
+npm pack                                              # 打出 greeter-0.1.0.tgz
+cd ..
+npx @arcships/rutis-host new welcome --lang python
 ```
 
-`add` 只要知道插件从哪里来（`npm:`、`pypi:`、Go 模块路径、本地路径），语言、包管理器、环境和行名都由它决定。每装一个，它打印插件的介绍（版本、`inject`、`provides`、配置 Schema）和 `check` 对这一行的结论：
+`welcome/src/welcome/__init__.py` 换成用 `greeter` 的插件（模板自带的测试测的是原来的代码，这里不跑它；怎样写插件见 [Python 插件](python-plugin.md)）：
+
+<!-- example: rutis-host file=welcome/src/welcome/__init__.py -->
+```python
+from rutis import define_plugin
+
+
+class Welcome:
+    def __init__(self, greeter):
+        self.greeter = greeter
+
+    async def everyone(self, names: list[str]) -> list[str]:
+        return [await self.greeter.hello(name) for name in names]
+
+
+def apply(ctx, config):
+    ctx.provide("welcome", Welcome(ctx.use("greeter")))
+
+
+plugin = define_plugin(apply, inject=["greeter"], provides={"welcome": Welcome})
+```
+
+2. 建宿主自己的目录，装 `rutis-host`，再用它装两个插件：
+
+<!-- example: rutis-host run -->
+```bash
+mkdir app
+cd app
+npm init -y
+npm install -D @arcships/rutis-host                   # rutis-host 带着 Node 运行时
+npx rutis-host add ../greeter/greeter-0.1.0.tgz       # npm 包：装进这里的 Node 项目
+npx rutis-host add ../welcome                         # Python 项目：没有 .venv 时先建好，装上同版本的 rutis
+```
+
+`add` 只要知道插件从哪里来（`npm:`、`pypi:`、Go 模块路径、本地路径），语言、包管理器、环境和行名都由它决定。包管理器的输出之后，每装一个，它打印插件的介绍（版本、`inject`、`provides`、配置 Schema）和 `check` 对这一行的结论：
 
 ```text
-installed @your-name/weather 1.2.0 (node) into /home/me/app
-weather (@your-name/weather): cannot run: nothing provides llm
-  version: "1.2.0"
-  inject: ["llm"]
-  provides: {}
-  config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
-  llm: add a row that provides it, or import it from a peer (import: ["llm"])
-rutis.json: added row weather, runtimes.node
-installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
-llm (py:llm): ok
-  version: "0.3.0"
+installed ../greeter/greeter-0.1.0.tgz 0.1.0 (node) into /home/me/app: plugin greeter
+greeter (greeter): ok
+  version: "0.1.0"
   inject: []
-  provides: {"llm":{"complete":"async"}}
-rutis.json: added row llm, runtimes.py
+  provides: {"greeter":{"hello":"async"}}
+  config: {"type":"object","properties":{"greeting":{"type":"string","default":"Hello"}}}
+rutis.json: added row greeter, runtimes.node
+installed ../welcome 0.1.0 (py) into /home/me/app/.venv: plugin welcome
+welcome (py:welcome): ok
+  version: "0.1.0"
+  inject: ["greeter"]
+  provides: {"welcome":{"everyone":"async"}}
+rutis.json: added row welcome, runtimes.py
 ```
 
-2. `add` 写好了 `rutis.json`：要启动的运行时、装了什么（`installed`）、每个插件一行（`name` 是行名的已有写法，由 `add` 写好：Node 是包名，Python 是 `py:<入口点>`；`config` 是插件的配置，按需加上）：
+先装 `welcome` 时，它这一行的结论是 `cannot run: nothing provides greeter`；`add` 仍以 0 退出，装上 `greeter` 后就好了。
+
+`add` 写好的 `rutis.json`：要启动的运行时（`runtimes`）、装了什么（`installed`）、每个插件一行（`rows`；行名 `name` 由 `add` 写好：Node 是包名，Python 是 `py:<入口点>`）：
 
 ```json
 {
   "format": 1,
-  "runtimes": { "node": {}, "py": {} },
+  "runtimes": {
+    "node": {},
+    "py": {}
+  },
   "installed": {
-    "@your-name/weather": { "from": "npm:@your-name/weather" },
-    "py:llm": { "from": "pypi:your-name-llm" }
+    "greeter": {
+      "from": "../greeter/greeter-0.1.0.tgz"
+    },
+    "py:welcome": {
+      "from": "../welcome"
+    }
   },
   "rows": [
-    { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "py:llm" }
+    {
+      "id": "greeter",
+      "name": "greeter"
+    },
+    {
+      "id": "welcome",
+      "name": "py:welcome"
+    }
   ]
 }
 ```
 
 3. 先检查，再运行：
 
+<!-- example: rutis-host run -->
 ```bash
-npx rutis-host check --strict        # 每一行 ok，每一行用到的服务都有别的行声明；以 0 退出
+npx rutis-host check --strict                         # 每一行 ok，每一行用到的服务都有别的行声明；以 0 退出
+```
+
+<!-- example: rutis-host run until="welcome: running" -->
+```bash
 npx rutis-host run --watch-config
 ```
 
 ```text
-llm: running
-weather: running
+greeter: running
+welcome: running
 ```
 
 每一行的状态变化时打印一行（还有 `starting`、`waiting for its services` 等，见 [run 打印什么](#run-打印什么)）。
 
-4. 运行中改配置：把 `rutis.json` 里的 `"Oslo"` 改成 `"Bergen"` 并保存。有 `--watch-config` 时宿主重新读这个文件，只重启变了的那一行：
+4. 另开一个终端，在 `app` 里看现在有哪些服务、由哪一行提供，再调一次（Windows 上不提供 `status` 与 `call`）：
+
+```console
+$ npx rutis-host status
+rows:
+  greeter: running
+  welcome: running
+services:
+  greeter: greeter
+  loader: host
+  welcome: welcome
+runtimes:
+  node: running (pid 12416)
+  py: running (pid 12415)
+calls:
+  none
+$ npx rutis-host call welcome.everyone '["Ana", "Bo"]'
+[
+  "Hello, Ana!",
+  "Hello, Bo!"
+]
+```
+
+`call` 的每个参数是一个 JSON 值，字符串带引号（`'"Ana"'`）；结果打印成 JSON。见 [查看当前状态](#查看当前状态)、[调用一个服务](#调用一个服务)。
+
+5. 运行中改配置：在 `rutis.json` 的 `greeter` 那一行加上 `"config": { "greeting": "Hej" }` 并保存。有 `--watch-config` 时宿主重新读这个文件，只重启变了的那一行：
 
 ```text
 rutis-host: reloaded rutis.json (1 row changed)
 ```
 
-Unix 上不加 `--watch-config`，发 SIGUSR1 也一样，见 [运行中改配置](#运行中改配置)。
+再调一次，`welcome.everyone` 返回 `"Hej, Ana!"`、`"Hej, Bo!"`。Unix 上不加 `--watch-config`，发 SIGUSR1 也一样，见 [运行中改配置](#运行中改配置)。
 
-5. Ctrl-C 停止：每个插件的清理都运行，运行时退出，`rutis-host` 以 0 退出。
+6. Ctrl-C 停止：每个插件的清理都运行，运行时退出，`rutis-host` 以 0 退出。
 
-还没发布的插件也这样从文件装：`npx rutis-host add ../weather/your-name-weather-0.1.0.tgz`（插件项目里 `npm pack` 打出的包），`npx rutis-host add ../llm`（插件的项目目录）。其他语言见 [宿主怎样装插件](#宿主怎样装插件)。
+接下来：
+
+- 装发布的插件：`npx rutis-host add npm:@your-name/greeter`、`npx rutis-host add pypi:your-name-welcome`；Bun、Go、Swift 插件和手动安装见 [宿主怎样装插件](#宿主怎样装插件)。
+- 插件作者在自己的插件项目里用 `rutis-host dev` 运行插件，改了文件就重新加载，启动后打印现在的服务（`rutis-host dev: services: …`），见 [用 dev 开发插件](#用-dev-开发插件)。
+- 插件在另一台机器上运行，见 [远程运行时](#远程运行时)。
+
+## 最小的 rutis.json
+
+手写时，一份能运行的 `rutis.json` 只要写出运行时和行：
+
+```json
+{
+  "runtimes": { "node": {} },
+  "rows": [{ "id": "greeter", "name": "greeter" }]
+}
+```
+
+- `rows`：每个要运行的插件一行；`id` 是行的名字，`name` 是插件（npm 包名、`py:<入口点>` 等，见 [rows](#rows)），按需加上 `config`。
+- `runtimes`：行用到的每个运行时写一个，空对象就是默认设置。npm 包名不会让宿主推断出 Node，不写 `runtimes.node` 时这一行报 `no plugin named "greeter"`；`py:` 行没写 `runtimes.py` 时按默认设置启用并告警（见 [runtimes](#runtimes)）。
+- `format`（默认 `1`）和 `installed`（`add` 的记录）可以不写；其余字段见 [rutis.json](#rutisjson)。
 
 ## 安装
 
@@ -159,15 +259,24 @@ a running host keeps the old versions until it restarts
 | 插件 | 用什么装 | 装到哪里 | 行的 `name` |
 | --- | --- | --- | --- |
 | TypeScript、JavaScript（npm） | `npm install <包名>` | Node 项目（`runtimes.node.project`，默认是 `rutis.json` 所在目录），和 `@arcships/rutis-runtime` 在一处（或用 npm 版 `rutis-host` 自带的那份） | 包名（`@your-name/weather`）或它的子路径；单个文件写 `./plugins/tool.ts` |
-| Bun | `bun add @arcships/rutis-bun <包名>` | Bun 项目（`runtimes.bun.project`） | `bun:<包名>`（[Bun 插件](bun-plugin.md#3-在宿主里运行)） |
+| Bun | `bun add @arcships/rutis-bun <包名>` | Bun 项目（`runtimes.bun.project`） | `bun:<包名>`（见下面的 [各语言](#各语言)） |
 | Python | 先 `uv venv` 一次，再 `uv pip install --python .venv/bin/python "rutis==<rutis-host 的版本>" <分发包名>`（用 pip：`.venv/bin/python -m pip install …`） | `runtimes.py.python` 的环境（默认先 `$VIRTUAL_ENV`，再 `<runtimes.py.project>/.venv`）；那里的 `rutis` 就是 Python 运行时，和 rutis-host 同版本 | `py:<入口点名>`（`py:llm`），`runtimes.py.project` 里的模块文件写 `py:<模块名>` |
-| Go | `GOBIN=<runtimes.go.dir> go install <模块>/cmd/<二进制>@<版本>`（用本机的 Go 工具链），或从插件的 release 下载本平台的二进制 | `runtimes.go.dir` | `go:<插件名>`（[Go 插件](go-plugin.md#6-被宿主使用)） |
-| Swift（macOS） | 从插件的 release 下载二进制 | `runtimes.swift.dir` | `swift:<插件名>`（[Swift 插件](swift-plugin.md#7-被宿主使用)） |
+| Go | `GOBIN=<runtimes.go.dir> go install <模块>/cmd/<二进制>@<版本>`（用本机的 Go 工具链），或从插件的 release 下载本平台的二进制 | `runtimes.go.dir` | `go:<插件名>`（见 [各语言](#各语言)） |
+| Swift（macOS） | 从插件的 release 下载二进制 | `runtimes.swift.dir` | `swift:<插件名>`（见 [各语言](#各语言)） |
 | Rust | 不用 `rutis-host`：Rust 应用自己挂它的 Rust 插件 | | [在 Rust 应用里嵌入](rust-host.md) |
 
 - 同一种语言的插件共用它的运行时：一个 Node 项目，一个 Python 环境。Python 插件对 `rutis` 只写下限，所以装插件不会把运行时降级；TypeScript 插件各自带着它写时那个版本的 SDK，几份可以并存（[插件 API：版本](plugin-api.md#版本)）。
 - 行用到的每个运行时都写进 `runtimes`（`"node": {}`、`"py": {}` 等：空对象就是默认设置）；没写的按默认设置启用，并给出告警（见 [runtimes](#runtimes)）。
 - 装好后，`rutis-host check --strict` 告诉你每一行能不能运行、每一行用到的服务是否都有别的行声明；放进 CI，不满足时失败。
+
+### 各语言
+
+- **TypeScript、JavaScript**：行名是包名（`@your-name/greeter`）或它的子路径。插件包带着它写时那个版本的 `@arcships/rutis`，宿主里几个版本可以并存；插件上标着它所用的插件 API 版本，宿主的运行时比它旧时明确报错。
+- **Bun**：包依赖 `@arcships/rutis-bun` 时 `add` 用 `bun add` 装进 `runtimes.bun.project`。行名 `bun:<npm 名或子路径>` 从这个项目的 `node_modules` 解析，`bun:./路径` 相对于这个项目；`bun:sqlite` 指项目里的模块 `sqlite`，不是 Bun 的内置模块。`runtimes.bun` 可以和 `runtimes.node`、`runtimes.py` 同时配置，服务按名字跨运行时共享。
+- **Python**：行名是插件包在 `rutis.plugins` 组里的入口点名（`py:welcome`），不是发行包名。Python 运行时就是这个环境里的 `rutis`，装成和 `rutis-host` 相同的版本（`rutis-host --version`）。
+- **Go**：二进制放进 `runtimes.go.dir`（`add` 用 `go install`，也可以下载插件发布里本平台的二进制；macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 在所有二进制里查找；两个二进制里有同名插件时写 `go-<二进制名>:<插件名>`。二进制在第一次有行用到时启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。
+- **Swift**（macOS）：从插件的 Release 下载二进制放进 `runtimes.swift.dir`；下载的二进制带隔离属性，`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除。行名 `swift:<插件>`（同名时 `swift-<二进制名>:<插件>`），其余设置与 `runtimes.go` 相同。运行它不需要 Swift 工具链。
+- **Rust**：Rust 插件编进 Rust 宿主，见 [在 Rust 应用里嵌入](rust-host.md)；Rust 宿主也能运行上面这些语言的插件（例如 Go 的 `BinaryResolver<Go>`、`BinaryRuntimes<Go>`），见 [运行时与加载器](rust-host.md#运行时与加载器)。
 
 ## 命令
 
@@ -264,7 +373,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `rutis/runtime` | 运行时运行起来（`running`）或结束（`down`，带 `reason`） |
 | `rutis/service` | 运行时的行提供的服务出现、被替换或撤走（`available`） |
 
-rutis 0.12 及更早的运行时（或节点）连进来时被拒绝：`incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later`。
+rutis 0.12 及更早的运行时（或节点）连进来时按协议版本被拒绝：`incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`。
 
 ## 检查配置
 
