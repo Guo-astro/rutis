@@ -231,26 +231,28 @@ pub fn fakes(
             )));
         }
         let binary = build(&fake)?;
-        let manifest = rutis_loader::internal::read_binary_manifest(&binary)
-            .map_err(|error| format!("{}: {error}", binary.display()))?;
-        let plugins: Vec<&String> = manifest.plugins.keys().collect();
-        let plugin = match plugins.as_slice() {
-            [plugin] => (*plugin).clone(),
-            [] => {
-                return Err(said(
-                    "serves no plugins; a fake needs a main that calls rutis.Serve".into(),
-                ))
+        let what = format!("rutis.dev.json: row {id}: {name}");
+        let (rows, _) = dev_rows(&binary, &fake.runtime, &own.dir, &what).map_err(|error| {
+            match error.strip_prefix(what.as_str()) {
+                Some(" serves no plugins") => {
+                    format!("{error}; a fake needs a main that calls rutis.Serve")
+                }
+                _ => error,
             }
-            more => {
-                let names: Vec<&str> = more.iter().map(|plugin| plugin.as_str()).collect();
-                return Err(said(format!(
-                    "serves {} plugins ({}); give each its own directory",
-                    names.len(),
-                    names.join(", ")
-                )));
-            }
+        })?;
+        let names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+        let [served] = names.as_slice() else {
+            let plugins: Vec<&str> = names
+                .iter()
+                .map(|name| name.split_once(':').map_or(*name, |(_, plugin)| plugin))
+                .collect();
+            return Err(said(format!(
+                "serves {} plugins ({}); give each its own directory",
+                plugins.len(),
+                plugins.join(", ")
+            )));
         };
-        row["name"] = json!(format!("{}:{plugin}", fake.runtime));
+        row["name"] = json!(served);
         built.push((binary, fake.runtime));
     }
     Ok(built)
@@ -260,11 +262,7 @@ pub fn fakes(
 /// `./dev/fakellm`; reading the dev file made it a `file:` URL), as
 /// `./dev/fakellm`; `None` for any other name.
 fn directory_in(project: &Path, name: &str) -> Option<String> {
-    let path = match name.strip_prefix("file:") {
-        Some(_) => url::Url::parse(name).ok()?.to_file_path().ok()?,
-        None if name.starts_with("./") => project.join(name),
-        None => return None,
-    };
+    let path = crate::project::local_path(name, project)?;
     if !path.is_dir() {
         return None;
     }
