@@ -209,7 +209,26 @@ rutis-host: error: rows one, two all provide llm: only the first to start provid
 
 Rows using a language whose runtime `runtimes` does not declare enable that runtime with its defaults, with a warning (see [`runtimes`](#runtimes)).
 
-rutis-host does not yet check a plugin's config against its schema (it does from 0.18, [#669](https://github.com/arcships/rutis/issues/669)); `check` only prints the schema. Whether a config is checked depends on how the plugin's language reads it: a Rust plugin, for example, decodes it into its type `C`, and the row fails to load when it cannot.
+### The config of each row
+
+From 0.18 `check` fills each row's config with its plugin's defaults and validates it against the plugin's JSON Schema, by the rules every language's SDK applies when it loads the row (the keywords checked are in the [plugin API](plugin-api.en.md#configuration)). A config that does not match cannot run: one line per problem, sorted by path, exit status 1:
+
+```
+weather (weather): cannot run: config: units should be "metric" or "imperial", got "kelvin"
+weather (weather): cannot run: config: home.lat should be a number, got "north"
+```
+
+A key the schema does not name, where it allows extra keys (an object with `properties` and no `additionalProperties`), is a warning on stderr, with a close known key suggested; the row still runs and its plugin gets the key's value as it is. With `--strict` it is an error, and the row `cannot run with --strict`:
+
+```
+rutis-host: warning: weather: config: cty is not a config key (did you mean city?)
+```
+
+- Cordis rows (Cordis plugins exporting `Config`) are validated by Cordis with their own `Config` when they load; `check` prints their schema and does not check their config.
+- Rows whose schema is known only when they run (remote runtimes not connected, a `peer:` row whose peer is not there) say `config not checked: its schema is known only when it runs`, which is not a warning.
+- Go binaries built with an SDK older than 0.18 list every field without `omitempty` as `required` in their manifest; `check` ignores their `required` (the rest is checked).
+
+`run` and `dev` apply the same rules: a row whose config does not match fails (`weather: config: …`, a line per problem), and rows waiting for it say so (`chat: waiting for weather (row weather failed: config: …)`); extra keys are warned about once per row and config value. Runtimes built with an SDK older than 0.18 do not check configs when they load rows; `check` checks them all the same.
 
 ## Stopping and exit status
 
@@ -256,7 +275,14 @@ rutis-host: reloaded <file> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <reason>; nothing changed
 ```
 
-Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
+Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Refused because a row's config does not match its schema, a line per problem comes first, then the rejection:
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
 
 Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 

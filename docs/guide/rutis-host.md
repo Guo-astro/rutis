@@ -209,7 +209,26 @@ rutis-host: error: rows one, two all provide llm: only the first to start provid
 
 行用到的语言在 `runtimes` 里没有声明时，按默认设置启用它的运行时，并写一条告警（见 [runtimes](#runtimes)）。
 
-rutis-host 目前不按插件的 Schema 检查它的配置（0.18 起检查，[#669](https://github.com/arcships/rutis/issues/669)），`check` 只打印 Schema。配置有没有被检查，取决于插件的语言怎样读它：例如 Rust 插件把配置解码成类型 `C`，解码不了时这一行装载失败。
+### 每一行的配置
+
+0.18 起 `check` 给每一行的配置补上插件 Schema 里的默认值，再按插件的 JSON Schema 校验，规则和各语言 SDK 加载这一行时用的一样（检查哪些关键字见[插件 API](plugin-api.md#配置)）。不合格的配置不能运行：每个问题一行，按路径排序，退出码 1：
+
+```
+weather (weather): cannot run: config: units should be "metric" or "imperial", got "kelvin"
+weather (weather): cannot run: config: home.lat should be a number, got "north"
+```
+
+Schema 没写的键，在 Schema 允许多余的键时（有 `properties`、没写 `additionalProperties` 的对象），是标准错误上的警告，拼写接近已知的键时给出提示；这一行照常运行，插件原样拿到这个键的值。加 `--strict` 时是错误，这一行 `cannot run with --strict`：
+
+```
+rutis-host: warning: weather: config: cty is not a config key (did you mean city?)
+```
+
+- Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
+- Schema 要运行时才知道的行（没连上的远端运行时、对端不在的 `peer:` 行）写 `config not checked: its schema is known only when it runs`，这不是警告。
+- 0.18 以前的 SDK 构建的 Go 二进制，清单里把没有 `omitempty` 的字段都列为 `required`；`check` 忽略它们的 `required`（其余照常检查）。
+
+`run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。0.18 以前的 SDK 构建的运行时加载行时不检查配置；`check` 照样检查它们。
 
 ## 停止与退出码
 
@@ -256,7 +275,14 @@ rutis-host: reloaded <文件> (1 row changed, runtime py stopped)
 rutis-host: reload rejected: <原因>; nothing changed
 ```
 
-被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
+被拒绝时旧的配置继续运行，原因写明是哪一行、什么问题，或者哪一项要重启宿主。因为某一行的配置不符合 Schema 而被拒绝时，先每个问题一行，再是拒绝的那一行：
+
+```
+weather: config: units should be "metric" or "imperial", got "kelvin"
+rutis-host: reload rejected: row weather's config does not match its plugin's schema; nothing changed
+```
+
+行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 

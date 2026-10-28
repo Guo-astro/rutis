@@ -30,7 +30,7 @@ The generated `src/index.ts` is a `greeter` that uses no service, `test/index.te
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city?: string
+  city: string
 }
 
 interface Llm {
@@ -48,13 +48,15 @@ class Weather {
 export default definePlugin<Config>({
   inject: ['llm'],                                 // Services used: start when all are ready; stop if any is revoked
   provides: { weather: { today: 'async' } },      // What it provides: check knows before running; only declared methods are callable
-  config: { type: 'object', properties: { city: { type: 'string' } } },  // Configuration JSON Schema
+  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // Configuration JSON Schema
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
+    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
     return () => {}                                // Cleanup; ctx.effect(cleanup) also works, or return nothing
   },
 })
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`city` is `Oslo` when the row leaves it out) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); the testing tool does the same.
 
 The plugin depends only on `@arcships/rutis`. It does not need to know which host runs it, which language or machine provides `llm`, or when it starts and stops; the host decides those things. See [Plugin API](plugin-api.en.md) for capabilities and value passing rules.
 
@@ -234,7 +236,7 @@ Alternatively, push a tag such as `v0.1.0`. The generated workflow tests, runs `
 
 Before publishing, give the package a name of your own: short names such as `weather` and `greeter` were taken on npm long ago. Use a scoped name: change `name` in `package.json`, for example to `"@your-name/weather"` (the scope is your npm user or organization; the first publish of a public scoped package needs `--access public`, which the template's workflow passes). A host's row names the plugin by this package name.
 
-Declare a version range such as `"@arcships/rutis": "^0.17.2"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
+Declare a version range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new` writes its own version). The plugin uses the SDK of the minor version it was written against: when the host has another version, npm installs the plugin a copy of its own, and SDKs of several versions work side by side (plugins are recognized by a `Symbol.for` marker, whichever copy made them). The plugin is tagged with its plugin API version (`definePlugin` adds this automatically). If the host runtime is older, it reports the problem clearly instead of failing later during execution.
 
 ## 6. Use from a host
 

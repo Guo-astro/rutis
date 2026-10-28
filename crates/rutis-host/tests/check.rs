@@ -736,7 +736,7 @@ fn rows_only(stdout: &str) -> Vec<&str> {
 /// A config that does not match its plugin's schema fails its row, one
 /// line per problem sorted by path, the same for every language; exit
 /// status 1 (config schema design §7).
-/// guarantee: host/check
+/// guarantee: host/check, sdk/config-schema
 #[tokio::test(flavor = "multi_thread")]
 async fn check_fails_a_config_that_does_not_match_the_schema() {
     let wrong = serde_json::json!({ "days": 1.5, "home": { "lat": "north" }, "units": "kelvin" });
@@ -778,7 +778,7 @@ async fn check_fails_a_config_that_does_not_match_the_schema() {
 
 /// An extra key is a warning on standard error, with exit status 0; with
 /// `--strict` the row cannot run, exit status 1 (config schema design §7).
-/// guarantee: host/check
+/// guarantee: host/check, sdk/config-schema
 #[tokio::test(flavor = "multi_thread")]
 async fn check_warns_of_extra_config_keys() {
     let rows = serde_json::json!([

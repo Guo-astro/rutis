@@ -91,7 +91,7 @@ In short:
 | Method names | An exported method's wire name has its first letter lowercased (`Today` → `today`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `rutis.Rename` overrides it |
 | Sync or async | `async` by default; `rutis.Sync("Unit")` marks synchronous ones. A sync method blocks a Node caller's event loop: keep methods that do I/O `async` |
 | Signatures | `func (T) M([ctx context.Context,] params...) ([result,] [error])` |
-| Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description); a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`). The `Schema` field takes a hand-written JSON Schema instead, which `rutis-host check` prints, but it fills in no defaults |
+| Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description), without `required`: a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`, which also takes `null`). Before `Apply` the config is validated against the schema, then decoded: a row whose config does not match fails with `config: …`, and `Apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); a decoding error after the schema passed is written `<path> is not a value the plugin accepts`. The `Schema` field takes a hand-written JSON Schema instead: its `default`s are filled in before decoding |
 | Using services | A struct of function fields may list only the methods it uses; or call by name with `*rutis.Service`: `svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads; goroutines the plugin starts use `ctx.Go(...)` or watch `ctx.Done()` |
 | Concurrency | Every incoming call runs on its own goroutine: provided objects must be safe for concurrent use; do not hold a lock while calling another service |
@@ -262,6 +262,8 @@ func TestToday(t *testing.T) {
 ```bash
 go test ./...
 ```
+
+`rutistest.Load` validates the config against the schema as the runtime does, failing the test when it does not match, and writes extra keys on stderr. To test that a config is refused, use `rutistest.TryLoad(t, Plugin, config, services)`: it gives back the error, a `*rutis.RemoteError` with `Name` `BindingError` and `Code` `bad-config`.
 
 `Provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). When present it applies (`Sync` marks synchronous methods, `Rename` renames them). It also runs without one: what `ctx.Provide` provides still reaches rutis by itself, its methods the value's exported ones, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
