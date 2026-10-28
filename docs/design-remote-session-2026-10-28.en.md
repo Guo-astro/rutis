@@ -2,7 +2,7 @@
 
 [中文](design-remote-session-2026-10-28.md)
 
-Status: final, not implemented. Date: 2026-10-28. Base: `main` `3d19634f`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-28; revised 2026-10-29: WebSockets close with 1000 when the host stops (no more 1001, §3); §7 writes the actual texts (an auth rejection keeps the dialer's address, a handshake failing on listen prints nothing, an app plugin that cannot be installed shows only in the device log), and decision 3 gets its `loader` form (§2.6). Base: `main` `3d19634f`. Scheduled: 0.19.
 Issue: [#695](https://github.com/arcships/rutis/issues/695) (implemented by [#696](https://github.com/arcships/rutis/issues/696) loader, [#698](https://github.com/arcships/rutis/issues/698) rutis-host). Basis: the two 2026-10-28 comments on #695.
 Relation to earlier designs: replaces the implementation part of [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md) (the "inside rutis-host" column of §4, §5, §7, §8); its "a missing plugin is always `Unavailable`" stays, and the `runtimes.remote` syntax goes (§6). The [decision record](decision-remote-runtime-consistency-2026-10-26.en.md)'s "no new handover interface, do not rewrite links and access points" is overturned by this design; see §1 for why.
 
@@ -168,7 +168,7 @@ Every use in [Connecting nodes](guide/nodes.en.md) and the tests, checked:
 - `rutis-host/listen` creates just one session per connection it lets through, and the far plugins register as ordinary plugins `<id>:<plugin>`; the services they provide are visible everywhere, with same names conflicting by the kernel's rule (the later one is refused, saying why). The host creates no instance per connection.
 - Logic that must run once per device goes on the device; a plugin on the host that handles many devices tells them apart itself, or the plugins on the devices use different service names. The platform does no isolation for plugins.
 - The loader's existing `instanced` groups stay a general feature; remote connections no longer use them specially.
-- 0.18's "one `py:coach` on the host per device" (the example in the Swift and Kotlin app guides) is not supported in 0.19. The ways to change it: move coach onto the device (a plugin in the app), or have coach tell devices apart itself (for example, the device plugins provide their service as `health-<device>`, and coach looks it up by name).
+- 0.18's "one `py:coach` on the host per device" (the example in the Swift and Kotlin app guides) is not supported in 0.19. The ways to change it: move coach onto the device (a plugin in the app), or have a plugin on the host tell devices apart: the device plugins provide their service as `health-<device>`, and a plugin on the host listens to the `rutis/service` event, calling the service `loader` on `available: true` for `health-<device>`: `loader.create({id: "coach-<device>", name: "py:coach-one", config: {device}, inject: ["health-<device>"]})`, and `loader.remove("coach-<device>")` on `available: false`; the calls are made in the event handler, not in `apply`.
 
 ## 3. Channel
 
@@ -211,7 +211,7 @@ pub enum Close { Done, Replaced, Rejected(String) }
 
   | `Close` | WebSocket | local pipe (child process) | memory |
   | --- | --- | --- | --- |
-  | `Done` | close code 1000 (1001 when the host stops) | closes the child's stdin | the other end's `recv` gets `Ok(None)` |
+  | `Done` | close code 1000 (when the host stops too) | closes the child's stdin | the other end's `recv` gets `Ok(None)` |
   | `Replaced` | close code 4002 | as `Done` | the other end's `recv` gets `Closed` |
   | `Rejected(r)` | close code 4003, reason `r` | as `Done` | the other end's `recv` gets `Rejected` |
 
@@ -352,13 +352,17 @@ Following [Diagnostics](design-diagnostics-2026-10-26.en.md) §4.5: output never
 ```text
 gpu: connected
 gpu: disconnected (gpu.example.com:7443: Connection refused); retrying in 2.1s
-gpu: disconnected (auth-rejected: upgrade refused with 403 Forbidden); retrying in 30s
+gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
 gpu: disconnected (incompatible: this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (PyPI rutis)); stopped
 phone: connected phone-1
 phone: disconnected phone-1 (connection lost)
 phone: disconnected phone-1 (replaced by a new connection)
 office: connected
 ```
+
+- An auth rejection's reason keeps the dialer's `ConnectError` text, with the far end's address.
+- A connection whose handshake fails on listen (a wrong token at the upgrade, 401 / 403; protocols that do not match) prints nothing: it touched no connection there is, and the dialing end says why.
+- No `disconnected` is printed when the host stops or the connection row is removed.
 
 **`rutis-host status`**: a `connections:` section, one line per connection row, each connected one followed by the remote plugins it registered:
 
@@ -379,6 +383,9 @@ connections:
 | 0.18 meeting 0.19 | refused in the handshake (on WebSocket, at the subprotocol step), not retried, saying which end to upgrade. A 0.19 host starting a 0.18 local runtime (which speaks the local protocol 2): `incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`; 0.18 dialing a 0.19 listener, the dialer prints `this endpoint speaks rutis.4, the dialer offered rutis.3: upgrade the dialer`; 0.19 dialing a 0.18 listener, the listener answers `this endpoint speaks rutis.3, the dialer offered rutis.4: upgrade this endpoint (<its package>)` (for example `(PyPI rutis)`). The exception: a 0.18 host starting a 0.19 local runtime passes no `--id`, and the runtime prints only `a local channel needs --id <endpoint>: fd:3; a host older than rutis 0.19 started this runtime: upgrade the host` before the handshake and exits |
 | 0.18 remote syntax (`runtimes.remote`, `rutis-bridge/peer` rows and their fields) | no dedicated message: `runtimes.remote` is an unknown rutis-host configuration field and `rutis-bridge/peer` an unknown plugin name, reported by the 0.18 rules |
 | The far end throws while running a plugin | the remote plugin `<id>:<plugin>` fails, printing the far end's error as in 0.18 §4.2 |
+| A plugin in an app cannot be installed (config not matching its schema, `apply` failing, a service name taken) | in 0.19 written only in the device's log (Swift's `log`, Kotlin's `System.err`, such as `rutis: plugin device: BindingError: config: installation is required`); the host prints nothing: the remote plugin just does not appear |
+| A listen row without a token | `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect` |
+| A listen row's listener does not exist | `no listener named private: add it to listen` |
 
 ## 8. What is removed or made internal
 

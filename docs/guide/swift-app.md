@@ -228,27 +228,31 @@ RUTIS_TOKEN_PHONE=<应用出示的 token> rutis-host run rutis.json
   })
   ```
 
-  宿主上的 coach 监听框架事件 `rutis/service`（参数 `{ name, scope, available, row }`，见 [插件 API：框架事件](plugin-api.md#框架事件-rutis)），从中知道哪些设备在：
+  宿主上的插件 `coach` 监听框架事件 `rutis/service`（参数 `{ name, scope, available, row }`，见 [插件 API：框架事件](plugin-api.md#框架事件-rutis)）：一个 `health-<设备>` 出现（`available: true`）时，经服务 `loader` 为这台设备加一行 `coach-<设备>`，运行只管一台设备的插件 `py:coach-one`；它撤走（`available: false`）时删掉这一行。`loader` 的方法在事件处理里调用，不在 `apply` 里（在一行自己的 `apply` 里调用会等到这个 `apply` 结束，卡住）：
 
   ```python
   from rutis import define_plugin
 
   def apply(ctx, config):
-      devices = set()
-      def seen(event):
+      loader = ctx.use("loader")
+
+      async def seen(event):
           name = event["name"]
           if not name.startswith("health-"):
               return
+          device = name.removeprefix("health-")          # kim-iphone
           if event["available"]:
-              devices.add(name.removeprefix("health-"))      # kim-iphone 连上了
+              await loader.create({"id": f"coach-{device}", "name": "py:coach-one",
+                                   "config": {"device": device}, "inject": [name]})
           else:
-              devices.discard(name.removeprefix("health-"))  # 它走了
+              await loader.remove(f"coach-{device}")
+
       ctx.on("rutis/service", seen)
 
-  coach = define_plugin(apply)
+  coach = define_plugin(apply, inject=["loader"])
   ```
 
-  两台设备的服务名不同，不会相互拒绝。
+  `py:coach-one` 用 `ctx.use(f"health-{config['device']}")` 拿到它那台设备的服务。两台设备的服务名不同，不会相互拒绝；每台设备一行 `coach-<设备>`，`rutis-host status` 里看得到。
 
 ### 改为监听
 

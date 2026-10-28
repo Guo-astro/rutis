@@ -150,12 +150,13 @@ bunx --bun rutis-host dev --debug
 ## 6. 在别的机器上运行
 
 Bun 运行时也可以在另一台机器上运行，由那里的 rutis 管理它的插件，两个方向都可以（见 [连接节点](nodes.md)）：
+<!-- S4-LISTEN-ROWS -->
 
 ```bash
-# 监听，由 rutis 来连（rutis 一侧写节点行与 runtimes.remote，language 为 bun）
+# 监听，由 rutis 来连（rutis 一侧写一行 rutis-host/dial，行 id 为 edge，插件行写 edge:<模块>）
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://0.0.0.0:7443/rutis --id edge --peer main .
-# 拨出，连到 rutis 的接入点（rutis 一侧写 runtimes.remote 的 listen 与 instances）
+# 拨出，连到 rutis 的接入点（rutis 一侧写一行 rutis-host/listen）
 RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 ```

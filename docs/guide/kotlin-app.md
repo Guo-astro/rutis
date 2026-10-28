@@ -150,10 +150,10 @@ rutis 一侧（[rutis-host](rutis-host.md)）：一行 `rutis-host/listen` 等�
 
 `RUTIS_TOKEN_PHONE=<token> rutis-host run`。每条通过的连接是一个会话，应用装着的插件注册为 `<应用的 id>:<插件>`（`kim-pixel:contacts`），它们提供的服务全局可见，别的行按名字 `inject`；同一 id 的新连接顶替旧的。`run` 的输出以行 id 开头：`phone: connected kim-pixel`、`phone: disconnected kim-pixel (connection lost)`。某台设备的应用停下（`stop`、断网、进程被杀）时只卸载它的插件。
 
-两台设备提供同名服务时按内核规则：后来的那台的插件被拒绝，它的 `System.err` 写着 rutis 给的原因（`rutis: cannot announce contacts: …`）。0.18 的"`instanced` 分组里一个 `py:digest`，每台设备一份"在 0.19 不再支持，按设备区分是设备上插件自己的事：
+两台设备提供同名服务时按内核规则：后来的那台的插件被拒绝，它的 `System.err` 写着 rutis 给的原因（`rutis: cannot announce contacts: …`）。应用里的插件装不上（被拒绝，或自己的 `apply` 失败）时，0.19 只在设备的日志里写出，宿主上不打印。0.18 的"`instanced` 分组里一个 `py:digest`，每台设备一份"在 0.19 不再支持，按设备区分是设备上插件自己的事：
 
 - 把它放到设备上：digest 写成应用里的一个插件，`inject` 同一个应用的 `contacts`（`contacts` 装上后它才装上）。
-- 由宿主上的插件自己按设备区分：设备上的插件以带设备名的名字提供服务（示例应用的插件都由配置给出服务名：`Samples.configs(suffix = "tablet")` 给出 `contacts-tablet`），宿主上的 `py:digest` 监听框架事件 `rutis/service`（`{ name, scope, available, row }`，[插件 API：框架事件](plugin-api.md#框架事件-rutis)），从 `name` 与 `available` 知道哪台设备在，写法见 [Swift 应用 §4](swift-app.md#每台设备各算一份)。
+- 由宿主上的插件自己按设备区分：设备上的插件以带设备名的名字提供服务（示例应用的插件都由配置给出服务名：`Samples.configs(suffix = "tablet")` 给出 `contacts-tablet`），宿主上的一个插件监听框架事件 `rutis/service`（`{ name, scope, available, row }`，[插件 API：框架事件](plugin-api.md#框架事件-rutis)）：`contacts-<设备>` 出现（`available: true`）时在事件处理里调用服务 `loader`：`loader.create({id: "digest-<设备>", name: "py:digest-one", config: {device}, inject: ["contacts-<设备>"]})`，撤走（`available: false`）时 `loader.remove("digest-<设备>")`；不在 `apply` 里调用。完整写法见 [Swift 应用 §4](swift-app.md#每台设备各算一份)。
 
 开发时可以不用证书：`adb reverse tcp:7443 tcp:7443`，应用连 `ws://127.0.0.1:7443/rutis`。Android 默认禁止明文流量，在网络安全配置里只对回环放行（示例应用的 `res/xml/network_security_config.xml`）。
 

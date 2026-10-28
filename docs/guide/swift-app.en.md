@@ -228,27 +228,31 @@ The 0.18 way (one `py:coach` in an `instanced` group, one per device) is not sup
   })
   ```
 
-  The coach on the host listens to the framework event `rutis/service` (its argument `{ name, scope, available, row }`, see [the plugin API: framework events](plugin-api.en.md#framework-events-rutis)) to learn which devices are there:
+  The plugin `coach` on the host listens to the framework event `rutis/service` (its argument `{ name, scope, available, row }`, see [the plugin API: framework events](plugin-api.en.md#framework-events-rutis)): when a `health-<device>` appears (`available: true`), it adds a row `coach-<device>` for that device through the service `loader`, running `py:coach-one`, a plugin minding one device; when it is withdrawn (`available: false`), it removes the row. The `loader` methods are called in the event handler, not in `apply` (called in a row's own `apply`, they wait for that `apply` to finish, and hang):
 
   ```python
   from rutis import define_plugin
 
   def apply(ctx, config):
-      devices = set()
-      def seen(event):
+      loader = ctx.use("loader")
+
+      async def seen(event):
           name = event["name"]
           if not name.startswith("health-"):
               return
+          device = name.removeprefix("health-")          # kim-iphone
           if event["available"]:
-              devices.add(name.removeprefix("health-"))      # kim-iphone connected
+              await loader.create({"id": f"coach-{device}", "name": "py:coach-one",
+                                   "config": {"device": device}, "inject": [name]})
           else:
-              devices.discard(name.removeprefix("health-"))  # it went
+              await loader.remove(f"coach-{device}")
+
       ctx.on("rutis/service", seen)
 
-  coach = define_plugin(apply)
+  coach = define_plugin(apply, inject=["loader"])
   ```
 
-  The two devices' service names differ, so neither is refused.
+  `py:coach-one` gets its device's service with `ctx.use(f"health-{config['device']}")`. The two devices' service names differ, so neither is refused; each device has a row `coach-<device>`, seen in `rutis-host status`.
 
 ### Listening instead
 

@@ -403,8 +403,9 @@ dlv connect 127.0.0.1:2345
 
 ## 7. 在另一台机器上运行
 
-插件二进制也能在别的机器上作为远程运行时运行，`language` 写 `go`。两种方式，参数与 Python 运行时相同，见 [连接节点](nodes.md#别的机器上的语言运行时)：
+插件二进制也能在别的机器上作为远程运行时运行，rutis 一侧写一行 `rutis-host/dial`（二进制监听）或 `rutis-host/listen`（二进制拨出）。两种方式，参数与 Python 运行时相同，见 [连接节点](nodes.md#别的机器上的语言运行时)：
 
+<!-- S4-LISTEN-ROWS -->
 ```bash
 # 监听，由 rutis 来连（证书与私钥在 RUTIS_CERT、RUTIS_KEY）
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \

@@ -403,8 +403,8 @@ How a host installs this plugin: [rutis-host: How a host installs plugins](rutis
 
 ## 7. Run it on another machine
 
-A plugin binary can also run on another machine as a remote runtime, with `language` set to `go`. Two ways, with the same arguments as the Python runtime; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
-
+A plugin binary can also run on another machine as a remote runtime, the rutis side one `rutis-host/dial` row (the binary listens) or `rutis-host/listen` row (the binary dials out). Two ways, with the same arguments as the Python runtime; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
+<!-- S4-LISTEN-ROWS -->
 ```bash
 # Listen, and rutis connects (certificate and key in RUTIS_CERT, RUTIS_KEY)
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \

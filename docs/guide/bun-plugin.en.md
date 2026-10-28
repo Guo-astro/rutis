@@ -150,12 +150,13 @@ As for TypeScript plugins: `npm publish` (it runs `prepack`, the build, first; t
 ## 6. Run on another machine
 
 A Bun runtime can also run on another machine, its plugins managed by rutis elsewhere, in either direction (see [Connect nodes](nodes.en.md)):
+<!-- S4-LISTEN-ROWS -->
 
 ```bash
-# Listen, and rutis connects (on the rutis side: a node row and runtimes.remote with language bun)
+# Listen, and rutis connects (on the rutis side: one rutis-host/dial row with the id edge, plugin rows edge:<module>)
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://0.0.0.0:7443/rutis --id edge --peer main .
-# Dial out to a rutis access point (on the rutis side: runtimes.remote with listen and instances)
+# Dial out to a rutis access point (on the rutis side: one rutis-host/listen row)
 RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
   bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
 ```
