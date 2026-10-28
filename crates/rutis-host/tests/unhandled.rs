@@ -118,14 +118,25 @@ fn states<'a>(output: &'a [String], row: &str) -> Vec<&'a String> {
         .collect()
 }
 
-/// Whether `row` ran until the host stopped: it was running, and its only
-/// other states are the stop's (`unloading`, `inactive`; a slower machine
-/// prints both), never failed or waiting.
+/// Whether `row` ran until the host stopped: until the stop's line
+/// (`rutis-host: SIGTERM: stopping; …`) it was only running, never failed
+/// or waiting; after it, only the states of a row being stopped. The host
+/// prints what it sees each time it looks, so which of these come out, if
+/// any, depends on the machine's speed: `unloading` while its cleanups
+/// run, `stopped` once they are done and before the loader lets the row
+/// go, `inactive` after.
 fn ran_on(output: &[String], row: &str) -> bool {
-    let allowed = ["running", "unloading", "inactive"].map(|state| format!("{row}: {state}"));
-    let states = states(output, row);
-    states.first().map(|line| line.as_str()) == Some(allowed[0].as_str())
-        && states.iter().all(|line| allowed.contains(line))
+    let stop = output
+        .iter()
+        .position(|line| line.starts_with("rutis-host: SIGTERM: stopping"))
+        .unwrap_or(output.len());
+    let line = |state: &str| format!("{row}: {state}");
+    let before = states(&output[..stop], row);
+    let after = states(&output[stop..], row);
+    let stopping = ["unloading", "stopped", "inactive"].map(line);
+    !before.is_empty()
+        && before.iter().all(|state| **state == line("running"))
+        && after.iter().all(|state| stopping.contains(state))
 }
 
 /// Wait until every file of `files` exists.
