@@ -674,6 +674,10 @@ class _Context(sdk.Context):
         return _cross(service, f"service {name}", service=True) if self._loaded._strict else service
 
     def provide(self, name: str, value: Any) -> Callable[[], None]:
+        # A name the host provides cannot be provided again (as in the host
+        # and in Cordis).
+        if name in self._services:
+            raise PluginTestError(f"{self._loaded.name}: {name} is already provided by the host")
         shape = self._loaded._plugin.provides.get(name)
         for method in shape or {}:
             if not callable(getattr(value, method, None)):

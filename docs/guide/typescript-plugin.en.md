@@ -107,7 +107,7 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. In strict mode (the default), values follow cross-process rules: data is copied, functions and objects with methods are passed by reference, and a method declared `sync` cannot return a Promise. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. In strict mode (the default), values follow cross-process rules: data is copied, functions and objects with methods are passed by reference, and a method declared `sync` cannot return a Promise. Code that works only within one process fails here.
 
 ### Events
 

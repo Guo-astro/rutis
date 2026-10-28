@@ -94,7 +94,7 @@ Each language's plugins go where that language's runtime finds them, and a row n
 | `rutis-host call [--config <rutis.json \| directory>] <service>.<method> [arguments…]` | Calls a service in the `rutis-host` running that configuration (or that `dev` project), as the host, and prints the result as JSON; `dev` accepts it, `run` with `--allow-call` (see [Calling a service](#calling-a-service)); not on Windows. |
 | `rutis-host new <name> --lang node\|bun\|python\|go\|swift` | Creates a plugin project. |
 | `rutis-host go add <module>@<version> [rutis.json]` | `go install`s a plugin binary into `runtimes.go.dir` with the machine's Go toolchain. |
-| `rutis-host types [directory] [-o file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; see [Embed in a Rust application](rust-host.en.md#mark-the-type-rutisservice). |
+| `rutis-host types [directory] [-o file] [--python file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; `--python` writes their Python types too; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations). |
 
 ## What `run` prints
 

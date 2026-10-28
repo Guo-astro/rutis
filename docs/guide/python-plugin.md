@@ -122,7 +122,7 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制（dataclass 变成 dict），函数和带方法的对象按引用传递，`sync` 方法不能返回协程。只在同一进程里才成立的写法，在这里就会失败。
+`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制（dataclass 变成 dict），函数和带方法的对象按引用传递，`sync` 方法不能返回协程。只在同一进程里才成立的写法，在这里就会失败。
 
 测试工具的全部接口（取自 `rutis/testing.py` 的文档字符串）：
 
@@ -404,3 +404,22 @@ uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # �
 ```
 
 见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+
+### 宿主给的类型
+
+Rust 宿主可以给出它的服务的 Python 类型（`rutis-host types --python` 写出的模块，见 [在 Rust 应用里嵌入：声明](rust-host.md#声明)），通常放在插件模板里。用它标注 `ctx.use` 的结果，编辑器和 pyright 就在运行之前检查调用；不标注也照样运行：
+
+```python
+from deskmate_types import Notes  # 宿主给的模块（rutis-host types --python deskmate_types.py 写出）
+
+
+def apply(ctx, config):
+    notes: Notes = ctx.use("notes")
+    ...
+```
+
+调用不符时 pyright 报：
+
+```text
+error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of type "str" in function "put"
+```

@@ -107,7 +107,7 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
+`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象上的方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；卸载时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制，函数和带方法的对象按引用传递，声明为 `sync` 的方法不能返回 Promise。只在同一进程里才成立的写法，在这里就会失败。
 
 ### 事件
 

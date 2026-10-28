@@ -122,7 +122,7 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's public methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when the `async with` block exits. In strict mode (the default), values follow cross-process rules: data is copied (dataclasses become dictionaries), functions and objects with methods are passed by reference, and `sync` methods cannot return coroutines. Code that works only within one process fails here.
 
 The testing tool's whole interface (from the docstrings of `rutis/testing.py`):
 
@@ -404,3 +404,22 @@ uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # t
 ```
 
 See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+
+### Types from the host
+
+A Rust host can give the Python types of its services (the module `rutis-host types --python` writes; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations)), usually in the plugin template. Annotate what `ctx.use` returns with them, and the editor and pyright check the calls before anything runs; without the annotation it runs the same:
+
+```python
+from deskmate_types import Notes  # the host's module (written by rutis-host types --python deskmate_types.py)
+
+
+def apply(ctx, config):
+    notes: Notes = ctx.use("notes")
+    ...
+```
+
+A call that does not match, as pyright reports it:
+
+```text
+error: Argument of type "Literal[42]" cannot be assigned to parameter "value" of type "str" in function "put"
+```

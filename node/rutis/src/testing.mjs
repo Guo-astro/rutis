@@ -516,6 +516,11 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
           return strict ? withoutMissing(name, found.value, cross(found.value, `service ${name}`, new Set(), false, 0, method => `${name}.${method}`)) : found.value
         },
         provide(name, value) {
+          // A name the host provides cannot be provided again (as in
+          // the host and in Cordis).
+          if (Object.hasOwn(own, name) || Object.hasOwn(services, name)) {
+            throw new PluginTestError(`${plugin.name ?? key}: ${name} is already provided by the host`)
+          }
           const shape = plugin.provides[name]
           if (shape) {
             for (const method of Object.keys(shape)) {
