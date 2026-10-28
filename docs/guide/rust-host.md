@@ -18,7 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
 | `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行；`peer`：节点行和 `peer:` 行 |
-| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`exports`（放在 `[build-dependencies]`）：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明；`testing`：一致性测试 |
+| `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
+| `rutis-types` | 放在 `[build-dependencies]`：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明与 Python 类型 |
 
 只用其中一种语言时只开那一个 feature，应用只编译、只启动它用到的部分。
 
@@ -246,7 +247,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **对外的方法**：带标注的 `impl` 块里公开的 `&self` 方法；一个类型可以有几个带标注的块。对调用方都是 `async`（JavaScript 里是 Promise，Python 里是 awaitable），Node、Bun、Python、Go 的行调用的是同一个 dispatcher。方法名按 camelCase 对外（`add_entry` 是 `addEntry`）。带 `#[cfg(...)]` 的方法在包含它的构建里对外，也只在这些构建里检查能不能绑定（同名的两个方法，`#[cfg]` 让每次构建只留一个时可以）；同一个类型的不同标注块不能有两个方法映射到同一个对外名字，`provide` 会失败并指出那个名字。参数类型可以写生命周期或 `Self`。
 - **名字**：默认是类型名、第一个词小写（`Calendar` 是 `calendar`，`TreeCommands` 是 `treeCommands`，`HTTPClient` 是 `httpClient`）；`#[service(name = "cal")]` 改名。
-- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读取拦截器（`intercept_require_as`）与对处在调用方行位置的 Rust 读取方一样拒绝或替换它：生效的是这一行的祖先注册的拦截器（没有行调用时为提供方的）。读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
+- **提供即对外**：`ctx.provide(value)`（以及以这个类型自己提供的 `provide_as::<T>`）同时按名字提供它，同一个撤销函数撤下两者，插件卸载时一起撤下；依赖它的行随之停止，与其他服务相同。带 `check()` 谓词提供时（rutis 自己的 crate 内部用的提供方式），按名字的入口也受它门控：谓词不成立期间，按名字用它的行与原生服务的使用者一样停下。可写绑定不对外，带名字的（`provide_at(Key::named(…), …)`）也不对外：同一类型的第二个值会占用同一个名字。每次按名字的调用都经提供方上下文的严格读取路径取服务，读到的只能是入口提供时的那个值：服务撤下后仍被保留的引用会被拒绝，即使槽位又被提供。因原生服务或这个名字已存在而被拒的 `provide` 什么都不提供。名字在原生服务之后提供、在它之前撤下（撤销函数与插件卸载都是这样），被名字唤醒的行一定调得到它。
 - **作用域跟着提供的位置**：在实例里提供（`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`），就是那个实例自己的，实例里的行拿到它；在实例外提供就是全局的。在隔离作用域里提供（`ctx.isolate(Key::<Notes>::of(), "a")`）时，名字在同一个作用域里对外（`isolate(host_key("notes"), "a")`），两个隔离作用域各自对外。不用写实例组。实例里提供过之后，实例里的行用的是这个实例自己的，不会退回到同名的全局服务：实例里的服务撤下时，它们等它在这个实例里重新提供（设计 R3：作用域跟着提供的位置）。
 - **能传什么、错误怎么抛**：见[参考](#导出服务参考)：serde 参数与返回值、按引用的回调、`&Ctx` 调用方行、`Err(e)` 抛出时带 `name`、`code`、`message`、`data`。
 - **编译期报错**：带标注的块里有公开方法绑定不了（`&mut self`、返回借用、可变引用参数、不是函数的泛型参数等），是指到那个方法的编译错误；不想对外的，在方法上加 `#[service(skip)]`。
@@ -254,7 +255,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **没标注的不对外**：宿主内部的服务（存储、锁、数据库句柄等）不会暴露给插件。一行等着的名字恰好是某个没标注的 Rust 服务的名字时，`Loader::waits(&entry)` 列出这一行等的名字，原因是 `WaitReason::Explained`，说明在那个类型的 `impl` 上加 `#[rutis::service]`。`Loader::check` 把标注类型的名字报告为 `Provider::Marked(类型)`：类型被提供后才对外，检查时无从知道是否提供（`rutis-host check` 也这样输出）。
 - **dylib 插件**：dylib 里带标注的类型（crate 只依赖 `rutis-sdk`，写 `#[rutis_sdk::rutis::service]` 或 `use rutis_sdk::rutis::service`）加载后同样对外，宿主不需要知道它；换代时旧代的入口随旧代的服务撤下，新代提供时重新出现。重新构建不用换版本号：同一插件的两次构建类型的 `TypeId` 相同，每个值按提供它的那次构建的代码对外，两次构建可以同时加载。去掉标注的构建，它的值不再按名字对外；名字以最新的构建为准。宿主要链接 `rutis-bridge`。
 - **没链接 rutis-bridge**：按名字对外和重名检查都由它做。程序没链接它时，标注的类型只按类型提供，第一次提供时错误汇集收到一次 `ErrorKind::NotServedByName`（默认写 `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`）。
-- **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-bridge` 开 `exports` feature），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
+- **声明与 Python 类型**：`rutis-host types <crate 目录> -o services.d.ts` 从源码里找出这个 crate 和它用到的、依赖 rutis 的 crate 里全部带标注的类型，写出 TypeScript 声明（`Services['calendar']`、各数据类型、`<Name>Thrown`）；加 `--python services.py` 同时写出 Python 类型。想每次构建都更新，`build.rs` 里写 `rutis_types::Exports::new().typescript("rows/services.d.ts").generate()`（构建依赖 `rutis-types`），`.python(…)` 同理。调用本身不需要它们。见[声明](#声明)。
 
 完整示例：[`examples/marked-services`](../../examples/marked-services)。
 
@@ -583,28 +584,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 节点
 
-```rust,no_run
-# use rutis::host::*;
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let root = rutis::Ctx::root()?;
-# let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
-
-let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
-root.plugin(WebSocketPlugin::new(Config::new())?).await?;
-root.plugin(IdentityPlugin::new(
-    "main",
-    StaticIdentity::new(main).present(office.clone(), Credential::Bearer(token)),
-));
-root.plugin(PeerPlugin::new(
-    LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
-    Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
-)?);
-# Ok(())
-# }
-```
+0.19 重做远程连接（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)），Rust 里直接搭节点的写法随之改变，这一节在新写法落地后补上；现在用 rutis-host 的节点行（见 [连接节点](nodes.md)）。
 
 用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
 
@@ -646,20 +626,19 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // 可省略：没有终态
     .await?;
 let sync = ctx.bail(Created("s1".into(), 3));                         // 遇到上面的异步监听器：AsyncListener
-let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // 宿主方法：同步的 waterfall
 let python_only = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
-# let _ = (first, out, sync, chain, python_only);
+# let _ = (first, out, sync, python_only);
 # Ok(())
 # }
 ```
 
 | 事项 | 规则 |
 | --- | --- |
-| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` / `waterfall_sync` 调用（`AsyncListener`） |
+| 监听器 | 一个监听器登记一次，五种方式都能调用它；`call.mode()` 是这次的方式，`call.next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`）。`on_sync` 登记同步监听器，它能被所有方式调用，但在异步 `waterfall` 里不能调 `next`；`on` 的（异步）监听器不能被 `bail` 调用（`AsyncListener`） |
 | 选项与前缀 | `ctx.listen::<E>()` 后接 `.prefix("session/")`（收这个前缀下的所有名字，`call.name()` 是实际的名字）、`.name(n)`、`.once()`、`.prepend()`、`.global()`，最后是 `.on(…)` 或 `.on_sync(…)` |
 | 按名字 | 不定义类型时用 `rutis_bridge::events::Args` 监听：`ctx.listen::<Args>().name("file-changed")`，参数是 `Args(vec![Value::Data(json!(…))])`，结果是 `ArgValue`。同名的类型化监听器与 `Args` 监听器互相收到对方的事件，经 serde 转换。名字由值决定的事件类型把 `NAME` 写成 `""`，重写 `Event::name` |
 | 作用域 | 发出方的作用域是 `ctx.scope()`：加载器把每个组实例标为一个作用域。事件按名字送达所有监听器；作用域只是描述，按 `ListenerInfo::scope` 过滤 |
@@ -672,7 +651,7 @@ off.dispose().await?;
 
 ## 导出服务：参考
 
-Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明和 Python 类型由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_bridge::build::Exports`（构建依赖开 `exports` feature）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
+Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名字使用：带 `#[rutis::service]` 的类型，dispatcher 由宏在编译期生成，提供即对外（[上文](#在类型上标注-rutisservice)）；改不了源码的类型包一层自己的类型再标注（[上文](#第三方类型包一层自己的类型)）。能传什么、错误怎么抛都按下面的规则。TypeScript 声明和 Python 类型由生成器从源码写出：`rutis-host types`，或者 `build.rs` 里的 `rutis_types::Exports`（构建依赖 `rutis-types`）。完整示例：[`examples/marked-services`](../../examples/marked-services)、[`examples/rust-services`](../../examples/rust-services)。
 
 | `Exports` | 作用 |
 | --- | --- |

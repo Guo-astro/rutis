@@ -21,6 +21,7 @@ export const crates = [
   'rutis-bridge',
   'rutis-loader',
   'rutis-dylib',
+  'rutis-types',
   'rutis-host',
   'rutis-dylib-launcher',
 ]
@@ -43,7 +44,7 @@ const versions = {
   // io.github.arcships:rutis-ksp): its
   // Gradle version, and what its runtime says it is when it greets.
   'maven io.github.arcships:rutis': read('kotlin/rutis/gradle.properties').match(/^version=(.+)$/m)?.[1],
-  'maven io.github.arcships:rutis (implementation)': read('kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/Rutis.kt').match(/const val VERSION: String = "([^"]+)"/)?.[1],
+  'maven io.github.arcships:rutis (implementation)': read('kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/advanced/Versions.kt').match(/const val VERSION: String = "([^"]+)"/)?.[1],
   // The Swift SDK (the root Package.swift, released by the train's own
   // v<version> tag): what its runtime and manifests say it is.
   'swift github.com/arcships/rutis (Rutis)': read('swift/rutis/Sources/Rutis/Version.swift').match(/^ {4}public static let sdkVersion = "([^"]+)"/m)?.[1],

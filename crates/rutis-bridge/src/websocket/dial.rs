@@ -3,7 +3,7 @@
 //! never from its text.
 
 use std::net::IpAddr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use crate::channel::{Channel, ConnectError};
 use crate::Credential;
@@ -63,8 +63,7 @@ fn certificate_problem(error: &std::io::Error) -> bool {
 }
 
 /// Dial `address` offering session protocol `protocol` (none when empty),
-/// presenting `credential`; connections run on `runtime`, counted by
-/// `live` if given.
+/// presenting `credential`; the connection runs on `runtime`.
 pub(crate) async fn dial(
     address: &str,
     protocol: &str,
@@ -72,8 +71,7 @@ pub(crate) async fn dial(
     roots: Arc<RootCertStore>,
     limits: &Limits,
     runtime: &tokio::runtime::Handle,
-    live: Option<connection::Live>,
-) -> Result<(Channel, Weak<connection::Shared>), ConnectError> {
+) -> Result<Channel, ConnectError> {
     let uri: Uri = address
         .parse()
         .map_err(|error| incompatible(format!("invalid address {address}: {error}")))?;
@@ -155,7 +153,7 @@ pub(crate) async fn dial(
     let socket = tokio::time::timeout(limits.handshake, connect)
         .await
         .map_err(|_| retryable(format!("{host}:{port}: timed out connecting")))??;
-    Ok(connection::channel(socket, limits, runtime, live))
+    Ok(connection::channel(socket, limits, runtime))
 }
 
 fn classify(host: &str, error: WsError) -> ConnectError {

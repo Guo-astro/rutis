@@ -178,11 +178,7 @@ fn retryable(error: std::io::Error) -> ConnectError {
 pub const HANDOVER_VARIABLE: &str = "RUTIS_LOCAL_HANDOVER";
 
 /// Start `spawn` and connect it.
-pub(crate) async fn start(
-    spawn: &Spawn,
-    token_wait: Duration,
-    processes: &Processes,
-) -> Result<Channel, ConnectError> {
+pub(crate) async fn start(spawn: &Spawn, processes: &Processes) -> Result<Channel, ConnectError> {
     let forced =
         !cfg!(unix) || std::env::var_os(HANDOVER_VARIABLE).is_some_and(|value| value == "loopback");
     let handover = match forced {
@@ -194,7 +190,7 @@ pub(crate) async fn start(
         Handover::Inherit => inherit(spawn)?,
         #[cfg(unix)]
         Handover::DialBack => dial_back(spawn).await?,
-        _ => loopback(spawn, token_wait).await?,
+        _ => loopback(spawn).await?,
     };
     let Channel {
         sender,
@@ -614,14 +610,11 @@ async fn dial_back(spawn: &Spawn) -> Result<Started, ConnectError> {
 }
 
 /// How long a connection to the loopback listener may take to present its
-/// token, unless the transport says otherwise ([`LocalTransport::token_wait`]).
-///
-/// [`LocalTransport::token_wait`]: super::LocalTransport::token_wait
+/// token.
 pub(crate) const TOKEN_WAIT: Duration = Duration::from_secs(10);
 
-async fn loopback(spawn: &Spawn, token_wait: Duration) -> Result<Started, ConnectError> {
-    let mut listener = Loopback::bind().await.map_err(retryable)?;
-    listener.wait = token_wait;
+async fn loopback(spawn: &Spawn) -> Result<Started, ConnectError> {
+    let listener = Loopback::bind().await.map_err(retryable)?;
     let mut command = spawn.command()?;
     #[cfg(unix)]
     hand_over(&mut command, None);
@@ -924,7 +917,7 @@ impl Exit {
     }
 }
 
-/// The processes a [`LocalTransport`](super::LocalTransport) started, to
+/// The processes [`spawn`](super::spawn) started into it, to
 /// tell when every one of them has ended: what started them waits for its
 /// own, not for whichever process ends first (#448).
 #[derive(Clone, Default)]
@@ -984,13 +977,13 @@ const HANG_GUARD: Duration = Duration::from_secs(10);
 static RUNNING: std::sync::LazyLock<watch::Sender<BTreeSet<u32>>> =
     std::sync::LazyLock::new(|| watch::channel(BTreeSet::new()).0);
 
-/// The ids of the processes the local transport started, in this process,
+/// The ids of the processes [`spawn`](super::spawn) started, in this process,
 /// that have not ended yet.
 pub fn running_processes() -> Vec<u32> {
     RUNNING.borrow().iter().copied().collect()
 }
 
-/// Wait until every process the local transport started has ended and been
+/// Wait until every process [`spawn`](super::spawn) started has ended and been
 /// waited for: what a host that is ending does once its root has shut down
 /// (the processes end when their channels close, or are killed after a
 /// grace period). Needs the async runtime that started them to keep running.
@@ -999,7 +992,7 @@ pub async fn processes_ended() {
     let _ = running.wait_for(|running| running.is_empty()).await;
 }
 
-/// Kill every process the local transport started that has not ended yet,
+/// Kill every process [`spawn`](super::spawn) started that has not ended yet,
 /// without waiting for its cleanups: for a host that exits before they
 /// finish. [`processes_ended`] then waits for them to be gone.
 pub fn kill_processes() {

@@ -318,7 +318,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 | `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）、`<Go 或 Swift 运行时> restarted`，或者 `<行> restarted`：它用到的、随这次变化重启的行（`llm` 重新加载、`greeter` 用到 `llm` 时，打印 `caller: restarted (greeter restarted)`）。写出的原因一定是这一行用到的行；不知道它用到哪些行时（依赖在运行时内部，Cordis 行之间），不写原因：`<行 id>: restarted`。这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
 | `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
-| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`（例如 rutis 自己提供的 `loader`）；没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。每次都打印，不和上次比较。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`（例如 rutis 自己提供的 `loader`）；没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。每次都打印，不和上次比较；此外服务有变化（例如运行时在行启动之后才提供服务）时也照实再打印一次。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
 
 ## 运行时结束时
@@ -501,7 +501,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
-| `remote` | `name`、`language`、`dial`、`listen`、`instances`、`transport` | 别的机器上的运行时，一条写全：`dial` 由 rutis 去连，`listen` 等它连进来，`listen` + `instances` 每条连接一个实例，见下面的[远程运行时](#远程运行时)；都不写时经 `rows` 里 `"runtime": "<name>"` 的节点行连接（0.19 之前的写法），见 [连接节点](nodes.md) |
+| `remote` | `name`、`language`、`dial`、`listen`、`instances` | 别的机器上的运行时，一条写全：`dial` 由 rutis 去连，`listen` 等它连进来，`listen` + `instances` 每条连接一个实例，见下面的[远程运行时](#远程运行时)；都不写时经 `rows` 里 `"runtime": "<name>"` 的节点行连接（0.19 之前的写法），见 [连接节点](nodes.md) |
 
 缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
 
@@ -548,8 +548,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 ```
 
 - token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`）。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
-- `transport`：可选，默认 `websocket`。宿主自己的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 的 `transports`），`transport` 写它的名字；一台、多台都用它。用别的传输时，`listen` 写那个传输自己的监听器名，不需要在 `listen` 里有同名的监听器。
-- 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`transport` 没有 `dial` 或 `listen`、`transport` 不是宿主有的、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
+- 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
 - 一台的 `listen` 与监听的节点行一样，参与同一 token 的检查（#702、#726）：两个条目会接受同一个 token 时启动报错。
 - 远端不含某一行的插件时，只有这一行失败（`runtime <name>: this connection does not contain plugin <插件>`），其他行不受影响，新增这样的行也不会被拒绝。
 - 连接的变化见 [run 打印什么](#run-打印什么)，当前状态见 [查看当前状态](#查看当前状态) 的 `connections`。

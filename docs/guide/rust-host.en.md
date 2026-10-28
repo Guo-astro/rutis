@@ -18,7 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
 | `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
-| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `exports` (in `[build-dependencies]`) writes the TypeScript declarations of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`; `testing` enables compatibility tests. |
+| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `testing` enables compatibility tests. |
+| `rutis-types` | In `[build-dependencies]`: writes the TypeScript declarations and Python types of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`. |
 
 Enable only the language features you use so the application compiles and starts only the required components.
 
@@ -246,7 +247,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 
 - **What is served**: the public `&self` methods of the marked `impl` blocks; a type may have several marked blocks. Each is `async` for the caller (a Promise in JavaScript, an awaitable in Python), and Node, Bun, Python and Go rows call the same dispatcher. Method names are camelCase (`add_entry` is `addEntry`). A method under `#[cfg(...)]` is served, and checked for whether it can be bound, only in the builds that include it (two methods of one name are fine when `#[cfg]` keeps one out of each build); two methods of one name across a type's marked blocks cannot both be served, and `provide` fails naming it. Parameter types may name lifetimes or `Self`.
 - **Its name**: by default the type's name with the first word lowercased (`Calendar` is `calendar`, `TreeCommands` `treeCommands`, `HTTPClient` `httpClient`); `#[service(name = "cal")]` renames it.
-- **Provided means served**: `ctx.provide(value)` (and `provide_as::<T>` providing it as its own type) also serves it by name; one disposer removes both, and both go when the plugin unloads, stopping the rows that use it, as with any service. Provided with a `check()` predicate (a way of providing internal to rutis's own crates), the name is gated by it too: while it fails, the rows using the name stop as the native service's users do. A writable binding is not served, nor is a named one (`provide_at(Key::named(…), …)`): a second value of the type would take the same name. Each call by name reads the service through the providing context's strict read path, so read interceptors (`intercept_require_as`) deny or replace it as they would for a Rust reader in the calling row's place: those of the row's ancestors apply (the provider's when no row calls). The read serves only the value the entry was provided with: a reference kept after the service went, even once the slot is provided again, is refused. A `provide` refused because the native service or the name is already there serves nothing. The name is served after the native service and withdrawn before it (by the disposer and by the plugin unloading alike), so a row the name wakes can always call it.
+- **Provided means served**: `ctx.provide(value)` (and `provide_as::<T>` providing it as its own type) also serves it by name; one disposer removes both, and both go when the plugin unloads, stopping the rows that use it, as with any service. Provided with a `check()` predicate (a way of providing internal to rutis's own crates), the name is gated by it too: while it fails, the rows using the name stop as the native service's users do. A writable binding is not served, nor is a named one (`provide_at(Key::named(…), …)`): a second value of the type would take the same name. Each call by name reads the service through the providing context's strict read path, and serves only the value the entry was provided with: a reference kept after the service went, even once the slot is provided again, is refused. A `provide` refused because the native service or the name is already there serves nothing. The name is served after the native service and withdrawn before it (by the disposer and by the plugin unloading alike), so a row the name wakes can always call it.
 - **Its scope follows where it is provided**: provided inside an instance (`ctx.provide_at(Key::of().instance(build.instance("session")?), notes)`), it is that instance's own, and the rows in that instance get it; provided outside instances, it is global. Provided in an isolation scope (`ctx.isolate(Key::<Notes>::of(), "a")`), the name is served in the same scope (`isolate(host_key("notes"), "a")`), so two isolated scopes each serve their own. No instance group is written down. Once an instance provides it, the rows in that instance use that instance's own and do not fall back to a global one of the same name: when the instance's service goes, they wait for it to be provided there again (design R3, scope follows where it is provided).
 - **What crosses, how errors are thrown**: see the [reference](#exported-services-reference): serde parameters and results, callbacks by reference, the calling row's `&Ctx`, `Err(e)` thrown with `name`, `code`, `message` and `data`.
 - **Errors at compile time**: a public method in a marked block that cannot be bound (`&mut self`, a borrowed result, a mutable reference parameter, a generic parameter that is not a function, …) is a compile error pointing at it; mark one you keep in Rust `#[service(skip)]`.
@@ -254,7 +255,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waits(&entry)` lists what the row waits for, with the reason `WaitReason::Explained` saying to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
 - **dylib plugins**: a marked type in a dylib (whose crate depends on `rutis-sdk` only and writes `#[rutis_sdk::rutis::service]`, or `use rutis_sdk::rutis::service`) is served once the plugin loads; the host need not know it. On a version swap the old generation's entry point goes with its services and the new one's appears when it provides them. A rebuild needs no new version: two builds of one plugin keep their types' `TypeId`s, and each value is served with the code of the build that provided it, so both can be loaded at once. A build that drops the marker serves its values by name no more, and names are those of the newest build. The host links `rutis-bridge`.
 - **Without rutis-bridge**: serving by name and checking clashes are its work. In a program that does not link it, a marked type is provided by type only, and the first time it is provided the error sink gets one `ErrorKind::NotServedByName` (by default `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`).
-- **Declarations and Python types**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their TypeScript declarations (`Services['calendar']`, the data types, `<Name>Thrown`); add `--python services.py` to write their Python types too. To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency), and `.python(…)` likewise. Calls need neither. See [Declarations](#declarations).
+- **Declarations and Python types**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their TypeScript declarations (`Services['calendar']`, the data types, `<Name>Thrown`); add `--python services.py` to write their Python types too. To refresh them on every build, write `rutis_types::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (build dependency `rutis-types`), and `.python(…)` likewise. Calls need neither. See [Declarations](#declarations).
 
 A complete example: [`examples/marked-services`](../../examples/marked-services).
 
@@ -584,28 +585,7 @@ rutis has no `tracing` / `log` integration; the host's own logging works as usua
 
 ## Nodes
 
-```rust,no_run
-# use rutis::host::*;
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let root = rutis::Ctx::root()?;
-# let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
-
-let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
-root.plugin(WebSocketPlugin::new(Config::new())?).await?;
-root.plugin(IdentityPlugin::new(
-    "main",
-    StaticIdentity::new(main).present(office.clone(), Credential::Bearer(token)),
-));
-root.plugin(PeerPlugin::new(
-    LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
-    Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
-)?);
-# Ok(())
-# }
-```
+0.19 redoes remote connections ([Remote connections: one session plugin](../design-remote-session-2026-10-28.en.md)); how a Rust program sets up a node itself changes with it, and this section is filled in once the new form lands. Until then, use rutis-host's node rows (see [Connect nodes](nodes.en.md)).
 
 For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
 
@@ -647,20 +627,19 @@ let out = ctx
     .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) })  // optional: no terminal
     .await?;
 let sync = ctx.bail(Created("s1".into(), 3));                         // meets the async listener above: AsyncListener
-let chain = ctx.waterfall_sync(Created("s1".into(), 3), |e| Ok(Some(e.0.clone()))); // a host method: a synchronous waterfall
 let python_only = ctx
     .filter(|l| l.runtime.as_deref() == Some("py"))                   // ListenerInfo
     .serial(Created("s1".into(), 3))
     .await?;
 off.dispose().await?;
-# let _ = (first, out, sync, chain, python_only);
+# let _ = (first, out, sync, python_only);
 # Ok(())
 # }
 ```
 
 | Topic | Rule |
 | --- | --- |
-| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail` / `waterfall_sync` (`AsyncListener`) |
+| Listeners | A listener registered once can be called by all five modes; `call.mode()` is this call's mode, `call.next()` works only in a `waterfall` (otherwise `WaterfallNext`). `on_sync` registers a synchronous listener, callable by every mode but unable to call `next` in an asynchronous `waterfall`; an (asynchronous) `on` listener cannot be called by `bail` (`AsyncListener`) |
 | Options and prefixes | `ctx.listen::<E>()` followed by `.prefix("session/")` (every name under the prefix; `call.name()` is the actual one), `.name(n)`, `.once()`, `.prepend()`, `.global()`, then `.on(…)` or `.on_sync(…)` |
 | By name | Without a type, listen with `rutis_bridge::events::Args`: `ctx.listen::<Args>().name("file-changed")`, arguments `Args(vec![Value::Data(json!(…))])`, results `ArgValue`. Typed and `Args` listeners of one name receive each other's events, converted through serde. An event type whose value decides its name has an empty `NAME` and overrides `Event::name` |
 | Scope | The emitter's scope is `ctx.scope()`: the loader marks each group instance as a scope. Events are delivered by name to every listener; a scope is a descriptor for filters (`ListenerInfo::scope`) |
@@ -673,7 +652,7 @@ Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx:
 
 ## Exported services: reference
 
-Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go): for a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); a type whose source you cannot change is wrapped in a type of your own and marked ([above](#third-party-types-wrap-them-in-a-type-of-your-own)). The rules below say what crosses and how errors are thrown. The generator writes the TypeScript declarations and the Python types from the source: `rutis-host types`, or `rutis_bridge::build::Exports` in `build.rs` (feature `exports` of the build dependency). Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
+Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go): for a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); a type whose source you cannot change is wrapped in a type of your own and marked ([above](#third-party-types-wrap-them-in-a-type-of-your-own)). The rules below say what crosses and how errors are thrown. The generator writes the TypeScript declarations and the Python types from the source: `rutis-host types`, or `rutis_types::Exports` in `build.rs` (build dependency `rutis-types`). Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
 
 | `Exports` | Effect |
 | --- | --- |

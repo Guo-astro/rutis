@@ -5,7 +5,7 @@
 //! One physical connection carries one logical channel, so close codes and
 //! heartbeats act on the connection.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
@@ -23,7 +23,7 @@ use crate::websocket::Limits;
 
 /// A normal close.
 pub(crate) const NORMAL: u16 = 1000;
-/// The host is stopping.
+/// The far end is going away.
 pub(crate) const GOING_AWAY: u16 = 1001;
 /// A message over the size limit.
 pub(crate) const TOO_BIG: u16 = 1009;
@@ -65,7 +65,7 @@ impl Control {
     }
 }
 
-pub(crate) struct Shared {
+struct Shared {
     outgoing: Pipe,
     incoming: Pipe,
     control: Control,
@@ -121,41 +121,28 @@ impl Closer for WsCloser {
     }
 }
 
-/// Close the connection of `shared`, if it is still open, because the
-/// host is stopping (close code 1001).
-pub(crate) fn going_away(shared: &Weak<Shared>) {
-    if let Some(shared) = shared.upgrade() {
-        shared.close(GOING_AWAY, "the host is stopping");
-    }
-}
-
-/// Counts a running connection task for the transport's shutdown.
-pub(crate) struct Live(pub Arc<crate::websocket::Shared>);
+/// Counts a running connection task, for [`crate::websocket::closed`].
+struct Live;
 impl Live {
-    pub(crate) fn new(transport: Arc<crate::websocket::Shared>) -> Self {
-        transport
-            .live
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self(transport)
+    fn new() -> Self {
+        super::LIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
     }
 }
 impl Drop for Live {
     fn drop(&mut self) {
-        self.0
-            .live
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        self.0.ended.notify_waiters();
+        super::LIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        super::ENDED.notify_waiters();
     }
 }
 
-/// Run `socket` as a channel on `runtime`; `live`, if given, counts the
-/// connection task while it runs. Also returns what [`going_away`] closes.
+/// Run `socket` as a channel on `runtime`.
 pub(crate) fn channel<S: Io>(
     socket: WebSocketStream<S>,
     limits: &Limits,
     runtime: &tokio::runtime::Handle,
-    live: Option<Live>,
-) -> (Channel, Weak<Shared>) {
+) -> Channel {
+    let live = Live::new();
     let shared = Arc::new(Shared {
         outgoing: Pipe::new(limits.buffer),
         incoming: Pipe::new(limits.buffer),
@@ -167,13 +154,11 @@ pub(crate) fn channel<S: Io>(
         task.await;
         drop(live);
     });
-    let weak = Arc::downgrade(&shared);
-    let channel = Channel {
+    Channel {
         sender: Box::new(WsSender(shared.clone())),
         receiver: Box::new(WsReceiver(shared.clone())),
         closer: Arc::new(WsCloser(shared)),
-    };
-    (channel, weak)
+    }
 }
 
 fn truncate(reason: &str) -> String {

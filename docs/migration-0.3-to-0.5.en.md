@@ -74,7 +74,7 @@ let candidate = bus.waterfall_sync(&ctx, &key, &event, |_, event| Ok(event.candi
 
 The synchronous terminal is a local `FnOnce` and may borrow stack variables or a `MutexGuard`; it need not be Send or `'static`. Listeners still require Send + Sync + `'static`. The bus holds no framework lock while user callbacks run, but a callback must not reacquire the same business mutex already held by its caller.
 
-Runnable example: [`sync_decision.rs`](../crates/rutis/examples/sync_decision.rs). The caller locks and reads the old value, the terminal creates a candidate, a listener rewrites the result, then the caller validates and commits inside the same critical section: `cargo run -p rutis --example sync_decision`.
+Runnable example: [`sync_decision.rs`](https://github.com/arcships/rutis/blob/v0.18.0/crates/rutis/examples/sync_decision.rs). The caller locks and reads the old value, the terminal creates a candidate, a listener rewrites the result, then the caller validates and commits inside the same critical section: `cargo run -p rutis --example sync_decision`.
 
 Ordinary errors are returned unchanged. Listener / terminal panics are caught, reported once to ErrorSink, and returned as `CordisError::SyncEventPanicked`; a panic in ErrorSink is also isolated. Dispatch-attempt observers keep their existing contract: report panic and continue. `DispatchMode` adds `BailSync` and `WaterfallSync` variants.
 

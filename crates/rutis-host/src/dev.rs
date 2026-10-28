@@ -124,11 +124,15 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     errln!("rutis-host dev: running {id}; changes reload it (Ctrl-C ends)");
     // Once every row settled: a row whose apply does not return keeps it
     // waiting, not the changes nor a signal.
+    // After that, the services are said again whenever they changed: a
+    // runtime can provide one after its row settled.
+    let shown = std::sync::Arc::new(std::sync::Mutex::new(None));
     {
         let loader = host.loader.clone();
+        let shown = shown.clone();
         tokio::spawn(async move {
             loader.settled().await;
-            errln!("{}", services_line(&loader));
+            show_services(&loader, &shown);
         });
     }
     status::follow(host.followed());
@@ -147,7 +151,16 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let stopped = 'dev: loop {
         remove_builds(&mut project.stale);
         tokio::select! {
-            _ = tokio::time::sleep(POLL) => {}
+            _ = tokio::time::sleep(POLL) => {
+                let changed = shown
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|line| *line != services_line(&host.loader));
+                if changed {
+                    show_services(&host.loader, &shown);
+                }
+            }
             signal = signals.next() => {
                 break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
             }
@@ -161,7 +174,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
                     () = async {
                         project.reconfigure(&mut host, &mut triggers).await;
                         host.loader.settled().await;
-                        errln!("{}", services_line(&host.loader));
+                        show_services(&host.loader, &shown);
                     } => {}
                     signal = signals.next() => {
                         break 'dev stop::stop(&host, signal, deadline, &mut signals).await;
@@ -206,7 +219,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
                 // Once the change ended, the services as they are now.
                 if project.reload(&host, &changed).await || rebuild {
                     host.loader.settled().await;
-                    errln!("{}", services_line(&host.loader));
+                    show_services(&host.loader, &shown);
                 }
             } => {}
             signal = signals.next() => {
@@ -804,6 +817,13 @@ impl Affected {
             })
             .collect()
     }
+}
+
+/// Print the services line, and keep it as the one last said.
+fn show_services(loader: &rutis_loader::Loader, shown: &std::sync::Mutex<Option<String>>) {
+    let line = services_line(loader);
+    errln!("{line}");
+    *shown.lock().unwrap() = Some(line);
 }
 
 /// Delete the builds in `stale`, keeping those that cannot be deleted yet

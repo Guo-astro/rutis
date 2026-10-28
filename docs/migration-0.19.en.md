@@ -31,7 +31,6 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 | --- | --- |
 | `"dial": "<address>"` | `"dial": "<address>"` |
 | `"listen": "<listener>"` | `"listen": "<listener>"` (without `instances`: one runtime, whose `--id` is the runtime's name) |
-| `"transport": "<kind>"` | `"transport": "<kind>"` (`websocket` by default) |
 
 - Many runtimes (`listen` + `instances`) are written as before.
 - **The old form still works; nothing needs to change, and nothing is converted.** Do not write both for one runtime: a `runtimes.remote` entry with `dial` or `listen` and a node row whose `"runtime"` names it stop the host at startup:
@@ -42,7 +41,6 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 
 - The node row's `export`, `import`, `host`, `rows` and similar fields have no counterpart in the new form: its connection only runs that runtime's rows. Keep the node row where you need them.
 - The token is `RUTIS_TOKEN_<NAME>` (see [Tokens on the host side](#tokens-on-the-host-side-695)). One runtime's `listen` without a token stops the host at startup.
-- A connection of your own (a relay, QUIC, …) implements `Transport`, which the Rust program embedding rutis-host mounts (`Embedding`'s new `transports`), and `transport` names it; one runtime and many both use it.
 
 ### What behaves differently
 
@@ -74,9 +72,19 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 
 ### Rust embeddings
 
-- `rutis_host::host::Embedding` has a new field, `transports`. Code that writes every field in a struct literal adds `transports: Vec::new()`, or uses `..Embedding::default()`.
 - `rutis_host::control::serve` takes one more argument after the `Loader`: a `Report` (a function returning the status text, which `status` is answered with); `Host::status_report()` gives it.
-- The runtime side, the session protocol, and the Rust APIs of rutis, rutis-loader and rutis-bridge do not change.
+- The runtime side, the session protocol, and the Rust APIs of rutis and rutis-loader do not change. rutis-bridge's connection part changed (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §11):
+
+  | 0.18 | 0.19 |
+  | --- | --- |
+  | `rutis_bridge::transport::{local, memory, websocket}` | `rutis_bridge::{pipe, memory, websocket}` |
+  | `Transport`, `Dial`, `transport_key`; `LocalPlugin`, `MemoryPlugin`, `WebSocketPlugin` and their `*Transport`; `websocket::Config` | `websocket::dial`, `websocket::listen`, `pipe::spawn` and `memory::pair` give a `Channel` directly |
+  | `ListenerConfig::new(name, address, local id)` | `ListenerConfig::new(name, address)` |
+  | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
+  | `Channel`'s `info` (`ChannelInfo`), `Spawn::new(program, peer)` | removed; the far end's id comes only from the session handshake; `Spawn::new(program)` |
+  | `rutis_host::host::Embedding`'s `transports` | removed; a connection of your own becomes a connection plugin (once the remote-connection redesign lands) |
+
+- The `transport` field of `rutis-bridge/peer` rows and of `runtimes.remote` is removed: a rutis.json that sets it is refused at startup as an unknown field.
 
 ## Tokens on the host side (#695)
 
@@ -125,10 +133,10 @@ Only imports change: a name moved off the root (value types, `PLUGIN_API`, the t
 
 Two more points for Kotlin:
 
-- Import the advanced names explicitly (the IDE's replacement adds explicit imports). In 0.19 both the old and the new names exist, so with both `import arcships.rutis.*` and `import arcships.rutis.advanced.*` the compiler reports `Overload resolution ambiguity` for `RutisFormat`, `Scope` and the like. Old code with only `import arcships.rutis.*` is not affected.
-- These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK (its source does not change).
+- Use the same version of `rutis-ksp` as of the SDK: the code a `rutis-ksp` before 0.19 generated refers to the old places at the root and does not compile against the 0.19 SDK.
+- These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK.
 
-Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change; the code 0.17.2's `rutis-ksp` generated still compiles against the 0.19 SDK, with deprecation warnings only. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
+Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
 
 ## Platform cleanup (#694)
 
@@ -152,6 +160,9 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
 | feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
+| `waterfall_sync` | Use `waterfall` (asynchronous) or the synchronous `bail` |
+| `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
+| `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
 
 ### Tools
 

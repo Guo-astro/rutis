@@ -6,14 +6,54 @@
 
 use std::path::Path;
 
+use std::sync::Arc;
+
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
-use rutis_bridge::{Credential, IdentityPlugin, LinkConfig, LinkPlugin, StaticIdentity};
+use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig, Trust};
+use rutis_bridge::{
+    Accepting, Credential, Dialer, IdentityPlugin, LinkConfig, LinkPlugin, Registrations,
+    StaticIdentity,
+};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
+}
+
+/// A loopback listener `public` for endpoint `main`, where it accepts.
+fn listening() -> (Listener, Accepting) {
+    let registrations = Registrations::new();
+    let listener = websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        websocket::admit_registered(registrations.clone(), "public"),
+    )
+    .unwrap();
+    let accepting = Accepting {
+        registrations,
+        listener: "public".into(),
+        local: id("main"),
+    };
+    (listener, accepting)
+}
+
+/// Dial `address` over WebSocket, trusting the system's roots.
+fn dialer(address: &str) -> Dialer {
+    let address = address.to_owned();
+    Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -33,24 +73,14 @@ async fn a_cordis_node_meets_the_node_contract() {
     }
 
     let main = Ctx::root().unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
-    .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let (listener, accepting) = listening();
+    let address = format!("ws://{}/rutis", listener.local_addr());
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("cordis-token", id("cordis")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("cordis"), "websocket", "main", "public").require("node"),
+        LinkConfig::listen(id("cordis"), "main", accepting).require("node"),
     ));
 
     let mut child = tokio::process::Command::new("node")
@@ -70,31 +100,18 @@ async fn a_cordis_node_meets_the_node_contract() {
 async fn a_rutis_node_meets_the_node_contract() {
     // main: listens for the node, and requires its `node` contract.
     let main = Ctx::root().unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
-    .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let (listener, accepting) = listening();
+    let address = format!("ws://{}/rutis", listener.local_addr());
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("node"), "websocket", "main", "public").require("node"),
+        LinkConfig::listen(id("node"), "main", accepting).require("node"),
     ));
 
     // node: a rutis node in its own root, dialing main.
     let node = Ctx::root().unwrap();
-    (&node.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-        .await
-        .unwrap();
     node.plugin(IdentityPlugin::new(
         "node",
         StaticIdentity::new(id("node"))
@@ -102,9 +119,8 @@ async fn a_rutis_node_meets_the_node_contract() {
     ));
     node.plugin(LinkPlugin::new(LinkConfig::dial(
         id("main"),
-        "websocket",
         "node",
-        &address,
+        dialer(&address),
     )));
     rutis_bridge::testing::fixture(&node, id("main"));
 

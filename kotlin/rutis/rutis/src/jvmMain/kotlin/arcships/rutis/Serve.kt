@@ -24,24 +24,19 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.io.IOException
 import kotlin.system.exitProcess
-import arcships.rutis.advanced.manifest
 
 private const val USAGE = "usage: <program> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
 
 @Volatile
 internal var projectDir: String = ""
 
-/** The project directory the host gave this runtime (its last argument). */
-@Deprecated("Moved in 0.19: use arcships.rutis.advanced.project.", ReplaceWith("project", "arcships.rutis.advanced.project"))
-val Rutis.project: String get() = projectDir
-
 /**
  * The desktop entry (jvm target): runs `plugins` as a rutis runtime as the
  * command line says, and exits the process. `<channel> <project>`: the
  * channel is `unix:<path>` (or a bare path) or `tcp:127.0.0.1:<port>`, a
- * local channel rutis made; or, with `--id <endpoint>` (and `--peer
- * <endpoint>`, the controller's id, when known), `dial:<ws or wss address>`
- * to dial a rutis access point and stay connected, or `listen:<ws or wss
+ * local channel rutis made, in the endpoint format when `--id <endpoint>`
+ * is given (and `--peer <endpoint>`, the controller's id, when known); or,
+ * with `--id`, `dial:<ws or wss address>` to dial a rutis access point and stay connected, or `listen:<ws or wss
  * address>` to wait for rutis to dial in. `--rutis-manifest` prints what the
  * plugins declare. Exit status 0 when the session ended (or, remotely, the
  * runtime was stopped: SIGTERM, Ctrl-C) and the rows unloaded; 1 when the
@@ -61,11 +56,7 @@ fun Rutis.serve(args: Array<String>, vararg plugins: Plugin): Nothing {
     exitProcess(status)
 }
 
-/** What the plugins declare, as `--rutis-manifest` prints it. */
-@Deprecated("Moved in 0.19: use arcships.rutis.advanced.manifest.", ReplaceWith("manifest(*plugins)", "arcships.rutis.advanced.manifest"))
-fun Rutis.manifest(vararg plugins: Plugin): String = manifestOf(plugins.toList())
-
-/** `Rutis.manifest`. */
+/** `arcships.rutis.advanced.manifest`. */
 internal fun manifestOf(plugins: List<Plugin>): String {
     RuntimeSession.checkPlugins(plugins)
     val state = arcships.rutis.internal.RuntimeState(plugins)
@@ -83,10 +74,10 @@ internal fun manifestOf(plugins: List<Plugin>): String {
 private fun jsonOf(value: Any?): JsonElement = arcships.rutis.internal.peer.plain(value)
 
 /** Serves the session `args` name; returns the exit status. */
-private fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
+internal fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     RuntimeSession.checkPlugins(plugins)
     if (args.size == 1 && args[0] == "--rutis-manifest") {
-        println(Rutis.manifest(*plugins.toTypedArray()))
+        println(manifestOf(plugins))
         return 0
     }
     if (args.isEmpty()) throw IllegalArgumentException(USAGE)
@@ -106,10 +97,14 @@ private fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
     if (!network && (channel.startsWith("ws:") || channel.startsWith("wss:"))) {
         throw IllegalArgumentException("a WebSocket channel is listen:<address> or dial:<address>: $channel")
     }
-    if (!network) return serveLocal(channel, plugins)
-    val id = flags["id"] ?: throw IllegalArgumentException("a network channel needs --id <endpoint>: $channel")
-    if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
-    val endpoint = Endpoint(id, flags["peer"], listOf("runtime"))
+    // With --id, every channel speaks the endpoint format, greeting as that
+    // id: a runtime, its controller managing its rows.
+    val endpoint = flags["id"]?.let { id ->
+        if (!validId(id)) throw IllegalArgumentException("invalid endpoint id $id: use lower-case letters, digits and -")
+        Endpoint(id, flags["peer"], listOf("runtime"))
+    }
+    if (!network) return serveLocal(channel, endpoint, plugins)
+    if (endpoint == null) throw IllegalArgumentException("a network channel needs --id <endpoint>: $channel")
     val ended = if (channel.startsWith("dial:")) {
         dial(channel.removePrefix("dial:"), endpoint, plugins)
     } else {
@@ -130,8 +125,8 @@ private fun serveArgs(args: List<String>, plugins: List<Plugin>): Int {
 }
 
 /** A local channel rutis made: one session, then the process ends. */
-private fun serveLocal(channel: String, plugins: List<Plugin>): Int {
-    val session = RuntimeSession.start(LocalChannels.open(channel), null, plugins)
+private fun serveLocal(channel: String, endpoint: Endpoint?, plugins: List<Plugin>): Int {
+    val session = RuntimeSession.start(LocalChannels.open(channel), endpoint, plugins)
     session.peer.closedFuture.join()
     val ended = session.end()
     session.refusal?.let {

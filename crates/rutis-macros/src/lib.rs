@@ -459,9 +459,8 @@ fn expand(default: Tokens, attr: Tokens, item: Tokens) -> syn::Result<Tokens> {
                 ctx: &#rutis::Ctx,
                 key: &#rutis::host::TypeKey,
                 provision: &#rutis::internal::service::Provision,
-                actor: ::std::option::Option<&#rutis::Ctx>,
             ) -> ::std::result::Result<::std::sync::Arc<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync>, ::std::string::String> {
-                #rutis::internal::CtxInternal::require_provided_as::<#served>(ctx, key.clone(), provision, actor)
+                #rutis::internal::CtxInternal::require_provided_as::<#served>(ctx, key.clone(), provision)
                     .map(|service| #erase)
                     .map_err(|error| ::std::string::ToString::to_string(&error))
             }

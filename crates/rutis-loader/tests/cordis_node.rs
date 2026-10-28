@@ -15,9 +15,10 @@ use rutis::Ctx;
 use rutis_bridge::events::{Args, LinkEventsPlugin};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
-use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
+use rutis_bridge::websocket::{Limits, ListenerConfig, Trust};
 use rutis_bridge::{
-    ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin, StaticIdentity,
+    Accepting, Credential, Dialer, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig,
+    LinkPlugin, Registrations, StaticIdentity,
 };
 use rutis_loader::peer::{PeerResolver, PeerRowsPlugin};
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch};
@@ -44,6 +45,24 @@ async fn tick(main: &Ctx, what: &str) {
         .unwrap();
 }
 
+/// Dials the WebSocket at `address`, presenting the link's credential.
+fn websocket_dialer(address: &str) -> Dialer {
+    let address = address.to_owned();
+    Arc::new(move |credential: Option<Credential>| {
+        let address = address.clone();
+        Box::pin(async move {
+            rutis_bridge::websocket::dial(
+                &address,
+                &rutis_bridge::protocol(),
+                credential.as_ref(),
+                &Trust::default(),
+                &Limits::default(),
+            )
+            .await
+        })
+    })
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     // An npm plugin installed on the Cordis side only.
@@ -67,24 +86,29 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
     // The rutis node: listens for mac.
     let main = Ctx::root().unwrap();
     main.provide_at(host_key("clock"), Arc::new(Clock)).unwrap();
-    let websocket = WebSocketPlugin::new(Config::new().listener(ListenerConfig::new(
-        "public",
-        "127.0.0.1:0".parse().unwrap(),
-        id("main"),
-    )))
+    let registrations = Registrations::new();
+    let listener = rutis_bridge::websocket::listen(
+        &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
+        &Limits::default(),
+        rutis_bridge::websocket::admit_registered(registrations.clone(), "public"),
+    )
     .unwrap();
-    let handle = websocket.clone();
-    (&main.plugin(websocket)).await.unwrap();
-    let address = format!(
-        "ws://{}/rutis",
-        handle.transport().unwrap().local_addr("public").unwrap()
-    );
+    let address = format!("ws://{}/rutis", listener.local_addr());
     main.plugin(IdentityPlugin::new(
         "main",
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
     ));
     main.plugin(LinkPlugin::new(
-        LinkConfig::listen(id("mac"), "websocket", "main", "public").require("node"),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations,
+                listener: "public".into(),
+                local: id("main"),
+            },
+        )
+        .require("node"),
     ));
     main.plugin(ImportPlugin::new(id("mac"), ["calendar"]));
     main.plugin(ExportPlugin::new(id("mac"), ["clock"]));
@@ -103,7 +127,10 @@ async fn a_rutis_node_and_a_cordis_node_share_services_rows_and_events() {
             }
         })
         .unwrap();
-    let rows = Arc::new(PeerResolver::new());
+    // No `rutis-bridge/peer` rows here: nothing to reach.
+    let rows = Arc::new(PeerResolver::new(Arc::new(|_, _| {
+        Err("no rutis-bridge/peer rows in this test".into())
+    })));
     let plugin = LoaderPlugin::new(
         Chain::new().with_shared(rows.clone()),
         LoaderOptions::default(),
@@ -356,18 +383,13 @@ async fn a_listening_cordis_node_lets_a_newer_connection_take_over() {
     async fn controller(address: &str) -> (Ctx, rutis::host::FiberView) {
         let root = Ctx::root().unwrap();
         root.provide_at(host_key("clock"), Arc::new(Clock)).unwrap();
-        (&root.plugin(WebSocketPlugin::new(Config::new()).unwrap()))
-            .await
-            .unwrap();
         root.plugin(IdentityPlugin::new(
             "main",
-            StaticIdentity::new(id("main")).present(
-                id("mac"),
-                rutis_bridge::Credential::Bearer("mac-token".into()),
-            ),
+            StaticIdentity::new(id("main"))
+                .present(id("mac"), Credential::Bearer("mac-token".into())),
         ));
         let link = root.plugin(LinkPlugin::new(
-            LinkConfig::dial(id("mac"), "websocket", "main", address).require("node"),
+            LinkConfig::dial(id("mac"), "main", websocket_dialer(address)).require("node"),
         ));
         root.plugin(ImportPlugin::new(id("mac"), ["calendar"]));
         (root, link)

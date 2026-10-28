@@ -1,6 +1,6 @@
 //! Events between nodes (#464, docs/design-events-protocol-2026-10-18.md §9):
 //! two and three applications in one process, linked by
-//! `rutis-bridge/peer` rows over the memory transport. The cases of the
+//! `rutis-bridge/peer` rows, in memory. The cases of the
 //! expectation file with a `node` participant run in
 //! `events_conformance.rs`; these are the rules of the link itself.
 #![cfg(feature = "peer")]
@@ -12,9 +12,8 @@ use std::sync::Arc;
 use common::runtimes::id;
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
-use rutis_bridge::{Credential, IdentityPlugin, StaticIdentity};
-use rutis_loader::peer::{register_peer_node, PeerResolver};
+use rutis_bridge::{Accepting, Connect, Credential, IdentityPlugin, Registrations, StaticIdentity};
+use rutis_loader::peer::{register_peer_node, Address, PeerResolver, Reach};
 use rutis_loader::{Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch};
 use serde_json::{json, Value};
 
@@ -23,20 +22,36 @@ fn layer(rows: Value) -> Vec<Layer> {
     vec![Layer::new("rows", patches)]
 }
 
+/// How a node's `rutis-bridge/peer` rows reach their peers in this
+/// process: listening on `registrations` as `local`, or dialing them.
+fn reach(registrations: &Registrations, local: &str) -> Reach {
+    let (registrations, local) = (registrations.clone(), id(local));
+    Arc::new(move |_, address| {
+        Ok(match address {
+            Address::Listen(listener) => Connect::Listen(Accepting {
+                registrations: registrations.clone(),
+                listener: listener.into(),
+                local: local.clone(),
+            }),
+            Address::Dial(listener) => Connect::Dial(rutis_bridge::memory::dialer(
+                registrations.clone(),
+                listener,
+            )),
+        })
+    })
+}
+
 /// A node `name` on `transport`, with a loader holding `rows` (its
 /// `rutis-bridge/peer` rows). `accepts`: the peers that dial it, with their
 /// tokens; `presents`: the peers it dials.
 async fn node(
-    transport: &Arc<MemoryTransport>,
+    transport: &Registrations,
     name: &str,
     accepts: &[&str],
     presents: &[&str],
     rows: Value,
 ) -> (Ctx, Loader) {
     let ctx = Ctx::root().unwrap();
-    (&ctx.plugin(MemoryPlugin::with_transport(transport.clone())))
-        .await
-        .unwrap();
     let mut identity = StaticIdentity::new(id(name));
     for peer in accepts {
         identity = identity.accept_token(format!("{peer}-token").as_str(), id(peer));
@@ -46,7 +61,10 @@ async fn node(
     }
     ctx.plugin(IdentityPlugin::new(name, identity));
     let mut builtins = Builtins::new();
-    register_peer_node(&mut builtins, Arc::new(PeerResolver::new()));
+    register_peer_node(
+        &mut builtins,
+        Arc::new(PeerResolver::new(reach(transport, name))),
+    );
     let plugin = LoaderPlugin::new(Chain::new().with(builtins), LoaderOptions::default());
     let loader = plugin.handle();
     (&ctx.plugin(plugin)).await.unwrap();
@@ -65,15 +83,14 @@ fn said(loader: &Loader, id: &str) -> String {
 /// guarantee: events/node-config
 #[tokio::test(flavor = "multi_thread")]
 async fn the_old_events_config_of_a_link_is_refused() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let (main, loader) = node(
         &transport,
         "main",
         &["mac"],
         &[],
         json!([{ "id": "link", "name": "rutis-bridge/peer", "config": {
-            "peer": "mac", "transport": "memory", "identity": "main", "listen": "main-in",
+            "peer": "mac", "identity": "main", "listen": "main-in",
             "events": { "out": ["t/tick"], "in": ["t/tock"] }
         } }]),
     )
@@ -92,15 +109,14 @@ async fn the_old_events_config_of_a_link_is_refused() {
 /// guarantee: events/link-export-import
 #[tokio::test(flavor = "multi_thread")]
 async fn event_prefixes_are_accepted_in_export_and_import() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let (main, loader) = node(
         &transport,
         "main",
         &["mac"],
         &[],
         json!([{ "id": "link", "name": "rutis-bridge/peer", "config": {
-            "peer": "mac", "transport": "memory", "identity": "main", "listen": "main-in",
+            "peer": "mac", "identity": "main", "listen": "main-in",
             "export": ["t/*", "rutis/*"], "import": ["t/*", "*"]
         } }]),
     )
@@ -125,7 +141,7 @@ mod dispatch {
 
     fn link(peer: &str, me: &str, how: Value, share: Value) -> Value {
         let mut config = json!({
-            "peer": peer, "transport": "memory", "identity": me,
+            "peer": peer, "identity": me,
             "export": share["export"], "import": share["import"],
         });
         for (key, value) in how.as_object().unwrap() {
@@ -169,8 +185,7 @@ mod dispatch {
     /// guarantee: events/no-multi-hop
     #[tokio::test(flavor = "multi_thread")]
     async fn an_imported_listener_is_not_passed_on() {
-        let transport = Arc::new(MemoryTransport::default());
-        transport.endpoint("b-in", id("b"));
+        let transport = Registrations::new();
         let all = json!({ "export": ["t/*"], "import": ["t/*"] });
         let (b, _) = node(
             &transport,
@@ -220,8 +235,7 @@ mod dispatch {
     /// guarantee: events/link-export-import
     #[tokio::test(flavor = "multi_thread")]
     async fn import_narrows_what_is_announced() {
-        let transport = Arc::new(MemoryTransport::default());
-        transport.endpoint("main-in", id("main"));
+        let transport = Registrations::new();
         let (main, _) = node(
             &transport,
             "main",

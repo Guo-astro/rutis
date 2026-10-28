@@ -1,5 +1,6 @@
 use super::*;
 use rutis_test_support::{eventually_blocking, recv_within};
+use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
@@ -161,26 +162,4 @@ fn the_far_end_learns_why_a_channel_closed() {
             reason: "rejected: not accepted here".into()
         })
     );
-}
-
-#[tokio::test]
-async fn dial_reaches_a_listener_and_unknown_names_are_retryable() {
-    let transport = Arc::new(MemoryTransport::default());
-    let listener = transport.listen("svc").unwrap();
-    assert!(matches!(
-        transport.listen("svc"),
-        Err(ConnectError::Incompatible { .. })
-    ));
-    let mut dialed = transport.dial(&crate::Dial::address("svc")).await.unwrap();
-    let mut accepted = listener.accept().unwrap();
-    dialed.sender.send(b"hi").unwrap();
-    assert_eq!(accepted.receiver.recv().unwrap().unwrap(), b"hi");
-    assert!(matches!(
-        transport.dial(&crate::Dial::address("other")).await,
-        Err(ConnectError::Retryable { .. })
-    ));
-    transport.close_all();
-    assert!(dialed.sender.send(b"after").is_err());
-    drop(listener);
-    assert!(transport.dial(&crate::Dial::address("svc")).await.is_err());
 }

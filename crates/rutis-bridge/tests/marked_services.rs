@@ -725,40 +725,6 @@ async fn a_provide_refused_for_its_native_slot_serves_nothing() {
     root.shutdown().await.unwrap();
 }
 
-/// Calls by name read the service through the strict read path: read
-/// interceptors deny or replace it, as for Rust readers.
-#[tokio::test]
-async fn calls_by_name_go_through_read_interceptors() {
-    use rutis::internal::ServiceIntercept;
-    use std::sync::atomic::{AtomicU8, Ordering};
-    let root = Ctx::root().unwrap();
-    root.provide(greeter("native")).unwrap();
-    let service = served(&root, "greeter").unwrap();
-    let policy = Arc::new(AtomicU8::new(0));
-    let read = policy.clone();
-    root.intercept_require_as::<Greeter>(TypeKey::of::<Greeter>(), move |_| {
-        match read.load(Ordering::SeqCst) {
-            0 => ServiceIntercept::Continue,
-            1 => ServiceIntercept::Replace(Arc::new(greeter("replaced"))),
-            _ => ServiceIntercept::Deny,
-        }
-    })
-    .unwrap();
-    assert_eq!(
-        call(&service, "text", json!([])).await.unwrap(),
-        json!("native")
-    );
-    policy.store(1, Ordering::SeqCst);
-    assert_eq!(
-        call(&service, "text", json!([])).await.unwrap(),
-        json!("replaced")
-    );
-    policy.store(2, Ordering::SeqCst);
-    let error = call(&service, "text", json!([])).await.unwrap_err();
-    assert!(error.to_string().contains("not available"), "{error}");
-    root.shutdown().await.unwrap();
-}
-
 /// Provided on an active context, a marked service is served by name only
 /// once the native service it calls is there: a row woken by the name
 /// finds it (#540). Another thread watches while it is provided and
