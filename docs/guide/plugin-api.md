@@ -248,6 +248,107 @@ incompatible session: the far end speaks protocol 2, this side 4: upgrade the fa
 
 清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
 
+## 用 `loader` 管理插件
+
+用 `rutis-host` 或 `LoaderPlugin` 的宿主提供一个服务 `loader`：插件用它加一行、重新加载一行的代码、删一行、读当前状态，与在 `rutis.json` 里手写、改动行的效果相同。它是一个普通的服务：`inject: ["loader"]`，再 `ctx.use("loader")`；任何语言的任何插件都能用，平台不加权限或限制（不想让某个插件管理插件，就不放它）。设计见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)。
+
+| 方法 | 参数 | 返回 |
+| --- | --- | --- |
+| `create(options, parent?, position?)` | `options`：`{id?, name, config?, disabled?, inject?}`，与 `rutis.json` 一行的写法相同 | 行 id；没给 `id` 时生成 8 位十六进制，例如 `"3f2a91c0"` |
+| `reload(id)` | 行 id | 无。重新加载这一行的代码 |
+| `remove(id)` | 行 id | 无。卸载并删掉这一行 |
+| `status()` | 无 | 当前状态，与 `rutis-host status` 读的是同一份：`{"rows": [{"id": "weather", "state": "running"}, …], "services": [{"name": "weather", "provider": "weather"}, …], "calls": […]}` |
+
+`create` 全有或全无：新的行起不来（找不到模块、语法错误、配置不合 Schema、`apply` 抛错）时不留下这一行。`reload` 时新代码加载不了（语法、导入错误），旧版本继续运行；新代码在 `apply` 里失败，这一行跑新代码并以那个错误失败，改好后再 `reload`（与 [`rutis-host dev`](rutis-host.md#用-dev-开发插件) 的重新加载相同）。
+
+**什么时候调用。** `loader` 的方法在 `apply` 返回后调用：在服务方法里、事件里。一行在自己的 `apply` 里调用 `create`、`reload`、`remove` 会等到这个 `apply` 结束，所以会卡住，不报错。要在 `apply` 里挂子插件，用 `ctx.plugin`（Rust；Node 里的 Cordis 插件）：子插件属于这一行，随这一行卸载。
+
+Python：
+
+```python
+from rutis import define_plugin
+
+
+class Maker:
+    def __init__(self, loader):
+        self.loader = loader
+
+    async def step(self):
+        row = await self.loader.create({"id": "weather", "name": "py:weather"})
+        await self.loader.reload(row)
+        snapshot = await self.loader.status()
+        await self.loader.remove(row)
+
+
+def apply(ctx, config):
+    ctx.provide("maker", Maker(ctx.use("loader")))
+
+
+plugin = define_plugin(apply, name="maker", inject=["loader"])
+```
+
+TypeScript：
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+interface Loader {
+  create(options: { id?: string; name: string; config?: unknown }): Promise<string>
+  reload(id: string): Promise<void>
+  remove(id: string): Promise<void>
+  status(): Promise<{ rows: { id: string; state: string }[] }>
+}
+
+export default definePlugin({
+  name: 'maker',
+  inject: ['loader'],
+  apply(ctx) {
+    const loader = ctx.use<Loader>('loader')
+    ctx.provide('maker', {
+      step: async () => {
+        const row = await loader.create({ name: 'py:weather' })
+        await loader.remove(row)
+      },
+    })
+  },
+})
+```
+
+Go（`Inject: []string{"loader"}`）：
+
+```go
+var loader struct {
+	Create func(ctx context.Context, options map[string]any) (string, error)
+	Reload func(ctx context.Context, id string) error
+	Status func(ctx context.Context) (map[string]any, error)
+	Remove func(ctx context.Context, id string) error
+}
+if err := ctx.Use("loader", &loader); err != nil {
+	return err
+}
+// 在服务方法里：
+row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
+```
+
+**出错时。** 每种情况抛出一个错误：`name` 是 `"Error"`（Python 里是 `rutis.RemoteError`，Go 里是 `*rutis.RemoteError`），`code` 是 `"Error"`，`data` 是 `{"row": <行 id>}`（没给 `id` 时是生成的 id），`message` 是 rutis 在终端打印给人看的同一段文字：
+
+| 怎样触发 | `message` | 这一行 |
+| --- | --- | --- |
+| `create`，`weather.py` 有语法错误 | `weather: cannot load weather.py: SyntaxError: expected ':' (weather.py:3)` | 不留下 |
+| `create`，`apply` 抛错 | `weather: KeyError: 'units'` | 被退回，不留下 |
+| `create`，配置不合 Schema | `weather: config: units should be "metric" or "imperial", got "kelvin"` | 不留下 |
+| `create`，没有这个模块 | `weather: cannot load "py:wether": ModuleNotFoundError: No module named 'wether'` | 不留下 |
+| `create`，`id` 已存在 | `a row weather already exists` | 原来的行不变 |
+| `reload`，语法错误 | `weather: cannot reload: cannot load weather.py: SyntaxError: expected ':' (weather.py:3); the previous version keeps running` | 旧版本继续运行 |
+| `reload`，`apply` 抛错 | `weather: cannot reload: KeyError: 'units'` | 跑新代码并失败 |
+| `reload` / `remove` 一个没有的行 | `no row wether` | — |
+| `create` / `remove`，宿主没有可编辑的配置 | `this host keeps no editable configuration, so rows cannot be added or removed` | — |
+| `create` 已生效，但没存下 | `weather: added, but rutis.json could not be written: <操作系统的原因>`（删时是 `removed`） | 在运行，宿主重启后就没有 |
+
+**改动存在哪。** `rutis-host run` 把加、删的行写回 `rutis.json`（只改 `rows`，见 [用 `loader` 管理插件](rutis-host.md#用-loader-管理插件)）；`rutis-host dev` 和不带 `Persist` 的嵌入宿主没有可编辑的配置，`create`、`remove` 得到上表的错误，`reload`、`status` 照常。
+
+**名字 `loader` 被占。** 一个服务名只有一个提供者，所以另一行也提供名叫 `loader` 的服务时，那一行以同名错误失败：`service loader is already provided by …: row <行> cannot provide it too`。给那一行的服务换名。
+
 ## 同一运行时里的插件共用一个进程
 
 同一个运行时（`node`、`py`、`bun`）里的行在同一个进程里运行：它们共用内存、全局状态和事件循环，一个插件阻塞事件循环，其他插件也停下。要隔离，把插件放进另一个运行时实例。宿主可以把插件放进单独的进程（见[做一个开放插件的宿主](open-host.md#3-管住插件)）。

@@ -387,6 +387,14 @@ impl Host {
         }
     }
 
+    /// Whether the process has exited, without waiting.
+    pub fn exited(&mut self) -> bool {
+        if self.status.is_none() {
+            self.status = self.child.try_wait().expect("the host's status");
+        }
+        self.status.is_some()
+    }
+
     /// Wait until the host process exits, within the hang guard.
     pub fn wait_exit(&mut self) -> ExitStatus {
         self.wait_exit_within(hang_guard())
