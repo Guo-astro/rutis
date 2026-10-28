@@ -63,6 +63,7 @@
   | `bad-argument` | 参数个数或类型不对 | 个数：`{service, method, expected, received}`；类型或缺少：`{service, method, argument, expected}`（`argument` 从 1 数起） |
   | `bad-value` | 值传不过去，或消息超过上限 | `{part, argument?, limit?}`（`part` 是 `argument`、`result` 或 `error`） |
   | `peer-gone` | 调用进行中对面的进程退出或断开 | 宿主一侧 `{runtime, reason}`；插件一侧 `{reason}` |
+  | `bad-config` | 这一行的配置不符合插件的 Schema（见下面 #669 一节） | `{issues: [{path, message}]}`（`path` 的每一项是键或下标） |
 
   协议层面的拒绝（一端没按约定办事）没有码。
 
@@ -267,3 +268,17 @@ let report = handle.reconcile(layers, None).await?;
 - **`dev` 里插件写的每一行前面带上行名**：`[weather] fetching forecast for Berlin`；Go、Swift 的是运行时名（`[go-weather] `）。按整行匹配插件输出的脚本或测试，在 `dev` 下加 `--no-prefix-output`，或者去掉前缀再比。`run` 默认不变，`--prefix-output` 打开。
 
 详见 [rutis-host 指南的输出](guide/rutis-host.md#输出)。
+
+## 配置在 `apply` 之前补默认值并校验（#669）
+
+插件 API 指南一直写着宿主按插件的 JSON Schema 校验配置；0.18 以前 Schema 其实只用来显示。0.18 起，各语言的 SDK 在 `apply` 之前给这一行的配置补上 Schema 里的默认值并校验，测试工具也一样，`rutis-host check` 按同样的规则检查每一行（[插件 API：配置](guide/plugin-api.md#配置)、[检查配置](guide/rutis-host.md#每一行的配置)）。
+
+- **以前写错也能运行的配置，现在这一行会失败**：类型不对、缺了 `required` 的字段（Python 以前完全不看 `required`）、裸字符串当配置、`additionalProperties: false` 下的多余键。这一行会写出每个问题：`weather: config: units should be "metric" or "imperial", got "kelvin"`。**升级之前先用 0.18 的 `rutis-host check` 跑一遍**：它列出每一行不合格的配置。
+- **测试也可能失败**：给测试工具传部分或错误配置的测试，现在和运行时一样失败（错误码 `bad-config` 的 `BindingError`）；按 Schema 把配置补全，或者让 Schema 如实写出哪些字段可以不填。
+- **默认值现在会补上**：判断「配置里有没有这个键」的插件代码会看到默认值；代码里为默认值写的兜底可以去掉，也可以留着。
+- **多余的键**（Schema 没写、但允许的键）：只是警告，每行每个配置值一次；`check --strict` 时是错误。
+- **Go**：生成的 Schema 不再有 `required`（不写的字段是零值，和 `encoding/json` 一样）；手写的 `Schema` 里的 `default` 现在会补上。旧版 SDK 构建的二进制，`check` 忽略它的 `required`。指针字段也接受 `null`。要在测试里检查配置被拒绝，用新的 `rutistest.TryLoad`。
+- **Swift**：带字面量初值的 `var` 字段（`var units = "metric"`）不再必填，不写时取这个值。没有 `@RutisConfig` 的普通 `Decodable` 结构体和以前一样只解码。
+- **Rust**：loader 行的配置错误在 `ReconcileReport` 里的文字从 `config validation failed: [...]` 变成 `config: <路径> …`；类型不变，内核 `ErrorKind::Validation` 的显示文字也不变。`Builtins` 注册的行、dylib 的行、嵌入方自己的 resolver 给了 Schema（`Resolved::with_schema`）的行，由 loader 在 `build` 之前补默认值并校验；dylib 照每次发布一样要用 0.18 重新构建，旧的 dylib 不会被装载。`Definition` 的配置和没写 `schema:` 的 dylib 解码时用同样的错误句子。多余的键默认写到标准错误；`Loader::on_config_warning` 可以改为交给你。
+- **Node、Bun**：`definePlugin` 的 `config` 是 Standard Schema 对象（schemastery、zod 等）时报错：这种 Schema 以前只用来显示，从没生效。Cordis 行和以前一样由 Cordis 用它自己的 `Config` 校验，问题现在也写成 `config: …`。
+- **0.18 以前的 SDK 构建的运行时**加载行时不检查配置；`check` 照样检查它们。

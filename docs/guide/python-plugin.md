@@ -39,7 +39,7 @@ class Weather:
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("llm"), config.get("city", "Oslo")))
+    ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
     return lambda: None                   # 清理（可以是 async），也可以不返回
 
 
@@ -47,9 +47,11 @@ plugin = define_plugin(
     apply,
     inject=["llm"],                       # 用到的服务：都就绪才启动，任何一个撤销就停下
     provides={"weather": Weather},        # 提供的服务：check 运行前就知道
-    config={"type": "object", "properties": {"city": {"type": "string"}}},
+    config={"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}},
 )
 ```
+
+`apply` 之前，rutis 给配置补上 Schema 里的默认值（行里不写 `city` 时就是 `Oslo`）并校验：配置不合格的行以 `config: …` 失败，不调用 `apply`（[插件 API：配置](plugin-api.md#配置)）。`rutis.testing` 的 `load`、`update` 也一样，不合格时抛出 `BindingError`，`code` 是 `bad-config`；多余的键写到标准错误。
 
 也可以不用 `define_plugin`，直接在模块里写 `apply`、`inject`、`provides`、`Config`。`apply` 可以是 `async def`。
 
@@ -381,7 +383,7 @@ weather = "weather"
 
 ```bash
 uv venv                                                         # 建 .venv
-uv pip install --python .venv/bin/python "rutis==0.17.2" your-name-weather   # 运行时（宿主的版本）和插件
+uv pip install --python .venv/bin/python "rutis==0.18.0" your-name-weather   # 运行时（宿主的版本）和插件
 ```
 
 ```json
