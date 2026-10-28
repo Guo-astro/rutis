@@ -36,6 +36,14 @@ internal object Control {
                 "plugins" to LinkedHashMap<String, Any?>().apply { for ((name, plugin) in rt.plugins) put(name, rt.describe(plugin)) },
             )
         }
+        "link.offers" -> {
+            rt.offered(record(arg(args, 0)))
+            null
+        }
+        "services.announce", "services.withdraw" -> {
+            rt.heard(method, record(arg(args, 0)))
+            null
+        }
         // Served by `arrive` on the reading thread; here only when called directly.
         "events.elsewhere", "events.call" -> EventsRuntime.arrive(rt, method, args)!!.invoke()
         "dispose" -> {

@@ -1,31 +1,40 @@
 // An app hosting plugins (design §7): the plugins are compiled into the
-// app, rutis drives them, and the app only starts and stops the connection.
-// `RutisApp` dials out to a rutis access point (recommended) or listens for
-// rutis to dial in, by the rules every runtime follows (dialing:
-// docs/design-remote-runtime-dial-2026-10-14.md §六; listening: design
-// §6.1); a binary's `dial:` and `listen:` channels run on it too, their
-// settings read from the environment instead (Serve.swift).
+// app, which installs them, each with its configuration, once connected,
+// and announces the services they provide to rutis
+// (docs/design-remote-session-2026-10-28.md §2.6, decision 2); the app only
+// starts and stops the connection. `RutisApp` dials out to rutis
+// (recommended) or listens for rutis to dial in, by the rules every runtime
+// follows (dialing: docs/design-remote-runtime-dial-2026-10-14.md §六;
+// listening: design §6.1). A binary's `dial:` and `listen:` channels run on
+// it too, their settings read from the environment instead (Serve.swift):
+// that is a runtime, whose plugins rutis runs by its rows.
 #if canImport(Network)
 import Foundation
 import Network
 import Observation
 import Security
 
-/// Plugins compiled into an app, served to rutis while started.
+/// Plugins compiled into an app, installed while connected to rutis.
 ///
 /// ```swift
 /// let rutis = RutisApp(
 ///     plugins: [health, device],
+///     configs: ["device": DeviceConfig(installation: id)],
 ///     connect: "wss://rutis.example.com:7443/rutis",
 ///     id: "kim-iphone",
 ///     token: secrets.rutisToken)
-/// try await rutis.start()   // connects; rutis then loads the plugins its configuration names
+/// try await rutis.start()   // connects; then installs the plugins, in order
 /// await rutis.stop()        // every plugin cleans up, latest first; then it disconnects
 /// ```
 ///
-/// While started it reconnects by itself whenever the connection is lost,
-/// until `stop()`; every connection is new, and rutis loads the plugins
-/// again. `state` says where it is, for the app to show: nothing here acts
+/// Once connected it offers rutis the `services` family and installs its
+/// plugins in order, each with its configuration (`configs`, by plugin
+/// name; without one, its schema's defaults) once every service it injects
+/// is there (its own plugins' or rutis's); the services they provide reach
+/// rutis, as `<id>:<plugin>`, once rutis offers `services`. While started
+/// it reconnects by itself whenever the connection is lost, until `stop()`;
+/// every connection is new: the plugins clean up when it is lost, latest
+/// first, and are installed again on the next. `state` says where it is, for the app to show: nothing here acts
 /// on it, nor on the app going to the background (the app's business).
 public final class RutisApp: Observable, @unchecked Sendable {
     /// Where the connection is.
@@ -36,7 +45,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
         /// Dialing rutis, or waiting before dialing again; listening, rutis
         /// not connected.
         case connecting
-        /// Connected: rutis loads, uses and unloads the plugins.
+        /// Connected: the plugins are installed, and rutis uses them.
         case connected
 
         public var description: String {
@@ -75,6 +84,11 @@ public final class RutisApp: Observable, @unchecked Sendable {
     }
 
     let plugins: [Rutis.Definition]
+    /// An app's configurations of its plugins, by name: it installs them
+    /// itself. Nil for a runtime binary (`dial:`, `listen:`), whose plugins
+    /// rutis's rows run.
+    let configs: [String: any Encodable]?
+    var installs: Bool { configs != nil }
     let mode: Mode
     let id: String
     let peer: String?
@@ -105,17 +119,21 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// `token`.
     ///
     /// - Parameters:
-    ///   - plugins: the plugins rutis may load.
+    ///   - plugins: the plugins it installs once connected, in order.
+    ///   - configs: the configurations of plugins, by plugin name: values
+    ///     of their configuration types (`Encodable`); a plugin without one
+    ///     gets its schema's defaults.
     ///   - peer: the id rutis greets with; when given, another one is refused.
     ///   - trust: CA certificates trusted besides the system's.
     ///   - shutdownTimeout: how long the plugins' cleanups may take, in
     ///     seconds, once the connection ends.
     ///   - log: where the connection's and the plugins' lines go (stderr).
-    public convenience init(plugins: [Rutis.Definition], connect: String, id: String, token: String,
+    public convenience init(plugins: [Rutis.Definition], configs: [String: any Encodable] = [:], connect: String, id: String,
+                            token: String,
                             peer: String? = nil, trust: [SecCertificate] = [], shutdownTimeout: Double = 10,
                             log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
     {
-        self.init(plugins: plugins, mode: .dial(connect, trust: trust), id: id, peer: peer, token: token,
+        self.init(plugins: plugins, configs: configs, mode: .dial(connect, trust: trust), id: id, peer: peer, token: token,
                   project: Bundle.main.bundlePath,
                   settings: Events.Settings(log: log, shutdownTimeout: shutdownTimeout))
     }
@@ -128,7 +146,8 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// - Parameters:
     ///   - certificate: the TLS identity of a `wss://` address.
     ///   - The others: as dialing.
-    public convenience init(plugins: [Rutis.Definition], listen: String, id: String, token: String,
+    public convenience init(plugins: [Rutis.Definition], configs: [String: any Encodable] = [:], listen: String, id: String,
+                            token: String,
                             certificate: SecIdentity? = nil, peer: String? = nil, shutdownTimeout: Double = 10,
                             log: @escaping @Sendable (String) -> Void = RutisApp.standardError)
     {
@@ -138,15 +157,16 @@ public final class RutisApp: Observable, @unchecked Sendable {
             }
             return identity
         }
-        self.init(plugins: plugins, mode: .listen(listen, identity: identity), id: id, peer: peer, token: token,
+        self.init(plugins: plugins, configs: configs, mode: .listen(listen, identity: identity), id: id, peer: peer, token: token,
                   project: Bundle.main.bundlePath,
                   settings: Events.Settings(log: log, shutdownTimeout: shutdownTimeout))
     }
 
-    init(plugins: [Rutis.Definition], mode: Mode, id: String, peer: String?, token: String, project: String,
-         settings: Events.Settings)
+    init(plugins: [Rutis.Definition], configs: [String: any Encodable]?, mode: Mode, id: String, peer: String?, token: String,
+         project: String, settings: Events.Settings)
     {
         self.plugins = plugins
+        self.configs = configs
         self.mode = mode
         self.id = id
         self.peer = peer
@@ -248,6 +268,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
         }
         if lock.withLock({ stops != stopsBefore }) { return }
         try Rutis.check(plugins)
+        let installing = try configured()
         guard validEndpointID(id) else {
             throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
         }
@@ -261,7 +282,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
             } catch {
                 throw RutisError(name: "Error", message: "\(error)")
             }
-            body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], stop: started.stop) }
+            body = { [self] in await dial(spec, anchors: spec.hasPrefix("wss:") ? trust : [], installing, stop: started.stop) }
         case let .listen(spec, identity):
             let (events, continuation) = AsyncStream<ListenEvent>.makeStream()
             let bind = { [token] () throws -> WebSocketListener in
@@ -283,7 +304,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                 listener.stop()
                 continuation.finish()
             }
-            body = { [self] in await listen(listener, bind, events, continuation, stop: started.stop) }
+            body = { [self] in await listen(listener, bind, events, continuation, installing, stop: started.stop) }
         }
         // A stop called meanwhile: this start is undone.
         let committed: Bool = lock.withLock {
@@ -329,7 +350,9 @@ public final class RutisApp: Observable, @unchecked Sendable {
 
     /// Dials `spec` and stays connected, by the rules, until stopped or
     /// refused as incompatible.
-    private func dial(_ spec: String, anchors: [SecCertificate], stop: StopSignal) async -> Ending {
+    private func dial(_ spec: String, anchors: [SecCertificate], _ installing: [(definition: Rutis.Definition, config: Value)],
+                      stop: StopSignal) async -> Ending
+    {
         let endpoint = Endpoint(local: id, expected: peer, declare: ["runtime"])
         let retry = Retry()
         var backoff = Backoff(retry)
@@ -346,7 +369,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                 }, discard: { $0.close("stopped") }) else { return .stopped }
                 let started: (Peer, Runtime)
                 do {
-                    started = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
+                    started = try Rutis.startSession(channel: socket, project: project, served, endpoint: endpoint,
                                                      settings: settings)
                 } catch {
                     socket.close("starting the session failed")
@@ -367,6 +390,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                 } else if peer.error == nil {
                     say("connected to \(address)")
                     publish(.connected)
+                    install(runtime, installing)
                     let since = Date()
                     guard try await stop.race({ await peer.closed(); return true }) != nil else {
                         return await Self.stop(session)
@@ -401,6 +425,35 @@ public final class RutisApp: Observable, @unchecked Sendable {
         }
     }
 
+    /// The plugins rows of rutis's may run: a runtime binary's; none of
+    /// an app's, which installs them itself.
+    private var served: [Rutis.Definition] { installs ? [] : plugins }
+
+    /// An app's plugins installed on a session rutis greeted, in order; a
+    /// stop or a lost connection unloads them, latest first.
+    private func install(_ runtime: Runtime, _ installing: [(definition: Rutis.Definition, config: Value)]) {
+        guard installs else { return }
+        runtime.install(installing)
+    }
+
+    /// The plugins with their configurations, encoded; a configuration of
+    /// no plugin, or one that cannot be encoded, is an error.
+    private func configured() throws -> [(definition: Rutis.Definition, config: Value)] {
+        let configs = configs ?? [:]
+        let names = Set(plugins.map(\.name))
+        if let stray = configs.keys.sorted().first(where: { !names.contains($0) }) {
+            throw RutisError(name: "Error", message: "configs names \(stray), which is not one of the plugins: \(names.sorted().joined(separator: ", "))")
+        }
+        return try plugins.map { plugin in
+            guard let config = configs[plugin.name] else { return (plugin, .undefined) }
+            do {
+                return (plugin, try ValueCodec.encodeAny(config))
+            } catch {
+                throw RutisError(name: "Error", message: "the configuration of \(plugin.name) cannot be encoded: \(error)")
+            }
+        }
+    }
+
     /// Stops `session` for good: its rows go while rutis still hears.
     private static func stop(_ session: ControllerSession) async -> Ending {
         do {
@@ -419,7 +472,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
     /// session going on, if any, stays.
     private func listen(_ first: WebSocketListener, _ bind: @escaping () throws -> WebSocketListener,
                         _ events: AsyncStream<ListenEvent>, _ continuation: AsyncStream<ListenEvent>.Continuation,
-                        stop: StopSignal) async -> Ending
+                        _ installing: [(definition: Rutis.Definition, config: Value)], stop: StopSignal) async -> Ending
     {
         let endpoint = Endpoint(local: id, expected: peer, declare: ["runtime"])
         let retry = Retry()
@@ -456,7 +509,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                     publish(.connecting)
                 }
                 do {
-                    let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, plugins, endpoint: endpoint,
+                    let (peer, runtime) = try Rutis.startSession(channel: socket, project: project, served, endpoint: endpoint,
                                                                  settings: settings)
                     next += 1
                     let id = next
@@ -473,6 +526,7 @@ public final class RutisApp: Observable, @unchecked Sendable {
                             socket.closeWith(CloseCode.goingAway, "no greeting")
                         } else if peer.error == nil {
                             continuation.yield(.greeted(id))
+                            self.install(runtime, installing)
                         }
                         await peer.closed()
                         continuation.yield(.closed(id))

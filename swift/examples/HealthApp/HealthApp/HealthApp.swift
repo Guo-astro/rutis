@@ -1,6 +1,7 @@
 // A sample app hosting rutis plugins (docs/guide/swift-app.md): its business
 // layer connects while the app is in the foreground and stops when it goes
-// to the background; the rest is rutis's.
+// to the background; once connected the app installs its plugins, each with
+// its configuration, and rutis uses their services.
 //
 // Where to connect comes from the app's settings, which launch arguments
 // set too (`-RutisConnect wss://… -RutisID kim-iphone -RutisToken …`, in
@@ -44,8 +45,10 @@ struct HealthApp: App {
     @Environment(\.scenePhase) private var phase
     @State private var rutis: RutisApp = {
         let id = Settings.id
-        return RutisApp(plugins: [health, device(installation: id)], connect: Settings.connect, id: id,
-                        token: Settings.token, trust: Settings.trust)
+        // Installed once connected, in this order: `health` with its
+        // defaults, `device` with the configuration given here.
+        return RutisApp(plugins: [health, device], configs: ["device": DeviceConfig(installation: id)],
+                        connect: Settings.connect, id: id, token: Settings.token, trust: Settings.trust)
     }()
 
     var body: some Scene {

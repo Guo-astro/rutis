@@ -72,8 +72,12 @@ let health = Rutis.define(Plugin(name: "health") { ctx in
     ctx.provide("health", Health())
 })
 
-func device(installation: String) -> Rutis.Definition {
-    Rutis.define(Plugin(name: "device") { ctx in
-        ctx.provide("device", Device(installation: installation))
-    })
+/// The `device` plugin's configuration: the app gives it in `RutisApp`.
+struct DeviceConfig: Codable {
+    /// The id this app connects to rutis with.
+    var installation: String
 }
+
+let device = Rutis.define(Plugin(name: "device", config: DeviceConfig.self) { ctx, config in
+    ctx.provide("device", Device(installation: config.installation))
+})

@@ -41,12 +41,16 @@ class Contacts(private val context: Context) {
     }
 }
 
+/** The `contacts` plugin's configuration: the name it provides its service as. */
+@Serializable
+data class ContactsConfig(val service: String = "contacts")
+
 /**
  * The plugin `contacts`. It needs READ_CONTACTS, which the application asks
- * the user for: without it the plugin does not load, and rutis says why
- * (design §六, the load-time case).
+ * the user for: without it the plugin does not load, and the application's
+ * log says why (design §六, the load-time case).
  */
-fun contacts(context: Context) = Rutis.define<Rutis.NoConfig>(name = "contacts") { ctx, _ ->
+fun contacts(context: Context) = Rutis.define<ContactsConfig>(name = "contacts") { ctx, config ->
     context.require(Manifest.permission.READ_CONTACTS)
-    ctx.provide("contacts", Contacts(context.applicationContext))
+    ctx.provide(config.service, Contacts(context.applicationContext))
 }
