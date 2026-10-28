@@ -167,7 +167,9 @@ impl Dialing {
                         if since.elapsed() >= STABLE {
                             backoff.reset();
                         }
-                        (Failure::of_session(ended.kind), ended.reason)
+                        // Only a handshake says rejected or incompatible:
+                        // a session that ran and ended is retried.
+                        (Failure::Retryable, ended.reason)
                     }
                 },
             };
