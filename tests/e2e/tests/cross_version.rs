@@ -1266,8 +1266,11 @@ fn the_current_runtimes_under_a_previous_host() {
         );
         // The checkout's runtimes, as for any host of a scenario.
         let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-        host.expect("greeter: running");
-        host.expect("gogreeter: running");
+        // The whole row name: `greeter: running` is inside `gogreeter: running`,
+        // and whichever row starts first would take the other's line (as #780).
+        for line in ["greeter: running", "gogreeter: running"] {
+            host.wait_for(&format!("the line {line:?}"), |text| text.starts_with(line));
+        }
         probe.started(&mut host);
         assert_eq!(
             probe.call(&mut host, "greeter", "hello", json!(["Ada"])),
