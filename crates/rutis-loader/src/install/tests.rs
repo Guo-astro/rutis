@@ -501,6 +501,17 @@ async fn a_name_taken_by_another_package() {
     );
     // The record settles it: npm is not asked.
     assert!(bench.asked().is_empty());
+
+    // A Python plugin of that name has another row name: no conflict.
+    let installer = bench.installer().with_installed([Installed {
+        name: "wordcount".into(),
+        from: "pypi:wordcount".into(),
+        language: "py".into(),
+        version: None,
+    }]);
+    let error = installer.add("npm:wordcount").await.unwrap_err();
+    assert!(!error.to_string().contains("already installed"), "{error}");
+    assert_eq!(bench.asked()[0], "npm [rutis-loader] view wordcount --json");
 }
 
 #[tokio::test]
@@ -523,7 +534,8 @@ async fn removing_a_node_package() {
     assert_eq!(bench.asked(), ["npm [app] uninstall @ana/wordcount"]);
 }
 
-/// The record is `from` and `language`; the name is its key.
+/// The record is `from`; the row name, its key, says the name and the
+/// language.
 #[test]
 fn records_and_row_names() {
     let plugin = Installed {
@@ -534,17 +546,29 @@ fn records_and_row_names() {
     };
     assert_eq!(
         serde_json::to_value(&plugin).unwrap(),
-        serde_json::json!({ "from": "github.com/bo/netkit/cmd/netkit", "language": "go" })
+        serde_json::json!({ "from": "github.com/bo/netkit/cmd/netkit" })
     );
     assert_eq!(plugin.row_name(), "go:dns");
-    let node = Installed {
-        name: "@ana/wordcount".into(),
-        language: "node".into(),
-        ..plugin.clone()
-    };
+    assert_eq!(
+        Installed::of_row("go:dns", "github.com/bo/netkit/cmd/netkit"),
+        Some(Installed {
+            version: None,
+            ..plugin.clone()
+        })
+    );
+    let node = Installed::of_row("@ana/wordcount", "npm:@ana/wordcount").unwrap();
+    assert_eq!(
+        (node.name.as_str(), node.language.as_str()),
+        ("@ana/wordcount", "node")
+    );
     assert_eq!(node.row_name(), "@ana/wordcount");
-    assert!(serde_json::from_value::<Installed>(
-        serde_json::json!({ "from": "x", "language": "go", "version": "1" })
-    )
-    .is_err());
+    for row in ["deno:x", "node:x", "py:", "./x"] {
+        assert_eq!(Installed::of_row(row, "x"), None, "{row}");
+    }
+    for record in [
+        serde_json::json!({ "from": "x", "language": "go" }),
+        serde_json::json!({ "from": "x", "version": "1" }),
+    ] {
+        assert!(serde_json::from_value::<Installed>(record).is_err());
+    }
 }

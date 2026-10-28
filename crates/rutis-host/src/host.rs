@@ -58,53 +58,9 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
-    /// The names rows resolve by, from `installed` ([`Recorded`]).
-    recorded: Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
     supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
-}
-
-/// Rows named after an installed plugin (`installed`), resolved by the
-/// name its record gives (`py:llm` for `llm`); every other name as it is.
-/// Messages keep the row's own name.
-struct Recorded {
-    names: Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
-    inner: Chain,
-}
-
-impl rutis_loader::Resolver for Recorded {
-    fn resolve<'a>(
-        &'a self,
-        name: &'a str,
-    ) -> rutis::host::BoxFuture<
-        'a,
-        Result<Arc<rutis_loader::resolve::Resolved>, rutis_loader::LoaderError>,
-    > {
-        let recorded: Option<String> = self.names.read().unwrap().get(name).cloned();
-        Box::pin(async move {
-            match recorded {
-                None => self.inner.resolve(name).await,
-                Some(recorded) => {
-                    self.inner
-                        .resolve(&recorded)
-                        .await
-                        .map_err(|error| match error {
-                            rutis_loader::LoaderError::NotFound { .. } => {
-                                rutis_loader::LoaderError::NotFound {
-                                    name: name.to_owned(),
-                                }
-                            }
-                            error => error,
-                        })
-                }
-            }
-        })
-    }
-
-    fn runtimes(&self) -> Vec<RuntimeHandle> {
-        self.inner.runtimes()
-    }
 }
 
 /// The local runtimes whose `restart` is `exit` that ended
@@ -343,11 +299,6 @@ impl Host {
             ..
         } = mount;
 
-        let recorded = Arc::new(std::sync::RwLock::new(config.row_names()));
-        let chain = Chain::new().with(Recorded {
-            names: recorded.clone(),
-            inner: chain,
-        });
         let plugin = LoaderPlugin::new(
             chain,
             LoaderOptions {
@@ -417,7 +368,6 @@ impl Host {
             config: config.clone(),
             accepted,
             restarts,
-            recorded,
             supervisors: Mutex::default(),
         })
     }
@@ -657,17 +607,6 @@ impl Host {
     /// error says why. Credentials are read when links dial or are
     /// dialed, so a peer row `new` adds presents its token.
     pub async fn reload(&mut self, new: HostConfig) -> Result<Reloaded, Error> {
-        // Rows of the new configuration resolve by its records; the old
-        // ones again when it is refused.
-        let before = std::mem::replace(&mut *self.recorded.write().unwrap(), new.row_names());
-        let reloaded = self.reload_recorded(new).await;
-        if reloaded.is_err() {
-            *self.recorded.write().unwrap() = before;
-        }
-        reloaded
-    }
-
-    async fn reload_recorded(&mut self, new: HostConfig) -> Result<Reloaded, Error> {
         restart_needed(&self.config, &new)?;
         new.check_runtime_names()?;
         new.check_dialing_runtimes()?;

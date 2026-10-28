@@ -52,9 +52,8 @@ pub struct HostConfig {
     /// `rutis-bridge/peer` row).
     #[serde(default)]
     pub listen: Vec<Listener>,
-    /// The plugins `rutis-host add` installed, by name: a row named by one
-    /// of these names runs in the runtime its record says
-    /// ([`HostConfig::row_name`]).
+    /// The plugins `rutis-host add` installed, by row name (`@ana/wordcount`,
+    /// `py:llm`): where each came from. Rows resolve as they always do.
     #[serde(default)]
     pub installed: std::collections::BTreeMap<String, Installed>,
     #[serde(default)]
@@ -427,45 +426,17 @@ impl HostConfig {
         Ok(config)
     }
 
-    /// Each record of `installed` given its name (its key); a language that
-    /// is not a local runtime's is refused.
+    /// Each record of `installed` given its name and language, from its
+    /// key; a key that is not a row name `add` writes is refused.
     fn name_installed(&mut self) -> Result<(), String> {
-        for (name, record) in &mut self.installed {
-            record.name = name.clone();
-            if !LANGUAGES
-                .iter()
-                .any(|language| language.key() == record.language)
-            {
-                let keys: Vec<String> = LANGUAGES
-                    .iter()
-                    .map(|language| language.key().to_owned())
-                    .collect();
-                return Err(format!(
-                    "installed.{name}: language {:?} is not {}",
-                    record.language,
-                    crate::languages::either(&keys)
-                ));
-            }
+        for (row, record) in &mut self.installed {
+            *record = Installed::of_row(row, record.from.clone()).ok_or_else(|| {
+                format!(
+                    "installed.{row}: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin"
+                )
+            })?;
         }
         Ok(())
-    }
-
-    /// The name the loader resolves for a row named `name`: the record's
-    /// (`py:llm` for `llm` installed as a Python plugin) when `installed`
-    /// has `name`, else `name`.
-    pub fn row_name(&self, name: &str) -> String {
-        match self.installed.get(name) {
-            Some(record) => record.row_name(),
-            None => name.to_owned(),
-        }
-    }
-
-    /// Each installed name and the name the loader resolves for it.
-    pub fn row_names(&self) -> std::collections::HashMap<String, String> {
-        self.installed
-            .iter()
-            .map(|(name, record)| (name.clone(), record.row_name()))
-            .collect()
     }
 
     /// Enable, with its defaults, each local runtime that enabled rows use
@@ -482,8 +453,6 @@ impl HostConfig {
     pub fn enable_used_runtimes_beside(&mut self, provided: &Runtimes) -> Vec<String> {
         let mut names = Vec::new();
         rows_named(&self.rows, &mut names);
-        // An installed plugin's row runs where its record says.
-        let names: Vec<String> = names.iter().map(|name| self.row_name(name)).collect();
         let mut said = Vec::new();
         for language in LANGUAGES {
             let key = language.key();

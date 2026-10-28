@@ -68,19 +68,22 @@ pub struct Places {
     pub swift: Option<PathBuf>,
 }
 
-/// One installed plugin: its record (`from`, `language`, what a
-/// configuration keeps under its name) and its name.
+/// One installed plugin: its record (`from`, what a configuration keeps
+/// under the plugin's row name, [`Installed::row_name`]), its name and
+/// its language.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Installed {
-    /// The plugin's name: the key of its record.
+    /// The plugin's name: its row name without the language prefix.
     #[serde(skip)]
     pub name: String,
     /// The reference it was installed from, without a version
     /// (`npm:@ana/wordcount`, `pypi:bo-llm`, a Go module path, a local
     /// path). The plugins of one package have the same.
     pub from: String,
-    /// The runtime it runs in: `node`, `bun`, `py`, `go` or `swift`.
+    /// The runtime it runs in: `node`, `bun`, `py`, `go` or `swift`. Not
+    /// recorded: the row name says it.
+    #[serde(skip)]
     pub language: String,
     /// The version just installed, when known; not recorded (the package
     /// manager's own files keep it).
@@ -98,6 +101,33 @@ impl Installed {
             language => format!("{language}:{}", self.name),
         }
     }
+
+    /// The plugin a record kept under the row name `row` is: its language
+    /// from the prefix (`bun:`, `py:`, `go:`, `swift:`; none for Node).
+    /// `None` when `row` is not a row name `add` writes.
+    pub fn of_row(row: &str, from: impl Into<String>) -> Option<Self> {
+        let (language, name) = match row.split_once(':') {
+            Some((prefix, name)) => (
+                Lang::of_key(prefix).filter(|lang| *lang != Lang::Node)?,
+                name,
+            ),
+            None => (Lang::Node, row),
+        };
+        if name.is_empty() || language == Lang::Node && is_local_name(name) {
+            return None;
+        }
+        Some(Self {
+            name: name.to_owned(),
+            from: from.into(),
+            language: language.key().to_owned(),
+            version: None,
+        })
+    }
+}
+
+/// Whether a Node row name is a path, which `add` never writes.
+fn is_local_name(name: &str) -> bool {
+    reference::is_local(name)
 }
 
 /// What [`Installer::upgrade`] did: the package's version before, and its
@@ -212,7 +242,7 @@ impl Installer {
         }
     }
 
-    /// The records the caller keeps: `add` refuses a plugin name another
+    /// The records the caller keeps: `add` refuses a row name another
     /// package's record has.
     pub fn with_installed(mut self, records: impl IntoIterator<Item = Installed>) -> Self {
         self.installed = records.into_iter().collect();
@@ -223,23 +253,29 @@ impl Installer {
     /// and describe each plugin in it: one record per plugin.
     pub async fn add(&self, reference: &str) -> Result<Vec<Installed>, Error> {
         let reference = Reference::parse(reference, &self.core.base())?;
-        // An npm package's plugin is the package: refused before npm runs.
+        // An npm package's plugin is the package, in Node or Bun: refused
+        // before npm runs.
         if let Source::Npm { package, .. } = &reference.source {
-            self.free(package, &reference.from, None)?;
+            let rows = [package.clone(), format!("bun:{package}")];
+            self.free(&rows, &reference.from, None)?;
         }
         let (lang, known) = {
             let (core, reference) = (self.core.clone(), reference.clone());
             blocking(move || core.language(&reference)).await?
         };
         if let Some(name) = &known {
-            self.free(name, &reference.from, None)?;
+            self.free(&[row_of(lang, name)], &reference.from, None)?;
         }
         let package = {
             let (core, reference) = (self.core.clone(), reference.clone());
             blocking(move || core.install(&reference, lang, &core.places, false)).await?
         };
         for plugin in &package.plugins {
-            self.free(&plugin.name, &reference.from, Some(&package.uninstall))?;
+            self.free(
+                &[plugin.row_name()],
+                &reference.from,
+                Some(&package.uninstall),
+            )?;
         }
         self.core
             .describe(lang, &package, &self.core.places)
@@ -317,15 +353,17 @@ impl Installer {
         blocking(move || core.remove(lang, &plugin)).await
     }
 
-    /// Refuse `name` when another package's record has it.
-    fn free(&self, name: &str, from: &str, uninstall: Option<&str>) -> Result<(), Error> {
+    /// Refuse each of `rows` another package's record has: two records
+    /// cannot share a row name.
+    fn free(&self, rows: &[String], from: &str, uninstall: Option<&str>) -> Result<(), Error> {
         match self
             .installed
             .iter()
-            .find(|record| record.name == name && record.from != from)
+            .find(|record| rows.contains(&record.row_name()) && record.from != from)
         {
             Some(record) => Err(Error::Other(format!(
-                "{name} is already installed from {}: remove it first{}",
+                "{} is already installed from {}: remove it first{}",
+                record.row_name(),
                 record.from,
                 stays(uninstall)
             ))),
@@ -337,6 +375,14 @@ impl Installer {
     fn with_path(mut self, path: impl Into<std::ffi::OsString>) -> Self {
         self.core.tools.path = Some(path.into());
         self
+    }
+}
+
+/// The row name of `lang`'s plugin `name`.
+fn row_of(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::Node => name.to_owned(),
+        lang => format!("{}:{name}", lang.key()),
     }
 }
 

@@ -303,7 +303,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     let mut records = target.records();
     for plugin in &added {
         records.insert(
-            plugin.name.clone(),
+            plugin.row_name(),
             serde_json::to_value(plugin).expect("a record"),
         );
     }
@@ -332,7 +332,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     collect_rows(&rows, &mut ids, &mut names);
     let mut new_rows = Vec::new();
     for plugin in &added {
-        if names.contains(&plugin.name) {
+        if names.contains(&plugin.row_name()) {
             continue;
         }
         let base = id_of(&plugin.name);
@@ -344,7 +344,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
             .find(|id| !ids.contains(id))
             .expect("a free id");
         ids.push(id.clone());
-        rows.push(json!({ "id": id, "name": plugin.name }));
+        rows.push(json!({ "id": id, "name": plugin.row_name() }));
         new_rows.push(id);
     }
     target.set("rows", Value::Array(rows), &[]);
@@ -355,7 +355,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     target.write()?;
 
     // What `check` says of the plugins' rows.
-    let names: Vec<String> = added.iter().map(|plugin| plugin.name.clone()).collect();
+    let names: Vec<String> = added.iter().map(Installed::row_name).collect();
     if let Err(error) = check_rows(&target, &names).await {
         errln!("rutis-host: warning: the new rows were not checked: {error}");
     }
@@ -458,19 +458,15 @@ async fn check_rows(target: &Target, names: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The records of the package `wanted` names: a plugin's name, or its
-/// reference (`from`, with no version).
+/// The records of the package `wanted` names: a plugin's row name, its
+/// name, or its reference (`from`, with no version).
 fn package_of<'a>(target: &'a Target, wanted: &str) -> Option<(String, Vec<&'a Installed>)> {
     let installed = &target.config.installed;
     let from = installed
         .get(wanted)
-        .map(|record| record.from.clone())
-        .or_else(|| {
-            installed
-                .values()
-                .find(|record| record.from == wanted)
-                .map(|record| record.from.clone())
-        })?;
+        .or_else(|| installed.values().find(|record| record.name == wanted))
+        .or_else(|| installed.values().find(|record| record.from == wanted))
+        .map(|record| record.from.clone())?;
     let plugins = installed
         .values()
         .filter(|record| record.from == from)
@@ -503,6 +499,7 @@ pub async fn remove(args: &[String]) -> Result<(), String> {
         None => outln!("{} was no longer installed in {place}", package(&from)),
     }
     let names: Vec<String> = plugins.iter().map(|plugin| plugin.name.clone()).collect();
+    let rows_of: Vec<String> = plugins.iter().map(Installed::row_name).collect();
     if names.len() > 1 {
         outln!(
             "{} had the plugins {}: all of them are removed",
@@ -511,11 +508,11 @@ pub async fn remove(args: &[String]) -> Result<(), String> {
         );
     }
     let mut records = target.records();
-    records.retain(|name, _| !names.contains(name));
+    records.retain(|row, _| !rows_of.contains(row));
     target.set("installed", Value::Object(records), &["rows"]);
     let mut rows = target.rows();
     let mut removed = Vec::new();
-    remove_rows(&mut rows, &names, &mut removed);
+    remove_rows(&mut rows, &rows_of, &mut removed);
     target.set("rows", Value::Array(rows), &[]);
     target.write()?;
     for id in removed {
@@ -627,12 +624,13 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
         for plugin in &upgraded.plugins {
             if !before.iter().any(|record| record.name == plugin.name) {
                 records.insert(
-                    plugin.name.clone(),
+                    plugin.row_name(),
                     serde_json::to_value(plugin).expect("a record"),
                 );
                 outln!(
-                    "{package}: new plugin {name}: add a row {{ \"id\": \"{id}\", \"name\": \"{name}\" }} to run it",
+                    "{package}: new plugin {name}: add a row {{ \"id\": \"{id}\", \"name\": \"{row}\" }} to run it",
                     name = plugin.name,
+                    row = plugin.row_name(),
                     id = id_of(&plugin.name)
                 );
             }
@@ -645,9 +643,9 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
             {
                 continue;
             }
-            records.remove(&record.name);
+            records.remove(&record.row_name());
             let mut ids = Vec::new();
-            rows_named(&rows, &record.name, &mut ids);
+            rows_named(&rows, &record.row_name(), &mut ids);
             match ids.is_empty() {
                 true => outln!("{package}: the new version has no plugin {}", record.name),
                 false => {

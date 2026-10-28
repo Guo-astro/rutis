@@ -574,8 +574,8 @@ installer.remove(&added[0]).await?;                           // uninstalls the 
 ```
 
 - References are strings, written as for `rutis-host add` (`npm:`, `pypi:`, a Go module path, a local path, with `@version` or not); `add` / `describe` return the error of one that does not read.
-- An `Installed` is a record (`from`, `language`; serializable: `rutis-host`'s `installed` is made of them) and the plugin's `name`; `row_name()` is the row name a loader with these runtimes knows (Node as it is; `bun:`, `py:`, `go:`, `swift:` and the plugin's name).
-- The records are the caller's: the API reads and writes no configuration file, and touches no loader or runtime. For `add` to refuse a plugin name another package has, hand it the records with `Installer::with_installed(records)`.
+- An `Installed` is a record (`from` only; serializable: `rutis-host`'s `installed` is made of them) with the plugin's `name` and `language`; `row_name()` is the plugin's row name (Node as it is; `bun:`, `py:`, `go:`, `swift:` and the plugin's name), which records are keyed by; `Installed::of_row(row name, from)` reads one back.
+- The records are the caller's: the API reads and writes no configuration file, and touches no loader or runtime. For `add` to refuse a row name another package has, hand it the records with `Installer::with_installed(records)`.
 - `Places.base` is where relative local paths start (by default the current directory); `Places.python` is an environment directory or an interpreter.
 - Errors are `install::Error`: `Failed` (a package manager failed; its output was shown), `NoPlace` (`Places` has no place for the language), `Other`. What a package manager installed before a failure stays; the error gives the command that uninstalls it.
 - The package managers (npm, bun, uv or pip, go) run as commands only when called, their output shown as it is; `add`, `upgrade` and `describe` may run the package's install scripts and import the plugin's code to describe it: install only plugins you trust.

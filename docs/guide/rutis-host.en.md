@@ -26,25 +26,25 @@ weather (@your-name/weather): cannot run: nothing provides llm
   config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
 rutis.json: added row weather, runtimes.node
 installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
-llm (llm): ok
+llm (py:llm): ok
   version: "0.3.0"
   provides: {"llm":{"complete":"async"}}
 rutis.json: added row llm, runtimes.py
 ```
 
-2. `add` wrote `rutis.json`: the runtimes to start, what was installed (`installed`), and a row per plugin (`name` is the plugin's name; `config`, the plugin's configuration, added as needed):
+2. `add` wrote `rutis.json`: the runtimes to start, what was installed (`installed`), and a row per plugin (`name` is the row name in its usual form, which `add` writes: the package name for Node, `py:<entry point>` for Python; `config`, the plugin's configuration, added as needed):
 
 ```json
 {
   "format": 1,
   "runtimes": { "node": {}, "py": {} },
   "installed": {
-    "@your-name/weather": { "from": "npm:@your-name/weather", "language": "node" },
-    "llm": { "from": "pypi:your-name-llm", "language": "py" }
+    "@your-name/weather": { "from": "npm:@your-name/weather" },
+    "py:llm": { "from": "pypi:your-name-llm" }
   },
   "rows": [
     { "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "llm" }
+    { "id": "llm", "name": "py:llm" }
   ]
 }
 ```
@@ -112,7 +112,7 @@ What `add` does:
 2. What the runtime lacks it sets up: `npm init -y` without a `package.json`; `@arcships/rutis-runtime`, when missing, installed with the plugin (at `rutis-host`'s version); for Bun, `bun add -d` of a missing `@arcships/rutis-bun`; for Python, `uv venv` without an environment (`python3 -m venv` without uv) and the `rutis` package of the same version when missing; for Go and Swift, the directory. Node, Bun, Python and Go themselves are not installed.
 3. It runs the package manager: `npm install`, `bun add`, `uv pip install --python <interpreter>` (`<interpreter> -m pip install` without uv), `GOBIN=<dir> go install <module>@<version>` (`go install ./...` inside a local Go project; a local binary is copied into the directory). Its output shows as it is.
 4. It finds the plugins in the package and describes them: a Node or Bun plugin is the package itself; Python's are the distribution's entry points in the group `rutis.plugins` (a package may have several); Go's and Swift's are the plugins of the binary's manifest.
-5. It writes `rutis.json`: a record per plugin under `installed`, a row `{ "id": …, "name": <plugin> }` per plugin at the end of `rows` (`-2`, `-3` added to an id that is taken; none when a row of that name is there), and the language under `runtimes` when it is not there (`"node": {}`, `"py": {}`, `"go": { "dir": "plugins/go" }`). The file keeps its keys' order, and is written to a temporary file then renamed.
+5. It writes `rutis.json`: a record per plugin under `installed` (keyed by its row name), a row `{ "id": …, "name": <row name> }` per plugin at the end of `rows`, the row name in its usual form: the package name for Node, `bun:<package>` for Bun, `py:<entry point>` for Python, `go:<plugin>` for Go, `swift:<plugin>` for Swift (the id is the plugin's name, `-2`, `-3` added when it is taken; no row when one of that name is there), and the language under `runtimes` when it is not there (`"node": {}`, `"py": {}`, `"go": { "dir": "plugins/go" }`). The file keeps its keys' order, and is written to a temporary file then renamed.
 6. It checks the new rows as `check` does, and prints what it finds: a service it needs that nothing provides, a required config value missing. `add` still exits with 0: the row is written, and what is missing can be added next.
 
 The file written: the second argument; without one, `rutis.json` here; without `rutis.json`, `rutis.dev.json` (a plugin project); without either, a new `rutis.json`.
@@ -142,8 +142,8 @@ bo-llm: 0.3.0 is the latest
 a running host keeps the old versions until it restarts
 ```
 
-- `remove <plugin or reference>` uninstalls the package the plugin is in (`npm uninstall`, `bun remove`, `uv pip uninstall`, deleting the binaries whose manifest has it), removes all of that package's records and the rows using those plugins (in groups too), and prints each row removed; a package with several plugins goes as a whole, and it says so. `runtimes` stays.
-- `upgrade [<plugin or reference>[@version]]`, without a name, upgrades every record: the newest version from the record's source (or the version given); rows stay. A plugin the new version adds is recorded, and how to add its row is printed; for one it no longer has, the record goes and each row using it prints `<row id>: the new version has no plugin <plugin>`.
+- `remove <row name, plugin or reference>` uninstalls the package the plugin is in (`npm uninstall`, `bun remove`, `uv pip uninstall`, deleting the binaries whose manifest has it), removes all of that package's records and the rows with those row names (in groups too), and prints each row removed; a package with several plugins goes as a whole, and it says so. `runtimes` stays.
+- `upgrade [<row name, plugin or reference>[@version]]`, without a name, upgrades every record: the newest version from the record's source (or the version given); rows stay. A plugin the new version adds is recorded, and how to add its row is printed; for one it no longer has, the record goes and each row using it prints `<row id>: the new version has no plugin <plugin>`.
 - A running host keeps running the old code until it restarts (reloading a row imports only its own entry module again; an upgrade replaces the whole package). Rows `add` adds join a running host as [Changing the configuration while it runs](#changing-the-configuration-while-it-runs) says, under `run --watch-config` and `dev`; when such a row needs a runtime that is not running yet, the `runtimes.<language>` written is refused, saying to restart.
 
 On errors (on stderr, exit status 1, `rutis.json` unchanged):
@@ -154,7 +154,7 @@ On errors (on stderr, exit status 1, `rutis.json` unchanged):
 | The package manager fails | its own output, then `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | Not a plugin | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
 | A local directory it does not recognize | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
-| The name is another package's | `rutis-host: llm is already installed from pypi:other-llm: remove it first` (when known only once installed, followed by the command that uninstalls it) |
+| The row name is another package's | `rutis-host: py:llm is already installed from pypi:other-llm: remove it first` (when known only once installed, followed by the command that uninstalls it) |
 | No Go directory | `rutis-host: runtimes.go has no dir to install into: add one, or remove runtimes.go to use plugins/go` |
 | `remove` of a name not recorded | `rutis-host: llm was not installed by add: uninstall it with the package manager that installed it, and remove its row` |
 
@@ -510,11 +510,11 @@ In the Node, Bun and Python runtimes, when a service method holds the runtime fo
     { "name": "public", "address": "0.0.0.0:7443", "cert": "tls/server.pem", "key": "tls/server.key" }
   ],
   "installed": {
-    "summarize": { "from": "pypi:bo-summarize", "language": "py" }
+    "py:summarize": { "from": "pypi:bo-summarize" }
   },
   "rows": [
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo" } },
-    { "id": "summarize", "name": "summarize" },
+    { "id": "summarize", "name": "py:summarize" },
     { "id": "llm", "name": "py:llm_gateway" },
     { "id": "dns", "name": "go:dns" },
     { "id": "calendar", "name": "swift:calendar" },
@@ -604,14 +604,17 @@ WebSocket listeners used by other nodes to connect. `cert` and `key` are a TLS c
 
 ### `installed`
 
-The plugins `rutis-host add` installed, keyed by plugin name, each with two fields:
+The plugins `rutis-host add` installed, keyed by the plugin's row name (`@ana/wordcount`, `bun:<package>`, `py:<entry point>`, `go:<plugin>`, `swift:<plugin>`), each with one field:
 
 | Field | Meaning |
 | --- | --- |
 | `from` | The plugin reference without a version (`npm:@ana/wordcount`, `pypi:bo-llm`, a Go module path, a local path): how `remove` and `upgrade` find the package. The plugins of one package have the same. |
-| `language` | The runtime's key: `node`, `bun`, `py`, `go`, `swift`. |
 
-A row whose `name` is a key here goes to that language as its record says: Node as it is, Bun as `bun:<package>`, Python as `py:<entry point>`, Go as `go:<plugin>`, Swift as `swift:<plugin>`. Output still shows the name the row has. Other names resolve as before; a row with an older name (`py:llm`) has nothing to do with the records.
+The language comes from the key's prefix (none for Node). Records do not change how rows resolve: a row name resolves the same with a record or without. A key in none of these forms is refused:
+
+```text
+rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin
+```
 
 No version is recorded: the package manager's own files keep it (`package.json` and the lock file, the Python environment); `check` shows it. A `rutis-host` older than 0.19 reads a file with `installed` as having an unknown field.
 
@@ -622,7 +625,7 @@ Each row runs a plugin:
 | Field | Meaning |
 | --- | --- |
 | `id` | Row name, unique within this file. |
-| `name` | Plugin identifier: a plugin name under `installed`, an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; `go-<binary name>:<plugin>` when two do), `swift:<plugin>` (likewise, Swift binaries), `./relative-path` (plugin file), `<remote-runtime>:<module or plugin>`, `rutis-bridge/peer` (a node; see [Connect nodes](nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
+| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; `go-<binary name>:<plugin>` when two do), `swift:<plugin>` (likewise, Swift binaries), `./relative-path` (plugin file), `<remote-runtime>:<module or plugin>`, `rutis-bridge/peer` (a node; see [Connect nodes](nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
 | `config` | Plugin configuration. |
 | `inject` | Additional service names to wait for. |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |
