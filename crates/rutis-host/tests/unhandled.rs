@@ -129,7 +129,7 @@ fn ran_on(output: &[String], row: &str) -> bool {
     let stop = output
         .iter()
         .position(|line| line.starts_with("rutis-host: SIGTERM: stopping"))
-        .unwrap_or(output.len());
+        .expect("the host prints the stop's line");
     let line = |state: &str| format!("{row}: {state}");
     let before = states(&output[..stop], row);
     let after = states(&output[stop..], row);
