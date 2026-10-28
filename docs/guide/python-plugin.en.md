@@ -39,7 +39,7 @@ class Weather:
 
 
 def apply(ctx, config):
-    ctx.provide("weather", Weather(ctx.use("llm"), config.get("city", "Oslo")))
+    ctx.provide("weather", Weather(ctx.use("llm"), config["city"]))
     return lambda: None                   # Cleanup may be async; returning nothing is also fine
 
 
@@ -47,9 +47,11 @@ plugin = define_plugin(
     apply,
     inject=["llm"],                       # Services used: start when all are ready; stop if any is revoked
     provides={"weather": Weather},        # What it provides: check knows before running
-    config={"type": "object", "properties": {"city": {"type": "string"}}},
+    config={"type": "object", "properties": {"city": {"type": "string", "default": "Oslo"}}},
 )
 ```
+
+Before `apply`, rutis fills the config with the schema's defaults (`Oslo` when the row has no `city`) and validates it: a row whose config does not match fails with `config: …`, and `apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)). `load` and `update` in `rutis.testing` do the same, raising a `BindingError` with code `bad-config`; extra keys are written on stderr.
 
 You can also omit `define_plugin` and declare `apply`, `inject`, `provides`, and `Config` directly in the module. `apply` may be an `async def` function.
 

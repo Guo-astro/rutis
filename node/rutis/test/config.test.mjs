@@ -17,6 +17,7 @@ function scribble(value) {
   else if (value !== null && typeof value === 'object') { Object.values(value).forEach(scribble); value.scribbled = true }
 }
 
+// guarantee: sdk/config-schema (the shared case list, the testing tool's column)
 test('every case of the shared list passes', () => {
   const failures = []
   for (const c of cases) {

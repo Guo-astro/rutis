@@ -30,7 +30,7 @@ npm install
 import { definePlugin } from '@arcships/rutis'
 
 export interface Config {
-  city?: string
+  city: string
 }
 
 interface Llm {
@@ -48,13 +48,15 @@ class Weather {
 export default definePlugin<Config>({
   inject: ['llm'],                                 // 用到的服务：都就绪才启动，任何一个撤销就停下
   provides: { weather: { today: 'async' } },      // 提供的服务：check 运行前就知道；只有声明的方法能调用
-  config: { type: 'object', properties: { city: { type: 'string' } } },  // 配置的 JSON Schema
+  config: { type: 'object', properties: { city: { type: 'string', default: 'Oslo' } } },  // 配置的 JSON Schema
   apply(ctx, config) {
-    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city ?? 'Oslo'))
+    ctx.provide('weather', new Weather(ctx.use<Llm>('llm'), config.city))
     return () => {}                                // 清理；也可以用 ctx.effect(cleanup)，或不返回
   },
 })
 ```
+
+`apply` 之前，rutis 给配置补上 Schema 里的默认值（行里不写 `city` 时就是 `Oslo`）并校验：配置不合格的行以 `config: …` 失败，不调用 `apply`（[插件 API：配置](plugin-api.md#配置)）；测试工具也一样。
 
 插件只依赖 `@arcships/rutis`。它不认识宿主是谁、`llm` 由哪种语言或哪台机器提供，也不管自己什么时候启动和停止：这些由宿主决定。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
 

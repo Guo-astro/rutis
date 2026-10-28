@@ -632,6 +632,8 @@ let mut builtins = Builtins::new();
 builtins.register("weather", Weather::new); // 行：{ "id": "weather", "name": "weather", "config": { "city": "Oslo" } }
 ```
 
+`build` 之前，loader 给这一行的配置补上 Schema 里的默认值并校验：配置不合格的行以 `config: …` 失败，不调用构造函数（[插件 API：配置](plugin-api.md#配置)），多余的键写到标准错误。`Option` 或带 `#[serde(default)]` 的字段不必填，不写时取 serde 的默认值。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
+
 每个实例各构造一份时用 `register_with(name, |build, config| …)`。加载器（`Chain` 里放进 `builtins`）、运行时和其他语言的行见 [在 Rust 应用里嵌入](rust-host.md#运行时与加载器)。
 
 ### 调试
@@ -646,7 +648,7 @@ builtins.register("weather", Weather::new); // 行：{ "id": "weather", "name": 
 rutis_sdk::export_plugin!(id: "weather", build: Weather::new);
 ```
 
-- `build:` 接受和 `Builtins::register` 相同的构造函数；`schema:` 可选，给出配置的 JSON Schema（`serde_json::Value`）。
+- `build:` 接受和 `Builtins::register` 相同的构造函数；`schema:` 可选，给出配置的 JSON Schema（`serde_json::Value`）：写了就和 `Builtins` 的行一样补默认值并校验，没写时只解码。
 - dylib 插件的事件和配置类型用 SDK 里的 serde 派生：`#[derive(rutis_sdk::rutis::serde::Deserialize)]` 加 `#[serde(crate = "rutis_sdk::rutis::serde")]`。插件自己的 serde 和 SDK 的不是同一份。
 - dylib 插件要用和宿主完全相同的 SDK 构建。工作区、打包和排错见 [外部插件开发指南](../external-plugin-guide.md)。
 

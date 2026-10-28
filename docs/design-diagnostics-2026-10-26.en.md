@@ -101,6 +101,7 @@ An error a plugin throws itself keeps whatever `code` it has. `BindingError`s th
 | `bad-argument` | Wrong number or type of arguments | `{service, method, argument, expected}` |
 | `bad-value` | A value cannot be sent, or a message exceeds the limit | `{argument?, part, limit?}` |
 | `peer-gone` | The runtime on the other side exited or disconnected during the call | `{runtime, reason}` |
+| `bad-config` | A row's config does not match its plugin's schema (added by the [config schema design](design-config-schema-2026-10-27.en.md) §5.2) | `{issues: [{path, message}]}` (the items of `path` are keys or indices) |
 
 `SyncWaitCycle` and `AggregateError` already have their own type names and get no code. Codes are for programs and do not appear in the line of text meant for people. Rows can be added to the table during implementation; existing rows do not change.
 
