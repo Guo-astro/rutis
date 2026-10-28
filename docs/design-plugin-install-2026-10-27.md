@@ -4,6 +4,7 @@
 
 状态：定稿，未实现。日期：2026-10-27。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#691](https://github.com/arcships/rutis/issues/691)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 H2、O4）。
+2026-10-28 调整（I6、§六）：`add` 写行时直接用已有的行名写法（Node 包名、`bun:`、`py:`、`go:`、`swift:`）；`installed` 以行名为键，只记 `from`；去掉"行名是记录里的键时按记录解析"这一层，行名解析完全照旧。原因：按记录换写法让同一个插件有两种行名，还多一条与已有写法重复的名字规则。
 与 0.18 设计的关系：`add` 打印的插件介绍就是 `check` 已有的描述（版本、`inject`、`provides`、配置 Schema），不另起一份；新写的行不带 `config`，默认值按 [0.18 配置 Schema](design-config-schema-2026-10-27.md) C1 由 SDK 补，缺必填项时 `add` 用 `check` 的同一段检查说出来；出错文字遵守 [0.18 诊断](design-diagnostics-2026-10-26.md) §4.5。
 兼容：全部兼容，不进《迁移到 0.19》。旧的行名写法（`py:`、`bun:`、`go:`、`swift:` 前缀，npm 包名）、手动安装和 `rutis-host go add` 照常可用，不转换。
 
@@ -35,7 +36,7 @@ rutis-host run
 
 | 已有 | 位置 | 本稿怎样用 |
 | --- | --- | --- |
-| 每种语言一个 `Language`：运行时的键（`node`、`bun`、`py`、`go`、`swift`）、按项目文件认语言（`of_project`） | `crates/rutis-host/src/languages/` | 本地目录的语言由 `of_project` 判断；记录里的语言就是运行时的键 |
+| 每种语言一个 `Language`：运行时的键（`node`、`bun`、`py`、`go`、`swift`）、按项目文件认语言（`of_project`） | `crates/rutis-host/src/languages/` | 本地目录的语言由 `of_project` 判断；行名前缀就是运行时的键 |
 | Bun 项目的判断：依赖 `@arcships/rutis-bun` | `languages/bun.rs` `runs_in_bun` | npm 包是 Bun 还是 Node 插件，用同一条规则 |
 | 运行时缺东西时给出的命令：Node `npm init -y`、`npm install @arcships/rutis-runtime`；Bun `bun add -d @arcships/rutis-bun`；Python 建 `.venv`、装 `rutis==<宿主版本>`（`create_venv`、`missing_rutis`） | `languages/node.rs`、`bun.rs`、`python.rs` | `add` 直接执行这些命令，不另定 |
 | `rutis-host go add`：`GOBIN=<dir> go install` | `crates/rutis-host/src/main.rs` | 移进安装代码，`go add` 行为不变 |
@@ -55,7 +56,7 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 | I3 | 语言由包自己决定：npm 包依赖 `@arcships/rutis-bun` 是 Bun，否则 Node；PyPI 是 Python；Go 模块是 Go；本地目录按项目文件；本地可执行文件按 SDK 标记（Go、Swift） | 四 |
 | I4 | 装到现在就用的位置：`runtimes.<语言>` 写了就用它指的；没写时用它的默认（Go、Swift 为 `plugins/go`、`plugins/swift`），并把用到的设置写进 `runtimes`（`"py": {}`、`"go": { "dir": "plugins/go" }`），运行时照现有规则启动，不另加推出规则 | 五 |
 | I5 | 运行时缺了就准备好：执行运行时现在缺东西时提示的命令（§二），以及建 Go / Swift 目录；不装 Node、Bun、Python、Go 本身 | 五 |
-| I6 | 安装记录写在 `rutis.json` 顶层的 `installed`，以插件名为键，只有 `from`、`language`；行里只写插件名 | 六 |
+| I6 | 安装记录写在 `rutis.json` 顶层的 `installed`，以行名为键，只有 `from`；行名用已有写法，由 `add` 写好 | 六 |
 | I7 | 插件介绍用插件已有的声明（`check` 打印的描述），不新增清单格式；`provides` 仍可不写 | 八 |
 | I8 | 嵌入 API 在 `rutis-loader` 的 `install` feature（默认关）：`Installer`、`Places`、`Installed`；引用是字符串；记录由调用方保存；`rutis` 内核不变 | 九 |
 | I9 | `rutis.json` 最后才写，前面任何一步失败它都不变；包管理器已经装上的东西不回滚，出错文字写明怎样卸 | 五 |
@@ -95,7 +96,7 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
    `runtimes.go`（`swift`）写了但没有 `dir` 时报错：`add` 不知道装到哪里。包管理器的输出原样显示。
 3. 找出包里的插件：Node、Bun 是包名（一个包一个插件）；Python 是这个发行包在 `rutis.plugins` 组里的入口点（一个包可以有几个）；Go、Swift 是二进制清单里的插件。
 4. 描述每个插件：启动它的运行时，和 `check` 一样描述这一行（§八），打印出来。
-5. 写文件：`installed` 加上每个插件的记录；`rows` 末尾每个插件加一行 `{ "id": <id>, "name": <插件名> }`，id 由插件名得出（已有的 `id_of`），已被占用时加 `-2`、`-3`，同名的行已经有了时不再加；`runtimes` 没写这门语言时写上用到的设置（I4）。按原有键的顺序写回，缩进两格，先写临时文件再改名（`--watch-config` 不会读到写了一半的文件）。
+5. 写文件：`installed` 加上每个插件的记录（键是行名）；`rows` 末尾每个插件加一行 `{ "id": <id>, "name": <行名> }`，行名用已有写法（§六），id 由插件名得出（已有的 `id_of`），已被占用时加 `-2`、`-3`，同名的行已经有了时不再加；`runtimes` 没写这门语言时写上用到的设置（I4）。按原有键的顺序写回，缩进两格，先写临时文件再改名（`--watch-config` 不会读到写了一半的文件）。
 6. 用 `check` 的同一段检查看新加的行，打印它的结果：缺它要用的服务、配置缺必填项（0.18）时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
 
 写哪个文件：第二个参数；没有时当前目录的 `rutis.json`；没有 `rutis.json`、有 `rutis.dev.json`（插件项目）时写它；都没有时新建 `rutis.json`。
@@ -109,29 +110,30 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
   "format": 1,
   "runtimes": { "node": {}, "py": {}, "go": { "dir": "plugins/go" } },
   "installed": {
-    "@ana/wordcount": { "from": "npm:@ana/wordcount", "language": "node" },
-    "llm":            { "from": "pypi:bo-llm", "language": "py" },
-    "dns":            { "from": "github.com/bo/netkit/cmd/netkit", "language": "go" }
+    "@ana/wordcount": { "from": "npm:@ana/wordcount" },
+    "py:llm":         { "from": "pypi:bo-llm" },
+    "go:dns":         { "from": "github.com/bo/netkit/cmd/netkit" }
   },
   "rows": [
     { "id": "wordcount", "name": "@ana/wordcount" },
-    { "id": "llm", "name": "llm" },
-    { "id": "dns", "name": "dns" }
+    { "id": "llm", "name": "py:llm" },
+    { "id": "dns", "name": "go:dns" }
   ]
 }
 ```
 
-- 键是插件名，也就是行的 `name`。`from` 是不带版本的引用，`remove` / `upgrade` 用它找到包（PyPI 的包名与插件名不同）；`language` 是运行时的键，启动时不必再读包。同一个包的几个插件，`from` 相同。
+- **行名用已有写法**：Node 是包名，Bun 是 `bun:<包>`，Python 是 `py:<入口点>`，Go 是 `go:<插件>`，Swift 是 `swift:<插件>`。行由 `add` 写，宿主持有者不用自己记前缀；rutis-host 解析行名完全照旧，有没有记录都一样，同一个插件只有一种写法。
+- 键是插件的行名，与它的行的 `name` 相同（选它而不选插件名：键就是行名，不用再换算，不同语言的同名插件也不会撞在一起）。`from` 是不带版本的引用，`remove` / `upgrade` 用它找到包（PyPI 的包名与插件名不同）。语言由键的前缀得出（没有前缀是 Node），不另记。同一个包的几个插件，`from` 相同。
+- 键不是上面几种写法时，读文件报错：`installed.ruby:geo: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin`。
 - 不记版本：装上的版本由包管理器自己的文件记着（`package.json` 与锁文件、Python 环境），再记一份，手动 `npm update` 之后就对不上了。要看版本用 `check`。
 - 为什么放在 `rutis.json` 里：少一个文件；宿主持有者在同一处看到装了什么、运行什么；部署时本来就要带着它。Koishi 也是把装上的插件直接写进配置。
-- 行的名字是记录里的键时，rutis-host 按记录把它交给那门语言的解析：Node 原样，Bun `bun:<包>`，Python `py:<入口点>`，Go `go:<插件>`，Swift `swift:<插件>`。输出里仍写行里写的名字。不是记录里的键的名字，和现在一样解析。
-- **名字冲突**：插件名已经是另一个包的记录时，`add` 拒绝，写明是哪个包。旧写法的行（`py:llm`）与记录无关，不算冲突。
+- 两条记录不能有同一个键：行名已经是另一个包的记录时，`add` 拒绝，写明是哪个包（不然后装的会盖掉前一条，前一个包就卸不掉了）。
 - 旧版 rutis-host 读到带 `installed` 的文件，按现有规则报"不认识的字段"。`format` 仍是 1。
 
 ## 七、`remove` 与 `upgrade`
 
-- `rutis-host remove <插件名或引用> [rutis.json]`：卸掉这个插件所在的包（`npm uninstall`、`bun remove`、`uv pip uninstall`、删掉清单里有它的二进制），删掉这个包的全部记录和用这些插件名的行（包括分组里的），逐个打印删掉的行。一个包有几个插件时，删整个包，并说明。`runtimes` 不动。名字不在记录里时拒绝，写明该用哪个包管理器自己卸。
-- `rutis-host upgrade [<插件名或引用>[@版本]] [rutis.json]`：不写名字时升级全部记录。按记录的来源装最新版（或给出的版本），行不改。新版本多出的插件打印一句如何加行；少了的插件删掉记录，用它的行打印一句"新版本里没有这个插件"。
+- `rutis-host remove <行名、插件名或引用> [rutis.json]`：卸掉这个插件所在的包（`npm uninstall`、`bun remove`、`uv pip uninstall`、删掉清单里有它的二进制），删掉这个包的全部记录和用这些行名的行（包括分组里的），逐个打印删掉的行。一个包有几个插件时，删整个包，并说明。`runtimes` 不动。名字不在记录里时拒绝，写明该用哪个包管理器自己卸。
+- `rutis-host upgrade [<行名、插件名或引用>[@版本]] [rutis.json]`：不写名字时升级全部记录。按记录的来源装最新版（或给出的版本），行不改。新版本多出的插件打印一句如何加行；少了的插件删掉记录，用它的行打印一句"新版本里没有这个插件"。
 - **运行中的宿主**：`upgrade` 只换磁盘上的包，正在运行的宿主继续运行旧代码，重启后生效；`upgrade` 结束时说明这一点（Koishi 更新依赖后同样要重启）。不热换的原因：重新加载一行只重新导入它自己的入口模块（`dev` 的已有规则），升级换掉的是整个包。
 
 ## 八、装之前看介绍
@@ -167,7 +169,7 @@ installer.upgrade(&added[0], None).await?;
 installer.remove(&added[0]).await?;
 ```
 
-- `Installed` 是 `installed` 里的一条（`from`、`language`）加上插件名 `name`，可序列化；rutis-host 读写 `installed` 用的就是它。`row_name()` 给出 loader 认得的行名，嵌入的宿主用程序写行，不需要无前缀的名字。
+- `Installed` 是 `installed` 里的一条（只有 `from`）加上插件名 `name` 与语言 `language`（算出来的，不写进文件），可序列化；rutis-host 读写 `installed` 用的就是它。`row_name()` 给出插件的行名，也是记录的键；`Installed::of_row(行名, from)` 从键与记录还原。
 - 引用用字符串，解析错误由 `add` / `describe` 返回，不另开类型。`describe` 返回已有的 `RowSchema`。
 - **放在 rutis-loader**：嵌入的宿主本来就依赖它；描述插件要用的运行时也在这里。只在调用时把 npm、uv、go 当作外部命令运行。`rutis` 内核不变。rutis-host 的库不是公开 API，不放那里。
 - **记录归调用方**：API 不读写任何配置文件，也不碰 loader 与运行时。
@@ -197,7 +199,7 @@ rutis.json: added row wordcount, runtimes.node
 $ rutis-host add pypi:bo-llm
 (uv 的输出)
 installed bo-llm 0.3.0 (py) into /app/.venv: plugin llm
-llm (llm): ok
+llm (py:llm): ok
   version: "0.3.0"
   provides: none declared (it may provide more once it runs)
 rutis.json: added row llm, runtimes.py
@@ -229,11 +231,11 @@ a running host keeps the old versions until it restarts
 | 包管理器失败 | 它自己的输出，然后 `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | 不是插件 | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils`；Node 包导入后不是插件时用 0.18 的文字，后面同样加卸掉的命令 |
 | 本地目录认不出 | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
-| 名字已被别的包占用 | `rutis-host: llm is already installed from pypi:other-llm: remove it first`（装后才知道时，后面同样加卸掉的命令） |
+| 行名已被别的包占用 | `rutis-host: py:llm is already installed from pypi:other-llm: remove it first`（装后才知道时，后面同样加卸掉的命令） |
 | Go 目录不明 | `rutis-host: runtimes.go has no dir to install into: add one, or remove runtimes.go to use plugins/go` |
 | `remove` 的名字不在记录里 | `rutis-host: llm was not installed by add: uninstall it with the package manager that installed it, and remove its row` |
 
-npm 包的插件名就是包名，冲突在装包前就报；Python 入口点名、Go 插件名要装上才知道，冲突在装后报，和"不是插件"一样包留在原处、写明卸掉的命令。
+npm 包的行名就是包名（Bun 是 `bun:<包>`），冲突在装包前就报；Python 入口点名、Go 插件名要装上才知道，冲突在装后报，和"不是插件"一样包留在原处、写明卸掉的命令。
 
 ## 十二、兼容与迁移
 
@@ -245,7 +247,7 @@ npm 包的插件名就是包名，冲突在装包前就报；Python 入口点名
 | 步骤 | 内容 | 完成条件 |
 | --- | --- | --- |
 | P1 | `rutis-loader` 的 `install` feature：引用解析、`Places`、`Installer` 的 `add` / `remove` / `upgrade` / `describe`、`Installed`；`go add` 改为调用它 | 单元测试：§四 每种写法解析出的来源、语言与包管理器命令（`PATH` 上放记录参数的假命令） |
-| P2 | rutis-host：`installed` 字段、按记录解析行名、`add`（含 `--dry-run`）/ `remove` / `upgrade`、写回文件（含 `runtimes`） | `crates/rutis-host/tests/install.rs`：记录 → 行名；旧写法与记录并存；写回保持键顺序；§十一 的每条出错输出逐字比较 |
+| P2 | rutis-host：`installed` 字段（以行名为键）、`add`（含 `--dry-run`）/ `remove` / `upgrade`、写回文件（含 `runtimes`） | `crates/rutis-host/tests/install.rs`：有记录的行照常解析；键不是行名写法时报错；写回保持键顺序；§十一 的每条出错输出逐字比较 |
 | P3 | 端到端：`tests/e2e/tests/plugin_install.rs`（与 `dev_loop.rs` 同在 ci.yml 的 e2e 任务里） | Node、Bun、Python、Go 各一个场景：用 `rutis-host new` 的模板打出本地包（`npm pack`、`uv build` 的 wheel、Go 模块目录）→ `add --dry-run` → `add` → `check` → `run`，probe 调到它的服务 → 改版本后 `upgrade` → `remove`；Python 场景从没有环境开始；`pypi:` 与 Go 模块路径的写法用 uv 的本地 `--find-links` 与 `GOPROXY=file://` 跑一遍；一个 `dev` 场景：`add` 写进 `rutis.dev.json` 后新行 `added`，项目自己的行不重启 |
 | P4 | 文档 | [rutis-host 指南](guide/rutis-host.md)（命令表、「快速上手」、「宿主怎样装插件」、`installed` 字段）、宿主持有者指南（#671，原 #685）、[在 Rust 应用里嵌入](guide/rust-host.md) 的 `Installer` 一节，中英两份同步；写明安装脚本与信任（§十） |
 

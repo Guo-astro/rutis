@@ -77,12 +77,11 @@ fn python_settings() -> serde_json::Value {
     }
 }
 
-/// A row named after a record runs in the record's runtime, its lines
-/// saying the row's own name; a row with an old name (`py:old`) beside it
-/// runs as before.
+/// A record is kept under its row's name and changes nothing about how
+/// rows resolve: the recorded row and one beside it run as rows do.
 /// guarantee: host/plugin-install
 #[tokio::test(flavor = "multi_thread")]
-async fn a_row_named_after_a_record_runs_where_the_record_says() {
+async fn rows_of_recorded_plugins_resolve_as_rows_do() {
     let dir = tempfile::tempdir().unwrap();
     let plugin = "provides = {'geo': {'find': 'sync'}}\ndef apply(ctx, config):\n    pass\n";
     write(
@@ -94,9 +93,9 @@ async fn a_row_named_after_a_record_runs_where_the_record_says() {
                 "rutis.json",
                 &serde_json::json!({
                     "runtimes": { "py": python_settings() },
-                    "installed": { "geo": { "from": "pypi:geo-plugin", "language": "py" } },
+                    "installed": { "py:geo": { "from": "pypi:geo-plugin" } },
                     "rows": [
-                        { "id": "geo", "name": "geo" },
+                        { "id": "geo", "name": "py:geo" },
                         { "id": "old", "name": "py:old" }
                     ]
                 })
@@ -115,32 +114,33 @@ async fn a_row_named_after_a_record_runs_where_the_record_says() {
     assert_eq!(ran.stderr, "");
     assert_eq!(
         ran.stdout,
-        "geo (geo): ok\n  inject: []\n  provides: {\"geo\":{\"find\":\"sync\"}}\n\
+        "geo (py:geo): ok\n  inject: []\n  provides: {\"geo\":{\"find\":\"sync\"}}\n\
          old (py:old): ok\n  inject: []\n  provides: {\"old\":{\"find\":\"sync\"}}\n"
     );
     assert_eq!(ran.status, 0);
 }
 
-/// A record of a language that is not a runtime's is refused.
+/// A record under a name that is not a row name `add` writes is refused;
+/// a record keeps `from` only.
 #[test]
-fn a_record_of_no_runtime_is_refused() {
+fn a_record_not_under_a_row_name_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rutis.json");
     let error = rutis_host::config::HostConfig::parse(
-        r#"{ "installed": { "geo": { "from": "pypi:geo", "language": "ruby" } } }"#,
+        r#"{ "installed": { "ruby:geo": { "from": "./geo" } } }"#,
         &path,
     )
     .unwrap_err();
     assert_eq!(
         normalize(&error, dir.path()),
-        "<dir>/rutis.json: installed.geo: language \"ruby\" is not node, bun, py, go or swift"
+        "<dir>/rutis.json: installed.ruby:geo: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin"
     );
     let error = rutis_host::config::HostConfig::parse(
-        r#"{ "installed": { "geo": { "from": "pypi:geo", "language": "py", "version": "1" } } }"#,
+        r#"{ "installed": { "py:geo": { "from": "pypi:geo", "language": "py" } } }"#,
         &path,
     )
     .unwrap_err();
-    assert!(error.contains("unknown field `version`"), "{error}");
+    assert!(error.contains("unknown field `language`"), "{error}");
 }
 
 /// The Node plugin the recording npm installs.
@@ -213,8 +213,7 @@ async fn add_writes_the_file_back_in_its_own_order() {
   },
   "installed": {
     "@ana/wordcount": {
-      "from": "npm:@ana/wordcount",
-      "language": "node"
+      "from": "npm:@ana/wordcount"
     }
   },
   "rows": [
@@ -298,7 +297,7 @@ async fn the_errors_say_what_to_do() {
     let app = dir.path().join("app");
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let file = "{ \"runtimes\": { \"go\": {} }, \"installed\": { \"wordcount\": { \"from\": \"pypi:other-llm\", \"language\": \"py\" } }, \"rows\": [] }\n";
+    let file = "{ \"runtimes\": { \"go\": {} }, \"installed\": { \"wordcount\": { \"from\": \"./plugins/wordcount\" } }, \"rows\": [] }\n";
     write(
         &app,
         &[
@@ -346,7 +345,7 @@ async fn the_errors_say_what_to_do() {
         (
             vec!["add", "npm:wordcount"],
             None,
-            "rutis-host: wordcount is already installed from pypi:other-llm: remove it first",
+            "rutis-host: wordcount is already installed from ./plugins/wordcount: remove it first",
         ),
         (
             vec!["add", "github.com/bo/netkit/cmd/netkit"],

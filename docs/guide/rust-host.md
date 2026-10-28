@@ -573,8 +573,8 @@ installer.remove(&added[0]).await?;                           // 卸掉整个包
 ```
 
 - 引用是字符串，写法与 `rutis-host add` 相同（`npm:`、`pypi:`、Go 模块路径、本地路径，`@版本` 可选）；解析错误由 `add` / `describe` 返回。
-- `Installed` 是一条记录（`from`、`language`，可序列化，`rutis-host` 的 `installed` 就是它）加上插件名 `name`；`row_name()` 给出 loader 带着这些运行时时认得的行名（Node 原样，`bun:`、`py:`、`go:`、`swift:` 加插件名）。
-- 记录归调用方：API 不读写任何配置文件，也不碰 loader 与运行时。要让 `add` 拒绝已被别的包占用的插件名，用 `Installer::with_installed(records)` 把已有的记录交给它。
+- `Installed` 是一条记录（只有 `from`，可序列化，`rutis-host` 的 `installed` 就是它）加上插件名 `name` 和语言 `language`；`row_name()` 给出插件的行名（Node 原样，`bun:`、`py:`、`go:`、`swift:` 加插件名），记录以它为键；`Installed::of_row(行名, from)` 从键和记录还原。
+- 记录归调用方：API 不读写任何配置文件，也不碰 loader 与运行时。要让 `add` 拒绝已被别的包占用的行名，用 `Installer::with_installed(records)` 把已有的记录交给它。
 - `Places.base` 是本地相对路径的起点（默认当前目录）；`Places.python` 可以是环境目录，也可以是解释器。
 - 出错是 `install::Error`：`Failed`（包管理器失败，它的输出已经显示）、`NoPlace`（`Places` 里没有这门语言的位置）、`Other`。失败时包管理器已经装上的包不回滚，出错文字写明卸掉它的命令。
 - 包管理器（npm、bun、uv 或 pip、go）只在调用时作为外部命令运行，输出原样显示；`add`、`upgrade`、`describe` 可能执行包里的安装脚本，并导入插件代码来描述它：只装信任的插件。
