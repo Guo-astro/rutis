@@ -88,7 +88,7 @@ impl Tools {
     /// [`Tools::run`]; `missing` says what to do when the program cannot be
     /// started (its error given).
     pub fn run_or(&self, run: &Run, missing: impl FnOnce(&str) -> String) -> Result<(), Error> {
-        let status = busy(|| self.command(run).stdin(Stdio::null()).status())
+        let status = crate::runtime::retry_busy(|| self.command(run).stdin(Stdio::null()).status())
             .map_err(|error| Error::Other(missing(&io_error(&error))))?;
         match status.success() {
             true => Ok(()),
@@ -111,7 +111,7 @@ impl Tools {
         run: &Run,
         missing: impl FnOnce(&str) -> String,
     ) -> Result<String, Error> {
-        let output = busy(|| {
+        let output = crate::runtime::retry_busy(|| {
             self.command(run)
                 .stdin(Stdio::null())
                 .stderr(Stdio::inherit())
@@ -130,7 +130,7 @@ impl Tools {
 
     /// Whether it runs and succeeds, nothing shown.
     pub fn succeeds(&self, run: &Run) -> bool {
-        busy(|| {
+        crate::runtime::retry_busy(|| {
             self.command(run)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -139,24 +139,6 @@ impl Tools {
         })
         .is_ok_and(|status| status.success())
     }
-}
-
-/// Start it again while the program is busy (ETXTBSY): a file just
-/// written cannot be run while a process another thread is starting still
-/// holds it open for writing, a moment later it can (as the loader does
-/// for binaries).
-fn busy<T>(mut start: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-    let mut pause = std::time::Duration::from_millis(10);
-    for _ in 0..5 {
-        match start() {
-            Err(error) if cfg!(unix) && error.raw_os_error() == Some(26) => {
-                std::thread::sleep(pause);
-                pause *= 2;
-            }
-            result => return result,
-        }
-    }
-    start()
 }
 
 /// A package manager that cannot be run: what to install.
@@ -204,6 +186,7 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// `path` as a shell takes it.
-pub(crate) fn quoted_path(path: &Path) -> String {
+#[doc(hidden)]
+pub fn quoted_path(path: &Path) -> String {
     quoted(&path.display().to_string())
 }

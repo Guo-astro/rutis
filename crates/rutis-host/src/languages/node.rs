@@ -150,16 +150,11 @@ fn runtime(node: &NodeRuntime, debug: bool) -> Result<LocalRuntime, Error> {
             node.project.display()
         ));
     }
-    let candidates = [
-        node.runtime.clone(),
-        Some(node.project.join("node_modules/@arcships/rutis-runtime")),
-        std::env::var_os("RUTIS_NODE_RUNTIME").map(PathBuf::from),
-    ];
-    let package = candidates
-        .into_iter()
-        .flatten()
-        .find(|package| package.join("package.json").exists())
-        .ok_or_else(|| {
+    let package = rutis_loader::internal::node_runtime_package(
+        node.runtime.as_deref(),
+        &node.project,
+    )
+    .ok_or_else(|| {
             format!(
                 "the Node runtime is not installed in {}: run `npm install @arcships/rutis-runtime` there",
                 node.project.display()

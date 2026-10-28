@@ -39,7 +39,9 @@ mod reference;
 mod tools;
 
 use reference::{Reference, Source};
-use tools::{io_error, quoted_path, Run, Tools};
+#[doc(hidden)]
+pub use tools::quoted_path;
+use tools::{io_error, Run, Tools};
 
 /// The version of the runtime packages installed where they are missing
 /// (`@arcships/rutis-runtime`, `@arcships/rutis-bun`, `rutis`): this
@@ -577,16 +579,18 @@ impl Core {
             Source::Local(path) => path.display().to_string(),
             _ => unreachable!("only npm packages and local paths are Node or Bun"),
         };
-        let runtime_package = match lang {
-            Lang::Node => "@arcships/rutis-runtime",
-            _ => "@arcships/rutis-bun",
+        let (runtime_package, runtime_there) = match lang {
+            Lang::Node => (
+                "@arcships/rutis-runtime",
+                node_runtime_package(None, project).is_some(),
+            ),
+            _ => (
+                "@arcships/rutis-bun",
+                project
+                    .join("node_modules/@arcships/rutis-bun/package.json")
+                    .exists(),
+            ),
         };
-        let runtime_there = project
-            .join("node_modules")
-            .join(runtime_package)
-            .join("package.json")
-            .exists()
-            || lang == Lang::Node && node_runtime_from_env().is_some();
         let runtime = format!("{runtime_package}@{VERSION}");
         match lang {
             Lang::Node => {
@@ -792,19 +796,20 @@ impl Core {
             })
             .collect::<Vec<_>>()
             .join(" && ");
+        let found = binaries_in(lang, dir);
         let mut plugins = Vec::new();
         for binary in &binaries {
-            let manifest = binary_manifest(lang, binary).map_err(|why| {
+            let manifest = manifest_of(lang, &found, binary).map_err(|why| {
                 Error::Other(format!(
                     "{} {why}: it is not a plugin; it stays installed: {uninstall}",
                     binary.display()
                 ))
             })?;
-            plugins.extend(manifest.into_iter().map(|(name, version)| Installed {
-                name,
+            plugins.extend(manifest.iter().map(|(name, schema)| Installed {
+                name: name.clone(),
                 from: reference.from.clone(),
                 language: lang.key().into(),
-                version,
+                version: schema.version.clone(),
             }));
         }
         if plugins.is_empty() {
@@ -840,7 +845,13 @@ impl Core {
                     let schema = package
                         .at
                         .iter()
-                        .find_map(|binary| binary_schema(lang, binary, &plugin.name))
+                        .find_map(|binary| {
+                            let dir = binary.parent()?;
+                            manifest_of(lang, &binaries_in(lang, dir), binary)
+                                .ok()?
+                                .get(&plugin.name)
+                                .cloned()
+                        })
                         .ok_or_else(|| {
                             not_plugin(format!("{}: no binary serves it", plugin.name))
                         })?;
@@ -883,14 +894,9 @@ impl Core {
             #[cfg(feature = "node")]
             Lang::Node => {
                 let anchor = at.join("package.json");
-                let package = [
-                    Some(at.join("node_modules/@arcships/rutis-runtime")),
-                    node_runtime_from_env(),
-                ]
-                .into_iter()
-                .flatten()
-                .find(|package| package.join("package.json").exists())
-                .ok_or_else(|| format!("the Node runtime is not installed in {}", at.display()))?;
+                let package = node_runtime_package(None, at).ok_or_else(|| {
+                    format!("the Node runtime is not installed in {}", at.display())
+                })?;
                 let entries = names
                     .iter()
                     .map(|name| {
@@ -954,7 +960,7 @@ impl Core {
                 };
                 binaries_serving(lang, dir, &plugin.name)
                     .into_iter()
-                    .find_map(|binary| binary_schema(lang, &binary, &plugin.name)?.version)
+                    .find_map(|(_, schema)| schema.version)
             }
         }
     }
@@ -994,7 +1000,10 @@ impl Core {
                     Lang::Go => &self.places.go,
                     _ => &self.places.swift,
                 })?;
-                let binaries = binaries_serving(lang, &dir, &plugin.name);
+                let binaries: Vec<PathBuf> = binaries_serving(lang, &dir, &plugin.name)
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect();
                 if binaries.is_empty() {
                     return Ok(None);
                 }
@@ -1146,10 +1155,13 @@ else:
     print("null")
 "#;
 
-/// The interpreter a host starts without one named (rutis-host's own).
-const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
+/// The interpreter a host starts without one named (rutis-host's too).
+#[doc(hidden)]
+pub const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
 
-fn venv_python(venv: &Path) -> PathBuf {
+/// The interpreter of the virtual environment `venv`.
+#[doc(hidden)]
+pub fn venv_python(venv: &Path) -> PathBuf {
     match cfg!(windows) {
         true => venv.join("Scripts").join("python.exe"),
         false => venv.join("bin").join("python"),
@@ -1158,7 +1170,8 @@ fn venv_python(venv: &Path) -> PathBuf {
 
 /// The virtual environment whose interpreter `interpreter` is, by its
 /// place (`<venv>/bin/python`, on Windows `<venv>\Scripts\python.exe`).
-fn venv_of(interpreter: &Path) -> Option<PathBuf> {
+#[doc(hidden)]
+pub fn venv_of(interpreter: &Path) -> Option<PathBuf> {
     let dir = interpreter.parent()?;
     let bin = if cfg!(windows) { "Scripts" } else { "bin" };
     let named = interpreter.file_name()?.to_str()?.starts_with("python");
@@ -1224,12 +1237,20 @@ fn js_version(project: &Path, name: &str) -> Option<String> {
     manifest["version"].as_str().map(str::to_owned)
 }
 
-/// The Node runtime package `RUTIS_NODE_RUNTIME` names, as rutis-host
-/// finds it.
-fn node_runtime_from_env() -> Option<PathBuf> {
-    std::env::var_os("RUTIS_NODE_RUNTIME")
-        .map(PathBuf::from)
-        .filter(|package| package.join("package.json").exists())
+/// The Node runtime package (`@arcships/rutis-runtime`) a host uses for
+/// the project `project`: `configured` (`runtimes.node.runtime`), else the
+/// project's own, else the one `RUTIS_NODE_RUNTIME` names; the first that
+/// is there.
+#[doc(hidden)]
+pub fn node_runtime_package(configured: Option<&Path>, project: &Path) -> Option<PathBuf> {
+    [
+        configured.map(Path::to_path_buf),
+        Some(project.join("node_modules/@arcships/rutis-runtime")),
+        std::env::var_os("RUTIS_NODE_RUNTIME").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|package| package.join("package.json").exists())
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value, Error> {
@@ -1285,68 +1306,65 @@ fn executable(name: &str) -> String {
     }
 }
 
-/// The plugins of a binary of `lang` and their versions; why it is not
-/// one, as `<binary> <why>`.
-#[allow(unused_variables)]
-fn binary_manifest(lang: Lang, binary: &Path) -> Result<Vec<(String, Option<String>)>, String> {
-    #[cfg(feature = "binary")]
-    {
-        let marker = match lang {
-            #[cfg(feature = "go")]
-            Lang::Go => crate::runtime::go::GO_MARKER,
-            #[cfg(feature = "swift")]
-            Lang::Swift => crate::runtime::swift::SWIFT_MARKER,
-            _ => return Err("cannot be read by this program".into()),
-        };
-        if !crate::runtime::binary::contains_marker(binary, marker) {
-            return Err(format!("was not built with the rutis {} SDK", lang.title()));
-        }
-        let manifest = crate::runtime::binary::read_binary_manifest(binary)
-            .map_err(|why| format!("has no manifest ({why})"))?;
-        Ok(manifest
-            .plugins
-            .into_iter()
-            .map(|(name, schema)| (name, schema.version))
-            .collect())
-    }
-    #[cfg(not(feature = "binary"))]
-    Err("cannot be read by this program".into())
-}
-
-/// What the binary `binary` declares of its plugin `name`.
-#[allow(unused_variables)]
-fn binary_schema(lang: Lang, binary: &Path, name: &str) -> Option<RowSchema> {
-    #[cfg(feature = "binary")]
-    {
-        binary_manifest(lang, binary).ok()?;
-        crate::runtime::binary::read_binary_manifest(binary)
-            .ok()?
-            .plugins
-            .remove(name)
-    }
-    #[cfg(not(feature = "binary"))]
-    None
-}
-
-/// The binaries of `lang` in `dir` whose manifests have the plugin `name`.
-fn binaries_serving(lang: Lang, dir: &Path, name: &str) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut found: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .filter(|path| {
-            binary_manifest(lang, path)
-                .is_ok_and(|plugins| plugins.iter().any(|(plugin, _)| plugin == name))
-        })
-        .collect();
-    found.sort();
-    found
-}
-
 // ── Runtimes ────────────────────────────────────────────────────
+
+/// A binary's plugins, by name, as its manifest says.
+type Plugins = std::collections::BTreeMap<String, RowSchema>;
+
+/// The binaries in `dir` built with `lang`'s SDK, as its runtime finds
+/// them ([`BinaryResolver::binaries`](crate::runtime::binary::BinaryResolver::binaries)):
+/// each with its manifest, or why it has none.
+fn binaries_in(lang: Lang, dir: &Path) -> Vec<(PathBuf, Result<Plugins, String>)> {
+    #[cfg(feature = "binary")]
+    {
+        let binaries = crate::runtime::binary::Binaries::new().dir(dir);
+        let found = match lang {
+            #[cfg(feature = "go")]
+            Lang::Go => crate::runtime::go::GoResolver::new(binaries).binaries(),
+            #[cfg(feature = "swift")]
+            Lang::Swift => crate::runtime::swift::SwiftResolver::new(binaries).binaries(),
+            _ => Vec::new(),
+        };
+        found
+            .into_iter()
+            .map(|binary| {
+                let plugins = binary.manifest.map(|manifest| manifest.plugins.clone());
+                (binary.path, plugins)
+            })
+            .collect()
+    }
+    #[cfg(not(feature = "binary"))]
+    {
+        let _ = (lang, dir);
+        Vec::new()
+    }
+}
+
+/// The manifest of `binary`, one of `found` ([`binaries_in`] of its
+/// directory): its plugins, or why it is not a plugin.
+fn manifest_of(
+    lang: Lang,
+    found: &[(PathBuf, Result<Plugins, String>)],
+    binary: &Path,
+) -> Result<Plugins, String> {
+    match found
+        .iter()
+        .find(|(path, _)| path.file_name() == binary.file_name())
+    {
+        None => Err(format!("was not built with the rutis {} SDK", lang.title())),
+        Some((_, manifest)) => manifest
+            .clone()
+            .map_err(|why| format!("has no manifest ({why})")),
+    }
+}
+
+/// The binaries in `dir` serving the plugin `name`, with its schema.
+fn binaries_serving(lang: Lang, dir: &Path, name: &str) -> Vec<(PathBuf, RowSchema)> {
+    binaries_in(lang, dir)
+        .into_iter()
+        .filter_map(|(path, plugins)| Some((path, plugins.ok()?.get(name)?.clone())))
+        .collect()
+}
 
 /// Start `runtime`, describe each of `entries` in it, and stop it.
 async fn describe_in(
