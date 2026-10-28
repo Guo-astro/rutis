@@ -109,8 +109,7 @@ pub struct Entry {
 }
 
 /// Read the marked service `provision` provided at `key` through `ctx`, by
-/// the strict read path ([`CtxInternal::require_provided_as`](crate::internal::CtxInternal::require_provided_as)): `check()` applies,
-/// and a read that finds another binding than the one provided (the slot
+/// the strict read path ([`CtxInternal::require_provided_as`](crate::internal::CtxInternal::require_provided_as)): a read that finds another binding than the one provided (the slot
 /// provided again, by another build after a swap, say) is refused.
 pub type Resolve = fn(
     ctx: &Ctx,
@@ -454,9 +453,6 @@ pub struct Exposure<'a> {
     pub scope: Option<&'a str>,
     /// The marked blocks of its type.
     pub entries: Vec<&'static Entry>,
-    /// The `check()` predicate the native binding is gated by
-    /// ([`CtxInternal::provide_checked`](crate::internal::CtxInternal::provide_checked)): it gates the name too.
-    pub check: Option<Check>,
     /// The native binding being provided, for [`Entry::resolve`].
     pub provision: Arc<Provision>,
 }
@@ -486,10 +482,6 @@ pub trait Exposer: Send + Sync + 'static {
 pub fn vacant(ctx: &Ctx, key: &TypeKey) -> bool {
     !ctx.slot_taken(key)
 }
-
-/// The `check()` predicate a service was provided with
-/// ([`CtxInternal::provide_checked`](crate::internal::CtxInternal::provide_checked)): the entry by name is gated by it too.
-pub type Check = Arc<dyn Fn() -> bool + Send + Sync>;
 
 static EXPOSER: OnceLock<&'static dyn Exposer> = OnceLock::new();
 

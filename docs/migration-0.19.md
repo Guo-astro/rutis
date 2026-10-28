@@ -165,6 +165,7 @@ Kotlin 另有两点：
 | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
+| `internal::provide_checked`、`refresh`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
 
 ### 工具
 
