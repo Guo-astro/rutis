@@ -63,7 +63,7 @@ class Calendar(typing.Protocol):
     async def each(self, visit: typing.Callable[[Entry], None | typing.Awaitable[None]]) -> int:
         """Call `visit` with each entry, in order; how many there were.
 
-        Raises CordisErrorThrown.
+        Raises ErrorThrown.
         """
         ...
 
@@ -87,7 +87,7 @@ CalendarErrorThrown = RustError
 CalendarErrorThrownCode: typing.TypeAlias = 'typing.Literal["NotFound"]'
 
 
-#: What a method returning `Err(CordisError)` raises: a RustError named "CordisError", its
-#: `code` one of CordisErrorThrownCode.
-CordisErrorThrown = RustError
-CordisErrorThrownCode: typing.TypeAlias = "str"
+#: What a method returning `Err(Error)` raises: a RustError named "Error", its
+#: `code` one of ErrorThrownCode.
+ErrorThrown = RustError
+ErrorThrownCode: typing.TypeAlias = "str"
