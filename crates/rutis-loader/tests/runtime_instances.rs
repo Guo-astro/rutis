@@ -500,6 +500,7 @@ async fn connections_with_the_same_plugin_each_get_their_own_instance() {
 /// A copy's extra config key, its schema known per connection, is warned
 /// about once per row and instance, named after the row (config schema
 /// design §3.2); the copies run.
+/// guarantee: sdk/config-schema
 #[tokio::test(flavor = "multi_thread")]
 async fn extra_config_keys_are_warned_about_per_instance() {
     let mut main = main().await;
