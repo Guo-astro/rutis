@@ -180,7 +180,7 @@ impl Host {
             };
             if needs && token(&remote.name).is_none() {
                 return Err(format!(
-                    "remote runtime {}: set RUTIS_TOKEN_{} (or RUTIS_TOKEN): the token its \
+                    "remote runtime {}: set RUTIS_TOKEN_{}: the token its \
                      runtimes present when they dial in",
                     remote.name,
                     remote.name.to_uppercase().replace('-', "_")
@@ -1266,7 +1266,7 @@ fn listening_peers(config: &HostConfig) -> Result<Vec<PeerId>, Error> {
 type Accepted = Arc<RwLock<Vec<PeerId>>>;
 
 /// This host's identity. Each peer's token comes from the environment
-/// ([`token`]: `RUTIS_TOKEN_<PEER>`, else `RUTIS_TOKEN`) when a link dials
+/// ([`token`]: `RUTIS_TOKEN_<PEER>`) when a link dials
 /// it, or when a peer that a listening peer row names dials in: a peer row
 /// a reload adds has its token too.
 struct EnvIdentity {

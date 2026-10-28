@@ -495,12 +495,12 @@ impl Inner {
 
     /// The record at `slot` goes because a group above it is going (being
     /// disposed, or already forgotten), not because it disposed itself.
+    /// The loader's own fiber going (disposed or restarted) cancels the
+    /// generation its root context belongs to (#812).
     fn cascading(state: &State, slot: &Slot) -> bool {
-        if state
-            .groups
-            .get(&None)
-            .is_none_or(|root| root.ctx.is_shutting_down())
-        {
+        if state.groups.get(&None).is_none_or(|root| {
+            root.ctx.is_shutting_down() || root.ctx.cancellation_token().is_cancelled()
+        }) {
             return true;
         }
         let mut parent = state.running.get(slot).and_then(|r| r.parent.clone());

@@ -22,7 +22,7 @@
 }
 ```
 
-两端用同一个 token：拨号方出示 `RUTIS_TOKEN`（或 `RUTIS_TOKEN_OFFICE`），监听方用它核对来者是 `main`。
+两端用同一个 token：拨号方（`main`）出示 `RUTIS_TOKEN_OFFICE`，监听方（`office`）用 `RUTIS_TOKEN_MAIN` 核对来者是 `main`，两个变量设成同一个值。
 
 - `dial` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。
 - 自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
@@ -113,7 +113,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 | `listen` + `instances: <分组>` | 多台，每条连接一个实例（见[连进来的运行时](#连进来的运行时)） |
 | 都不写 | 不起连接，由一条带 `runtime` 的节点行或嵌入的程序提供会话 |
 
-`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 照旧：`RUTIS_TOKEN_<名字>`，没有时用 `RUTIS_TOKEN`。可选的 `transport` 选传输，默认 `websocket`；宿主自己的连接方式（中继、QUIC 等）实现一个 `Transport`，由嵌入 rutis-host 的程序挂上，`transport` 写它的名字（[rutis-host](rutis-host.md#runtimes)）。
+`dial` 与 `listen` 不能同时写，`dial` 与 `instances` 也不能（rutis 去连的只能是一台）。token 是 `RUTIS_TOKEN_<名字>`。可选的 `transport` 选传输，默认 `websocket`；宿主自己的连接方式（中继、QUIC 等）实现一个 `Transport`，由嵌入 rutis-host 的程序挂上，`transport` 写它的名字（[rutis-host](rutis-host.md#runtimes)）。
 
 0.19 之前的写法——`runtimes.remote` 只写 `name` 与 `language`，另写一条带 `"runtime": "gpu"` 的 `rutis-bridge/peer` 行——照常可用（见[迁移到 0.19](../migration-0.19.md)）。
 
@@ -148,7 +148,7 @@ runtime worker: refused (the worker runtime lacks rows.v2 and hosts: …)
 }
 ```
 
-每条连接出示同一个 token（`RUTIS_TOKEN_WORKER`，或 `RUTIS_TOKEN`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。没有声明就提供的服务（自动投到 rutis 的）也一样：只有本实例里的行看得到，实例外的行和别的实例都看不到。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
+每条连接出示同一个 token（rutis 一侧是 `RUTIS_TOKEN_WORKER`），自报一个 id，成为分组的一个实例：连进来时创建，断开时关闭，同一 id 的新连接接管旧连接。分组里的行在每个实例中运行在该实例的连接上，它们提供的服务只在本实例里可见。没有声明就提供的服务（自动投到 rutis 的）也一样：只有本实例里的行看得到，实例外的行和别的实例都看不到。字段与规则见 [rutis-host](rutis-host.md#连进来的运行时)。
 
 Python 运行时用 `dial:` 连进来：
 

@@ -2,7 +2,7 @@
 
 [English](migration-0.19.en.md)
 
-0.19 面向宿主持有者。不兼容的只有远程运行时的连接一处（下面第一节）；其余是默认关闭的新选项，各节随 0.19 的改动补齐。
+0.19 面向宿主持有者。不兼容的是远程运行时的连接（下面第一节）与宿主一侧的 token；其余是默认关闭的新选项，各节随 0.19 的改动补齐。
 
 ## 远程运行时（#696、#698）
 
@@ -41,7 +41,7 @@
   ```
 
 - 旧写法里节点行的 `export`、`import`、`host`、`rows` 等字段，新写法没有：连接只用来运行这个运行时的行。还要这些字段的，继续用节点行。
-- token 规则不变：`RUTIS_TOKEN_<名字>`，没有时用 `RUTIS_TOKEN`。新写法的一台 `listen` 没有 token 时启动报错。
+- token 是 `RUTIS_TOKEN_<名字>`（见[宿主一侧的 token](#宿主一侧的-token695)）。新写法的一台 `listen` 没有 token 时启动报错。
 - 自建的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 新增的 `transports`），`transport` 写它的名字；一台、多台都用它。
 
 ### 行为变化
@@ -78,6 +78,35 @@
 - `rutis_host::control::serve` 在 `Loader` 之后多了一个参数 `Report`（一个返回状态文字的函数，`status` 用它回答）；用 `Host::status_report()` 得到它。
 - 运行时一侧、会话协议与 rutis、rutis-loader、rutis-bridge 的 Rust API 都不变。
 
+## 宿主一侧的 token（#695）
+
+**token**：宿主一侧只认 `RUTIS_TOKEN_<名字>`；只设了 `RUTIS_TOKEN` 的宿主改为按名字设。运行时一侧的 `RUTIS_TOKEN` 不变。
+
+`<名字>` 是节点行的 `peer` 或远程运行时的 `name`，大写，`-` 写作 `_`：
+
+```bash
+# 0.18：一个 RUTIS_TOKEN 给所有对端
+RUTIS_TOKEN=secret rutis-host run rutis.json
+# 0.19：每个对端、每个远程运行时一个
+RUTIS_TOKEN_OFFICE=secret RUTIS_TOKEN_GPU=secret rutis-host run rutis.json
+```
+
+没改时看到的：
+
+- 连进来的远程运行时（`listen`）没有 token，宿主启动报错：
+
+  ```
+  rutis-host: remote runtime phone: set RUTIS_TOKEN_PHONE: the token its runtimes present when they dial in
+  ```
+
+- 拨出的节点行不出示 token，对端拒绝，`run` 每 30 秒重试一次：`office: link refused: auth-rejected (…); retrying in 30s`。监听的节点行没有 token 时，对端连进来同样被拒。
+
+同一个监听器上两个条目的 `RUTIS_TOKEN_<名字>` 设成同一个值时仍在启动前报错（#702），文字改为写明两个变量：
+
+```
+rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
+```
+
 ## SDK 的默认入口（#692）
 
 0.19 起，各语言 SDK 的根上只留写插件常用的名字，其余放进 advanced：TypeScript / Bun `@arcships/rutis/advanced`，Python `rutis.advanced`，Go `github.com/arcships/rutis/go/rutis/advanced`，Swift `Rutis.Advanced`，Kotlin `arcships.rutis.advanced`。只有 Swift 宏与 Kotlin KSP 生成的代码用的名字放进 `Rutis._Generated` 与 `arcships.rutis.generated`。
@@ -100,3 +129,11 @@ Kotlin 另有两点：
 - 这些类换了包。单独发布、预先编译好的 Kotlin 插件库要用 0.19 的 SDK 重新编译后，才能和 0.19 的 SDK 放进同一个应用（源代码不用改）。
 
 不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改；0.17.2 的 `rutis-ksp` 生成的代码在 0.19 的 SDK 上照样编译，只有弃用警告。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
+
+## 平台清理（#694）
+
+0.19 删去不属于平台的东西（[平台清理](design-platform-cleanup-2026-10-28.md)）。不做兼容：删掉的 Rust API 是编译错误。
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `LocalRuntime::call_limit`、`kill_on_timeout`、`allowed_services`，错误码 `timeout` | 调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）；超时后插件仍卡住时，宿主用 `processes().kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `FiberView::restart()`；能用哪些服务由宿主自己决定 |
