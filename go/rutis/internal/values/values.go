@@ -1,8 +1,8 @@
 // Package values holds the tagged values beyond JSON data (#308, #355,
 // #360) and their text on the wire: points in time, local dates and
-// times, binary data, big integers, decimals and UUIDs. The rutis package
-// exports the types (rutis.DateTime, rutis.Date, rutis.TimeOfDay,
-// rutis.Decimal, rutis.UUID).
+// times, binary data, big integers, decimals and UUIDs. Package advanced
+// exports the types (advanced.DateTime, advanced.Date,
+// advanced.TimeOfDay, advanced.Decimal, advanced.UUID).
 //
 //	| tag      | Go                | text on the wire                       |
 //	| instant  | time.Time (UTC)   | 2026-10-15T03:22:15.123456789Z         |

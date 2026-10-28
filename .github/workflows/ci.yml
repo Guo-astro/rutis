@@ -75,7 +75,7 @@ env:
     node_conformance
   PURE_TESTS_LOADER: >-
     check instance_peers instance_services instances lifecycle loader
-    migration_example overlay patch_parity peer_rows regressions scope
+    migration_example patch_parity peer_rows regressions reload scope
   # What the pull-request jobs on macOS and Windows skip besides PURE_TESTS_*:
   # tests of runtime and event behavior that is the same on Linux, where the
   # `rust` job runs them with every runtime's features. What is platform
@@ -172,7 +172,6 @@ jobs:
               - crates/rutis-dylib-meta/**
               - crates/rutis-dylib-launcher/**
               - crates/rutis-sdk/**
-              - crates/rutis-dev/**
               - crates/rutis-xtask/**
               - tools/*dylib*
               - tools/build-dylib-bundle.sh

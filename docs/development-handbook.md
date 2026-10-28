@@ -95,10 +95,9 @@ cargo run -p rutis --example development_workflow
 | 创建方式 | 适用情况 | 重新加载时的行为 |
 |---|---|---|
 | `ctx.plugin(plugin)` | 配置由插件对象持有 | 在同一个对象上再次执行 `apply` |
-| `ctx.plugin_from(build, config)` | 运行期间需要更新配置 | 调用 `build` 从当前配置创建新的插件对象 |
-| `ctx.plugin_with(factory, config)` | 依赖由工厂在运行时列出（`host::PluginFactory`） | 根据当前配置创建新的插件对象 |
+| `ctx.plugin_with(factory, config)` | 运行期间需要更新配置（实现 `host::PluginFactory`） | 调用工厂的 `build` 从当前配置创建新的插件对象 |
 
-插件的依赖写在 `type Deps` 中；`plugin_from` 的依赖取自 `build` 返回的插件类型的 `Deps`；工厂写在 `PluginFactory::injects()` 中；按名字依赖服务的插件实现 `host::DynPlugin`，写在 `DynPlugin::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
+插件的依赖写在 `type Deps` 中；工厂写在 `PluginFactory::injects()` 中；按名字依赖服务的插件实现 `host::DynPlugin`，写在 `DynPlugin::injects()` 中。声明在注册时确定，并在该 fiber 的整个生命周期内保持固定。
 
 创建资源的代码放在 `apply` 中。这样，每次重新加载都会取得当前依赖，创建所需资源，并登记新的清理函数。
 
@@ -330,18 +329,23 @@ fn backend(label: &String) -> rutis::Result<BackendPlugin> {
 }
 ```
 
-宿主用构造函数注册插件，之后提交新配置：
+宿主实现 `host::PluginFactory`，在 `build` 里调用构造函数，用 `plugin_with` 注册，之后提交新配置：
 
 ```rust,ignore
-let backend = root.plugin_from(backend, String::from("local"));
+struct BackendFactory;
+impl PluginFactory<String> for BackendFactory {
+    fn build(&self, label: &String) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(backend(label)?))
+    }
+}
+
+let backend = root.plugin_with(BackendFactory, String::from("local"));
 backend.update(String::from("remote")).await?;
 ```
 
-依赖在运行时才确定的插件实现 `host::PluginFactory`，用 `plugin_with(factory, config)` 注册，更新的规则相同。
-
 一次更新分为两步：
 
-1. **预检查。** 执行构造函数（工厂为 `validate_config` 和 `build`）和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
+1. **预检查。** 执行工厂的 `validate_config`、`build` 和插件的 `validate`。失败时返回错误，现有配置和实例保持原状。
 2. **重新加载。** 保存新配置，清理旧实例，依赖就绪后再次构造和加载插件。消费者随服务变化重新加载。
 
 构造函数（以及工厂的 `build`）只负责构造对象，网络连接、任务启动等操作放在 `apply` 中。首次加载也需要的校验写在构造函数或插件的 `validate` 中；工厂的 `validate_config` 用于更新预检查。

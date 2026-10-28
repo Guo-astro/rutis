@@ -81,7 +81,7 @@ impl Plugin for Printer {
 | 事项 | 规则 |
 | --- | --- |
 | `type Deps` | 必须写；没有依赖时写 `()`，`apply` 的参数写 `_: ()` |
-| `name` | `ctx.plugin(p)` 装的插件在日志和诊断里的名字，默认是类型名的最后一段（`Greeter`），可以重写 `fn name(&self) -> &str`。由构造函数装的插件用装它时的名字：`Builtins::register` 登记的名字、`export_plugin!` 的 `id`，`plugin_from` 是类型名 |
+| `name` | `ctx.plugin(p)` 装的插件在日志和诊断里的名字，默认是类型名的最后一段（`Greeter`），可以重写 `fn name(&self) -> &str`。由构造函数装的插件用装它时的名字：`Builtins::register` 登记的名字、`export_plugin!` 的 `id`，`plugin_with` 用工厂的 `name()` |
 | `validate` | `fn validate(&self) -> Result`，在装载时、`apply` 之前执行；失败时插件进入 Failed，不执行 `apply` |
 | 配置 | 写成结构体的字段，再提供 `fn new(config: &Config) -> Result<Self>`；装插件的一方用它构造插件，配置变了也用它重建（见[第 4 节](#4-被宿主使用)） |
 | 并发 | `apply`、监听器和服务的方法在 tokio 上执行，可能同时被调用：插件和它提供的服务要是 `Send + Sync` |
@@ -576,7 +576,7 @@ cargo test
 
 ### 编进 Rust 宿主
 
-插件的配置写成结构体，构造函数从配置构造插件：
+插件的配置写成结构体，构造函数从配置构造插件；宿主实现 `host::PluginFactory`，在 `build` 里调用它：
 
 ```rust
 use rutis::host::*;
@@ -609,12 +609,25 @@ impl Plugin for Weather {
     }
 }
 
+/// 从配置构造 Weather；`update(config)` 也用它重建。
+struct WeatherFactory;
+
+impl PluginFactory<WeatherConfig> for WeatherFactory {
+    fn name(&self) -> &str {
+        "weather"
+    }
+
+    fn build(&self, config: &WeatherConfig) -> Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Weather::new(config)?))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Ctx::root()?;
-    let weather = root.plugin_from(Weather::new, WeatherConfig { city: "Oslo".into() });
+    let weather = root.plugin_with(WeatherFactory, WeatherConfig { city: "Oslo".into() });
     (&weather).await?;
-    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 Weather::new 重建
+    weather.update(WeatherConfig { city: "Bergen".into() }).await?; // 用 WeatherFactory 重建
     root.shutdown().await?;
     Ok(())
 }

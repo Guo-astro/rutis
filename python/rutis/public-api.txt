@@ -22,14 +22,6 @@ class Plugin(object)(apply: Callable, inject: list = <factory>, provides: dict =
     name: str | None
 class RemoteError(Exception)(name: str, message: str, graph: Any = None)
 def define_plugin(apply: Callable, *, inject: list | tuple = (), provides: dict | None = None, config: dict | None = None, name: str | None = None) -> Plugin
-## rutis (deprecated: moved to rutis.advanced in 0.19)
-AggregateError -> rutis.advanced.AggregateError
-AsyncListener -> rutis.advanced.AsyncListener
-LoadError -> rutis.advanced.LoadError
-PLUGIN_API -> rutis.advanced.PLUGIN_API
-ReservedEvent -> rutis.advanced.ReservedEvent
-SyncWaitCycle -> rutis.advanced.SyncWaitCycle
-WaterfallNext -> rutis.advanced.WaterfallNext
 
 ## rutis.advanced
 class AggregateError(Exception)(errors, message: str = '')

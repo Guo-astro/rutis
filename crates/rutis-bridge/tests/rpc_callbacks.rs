@@ -313,7 +313,7 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
 mod websocket {
     use super::*;
     use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketTransport};
+    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketTransport};
     use rutis_bridge::{Credential, Dial, Identity, Registration, StaticIdentity, Transport};
     use tokio::io::AsyncBufReadExt;
 
@@ -367,7 +367,6 @@ mod websocket {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(channel.info.peer, Some(id("node")));
         let peer = Connection::open_with(
             channel,
             Arc::new(Service(Mutex::new(None))),

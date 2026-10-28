@@ -56,7 +56,7 @@
 | Q6.13 | 节点互联、远程运行时、租约 | 部分 | 库级测试完整；两个独立宿主进程之间经 loopback 验证（S5，`nodes.rs`，#322、#336）：断网时进行中的调用失败一次、重连恢复、对端重启后拿到新租约、换 token 被拒、证书主机名不匹配与过期被拒；两个容器之间经真实网络（E12，#341 → #433，nightly 只报告）：非 loopback + TLS，200 ms 延迟 + 5% 丢包下调用成功、只执行一次、link 不断，断网时进行中的调用失败一次、心跳超时报告、退避上限内重连。缺：运行中吊销凭据（#273）；link 实际重试时序与稳定 60 s 后重置（E3）。租约、接管、重连与吊销有 TLA+ 模型（E4、E5，#210） |
 | Q6.14 | Cordis 挂载与 Cordis 节点 | 部分 | 以原生 Cordis 为参照的差分验证；边界规则 3、4、5、7 有跨进程测试（`boundary_rules.rs` 等，#283），测试发现的静默降级改为明确报错（#281、#282 → #337）。用 `rutis.json` 挂载已发布插件的黑盒场景 S6（`tests/e2e/tests/cordis.rs`，#190 → #429）：依赖 rutis 一侧服务的插件所做的调用与原生一致，服务撤回、恢复时按原生规则停止、重启，未捕获的异常明确报错；`rutis.json` 挂载的已发布插件之间按原生规则互用服务，提供的服务自动投到 rutis，probe 经这些服务的调用与原生一致（#428）；新发布的版本每晚跑一遍，只报告（F4）。缺：跨边界的 `serial` 在对侧也按 serial 执行，需要协议改动（#340）；`boundary/5.8` 部分验证 |
 | Q6.15 | npm、PyPI、二进制、crates.io | 部分 | `install.yml`：npm、PyPI、release 二进制在干净目录安装运行，每晚五个平台，PR 上 linux-x64，发布前五个平台；发布后用注册表上的包跑文档示例（#193 → #254，#266 → #324）。缺：crates.io 与 Go 模块没有安装验证；Python 指南示例的标记（#266 (d)，等 #259） |
-| Q6.16 | `rutis-dev` dev 通道 | 部分 | 本机 socket、`0600` 已实现；"生产构建中不存在"没有验证 |
+| Q6.16 | `rutis-dev` dev 通道 | 不适用 | 0.19 删除 `rutis-dev`（#694） |
 
 ### 1.3 测试规则、流程、矩阵、发布
 
@@ -102,7 +102,7 @@
 | Bun 包 | `@arcships/rutis-bun`（Bun 运行时，#194 B1） | 插件作者 |
 | Python 包 | `rutis`（插件 SDK、测试工具、运行时）、`rutis-host`（分发） | 插件作者 |
 | Go 模块 | `github.com/arcships/rutis/go/rutis`（插件 SDK、`rutistest`、运行时） | 插件作者 |
-| dylib 工具链 | `rutis-sdk`、`rutis-dylib*`、`rutis-dev`（dev 通道） | Rust 插件作者 |
+| dylib 工具链 | `rutis-sdk`、`rutis-dylib*` | Rust 插件作者 |
 | 应用 | `rutis-dsh`、`rutis-agent` | 本仓库自用，也是框架的第一批使用方 |
 
 ### 2.2 运行条件与规模假设
@@ -139,7 +139,6 @@
 | `rutis-bridge` | 34 个测试文件；channel / session / runtime / node 四套一致性套件；`fault` 装饰器；两个浸泡测试 | 143 | 87.8% |
 | `rutis-loader` | 20 个测试文件；patch 合并以 cordis-plugin-include 为参照 | 110 | 89.8% |
 | `rutis-host` | 只有 src 内的单元测试 | 8 | 69.8%（`main.rs` 0%） |
-| `rutis-dev` | dev 通道 | 5 | — |
 | dylib 工具链 | `tools/test-dylib*.sh`、`tools/test-sdk-bundle.sh`；两个 runner 比较 SDK 哈希 | — | — |
 | Node 包 | `node/*/test/` | 46 | 86% |
 | Python 包 | `python/rutis/tests/` | 25 | 81% |
@@ -406,11 +405,11 @@ CI：`ci.yml`（PR 按改动选择任务，每晚全部运行；Linux 全量与�
 | H4 | agent 反复生成、加载、卸载数百次后资源增长 | 残留 | 中 | 中 | P1 | SK + R | nightly | 没有 |
 | H5 | 用真实模型的测试不可重复 | — | 中 | 高 | P1 | 用脚本化模型后端（`ScriptedLlm`）驱动；真实模型只做 `#[ignore]` 的手动测试 | — | 有脚本化后端 |
 
-#### 场景 I：dylib 插件与 dev 通道
+#### 场景 I：dylib 插件
 
-**内容**：Rust 插件编译为动态库，宿主校验身份后加载；`rutis-dev` 通道在开发时热替换。
+**内容**：Rust 插件编译为动态库，宿主校验身份后加载。
 
-**经过**：`rutis-sdk`、`rutis-dylib`、launcher、`rutis-dev`、`xtask`。
+**经过**：`rutis-sdk`、`rutis-dylib`、launcher、`xtask`。
 
 **条件**：工具链版本、构建路径、平台各不相同；加载错误的库可能导致内存错误。
 

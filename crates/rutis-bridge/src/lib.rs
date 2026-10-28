@@ -11,11 +11,14 @@
 //! - Access points ([`AccessPointPlugin`]): one listener admitting many
 //!   runtimes that dial out to rutis, each by the id it greets with, as an
 //!   [`Admission`] decides.
-//! - [`transport`]: what links run over (local processes and Unix sockets,
-//!   in-process channels, WebSocket with feature `websocket`). A transport
-//!   provides a [`Transport`] under [`transport_key`]; links depend on that
-//!   and never on a concrete transport. An [`Identity`] holds credentials
-//!   and the rules that map what a far end presents to its endpoint id.
+//! - What links run over: [`pipe`] (local processes and Unix sockets),
+//!   [`memory`] (in-process channels) and `websocket` (feature
+//!   `websocket`). Each gives a [`Channel`] directly ([`pipe::spawn`],
+//!   [`memory::pair`], `websocket::dial`, `websocket::listen`) and has a
+//!   plugin that provides a [`Transport`] under [`transport_key`]; links
+//!   depend on that and never on a concrete transport. An [`Identity`]
+//!   holds credentials and the rules that map what a far end presents to
+//!   its endpoint id.
 //! - [`session`]: the protocol all of these speak, over any
 //!   [`channel::Channel`].
 //! - [`cordis`] (feature `cordis`): Cordis plugins mounted in a Rust
@@ -35,12 +38,15 @@ pub mod channel;
 pub mod cordis;
 pub mod events;
 pub mod exports;
+pub mod memory;
+pub mod pipe;
 pub mod report;
 pub mod runtime;
 pub mod session;
 #[cfg(feature = "testing")]
 pub mod testing;
-pub mod transport;
+#[cfg(feature = "websocket")]
+pub mod websocket;
 
 // The fuzz targets' entry points (`fuzz/`, #179): only in a build by
 // cargo-fuzz, which sets `--cfg fuzzing`.
@@ -61,7 +67,7 @@ mod services;
 pub use access_point::{
     Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin, Release,
 };
-pub use channel::{Channel, ConnectError, PeerId};
+pub use channel::{Channel, Close, ConnectError, PeerId};
 pub use compose::{Features, PeerHandle, PeerPlugin};
 pub use events::LinkEventsPlugin;
 pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};

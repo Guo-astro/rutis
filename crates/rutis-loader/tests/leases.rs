@@ -18,7 +18,7 @@ use rutis::host::{CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::runtime::RuntimeAccessPlugin;
 use rutis_bridge::runtime::RuntimePlugin;
-use rutis_bridge::transport::websocket::{Config, WebSocketPlugin};
+use rutis_bridge::websocket::{Config, WebSocketPlugin};
 use rutis_bridge::{
     peer_key, Credential, IdentityPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry,
     StaticIdentity,

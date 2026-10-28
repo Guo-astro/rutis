@@ -12,7 +12,8 @@ use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+use rutis_loader::runtime::go::Go;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::json;
 
@@ -140,7 +141,9 @@ async fn fixture() -> Fixture {
     for name in ["tools", "go_timeline"] {
         catalog.register_shared_instance(name, "session");
     }
-    let go = Arc::new(GoResolver::new(GoBinaries::new().file(go_binary())).with_catalog(&catalog));
+    let go = Arc::new(
+        BinaryResolver::<Go>::new(Binaries::new().file(go_binary())).with_catalog(&catalog),
+    );
     let plugin = LoaderPlugin::new(
         Chain::new().with(builtins()).with_shared(go.clone()),
         LoaderOptions {
@@ -150,7 +153,7 @@ async fn fixture() -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(GoRuntimes::new(go, dir.path()).idle(None))
+    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path()).idle(None))
         .await
         .unwrap();
     let rows = json!([{ "insert": [

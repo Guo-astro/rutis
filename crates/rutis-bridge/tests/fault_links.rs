@@ -22,9 +22,9 @@ use rutis::host::{BoxFuture, CtxHost};
 use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Format, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, transport_key, Credential, Dial, ExportPlugin, Identity, IdentityPlugin,
     ImportPlugin, LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
@@ -167,7 +167,7 @@ fn nothing() -> Arc<dyn Dispatch> {
 
 /// Two Rust sessions on a memory pair, the caller's end wrapped by `fault`.
 async fn sessions(callee: Arc<dyn Dispatch>) -> (Connection, Connection, Faults) {
-    let (near, far) = rutis_bridge::transport::memory::pair();
+    let (near, far) = rutis_bridge::memory::pair();
     let (near, faults) = fault(near);
     let caller = Connection::open_with(
         near,
@@ -290,7 +290,7 @@ async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
     within("main to run the call", running.recv())
         .await
         .unwrap();
-    linked.faulty.dialed(0).drop_and_close("cut by the test");
+    linked.faulty.dialed(0).drop_and_close();
 
     let failed = within("the call in flight to end", call).await.unwrap();
     assert!(
@@ -433,7 +433,7 @@ async fn calls_while_a_link_reconnects_fail_or_reach_the_new_session() {
     assert_eq!(reply.json().unwrap(), json!(old_tag));
 
     linked.faulty.down.store(true, Ordering::SeqCst);
-    linked.faulty.dialed(0).drop_and_close("cut by the test");
+    linked.faulty.dialed(0).drop_and_close();
     eventually(
         || matches!(*linked.mac_states.borrow(), LinkState::Waiting { .. }).then_some(()),
         "mac's link to fail to redial",
@@ -845,7 +845,7 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
-    use rutis_bridge::transport::websocket::{Config, Limits, ListenerConfig, WebSocketTransport};
+    use rutis_bridge::websocket::{Config, Limits, ListenerConfig, WebSocketTransport};
     use rutis_bridge::Registration;
 
     const LIMIT: usize = 64 * 1024;

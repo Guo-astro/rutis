@@ -3249,18 +3249,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rutis-dev"
-version = "0.1.0"
-dependencies = [
- "rutis",
- "rutis-loader",
- "rutis-test-support",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "rutis-dsh"
 version = "0.6.0"
 dependencies = [
@@ -3423,14 +3411,6 @@ version = "0.18.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "rutis-migrate"
-version = "0.18.0"
-dependencies = [
- "proc-macro2",
  "syn 2.0.119",
 ]
 

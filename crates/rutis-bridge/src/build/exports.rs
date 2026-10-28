@@ -476,8 +476,8 @@ struct Generator<'a> {
     py_thrown: BTreeMap<String, String>,
 }
 
-/// `rutis::Error`, `rutis::host::ErrorKind` (or 0.16's `rutis::CordisError`),
-/// also through `rutis_sdk::rutis`.
+/// `rutis::Error` or `rutis::host::ErrorKind`, also through
+/// `rutis_sdk::rutis`.
 fn rutis_error(path: &[String]) -> bool {
     let path = match path.first().map(String::as_str) {
         Some("rutis_sdk") => &path[1..],
@@ -485,11 +485,7 @@ fn rutis_error(path: &[String]) -> bool {
     };
     path_is(
         path,
-        &[
-            &["rutis", "Error"],
-            &["rutis", "host", "ErrorKind"],
-            &["rutis", "CordisError"],
-        ],
+        &[&["rutis", "Error"], &["rutis", "host", "ErrorKind"]],
     )
 }
 
@@ -1852,10 +1848,9 @@ impl Generator<'_> {
         };
         let segment = path.path.segments.last().expect("a segment");
         let res = self.resolve_type(scope, &path.path)?;
-        // rutis's error keeps the name it had in 0.16 on the TypeScript side
-        // too (`CordisErrorThrown`)
+        // rutis's error is declared as `ErrorThrown`, whichever path names it
         let ident = match &res {
-            Some(Res::External(found)) if rutis_error(found) => "CordisError".to_owned(),
+            Some(Res::External(found)) if rutis_error(found) => "Error".to_owned(),
             _ => segment.ident.to_string(),
         };
         // `Err(message)`: named and coded `Error`, declared as `StringThrown`.
@@ -1873,8 +1868,7 @@ impl Generator<'_> {
             {
                 return Ok(None);
             }
-            // rutis's error (0.16's `CordisError`): thrown as `CordisError`,
-            // its code the kind's variant, as before
+            // rutis's error: thrown as `Error`, its code the kind's variant
             Some(Res::External(found)) if rutis_error(found) => {
                 (ident.clone(), "string".to_owned(), "undefined".to_owned())
             }

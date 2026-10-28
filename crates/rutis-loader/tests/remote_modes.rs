@@ -17,11 +17,11 @@ use common::runtimes::id;
 use rutis::host::{BoxFuture, CtxHost, FiberState};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
+use rutis_bridge::memory::{pair, MemoryPlugin, MemoryTransport};
 use rutis_bridge::runtime::{RuntimeAccessPlugin, RuntimePlugin};
 use rutis_bridge::session::{
     host_key, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
-use rutis_bridge::transport::memory::{pair, MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     protocol, transport_key, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Channel,
     ConnectError, Credential, Dial, IdentityPlugin, LinkConfig, LinkPlugin, SharedToken,
@@ -195,8 +195,7 @@ async fn main(way: Way, lists: bool) -> Main {
         { "id": "contacts", "name": "rt:contacts" },
         { "id": "missing", "name": "rt:missing" }
     ]);
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let (chain, rows, single) = match way {
         Way::Instances => {
             let instances = RuntimeInstances::new("rt", "rt", &catalog);

@@ -340,7 +340,7 @@ mod tests {
     /// follower restarted what it ran on it (#435).
     #[tokio::test(flavor = "multi_thread")]
     async fn a_family_is_announced_only_with_its_offer() {
-        let (channel, _far) = crate::transport::memory::pair();
+        let (channel, _far) = crate::memory::pair();
         let operations = Arc::new(Operations::default());
         let connection = Connection::open(channel, operations.clone()).unwrap();
         let peer = Peer::new(
