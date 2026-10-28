@@ -162,6 +162,8 @@ fn node(s: &Scenario, script: &str, args: &[&str]) -> Value {
         &[],
     );
     let status = program.wait_exit();
+    // Its exit can come before the last of its output is read.
+    program.wait_output_end();
     let output: String = program.lines().into_iter().map(|line| line.text).collect();
     assert!(
         status.success(),
@@ -250,6 +252,8 @@ fn published_cordis_plugins_run_from_rutis_json_as_in_native_cordis() {
     //    provides; every row can run.
     let mut check = s.host(["check", "rutis.json"]);
     let status = check.wait_exit();
+    // Its exit can come before the last of its output is read.
+    check.wait_output_end();
     let printed = output(&check).join("\n");
     assert!(status.success(), "check: {status}\n{printed}");
     for (id, package, _) in
@@ -459,6 +463,8 @@ fn published_cordis_services_resolve_and_answer_as_in_native_cordis() {
     // Cordis it resolves natively.
     let mut check = s.host(["check", "rutis.json"]);
     let status = check.wait_exit();
+    // Its exit can come before the last of its output is read.
+    check.wait_output_end();
     let printed = output(&check).join("\n");
     assert!(status.success(), "check: {status}\n{printed}");
     assert!(
