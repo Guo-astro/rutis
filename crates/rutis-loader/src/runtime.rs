@@ -465,7 +465,7 @@ pub(crate) fn unknown(why: String) -> crate::resolver::Declarations {
 /// The resolution of a row `name` whose runtime does not contain its plugin
 /// `entry`: the row fails with `why`, alone, and an edit adding it is not
 /// refused.
-fn unavailable_resolved(name: &str, entry: &Path, why: crate::Unavailable) -> Resolved {
+fn unavailable_resolved(name: &str, entry: &Path, why: crate::error::Unavailable) -> Resolved {
     Resolved {
         factory: Arc::new(UnavailableFactory {
             name: name.to_owned(),
@@ -482,7 +482,7 @@ fn unavailable_resolved(name: &str, entry: &Path, why: crate::Unavailable) -> Re
 /// The factory of a row whose plugin its runtime does not contain.
 struct UnavailableFactory {
     name: String,
-    why: crate::Unavailable,
+    why: crate::error::Unavailable,
 }
 
 impl PluginFactory<Value> for UnavailableFactory {
