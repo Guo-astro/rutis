@@ -12,11 +12,13 @@ use std::time::Duration;
 
 use common::runtimes::{layer, repo, COLD};
 use rutis::host::CtxHost;
+use rutis::host::FiberState;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Value as RpcValue};
+use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
-use rutis_loader::status::{RowState, RuntimeState, Status};
+use rutis_loader::status::{RuntimeState, Status};
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin};
 use serde_json::json;
 
@@ -112,12 +114,12 @@ fn line<'a>(status: &'a str, start: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no line {start:?} in:\n{status}"))
 }
 
-fn row_state(status: &Status, id: &str) -> Option<RowState> {
-    status
-        .rows
-        .iter()
-        .find(|row| row.id == id)
-        .map(|row| row.state)
+/// Whether row `id` runs, as `status` says.
+fn runs(status: &Status, id: &str) -> bool {
+    status.rows.iter().any(|row| {
+        row.id == id
+            && matches!(&row.state, EntryStatus::Running(snapshot) if snapshot.state == FiberState::Active)
+    })
 }
 
 fn runtime_of<'a>(status: &'a Status, name: &str) -> &'a rutis_loader::status::Runtime {
@@ -148,8 +150,7 @@ async fn each_plugin_runs_in_its_own_process() {
     host.rows(&[("a", "alpha", &a), ("b", "beta", &b)]).await;
     let status = host
         .status("both rows running", |status| {
-            row_state(status, "a") == Some(RowState::Running)
-                && row_state(status, "b") == Some(RowState::Running)
+            runs(status, "a") && runs(status, "b")
         })
         .await;
     let (alpha, beta) = (runtime_of(&status, "alpha"), runtime_of(&status, "beta"));
@@ -170,7 +171,7 @@ async fn each_plugin_runs_in_its_own_process() {
         json!("b pong")
     );
     let status = host.loader.status();
-    assert_eq!(row_state(&status, "b"), Some(RowState::Running));
+    assert!(runs(&status, "b"), "{status}");
     assert_eq!(runtime_of(&status, "beta").pid, Some(beta_pid));
     drop(b);
     host.root.shutdown().await.unwrap();

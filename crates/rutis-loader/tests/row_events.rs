@@ -10,12 +10,12 @@ use common::*;
 use rutis::host::CtxHost;
 use rutis::internal::CtxInternal;
 use rutis::Event;
-use rutis_loader::report::RowState;
+use rutis_loader::report::RowEventState;
 use rutis_loader::RowEvent;
 use rutis_test_support::eventually;
 use serde_json::json;
 
-fn states(events: &Arc<Mutex<Vec<RowEvent>>>, row: &str) -> Vec<RowState> {
+fn states(events: &Arc<Mutex<Vec<RowEvent>>>, row: &str) -> Vec<RowEventState> {
     events
         .lock()
         .unwrap()
@@ -56,13 +56,13 @@ async fn rows_announce_their_states_at_their_scopes() {
     eventually(
         || {
             states(&events, "a")
-                .contains(&RowState::Running)
+                .contains(&RowEventState::Running)
                 .then_some(())
         },
         "a running",
     )
     .await;
-    assert_eq!(states(&events, "a")[0], RowState::Pending);
+    assert_eq!(states(&events, "a")[0], RowEventState::Pending);
     let a = events
         .lock()
         .unwrap()
@@ -77,7 +77,7 @@ async fn rows_announce_their_states_at_their_scopes() {
     eventually(
         || {
             states(&events, "inner")
-                .contains(&RowState::Running)
+                .contains(&RowEventState::Running)
                 .then_some(())
         },
         "inner running",
@@ -97,7 +97,7 @@ async fn rows_announce_their_states_at_their_scopes() {
     eventually(
         || {
             states(&events, "a")
-                .contains(&RowState::Stopped)
+                .contains(&RowEventState::Stopped)
                 .then_some(())
         },
         "a stopped",
@@ -131,7 +131,7 @@ async fn rows_share_one_status_listener() {
         std::future::ready(Ok(None))
     })
     .unwrap();
-    let count = |state: RowState| {
+    let count = |state: RowEventState| {
         events
             .lock()
             .unwrap()
@@ -153,14 +153,14 @@ async fn rows_share_one_status_listener() {
     };
     reconcile(&loader, rows(1), &store).await;
     eventually(
-        || (count(RowState::Running) == 1).then_some(()),
+        || (count(RowEventState::Running) == 1).then_some(()),
         "one row running",
     )
     .await;
     assert_eq!(status_listeners(&root), before);
     reconcile(&loader, rows(65), &store).await;
     eventually(
-        || (count(RowState::Running) == 65).then_some(()),
+        || (count(RowEventState::Running) == 65).then_some(()),
         "sixty-five rows running",
     )
     .await;
@@ -172,7 +172,7 @@ async fn rows_share_one_status_listener() {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(row, state)| row == "r10" && *state == RowState::Stopped))
+                .any(|(row, state)| row == "r10" && *state == RowEventState::Stopped))
             .then_some(())
         },
         "r10 stopped",
@@ -213,14 +213,14 @@ async fn rows_stopped_with_the_loader_say_stopped() {
     let loader = plugin.handle();
     let view = root.plugin(plugin);
     (&view).await.unwrap();
-    let events: Arc<Mutex<Vec<(String, RowState)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<(String, RowEventState)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = events.clone();
     root.on::<RowEvent>(move |event, _| {
         seen.lock().unwrap().push((event.row.clone(), event.state));
         std::future::ready(Ok(None))
     })
     .unwrap();
-    let reached = |row: &str, state: RowState| {
+    let reached = |row: &str, state: RowEventState| {
         events
             .lock()
             .unwrap()
@@ -241,7 +241,7 @@ async fn rows_stopped_with_the_loader_say_stopped() {
     loader.create_instance(&root, "doc").await.unwrap();
     eventually(
         || {
-            (reached("tree", RowState::Running) && reached("inner", RowState::Running))
+            (reached("tree", RowEventState::Running) && reached("inner", RowEventState::Running))
                 .then_some(())
         },
         "both rows running",
@@ -250,7 +250,7 @@ async fn rows_stopped_with_the_loader_say_stopped() {
     view.dispose().await.unwrap();
     eventually(
         || {
-            (reached("tree", RowState::Stopped) && reached("inner", RowState::Stopped))
+            (reached("tree", RowEventState::Stopped) && reached("inner", RowEventState::Stopped))
                 .then_some(())
         },
         "both rows stopped",
@@ -291,14 +291,14 @@ async fn the_listener_leaves_when_the_loader_is_dropped() {
         before + 1,
         "the loader listens once"
     );
-    let events: Arc<Mutex<Vec<(String, RowState)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<(String, RowEventState)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = events.clone();
     root.on::<RowEvent>(move |event, _| {
         seen.lock().unwrap().push((event.row.clone(), event.state));
         std::future::ready(Ok(None))
     })
     .unwrap();
-    let reached = |row: &str, state: RowState| {
+    let reached = |row: &str, state: RowEventState| {
         events
             .lock()
             .unwrap()
@@ -314,13 +314,13 @@ async fn the_listener_leaves_when_the_loader_is_dropped() {
     )
     .await;
     eventually(
-        || reached("tree", RowState::Running).then_some(()),
+        || reached("tree", RowEventState::Running).then_some(()),
         "the row runs",
     )
     .await;
     view.dispose().await.unwrap();
     eventually(
-        || reached("tree", RowState::Stopped).then_some(()),
+        || reached("tree", RowEventState::Stopped).then_some(()),
         "the row stopped with the loader",
     )
     .await;
@@ -358,14 +358,14 @@ async fn a_restarted_loader_still_listens_once() {
     (&view).await.unwrap();
     let listening = status_listeners(&root);
     assert_eq!(listening, before + 1, "the loader listens once");
-    let events: Arc<Mutex<Vec<(String, RowState)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<(String, RowEventState)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = events.clone();
     root.on::<RowEvent>(move |event, _| {
         seen.lock().unwrap().push((event.row.clone(), event.state));
         std::future::ready(Ok(None))
     })
     .unwrap();
-    let count = |row: &str, state: RowState| {
+    let count = |row: &str, state: RowEventState| {
         events
             .lock()
             .unwrap()
@@ -383,13 +383,16 @@ async fn a_restarted_loader_still_listens_once() {
     )
     .await;
     eventually(
-        || (count("a", RowState::Running) == 1 && count("b", RowState::Running) == 1).then_some(()),
+        || {
+            (count("a", RowEventState::Running) == 1 && count("b", RowEventState::Running) == 1)
+                .then_some(())
+        },
         "both rows running",
     )
     .await;
     assert_eq!(status_listeners(&root), listening);
-    let ran_a = count("a", RowState::Running);
-    let ran_b = count("b", RowState::Running);
+    let ran_a = count("a", RowEventState::Running);
+    let ran_b = count("b", RowEventState::Running);
     view.restart().await.unwrap();
     // The withdrawal of a registration is spawned, so the count settles
     // rather than changing on the spot; a second registration would stay 2.
@@ -402,18 +405,17 @@ async fn a_restarted_loader_still_listens_once() {
     // own, and a row it respawned may already run again. Enable whichever is
     // off, so both run through the new registration.
     for id in ["a", "b"] {
-        let off = loader
-            .status()
-            .rows
-            .iter()
-            .any(|row| row.id == id && row.state == rutis_loader::status::RowState::Disabled);
+        let off = loader.status().rows.iter().any(|row| {
+            row.id == id && matches!(row.state, rutis_loader::report::EntryStatus::Disabled)
+        });
         if off {
             loader.set_disabled(id, false).await.unwrap();
         }
     }
     eventually(
         || {
-            (count("a", RowState::Running) > ran_a && count("b", RowState::Running) > ran_b)
+            (count("a", RowEventState::Running) > ran_a
+                && count("b", RowEventState::Running) > ran_b)
                 .then_some(())
         },
         "both rows say running again",
@@ -424,10 +426,10 @@ async fn a_restarted_loader_still_listens_once() {
         listening,
         "one listener for the rows of the new run"
     );
-    let stopped = count("b", RowState::Stopped);
+    let stopped = count("b", RowEventState::Stopped);
     loader.set_disabled("b", true).await.unwrap();
     eventually(
-        || (count("b", RowState::Stopped) == stopped + 1).then_some(()),
+        || (count("b", RowEventState::Stopped) == stopped + 1).then_some(()),
         "b stopped after the restart",
     )
     .await;

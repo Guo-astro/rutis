@@ -49,7 +49,7 @@ use rutis_bridge::runtime::testing::events::{
 };
 use rutis_bridge::runtime::{Launcher, LocalRuntime};
 use rutis_bridge::session::{host_key, HostDispatch};
-use rutis_loader::report::{EntryStatus, RowState};
+use rutis_loader::report::{EntryStatus, RowEventState};
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, RowEvent, ServiceCatalog,
@@ -459,14 +459,14 @@ struct Host {
 /// row is at the root (the scope is empty there), as `Host::row_state`
 /// tells a row's copy apart.
 #[derive(Clone, Default)]
-struct Said(Arc<Mutex<HashMap<(String, bool), RowState>>>);
+struct Said(Arc<Mutex<HashMap<(String, bool), RowEventState>>>);
 
 impl Said {
     fn key(row: &Row) -> (String, bool) {
         (row.label.clone(), row.scope == "root")
     }
 
-    fn of(&self, row: &Row) -> Option<RowState> {
+    fn of(&self, row: &Row) -> Option<RowEventState> {
         self.0.lock().unwrap().get(&Self::key(row)).copied()
     }
 
@@ -738,10 +738,10 @@ impl Host {
             // selects).
             let said = self.said.of(row);
             match &state {
-                Some((FiberState::Active, _)) if !fails && said == Some(RowState::Running) => {
+                Some((FiberState::Active, _)) if !fails && said == Some(RowEventState::Running) => {
                     return Ok(())
                 }
-                Some((FiberState::Failed, _)) if fails && said == Some(RowState::Failed) => {
+                Some((FiberState::Failed, _)) if fails && said == Some(RowEventState::Failed) => {
                     return Ok(())
                 }
                 // Failed as it should, its `failed` not out yet: wait.
@@ -788,7 +788,7 @@ impl Host {
     /// anything has nothing to wait for.
     async fn said_stopped(&self, row: &Row) -> Result<(), String> {
         until(
-            || matches!(self.said.of(row), None | Some(RowState::Stopped)),
+            || matches!(self.said.of(row), None | Some(RowEventState::Stopped)),
             &format!("{}'s rutis/row stopped", row.label),
         )
         .await

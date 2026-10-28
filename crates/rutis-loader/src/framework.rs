@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// A row's state, as `rutis/row` gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RowState {
+pub enum RowEventState {
     /// Waiting for what it needs, or loading.
     Pending,
     Running,
@@ -34,7 +34,7 @@ pub struct RowEvent {
     pub row: String,
     pub plugin: String,
     pub scope: Vec<Scope>,
-    pub state: RowState,
+    pub state: RowEventState,
     pub error: Option<String>,
 }
 
@@ -43,12 +43,12 @@ impl Event for RowEvent {
     type Value = ();
 }
 
-fn state_of(state: FiberState) -> RowState {
+fn state_of(state: FiberState) -> RowEventState {
     match state {
-        FiberState::Pending | FiberState::Loading => RowState::Pending,
-        FiberState::Active => RowState::Running,
-        FiberState::Failed => RowState::Failed,
-        FiberState::Disposed | FiberState::Unloading => RowState::Stopped,
+        FiberState::Pending | FiberState::Loading => RowEventState::Pending,
+        FiberState::Active => RowEventState::Running,
+        FiberState::Failed => RowEventState::Failed,
+        FiberState::Disposed | FiberState::Unloading => RowEventState::Stopped,
     }
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn follow(
     let emit = {
         let ctx = ctx.clone();
         let (row, plugin) = (row.to_owned(), plugin.to_owned());
-        move |state: RowState, error: Option<String>| {
+        move |state: RowEventState, error: Option<String>| {
             let event = RowEvent {
                 row: row.clone(),
                 plugin: plugin.clone(),
@@ -85,10 +85,10 @@ pub(crate) fn follow(
         }
     };
     // Just spawned: pending, said before anything else of the row.
-    emit(RowState::Pending, None);
+    emit(RowEventState::Pending, None);
     let follower = Arc::new(Follower {
         view: view.clone(),
-        last: Mutex::new((0, RowState::Pending)),
+        last: Mutex::new((0, RowEventState::Pending)),
         emit: Box::new(emit),
         followers: Arc::downgrade(followers),
     });
@@ -207,13 +207,13 @@ impl Drop for Followers {
     }
 }
 
-type Emit = Box<dyn Fn(RowState, Option<String>) + Send + Sync>;
+type Emit = Box<dyn Fn(RowEventState, Option<String>) + Send + Sync>;
 
 /// Follows one row's fiber.
 struct Follower {
     view: FiberView,
     /// The `seq` of the latest change seen, and the state said last.
-    last: Mutex<(u64, RowState)>,
+    last: Mutex<(u64, RowEventState)>,
     emit: Emit,
     /// The loader's followers, weakly: the map holds the follower, so a
     /// strong reference here would keep both alive when a `Disposed` is
@@ -231,7 +231,7 @@ impl Follower {
         last.0 = last.0.max(seq);
         if last.1 != state {
             last.1 = state;
-            let error = (state == RowState::Failed)
+            let error = (state == RowEventState::Failed)
                 .then(|| self.view.state().error.map(|error| error.to_string()))
                 .flatten();
             (self.emit)(state, error);
@@ -305,8 +305,9 @@ mod tests {
         gate.notify_one();
         rutis_test_support::eventually(
             || {
-                (seen.lock().unwrap().as_slice() == [RowState::Pending, RowState::Running])
-                    .then_some(())
+                (seen.lock().unwrap().as_slice()
+                    == [RowEventState::Pending, RowEventState::Running])
+                .then_some(())
             },
             "pending then running",
         )
@@ -321,13 +322,17 @@ mod tests {
         follower.saw(1, FiberState::Loading);
         assert_eq!(
             seen.lock().unwrap().as_slice(),
-            [RowState::Pending, RowState::Running]
+            [RowEventState::Pending, RowEventState::Running]
         );
         view.dispose().await.unwrap();
         rutis_test_support::eventually(
             || {
                 (seen.lock().unwrap().as_slice()
-                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                    == [
+                        RowEventState::Pending,
+                        RowEventState::Running,
+                        RowEventState::Stopped,
+                    ])
                 .then_some(())
             },
             "stopped",
@@ -367,7 +372,11 @@ mod tests {
         rutis_test_support::eventually(
             || {
                 (seen.lock().unwrap().as_slice()
-                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                    == [
+                        RowEventState::Pending,
+                        RowEventState::Running,
+                        RowEventState::Stopped,
+                    ])
                 .then_some(())
             },
             "pending, running, stopped",
@@ -419,7 +428,11 @@ mod tests {
         rutis_test_support::eventually(
             || {
                 (seen.lock().unwrap().as_slice()
-                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                    == [
+                        RowEventState::Pending,
+                        RowEventState::Running,
+                        RowEventState::Stopped,
+                    ])
                 .then_some(())
             },
             "pending, running, stopped",
