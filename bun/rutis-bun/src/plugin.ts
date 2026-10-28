@@ -83,7 +83,7 @@ function check(plugin: any, entry: string): Plugin {
       if (kind !== 'sync' && kind !== 'async') throw new TypeError(`${entry}: ${name}.${method}: kind must be 'sync' or 'async'`)
     }
   }
-  const api = plugin.api ?? PLUGIN_API
+  const api = plugin.api
   if (api > PLUGIN_API) {
     throw new Error(`plugin ${entry} needs plugin API ${api}; this runtime supports ${PLUGIN_API}: upgrade @arcships/rutis-bun where the host runs`)
   }

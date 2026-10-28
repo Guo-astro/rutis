@@ -196,7 +196,7 @@ for (const entry of expected.cases) {
     const h = host({ services: { 'events-log': service }, scopes: expected.scopes })
     const sync = (() => {
       const modes = entry.steps.flatMap(emitsOf).map(spec => spec.mode)
-      return modes.length > 0 && modes.every(mode => mode === 'bail' || mode === 'waterfall-sync')
+      return modes.length > 0 && modes.every(mode => mode === 'bail')
     })()
     const rows = new Map()
     const participants = new Map()
@@ -222,7 +222,7 @@ for (const entry of expected.cases) {
       const { from: _from, row = 'e', scope, ...rest } = spec
       const wire = { ...rest, name: spec.name ?? entry.name, args: spec.args.map(argument) }
       const service = await emitter(row, scope)
-      return wire.mode === 'bail' || wire.mode === 'waterfall-sync' ? service.dispatch_sync(wire) : service.dispatch(wire)
+      return wire.mode === 'bail' ? service.dispatch_sync(wire) : service.dispatch(wire)
     }
     let background
     try {
