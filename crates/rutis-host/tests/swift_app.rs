@@ -76,8 +76,14 @@ struct App {
 impl App {
     /// The app `id`, `dial`ing or `listen`ing on `address`.
     fn new(mode: &str, address: &str, id: &str, token: &str) -> Self {
+        Self::with(mode, address, id, token, None)
+    }
+
+    /// [`App::new`], its service `device-<suffix>` with a suffix.
+    fn with(mode: &str, address: &str, id: &str, token: &str, suffix: Option<&str>) -> Self {
         let mut child = tokio::process::Command::new(fixture())
             .args([mode, address, id])
+            .args(suffix)
             .env("RUTIS_TOKEN", token)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -189,7 +195,8 @@ impl App {
 /// Two apps with the plugin `device` dial in to the listen row `phone`:
 /// both are connected; the first's `kim-iphone:device` provides `device`,
 /// which the host's row uses, and the host emits `rutis/service` for it;
-/// the second's is refused, as the name is taken. The first's `stop`
+/// the second's is refused, as the name is taken. A third, naming its
+/// service `device-pat-iphone`, comes and goes with `rutis/service`. The first's `stop`
 /// withdraws it (`rutis/service`, not available) and stops its user; its
 /// `start` brings both back.
 /// guarantee: host/remote-runtimes
@@ -273,6 +280,19 @@ async fn apps_on_one_listen_row_bring_their_plugins_the_later_name_refused() {
     };
     assert_eq!(name(), Some(json!("kim-iphone")));
     assert!(!running("lee-iphone"));
+
+    // A device naming its service after itself (decision 3): `device-<id>`,
+    // there while it is connected.
+    let mut pat = App::with("dial", &address, "pat-iphone", "shared", Some("pat-iphone"));
+    pat.command("start").await;
+    let pats = |available: bool| ("device-pat-iphone".to_owned(), available);
+    COLD.until(|| said(pats(true)) == 1, "pat's device-pat-iphone")
+        .await;
+    assert!(host.service("device-pat-iphone").is_some());
+    pat.command("quit").await;
+    COLD.until(|| said(pats(false)) == 1, "pat's device-pat-iphone gone")
+        .await;
+    let _ = pat.child.wait().await;
 
     // kim stops: its device is withdrawn and its user stops.
     kim.command("stop").await;
