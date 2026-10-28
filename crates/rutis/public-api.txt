@@ -418,25 +418,6 @@ impl core::marker::Unpin for rutis::host::Effect
 impl core::marker::UnsafeUnpin for rutis::host::Effect
 impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::Effect
 impl !core::panic::unwind_safe::UnwindSafe for rutis::host::Effect
-pub enum rutis::host::EffectPhase
-pub rutis::host::EffectPhase::Draining
-pub rutis::host::EffectPhase::Live
-impl core::clone::Clone for rutis::host::EffectPhase
-pub fn rutis::host::EffectPhase::clone(&self) -> Self
-impl core::cmp::Eq for rutis::host::EffectPhase
-impl core::cmp::PartialEq for rutis::host::EffectPhase
-pub fn rutis::host::EffectPhase::eq(&self, &Self) -> bool
-impl core::fmt::Debug for rutis::host::EffectPhase
-pub fn rutis::host::EffectPhase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for rutis::host::EffectPhase
-impl core::marker::StructuralPartialEq for rutis::host::EffectPhase
-impl core::marker::Freeze for rutis::host::EffectPhase
-impl core::marker::Send for rutis::host::EffectPhase
-impl core::marker::Sync for rutis::host::EffectPhase
-impl core::marker::Unpin for rutis::host::EffectPhase
-impl core::marker::UnsafeUnpin for rutis::host::EffectPhase
-impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::EffectPhase
-impl core::panic::unwind_safe::UnwindSafe for rutis::host::EffectPhase
 #[non_exhaustive] pub enum rutis::host::ErrorKind
 pub rutis::host::ErrorKind::Aggregate
 pub rutis::host::ErrorKind::Aggregate::errors: alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
@@ -639,25 +620,6 @@ impl core::marker::Unpin for rutis::host::CallError
 impl core::marker::UnsafeUnpin for rutis::host::CallError
 impl !core::panic::unwind_safe::RefUnwindSafe for rutis::host::CallError
 impl !core::panic::unwind_safe::UnwindSafe for rutis::host::CallError
-#[non_exhaustive] pub struct rutis::host::EffectMeta
-pub rutis::host::EffectMeta::children: alloc::vec::Vec<rutis::host::EffectMeta>
-pub rutis::host::EffectMeta::label: alloc::string::String
-pub rutis::host::EffectMeta::phase: rutis::host::EffectPhase
-impl core::clone::Clone for rutis::host::EffectMeta
-pub fn rutis::host::EffectMeta::clone(&self) -> Self
-impl core::cmp::Eq for rutis::host::EffectMeta
-impl core::cmp::PartialEq for rutis::host::EffectMeta
-pub fn rutis::host::EffectMeta::eq(&self, &Self) -> bool
-impl core::fmt::Debug for rutis::host::EffectMeta
-pub fn rutis::host::EffectMeta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for rutis::host::EffectMeta
-impl core::marker::Freeze for rutis::host::EffectMeta
-impl core::marker::Send for rutis::host::EffectMeta
-impl core::marker::Sync for rutis::host::EffectMeta
-impl core::marker::Unpin for rutis::host::EffectMeta
-impl core::marker::UnsafeUnpin for rutis::host::EffectMeta
-impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::EffectMeta
-impl core::panic::unwind_safe::UnwindSafe for rutis::host::EffectMeta
 #[non_exhaustive] pub struct rutis::host::EventSubscription
 pub rutis::host::EventSubscription::calls: u64
 pub rutis::host::EventSubscription::global: bool
@@ -711,7 +673,6 @@ impl rutis::host::FiberView
 pub fn rutis::host::FiberView::current_config<C: core::marker::Send + core::marker::Sync + 'static>(&self) -> core::option::Option<alloc::rcs::arc::Arc<C>>
 pub fn rutis::host::FiberView::dispose(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::host::FiberView::dispose_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
-pub fn rutis::host::FiberView::effects(&self) -> alloc::vec::Vec<rutis::host::EffectMeta>
 pub fn rutis::host::FiberView::instance(&self) -> rutis::host::InstanceId
 pub fn rutis::host::FiberView::name(&self) -> &str
 pub fn rutis::host::FiberView::restart(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
@@ -719,7 +680,6 @@ pub fn rutis::host::FiberView::sequenced_state(&self) -> (u64, rutis::host::Snap
 pub fn rutis::host::FiberView::set_config<C: core::marker::Send + core::marker::Sync + 'static>(&self, C) -> core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::host::FiberView::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::host::FiberView::state(&self) -> rutis::host::Snapshot
-pub fn rutis::host::FiberView::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::host::FiberView::update<C: core::marker::Send + core::marker::Sync + 'static>(&self, C) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::host::FiberView::watch(&self) -> tokio::sync::watch::Receiver<rutis::host::Snapshot>
 impl core::clone::Clone for rutis::host::FiberView
@@ -925,7 +885,6 @@ pub fn rutis::host::CtxHost::scope(&self) -> alloc::vec::Vec<rutis::events::Scop
 pub fn rutis::host::CtxHost::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::host::CtxHost::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
 pub fn rutis::host::CtxHost::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
-pub fn rutis::host::CtxHost::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::host::CtxHost::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
 pub fn rutis::host::CtxHost::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl rutis::host::CtxHost for rutis::Ctx
@@ -955,7 +914,6 @@ pub fn rutis::Ctx::scope(&self) -> alloc::vec::Vec<rutis::events::Scope>
 pub fn rutis::Ctx::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
 pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
-pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
 pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 pub trait rutis::host::DynPlugin: core::marker::Send + core::marker::Sync + 'static
@@ -1097,7 +1055,6 @@ pub fn rutis::Ctx::scope(&self) -> alloc::vec::Vec<rutis::events::Scope>
 pub fn rutis::Ctx::shutdown(&self) -> rutis::host::BoxFuture<'static, core::result::Result<(), alloc::rcs::arc::Arc<rutis::host::ErrorKind>>>
 pub fn rutis::Ctx::shutdown_with_timeout(&self, core::time::Duration) -> rutis::host::BoxFuture<'static, core::result::Result<(), rutis::host::DisposeWaitError>>
 pub fn rutis::Ctx::subscriptions(&self) -> alloc::vec::Vec<rutis::host::EventSubscription>
-pub fn rutis::Ctx::take_cleanup_errors(&self) -> alloc::vec::Vec<alloc::rcs::arc::Arc<rutis::host::ErrorKind>>
 pub fn rutis::Ctx::view(&self, rutis::host::PluginId) -> core::option::Option<rutis::host::FiberView>
 pub fn rutis::Ctx::waterfall_sync<E, F>(&self, impl rutis::events::into_event::IntoEvent<E>, F) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error> where E: rutis::events::Event, F: core::ops::function::FnOnce(alloc::rcs::arc::Arc<E>) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl core::marker::Freeze for rutis::Ctx

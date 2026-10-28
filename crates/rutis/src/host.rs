@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::bus::EventSubscription;
-pub use crate::effect::{Effect, EffectMeta, EffectPhase};
+pub use crate::effect::Effect;
 pub use crate::error::{
     default_sink, ErrorKind, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure,
 };
@@ -60,14 +60,6 @@ pub trait CtxHost: sealed::Sealed {
     /// failures through it (a session that fails to save, for example); it is the
     /// same sink the framework uses, so nothing fails silently.
     fn error_sink(&self) -> ErrorSink;
-
-    /// Take completed, early-disposed effect errors owned by this fiber.
-    /// `Disposer::dispose()` returns an error immediately without sending it
-    /// to the error sink. Each error is returned here once; taken errors no
-    /// longer appear in a later unload result or restart sink notification.
-    /// Errors from effects still draining remain available to a subsequent
-    /// call or to the unload that owns their completion.
-    fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>>;
 
     /// A root on the current tokio runtime (`Handle::try_current()`). Without one
     /// it returns an error; it never creates a runtime.

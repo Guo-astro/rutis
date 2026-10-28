@@ -8,7 +8,7 @@
 use crate::Ctx;
 use std::sync::Arc;
 
-pub use crate::bus::{DispatchAttempt, EventBus};
+pub use crate::bus::EventBus;
 /// How config problems are written (config schema design §6.2).
 pub mod config {
     pub use crate::config::{
@@ -18,7 +18,7 @@ pub mod config {
 pub use crate::error::{ServiceWriteError, ServiceWriteFailure};
 pub use crate::events::kinds::{EventOptions, RESERVED_PREFIX};
 pub use crate::intercept::{ServiceIntercept, ServiceWriter};
-pub use crate::key::{EventKey, EventPattern};
+pub use crate::key::EventKey;
 pub use crate::plugin::build_fn;
 /// What `#[rutis::service]` blocks and the bridge exchange.
 pub mod service {
@@ -150,7 +150,8 @@ pub trait CtxInternal: sealed::Sealed {
     /// is unloading or disposed.
     fn effect_raw(&self, f: impl FnOnce() -> Effect) -> Result<Disposer, Error>;
 
-    /// Register a cleanup with a label visible through [`FiberView::effects`](crate::host::FiberView::effects).
+    /// Register a cleanup with a label: a shutdown that runs out of time
+    /// names it in its Stuck hint.
     fn effect_named(
         &self,
         label: impl Into<String>,
@@ -160,13 +161,6 @@ pub trait CtxInternal: sealed::Sealed {
     /// Asks every fiber that declares dependencies to re-check them (when the
     /// result of a `check()` predicate changes).
     fn refresh(&self);
-
-    /// `ctx.filter` with a predicate that can fail: its error fails the
-    /// dispatch before any call (in `emit`: reported, nothing delivered).
-    fn try_filter(
-        &self,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_>;
 
     /// The five ways to send under `name` instead of the event's own:
     /// what a typed event dispatched under a name chosen at run time needs
@@ -189,14 +183,4 @@ pub trait CtxInternal: sealed::Sealed {
         key: impl Into<TypeKey>,
         hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
     ) -> Result<Disposer, Error>;
-
-    /// [`try_filter`](Self::try_filter) and [`named`](Self::named)
-    /// together: under `name`, to the listeners `keep` accepts (a filtered
-    /// dispatch of an event with no name of its own, such as rutis-bridge's
-    /// `Args`).
-    fn try_filter_named(
-        &self,
-        name: impl Into<std::sync::Arc<str>>,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_>;
 }
