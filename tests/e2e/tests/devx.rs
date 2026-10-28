@@ -356,9 +356,6 @@ fn npm_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
     }
 }
 
-/// The same for what Bun installed: `bun.lock` names the tarball among
-/// the artifacts (a registry's package is `<name>@<version>`, its URL
-/// left out for the default registry).
 /// Point every `@arcships/*` package Bun resolves, the ones other packages
 /// depend on too (rutis-host on rutis-runtime), at this build's tarballs.
 /// Without it Bun may resolve such a dependency from the registry, which has
@@ -371,6 +368,9 @@ fn bun_overrides(s: &Scenario, project: &str, packages: &[&str]) {
     s.write_json(&file, &manifest);
 }
 
+/// The same for what Bun installed: `bun.lock` names the tarball among
+/// the artifacts (a registry's package is `<name>@<version>`, its URL
+/// left out for the default registry).
 fn bun_from_artifacts(s: &Scenario, project: &str, packages: &[&str]) {
     let lock = std::fs::read_to_string(s.path(project).join("bun.lock")).unwrap();
     for package in packages {
