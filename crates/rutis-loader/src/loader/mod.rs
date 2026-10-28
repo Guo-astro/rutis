@@ -400,6 +400,8 @@ struct Inner {
     warned: config_step::Warned,
     /// Where extra config keys are written ([`Loader::on_config_warning`]).
     config_warnings: Mutex<ConfigWarnings>,
+    /// The rows this loader follows with one `FiberStatusChanged` listener.
+    followers: Arc<crate::framework::Followers>,
     state: Mutex<State>,
 }
 

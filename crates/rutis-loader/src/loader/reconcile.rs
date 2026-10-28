@@ -327,7 +327,7 @@ impl Inner {
                 token,
             });
             self.monitor(slot.clone(), view.clone());
-            crate::framework::follow(&row_ctx, &view, &slot.row, "group");
+            crate::framework::follow(&self.followers, &row_ctx, &view, &slot.row, "group");
             state.running.insert(
                 slot,
                 Running {
@@ -410,7 +410,7 @@ impl Inner {
             },
         );
         self.monitor(slot.clone(), view.clone());
-        crate::framework::follow(&row_ctx, &view, &slot.row, &name);
+        crate::framework::follow(&self.followers, &row_ctx, &view, &slot.row, &name);
         state.running.insert(
             slot,
             Running {

@@ -2,11 +2,12 @@
 //! row, any language's, on the logical bus at the row's scope. Plugins of
 //! every language listen to it; only rutis emits it.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rutis::events::Scope;
 use rutis::host::CtxHost;
-use rutis::host::{FiberState, FiberStatusChanged, FiberView};
+use rutis::host::{FiberState, FiberStatusChanged, FiberView, PluginId};
 use rutis::internal::CtxInternal;
 use rutis::internal::EventKey;
 use rutis::{Ctx, Error, Event};
@@ -57,9 +58,15 @@ fn state_of(state: FiberState) -> RowState {
 /// Each change is taken from the kernel's `FiberStatusChanged` of the
 /// fiber, in `seq` order, none skipped: a row that runs and stops at once
 /// still says `running` (a watch of the state would see only the latest).
-/// What changed before the listener was on the table is read from the
+/// What changed before the follower was in `followers` is read from the
 /// state, and an older change delivered after it is not said.
-pub(crate) fn follow(ctx: &Ctx, view: &FiberView, row: &str, plugin: &str) {
+pub(crate) fn follow(
+    followers: &Arc<Followers>,
+    ctx: &Ctx,
+    view: &FiberView,
+    row: &str,
+    plugin: &str,
+) {
     let scope = ctx.scope();
     let emit = {
         let ctx = ctx.clone();
@@ -83,20 +90,149 @@ pub(crate) fn follow(ctx: &Ctx, view: &FiberView, row: &str, plugin: &str) {
         view: view.clone(),
         last: Mutex::new((0, RowState::Pending)),
         emit: Box::new(emit),
-        listening: Mutex::default(),
+        followers: followers.clone(),
     });
-    let root = ctx.root_ctx();
-    if let Ok(disposer) = root.on_sync::<FiberStatusChanged>({
-        let listener = Listening(follower.clone());
-        move |event, call| {
-            let ctx = call.ctx().clone();
-            listener.on_event_sync(&ctx, &event, call)
-        }
-    }) {
-        *follower.listening.lock().unwrap() = Some(disposer);
-    }
+    // A dispatch selects its listeners before it runs them, so a change
+    // emitted before this follower entered the map can still arrive after
+    // it. `saw` drops that one: `last` is seeded below from
+    // `view.sequenced_state()`, which is at least as new as anything the
+    // earlier selection could carry.
+    followers.insert(follower.clone());
     let (seq, now) = view.sequenced_state();
     follower.saw(seq, now.state);
+}
+
+/// The rows one loader follows, by the fiber each one runs in.
+///
+/// The loader registers one `FiberStatusChanged` listener for all of them
+/// ([`Followers::listen`]); a per-row listener would make every change in
+/// the process run every row's handler, which costs O(rows) per change.
+#[derive(Default)]
+pub(crate) struct Followers {
+    rows: Mutex<HashMap<PluginId, Arc<Follower>>>,
+    /// The registration, taken when the loader has stopped and its last
+    /// follower has left.
+    listener: Mutex<Listener>,
+}
+
+#[derive(Default)]
+struct Listener {
+    disposer: Option<rutis::Disposer>,
+    /// The loader's fiber is going: rows still stop, and their changes must
+    /// be said.
+    stopped: bool,
+}
+
+impl Followers {
+    /// Registers the dispatch on the root of `ctx`'s tree.
+    ///
+    /// It follows the loader's rows wherever they run — its tree, the
+    /// instances it creates, the anchors below — through the map keyed by the
+    /// change's fiber. It is registered on the root rather than on the
+    /// loader's context because a row stopping with the loader starts
+    /// delivery while the loader's own fiber is `closing`, and an entry whose
+    /// owner is closing is skipped (`Entry::live`). It leaves with
+    /// [`Followers::stop`] and the last follower (see [`Followers::remove`]),
+    /// and called again while it is still there it keeps that one
+    /// registration.
+    pub(crate) fn listen(self: &Arc<Self>, ctx: &Ctx) -> Result<(), Error> {
+        let mut listener = self.listener.lock().unwrap();
+        // Live again either way: a registration found below is the one of
+        // this run.
+        listener.stopped = false;
+        // A loader applied again (a restart) may come before the rows of the
+        // previous run have said `Disposed`: their deliveries are spawned
+        // tasks, and nothing in `restart` waits for them. The registration is
+        // still there then — it is on the root, which is not closing, so it
+        // still delivers — and it stays the one registration. Registering a
+        // second one would deliver every change twice and leave the first
+        // behind: `stop()` took it only for the last follower, which is no
+        // longer the rule now that `stopped` is false again.
+        if listener.disposer.is_some() {
+            return Ok(());
+        }
+        let followers = self.clone();
+        listener.disposer = Some(ctx.root_ctx().on_sync::<FiberStatusChanged>(
+            move |changed, _| {
+                followers.dispatch(&changed);
+                Ok(None)
+            },
+        )?);
+        Ok(())
+    }
+
+    /// The loader's fiber is being disposed. Its rows are still going: the
+    /// listener stays until the last of them has left, so every `stopped` is
+    /// still said.
+    pub(crate) fn stop(&self) {
+        let empty = self.rows.lock().unwrap().is_empty();
+        let disposer = {
+            let mut listener = self.listener.lock().unwrap();
+            listener.stopped = true;
+            if empty {
+                listener.disposer.take()
+            } else {
+                None
+            }
+        };
+        if let Some(disposer) = disposer {
+            dispose_in_background(disposer);
+        }
+    }
+
+    /// Routes one change to the follower of its fiber, if a row still runs
+    /// there. The map is released before the follower runs: it removes
+    /// itself when the fiber is disposed.
+    fn dispatch(&self, changed: &FiberStatusChanged) {
+        let follower = self.rows.lock().unwrap().get(&changed.plugin_id).cloned();
+        if let Some(follower) = follower {
+            follower.saw(changed.seq, changed.to);
+        }
+    }
+
+    fn insert(&self, follower: Arc<Follower>) {
+        self.rows.lock().unwrap().insert(follower.view.id, follower);
+    }
+
+    /// Takes the row out of the map; the last one out, after the loader has
+    /// stopped, withdraws the listener.
+    fn remove(&self, id: PluginId) {
+        let empty = {
+            let mut rows = self.rows.lock().unwrap();
+            rows.remove(&id);
+            rows.is_empty()
+        };
+        if !empty {
+            return;
+        }
+        let disposer = {
+            let mut listener = self.listener.lock().unwrap();
+            if listener.stopped {
+                listener.disposer.take()
+            } else {
+                None
+            }
+        };
+        if let Some(disposer) = disposer {
+            dispose_in_background(disposer);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.rows.lock().unwrap().len()
+    }
+}
+
+/// Withdraws a registration without holding up the caller. Without a runtime
+/// it is not withdrawn: the entry stays on the root until the root goes, one
+/// entry per unmounted loader.
+fn dispose_in_background(disposer: rutis::Disposer) {
+    if let Ok(tasks) = tokio::runtime::Handle::try_current() {
+        tasks.spawn(async move {
+            let _ = disposer.dispose().await;
+        });
+    }
 }
 
 type Emit = Box<dyn Fn(RowState, Option<String>) + Send + Sync>;
@@ -107,8 +243,7 @@ struct Follower {
     /// The `seq` of the latest change seen, and the state said last.
     last: Mutex<(u64, RowState)>,
     emit: Emit,
-    /// Its registration: it leaves when the row is disposed.
-    listening: Mutex<Option<rutis::Disposer>>,
+    followers: Arc<Followers>,
 }
 
 impl Follower {
@@ -128,29 +263,212 @@ impl Follower {
         }
         drop(last);
         if fiber == FiberState::Disposed {
-            if let Some(disposer) = self.listening.lock().unwrap().take() {
-                if let Ok(tasks) = tokio::runtime::Handle::try_current() {
-                    tasks.spawn(async move {
-                        let _ = disposer.dispose().await;
-                    });
-                }
-            }
+            self.followers.remove(self.view.id);
         }
     }
 }
 
-struct Listening(Arc<Follower>);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rutis::host::{BoxFuture, DynPlugin, Effect};
+    use rutis::internal::CtxInternal;
 
-impl Listening {
-    fn on_event_sync(
-        &self,
-        _: &rutis::Ctx,
-        changed: &FiberStatusChanged,
-        _: rutis::events::SyncCall<'_, FiberStatusChanged>,
-    ) -> Result<Option<()>, Error> {
-        if changed.plugin_id == self.0.view.id {
-            self.0.saw(changed.seq, changed.to);
+    /// The root is one per process, so a listener count sees the rows of
+    /// every test running: these tests take turns.
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn status_listeners(root: &Ctx) -> usize {
+        root.events()
+            .subscriptions()
+            .into_iter()
+            .filter(|entry| entry.name == FiberStatusChanged::NAME)
+            .count()
+    }
+
+    /// A row that becomes Active when the gate opens.
+    struct GatedRow(Arc<tokio::sync::Notify>);
+
+    impl DynPlugin for GatedRow {
+        fn name(&self) -> &str {
+            "row"
         }
-        Ok(None)
+
+        fn apply<'a>(&'a self, _: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+            Box::pin(async move {
+                self.0.notified().await;
+                Ok(Effect::Done)
+            })
+        }
+    }
+
+    async fn mount_row() -> (Ctx, Arc<Followers>, FiberView, Arc<tokio::sync::Notify>) {
+        let root = Ctx::root().unwrap();
+        let followers = Arc::new(Followers::default());
+        followers.listen(&root).unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let view = root.plugin(GatedRow(gate.clone()));
+        (root, followers, view, gate)
+    }
+
+    /// Every change of a followed row is said once and in order, and a change
+    /// older than the state `follow` seeded is not said: that one covers an
+    /// emission selected before the follower entered the map, delivered after
+    /// `follow` read the state.
+    #[tokio::test]
+    async fn changes_are_said_once_in_order() {
+        let _serial = SERIAL.lock().await;
+        let (root, followers, view, gate) = mount_row().await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        root.on::<RowEvent>(move |event, _| {
+            sink.lock().unwrap().push(event.state);
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
+        follow(&followers, &root, &view, "row", "row");
+        assert_eq!(followers.len(), 1);
+        gate.notify_one();
+        rutis_test_support::eventually(
+            || {
+                (seen.lock().unwrap().as_slice() == [RowState::Pending, RowState::Running])
+                    .then_some(())
+            },
+            "pending then running",
+        )
+        .await;
+        let follower = followers
+            .rows
+            .lock()
+            .unwrap()
+            .get(&view.id)
+            .cloned()
+            .unwrap();
+        follower.saw(1, FiberState::Loading);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [RowState::Pending, RowState::Running]
+        );
+        view.dispose().await.unwrap();
+        rutis_test_support::eventually(
+            || {
+                (seen.lock().unwrap().as_slice()
+                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                .then_some(())
+            },
+            "stopped",
+        )
+        .await;
+        rutis_test_support::eventually(
+            || (followers.len() == 0).then_some(()),
+            "the disposed row left the map",
+        )
+        .await;
+    }
+
+    /// A row that runs and stops at once still says `running`: the states are
+    /// the kernel's changes, not a watch of the latest one
+    /// ([`follow`]'s contract).
+    #[tokio::test]
+    async fn a_row_that_ends_at_once_still_says_running() {
+        let _serial = SERIAL.lock().await;
+        let (root, followers, view, gate) = mount_row().await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        root.on::<RowEvent>(move |event, _| {
+            sink.lock().unwrap().push(event.state);
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
+        follow(&followers, &root, &view, "row", "row");
+        gate.notify_one();
+        rutis_test_support::eventually(
+            || (view.state().state == FiberState::Active).then_some(()),
+            "the row runs",
+        )
+        .await;
+        // Disposed before the change above was delivered: both are still said.
+        view.dispose().await.unwrap();
+        rutis_test_support::eventually(
+            || {
+                (seen.lock().unwrap().as_slice()
+                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                .then_some(())
+            },
+            "pending, running, stopped",
+        )
+        .await;
+        rutis_test_support::eventually(
+            || (followers.len() == 0).then_some(()),
+            "the row left the map",
+        )
+        .await;
+    }
+    /// guarantee: events/framework (rutis/row)
+    ///
+    /// A loader applied again before its rows' `Disposed` was delivered keeps
+    /// the one registration: `stop()` leaves it for the rows still going, and
+    /// the second `listen()` registers no other. The rows still say
+    /// `stopped`, and `stop()` with an empty map withdraws it.
+    #[tokio::test]
+    async fn a_second_listen_keeps_the_registration() {
+        let _serial = SERIAL.lock().await;
+        let root = Ctx::root().unwrap();
+        let before = status_listeners(&root);
+        let followers = Arc::new(Followers::default());
+        followers.listen(&root).unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let view = root.plugin(GatedRow(gate.clone()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        root.on::<RowEvent>(move |event, _| {
+            sink.lock().unwrap().push(event.state);
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
+        follow(&followers, &root, &view, "row", "row");
+        gate.notify_one();
+        rutis_test_support::eventually(
+            || (view.state().state == FiberState::Active).then_some(()),
+            "the row runs",
+        )
+        .await;
+        assert_eq!(status_listeners(&root), before + 1);
+        // The loader's fiber goes while the row still runs: the registration
+        // stays, for the row to say its `stopped`.
+        followers.stop();
+        assert_eq!(status_listeners(&root), before + 1);
+        // Applied again before the row's `Disposed` was delivered.
+        followers.listen(&root).unwrap();
+        assert_eq!(
+            status_listeners(&root),
+            before + 1,
+            "the second listen registers nothing"
+        );
+        view.dispose().await.unwrap();
+        rutis_test_support::eventually(
+            || {
+                (seen.lock().unwrap().as_slice()
+                    == [RowState::Pending, RowState::Running, RowState::Stopped])
+                .then_some(())
+            },
+            "pending, running, stopped",
+        )
+        .await;
+        assert_eq!(status_listeners(&root), before + 1);
+        rutis_test_support::eventually(
+            || (followers.len() == 0).then_some(()),
+            "the row left the map",
+        )
+        .await;
+        // The row leaving did not withdraw it: the second `listen` reset
+        // `stopped`.
+        assert_eq!(status_listeners(&root), before + 1);
+        followers.stop();
+        rutis_test_support::eventually(
+            || (status_listeners(&root) == before).then_some(()),
+            "the registration left with the empty map",
+        )
+        .await;
     }
 }
