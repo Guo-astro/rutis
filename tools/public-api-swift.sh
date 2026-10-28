@@ -11,8 +11,6 @@
 set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 snapshot="$repo_dir/swift/rutis/public-api.txt"
-current="$(mktemp)"
-trap 'rm -f "$current"' EXIT
 cd "$repo_dir"
 # The command says where it wrote the graphs; the place differs between
 # SwiftPM's build systems, so it is read, not worked out.
@@ -28,23 +26,17 @@ lines() {
     | (.pathComponents | join(".")) + "  " + ([.declarationFragments[].spelling] | join("") | gsub("\n"; " "))
   ' "$graphs/$1.symbols.json" | LC_ALL=C sort
 }
-for module in Rutis RutisTest; do
-  echo "## $module"
-  lines "$module" no
-  deprecated="$(lines "$module" yes)"
-  if [ -n "$deprecated" ]; then
-    echo "## $module (deprecated: moved to Rutis.Advanced or Rutis._Generated in 0.19)"
-    echo "$deprecated"
-  fi
-  echo
-done > "$current"
-if [ "${1:-}" = "--write" ]; then
-  cp "$current" "$snapshot"
-  echo "wrote $snapshot"
-  exit 0
-fi
-if ! diff -u "$snapshot" "$current"; then
-  echo "::error::the public API of the Swift SDK changed: review the diff above, then run tools/public-api-swift.sh --write" >&2
-  exit 1
-fi
-echo "public API unchanged"
+public_api() {
+  for module in Rutis RutisTest; do
+    echo "## $module"
+    lines "$module" no
+    deprecated="$(lines "$module" yes)"
+    if [ -n "$deprecated" ]; then
+      echo "## $module (deprecated: moved to Rutis.Advanced or Rutis._Generated in 0.19)"
+      echo "$deprecated"
+    fi
+    echo
+  done
+}
+. "$repo_dir/tools/public-api-check.sh"
+public_api_check "$snapshot" "the Swift SDK" "$@"

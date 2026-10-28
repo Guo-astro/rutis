@@ -224,6 +224,7 @@ jobs:
               - Package.swift
               - swift/**
               - tools/public-api-swift.sh
+              - tools/public-api-check.sh
               - crates/rutis-bridge/tests/swift_remote.rs
               - crates/rutis-bridge/tests/swift_runtime.rs
               - crates/rutis-loader/src/runtime/swift.rs
