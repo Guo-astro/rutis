@@ -6,8 +6,10 @@
 //! as its own text.
 
 use rutis::host::CtxHost;
+use rutis::host::FiberState;
 use rutis_bridge::session::{self, call_service, host_key, Dynamic, HostDispatch, Value};
-use rutis_loader::status::{RowState, Status};
+use rutis_loader::report::EntryStatus;
+use rutis_loader::status::Status;
 use rutis_loader::Loader;
 use serde_json::Value as Json;
 
@@ -91,7 +93,7 @@ fn not_there(status: &Status, loader: &Loader, service: &str, provided: bool) ->
             .find(|listed| &listed.id == row && listed.instance.is_none())
     });
     if let (Some(row), Some(state)) = (&row, state) {
-        if let Some(why) = not_running(state.state, state.reason.as_deref()) {
+        if let Some(why) = not_running(&state.state, state.reason.as_deref()) {
             return Some(format!("{service} is not available (row {row} {why})"));
         }
     }
@@ -134,26 +136,42 @@ fn declaring(loader: &Loader, service: &str) -> Option<String> {
 /// What a row that is not running is doing instead, after `row <id> `:
 /// `waits for its runtime go-weather`, `waits for llm (…)`, `failed in
 /// apply: …`, `is disabled`. `None` for a row that runs or starts.
-fn not_running(state: RowState, reason: Option<&str>) -> Option<String> {
-    Some(match (state, reason) {
-        (RowState::Running | RowState::Starting, _) => return None,
-        (RowState::Pending, Some(reason)) => match reason.strip_prefix("waiting for runtime ") {
-            Some(runtime) => {
-                let name = runtime.split(" (").next().unwrap_or(runtime);
-                format!("waits for its runtime {name}")
+fn not_running(state: &EntryStatus, reason: Option<&str>) -> Option<String> {
+    let fiber = match state {
+        EntryStatus::Running(snapshot) => Some(snapshot.state),
+        _ => None,
+    };
+    Some(match (state, fiber, reason) {
+        (_, Some(FiberState::Active | FiberState::Loading), _) => return None,
+        (_, Some(FiberState::Pending), Some(reason)) => {
+            match reason.strip_prefix("waiting for runtime ") {
+                Some(runtime) => {
+                    let name = runtime.split(" (").next().unwrap_or(runtime);
+                    format!("waits for its runtime {name}")
+                }
+                None => match reason.strip_prefix("waiting for ") {
+                    Some(rest) => format!("waits for {rest}"),
+                    None => reason.to_owned(),
+                },
             }
-            None => match reason.strip_prefix("waiting for ") {
-                Some(rest) => format!("waits for {rest}"),
-                None => reason.to_owned(),
-            },
-        },
-        (RowState::Pending, None) => "waits for its services".to_owned(),
-        (RowState::Failed, Some(reason)) if reason.starts_with("failed") => reason.to_owned(),
-        (RowState::Failed, Some(reason)) => format!("failed: {reason}"),
-        (RowState::Failed, None) => "failed".to_owned(),
-        (RowState::Disabled, _) => "is disabled".to_owned(),
-        (_, Some(reason)) => format!("is stopped ({reason})"),
-        (_, None) => "is stopped".to_owned(),
+        }
+        (_, Some(FiberState::Pending), None) => "waits for its services".to_owned(),
+        (EntryStatus::Unresolved(_), _, Some(reason))
+        | (_, Some(FiberState::Failed), Some(reason))
+            if reason.starts_with("failed") =>
+        {
+            reason.to_owned()
+        }
+        (EntryStatus::Unresolved(_), _, Some(reason))
+        | (_, Some(FiberState::Failed), Some(reason)) => {
+            format!("failed: {reason}")
+        }
+        (EntryStatus::Unresolved(_), _, None) | (_, Some(FiberState::Failed), None) => {
+            "failed".to_owned()
+        }
+        (EntryStatus::Disabled, _, _) => "is disabled".to_owned(),
+        (_, _, Some(reason)) => format!("is stopped ({reason})"),
+        (_, _, None) => "is stopped".to_owned(),
     })
 }
 
@@ -285,10 +303,17 @@ mod tests {
     /// A row that is not running says what it does instead.
     #[test]
     fn a_row_not_running_says_why() {
-        let why = |state, reason| not_running(state, reason);
+        let running = |state| {
+            EntryStatus::Running(rutis::host::Snapshot {
+                generation: 1,
+                state,
+                error: None,
+            })
+        };
+        let why = |state: EntryStatus, reason| not_running(&state, reason);
         assert_eq!(
             why(
-                RowState::Pending,
+                running(FiberState::Pending),
                 Some("waiting for runtime go-weather (down: exited with status 1)")
             )
             .as_deref(),
@@ -296,21 +321,21 @@ mod tests {
         );
         assert_eq!(
             why(
-                RowState::Pending,
+                running(FiberState::Pending),
                 Some("waiting for llm (no row provides it)")
             )
             .as_deref(),
             Some("waits for llm (no row provides it)")
         );
         assert_eq!(
-            why(RowState::Failed, Some("failed in apply: boom")).as_deref(),
+            why(running(FiberState::Failed), Some("failed in apply: boom")).as_deref(),
             Some("failed in apply: boom")
         );
         assert_eq!(
-            why(RowState::Disabled, None).as_deref(),
+            why(EntryStatus::Disabled, None).as_deref(),
             Some("is disabled")
         );
-        assert_eq!(why(RowState::Running, None), None);
+        assert_eq!(why(running(FiberState::Active), None), None);
     }
 
     /// Values JSON has are themselves; the others their text, or what
