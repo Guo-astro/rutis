@@ -213,10 +213,7 @@ fn a_node_plugin_installs_runs_upgrades_and_goes() {
         "{said}"
     );
     let file = written(&s);
-    assert_eq!(
-        file["installed"]["demo"],
-        json!({ "from": "./demo.tgz", "language": "node" })
-    );
+    assert_eq!(file["installed"]["demo"], json!({ "from": "./demo.tgz" }));
     assert_eq!(file["rows"][1], json!({ "id": "demo", "name": "demo" }));
     says(&s, &["check"], &[], &["demo (demo): ok"]);
     runs(&s, &probe, &[], 1);
@@ -367,7 +364,7 @@ fn a_bun_plugin_installs_runs_upgrades_and_goes() {
         &["add", "./demo.tgz"],
         env,
         &[
-            "demo (demo): ok",
+            "demo (bun:demo): ok",
             "rutis.json: added row demo, runtimes.bun",
         ],
     );
@@ -375,8 +372,13 @@ fn a_bun_plugin_installs_runs_upgrades_and_goes() {
         said.contains("installed ./demo.tgz 0.1.0 (bun) into "),
         "{said}"
     );
-    assert_eq!(written(&s)["installed"]["demo"]["language"], "bun");
-    says(&s, &["check"], &[], &["demo (demo): ok"]);
+    let file = written(&s);
+    assert_eq!(
+        file["installed"]["bun:demo"],
+        json!({ "from": "./demo.tgz" })
+    );
+    assert_eq!(file["rows"][1], json!({ "id": "demo", "name": "bun:demo" }));
+    says(&s, &["check"], &[], &["demo (bun:demo): ok"]);
     runs(&s, &probe, &[], 1);
 
     pack_js(&s, "src/index.ts", 2);
@@ -543,7 +545,7 @@ fn a_python_plugin_installs_runs_upgrades_and_goes() {
         &["add", "pypi:demo"],
         &env,
         &[
-            "demo (demo): ok",
+            "demo (py:demo): ok",
             "  version: \"0.1.0\"",
             "rutis.json: added row demo",
         ],
@@ -551,10 +553,10 @@ fn a_python_plugin_installs_runs_upgrades_and_goes() {
     assert!(said.contains("installed demo 0.1.0 (py) into "), "{said}");
     assert!(s.path(".venv").exists(), "add made the environment");
     assert_eq!(
-        written(&s)["installed"]["demo"],
-        json!({ "from": "pypi:demo", "language": "py" })
+        written(&s)["installed"]["py:demo"],
+        json!({ "from": "pypi:demo" })
     );
-    says(&s, &["check"], &[], &["demo (demo): ok"]);
+    says(&s, &["check"], &[], &["demo (py:demo): ok"]);
     runs(&s, &probe, &[], 1);
 
     s.write("demo/version", "0.2.0");
@@ -724,7 +726,7 @@ fn a_go_plugin_installs_runs_upgrades_and_goes() {
         &["add", "example.com/netkit/cmd/netkit@v0.1.0"],
         &env,
         &[
-            "netkit (netkit): ok",
+            "netkit (go:netkit): ok",
             "rutis.json: added row netkit, runtimes.go",
         ],
     );
@@ -735,11 +737,11 @@ fn a_go_plugin_installs_runs_upgrades_and_goes() {
     );
     let file = written(&s);
     assert_eq!(
-        file["installed"]["netkit"],
-        json!({ "from": "example.com/netkit/cmd/netkit", "language": "go" })
+        file["installed"]["go:netkit"],
+        json!({ "from": "example.com/netkit/cmd/netkit" })
     );
     assert_eq!(file["runtimes"]["go"], json!({ "dir": "plugins/go" }));
-    says(&s, &["check"], &[], &["netkit (netkit): ok"]);
+    says(&s, &["check"], &[], &["netkit (go:netkit): ok"]);
     runs(&s, &probe, &[], 1);
 
     publish_go(&s, 2, &env);
