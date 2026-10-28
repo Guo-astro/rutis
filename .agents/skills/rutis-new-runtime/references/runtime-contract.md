@@ -32,13 +32,13 @@ A far end greeting with another version is refused at the handshake, saying whic
 
 | Capability | Declare it when | If not declared |
 | --- | --- | --- |
-| `sync-wait` | Synchronous calls you send carry `sync: true` on the frame, and you accept that field | Your synchronous calls are outside the host's wait-cycle detection and can deadlock |
+| `sync-wait` | Synchronous calls you send carry `sync: true` on the frame, and you accept that field | Your synchronous calls are outside the host's wait-cycle detection and can deadlock. The host does not check it: its synchronous calls to you carry `sync: true` either way |
 | `reentrant-sync` | While waiting synchronously you still run **any** incoming call | You are treated as non-reentrant (only calls on your call chain run; others are deferred) |
 | `sync-stack` | One thread, one stack: calls run while waiting are stacked on top of the waiting one (last in, first out) | You take part only in call-chain edges (runtimes with one execution unit per call do not declare it) |
 | `signals` | Signal frames of the endpoint format; every existing implementation (Rust, Node, Python, Bun, Go) declares it | — |
-| `objects` | You can receive object references from the peer | You can send references but not receive them |
+| `objects` | You can receive object references from the peer | The host does not check it: it sends you object references either way |
 | `plugins` | You can receive plugin definitions (`plugin` references, §5). rutis declares it; runtimes do not | Send no `plugin` reference to a far end that did not declare it: fail only that call |
-| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it, and end the session right after the handshake when the far end does not | A 0.13 host ends the session: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later` |
+| `events-v2` | You implement the event protocol of rutis 0.13 (§6). Mandatory from 0.13: declare it, and end the session right after the handshake when the far end does not | The host does not check it (older hosts are refused by protocol version, above) |
 
 How to choose: one execution unit per incoming call (thread / goroutine / Task / virtual thread) → `sync-wait` + `reentrant-sync`, no `sync-stack`; single-threaded event loops that run incoming calls while waiting, like Python and Bun → all three; Node is not reentrant → no `reentrant-sync`.
 
