@@ -184,126 +184,9 @@ pub(super) fn dev_rows(
         idle: None,
         project: project.to_owned(),
         restart: Restart::No,
-        dev: vec![(binary.to_owned(), runtime.to_owned())],
+        dev: Some((binary.to_owned(), runtime.to_owned())),
     };
     Ok((rows, settings))
-}
-
-/// The rows of `rutis.dev.json` (`rows`, the ones besides the project's own)
-/// whose `name` is a directory of the Go project `own` (`./dev/fakellm`):
-/// fakes written in Go, each a main package of the same module serving one
-/// plugin. Each is built with `build` (the first time, or the build it
-/// runs now) and its row becomes `go-<directory>:<plugin>`; the builds and
-/// their runtimes, in the rows' order. `rutis.json` and `run` do not have
-/// such rows: only `dev` and `check` in a project, which read the dev file.
-pub fn fakes(
-    own: &GoDev,
-    rows: &mut [Value],
-    build: &mut dyn FnMut(&GoDev) -> Result<PathBuf, String>,
-) -> Result<Vec<(PathBuf, String)>, String> {
-    let mut built: Vec<(PathBuf, String)> = Vec::new();
-    for row in rows {
-        let Some(name) = row["name"]
-            .as_str()
-            .and_then(|name| directory_in(&own.dir, name))
-        else {
-            continue;
-        };
-        let id = row["id"].as_str().unwrap_or_default().to_owned();
-        let said = |what: String| format!("rutis.dev.json: row {id}: {name} {what}");
-        let fake = GoDev::fake(own, &name);
-        if let Some(package) = package_of(&own.dir.join(&name)).filter(|package| package != "main")
-        {
-            return Err(said(format!(
-                "is not a Go main package (its package is {package}); a fake needs package main \
-                 and a main that calls rutis.Serve"
-            )));
-        }
-        if fake.runtime == own.runtime || built.iter().any(|(_, runtime)| *runtime == fake.runtime)
-        {
-            let by = match fake.runtime == own.runtime {
-                true => "the project does".to_owned(),
-                false => "another fake does".to_owned(),
-            };
-            return Err(said(format!(
-                "would run as {}, as {by}; rename the directory",
-                fake.runtime
-            )));
-        }
-        let binary = build(&fake)?;
-        let what = format!("rutis.dev.json: row {id}: {name}");
-        let (rows, _) = dev_rows(&binary, &fake.runtime, &own.dir, &what).map_err(|error| {
-            match error.strip_prefix(what.as_str()) {
-                Some(" serves no plugins") => {
-                    format!("{error}; a fake needs a main that calls rutis.Serve")
-                }
-                _ => error,
-            }
-        })?;
-        let names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
-        let [served] = names.as_slice() else {
-            let plugins: Vec<&str> = names
-                .iter()
-                .map(|name| name.split_once(':').map_or(*name, |(_, plugin)| plugin))
-                .collect();
-            return Err(said(format!(
-                "serves {} plugins ({}); give each its own directory",
-                plugins.len(),
-                plugins.join(", ")
-            )));
-        };
-        row["name"] = json!(served);
-        built.push((binary, fake.runtime));
-    }
-    Ok(built)
-}
-
-/// The directory of the project `project` the row name `name` is (written
-/// `./dev/fakellm`; reading the dev file made it a `file:` URL), as
-/// `./dev/fakellm`; `None` for any other name.
-fn directory_in(project: &Path, name: &str) -> Option<String> {
-    let path = crate::project::local_path(name, project)?;
-    if !path.is_dir() {
-        return None;
-    }
-    let project = project
-        .canonicalize()
-        .unwrap_or_else(|_| project.to_owned());
-    let path = path.canonicalize().unwrap_or(path);
-    let parts: Vec<String> = path
-        .strip_prefix(&project)
-        .ok()?
-        .components()
-        .map(|part| part.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    (!parts.is_empty()).then(|| format!("./{}", parts.join("/")))
-}
-
-/// The package of the Go files in `dir` (not its tests): the first
-/// `package` clause found; `None` without Go files.
-fn package_of(dir: &Path) -> Option<String> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|extension| extension == "go")
-                && !path.to_string_lossy().ends_with("_test.go")
-        })
-        .collect();
-    files.sort();
-    files.iter().find_map(|file| {
-        let text = std::fs::read_to_string(file).ok()?;
-        text.lines()
-            .find_map(|line| line.trim().strip_prefix("package "))
-            .map(|package| {
-                package
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-    })
 }
 
 /// A Go plugin project as `rutis-host dev` builds it: its main package and
@@ -356,31 +239,6 @@ impl GoDev {
             runtime,
             debug: false,
         })
-    }
-
-    /// The fake in the directory `package` (`./dev/fakellm`) of the
-    /// project `own`: built as `.rutis/go/<directory>-<n>`, run as
-    /// `go-<directory>`.
-    pub fn fake(own: &GoDev, package: &str) -> Self {
-        let package = package.trim_end_matches('/');
-        let name = Path::new(package)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        let runtime = rutis_bridge::runtime::go_runtime_name(Path::new(&name));
-        Self {
-            dir: own.dir.clone(),
-            name,
-            package: package.to_owned(),
-            runtime,
-            debug: own.debug,
-        }
-    }
-
-    /// Build #`n`, saying so (`<name>: building`, `<name>: built in 0.6s`):
-    /// its binary, or the compiler's errors.
-    pub fn build_saying(&self, n: u32) -> Result<PathBuf, String> {
-        binary::building(&self.name, || self.build(n))
     }
 
     /// Build #`n`: its binary, or the compiler's errors.
