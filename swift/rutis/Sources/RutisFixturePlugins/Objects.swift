@@ -110,7 +110,7 @@ public enum Objects {
 
         public func listed(_ items: [Any?]) -> String {
             let data = (items[0] as? [String: Any?])?["data"] ?? nil
-            let given = items[1] as? Rutis.Client, held = (kept as? any RutisProxy)?.rutisClient
+            let given = items[1] as? Rutis.Advanced.Client, held = (kept as? any RutisProxy)?.rutisClient
             let same = given != nil && given === held
             return "{\"data\":\((data as? Int) ?? -1)} \(same)"
         }
@@ -151,7 +151,7 @@ public let swiftHolder = Rutis.define(Plugin(
     apply: { ctx in
         let holder = Objects.Holder(poker: try ctx.use("poker", PokerProxy.self))
         let probe = try ctx.use("probe", RecorderProxy.self)
-        ctx.on("counter") { (counter: Rutis.Client) in
+        ctx.on("counter") { (counter: Rutis.Advanced.Client) in
             let held = (holder.kept as? any RutisProxy)?.rutisClient
             let same = held != nil && counter === held
             let n: Int = try await counter.call("value", [], as: Int.self)

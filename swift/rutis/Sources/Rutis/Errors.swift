@@ -177,7 +177,7 @@ package final class ThrowSite: @unchecked Sendable {
     @TaskLocal package static var current: ThrowSite?
 }
 
-extension Rutis {
+extension Rutis._Generated {
     /// For generated code (`@RutisService`): runs `body`, a call of the
     /// method `method` declared at `file`:`line`; what it throws is thrown
     /// on unchanged, and the call being served records where.
@@ -294,7 +294,7 @@ private func graphData(_ value: Value, _ nodes: inout [JSON], _ depth: Int) -> J
     case let .data(json):
         switch json {
         case let .number(text):
-            if JSONNumber.isIntegerLiteral(text), let big = Rutis.BigInt(text), !big.isSafe { return tagged("bigint", text) }
+            if JSONNumber.isIntegerLiteral(text), let big = Rutis.Advanced.BigInt(text), !big.isSafe { return tagged("bigint", text) }
             return .object([("type", .string("data")), ("value", json)])
         case let .array(items):
             return graphData(.list(items.map(Value.data)), &nodes, depth)

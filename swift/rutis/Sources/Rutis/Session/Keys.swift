@@ -16,23 +16,23 @@ package func parseTagged(_ tag: String, _ text: String) throws -> Value {
         }
         return .instant(value)
     case "datetime":
-        guard let value = Rutis.DateTime(text) else {
+        guard let value = Rutis.Advanced.DateTime(text) else {
             throw ValueError("invalid datetime \(quoted(text)): expected YYYY-MM-DDTHH:MM:SS[.fraction] without a time zone, years 0001–9999")
         }
         return .dateTime(value)
     case "date":
-        guard let value = Rutis.CalendarDate(text) else {
+        guard let value = Rutis.Advanced.CalendarDate(text) else {
             throw ValueError("invalid date \(quoted(text)): expected YYYY-MM-DD, years 0001–9999")
         }
         return .date(value)
     case "time":
-        guard let value = Rutis.TimeOfDay(text) else {
+        guard let value = Rutis.Advanced.TimeOfDay(text) else {
             throw ValueError("invalid time \(quoted(text)): expected HH:MM:SS[.fraction], 24-hour, 0–9 fraction digits")
         }
         return .time(value)
     case "bytes": return .bytes(try TagText.bytes(text))
     case "bigint":
-        guard let value = Rutis.BigInt(text) else {
+        guard let value = Rutis.Advanced.BigInt(text) else {
             throw ValueError("invalid bigint \(quoted(text)): expected a decimal integer without leading zeros, at most 4300 digits")
         }
         return .bigint(value)
@@ -76,7 +76,7 @@ func taggedText(_ value: Value) throws -> String? {
 
 // ── Map keys and set elements (design §5) ────────────────────────────────
 
-private let maxSafeInteger = Rutis.BigInt(9_007_199_254_740_991)
+private let maxSafeInteger = Rutis.Advanced.BigInt(9_007_199_254_740_991)
 
 /// A map key or set element as the languages compare it: numbers by value
 /// (`1` and `1.0` are one key, as are `0` and `-0`), the rest by kind and
@@ -86,7 +86,7 @@ private func keyOf(_ value: Value, _ what: String) throws -> String {
     case let .data(.string(s)): return "s" + s
     case let .data(.bool(b)): return "b\(b)"
     case let .data(.number(text)):
-        if JSONNumber.isIntegerLiteral(text), let integer = Rutis.BigInt(text) ?? Rutis.BigInt(text.replacingOccurrences(of: "-0", with: "0")) {
+        if JSONNumber.isIntegerLiteral(text), let integer = Rutis.Advanced.BigInt(text) ?? Rutis.Advanced.BigInt(text.replacingOccurrences(of: "-0", with: "0")) {
             return try integerKey(integer, what)
         }
         guard let double = Double(text), double.isFinite else { throw ValueError("a \(what) cannot be \(text)") }
@@ -102,7 +102,7 @@ private func keyOf(_ value: Value, _ what: String) throws -> String {
     }
 }
 
-private func integerKey(_ n: Rutis.BigInt, _ what: String) throws -> String {
+private func integerKey(_ n: Rutis.Advanced.BigInt, _ what: String) throws -> String {
     guard n.isSafe else {
         throw ValueError("a \(what) cannot be the integer \(n), beyond ±(2^53-1): send it as a bigint")
     }

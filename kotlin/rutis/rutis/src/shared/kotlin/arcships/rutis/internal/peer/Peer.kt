@@ -2,8 +2,8 @@ package arcships.rutis.internal.peer
 
 import arcships.rutis.HostGoneException
 import arcships.rutis.Plugin
-import arcships.rutis.RemoteFunction
-import arcships.rutis.RemoteObject
+import arcships.rutis.advanced.RemoteFunction
+import arcships.rutis.advanced.RemoteObject
 import arcships.rutis.RutisException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job

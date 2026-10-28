@@ -5,7 +5,7 @@ import Foundation
 // The runtime dispatches its fast path with it (every entry a listener of
 // its own process); RutisTest dispatches as a host with it.
 
-extension Rutis {
+extension Rutis.Advanced {
     /// One loader instance of a scope chain (a group copy, such as a tenant
     /// or a session), outermost first.
     public struct Scope: Codable, Hashable, Sendable {
@@ -122,7 +122,7 @@ package typealias EventCall = (_ mode: Mode, _ args: [Value], _ next: NextFuncti
 
 /// One listener of a dispatch's snapshot.
 package protocol EventEntry: AnyObject {
-    var info: Rutis.Listener { get }
+    var info: Rutis.Advanced.Listener { get }
     /// Reserves an invocation, unless the entry was withdrawn: then it is
     /// skipped, as if it had never been in the snapshot.
     func begin() -> EventCall?
@@ -226,9 +226,9 @@ package struct Dispatch {
     package var entries: [EventEntry]
     /// The filter (§6), nil for none: asked once per non-global entry, in
     /// order, before any invocation starts.
-    package var keep: ((Rutis.Listener) async throws -> Bool)?
+    package var keep: ((Rutis.Advanced.Listener) async throws -> Bool)?
 
-    package init(name: String, entries: [EventEntry], keep: ((Rutis.Listener) async throws -> Bool)? = nil) {
+    package init(name: String, entries: [EventEntry], keep: ((Rutis.Advanced.Listener) async throws -> Bool)? = nil) {
         self.name = name
         self.entries = entries
         self.keep = keep

@@ -5,7 +5,7 @@
 // serves `conformance` until the session ends.
 package arcships.rutis.conformance
 
-import arcships.rutis.RemoteFunction
+import arcships.rutis.advanced.RemoteFunction
 import arcships.rutis.RutisException
 import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.ExportedObject

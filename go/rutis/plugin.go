@@ -270,6 +270,8 @@ func Sync(methods ...string) ShapeOption {
 }
 
 // Rename gives the Go method `method` the wire name `wire`.
+//
+// Deprecated: moved in 0.19: use advanced.Rename.
 func Rename(method, wire string) ShapeOption {
 	return func(o *shapeOptions) {
 		if o.renames == nil {
