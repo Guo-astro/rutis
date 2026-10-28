@@ -100,3 +100,16 @@ Two more points for Kotlin:
 - These classes changed packages. A Kotlin plugin library published on its own, already compiled, has to be recompiled with the 0.19 SDK before it goes into an application with the 0.19 SDK (its source does not change).
 
 Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change; the code 0.17.2's `rutis-ksp` generated still compiles against the 0.19 SDK, with deprecation warnings only. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
+
+## Platform cleanup (#694)
+
+Design: [0.19 platform cleanup](design-platform-cleanup-2026-10-28.en.md). The old forms are removed in 0.19 without a deprecation: a removed Rust API is a compile error.
+
+### Rust API
+
+| 0.18 | 0.19 |
+| --- | --- |
+| `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
+| `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
+| `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
+| feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |

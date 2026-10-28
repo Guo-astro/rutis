@@ -672,7 +672,7 @@ async fn sync_patterns_expose_keys_and_share_order_for_both_modes() {
 /// A synchronous listener may dispatch its own name again, synchronously,
 /// in every combination of `bail` and `waterfall-sync` (as Cordis allows;
 /// `ReentrantEvent` is no error of events protocol §11): the inner
-/// dispatch runs on the same stack and is observed like any.
+/// dispatch runs on the same stack and calls the listener like any.
 #[tokio::test]
 async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
     fn nested(ctx: &Ctx, key: &str, waterfall: bool) -> Result<Option<u64>, Error> {
@@ -688,18 +688,16 @@ async fn sync_listener_reentry_runs_in_all_bail_and_waterfall_combinations() {
             let key = "reentry";
             let observed = Arc::new(AtomicUsize::new(0));
             let count = observed.clone();
-            root.events()
-                .observe_dispatch(&root, move |_| {
-                    count.fetch_add(1, Ordering::SeqCst);
-                })
-                .unwrap();
             // One listener answers both modes: the outer call dispatches
             // the same name once more, the inner one answers.
             root.listen::<Ping>()
                 .name(key)
-                .on_sync(move |event, call| match event.0 {
-                    0 => Ok(nested(call.ctx(), key, inner_waterfall)?.map(|inner| inner + 1)),
-                    _ => Ok(Some(10)),
+                .on_sync(move |event, call| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    match event.0 {
+                        0 => Ok(nested(call.ctx(), key, inner_waterfall)?.map(|inner| inner + 1)),
+                        _ => Ok(Some(10)),
+                    }
                 })
                 .unwrap();
             for attempt in 1..=2 {
@@ -764,37 +762,28 @@ async fn same_sync_key_can_execute_on_two_threads_at_once() {
     }
 }
 
-/// A synchronous dispatch of the same name from an observer and from a
+/// A synchronous dispatch of the same name from a listener and from a
 /// terminal runs (as Cordis allows); other names and other buses too.
 #[tokio::test]
-async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
+async fn sync_reentry_covers_listener_terminal_modes_and_bus_identity() {
     let root = Ctx::root().unwrap();
     let other = Ctx::root().unwrap();
     let key = "same";
-    let checks = Arc::new(AtomicUsize::new(0));
-    let checked = checks.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::WaterfallSync {
-                assert!(matches!(root_call(attempt.event), Some(0)));
-                checked.fetch_add(1, Ordering::SeqCst);
+    let seen = Arc::new(AtomicUsize::new(0));
+    let heard = seen.clone();
+    // Once per waterfall: the listener's own bail of the name hears it
+    // again (the inner call answers `None`).
+    root.listen::<Ping>()
+        .name(key)
+        .on_sync(move |event, call| {
+            if call.mode() != Mode::WaterfallSync {
+                return Ok(None);
             }
-        })
-        .unwrap();
-    fn root_call(event: &(dyn std::any::Any + Send + Sync)) -> Option<u64> {
-        event.downcast_ref::<Ping>().map(|event| event.0)
-    }
-    let observed_ctx = root.clone();
-    let guard_seen = Arc::new(AtomicUsize::new(0));
-    let guard_check = guard_seen.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            // Once per waterfall: the inner bail is observed too.
-            if attempt.mode == Mode::WaterfallSync
-                && matches!(observed_ctx.named(key).bail(Ping(0)), Ok(None))
-            {
-                guard_check.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(event.0, 0);
+            if matches!(call.ctx().named(key).bail(Ping(0)), Ok(None)) {
+                heard.fetch_add(1, Ordering::SeqCst);
             }
+            call.next()
         })
         .unwrap();
     let (inner, other_bus) = (root.clone(), other.clone());
@@ -808,8 +797,7 @@ async fn sync_reentry_covers_observer_terminal_modes_and_bus_identity() {
     })
     .unwrap();
     assert_eq!(result, Some(6));
-    assert_eq!(guard_seen.load(Ordering::SeqCst), 2);
-    assert_eq!(checks.load(Ordering::SeqCst), 2);
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
     root.shutdown().await.unwrap();
     other.shutdown().await.unwrap();
 }
@@ -1095,62 +1083,4 @@ async fn pattern_shutdown_drains_old_callback_and_excludes_new_named_dispatches(
         assert!(root.subscriptions().is_empty());
         root.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn sync_observer_can_register_before_snapshot_or_close_admission() {
-    let root = Ctx::root().unwrap();
-    let observed = root.clone();
-    let once = AtomicUsize::new(0);
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::Bail && once.fetch_add(1, Ordering::SeqCst) == 0 {
-                observed.on_sync::<Ping>(|_, _| Ok(Some(33))).unwrap();
-            }
-        })
-        .unwrap();
-    assert_eq!(root.bail(Ping(0)).unwrap(), Some(33));
-    let body_ctx = root.clone();
-    root.listen::<Ping>()
-        .name("body")
-        .on_sync(move |event, _| match event.0 {
-            // The body dispatches its own name once more.
-            0 => body_ctx
-                .named("body")
-                .bail(Ping(1))
-                .map(|inner| inner.map(|inner| inner + 1)),
-            _ => Ok(Some(40)),
-        })
-        .unwrap();
-    assert_eq!(
-        waterfall_sync_at(&root, "body", Ping(0), |_| Ok(Some(0))).unwrap(),
-        Some(41)
-    );
-    let closing = root.clone();
-    root.events()
-        .observe_dispatch(&root, move |attempt| {
-            if attempt.mode == Mode::WaterfallSync {
-                drop(closing.shutdown());
-            }
-        })
-        .unwrap();
-    // New behaviour: admission is checked before the observers, which cannot
-    // veto the dispatch; the listener of the root that is now closing is
-    // skipped (liveness), so only the terminal answers. A dispatch started
-    // after that is rejected.
-    let mut called = false;
-    assert_eq!(
-        root.waterfall_sync(Ping(0), |_| {
-            called = true;
-            Ok(Some(0))
-        })
-        .unwrap(),
-        Some(0)
-    );
-    assert!(called);
-    assert!(matches!(
-        &*root.bail(Ping(0)).unwrap_err(),
-        ErrorKind::Closed
-    ));
-    root.shutdown().await.unwrap();
 }

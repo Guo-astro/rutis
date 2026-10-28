@@ -141,9 +141,9 @@ impl DynPlugin for Router {
 
 ### Errors a host sees
 
-- Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly; with rutis's `anyhow` feature, one returning `anyhow::Result` does too.
+- Every signature's error is `rutis::Error`. A host function returning `Box<dyn Error>` (or `Box<dyn Error + Send + Sync>`) uses `?` directly.
 - `err.kind()` returns `Option<&host::ErrorKind>`: `Some` for rutis's own failures (`Closed`, `InjectUnsatisfied`, `ListenersFailed`, …: 0.16's `CordisError` renamed, the same variants), `None` for an error from plugin code, which reaches the host wrapped in `ErrorKind::PluginFailed`.
-- Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives, what `take_cleanup_errors()` returns, and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
+- Errors are not `Clone`. An error several parties hold is an `Arc<ErrorKind>`: what the error sink (`ErrorSink`) receives and the result of awaiting a `FiberView`, `dispose()` or `shutdown()`.
 
 ```rust,no_run
 use std::sync::Arc;

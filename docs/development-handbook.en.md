@@ -417,9 +417,9 @@ When a plugin unloads, the framework waits for its listeners' running calls to f
 
 ### Handling Errors
 
-Lifecycle operations and waiting event APIs return errors directly. The error type is `rutis::Error`, and `?` converts any standard error into it; to tell rutis's own failures apart, use `err.kind()`, which returns `Option<&ErrorKind>` and is `None` for an error from plugin code. Emit listener errors (wrapped as `ListenerFailed`) and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger. The ErrorSink, `take_cleanup_errors()`, and waiting on a `FiberView`, `dispose()` or `shutdown()` give shared `Arc<ErrorKind>` errors.
+Lifecycle operations and waiting event APIs return errors directly. The error type is `rutis::Error`, and `?` converts any standard error into it; to tell rutis's own failures apart, use `err.kind()`, which returns `Option<&ErrorKind>` and is `None` for an error from plugin code. Emit listener errors (wrapped as `ListenerFailed`) and cleanup errors during reload go to ErrorSink; default output is stderr, and hosts can use `Ctx::root_with_sink` to connect their own logger. The ErrorSink and waiting on a `FiberView`, `dispose()` or `shutdown()` give shared `Arc<ErrorKind>` errors.
 
-When releasing an effect early, handle the result of `Disposer::dispose()`. Long-lived plugins may periodically call `take_cleanup_errors()` to retrieve completed historical cleanup failures. The owner of each background task observes and reports its errors.
+When releasing an effect early, handle the result of `Disposer::dispose()`; the same error later joins a terminal unload result, or reaches the error sink on reload. The owner of each background task observes and reports its errors.
 
 ### Verifying Critical Flows
 

@@ -490,9 +490,6 @@ jobs:
           # The Go debugging test fails instead of skipping without dlv.
           RUTIS_TEST_DELVE: required
         run: cargo test --workspace --exclude rutis-bridge --exclude rutis-loader --exclude rutis-e2e
-      # The `anyhow` feature's conversions (the error table of #617).
-      - name: cargo test (rutis, anyhow feature)
-        run: cargo test -p rutis --features anyhow --test author_api
 
       # The shuttle models of the kernel (crates/rutis/src/fiber/shuttle_tests.rs,
       # #179), 1000 iterations of each scheduler (well under a second); the

@@ -50,13 +50,9 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 - **Lifecycle**: a listener is called with the `Ctx` that registered it; once its fiber unloads no new call starts, and the unload waits for running calls (their `ctx.cancelled()` has fired), at most until the host's shutdown deadline.
 - `rutis/*` is reserved for framework events: plugins listen to them; emitting one fails with `ReservedEvent`.
 
-## Observing dispatch
+## Cleanup names
 
-`ctx.events().observe_dispatch(&ctx, observer)` (in `rutis::internal`) calls the observer synchronously before business listeners are selected, even when there are none. An observer sees only dispatches within the subtree of the fiber that registered it and is cleaned up with that fiber; a `DispatchAttempt` carries the event name, the dispatch mode, the emitter and the borrowed event. It records attempts; it cannot veto a dispatch.
-
-## Cleanup tree
-
-`FiberView::effects()` returns the fiber's read-only cleanup tree (`host::EffectMeta`). A composite `host::Effect::Many` keeps its real nesting, an entry being cleaned up shows as `Draining`, and it leaves the tree once done. Plugin loads, service registrations and event listeners are labelled automatically, and a cleanup registered with `ctx.effect` is labelled `anonymous`; `effect_named("cache watcher", || effect)`, in `rutis::internal`, names an entry.
+A shutdown that runs out of time names the cleanups still running in its Stuck hint: one registered with `ctx.effect` by where it was registered, one registered with `effect_named("cache watcher", || effect)` (in `rutis::internal`) by that name.
 
 ## Intercepting service reads and writes
 
@@ -78,7 +74,7 @@ A plugin whose services (its `Deps` or `injects`) never get a provider stays Pen
 
 Every signature's error is `rutis::Error`, and `?` accepts any `std::error::Error`. A host tells rutis's failures apart with `err.kind()` (an `Option<&host::ErrorKind>`, `None` for plugin code's own errors); errors that are shared (the error sink, a `FiberView`'s result) are `Arc<ErrorKind>`.
 
-Synchronous and asynchronous `apply` panics become plugin errors; a `check()` panic leaves a dependency unready; a `waterfall` callback panic propagates to its caller. `settle` is a FIFO barrier for one fiber, and Pending can be a stable result. A plugin whose load failed (in construction, `validate` or `apply`) stays Failed and loads again only when its dependencies change (a new provider generation, or one removed and back); repeated notifications of the same dependencies do not retry it. Root `dispose()` remains restartable, while `shutdown()` closes it permanently; dropping a waiting future does not stop cleanup already in progress. `update(config)` reassembles a plugin without replacing process code. An early `Disposer::dispose()` failure returns to its caller without notifying the error sink; `Ctx::take_cleanup_errors()` consumes and releases these retained errors. Unconsumed errors join a terminal unload result or reach the error sink on reload.
+Synchronous and asynchronous `apply` panics become plugin errors; a `check()` panic leaves a dependency unready; a `waterfall` callback panic propagates to its caller. `settle` is a FIFO barrier for one fiber, and Pending can be a stable result. A plugin whose load failed (in construction, `validate` or `apply`) stays Failed and loads again only when its dependencies change (a new provider generation, or one removed and back); repeated notifications of the same dependencies do not retry it. Root `dispose()` remains restartable, while `shutdown()` closes it permanently; dropping a waiting future does not stop cleanup already in progress. `update(config)` reassembles a plugin without replacing process code. An early `Disposer::dispose()` failure returns to its caller without notifying the error sink; these errors join a terminal unload result or reach the error sink on reload.
 
 ## Relation to Cordis
 

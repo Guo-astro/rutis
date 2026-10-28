@@ -164,10 +164,6 @@ impl Ctx {
         Ok(())
     }
 
-    pub(crate) fn plugin_id(&self) -> PluginId {
-        self.0.plugin_id
-    }
-
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.0.shared
     }
@@ -221,18 +217,6 @@ impl Ctx {
         let tr = fiber.transition.lock().unwrap();
         self.check_generation(tr.generation, tr.state)?;
         if matches!(tr.state, FiberState::Unloading | FiberState::Disposed) {
-            return Err(ErrorKind::InactiveEffect.into());
-        }
-        Ok(())
-    }
-
-    /// Non-instance event dispatch is not a registration. Preserve its
-    /// historical observer behavior for an old context while its fiber is
-    /// active again; instance dispatch still uses registration_preflight.
-    pub(crate) fn dispatch_preflight(&self) -> Result<(), Error> {
-        self.registration_open()?;
-        let fiber = self.0.fiber.upgrade().ok_or(ErrorKind::InactiveEffect)?;
-        if matches!(fiber.state(), FiberState::Unloading | FiberState::Disposed) {
             return Err(ErrorKind::InactiveEffect.into());
         }
         Ok(())
@@ -1073,14 +1057,6 @@ impl crate::host::CtxHost for Ctx {
         self.0.shared.error_sink.clone()
     }
 
-    fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>> {
-        self.0
-            .fiber
-            .upgrade()
-            .map(|fiber| std::mem::take(&mut *fiber.drained_errors.lock().unwrap()))
-            .unwrap_or_default()
-    }
-
     fn root() -> Result<Ctx, Error> {
         let handle = Handle::try_current().map_err(|_| {
             ErrorKind::PluginFailed(
@@ -1588,13 +1564,6 @@ impl crate::internal::CtxInternal for Ctx {
         self.0.shared.registry.refresh_all();
     }
 
-    fn try_filter(
-        &self,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_> {
-        crate::events::Filtered::new(self, Arc::new(keep))
-    }
-
     fn named(&self, name: impl Into<Arc<str>>) -> crate::events::Filtered<'_> {
         crate::events::Filtered::named(self, name.into())
     }
@@ -1613,14 +1582,6 @@ impl crate::internal::CtxInternal for Ctx {
         hook: impl Fn(Arc<T>) -> crate::intercept::ServiceIntercept<T> + Send + Sync + 'static,
     ) -> Result<Disposer, Error> {
         self.intercept_set_impl(key, hook)
-    }
-
-    fn try_filter_named(
-        &self,
-        name: impl Into<Arc<str>>,
-        keep: impl Fn(&crate::events::ListenerInfo) -> Result<bool, Error> + Send + Sync + 'static,
-    ) -> crate::events::Filtered<'_> {
-        crate::events::Filtered::filtered_named(self, name.into(), Arc::new(keep))
     }
 }
 
