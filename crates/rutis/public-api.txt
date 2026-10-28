@@ -576,9 +576,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for rutis::host::NextMisuse
 impl core::panic::unwind_safe::UnwindSafe for rutis::host::NextMisuse
 #[non_exhaustive] pub enum rutis::host::ServiceReadFailure
 pub rutis::host::ServiceReadFailure::Inactive
-pub rutis::host::ServiceReadFailure::InterceptDenied
-pub rutis::host::ServiceReadFailure::InterceptPanicked
-pub rutis::host::ServiceReadFailure::InterceptReentrant
 pub rutis::host::ServiceReadFailure::OutOfScope
 pub rutis::host::ServiceReadFailure::TypeMismatch
 pub rutis::host::ServiceReadFailure::Unavailable(rutis::host::diagnostics::DependencyStatus)

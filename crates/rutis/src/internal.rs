@@ -5,7 +5,6 @@
 //! [`crate::host`].
 #![doc(hidden)]
 
-use crate::Ctx;
 use std::sync::Arc;
 
 pub use crate::bus::EventBus;
@@ -17,9 +16,9 @@ pub mod config {
 }
 pub use crate::error::{ServiceWriteError, ServiceWriteFailure};
 pub use crate::events::kinds::{EventOptions, RESERVED_PREFIX};
-pub use crate::intercept::{ServiceIntercept, ServiceWriter};
 pub use crate::key::EventKey;
 pub use crate::plugin::build_fn;
+pub use crate::writer::ServiceWriter;
 /// What `#[rutis::service]` blocks and the bridge exchange.
 pub mod service {
     pub use crate::service::*;
@@ -108,14 +107,11 @@ pub trait CtxInternal: sealed::Sealed {
 
     /// The strict read a marked service's entry by name makes on every call
     /// ([`crate::service::Entry::resolve`]): [`CtxHost::require_at`](crate::host::CtxHost::require_at) by the
-    /// providing context, of the binding `provision` provided only, with
-    /// read interceptors selected for `actor` (the calling row; this
-    /// context when there is none), as for a Rust reader in its place.
+    /// providing context, of the binding `provision` provided only.
     fn require_provided_as<T: ?Sized + Send + Sync + 'static>(
         &self,
         key: impl Into<TypeKey>,
         provision: &crate::service::Provision,
-        actor: Option<&Ctx>,
     ) -> Result<Arc<T>, ServiceReadError>;
 
     /// Registers `value` under an explicit key (trait objects, shared instances).
@@ -166,21 +162,4 @@ pub trait CtxInternal: sealed::Sealed {
     /// what a typed event dispatched under a name chosen at run time needs
     /// (plugin code uses a type that overrides `Event::name`).
     fn named(&self, name: impl Into<std::sync::Arc<str>>) -> crate::events::Filtered<'_>;
-
-    /// Intercept only strict reads under `key`, after the existing
-    /// declaration, visibility and readiness checks. `get_key` stays an
-    /// unhooked locator.
-    fn intercept_require_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error>;
-
-    /// Intercept a provider's update of a binding made with
-    /// [`provide_mut_at`](Self::provide_mut_at).
-    fn intercept_set_as<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        hook: impl Fn(Arc<T>) -> ServiceIntercept<T> + Send + Sync + 'static,
-    ) -> Result<Disposer, Error>;
 }

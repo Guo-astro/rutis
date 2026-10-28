@@ -55,9 +55,9 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 关闭超时时，Stuck 提示写出还在运行的清理：`ctx.effect` 登记的写登记它的位置，`rutis::internal` 的 `effect_named("cache watcher", || effect)` 登记的写这个名字。
 
-## 服务读写拦截
+## 可写服务
 
-`ctx.intercept_require_as::<T>(key, hook)` 只作用于通过声明、实例和就绪检查的严格读取；可选读取 `get` / `get_at` 仍直接定位服务。`ctx.intercept_set_as::<T>(key, hook)` 可处理可写服务的更新。`hook` 返回 `ServiceIntercept<T>`；它和可写绑定都在 `rutis::internal` 里：`provide_mut_at(key, value)` 返回绑定代次限定的 `ServiceWriter<T>`，由提供者使用 `writer.set(&ctx, Arc::new(value))` 更新；旧 `Arc<T>` 快照保持旧值，写入不自动重载消费者。拦截器可替换同类型值或拒绝操作，因此只应注册可信代码。
+可写绑定在 `rutis::internal` 里：`provide_mut_at(key, value)` 返回绑定代次限定的 `ServiceWriter<T>`，由提供者使用 `writer.set(&ctx, Arc::new(value))` 更新；旧 `Arc<T>` 快照保持旧值，写入不自动重载消费者。
 
 ## 使用边界
 
@@ -65,7 +65,7 @@ let hi = ctx.serial(RoomEvent { room: "a".into() }).await?;
 
 ## 依赖诊断
 
-`ctx.diagnostics()` 列出存活 fiber 的身份、状态、声明与已绑定依赖，以及服务绑定。`injects[].status` 可区分缺失、实例越界、provider 未就绪、摘除中、check 拒绝或 panic；`TypeKey::describe()` 给出类型名、限定名和实例号。读取只使用已登记的元数据与最近一次门控检查结果，不调用插件或 check，也不触发生命周期转换。它逐个读取 fiber 和绑定，**不是全树原子快照**：并发生命周期变化时，同一结果中的状态、依赖和绑定可能来自不同时刻。check 状态（`check()` 谓词由 `rutis::internal` 的 `provide_checked` 登记）可能停留在上次门控结果；调用 `refresh()` 后应等待相关 fiber 收敛，再重新读取诊断。Cordis 原生的投递观察、清理树和服务拦截差异见 [设计草案](design-cordis-observation.md)。
+`ctx.diagnostics()` 列出存活 fiber 的身份、状态、声明与已绑定依赖，以及服务绑定。`injects[].status` 可区分缺失、实例越界、provider 未就绪、摘除中、check 拒绝或 panic；`TypeKey::describe()` 给出类型名、限定名和实例号。读取只使用已登记的元数据与最近一次门控检查结果，不调用插件或 check，也不触发生命周期转换。它逐个读取 fiber 和绑定，**不是全树原子快照**：并发生命周期变化时，同一结果中的状态、依赖和绑定可能来自不同时刻。check 状态（`check()` 谓词由 `rutis::internal` 的 `provide_checked` 登记）可能停留在上次门控结果；调用 `refresh()` 后应等待相关 fiber 收敛，再重新读取诊断。
 
 插件等的服务（`Deps` 或 `injects`）一直没有提供者时，它停在 Pending，本身不报错。等了 10 秒仍缺时，ErrorSink 收到一次 `ErrorKind::StillWaiting`，写明插件和缺的类型（默认的 sink 打印 `printer: still waiting after 10s for app::Greeting: it starts once that is provided`）；插件照常继续等，每次重新开始等待最多报一次。rutis 自己的插件（链路等对端、运行时的行等运行时）不报，它们在等什么看它们自己的状态（0.18 起，#678）。`ctx.report_waiting_after(Some(时长))` 改这个时间，`None` 不报，对整棵树生效（0.17.2 起，#676）。缺的键默认按 `TypeKey::describe()` 写；`ctx.name_keys_with(&namer)` 加一个命名函数，rutis-loader 挂上时就加了一个：服务写它的名字（`llm`），行的运行时写 `runtime py`。rutis-host 关掉它：它的行状态已经写明在等什么。
 

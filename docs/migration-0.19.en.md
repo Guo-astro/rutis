@@ -151,6 +151,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |
 | feature `anyhow`, `Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
+| `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement |
 
 ### Tools
 
