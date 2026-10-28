@@ -1,5 +1,7 @@
 """{{name}}: a rutis plugin."""
 
+# Guide: https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md
+
 from rutis import define_plugin
 
 
@@ -12,21 +14,18 @@ class Greeter:
 
 
 def apply(ctx, config):
-    # The schema's default is filled in when the row leaves it out.
+    # config has the schema's default when the row leaves greeting out.
     ctx.provide("greeter", Greeter(config["greeting"]))
-    # Return a cleanup, or use ctx.effect(cleanup), when the plugin holds
-    # anything to release.
 
 
 plugin = define_plugin(
     apply,
-    # Services this plugin uses: inject=["llm"], then ctx.use("llm").
+    # The services it uses (step 3 of the guide): inject=["translate"], then
+    # ctx.use("translate") in apply.
     inject=[],
-    # What it provides, so that `rutis-host check` (and `check --strict` in a
-    # host's CI) knows it before the plugin runs. The class's public methods
-    # are the service's: `async def` ones async, the others sync.
+    # The services it provides, so a host knows them before the plugin runs:
+    # the class's public methods.
     provides={"greeter": Greeter},
-    # The JSON Schema of its config: rutis fills its defaults and validates
-    # the row's config with it before apply.
+    # The JSON Schema of its config (step 4).
     config={"type": "object", "properties": {"greeting": {"type": "string", "default": "Hello"}}},
 )
