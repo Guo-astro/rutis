@@ -1,21 +1,13 @@
 //! Channels within one process, for tests and in-process links:
 //! bounded, [`CAPACITY`] messages per direction.
 //!
-//! [`pair`] makes two connected channels. [`MemoryPlugin`] provides
-//! `Transport#memory`, whose `dial(name)` reaches a [`Listener`] opened
-//! with [`MemoryTransport::listen`]. Unloading the plugin closes every
-//! channel and listener it made.
+//! [`pair`] makes two connected channels.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::channel::{Channel, ChannelError, Close, Closer, ConnectError, Receiver, Sender};
-use crate::{
-    transport_key, Credential, Dial, Presented, Refusal, Registered, Registration,
-    RegistrationError, Registrations, Transport,
-};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
-use rutis::{Ctx, Error};
+use crate::{Presented, Refusal, Registrations};
 
 /// Messages buffered per direction before `send` blocks.
 pub const CAPACITY: usize = 64;
@@ -192,224 +184,55 @@ fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
     (end(&a, &b), end(&b, &a), b, a)
 }
 
-/// Provides `Transport#memory`. Clones share one transport, so a test can
-/// listen on the plugin it mounts, or mount it in two applications that
-/// talk in-process.
-#[derive(Clone, Default)]
-pub struct MemoryPlugin {
-    transport: Arc<MemoryTransport>,
+/// Dial `listener` of `registrations` in this process, presenting the
+/// bearer token the link's identity gives: routed as a network connection
+/// is, to the registration whose identity verifies it. Transitional
+/// (#695 S2): goes with links and access points.
+#[doc(hidden)]
+pub fn dialer(registrations: Registrations, listener: &str) -> crate::Dialer {
+    let listener = listener.to_owned();
+    std::sync::Arc::new(move |credential: Option<crate::Credential>| {
+        let result = dial_registered(&registrations, &listener, credential);
+        Box::pin(async move { result })
+    })
 }
 
-impl MemoryPlugin {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A plugin providing an existing transport.
-    pub fn with_transport(transport: Arc<MemoryTransport>) -> Self {
-        Self { transport }
-    }
-
-    pub fn transport(&self) -> &Arc<MemoryTransport> {
-        &self.transport
-    }
-}
-
-impl DynPlugin for MemoryPlugin {
-    fn platform(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &str {
-        "rutis-bridge/memory"
-    }
-
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
-        Box::pin(async move {
-            let transport = self.transport.clone();
-            ctx.effect(move || async move {
-                transport.close_all();
-                Ok(())
-            })?;
-            ctx.provide_at(transport_key("memory"), self.transport.clone())?;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-/// Named in-process listeners, and the channels dialed to them.
-///
-/// Besides plain listeners ([`MemoryTransport::listen`]), links register on
-/// named endpoints ([`MemoryTransport::endpoint`]): a dial to one presents
-/// the dialing identity's bearer token, and is routed like a network
-/// connection, to the registration whose identity verifies it.
-#[derive(Default)]
-pub struct MemoryTransport {
-    listeners: Mutex<HashMap<String, mpsc::Sender<Channel>>>,
-    /// Endpoints links may register on: name -> the endpoint they serve.
-    endpoints: Mutex<HashMap<String, crate::channel::PeerId>>,
-    registrations: Registrations,
-    open: Mutex<Vec<Weak<dyn Closer>>>,
-}
-
-/// Accepts the channels dialed to one name; dropping it stops listening.
-pub struct Listener {
-    name: String,
-    transport: Weak<MemoryTransport>,
-    accepted: mpsc::Receiver<Channel>,
-}
-
-impl Listener {
-    /// Block until the next channel arrives; `None` once the transport is
-    /// closed.
-    pub fn accept(&self) -> Option<Channel> {
-        self.accepted.recv().ok()
-    }
-}
-
-impl Drop for Listener {
-    fn drop(&mut self) {
-        if let Some(transport) = self.transport.upgrade() {
-            transport.listeners.lock().unwrap().remove(&self.name);
-        }
-    }
-}
-
-impl MemoryTransport {
-    /// Listen on `name`; a name has one listener at a time.
-    pub fn listen(self: &Arc<Self>, name: &str) -> Result<Listener, ConnectError> {
-        let mut listeners = self.listeners.lock().unwrap();
-        if listeners.contains_key(name) {
-            return Err(ConnectError::Incompatible {
-                reason: format!("memory:{name} already has a listener"),
-            });
-        }
-        let (sender, accepted) = mpsc::channel();
-        listeners.insert(name.to_owned(), sender);
-        Ok(Listener {
-            name: name.to_owned(),
-            transport: Arc::downgrade(self),
-            accepted,
-        })
-    }
-
-    /// Accept registrations on `name` for endpoint `local`, as a network
-    /// transport's configured listener.
-    pub fn endpoint(&self, name: &str, local: crate::channel::PeerId) {
-        self.endpoints
-            .lock()
-            .unwrap()
-            .insert(name.to_owned(), local);
-    }
-
-    fn track(&self, channels: [&Channel; 2]) {
-        let mut open = self.open.lock().unwrap();
-        open.retain(|closer| closer.strong_count() > 0);
-        for channel in channels {
-            open.push(Arc::downgrade(&channel.closer));
-        }
-    }
-
-    fn close_all(&self) {
-        self.listeners.lock().unwrap().clear();
-        self.registrations.clear();
-        for closer in std::mem::take(&mut *self.open.lock().unwrap()) {
-            if let Some(closer) = closer.upgrade() {
-                closer.close(Close::Done);
-            }
-        }
-    }
-}
-
-impl MemoryTransport {
-    fn dial_endpoint(&self, dial: &Dial) -> Result<Channel, ConnectError> {
-        let address = dial.address.as_str();
-        let token = match (&dial.identity, &dial.peer) {
-            (Some(identity), Some(peer)) => match identity.credential(peer) {
-                Some(Credential::Bearer(token)) => Some(token),
-                _ => None,
+fn dial_registered(
+    registrations: &Registrations,
+    listener: &str,
+    credential: Option<crate::Credential>,
+) -> Result<Channel, ConnectError> {
+    let Some(crate::Credential::Bearer(token)) = credential else {
+        return Err(ConnectError::AuthRejected {
+            reason: format!("memory:{listener}: credentials required"),
+        });
+    };
+    let ticket = registrations
+        .route(listener, Presented::Bearer(&token))
+        .map_err(|refusal| match refusal {
+            Refusal::NotListening => ConnectError::Retryable {
+                reason: format!("memory:{listener}: not listening for this peer yet"),
             },
-            _ => None,
-        };
-        let Some(token) = token else {
-            return Err(ConnectError::AuthRejected {
-                reason: format!("memory:{address}: credentials required"),
-            });
-        };
-        let ticket = self
-            .registrations
-            .route(address, Presented::Bearer(&token))
-            .map_err(|refusal| match refusal {
-                Refusal::NotListening => ConnectError::Retryable {
-                    reason: format!("memory:{address}: not listening for this peer yet"),
-                },
-                Refusal::Unauthenticated => ConnectError::AuthRejected {
-                    reason: format!("memory:{address}: not accepted here"),
-                },
-                Refusal::Ambiguous => ConnectError::AuthRejected {
-                    reason: format!("memory:{address}: ambiguous credentials"),
-                },
-            })?;
-        if !dial.protocol.is_empty() && dial.protocol != ticket.protocol {
-            return Err(ConnectError::Incompatible {
-                reason: format!("memory:{address} speaks {}", ticket.protocol),
-            });
-        }
-        let (a, b) = (Arc::default(), Arc::default());
-        let (dialed, accepted) = (end(&a, &b), end(&b, &a));
-        self.track([&dialed, &accepted]);
-        match self.registrations.hand_over(&ticket, accepted) {
-            Ok(()) => Ok(dialed),
-            // Revoked since it was routed: nobody listens for it now, as
-            // when it was never registered.
-            Err(_) => Err(ConnectError::Retryable {
-                reason: format!("memory:{address}: registration revoked"),
-            }),
-        }
+            Refusal::Unauthenticated => ConnectError::AuthRejected {
+                reason: format!("memory:{listener}: not accepted here"),
+            },
+            Refusal::Ambiguous => ConnectError::AuthRejected {
+                reason: format!("memory:{listener}: ambiguous credentials"),
+            },
+        })?;
+    if ticket.protocol != crate::protocol() {
+        return Err(ConnectError::Incompatible {
+            reason: format!("memory:{listener} speaks {}", ticket.protocol),
+        });
     }
-}
-
-impl Transport for MemoryTransport {
-    fn kind(&self) -> &str {
-        "memory"
-    }
-
-    fn dial<'a>(&'a self, dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
-        Box::pin(async move {
-            let address = dial.address.as_str();
-            if self.endpoints.lock().unwrap().contains_key(address) {
-                return self.dial_endpoint(dial);
-            }
-            let listener = self.listeners.lock().unwrap().get(address).cloned();
-            let listener = listener.ok_or_else(|| ConnectError::Retryable {
-                reason: format!("nothing listens on memory:{address}"),
-            })?;
-            let (a, b) = (Arc::default(), Arc::default());
-            let (dialed, accepted) = (end(&a, &b), end(&b, &a));
-            self.track([&dialed, &accepted]);
-            listener
-                .send(accepted)
-                .map_err(|_| ConnectError::Retryable {
-                    reason: format!("memory:{address} stopped listening"),
-                })?;
-            Ok(dialed)
-        })
-    }
-
-    fn register(&self, registration: Registration) -> Result<Registered, RegistrationError> {
-        let local = self
-            .endpoints
-            .lock()
-            .unwrap()
-            .get(&registration.listener)
-            .cloned()
-            .ok_or_else(|| {
-                RegistrationError::NoListener(format!(
-                    "no memory endpoint named {}",
-                    registration.listener
-                ))
-            })?;
-        self.registrations.register(&local, registration)
+    let (dialed, accepted) = pair();
+    match registrations.hand_over(&ticket, accepted) {
+        Ok(()) => Ok(dialed),
+        // Revoked since it was routed: nobody listens for it now, as when
+        // it was never registered.
+        Err(_) => Err(ConnectError::Retryable {
+            reason: format!("memory:{listener}: registration revoked"),
+        }),
     }
 }
 

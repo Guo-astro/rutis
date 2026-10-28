@@ -585,28 +585,7 @@ rutis has no `tracing` / `log` integration; the host's own logging works as usua
 
 ## Nodes
 
-```rust,no_run
-# use rutis::host::*;
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let root = rutis::Ctx::root()?;
-# let token = std::env::var("RUTIS_TOKEN")?;
-use rutis_bridge::websocket::{Config, WebSocketPlugin};
-use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerId, PeerPlugin, StaticIdentity};
-
-let (main, office) = (PeerId::new("main")?, PeerId::new("office")?);
-root.plugin(WebSocketPlugin::new(Config::new())?).await?;
-root.plugin(IdentityPlugin::new(
-    "main",
-    StaticIdentity::new(main).present(office.clone(), Credential::Bearer(token)),
-));
-root.plugin(PeerPlugin::new(
-    LinkConfig::dial(office, "websocket", "main", "wss://office.example.com/rutis"),
-    Features { export: vec!["clock".into()], import: vec!["calendar".into()], ..Features::default() },
-)?);
-# Ok(())
-# }
-```
+0.19 redoes remote connections ([Remote connections: one session plugin](../design-remote-session-2026-10-28.en.md)); how a Rust program sets up a node itself changes with it, and this section is filled in once the new form lands. Until then, use rutis-host's node rows (see [Connect nodes](nodes.en.md)).
 
 For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
 

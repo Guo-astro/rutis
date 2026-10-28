@@ -33,8 +33,7 @@ use crate::link::{Greet, Live};
 use crate::runtime::RuntimeSession;
 use crate::session::Error;
 use crate::{
-    admission_key, transport_key, Admission, Credential, Identity, Peer, Presented, Registration,
-    Rejection, Retry, Transport,
+    admission_key, Accepting, Admission, Credential, Identity, Peer, Presented, Rejection, Retry,
 };
 
 /// Undoes what [`Accept::accept`] set up for a connection.
@@ -101,12 +100,10 @@ pub struct AccessPointConfig {
     /// The access point's name: what its registration on the listener is
     /// keyed by, as a link's is by its far end.
     pub name: PeerId,
-    /// The transport's kind (`Transport#<kind>`).
-    pub transport: String,
     /// The admission's name (`Admission#<name>`).
     pub admission: String,
-    /// The listener of the transport to register on.
-    pub listener: String,
+    /// The listener to register on.
+    pub accepting: Accepting,
     /// How long a runtime may take to greet.
     pub handshake: Duration,
     /// Capabilities each runtime must declare (`runtime`).
@@ -116,12 +113,11 @@ pub struct AccessPointConfig {
 }
 
 impl AccessPointConfig {
-    pub fn new(name: PeerId, transport: &str, admission: &str, listener: &str) -> Self {
+    pub fn new(name: PeerId, admission: &str, accepting: Accepting) -> Self {
         Self {
             name,
-            transport: transport.into(),
             admission: admission.into(),
-            listener: listener.into(),
+            accepting,
             handshake: Retry::default().handshake,
             require: Vec::new(),
             declare: Vec::new(),
@@ -146,13 +142,13 @@ impl AccessPointConfig {
     }
 }
 
-/// The access point plugin: depends on `Transport#<kind>` and
-/// `Admission#<name>`, registers on the listener while applied, and hands
-/// each admitted connection to its [`Accept`].
+/// The access point plugin: depends on `Admission#<name>`, registers on
+/// the listener while applied, and hands each admitted connection to its
+/// [`Accept`].
 pub struct AccessPointPlugin {
     label: String,
     config: AccessPointConfig,
-    injects: [TypeKey; 2],
+    injects: [TypeKey; 1],
     accept: Option<Arc<dyn Accept>>,
     events: broadcast::Sender<AccessEvent>,
 }
@@ -161,10 +157,7 @@ impl AccessPointPlugin {
     pub fn new(config: AccessPointConfig) -> Self {
         Self {
             label: format!("rutis-bridge/access-point#{}", config.name),
-            injects: [
-                transport_key(&config.transport).erase(),
-                admission_key(&config.admission).erase(),
-            ],
+            injects: [admission_key(&config.admission).erase()],
             accept: None,
             events: broadcast::channel(64).0,
             config,
@@ -204,28 +197,26 @@ impl DynPlugin for AccessPointPlugin {
                     format!("{}: {what}", self.label).into(),
                 ))
             };
-            let transport = ctx
-                .get_key::<dyn Transport>(self.injects[0].clone())
-                .ok_or_else(|| failed("the transport is not provided".into()))?;
             let admission = ctx
-                .get_key::<dyn Admission>(self.injects[1].clone())
+                .get_key::<dyn Admission>(self.injects[0].clone())
                 .ok_or_else(|| failed("the admission is not provided".into()))?;
             let (sender, mut delivered) = mpsc::unbounded_channel::<Channel>();
-            let registered = transport
-                .register(Registration {
-                    listener: self.config.listener.clone(),
-                    peer: self.config.name.clone(),
-                    identity: Arc::new(Routing {
+            let registered = self
+                .config
+                .accepting
+                .register(
+                    self.config.name.clone(),
+                    Arc::new(Routing {
                         admission: admission.clone(),
                         name: self.config.name.clone(),
                     }),
-                    protocol: crate::protocol(),
-                    deliver: Box::new(move |channel| {
+                    crate::protocol(),
+                    Box::new(move |channel| {
                         if let Err(refused) = sender.send(channel) {
                             refused.0.closer.close(crate::channel::Close::Done);
                         }
                     }),
-                })
+                )
                 .map_err(|error| failed(error.to_string()))?;
             let (stop, stopping) = watch::channel(false);
             let shared = Arc::new(Shared {

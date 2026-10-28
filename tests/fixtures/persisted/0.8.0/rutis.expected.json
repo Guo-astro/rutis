@@ -90,7 +90,6 @@
         "export": [
           "weather"
         ],
-        "transport": "websocket",
         "identity": "host"
       }
     },
@@ -103,7 +102,6 @@
         "import": [
           "clock"
         ],
-        "transport": "websocket",
         "identity": "host"
       }
     },
@@ -113,7 +111,6 @@
       "config": {
         "peer": "sidecar",
         "dial": "/run/rutis/sidecar.sock",
-        "transport": "local",
         "identity": "host"
       }
     },
@@ -124,7 +121,6 @@
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
         "runtime": "gpu",
-        "transport": "websocket",
         "identity": "host"
       }
     },

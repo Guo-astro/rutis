@@ -52,13 +52,14 @@ extension Rutis {
         if channel.hasPrefix("ws:") || channel.hasPrefix("wss:") {
             throw RutisError(name: "Error", message: "a WebSocket channel is listen:<address> or dial:<address>: \(channel)")
         }
-        try serve(channel: try Channels.open(channel), project: project, plugins)
+        try serve(channel: try Channels.open(channel), endpoint: endpoint, project: project, plugins)
     }
 
-    /// Serves `plugins` on `channel` (the compat protocol, one message per
-    /// line) until the session ends, then unloads them.
-    static func serve(channel: Channel, project: String, _ plugins: [Definition]) throws {
-        try block { try await serveSession(channel: channel, project: project, plugins) }
+    /// Serves `plugins` on `channel` (one message per line: the endpoint
+    /// format with `endpoint`, else compat) until the session ends, then
+    /// unloads them.
+    static func serve(channel: Channel, endpoint: Endpoint? = nil, project: String, _ plugins: [Definition]) throws {
+        try block { try await serveSession(channel: channel, endpoint: endpoint, project: project, plugins) }
     }
 
     /// Runs `body` in a Task of its own, blocking this thread until it ends.
@@ -77,10 +78,10 @@ extension Rutis {
 
     /// `started` sees the session once it starts (RutisTest reads the
     /// plugin definitions it exports).
-    package static func serveSession(channel: Channel, project: String, _ plugins: [Definition],
+    package static func serveSession(channel: Channel, endpoint: Endpoint? = nil, project: String, _ plugins: [Definition],
                                      started: ((Peer) -> Void)? = nil) async throws
     {
-        let (session, runtime) = try startSession(channel: channel, project: project, plugins)
+        let (session, runtime) = try startSession(channel: channel, project: project, plugins, endpoint: endpoint)
         started?(session)
         await session.closed()
         if let ended = session.error as? SessionEnded, ended.kind == .refused {
@@ -194,8 +195,9 @@ extension Rutis {
         #endif
     }
 
-    /// The channel, the endpoint of a network channel (`listen:`, `dial:`:
-    /// a runtime, its controller managing its rows) and the project. What
+    /// The channel, the endpoint `--id` names (a runtime, its controller
+    /// managing its rows; required on `listen:` and `dial:`) and the
+    /// project. What
     /// retrying cannot fix fails here, before any dial.
     static func parse(_ args: [String]) throws -> (channel: String, endpoint: Endpoint?, project: String) {
         guard let channel = args.first else { throw RutisError(name: "Error", message: serveUsage) }
@@ -211,10 +213,12 @@ extension Rutis {
         }
         guard rest.count == 1 else { throw RutisError(name: "Error", message: serveUsage) }
         var endpoint: Endpoint?
-        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:") {
-            guard let id = flags["id"], !id.isEmpty else {
-                throw RutisError(name: "Error", message: "a network channel needs --id <endpoint>: \(channel)")
-            }
+        if channel.hasPrefix("listen:") || channel.hasPrefix("dial:"), flags["id"]?.isEmpty ?? true {
+            throw RutisError(name: "Error", message: "a network channel needs --id <endpoint>: \(channel)")
+        }
+        // With --id, every channel speaks the endpoint format, greeting as
+        // that id.
+        if let id = flags["id"] {
             guard validEndpointID(id) else {
                 throw RutisError(name: "Error", message: "invalid endpoint id \(id): use lower-case letters, digits and -")
             }

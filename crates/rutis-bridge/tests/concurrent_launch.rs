@@ -19,8 +19,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use rutis_bridge::channel::ChannelError;
-use rutis_bridge::pipe::{LocalTransport, Spawn};
-use rutis_bridge::{Dial, Transport};
+use rutis_bridge::pipe::{self, Processes, Spawn};
 
 const THREADS: usize = 16;
 const ROUNDS: usize = 5;
@@ -212,7 +211,7 @@ impl Failures {
 }
 
 /// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
-/// Q6.5.2): the local transport's `spawn:` processes started at once each
+/// Q6.5.2): `pipe::spawn` processes started at once each
 /// hold their own channel only.
 #[test]
 fn spawned_processes_started_at_once_hold_only_their_own_channel() {
@@ -231,12 +230,11 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
         r#"exec <&3 >&3; echo "$$"; read line; exit 0"#.into(),
     ];
     rounds(move |number, thread, barrier| {
-        let transport = LocalTransport::default();
-        transport.spawner("probe", spawn.clone());
+        let processes = Processes::default();
         let runtime = runtime();
         let mut failures = Failures(Vec::new());
         failures.check("line up", barrier.wait());
-        let channel = runtime.block_on(transport.dial(&Dial::address("spawn:probe")));
+        let channel = runtime.block_on(pipe::spawn(&spawn, &processes));
         let mut channel = match channel {
             Ok(channel) => Some(channel),
             Err(error) => {

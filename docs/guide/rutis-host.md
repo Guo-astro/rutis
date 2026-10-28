@@ -500,7 +500,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 | `py` | `project`（默认 `.`）、`python`、`restart` | 启动 Python 运行时。解释器默认依次为 `$VIRTUAL_ENV/bin/python`、`<project>/.venv/bin/python`、`python3`（Windows 上为 `Scripts\python.exe` 和 `python`），它的环境里要装 `rutis` 和插件 |
 | `go` | `dir`、`binaries`、`start`（`on-demand` 默认 / `eager`）、`idle`（秒，默认 60）、`project`（默认 `.`）、`restart` | Go 插件：一个二进制一个运行时进程。`dir` 里含 Go SDK 标记的可执行文件都算（整个目录被视为受信任，应是专用目录），`binaries` 列出单个文件。运行时名由文件名得出（`netkit` → `go-netkit`）。按需启动的运行时在第一次有行用到时启动、空闲 `idle` 秒后停下（别处持有它交出的对象不算在用：停下后对这些对象的调用以 `peer-gone` 失败）；`eager` 全部启动并一直运行（不能同时写 `idle`）。换了二进制，重启宿主后生效 |
 | `swift` | 同 `go` | Swift 插件（macOS）：与 `go` 相同，针对用 Swift SDK 构建的二进制（`plugin-binary` → `swift-plugin-binary`）；见 [Swift 插件](swift-plugin.md) |
-| `remote` | `name`、`language`、`dial`、`listen`、`instances`、`transport` | 别的机器上的运行时，一条写全：`dial` 由 rutis 去连，`listen` 等它连进来，`listen` + `instances` 每条连接一个实例，见下面的[远程运行时](#远程运行时)；都不写时经 `rows` 里 `"runtime": "<name>"` 的节点行连接（0.19 之前的写法），见 [连接节点](nodes.md) |
+| `remote` | `name`、`language`、`dial`、`listen`、`instances` | 别的机器上的运行时，一条写全：`dial` 由 rutis 去连，`listen` 等它连进来，`listen` + `instances` 每条连接一个实例，见下面的[远程运行时](#远程运行时)；都不写时经 `rows` 里 `"runtime": "<name>"` 的节点行连接（0.19 之前的写法），见 [连接节点](nodes.md) |
 
 缺少运行时包时，启动失败并给出安装命令。Python 的环境不存在（`python` 指向的 `.venv/bin/python` 还没有建）、或解释器里没有 `rutis` 包时，报错写明创建环境、安装与本宿主同版本 `rutis` 的命令（`uv venv <环境>` 和 `uv pip install --python <解释器> rutis==<版本>`，或用 `python3 -m venv` 和 pip）；没有任何环境、只找到没有 `rutis` 的 `python3` 时，给出在 `<project>/.venv` 创建环境的命令，建好后宿主自动用它。
 
@@ -547,8 +547,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 ```
 
 - token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`）。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
-- `transport`：可选，默认 `websocket`。宿主自己的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 的 `transports`），`transport` 写它的名字；一台、多台都用它。用别的传输时，`listen` 写那个传输自己的监听器名，不需要在 `listen` 里有同名的监听器。
-- 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`transport` 没有 `dial` 或 `listen`、`transport` 不是宿主有的、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
+- 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
 - 一台的 `listen` 与监听的节点行一样，参与同一 token 的检查（#702、#726）：两个条目会接受同一个 token 时启动报错。
 - 远端不含某一行的插件时，只有这一行失败（`runtime <name>: this connection does not contain plugin <插件>`），其他行不受影响，新增这样的行也不会被拒绝。
 - 连接的变化见 [run 打印什么](#run-打印什么)，当前状态见 [查看当前状态](#查看当前状态) 的 `connections`。
