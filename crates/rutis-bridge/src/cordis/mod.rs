@@ -13,8 +13,6 @@
 pub(crate) use crate::runtime::*;
 
 pub mod build;
-#[cfg(unix)]
-pub mod server;
 
 pub use crate::runtime::{Host, Mount, Process, Projection};
 /// What generated code uses, by the paths it names them with.

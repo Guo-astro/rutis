@@ -75,7 +75,7 @@ websocket = [
 # The declaration generator for build scripts (`build::Exports`): the
 # TypeScript declarations of the `#[rutis::service]` types.
 exports = ["dep:proc-macro2", "dep:quote", "dep:syn"]
-cordis = ["node", "exports", "dep:toml"]
+cordis = ["node", "dep:toml"]
 # The channel contract tests, and the session, runtime and node conformance
 # suites other implementations run.
 testing = []
