@@ -44,12 +44,8 @@ var (
 )
 
 // TestCapabilities is what a test session declares, at either end: what
-// every session since rutis 0.13 has, without `signals` and `plugins`.
-var TestCapabilities = append([]string{"objects", "reentrant-sync", "sync-wait", EventsCapability}, ValueCapabilities...)
-
-// EventsCapability is the event protocol of rutis 0.13 (#464), which both
-// ends of every 0.13 session declare.
-const EventsCapability = "events-v2"
+// a runtime's session declares.
+var TestCapabilities = append([]string{"reentrant-sync"}, ValueCapabilities...)
 
 // UndefinedType is the wire's `undefined`: an omitted argument or field.
 type UndefinedType struct{}
@@ -728,9 +724,6 @@ func (p *Peer) encode(value any, grants *[]int64, origin []string, depth int) (m
 		}
 		return p.exportValue(v.Value, "plugin", key, grants, origin)
 	case Object:
-		if !p.supports("objects") {
-			return nil, p.objectRefused(v)
-		}
 		var key any
 		if reflect.ValueOf(v).Comparable() {
 			key = v
@@ -1084,10 +1077,9 @@ func (p *Peer) Call(ctx context.Context, target, method string, args []any, sync
 }
 
 // waiting marks a synchronous call's frame: this goroutine waits for the
-// reply, and a host that checks for wait cycles needs to know (#228). Only
-// for a far end that declared `sync-wait`: others would refuse the field.
+// reply, and a host that checks for wait cycles needs to know (#228).
 func (p *Peer) waiting(fields map[string]any, sync bool) map[string]any {
-	if sync && p.Supports("sync-wait") {
+	if sync {
 		fields["sync"] = true
 	}
 	return fields

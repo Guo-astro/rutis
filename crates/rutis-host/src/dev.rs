@@ -48,7 +48,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
     let dir = std::path::absolute(&given).unwrap_or(given);
     // From the start, as `run` does: the dev file's content now is what the
     // host starts with.
-    let mut triggers = Triggers::listen(&dir.join(DEV_FILE), true)?;
+    let mut triggers = Triggers::listen(&dir.join(DEV_FILE), true, Default::default())?;
     // Go runtimes warn of calls that carry no call chain.
     std::env::set_var("RUTIS_DEV", "1");
     // A compiled language's project (Go, Swift) is rebuilt, not reloaded:

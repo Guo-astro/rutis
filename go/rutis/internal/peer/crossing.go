@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 )
 
@@ -132,37 +131,6 @@ func largest(encoded map[string]any) int {
 		}
 	}
 	return index
-}
-
-// typeName is the name of a value's type, for messages: what an Object
-// says it is (TypeName), else its Go type's name without the package.
-func typeName(value any) string {
-	if named, ok := value.(interface{ TypeName() string }); ok {
-		return named.TypeName()
-	}
-	t := reflect.TypeOf(value)
-	for t != nil && t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t == nil {
-		return ""
-	}
-	return t.Name()
-}
-
-// objectRefused says why an object is not sent to a far end that did not
-// declare `objects`; p.mu is held.
-func (p *Peer) objectRefused(value any) error {
-	far := "the far end"
-	if p.greeting != nil {
-		far = p.greeting.Endpoint
-	}
-	what := "an object with methods"
-	if name := typeName(value); name != "" {
-		what += " (" + name + ")"
-	}
-	// One older than rutis 0.18 takes none.
-	return valueErrorf("%s cannot cross to %s; pass plain data or a function instead, or upgrade %s to rutis 0.18", what, far, far)
 }
 
 // encodeArgs encodes a call's arguments; p.mu is held. An error names the

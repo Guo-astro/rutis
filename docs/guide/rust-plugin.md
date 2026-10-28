@@ -15,7 +15,7 @@ Rust 插件和 TypeScript、Python、Go 插件的规则相同（见 [插件 API]
 | `rutis::events::Mode` | 监听器里看这次分发的方式 |
 | `rutis::Disposer` | `provide`、`on`、`effect` 返回的句柄，用来提前撤销 |
 | `#[rutis::service]` | 让服务对其他语言公开 |
-| `rutis::Definition` | 插件定义：可以交出、挂很多次的插件，见[插件定义](#插件定义) |
+| `rutis::Definition` | 插件定义：可以交出、挂很多次的插件，见 [插件 API：插件定义](plugin-api.md#各语言怎样交出插件定义) |
 
 `Ctx` 上给插件用的方法：
 
@@ -204,56 +204,7 @@ plugin = define_plugin(apply, inject=["calendar"])
 
 ### 插件定义
 
-`Plugin` 是一个实例：配置写在字段里，交给 `ctx.plugin` 就用掉了。要把插件交给别处、由那边挂很多次（例如每个 Session 一份），用 `rutis::Definition`：`Definition::new(ctx, build)` 造一个定义，`build` 拿到挂载位置的 `ctx` 和这一份的配置，返回一个 `Plugin`；挂的一方写 `ctx.plugin(def.at(&ctx, config)?)`。
-
-```rust
-use std::sync::{Arc, Mutex};
-use rutis::{Ctx, Definition, Plugin, Result};
-
-/// 每个 Session 一份，`depth` 来自它自己的配置。
-struct Part {
-    depth: u32,
-}
-
-impl Plugin for Part {
-    type Deps = ();
-
-    async fn apply(&self, _: &Ctx, _: ()) -> Result {
-        println!("depth {}", self.depth);
-        Ok(())
-    }
-}
-
-/// 把 `Part` 的定义交给挂部件的一方（这里只是一个列表）。
-struct Git {
-    parts: Arc<Mutex<Vec<Definition>>>,
-}
-
-impl Plugin for Git {
-    type Deps = ();
-
-    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
-        let pool = Arc::new(String::from("pool")); // apply 里准备好的东西
-        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
-            let _pool = pool.clone();
-            Ok(Part { depth })
-        });
-        self.parts.lock().unwrap().push(definition);
-        Ok(())
-    }
-}
-
-/// 挂的一方：每挂一次是一份，配置各自给。
-fn mount(at: &Ctx, definition: &Definition) -> Result {
-    at.plugin(definition.at(at, 3u32)?);
-    Ok(())
-}
-# fn main() {}
-```
-
-- 定义属于造它的插件的这一代：这个插件卸载、重启或结束时，先结束从它挂出的每一份，等它们清理完，再运行它自己的清理；之后 `at` 失败，`ended()` 完成。
-- 只能挂在造它的插件所在的实例里，或者更里面。
-- 其他语言交来的插件定义也是 `Definition`，挂法相同，见 [插件 API](plugin-api.md#插件定义)；Rust 造的定义不能交给其他语言。
+`Plugin` 是一个实例，交给 `ctx.plugin` 就用掉了；要交给别处、挂很多次的插件用 `rutis::Definition`：见 [插件 API：插件定义](plugin-api.md#各语言怎样交出插件定义)。
 
 ### 事件
 
@@ -262,7 +213,6 @@ fn mount(at: &Ctx, definition: &Definition) -> Result {
 事件是一个类型，`NAME` 是它在所有语言里的名字，参数按 serde 编解码。两个及以上字段的元组结构体对应同样多个参数，所以下面的 `Created` 就是别的语言里的 `emit("session/created", id, size)`；unit 结构体没有参数；其余（普通结构体、newtype）是一个参数。
 
 ```rust
-use rutis::events::Mode;
 use rutis::{Ctx, Event, Plugin, Result};
 use serde::{Deserialize, Serialize};
 
@@ -289,83 +239,17 @@ impl Plugin for Audit {
     type Deps = ();
 
     async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
-        ctx.on::<Created>(|event, call| async move {
-            if call.mode() == Mode::Waterfall {
-                let inner = call.next().await?; // 中间件：先执行链上其余部分
-                return Ok(inner.map(|text| format!("[{text}]")));
-            }
-            Ok(Some(format!("audited {}", event.0))) // Ok(None) 是没有结果
+        ctx.on::<Created>(|event, _| async move {
+            println!("created {}", event.0);
+            Ok(None) // Ok(None) 是没有结果
         })?;
-        ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
-        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
-            println!("{}", call.name()); // 前缀监听器：实际的名字
-            Ok(None)
-        })?;
+        ctx.emit(Closed("s0".into()))?; // 立即返回，不等监听器
         Ok(())
     }
 }
 ```
 
-发出事件用五种方式，名字和其他语言相同：
-
-```rust
-# use rutis::{Ctx, Event};
-# use serde::{Deserialize, Serialize};
-# #[derive(Serialize, Deserialize)]
-# pub struct Created(pub String, pub u32);
-# impl Event for Created {
-#     const NAME: &'static str = "session/created";
-#     type Value = String;
-# }
-# async fn demo(ctx: &Ctx) -> rutis::Result {
-ctx.emit(Created("s1".into(), 3))?;                         // 立即返回
-ctx.parallel(Created("s1".into(), 3)).await?;               // 等全部完成
-let first = ctx.serial(Created("s1".into(), 3)).await?;     // 第一个结果
-let out = ctx
-    .waterfall(Created("s1".into(), 3))
-    .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) }) // 可省略
-    .await?;
-let quick = ctx.bail(Created("s1".into(), 3))?;             // 同步
-let from_python = ctx
-    .filter(|l| l.runtime.as_deref() == Some("py"))
-    .serial(Created("s1".into(), 3))
-    .await?;
-# let _ = (first, out, quick, from_python);
-# Ok(())
-# }
-```
-
-| 事项 | 规则 |
-| --- | --- |
-| 监听器 | 闭包，参数是 `(Arc<E>, Call<E>)`，同步监听器是 `(Arc<E>, SyncCall<'_, E>)`；返回 `Result<Option<E::Value>>`，`Ok(None)` 和 `Ok(Some(false))` 是没有结果。参数类型由编译器推断，块里可以对任何错误用 `?`。闭包会被调用多次，要移进 `async move` 的东西先在闭包里克隆 |
-| `call` | `mode()` 是这次分发的方式；`name()` 是分发用的名字；`next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`），执行链上其余部分，不调用就否决其余；`ctx()` 是登记这个监听器的 `Ctx`，在它上面登记的东西属于这个插件 |
-| 同步与异步 | `on_sync` 的监听器所有方式都能调用，但在异步 `waterfall` 里不能调 `next`；`on` 的监听器不能被 `bail` 调用（`AsyncListener`） |
-| 名字 | 以 `E::NAME` 登记和发出。`listen::<E>().name(n)` 在另一个名字下监听；`.prefix(p)` 收这个前缀下的所有名字，都按 `E` 解码，形状不同的事件让这次调用以 `EventValue` 失败 |
-| 发出 | `emit`、`parallel`、`serial`、`waterfall`、`bail` 接受 `E` 或 `Arc<E>`；`waterfall` 返回一个构建器，可以先写 `.terminal(…)` 再 `.await`，没有终态时最后一个 `next()` 得到 `None`。`ctx.filter(keep)` 给出同样五个方法，`keep` 收到每个监听器的 `ListenerInfo` |
-| 失败 | `emit` 的监听器失败不影响发出方，报给宿主；`parallel` 全部跑完，返回 `ListenersFailed`（按登记顺序，只有一个失败也是）；`serial`、`bail`、`waterfall` 遇到第一个错误停止并返回它 |
-| 卸载 | 插件停下时它的监听器撤下；正在运行的调用看到 `call.ctx().cancelled()`，卸载等它们结束，最多到关闭截止时间。丢弃 `parallel`、`serial`、`waterfall` 的 future 即取消这次分发 |
-| 保留的名字 | `rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
-
-#### 高级：`once`、`prepend`、`global`
-
-```rust
-# use rutis::{Ctx, Event};
-# use serde::{Deserialize, Serialize};
-# #[derive(Serialize, Deserialize)]
-# pub struct Created(pub String, pub u32);
-# impl Event for Created {
-#     const NAME: &'static str = "session/created";
-#     type Value = String;
-# }
-# fn demo(ctx: &Ctx) -> rutis::Result {
-ctx.listen::<Created>().once().on(|_, _| async move { Ok(None) })?;    // 最多调用一次
-ctx.listen::<Created>().prepend().on_sync(|_, _| Ok(None))?;           // 排在这个名字已有的监听器之前
-ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // 不经过滤
-# Ok(())
-# }
-```
-
-选项可以连着写，最后是 `.on(…)` 或 `.on_sync(…)`。没有固定名字的事件类型（名字由值决定）把 `NAME` 写成 `""`，重写 `fn name(&self) -> &str` 返回这个值的名字，监听时用 `.name(…)` 给出名字。
+其余发出方式（`parallel`、`serial`、`waterfall`、`bail`）、`call.mode()`、`on_sync`、前缀监听器、过滤，以及 `once`、`prepend`、`global`，见 [插件 API：事件](plugin-api.md#rust)。
 
 #### 在服务方法里发事件
 

@@ -24,7 +24,6 @@ import { takeToken } from './channel.ts'
 import { dialOut, serve } from './remote.ts'
 import { Runtime } from './runner.ts'
 import { MANIFEST } from './session.ts'
-import { EVENTS_V2, NO_EVENTS_V2 } from './events.mjs'
 import { say } from './output.mjs'
 
 const USAGE = 'usage: bun --no-install --no-env-file <rutis-bun>/src/main.ts <channel> --id <endpoint> [--peer <endpoint>] <project>'
@@ -136,16 +135,10 @@ const watchdog = new Worker(new URL('./watchdog.ts', import.meta.url), { workerD
 watchdog.unref()
 let client: Client
 try {
-  // The logical bus (#464): `events.elsewhere` runs as its frame arrives;
-  // a host older than 0.13 (no events-v2) is refused (protocol §2.2).
+  // The logical bus (#464): `events.elsewhere` runs as its frame arrives.
   // A function or object a row hands over runs as that row's (#678).
-  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], requires: [EVENTS_V2], ended: channelEnded, owner: runtime.running, within: runtime.within })
+  client = await Client.connect(channel, { dispatch: runtime.dispatch, token, endpoint, inline: ['events.elsewhere', 'plugins.read'], ended: channelEnded, owner: runtime.running, within: runtime.within })
 } catch (error: any) {
-  if (error?.message === NO_EVENTS_V2) {
-    say(`rutis: refused: incompatible (${NO_EVENTS_V2}); stopping\n`)
-    await flushed()
-    process.exit(1)
-  }
   // The supervisor ended the session before it greeted, and said why.
   if (dialed) process.exit(1)
   fail(`cannot connect on ${channel}: ${error.message}`)

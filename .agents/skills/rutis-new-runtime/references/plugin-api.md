@@ -207,10 +207,10 @@ In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an e
 
 ### Mixing with 0.12 and earlier
 
-The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a 0.13 host is refused before anything loads:
+The event protocol is rutis 0.13's, with no old path. A runtime or node of 0.12 or earlier connecting to a current host is refused by its protocol version before anything loads:
 
 ```text
-incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
 A 0.13 runtime meeting an older host exits (status 1): `rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`. Upgrading from 0.12: [migrating to 0.13](https://github.com/arcships/rutis/blob/main/docs/migration-0.13.en.md).
@@ -227,8 +227,6 @@ The host controls when a plugin runs:
 Services obtained in `apply` remain valid while the plugin is running, so the plugin does not need to handle a service disappearing midway through its work.
 
 A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails (to load, or, when it provides it after loading, at that point), and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency with a warning, `nothing declares <service>; it may be provided at runtime by …`, not as a failure (with `check --strict`, as one: see [Checking a configuration](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#checking-a-configuration)). The same for one provided from a thread or goroutine before `apply` returns: the host has handled it before the plugin has loaded, and a clash fails the load.
-
-When a 0.12 runtime is mounted by a host older than 0.12, the host does not take undeclared services, which stay visible in their process only; a plugin providing one is told so on stderr, once per name: `rutis: service <name> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`. Declare it in `provides`, or upgrade rutis-host.
 
 When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 

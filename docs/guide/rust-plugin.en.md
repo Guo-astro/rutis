@@ -15,7 +15,7 @@ Writing a plugin takes only these:
 | `rutis::events::Mode` | Which mode a listener is called in |
 | `rutis::Disposer` | What `provide`, `on` and `effect` return, to withdraw early |
 | `#[rutis::service]` | Serves a service to other languages |
-| `rutis::Definition` | A plugin definition: a plugin to hand over and mount many times, see [Plugin definitions](#plugin-definitions) |
+| `rutis::Definition` | A plugin definition: a plugin to hand over and mount many times, see [plugin API: plugin definitions](plugin-api.en.md#handing-over-plugin-definitions-in-each-language) |
 
 The `Ctx` methods for plugins:
 
@@ -204,56 +204,7 @@ A service's parameters take data and functions, not objects with methods: when a
 
 ### Plugin definitions
 
-A `Plugin` is an instance: its config is in its fields, and handing it to `ctx.plugin` uses it up. To hand a plugin elsewhere, to be mounted there many times (one per session, say), use `rutis::Definition`: `Definition::new(ctx, build)` makes a definition, whose `build` gets the `ctx` where a copy mounts and that copy's config, and returns a `Plugin`; the mounting side writes `ctx.plugin(def.at(&ctx, config)?)`.
-
-```rust
-use std::sync::{Arc, Mutex};
-use rutis::{Ctx, Definition, Plugin, Result};
-
-/// One per session; `depth` comes from its own config.
-struct Part {
-    depth: u32,
-}
-
-impl Plugin for Part {
-    type Deps = ();
-
-    async fn apply(&self, _: &Ctx, _: ()) -> Result {
-        println!("depth {}", self.depth);
-        Ok(())
-    }
-}
-
-/// Hands a definition of `Part` to whoever mounts parts (here just a list).
-struct Git {
-    parts: Arc<Mutex<Vec<Definition>>>,
-}
-
-impl Plugin for Git {
-    type Deps = ();
-
-    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
-        let pool = Arc::new(String::from("pool")); // prepared in apply
-        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
-            let _pool = pool.clone();
-            Ok(Part { depth })
-        });
-        self.parts.lock().unwrap().push(definition);
-        Ok(())
-    }
-}
-
-/// The mounting side: each mount is one copy, with its own config.
-fn mount(at: &Ctx, definition: &Definition) -> Result {
-    at.plugin(definition.at(at, 3u32)?);
-    Ok(())
-}
-# fn main() {}
-```
-
-- A definition belongs to the current generation of the plugin that made it: when that plugin unloads, restarts or ends, every copy mounted from it ends first, and is cleaned up, before the plugin's own cleanups run; then `at` fails and `ended()` completes.
-- It can only be mounted inside the instance of the plugin that made it, or deeper.
-- A plugin definition another language hands over is a `Definition` too, mounted the same way; see the [plugin API](plugin-api.en.md#plugin-definitions). A definition made in Rust cannot be handed to another language.
+A `Plugin` is an instance, used up when handed to `ctx.plugin`; a plugin to hand elsewhere and mount many times is a `rutis::Definition`: see [plugin API: plugin definitions](plugin-api.en.md#handing-over-plugin-definitions-in-each-language).
 
 ### Events
 
@@ -262,7 +213,6 @@ All listeners of every language and process on a host are on one event bus ([plu
 An event is a type: `NAME` is its name in every language, and its arguments go through serde. A tuple struct of two or more fields is that many arguments, so `Created` below is `emit("session/created", id, size)` in other languages; a unit struct has no arguments; anything else (a struct with named fields, a newtype) is one argument.
 
 ```rust
-use rutis::events::Mode;
 use rutis::{Ctx, Event, Plugin, Result};
 use serde::{Deserialize, Serialize};
 
@@ -289,83 +239,17 @@ impl Plugin for Audit {
     type Deps = ();
 
     async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
-        ctx.on::<Created>(|event, call| async move {
-            if call.mode() == Mode::Waterfall {
-                let inner = call.next().await?; // middleware: run the rest of the chain first
-                return Ok(inner.map(|text| format!("[{text}]")));
-            }
-            Ok(Some(format!("audited {}", event.0))) // Ok(None) is no result
+        ctx.on::<Created>(|event, _| async move {
+            println!("created {}", event.0);
+            Ok(None) // Ok(None) is no result
         })?;
-        ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
-        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
-            println!("{}", call.name()); // a prefix listener: the actual name
-            Ok(None)
-        })?;
+        ctx.emit(Closed("s0".into()))?; // returns at once, waits for no listener
         Ok(())
     }
 }
 ```
 
-Events are sent in five ways, named as in every other language:
-
-```rust
-# use rutis::{Ctx, Event};
-# use serde::{Deserialize, Serialize};
-# #[derive(Serialize, Deserialize)]
-# pub struct Created(pub String, pub u32);
-# impl Event for Created {
-#     const NAME: &'static str = "session/created";
-#     type Value = String;
-# }
-# async fn demo(ctx: &Ctx) -> rutis::Result {
-ctx.emit(Created("s1".into(), 3))?;                         // returns at once
-ctx.parallel(Created("s1".into(), 3)).await?;               // waits for all
-let first = ctx.serial(Created("s1".into(), 3)).await?;     // the first result
-let out = ctx
-    .waterfall(Created("s1".into(), 3))
-    .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) }) // optional
-    .await?;
-let quick = ctx.bail(Created("s1".into(), 3))?;             // synchronous
-let from_python = ctx
-    .filter(|l| l.runtime.as_deref() == Some("py"))
-    .serial(Created("s1".into(), 3))
-    .await?;
-# let _ = (first, out, quick, from_python);
-# Ok(())
-# }
-```
-
-| Topic | Rule |
-| --- | --- |
-| Listener | A closure taking `(Arc<E>, Call<E>)`, a synchronous one `(Arc<E>, SyncCall<'_, E>)`; it returns `Result<Option<E::Value>>`, where `Ok(None)` and `Ok(Some(false))` are no result. The compiler infers the parameter types, and `?` works on any error inside. The closure is called many times: clone what moves into `async move` inside the closure first |
-| `call` | `mode()` is this dispatch's mode; `name()` the dispatched name; `next()`, in a `waterfall` only (elsewhere `WaterfallNext`), runs the rest of the chain, and not calling it vetoes the rest; `ctx()` is the `Ctx` that registered the listener, and what is registered on it belongs to this plugin |
-| Sync and async | Every mode can call an `on_sync` listener, but it cannot call `next` in an async `waterfall`; `bail` cannot call an `on` listener (`AsyncListener`) |
-| Names | Registered and sent under `E::NAME`. `listen::<E>().name(n)` listens under another name; `.prefix(p)` hears every name under the prefix, each decoded as `E`, and an event of another shape fails that call with `EventValue` |
-| Sending | `emit`, `parallel`, `serial`, `waterfall` and `bail` take an `E` or an `Arc<E>`; `waterfall` returns a builder: `.terminal(…)` first if wanted, then `.await`; without a terminal, the last `next()` gets `None`. `ctx.filter(keep)` gives the same five methods, `keep` seeing each listener's `ListenerInfo` |
-| Failures | An `emit` listener's failure does not reach the emitter; it is reported to the host. `parallel` runs every listener and returns `ListenersFailed` (in registration order, also for a single failure); `serial`, `bail` and `waterfall` stop at the first error and return it |
-| Unload | When the plugin stops its listeners are withdrawn; running calls see `call.ctx().cancelled()`, and the unload waits for them, at most until the shutdown deadline. Dropping a `parallel`, `serial` or `waterfall` future cancels that dispatch |
-| Reserved names | `rutis/*` (`rutis/service`, `rutis/row`, `rutis/runtime`) can be listened to, not sent (`ReservedEvent`) |
-
-#### Advanced: `once`, `prepend`, `global`
-
-```rust
-# use rutis::{Ctx, Event};
-# use serde::{Deserialize, Serialize};
-# #[derive(Serialize, Deserialize)]
-# pub struct Created(pub String, pub u32);
-# impl Event for Created {
-#     const NAME: &'static str = "session/created";
-#     type Value = String;
-# }
-# fn demo(ctx: &Ctx) -> rutis::Result {
-ctx.listen::<Created>().once().on(|_, _| async move { Ok(None) })?;    // called at most once
-ctx.listen::<Created>().prepend().on_sync(|_, _| Ok(None))?;           // before this name's existing listeners
-ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // filters skip it
-# Ok(())
-# }
-```
-
-Options chain, ending with `.on(…)` or `.on_sync(…)`. An event type with no fixed name (the value decides it) has an empty `NAME` and overrides `fn name(&self) -> &str` to return the value's name; listen to it with `.name(…)`.
+The other ways to send (`parallel`, `serial`, `waterfall`, `bail`), `call.mode()`, `on_sync`, prefix listeners, filters, and `once`, `prepend`, `global` are in [plugin API: events](plugin-api.en.md#rust).
 
 #### Emitting from a service
 

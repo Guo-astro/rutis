@@ -21,8 +21,7 @@ import (
 
 // features are what this runtime supports of the runtime contract.
 // rows.announce: services rows provide without declaring them are announced
-// with their methods, to a host whose mount says `announce`. Events are the
-// capability events-v2 (#464), no longer a feature. plugin-values: a plugin
+// to the host with their methods. plugin-values: a plugin
 // definition this runtime handed over comes back to be described
 // (`plugins.read`) and loaded as a row's entry
 // (docs/design-plugin-values-2026-10-25.md §5).
@@ -167,12 +166,6 @@ type runtimeState struct {
 	hostEmits         map[string]int
 	// What the host calls this runtime (mount `runtime`), for descriptors.
 	runtimeName string
-	// The host takes announced services (mount `announce`).
-	announce bool
-	// Mounted by a host; one without `announce` is older than 0.12.
-	mounted bool
-	// The undeclared names a plugin was told such a host does not take.
-	told map[string]bool
 
 	// Frames for the host, queued under mu in the order they are taken and
 	// sent by flush once mu is released: a write blocked by a far end that
@@ -218,19 +211,8 @@ func relay(from <-chan struct{}, to chan struct{}) {
 	}()
 }
 
-// Where a plugin is told that the host does not take an undeclared
-// service (oldHost).
-var oldHostOutput io.Writer = os.Stderr
-
 // Where a row's late failures are written (tests replace it).
 var rowOutput io.Writer = os.Stderr
-
-// What a plugin providing the undeclared service name is told when the
-// host, older than 0.12, mounted without `announce`: such a host does not
-// take the service, which stays in this process.
-func oldHost(name string) string {
-	return fmt.Sprintf("rutis: service %s is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host", name)
-}
 
 func newRuntime(defs []*Definition) *runtimeState {
 	byName := map[string]*Definition{}
@@ -244,7 +226,6 @@ func newRuntime(defs []*Definition) *runtimeState {
 		hosts:    map[string]map[string]string{},
 		slots:    map[string]*slot{},
 		handles:  map[string]*handleEntry{},
-		told:     map[string]bool{},
 
 		listeners:         map[string][]*listener{},
 		byID:              map[string]*listener{},
@@ -408,16 +389,10 @@ func (rt *runtimeState) provide(r *row, name string, value any) func() {
 	}
 	rt.services[id] = providedService{row: r.key, value: value, shape: shape}
 	r.provided = append(r.provided, id)
-	// Not declared: announced, with its exported methods; a host older
-	// than 0.12 does not take it, and the plugin is told, once per name.
+	// Not declared: announced, with its exported methods.
 	if rt.slots[id] == nil && !strings.Contains(name, "#") {
-		if rt.announce {
-			rt.slots[id] = &slot{row: r.key, name: name, announced: true}
-			r.announced = append(r.announced, id)
-		} else if rt.mounted && !rt.told[name] {
-			rt.told[name] = true
-			fmt.Fprintln(oldHostOutput, oldHost(name))
-		}
+		rt.slots[id] = &slot{row: r.key, name: name, announced: true}
+		r.announced = append(r.announced, id)
 	}
 	rt.refresh(id)
 	rt.mu.Unlock()
@@ -688,7 +663,6 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 	switch method {
 	case "mount":
 		mount, err := argument[struct {
-			Announce bool
 			// The name the host gives this runtime, which descriptors of
 			// its listeners carry; optional.
 			Runtime string
@@ -697,9 +671,7 @@ func (rt *runtimeState) control(ctx context.Context, method string, args []any) 
 			return nil, fmt.Errorf("mount: %w", err)
 		}
 		rt.mu.Lock()
-		rt.announce = mount.Announce
 		rt.runtimeName = mount.Runtime
-		rt.mounted = true
 		rt.mu.Unlock()
 		return map[string]any{
 			"services":       map[string]any{},
@@ -1053,7 +1025,6 @@ func (rt *runtimeState) hostService(name, id string, methods map[string]string) 
 		name:    name,
 		methods: methods,
 		call: func(ctx context.Context, method string, args []any) (any, error) {
-			rt.warnChainless(ctx)
 			session := rt.session
 			if session == nil {
 				return nil, peer.HostGone(nil)
@@ -1141,35 +1112,4 @@ func (s *Service) bind(target any) error {
 		}))
 	}
 	return nil
-}
-
-var (
-	warned  sync.Map
-	devMode = os.Getenv("RUTIS_DEV") == "1"
-	// The SDK's packages: the module, this package being internal/runtime.
-	selfPath = strings.TrimSuffix(reflect.TypeFor[runtimeState]().PkgPath(), "/internal/runtime")
-)
-
-// warnChainless warns, in development mode, of a call without a call chain
-// made while an incoming synchronous call runs: a context was not passed
-// on, and a far end waiting for this process may wait forever.
-func (rt *runtimeState) warnChainless(ctx context.Context) {
-	if !devMode || len(peer.ChainOf(ctx)) > 0 || rt.session == nil || rt.session.Incoming() == 0 {
-		return
-	}
-	pcs := make([]uintptr, 32)
-	frames := goruntime.CallersFrames(pcs[:goruntime.Callers(2, pcs)])
-	for {
-		frame, more := frames.Next()
-		if !strings.HasPrefix(frame.Function, "reflect.") && !strings.HasPrefix(frame.Function, selfPath) && !strings.HasPrefix(frame.Function, "runtime.") {
-			site := fmt.Sprintf("%s:%d", frame.File, frame.Line)
-			if _, seen := warned.LoadOrStore(site, true); !seen {
-				fmt.Fprintf(os.Stderr, "rutis: a call at %s carries no call chain while a call into this process runs: pass on the context.Context the plugin was given\n", site)
-			}
-			return
-		}
-		if !more {
-			return
-		}
-	}
 }

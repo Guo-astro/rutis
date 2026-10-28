@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
-import { oncePerName, supported, toCordis } from '../src/leaf.mjs'
+import { supported, toCordis } from '../src/leaf.mjs'
 import { Bus } from '../src/events.mjs'
 import { install } from '../src/cordis-events.mjs'
 
@@ -67,31 +67,6 @@ test('a failed apply and an update remove the leaf listeners, as the runner driv
   await plugin.dispose()
 })
 
-// An undeclared service under a host older than 0.12: told once per name,
-// a declared or keyed one not at all.
-test('a leaf plugin providing an undeclared service is told once per name', async () => {
-  const root = new Context()
-  const written = []
-  const spec = definePlugin({
-    provides: { declared: { get: 'sync' } },
-    apply(ctx) {
-      ctx.provide('declared', { get() {} })
-      ctx.provide('weather', { today() {} })
-      ctx.provide('weather#1', { today() {} })
-    },
-  })
-  const told = oncePerName(text => written.push(text))
-  const first = root.plugin(toCordis(supported(spec, 'old-host'), told))
-  await first.await()
-  await first.dispose()
-  const again = root.plugin(toCordis(supported(spec, 'old-host'), told))
-  await again.await()
-  await again.dispose()
-  assert.deepEqual(written, [
-    'rutis: service weather is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host\n',
-  ])
-})
-
 // A service neither the plugin nor its row declares in `inject`, and that
 // is not there for it: `use` says what to declare, not that the service
 // does not exist (#676). One the row's own `inject` declares is missing.
@@ -106,7 +81,7 @@ test('a leaf plugin using a service it does not inject is told to declare it', a
       }
     },
   })
-  const plugin = root.plugin(toCordis(supported(spec, 'sneaky'), undefined, ['extra']))
+  const plugin = root.plugin(toCordis(supported(spec, 'sneaky'), ['extra']))
   await plugin.await()
   assert.equal(errors.tsvc, "service tsvc is not available to this plugin, which does not declare it in inject: add 'tsvc' to its inject")
   assert.equal(errors.extra, 'service extra is not available')
