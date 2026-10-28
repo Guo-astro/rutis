@@ -4,6 +4,7 @@
 //! It is public for the binary and its tests, not as an API: it changes with
 //! the binary, without a semver promise.
 
+pub mod call;
 pub mod config;
 pub mod control;
 pub mod host;

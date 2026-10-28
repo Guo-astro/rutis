@@ -91,7 +91,7 @@ In short:
 | Method names | An exported method's wire name has its first letter lowercased (`Today` → `today`, `URLFor` → `urlFor`, `HTTPServer` → `httpServer`); `rutis.Rename` overrides it |
 | Sync or async | `async` by default; `rutis.Sync("Unit")` marks synchronous ones. A sync method blocks a Node caller's event loop: keep methods that do I/O `async` |
 | Signatures | `func (T) M([ctx context.Context,] params...) ([result,] [error])` |
-| Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description); a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`). The `Schema` field takes a hand-written JSON Schema instead, which `rutis-host check` prints, but it fills in no defaults |
+| Config | The JSON Schema is derived from the config type (field names follow `json` tags, a `doc` tag is the description), without `required`: a field the row's `config` leaves out is the zero value, so defaults go in `Apply` (`city` above); to tell "left out" from "given empty", use a pointer field (`*string`, which also takes `null`). Before `Apply` the config is validated against the schema, then decoded: a row whose config does not match fails with `config: …`, and `Apply` is not called ([plugin API: configuration](plugin-api.en.md#configuration)); a decoding error after the schema passed is written `<path> is not a value the plugin accepts`. The `Schema` field takes a hand-written JSON Schema instead: its `default`s are filled in before decoding |
 | Using services | A struct of function fields may list only the methods it uses; or call by name with `*rutis.Service`: `svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` is a `context.Context` cancelled when the plugin unloads; goroutines the plugin starts use `ctx.Go(...)` or watch `ctx.Done()` |
 | Concurrency | Every incoming call runs on its own goroutine: provided objects must be safe for concurrent use; do not hold a lock while calling another service |
@@ -263,6 +263,8 @@ func TestToday(t *testing.T) {
 go test ./...
 ```
 
+`rutistest.Load` validates the config against the schema as the runtime does, failing the test when it does not match, and writes extra keys on stderr. To test that a config is refused, use `rutistest.TryLoad(t, Plugin, config, services)`: it gives back the error, a `*rutis.RemoteError` with `Name` `BindingError` and `Code` `bad-config`.
+
 `Provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). When present it applies (`Sync` marks synchronous methods, `Rename` renames them). It also runs without one: what `ctx.Provide` provides still reaches rutis by itself, its methods the value's exported ones, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
 Events in tests: the test side is the host of the bus. `loaded.Emit`, `Parallel`, `Serial`, `Waterfall`, `Bail` and `Filter` emit from the row's scope; `loaded.On(name, fn)` listens as the host does (the plugin's emissions of that name then go through the test side, as they go through rutis); `loaded.Load(config, rutistest.InScope("t1/s1"))` loads another row in a scope; `loaded.Update(config)` changes a row's config as rutis does, by restarting the row: it unloads, then loads with the new config, its listeners registered anew, after the others (rutis sends a Go row no `rows.update`: a change of config is a restart; the row is gone while its cleanups run, so an event a cleanup emits fails); `loaded.Reported()` is what the runtime reported of failed `Emit` listeners. A test of the `greeter` above:
@@ -339,6 +341,17 @@ uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # the version of 
 The Python runtime finds its interpreter in the `.venv` of `runtimes.py.project` (here `dev`), and that environment needs `rutis`; `dev/` holds no Go code, so `go build ./...` is not affected. In TypeScript it is the same: `"runtimes": { "node": { "project": "dev" } }`, `npm install @arcships/rutis` in `dev/`, and the row named `./dev/fake-llm.ts`.
 
 When these rows' files change, only those rows reload, without a rebuild, and the Go runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Go binary with its plugins, versions and plugin API.
+
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ### Debugging
 

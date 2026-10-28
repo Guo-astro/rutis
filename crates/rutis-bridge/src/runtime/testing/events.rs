@@ -204,7 +204,7 @@ impl Participant {
     }
 }
 
-/// What a dispatch step emits (§13.2 "发出说明").
+/// What a dispatch step emits.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
     pub from: Location,

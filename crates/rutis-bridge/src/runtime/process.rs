@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// What the rows of a runtime need from it ([`Process::check_rows`]).
+const ROW_FEATURES: [&str; 2] = ["rows.v2", "hosts"];
+
 /// Receives changes of exported Cordis service slots. `handle` addresses the
 /// object now in the slot (`None` when it is unavailable); `version` orders
 /// changes, so an older notification must not override a newer one.
@@ -1481,6 +1484,27 @@ impl Process {
     /// plugins are described one by one.
     pub fn plugins(&self) -> Option<&HashMap<String, RowSchema>> {
         self.plugins.get().and_then(Option::as_ref)
+    }
+
+    /// Check that the runtime named `runtime` speaks the row contract:
+    /// describing plugins and exporting their services (`rows.v2`) and
+    /// leasing host services (`hosts`). Static mounts use neither; every
+    /// runtime that runs rows, one or one per connection, checks here.
+    #[doc(hidden)]
+    pub fn check_rows(&self, runtime: &str) -> Result<(), Error> {
+        let missing: Vec<&str> = ROW_FEATURES
+            .iter()
+            .copied()
+            .filter(|feature| !self.supports(feature))
+            .collect();
+        match missing.is_empty() {
+            true => Ok(()),
+            false => Err(Error::refused(format!(
+                "the {runtime} runtime lacks {}: a runtime speaking the row contract is required \
+                 (for Node, @arcships/rutis-runtime 0.3.0 or later)",
+                missing.join(" and ")
+            ))),
+        }
     }
 
     /// Whether the Node runtime supports `feature` (reported when mounting).

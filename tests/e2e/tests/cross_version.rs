@@ -1266,8 +1266,11 @@ fn the_current_runtimes_under_a_previous_host() {
         );
         // The checkout's runtimes, as for any host of a scenario.
         let mut host = s.program("", release.host(), ["run", "rutis.json"], &[]);
-        host.expect("greeter: running");
-        host.expect("gogreeter: running");
+        // The whole row name: `greeter: running` is inside `gogreeter: running`,
+        // and whichever row starts first would take the other's line (as #780).
+        for line in ["greeter: running", "gogreeter: running"] {
+            host.wait_for(&format!("the line {line:?}"), |text| text.starts_with(line));
+        }
         probe.started(&mut host);
         assert_eq!(
             probe.call(&mut host, "greeter", "hello", json!(["Ada"])),
@@ -1506,6 +1509,8 @@ fn undeclared(release: &Release, s: Scenario, old: Old) {
     if let Old::Runtime = old {
         let mut check = s.host(["check", "rutis.json"]);
         let status = check.wait_exit();
+        // Its exit can come before the last of its output is read.
+        check.wait_output_end();
         let printed: Vec<String> = check.lines().into_iter().map(|line| line.text).collect();
         let has = |text: &str| printed.iter().any(|line| line.contains(text));
         assert!(status.success(), "check: {status}\n{printed:#?}");

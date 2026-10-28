@@ -79,7 +79,12 @@ async fn a_runtime_still_starting_holds_up_only_its_own_rows() {
     .await
     .unwrap();
     probe.wait_for("fast: started").await;
-    assert_eq!(row_state(&loader, "fast"), Some(FiberState::Active));
+    // `started` is recorded inside `apply`, before the row runs in rutis.
+    COLD.until(
+        || row_state(&loader, "fast") == Some(FiberState::Active),
+        "the fast row running in rutis",
+    )
+    .await;
     assert!(matches!(stuck_handle.state(), RuntimeState::Starting));
     assert_eq!(row_state(&loader, "held"), Some(FiberState::Pending));
     let held = loader.get("held").unwrap();

@@ -205,6 +205,8 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 The rules (waterfall, failures, scope, filter, cancellation, reserved names) are the same in every language: see [plugin API: events](plugin-api.en.md#events) and the [Go guide's table](go-plugin.en.md#events). In Swift, a listener's Task is cancelled when its row unloads, and when the emitter of a `parallel`, `serial`, `waterfall` or `bail` gives up; every listener is called as a synchronous one, so `bail` reaches Swift listeners anywhere.
 
+The config is validated against `@RutisConfig`'s schema, its defaults filled, before it is decoded: a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). Optional properties (`T?`) and `var`s with a literal initial value (`var units = "metric"`, also numbers, booleans and arrays and dictionaries of them) are not required; the literal is the default. Any other initial value is no default, and the property is required. A type writing its own `static let rutisSchema` is validated against it; a plain `Decodable` struct without `@RutisConfig` is only decoded (a primitive type such as `String`, or a `CaseIterable` enum with `String` raw values, is still validated against the schema derived from the type). A decoding error after the schema passed is written `<path> is not a value the plugin accepts`.
+
 ## 3. Test
 
 `RutisTest` needs no host, but the plugin runs in its real runtime and values cross a real session (an in-memory socket pair); the test side is the host:
@@ -240,6 +242,17 @@ rutis-host dev
 ```
 
 `dev` builds the package's executable product with `swift build` and runs each of its plugins as the runtime `swift-weather`; a change to the sources, `Package.swift` or `Package.resolved` rebuilds it and restarts only that runtime, and a failed build keeps the old one running (the compiler's errors are printed). Each build says `weather: building`, then `weather: built in 12.3s`: the first one compiles the dependencies, the SDK's macros among them, and can take minutes. Each build is copied to `.rutis/swift/<product>-<n>`, a new file each time. Other services the plugin needs go in `rutis.dev.json`; they may be Python or TypeScript plugins (with their `runtimes`). When their files change, only those rows reload, without a rebuild, and the Swift runtime does not restart for it; a change to `rutis.dev.json` applies while it runs (see [Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev)). `rutis-host check` lists every row and every Swift binary with its platform, SDK, plugin API and plugins; a binary built with an SDK older than rutis 0.13 cannot run, and `check` says to rebuild it.
+
+### Calling a method
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ## 5. System access
 

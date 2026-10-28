@@ -23,7 +23,8 @@ use rutis_bridge::{peer_key, LinkState, Peer};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
-use crate::{Build, Loader, LoaderError, Resolved, Resolver};
+use crate::resolver::{Build, Resolved};
+use crate::{Loader, LoaderError, Resolver};
 
 const PREFIX: &str = "peer:";
 
@@ -633,7 +634,7 @@ impl PluginFactory<Value> for NodeFactory {
 }
 
 /// Declarations of a row that runs on `peer`, not known here, and why.
-fn runs_on(peer: &PeerId, why: &str) -> crate::Declarations {
+fn runs_on(peer: &PeerId, why: &str) -> crate::resolver::Declarations {
     let why = format!("it runs on {peer}: {why}");
     Arc::new(move |_: &Value| Err(why.clone()))
 }
@@ -645,7 +646,7 @@ pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerReso
         resolver: resolver.clone(),
         build: Build::default(),
     });
-    let scoped: crate::ScopedFactory = Arc::new(move |build: &Build| {
+    let scoped: crate::resolver::ScopedFactory = Arc::new(move |build: &Build| {
         let factory: Arc<dyn PluginFactory<Value>> = Arc::new(NodeFactory {
             resolver: resolver.clone(),
             build: build.clone(),
@@ -665,7 +666,7 @@ pub fn register_peer_node(builtins: &mut crate::Builtins, resolver: Arc<PeerReso
                 .flatten()
                 .filter_map(|name| name.as_str().map(str::to_owned))
                 .collect();
-            Ok(crate::Declared {
+            Ok(crate::resolver::Declared {
                 requires: Vec::new(),
                 provides,
                 announces: false,
@@ -691,7 +692,7 @@ struct Reconfigure {
 }
 
 impl Reconfigure {
-    async fn apply(&self, update: &crate::VolatileUpdate) -> Result<Option<()>, Error> {
+    async fn apply(&self, update: &crate::volatile::VolatileUpdate) -> Result<Option<()>, Error> {
         let config = NodeConfig::parse(&update.config)?;
         config.check(self.loader.as_ref(), &self.build)?;
         self.handle
@@ -755,8 +756,8 @@ impl DynPlugin for Node {
                 loader,
                 build: self.build.clone(),
             });
-            ctx.listen::<crate::VolatileUpdate>()
-                .name(crate::volatile_key(ctx))
+            ctx.listen::<crate::volatile::VolatileUpdate>()
+                .name(crate::volatile::volatile_key(ctx))
                 .on(move |update, _| {
                     let reconfigure = reconfigure.clone();
                     async move { reconfigure.apply(&update).await }

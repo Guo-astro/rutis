@@ -101,6 +101,7 @@ site: {
 | `bad-argument` | 参数个数或类型不对 | `{service, method, argument, expected}` |
 | `bad-value` | 值传不过去，或消息超过上限 | `{argument?, part, limit?}` |
 | `peer-gone` | 调用进行中对面的运行时退出或断开 | `{runtime, reason}` |
+| `bad-config` | 这一行的配置不符合插件的 Schema（[配置 Schema 设计](design-config-schema-2026-10-27.md) §5.2 加的一行） | `{issues: [{path, message}]}`（`path` 的每一项是键或下标） |
 
 `SyncWaitCycle`、`AggregateError` 已有自己的类型名，不另设码。码给程序判断，不出现在给人看的那一行文字里。表在实施时可以加行，不改已有的行。
 
