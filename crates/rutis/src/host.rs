@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::bus::EventSubscription;
-pub use crate::effect::{Effect, EffectMeta, EffectPhase};
+pub use crate::effect::Effect;
 pub use crate::error::{
     default_sink, ErrorKind, ErrorSink, NextMisuse, ServiceReadError, ServiceReadFailure,
 };
@@ -29,7 +29,7 @@ pub use crate::service::CallError;
 use crate::diagnostics::RuntimeDiagnostics;
 use crate::effect::Disposer;
 use crate::error::Error;
-use crate::{Ctx, Event, Plugin};
+use crate::Ctx;
 
 /// The diagnostics snapshot [`CtxHost::diagnostics`] returns.
 pub mod diagnostics {
@@ -60,14 +60,6 @@ pub trait CtxHost: sealed::Sealed {
     /// failures through it (a session that fails to save, for example); it is the
     /// same sink the framework uses, so nothing fails silently.
     fn error_sink(&self) -> ErrorSink;
-
-    /// Take completed, early-disposed effect errors owned by this fiber.
-    /// `Disposer::dispose()` returns an error immediately without sending it
-    /// to the error sink. Each error is returned here once; taken errors no
-    /// longer appear in a later unload result or restart sink notification.
-    /// Errors from effects still draining remain available to a subsequent
-    /// call or to the unload that owns their completion.
-    fn take_cleanup_errors(&self) -> Vec<Arc<ErrorKind>>;
 
     /// A root on the current tokio runtime (`Handle::try_current()`). Without one
     /// it returns an error; it never creates a runtime.
@@ -231,28 +223,6 @@ pub trait CtxHost: sealed::Sealed {
         &self,
         key: &Key<T>,
     ) -> Result<Arc<T>, ServiceReadError>;
-
-    /// Mounts a plugin built from `config` by `build`, as
-    /// `Builtins::register` does; the returned view can `update(config)`,
-    /// which builds a new instance with the same function (so `build` only
-    /// constructs). The dependencies are `P::Deps`.
-    fn plugin_from<C, P, B>(&self, build: B, config: C) -> FiberView
-    where
-        C: Send + Sync + 'static,
-        P: Plugin,
-        B: Fn(&C) -> Result<P, Error> + Send + Sync + 'static;
-
-    /// `waterfall`, synchronously: every listener on the chain must be
-    /// synchronous (`on_sync`); `terminal` is what the last one's `next`
-    /// returns.
-    fn waterfall_sync<E, F>(
-        &self,
-        event: impl crate::events::IntoEvent<E>,
-        terminal: F,
-    ) -> Result<Option<E::Value>, Error>
-    where
-        E: Event,
-        F: FnOnce(Arc<E>) -> Result<Option<E::Value>, Error>;
 
     /// The current registrations of the root's event bus, in registration
     /// order.

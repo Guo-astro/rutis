@@ -6,15 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::host::{BoxFuture, CtxHost, FiberView};
+use rutis::host::{CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
 use rutis_bridge::session::Error;
 use rutis_bridge::session::{Connection, Endpoint, Format, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
-    peer_key, protocol, transport_key, Credential, Dial, Failure, Identity, IdentityPlugin,
-    LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,
+    peer_key, Accepting, Credential, Dialer, Failure, Identity, IdentityPlugin, LinkConfig,
+    LinkPlugin, LinkState, Peer, Registrations, Retry, StaticIdentity,
 };
 use rutis_test_support::{eventually, scaled, HANG_GUARD};
 use serde_json::json;
@@ -55,7 +54,7 @@ fn peer(root: &Ctx, of: &str) -> Option<Arc<Peer>> {
     root.get_at::<Peer>(&peer_key(&id(of)))
 }
 
-/// One application: the shared transport, an identity and a link.
+/// One application: an identity and a link.
 struct App {
     root: Ctx,
     link: FiberView,
@@ -63,10 +62,8 @@ struct App {
     states: watch::Receiver<LinkState>,
 }
 
-async fn app(transport: &Arc<MemoryTransport>, identity: StaticIdentity, link: LinkConfig) -> App {
+async fn app(identity: StaticIdentity, link: LinkConfig) -> App {
     let root = Ctx::root().unwrap();
-    let memory = root.plugin(MemoryPlugin::with_transport(transport.clone()));
-    (&memory).await.unwrap();
     let name = identity.local().to_string();
     let identity = root.plugin(IdentityPlugin::new(&name, identity));
     let plugin = LinkPlugin::new(link.retry(quick()));
@@ -81,19 +78,28 @@ async fn app(transport: &Arc<MemoryTransport>, identity: StaticIdentity, link: L
 }
 
 /// `main` listens for `mac`; `mac` dials it with its token.
-async fn linked() -> (Arc<MemoryTransport>, App, App) {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+async fn linked() -> (Registrations, App, App) {
+    let transport = Registrations::new();
     let main = app(
-        &transport,
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in"),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        ),
     )
     .await;
     let mac = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in"),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        ),
     )
     .await;
     (transport, main, mac)
@@ -228,16 +234,8 @@ async fn a_newer_connection_takes_over_and_the_old_one_is_told() {
     let old = eventually(|| peer(&main.root, "mac"), "the first session").await;
     let old_at_mac = eventually(|| peer(&mac.root, "main"), "mac's session").await;
     // Another connection authenticating as mac, completing its handshake.
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-    );
-    let channel = transport
-        .dial(
-            &Dial::address("main-in")
-                .peer(id("main"))
-                .identity(identity)
-                .protocol(protocol()),
-        )
+    let dial = rutis_bridge::memory::dialer(transport.clone(), "main-in");
+    let channel = dial(Some(Credential::Bearer("mac-token".into())))
         .await
         .unwrap();
     struct Nothing;
@@ -273,12 +271,18 @@ async fn a_newer_connection_takes_over_and_the_old_one_is_told() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn failures_are_retried_by_category() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let _main = app(
-        &transport,
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in"),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        ),
     )
     .await;
 
@@ -293,9 +297,12 @@ async fn failures_are_retried_by_category() {
 
     // A wrong token: slow retries, reported as an authentication failure.
     let guessing = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("guess".into())),
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in"),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        ),
     )
     .await;
     let waiting = state(
@@ -311,20 +318,27 @@ async fn failures_are_retried_by_category() {
 
     // An endpoint speaking another protocol: no more attempts.
     let foreign = transport.clone();
-    foreign.endpoint("old-in", id("old"));
     let _old = foreign
-        .register(rutis_bridge::Registration {
-            listener: "old-in".into(),
-            peer: id("mac"),
-            identity: Arc::new(StaticIdentity::new(id("old")).accept_token("mac-token", id("mac"))),
-            protocol: "rutis.2".into(),
-            deliver: Box::new(|_| {}),
-        })
+        .register(
+            &id("old"),
+            rutis_bridge::Registration {
+                listener: "old-in".into(),
+                peer: id("mac"),
+                identity: Arc::new(
+                    StaticIdentity::new(id("old")).accept_token("mac-token", id("mac")),
+                ),
+                protocol: "rutis.2".into(),
+                deliver: Box::new(|_| {}),
+            },
+        )
         .unwrap();
     let dialing_old = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("old"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("old"), "memory", "mac", "old-in"),
+        LinkConfig::dial(
+            id("old"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "old-in"),
+        ),
     )
     .await;
     state(
@@ -336,9 +350,12 @@ async fn failures_are_retried_by_category() {
 
     // Nothing listening yet: retryable, with backoff.
     let early = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("main"), "memory", "mac", "nowhere"),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "nowhere"),
+        ),
     )
     .await;
     state(
@@ -359,19 +376,28 @@ async fn failures_are_retried_by_category() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_far_end_greeting_as_someone_else_is_an_identity_failure() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let main = app(
-        &transport,
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in"),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        ),
     )
     .await;
     // Holds mac's token, but greets as pi.
     let _impostor = app(
-        &transport,
         StaticIdentity::new(id("pi")).present(id("main"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("main"), "memory", "pi", "main-in"),
+        LinkConfig::dial(
+            id("main"),
+            "pi",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        ),
     )
     .await;
     state(
@@ -417,18 +443,9 @@ async fn stopping_a_link_withdraws_its_peer_and_revokes_its_registration() {
         "the refusal",
     )
     .await;
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-    );
+    let dial = rutis_bridge::memory::dialer(transport.clone(), "main-in");
     assert!(matches!(
-        transport
-            .dial(
-                &Dial::address("main-in")
-                    .peer(id("main"))
-                    .identity(identity)
-                    .protocol(protocol())
-            )
-            .await,
+        dial(Some(Credential::Bearer("mac-token".into()))).await,
         Err(rutis_bridge::channel::ConnectError::Retryable { .. })
     ));
 }
@@ -451,27 +468,27 @@ async fn a_link_stops_with_its_identity() {
     assert_eq!(*mac.states.borrow(), LinkState::Idle);
 }
 
-/// A transport whose dial holds its thread for a while, as starting a
-/// local runtime's process does (fork and exec do not yield), then is
-/// refused: `dialing` once it has begun, `dialed` once it is over.
+/// A dial that holds its thread for a while, as starting a local
+/// runtime's process does (fork and exec do not yield), then is refused:
+/// `dialing` once it has begun, `dialed` once it is over.
 #[derive(Default)]
 struct Blocking {
     dialing: AtomicBool,
     dialed: AtomicBool,
 }
 
-impl Transport for Blocking {
-    fn kind(&self) -> &str {
-        "blocking"
-    }
-
-    fn dial<'a>(&'a self, _dial: &'a Dial) -> BoxFuture<'a, Result<Channel, ConnectError>> {
-        Box::pin(async move {
-            self.dialing.store(true, Ordering::SeqCst);
-            std::thread::sleep(scaled(Duration::from_millis(500)));
-            self.dialed.store(true, Ordering::SeqCst);
-            Err(ConnectError::Retryable {
-                reason: "blocking: refused".into(),
+impl Blocking {
+    fn dialer(self: &Arc<Self>) -> Dialer {
+        let blocking = self.clone();
+        Arc::new(move |_| {
+            let blocking = blocking.clone();
+            Box::pin(async move {
+                blocking.dialing.store(true, Ordering::SeqCst);
+                std::thread::sleep(scaled(Duration::from_millis(500)));
+                blocking.dialed.store(true, Ordering::SeqCst);
+                Err::<Channel, _>(ConnectError::Retryable {
+                    reason: "blocking: refused".into(),
+                })
             })
         })
     }
@@ -486,12 +503,9 @@ impl Transport for Blocking {
 async fn a_link_stopped_while_it_dials_stops_once_the_dial_is_over() {
     let root = Ctx::root().unwrap();
     let blocking = Arc::new(Blocking::default());
-    let _transport = root
-        .provide_at(transport_key("blocking"), blocking.clone())
-        .unwrap();
     root.plugin(IdentityPlugin::new("mac", StaticIdentity::new(id("mac"))));
     let link = root.plugin(LinkPlugin::new(
-        LinkConfig::dial(id("main"), "blocking", "mac", "main-in").retry(quick()),
+        LinkConfig::dial(id("main"), "mac", blocking.dialer()).retry(quick()),
     ));
     eventually(
         || blocking.dialing.load(Ordering::SeqCst).then_some(()),
@@ -509,19 +523,29 @@ async fn a_link_stopped_while_it_dials_stops_once_the_dial_is_over() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_far_end_without_the_required_contract_stops_the_link() {
-    let transport = Arc::new(MemoryTransport::default());
-    transport.endpoint("main-in", id("main"));
+    let transport = Registrations::new();
     let main = app(
-        &transport,
         StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-        LinkConfig::listen(id("mac"), "memory", "main", "main-in"),
+        LinkConfig::listen(
+            id("mac"),
+            "main",
+            Accepting {
+                registrations: transport.clone(),
+                listener: "main-in".into(),
+                local: id("main"),
+            },
+        ),
     )
     .await;
     // mac requires a runtime; main is a node.
     let mac = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in").require("runtime"),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        )
+        .require("runtime"),
     )
     .await;
     let stopped = state(
@@ -537,9 +561,13 @@ async fn a_far_end_without_the_required_contract_stops_the_link() {
 
     // Requiring what it declares works.
     let fine = app(
-        &transport,
         StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-        LinkConfig::dial(id("main"), "memory", "mac", "main-in").require("node"),
+        LinkConfig::dial(
+            id("main"),
+            "mac",
+            rutis_bridge::memory::dialer(transport.clone(), "main-in"),
+        )
+        .require("node"),
     )
     .await;
     eventually(|| peer(&fine.root, "main"), "the node peer").await;

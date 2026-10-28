@@ -2,6 +2,8 @@
 
 > Package structure changed on 2026-10-06: `rutis-channel`, `rutis-interop`, `rutis-transport-*`, and `rutis-runtime-local` were merged as modules (`channel`, `session`, `runtime`, `transport::*`, `cordis`) in `rutis-bridge`; see [Packages, Tools, and Workflows for Developers](design-developer-packages-2026-10-06.md). The crate names below are retained as they were at design time.
 
+> 0.19 ([Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3): `ChannelInfo` is removed, the far end's id comes only from the session handshake; `Closer::close(&str)`, `replaced()` and `rejected()` became `close(Close)` (`Done`, `Replaced`, `Rejected`); `transport::local`, `transport::memory` and `transport::websocket` were renamed `pipe`, `memory` and `websocket`. What follows is as designed then.
+
 Status: design, not implemented. Revised: 2026-10-05.
 Based on: [Compatibility Layer Design](design-protocol-plugin-mount.md), [Requirements: Mounting Cordis Plugins](requirements-protocol-plugins.md).
 Consumer: [Remote Plugin Design](design-remote-plugins-2026-10-03.md) (called “remote design” below).

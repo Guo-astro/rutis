@@ -15,12 +15,13 @@ use common::runtimes::{layer, row_state, swift_binary, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
-use rutis_loader::internal::read_swift_manifest;
+use rutis_loader::internal::read_binary_manifest;
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
-use rutis_loader::runtime::swift::{
-    SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes, SwiftRuntimesHandle,
+use rutis_loader::runtime::binary::{
+    Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle,
 };
+use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
+use rutis_loader::runtime::swift::Swift;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -34,8 +35,8 @@ fn install(dir: &Path, product: &str, name: &str) -> PathBuf {
 struct Fixture {
     root: Ctx,
     loader: Loader,
-    resolver: Arc<SwiftResolver>,
-    runtimes: SwiftRuntimesHandle,
+    resolver: Arc<BinaryResolver<Swift>>,
+    runtimes: BinaryRuntimesHandle<Swift>,
     dir: tempfile::TempDir,
 }
 
@@ -58,7 +59,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
     let root = Ctx::root().unwrap();
     let catalog = ServiceCatalog::new();
     let resolver = Arc::new(
-        SwiftResolver::new(SwiftBinaries::new().dir(&plugins))
+        BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins))
             .with_catalog(&catalog)
             .reserve(["node", "py"]),
     );
@@ -71,7 +72,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let swift = SwiftRuntimes::new(resolver.clone(), dir.path());
+    let swift = BinaryRuntimes::<Swift>::new(resolver.clone(), dir.path());
     let swift = match start {
         Start::Eager => swift.eager(),
         Start::OnDemand(idle) => swift.idle(idle),
@@ -98,7 +99,7 @@ fn unresolved(loader: &Loader, id: &str) -> Option<String> {
     }
 }
 
-fn runtime_state(runtimes: &SwiftRuntimesHandle, name: &str) -> Option<SwiftRuntimeState> {
+fn runtime_state(runtimes: &BinaryRuntimesHandle<Swift>, name: &str) -> Option<BinaryRuntimeState> {
     runtimes
         .runtimes()
         .into_iter()
@@ -127,7 +128,7 @@ async fn call(root: &Ctx, name: &str, method: &str, args: Value) -> Result<Value
 #[test]
 fn a_binary_describes_itself() {
     let binary = swift_binary("RutisMultilang", "multilang");
-    let manifest = read_swift_manifest(&binary).unwrap();
+    let manifest = read_binary_manifest(&binary).unwrap();
     let text = format!("{manifest:?}");
     for plugin in ["swift_provider", "swift_registrant", "caller", "probe"] {
         assert!(text.contains(plugin), "{text}");
@@ -203,7 +204,7 @@ async fn rows_find_their_binary_and_call_across_binaries() {
     for name in ["swift-netkit", "swift-multilang"] {
         assert_eq!(
             runtime_state(&fixture.runtimes, name),
-            Some(SwiftRuntimeState::Running),
+            Some(BinaryRuntimeState::Running),
             "{name}"
         );
     }
@@ -279,7 +280,7 @@ async fn eager_runtimes_run_side_by_side_and_a_crash_stops_only_its_rows() {
         || {
             ["swift-netkit", "swift-multilang"]
                 .iter()
-                .all(|name| runtime_state(&runtimes, name) == Some(SwiftRuntimeState::Running))
+                .all(|name| runtime_state(&runtimes, name) == Some(BinaryRuntimeState::Running))
         },
         "both runtimes, with no row",
     )
@@ -308,7 +309,7 @@ async fn eager_runtimes_run_side_by_side_and_a_crash_stops_only_its_rows() {
         || {
             matches!(
                 runtime_state(&runtimes, "swift-netkit"),
-                Some(SwiftRuntimeState::Stopped(_))
+                Some(BinaryRuntimeState::Stopped(_))
             )
         },
         "the crashed runtime",
@@ -346,7 +347,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
     .await;
     assert_eq!(
         runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(SwiftRuntimeState::NotStarted),
+        Some(BinaryRuntimeState::NotStarted),
         "nothing starts before a row uses it"
     );
     fixture
@@ -377,13 +378,13 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .unwrap();
     let runtimes = fixture.runtimes.clone();
     COLD.until(
-        || runtime_state(&runtimes, "swift-multilang") == Some(SwiftRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "swift-multilang") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop of swift-multilang",
     )
     .await;
     assert_eq!(
         runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(SwiftRuntimeState::Running)
+        Some(BinaryRuntimeState::Running)
     );
     let now = service(&fixture.root, "ping").expect("ping's service");
     assert!(
@@ -394,7 +395,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 
     fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
     COLD.until(
-        || runtime_state(&runtimes, "swift-netkit") == Some(SwiftRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "swift-netkit") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop of swift-netkit",
     )
     .await;
@@ -424,7 +425,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 /// What supervising reported.
 type Ends = Arc<std::sync::Mutex<Vec<RuntimeEnd>>>;
 
-fn supervise(runtimes: &SwiftRuntimesHandle, policy: RestartPolicy) -> Ends {
+fn supervise(runtimes: &BinaryRuntimesHandle<Swift>, policy: RestartPolicy) -> Ends {
     let ends: Ends = Arc::default();
     let report = ends.clone();
     runtimes.supervise(policy, move |end| report.lock().unwrap().push(end));
@@ -493,7 +494,7 @@ async fn a_crashed_runtime_restarts_on_failure_and_an_idle_stop_does_not() {
     fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
     let runtimes = fixture.runtimes.clone();
     COLD.until(
-        || runtime_state(&runtimes, "swift-netkit") == Some(SwiftRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "swift-netkit") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop",
     )
     .await;
@@ -501,7 +502,7 @@ async fn a_crashed_runtime_restarts_on_failure_and_an_idle_stop_does_not() {
     assert_eq!(ends.lock().unwrap().len(), 1, "{:?}", ends.lock().unwrap());
     assert_eq!(
         runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(SwiftRuntimeState::NotStarted)
+        Some(BinaryRuntimeState::NotStarted)
     );
     fixture.root.shutdown().await.unwrap();
 }
@@ -532,7 +533,7 @@ async fn exit_reports_a_crashed_runtime() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(matches!(
         runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(SwiftRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     assert_eq!(ends.lock().unwrap().len(), 1);
     fixture.root.shutdown().await.unwrap();

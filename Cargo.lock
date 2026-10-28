@@ -3170,7 +3170,6 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "rutis"
 version = "0.18.0"
 dependencies = [
- "anyhow",
  "erased-serde",
  "rutis-macros",
  "rutis-test-support",
@@ -3246,18 +3245,6 @@ dependencies = [
  "rutis-dylib",
  "rutis-sdk",
  "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rutis-dev"
-version = "0.1.0"
-dependencies = [
- "rutis",
- "rutis-loader",
- "rutis-test-support",
- "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -3424,14 +3411,6 @@ version = "0.18.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "rutis-migrate"
-version = "0.18.0"
-dependencies = [
- "proc-macro2",
  "syn 2.0.119",
 ]
 

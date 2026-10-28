@@ -241,7 +241,7 @@ All of these form a release train: released together at one version, currently 0
 - **[Design philosophy](docs/design-philosophy.en.md)**: why rutis exists, the shape that follows, its costs and principles.
 - **[Application design guide](docs/development-guide.en.md)**: splitting an app into plugins, drawing the dependency graph, designing reloads and multiple instances.
 - **[Development handbook](docs/development-handbook.en.md)**: API usage, resource cleanup, events, troubleshooting and verification.
-- **[Core features](docs/core-features.en.md)**: config hot update, dynamic events, interception, diagnostics, and the boundaries of each.
+- **[Core features](docs/core-features.en.md)**: config hot update, dynamic events, diagnostics, and the boundaries of each.
 - **[Guarantee registry](docs/guarantees.en.md)**: what rutis promises, at what level, and which tests verify each promise.
 - **[API docs](https://docs.rs/rutis)**: the complete reference on docs.rs.
 - **Design records**: the [core design](docs/design-rust-port.en.md), the [spec-by-spec parity check against Cordis](docs/cordis-spec-parity-2026-08-18.en.md), and every design record in [docs](docs).

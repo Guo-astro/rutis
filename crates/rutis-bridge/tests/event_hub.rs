@@ -90,7 +90,7 @@ struct Rig {
 }
 
 async fn rig_with(root: Ctx, endpoint: Endpoint) -> Result<Rig, Error> {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let fake = Arc::new(Fake::default());
     let far = Connection::open_with(b, fake.clone(), Format::Endpoint(endpoint)).unwrap();
     let process = Process::attach(
@@ -969,8 +969,8 @@ async fn an_unload_does_not_wait_for_a_call_the_runtime_never_answers() {
 
 /// guarantee: events/hub-dispatch
 ///
-/// A session's event operations never run on its reader: a dispatch
-/// observer (plugin code) seeing a runtime's `emit` calls that runtime
+/// A session's event operations never run on its reader: a listener
+/// (plugin code) hearing a runtime's `emit` calls that runtime
 /// synchronously over the same session, and gets its answer, which only
 /// that reader can read.
 #[tokio::test(flavor = "multi_thread")]
@@ -980,14 +980,14 @@ async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
     let into = answers.clone();
     let connection = rig.process.connection().clone();
     rig.root
-        .events()
-        .observe_dispatch(&rig.root, move |attempt| {
-            if attempt.name == "t/probe" {
-                let answer = connection
-                    .invoke("", "ping", Value::List(vec![]))
-                    .and_then(Value::json);
-                into.lock().unwrap().push(answer.unwrap_or(Json::Null));
-            }
+        .listen::<Args>()
+        .name("t/probe")
+        .on(move |_: Arc<Args>, _: Call<Args>| {
+            let answer = connection
+                .invoke("", "ping", Value::List(vec![]))
+                .and_then(Value::json);
+            into.lock().unwrap().push(answer.unwrap_or(Json::Null));
+            async { Ok(None::<ArgValue>) }
         })
         .unwrap();
     within(
@@ -998,7 +998,7 @@ async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
     .unwrap();
     eventually(
         || !answers.lock().unwrap().is_empty(),
-        "the observer's call",
+        "the listener's call",
     )
     .await;
     assert_eq!(*answers.lock().unwrap(), [json!("pong")]);

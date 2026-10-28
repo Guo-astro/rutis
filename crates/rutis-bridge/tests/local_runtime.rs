@@ -172,7 +172,7 @@ async fn a_runtime_announces_running_and_down() {
         }
     }
     within("rutis/runtime", async {
-        let (a, b) = rutis_bridge::transport::memory::pair();
+        let (a, b) = rutis_bridge::memory::pair();
         let endpoint = |name| Format::Endpoint(Endpoint::rust(PeerId::new(name).unwrap()));
         let far = Connection::open_with(b, Arc::new(Fake), endpoint("fake")).unwrap();
         let session = Connection::open_with(a, Arc::new(Fake), endpoint("main")).unwrap();

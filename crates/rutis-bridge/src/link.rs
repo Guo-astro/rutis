@@ -1,8 +1,8 @@
 //! A link: the connection and session with one far end, kept up.
 //!
 //! The link dials the far end (and redials, with backoff by failure
-//! category) or registers on a listener for it (and lets a newer connection
-//! take over). Once the far end greets as the expected endpoint, the link
+//! category) or is accepted on a listener for it (and lets a newer
+//! connection take over). Once the far end greets as the expected endpoint, the link
 //! provides `Peer#<id>`; when the session ends it withdraws it, so what
 //! depends on the peer stops natively. It knows nothing of rows, schemas
 //! or what the families registered on the peer do.
@@ -20,22 +20,40 @@ use tokio::sync::{mpsc, watch};
 
 use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
-use crate::{
-    identity_key, peer_key, transport_key, Dial, Identity, Registered, Registration, Transport,
-};
+use crate::{identity_key, peer_key, Accepting, Identity, Registered};
 
-/// The session protocol links speak, as a transport subprotocol.
+/// The session protocol links speak, as a WebSocket subprotocol.
 pub fn protocol() -> String {
     format!("rutis.{}", crate::session::ENDPOINT_PROTOCOL)
 }
 
+/// One attempt to reach the far end, presenting the credential the link's
+/// identity has for it (if any): each call reports one result and never
+/// retries; the link owns the retry policy, decided by the
+/// [`ConnectError`] category. Transitional (#695 S2): goes with links.
+#[doc(hidden)]
+pub type Dialer = Arc<
+    dyn Fn(Option<crate::Credential>) -> BoxFuture<'static, Result<Channel, ConnectError>>
+        + Send
+        + Sync,
+>;
+
 /// How the link reaches its far end.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Connect {
-    /// Dial this address on the transport.
-    Dial(String),
-    /// Accept the far end on this listener of the transport.
-    Listen(String),
+    /// Dial with this.
+    Dial(Dialer),
+    /// Accept the far end on this listener.
+    Listen(Accepting),
+}
+
+impl std::fmt::Debug for Connect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Connect::Dial(_) => f.write_str("Dial"),
+            Connect::Listen(accepting) => write!(f, "Listen({})", accepting.listener),
+        }
+    }
 }
 
 /// Reconnection, for a dialing link
@@ -72,8 +90,6 @@ impl Default for Retry {
 pub struct LinkConfig {
     /// The far end.
     pub peer: PeerId,
-    /// The transport's kind (`Transport#<kind>`).
-    pub transport: String,
     /// The identity's name (`Identity#<name>`): this endpoint, its
     /// credentials and the rules that verify the far end.
     pub identity: String,
@@ -96,12 +112,11 @@ pub struct LinkConfig {
 }
 
 impl LinkConfig {
-    pub fn dial(peer: PeerId, transport: &str, identity: &str, address: &str) -> Self {
+    pub fn dial(peer: PeerId, identity: &str, dialer: Dialer) -> Self {
         Self {
             peer,
-            transport: transport.into(),
             identity: identity.into(),
-            connect: Connect::Dial(address.into()),
+            connect: Connect::Dial(dialer),
             retry: Retry::default(),
             require: Vec::new(),
             declare: Vec::new(),
@@ -110,10 +125,16 @@ impl LinkConfig {
         }
     }
 
-    pub fn listen(peer: PeerId, transport: &str, identity: &str, listener: &str) -> Self {
+    pub fn listen(peer: PeerId, identity: &str, accepting: Accepting) -> Self {
         Self {
-            connect: Connect::Listen(listener.into()),
-            ..Self::dial(peer, transport, identity, "")
+            peer,
+            identity: identity.into(),
+            connect: Connect::Listen(accepting),
+            retry: Retry::default(),
+            require: Vec::new(),
+            declare: Vec::new(),
+            compat: false,
+            reconnect: true,
         }
     }
 
@@ -183,12 +204,12 @@ pub enum LinkState {
     Stopped { failure: Failure, error: String },
 }
 
-/// The link plugin: depends on `Transport#<kind>` and `Identity#<name>`,
-/// provides `Peer#<id>` while a session is ready.
+/// The link plugin: depends on `Identity#<name>`, provides `Peer#<id>`
+/// while a session is ready.
 pub struct LinkPlugin {
     name: String,
     config: LinkConfig,
-    injects: [TypeKey; 2],
+    injects: [TypeKey; 1],
     state: Arc<watch::Sender<LinkState>>,
 }
 
@@ -196,10 +217,7 @@ impl LinkPlugin {
     pub fn new(config: LinkConfig) -> Self {
         Self {
             name: format!("link to {}", config.peer),
-            injects: [
-                transport_key(&config.transport).erase(),
-                identity_key(&config.identity).erase(),
-            ],
+            injects: [identity_key(&config.identity).erase()],
             state: Arc::new(watch::channel(LinkState::Idle).0),
             config,
         }
@@ -230,16 +248,12 @@ impl DynPlugin for LinkPlugin {
                     format!("{}: {what} is not provided", self.name).into(),
                 ))
             };
-            let transport = ctx
-                .get_key::<dyn Transport>(self.injects[0].clone())
-                .ok_or_else(|| missing("the transport"))?;
             let identity = ctx
-                .get_key::<dyn Identity>(self.injects[1].clone())
+                .get_key::<dyn Identity>(self.injects[0].clone())
                 .ok_or_else(|| missing("the identity"))?;
             let link = Link {
                 ctx: ctx.clone(),
                 config: self.config.clone(),
-                transport,
                 identity,
                 state: self.state.clone(),
                 generation: 0,
@@ -249,8 +263,8 @@ impl DynPlugin for LinkPlugin {
             // access point already registered on, where an unknown
             // credential is refused, not retried (#411).
             let task = match self.config.connect.clone() {
-                Connect::Dial(address) => tokio::spawn(link.dialing(address)),
-                Connect::Listen(listener) => match link.register(listener) {
+                Connect::Dial(dialer) => tokio::spawn(link.dialing(dialer)),
+                Connect::Listen(accepting) => match link.register(&accepting) {
                     Some(listening) => tokio::spawn(link.listening(listening)),
                     None => tokio::spawn(async {}),
                 },
@@ -278,7 +292,6 @@ impl DynPlugin for LinkPlugin {
 struct Link {
     ctx: Ctx,
     config: LinkConfig,
-    transport: Arc<dyn Transport>,
     identity: Arc<dyn Identity>,
     state: Arc<watch::Sender<LinkState>>,
     generation: u64,
@@ -413,36 +426,6 @@ fn classify(error: &Error) -> Failure {
 }
 
 impl Link {
-    /// Whether the identity revoked the far end ([`Revocations`](crate::Revocations)).
-    fn is_revoked(&self) -> bool {
-        self.identity
-            .revocations()
-            .is_some_and(|revocations| revocations.is_revoked(&self.config.peer))
-    }
-
-    /// Resolves once the identity revokes the far end; never for an
-    /// identity that revokes nothing.
-    fn revoked(&self) -> BoxFuture<'static, ()> {
-        match self.identity.revocations() {
-            Some(revocations) => Box::pin(revocations.revoked(&self.config.peer)),
-            None => Box::pin(std::future::pending()),
-        }
-    }
-
-    fn revoked_reason(&self) -> String {
-        format!("{}: identity revoked", self.config.peer)
-    }
-
-    /// End a session whose far end was revoked: closed first, so calls in
-    /// flight fail at once as a transport failure (as when the network
-    /// drops) and the far end sees the connection end; then the peer is
-    /// withdrawn.
-    async fn cut(&self, live: Live) {
-        let reason = self.revoked_reason();
-        live.session.close(Error::Transport(reason.clone()));
-        live.end(&reason).await;
-    }
-
     /// Open a session on `channel` and, once the far end greeted as the
     /// expected endpoint, provide the peer.
     async fn start(&mut self, channel: Channel) -> Result<Live, Error> {
@@ -456,18 +439,6 @@ impl Link {
             timeout: self.config.retry.handshake,
         };
         let (session, operations) = greet.open(channel).await?;
-        // Revoked while it greeted: refused before anything is set up for
-        // it (#210). A listening link tells the dialer so (4003), as the
-        // hand-over does for a revocation before it.
-        if self.is_revoked() {
-            let reason = self.revoked_reason();
-            if let Connect::Listen(_) = self.config.connect {
-                closer.rejected(crate::identity::NOT_ACCEPTED);
-            }
-            session.close(Error::Transport(reason.clone()));
-            operations.detach();
-            return Err(Error::Transport(reason));
-        }
         self.generation += 1;
         let peer = Peer::new(
             self.config.peer.clone(),
@@ -499,24 +470,12 @@ impl Link {
         tokio::time::sleep(retry_in).await;
     }
 
-    async fn dialing(mut self, address: String) {
-        let dial = Dial::address(address)
-            .peer(self.config.peer.clone())
-            .identity(self.identity.clone())
-            .protocol(protocol());
+    async fn dialing(mut self, dialer: Dialer) {
         let retry = self.config.retry.clone();
         let mut backoff = Backoff::new(&retry);
         loop {
-            // A revoked far end is not dialed: an authentication failure,
-            // waited out as one.
-            if self.is_revoked() {
-                let error = self.revoked_reason();
-                self.wait(Failure::AuthRejected, error, retry.rejected)
-                    .await;
-                continue;
-            }
             self.state.send_replace(LinkState::Connecting);
-            let (failure, error) = match self.transport.dial(&dial).await {
+            let (failure, error) = match dialer(self.identity.credential(&self.config.peer)).await {
                 Err(error) => (
                     match error {
                         ConnectError::Retryable { .. } => Failure::Retryable,
@@ -526,18 +485,9 @@ impl Link {
                     error.to_string(),
                 ),
                 Ok(channel) => match self.start(channel).await {
-                    // Revoked while it greeted.
-                    Err(_) if self.is_revoked() => (Failure::AuthRejected, self.revoked_reason()),
                     Err(error) => (classify(&error), error.to_string()),
-                    Ok(live) => 'session: {
-                        let revoked = tokio::select! {
-                            () = live.session.closed() => false,
-                            () = self.revoked() => true,
-                        };
-                        if revoked {
-                            self.cut(live).await;
-                            break 'session (Failure::AuthRejected, self.revoked_reason());
-                        }
+                    Ok(live) => {
+                        live.session.closed().await;
                         if live.since.elapsed() >= retry.stable {
                             backoff.reset();
                         }
@@ -572,21 +522,20 @@ impl Link {
         }
     }
 
-    /// Register on `listener` for the far end. If the listener refuses,
+    /// Register on the listener for the far end. If the listener refuses,
     /// the link is stopped (as `Incompatible`) and there is nothing to run.
-    fn register(&self, listener: String) -> Option<Listening> {
+    fn register(&self, accepting: &Accepting) -> Option<Listening> {
         let (sender, accepted) = mpsc::unbounded_channel::<Channel>();
-        let registered = self.transport.register(Registration {
-            listener,
-            peer: self.config.peer.clone(),
-            identity: self.identity.clone(),
-            protocol: protocol(),
-            deliver: Box::new(move |channel| {
+        let registered = accepting.register(
+            self.config.peer.clone(),
+            self.identity.clone(),
+            protocol(),
+            Box::new(move |channel| {
                 if let Err(refused) = sender.send(channel) {
-                    refused.0.closer.close("the link stopped");
+                    refused.0.closer.close(crate::channel::Close::Done);
                 }
             }),
-        });
+        );
         match registered {
             Ok(registered) => {
                 self.state.send_replace(LinkState::Connecting);
@@ -614,8 +563,6 @@ impl Link {
             mut accepted,
         } = listening;
         let mut current: Option<Live> = None;
-        // Revocations are not undone: once revoked, the far end stays so.
-        let mut revoked = false;
         loop {
             let ended = async {
                 match &current {
@@ -623,28 +570,17 @@ impl Link {
                     None => std::future::pending().await,
                 }
             };
-            let revocation = self.revoked();
             tokio::select! {
                 channel = accepted.recv() => {
                     let Some(channel) = channel else { return };
-                    // Handed over before the revocation reached this task:
-                    // refused as a wrong credential is, the current
-                    // session left to the revocation.
-                    if self.is_revoked() {
-                        channel.closer.rejected(crate::identity::NOT_ACCEPTED);
-                        continue;
-                    }
                     // A newer connection of the far end takes over: the old
                     // session ends, and its peer is withdrawn, first.
                     if let Some(old) = current.take() {
-                        old.closer.replaced();
+                        old.closer.close(crate::channel::Close::Replaced);
                         old.end("replaced by a new connection").await;
                     }
                     match self.start(channel).await {
                         Ok(live) => current = Some(live),
-                        // Revoked while it greeted: the revocation, next,
-                        // sets the state.
-                        Err(_) if self.is_revoked() => {}
                         Err(error) => {
                             self.state.send_replace(LinkState::Waiting {
                                 failure: classify(&error),
@@ -659,19 +595,6 @@ impl Link {
                         old.end("the connection ended").await;
                     }
                     self.state.send_replace(LinkState::Connecting);
-                }
-                // Only the far end's session closes; the registration
-                // stays and refuses its connections from now on.
-                () = revocation, if !revoked => {
-                    revoked = true;
-                    if let Some(live) = current.take() {
-                        self.cut(live).await;
-                    }
-                    self.state.send_replace(LinkState::Waiting {
-                        failure: Failure::AuthRejected,
-                        error: self.revoked_reason(),
-                        retry_in: Duration::ZERO,
-                    });
                 }
             }
         }

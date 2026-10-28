@@ -22,8 +22,8 @@
 //! - `stop`, or the end of stdin: shut down (every cleanup runs), then exit
 //!   0; 2 when the shutdown did not finish.
 //!
-//! Links present `RUTIS_TOKEN_<PEER>` (else `RUTIS_TOKEN`), read when they
-//! dial, so a link added by a reload has its credential too.
+//! Links present `RUTIS_TOKEN_<PEER>`, read when they dial, so a link
+//! added by a reload has its credential too.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -71,7 +71,6 @@ async fn run(path: &Path) -> i32 {
             builtins.register::<serde_json::Value, _, _>("fixture/calendar", |_| Ok(RustCalendar));
         })),
         identity: None,
-        transports: Vec::new(),
     };
     let mut host = match Host::start_with(&config, embedding).await {
         Ok(host) => host,

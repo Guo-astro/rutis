@@ -36,7 +36,6 @@ fn the_expectation_file_is_well_formed() {
         "waterfall/end-without-terminal",
         "waterfall/next-twice",
         "waterfall/error",
-        "waterfall-sync/chain",
         "bail/first-result",
         "bail/async-listener",
         "bail/awaitable-from-plain-function",
@@ -66,7 +65,7 @@ fn the_expectation_file_is_well_formed() {
         "rust/unit-event",
         "rust/next-outside-waterfall",
     ];
-    assert_eq!(starter.len(), 47);
+    assert_eq!(starter.len(), 46);
     for case in starter {
         assert!(
             expected.cases.iter().any(|c| c.case == case),

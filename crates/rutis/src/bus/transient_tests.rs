@@ -49,16 +49,9 @@ async fn thousand_subtrees_release_exact_and_prefix_entries() {
             .unwrap();
         ctx.listen::<Ping>()
             .prefix("room/")
-            .on_sync(|_, call| {
-                if call.mode().is_waterfall() {
-                    call.next()
-                } else {
-                    Ok(None)
-                }
-            })
+            .on_sync(|_, _| Ok(None))
             .unwrap();
-        ctx.named(name.clone()).bail(Ping).unwrap();
-        ctx.named(name).waterfall_sync(Ping, |_| Ok(None)).unwrap();
+        ctx.named(name).bail(Ping).unwrap();
         view.shutdown().await.unwrap();
         assert_eq!(bus.table_counts().0, 0);
         assert_eq!(bus.table_counts().1, 0);
@@ -118,18 +111,6 @@ async fn named_channels_and_dispatch_tails_prune() {
         .emit(Ping)
         .expect("default event dispatch");
     listener.dispose().await.unwrap();
-}
-
-#[tokio::test]
-async fn dispatch_observers_prune_after_repeated_registration() {
-    let ctx = Ctx::root().unwrap();
-    let bus = ctx.events().clone();
-    for _ in 0..1000 {
-        let observer = bus.observe_dispatch(&ctx, |_| {}).unwrap();
-        assert_eq!(bus.observer_count(), 1);
-        observer.dispose().await.unwrap();
-        assert_eq!(bus.observer_count(), 0);
-    }
 }
 
 /// An emit on a runtime shutting down: `spawn` drops its task's future at

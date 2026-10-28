@@ -50,7 +50,7 @@ async fn run(far: Connection) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_meets_the_session_contract() {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     let _far = Connection::open_with(
         b,
         Arc::new(Fixture::default()),
@@ -60,7 +60,7 @@ async fn rust_meets_the_session_contract() {
     run(Connection::open_with(a, Arc::new(Nothing), main_endpoint("rust")).unwrap()).await;
 }
 
-/// The channel to the far end: one it dials, framed by the local transport,
+/// The channel to the far end: one it dials, framed by `pipe::framed`,
 /// or a WebSocket it listens on.
 #[derive(Clone, Copy, Debug)]
 enum Via {
@@ -70,10 +70,9 @@ enum Via {
     /// the token in `RUTIS_CHANNEL_TOKEN` and a newline first.
     Loopback,
     /// `listen:ws://127.0.0.1:0/rutis`: the far end listens, announces its
-    /// address on stderr, and takes a dial presenting `RUTIS_TOKEN`; it
-    /// greets as the endpoint named here.
+    /// address on stderr, and takes a dial presenting `RUTIS_TOKEN`.
     #[cfg(feature = "websocket")]
-    WebSocket(&'static str),
+    WebSocket,
 }
 
 /// Why the Unix socket column does not run on Windows (Q7.8). Kept in step
@@ -84,15 +83,14 @@ const NO_UNIX_SOCKET: &str = "Unix socket column: Windows runtimes connect on lo
 /// The token the far end presents on a loopback channel.
 const TOKEN: &str = "conformance-token";
 
-/// A started far end: killed when dropped, with what its channel needs kept
-/// alive as long (the WebSocket transport's threads).
+/// A started far end: killed when dropped.
 #[allow(dead_code)]
-struct Child(tokio::process::Child, Option<Box<dyn std::any::Any + Send>>);
+struct Child(tokio::process::Child);
 
 /// Shuts the stream down: wakes the channel's reader and writer.
 struct Shut(Box<dyn Fn() + Send + Sync>);
 impl rutis_bridge::channel::Closer for Shut {
-    fn close(&self, _: &str) {
+    fn close(&self, _: rutis_bridge::Close) {
         (self.0)()
     }
 }
@@ -120,8 +118,8 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
                 let _ = shut.shutdown(std::net::Shutdown::Both);
             })));
             (
-                rutis_bridge::transport::local::framed(reader, stream, closer),
-                Child(child, None),
+                rutis_bridge::pipe::framed(reader, stream, closer),
+                Child(child),
             )
         }
         #[cfg(not(unix))]
@@ -157,20 +155,20 @@ async fn connect(mut command: tokio::process::Command, via: Via) -> (Channel, Ch
                 let _ = shut.shutdown(std::net::Shutdown::Both);
             })));
             (
-                rutis_bridge::transport::local::framed(reader, stream, closer),
-                Child(child, None),
+                rutis_bridge::pipe::framed(reader, stream, closer),
+                Child(child),
             )
         }
         #[cfg(feature = "websocket")]
-        Via::WebSocket(far) => listening(command, far).await,
+        Via::WebSocket => listening(command).await,
     }
 }
 
 /// Start `command` listening on a loopback WebSocket, and dial it.
 #[cfg(feature = "websocket")]
-async fn listening(mut command: tokio::process::Command, far: &str) -> (Channel, Child) {
-    use rutis_bridge::transport::websocket::{Config, WebSocketTransport};
-    use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
+async fn listening(mut command: tokio::process::Command) -> (Channel, Child) {
+    use rutis_bridge::websocket::{Limits, Trust};
+    use rutis_bridge::Credential;
     use tokio::io::AsyncBufReadExt;
 
     let mut child = command
@@ -197,25 +195,16 @@ async fn listening(mut command: tokio::process::Command, far: &str) -> (Channel,
             eprintln!("{line}");
         }
     });
-    let transport = WebSocketTransport::start(Config::new()).unwrap();
-
-    let far = id(far);
-    let identity: Arc<dyn Identity> = Arc::new(
-        StaticIdentity::new(id("main")).present(far.clone(), Credential::Bearer(TOKEN.into())),
-    );
-    let channel = transport
-        .dial(
-            &Dial::address(address)
-                .peer(far)
-                .identity(identity)
-                .protocol(format!(
-                    "rutis.{}",
-                    rutis_bridge::session::ENDPOINT_PROTOCOL
-                )),
-        )
-        .await
-        .unwrap();
-    (channel, Child(child, Some(Box::new(transport))))
+    let channel = rutis_bridge::websocket::dial(
+        &address,
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&Credential::Bearer(TOKEN.into())),
+        &Trust::default(),
+        &Limits::default(),
+    )
+    .await
+    .unwrap();
+    (channel, Child(child))
 }
 
 fn node() -> tokio::process::Command {
@@ -346,13 +335,13 @@ async fn python_meets_the_session_contract_on_loopback() {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_meets_the_session_contract_on_a_websocket() {
-    contract(node(), Via::WebSocket("node"), "node").await;
+    contract(node(), Via::WebSocket, "node").await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_meets_the_session_contract_on_a_websocket() {
-    contract(python(), Via::WebSocket("python"), "python").await;
+    contract(python(), Via::WebSocket, "python").await;
 }
 
 // No Go cell on a WebSocket: the Go SDK's WebSocket listener is internal to
@@ -435,7 +424,7 @@ async fn rust_ends_the_session_on_malformed_frames() {
     tokio::task::spawn_blocking(|| {
         let kept = std::sync::Mutex::new(Vec::new());
         malformed(|| {
-            let (a, b) = rutis_bridge::transport::memory::pair();
+            let (a, b) = rutis_bridge::memory::pair();
             let far = Connection::open_with(
                 b,
                 Arc::new(Fixture::default()),
@@ -491,13 +480,13 @@ async fn python_ends_the_session_on_malformed_frames_on_loopback() {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_ends_the_session_on_malformed_frames_on_a_websocket() {
-    ends_on_malformed(node, Via::WebSocket("node")).await;
+    ends_on_malformed(node, Via::WebSocket).await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
-    ends_on_malformed(python, Via::WebSocket("python")).await;
+    ends_on_malformed(python, Via::WebSocket).await;
 }
 
 /// Q6.2.2, Q6.2.3, risk P3: Go ends the session on the same malformed and

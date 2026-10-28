@@ -243,7 +243,7 @@ async fn a_port_another_program_holds() {
     let error = first_error(dir.path(), &text).await;
     assert_eq!(
         error.replace(&address.to_string(), "<address>").replace(&in_use, "<in use>"),
-        "the WebSocket transport: listener public: cannot bind <address>: <in use>: another program listens there: stop it, or change the address"
+        "listener public: cannot bind <address>: <in use>: another program listens there: stop it, or change the address"
     );
 }
 
@@ -331,7 +331,7 @@ async fn a_runtime_that_dials_in_without_what_it_needs() {
         // `listen` alone is one runtime (0.19): it needs its token too.
         (
             config(r#", "listen": "public""#, ""),
-            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
+            "remote runtime phone: set RUTIS_TOKEN_PHONE: the token its runtimes present when they dial in",
         ),
         (
             config(r#", "instances": "phone""#, group),
@@ -351,7 +351,7 @@ async fn a_runtime_that_dials_in_without_what_it_needs() {
         ),
         (
             config(both, group),
-            "remote runtime phone: set RUTIS_TOKEN_PHONE (or RUTIS_TOKEN): the token its runtimes present when they dial in",
+            "remote runtime phone: set RUTIS_TOKEN_PHONE: the token its runtimes present when they dial in",
         ),
     ];
     for (text, expected) in cases {
