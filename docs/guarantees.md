@@ -411,7 +411,6 @@ PR 模板中有对应的检查项。
 | `host/status` | 「查看当前状态」 | `run`、`dev` 运行时（包括启动卡住时）在本用户的 0700 目录里开一个 0600 的本地 socket，回答 `status`，不改任何东西（`call` 见 `host/call`），按配置路径的散列命名，宿主结束时删除；`rutis-host status [rutis.json \| 目录]` 打印那个宿主的 `Loader::status()`（目录里有 `rutis.json` 时与它是同一个），没有宿主时说明并以 1 退出；同一配置已有宿主在回答时后起的宿主照常运行并告警；停止没有按时完成时另列还没返回的调用。Windows 上不提供 | 契约行为 | 已验证 | `rutis-host/tests/status.rs::status_says_what_a_running_host_does`、`rutis-host/src/control.rs::tests::the_socket_answers_status_and_call_once_per_configuration`、`::a_directory_and_its_configuration_are_one_key` | Unix；#678 |
 | `host/call` | 「调用一个服务」 | `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` 通过 `host/status` 的同一个 socket，以宿主的身份调用正在运行的宿主里的服务，结果打印成两格缩进的 JSON；`run` 和 `dev` 都接受；参数不是 JSON、没写方法、没有提供者（附相近的名字与现有服务）、提供它的行没在运行、方法不存在、参数类型不对、方法抛错（出错的行与堆栈）、方法要调用方那一行、没有在运行的宿主，各有固定文字并以 1 退出；Ctrl-C 以 130 结束且宿主丢弃这次调用；进行中的调用在快照里记为 `host`。Windows 上不提供 | 契约行为 | 已验证 | `rutis-host/tests/call.rs`（全部）、`rutis-host/src/call.rs::tests`、`rutis-host/src/control.rs::tests::the_socket_answers_status_and_call_once_per_configuration` | Unix；#670 |
 | `host/remote-runtimes` | 「rutis.json」的「远程运行时」 | `runtimes.remote` 的一条写全一个远程运行时：`dial` 由 rutis 去连，`listen` 等它连进来（对方 `--id` 为运行时名），`listen` + `instances` 每条连接一个实例；都不写时经带 `runtime` 的节点行连接（0.19 之前的写法，照常可用）；连接走 WebSocket；`dial` 与 `listen`、`dial` 与 `instances` 同时写等错误启动即报；连接的变化以 `runtime <名>` 开头打印（`link …`、`connected <id>`、`disconnected <id> (…)`、`refused (…)`），`rutis-host status` 有 `connections:` 一节 | 契约行为 | 已验证 | `rutis-host/tests/remote_runtimes.rs::a_runtime_rutis_dials`、`::a_runtime_that_dials_in_alone`、`::runtimes_that_dial_in_as_instances`、`::a_link_row_still_connects_a_runtime`、`::a_remote_runtime_connects_one_way`、`rutis-host/src/config.rs::tests::runtimes_that_dial_in_accept_tokens_as_link_rows_and_runtimes_do` | 端到端测试用真实的 Python 运行时；#698 |
-| `host/go-add` | 「命令」 | `rutis-host go add <模块>@<版本> [rutis.json]` 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` | 契约行为 | 未验证 | — | |
 | `host/plugin-limits` | [做一个开放插件的宿主](guide/open-host.md)「管住插件」；[设计](design-host-plugin-limits-2026-10-27.md) §四、§五 | 每个插件一个命名的运行时，`RuntimeResolver::modules` 把 `<运行时名>:<npm 名或文件>` 的行送进各自的进程，一个进程结束不影响另一个；`LocalRuntime::greeting` 设本机运行时进程的问候时限（默认 30 秒），`Duration::MAX` 不限，这时一直不问候的进程停在启动中，`Loader::status()` 写 `starting (pid …)` | 契约行为 | 已验证 | `rutis-bridge/tests/plugin_limits.rs::a_short_greeting_limit_ends_a_silent_runtime`、`::an_unbounded_greeting_waits_for_a_silent_runtime`；`rutis-loader/tests/plugin_limits.rs::each_plugin_runs_in_its_own_process`、`::a_runtime_waiting_for_a_debugger_stays_starting` | #683。`greeting` 的 bridge 测试只在 Unix 上运行。调用时限与服务名单在 0.19 删去（[平台清理](design-platform-cleanup-2026-10-28.md) §5.5）：调用方自己限时，能用哪些服务由宿主决定 |
 
 ---
@@ -430,11 +429,11 @@ PR 模板中有对应的检查项。
 | `sdk/*`（§12） | 7 | 1 | 0 | 0 | 8 |
 | `host/*`（§13） | 5 | 0 | 0 | 0 | 5 |
 | `loader/*`（§14） | 37 | 4 | 0 | 0 | 41 |
-| `host/*`（§15） | 17 | 3 | 1 | 0 | 21 |
-| 合计 | 168 | 12 | 1 | 2 | 183 |
+| `host/*`（§15） | 17 | 3 | 0 | 0 | 20 |
+| 合计 | 168 | 12 | 0 | 2 | 182 |
 
 已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
 
-核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 144 条：已验证 134，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 1（`host/go-add`）。
+核心承诺 41 条：已验证 37，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 0。契约行为 143 条：已验证 134，部分验证 9（D5、`sdk/testing-matches-runtime`、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`host/stop-deadline`、`host/exit-codes`、`host/row-state-lines`、`swift/app-access-belongs-to-the-app`），未验证 0。
 
-**0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。
+**0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`，0.19 随命令删除）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。
