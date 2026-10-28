@@ -1,7 +1,7 @@
 # rutis: kept in applications that shrink (R8), shipped in the AAR.
 
 # The method tables and proxies the rutis-ksp processor generates are found
-# by name at run time (arcships.rutis.Tables, as Room and Moshi do): keep
+# by name at run time (arcships.rutis.generated.Tables, as Room and Moshi do): keep
 # them, their constructors and the names of the classes they belong to.
 -keep class **_RutisService { <init>(); }
 -keep class **_RutisClient { <init>(); }

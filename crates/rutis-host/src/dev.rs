@@ -108,7 +108,7 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
         }
     }
     let mut host = Host::start(&config).await?;
-    let _status = crate::answer_status(&dir, &host, true);
+    let _status = crate::answer_status(&dir, &host);
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }

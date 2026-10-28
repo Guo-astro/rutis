@@ -9,7 +9,7 @@
 //!                                  call a service of a running host
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
-//! rutis-host types [crate dir] [-o file] [--contract file]
+//! rutis-host types [crate dir] [-o file]
 //! ```
 
 use std::collections::HashSet;
@@ -58,7 +58,6 @@ usage:
                                               row's name ([weather]); on in dev, off in run
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
-    run: --allow-call                         accept rutis-host call (dev always does)
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
@@ -77,12 +76,10 @@ usage:
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
-  rutis-host types [dir] [-o file] [--contract file]
-                                              write the TypeScript declarations of the Rust
+  rutis-host types [dir] [-o file]            write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
                                               dir (default .) and the crates it uses (to stdout,
-                                              or to file); --contract also writes the contract
-                                              description the testing tools check calls against
+                                              or to file)
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
@@ -148,20 +145,15 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
     })
 }
 
-/// `rutis-host types [dir] [-o file] [--contract file]`: the declarations
-/// of the marked Rust services, and their contract description, as
-/// `build::Exports` writes them.
+/// `rutis-host types [dir] [-o file]`: the declarations of the marked Rust
+/// services, as `build::Exports` writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
     let mut output = None;
-    let mut contract = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
-            "--contract" => {
-                contract = Some(args.next().ok_or("--contract needs a file")?.to_owned())
-            }
             other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
@@ -173,18 +165,16 @@ fn types(args: &[String]) -> Result<(), String> {
             dir.display()
         ));
     }
-    let mut exports = rutis_bridge::build::Exports::new();
-    if let Some(file) = &output {
-        exports = exports.typescript(file);
+    let typescript = rutis_bridge::build::Exports::new()
+        .declarations(&dir)
+        .map_err(|error| error.to_string())?;
+    match output {
+        Some(file) => std::fs::write(&file, typescript).map_err(|error| format!("{file}: {error}")),
+        None => {
+            outln!("{}", typescript.trim_end());
+            Ok(())
+        }
     }
-    if let Some(file) = &contract {
-        exports = exports.contract(file);
-    }
-    let typescript = exports.write(&dir).map_err(|error| error.to_string())?;
-    if output.is_none() {
-        outln!("{}", typescript.trim_end());
-    }
-    Ok(())
 }
 
 /// `rutis-host status [rutis.json | dir]`: ask the host running that
@@ -243,19 +233,17 @@ fn call_command(args: &[String]) -> Result<Stopped, String> {
     })
 }
 
-/// Answer `rutis-host status` for `target` while the host runs, and
-/// `rutis-host call` when `calls` (`dev`, `run --allow-call`); a host that
-/// cannot says why and runs on.
+/// Answer `rutis-host status` and `rutis-host call` for `target` while the
+/// host runs; a host that cannot says why and runs on.
 pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
-    calls: bool,
 ) -> Option<control::Serving> {
     match control::serve(
         target,
         host.loader.clone(),
         host.status_report(),
-        calls.then(|| host.root()),
+        host.root(),
     ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
@@ -322,7 +310,6 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
     let (watch, args) = take_flag(&args, "--watch-config");
-    let (allow_call, args) = take_flag(&args, "--allow-call");
     // Plugins' output as they write it, unless asked (#678).
     let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
@@ -335,7 +322,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     config.runtimes.prefix_output = prefix;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
-    let _status = answer_status(&path, &host, allow_call);
+    let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
@@ -363,7 +350,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `flag` (`--watch-config`, `--allow-call`, `--debug`) taken out of
+/// `flag` (`--watch-config`, `--debug`) taken out of
 /// `args`: whether it was there, and the rest.
 pub(crate) fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();

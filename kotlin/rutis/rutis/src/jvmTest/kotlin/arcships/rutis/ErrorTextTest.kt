@@ -18,6 +18,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import arcships.rutis.generated.ServiceObject
+import arcships.rutis.generated.Tables
 
 /** #677: what this runtime refuses says so with what the developer wrote, a code and data. */
 class ErrorTextTest {

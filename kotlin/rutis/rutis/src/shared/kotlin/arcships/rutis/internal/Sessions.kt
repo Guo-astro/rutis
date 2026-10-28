@@ -10,6 +10,8 @@ import arcships.rutis.internal.peer.Peer
 import arcships.rutis.internal.peer.RefusedException
 import arcships.rutis.internal.peer.SESSION_CAPABILITIES
 import kotlinx.coroutines.runBlocking
+import arcships.rutis.advanced.IMPLEMENTATION
+import arcships.rutis.advanced.VERSION
 
 /** Why a host that does not declare events-v2 is refused. */
 const val OLD_EVENTS_HOST: String =
@@ -61,7 +63,7 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
                     dispatch = runtime::dispatch,
                     arrive = { method, args -> EventsRuntime.arrive(runtime, method, args) },
                     endpoint = endpoint,
-                    implementation = mapOf("name" to Rutis.IMPLEMENTATION, "version" to Rutis.VERSION),
+                    implementation = mapOf("name" to arcships.rutis.advanced.IMPLEMENTATION, "version" to arcships.rutis.advanced.VERSION),
                     capabilities = SESSION_CAPABILITIES,
                     // A host older than 0.13 is refused right after its handshake (#464 §2.2).
                     require = listOf(EVENTS_CAPABILITY),

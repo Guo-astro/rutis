@@ -16,6 +16,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.IOException
+import arcships.rutis.advanced.RemoteFunction
+import arcships.rutis.advanced.RemoteObject
+import arcships.rutis.generated.ServiceTable
 
 // The errors this runtime makes when it refuses a call (#677,
 // docs/design-diagnostics-2026-10-26.md §4.3): a BindingError with a code
