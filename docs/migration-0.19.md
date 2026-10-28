@@ -151,6 +151,7 @@ Kotlin 另有两点：
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
 | feature `anyhow`、`Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
+| `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
 | `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |
 
 ### 工具
