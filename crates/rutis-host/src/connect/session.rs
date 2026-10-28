@@ -6,8 +6,6 @@
 // a double (`double`), whose far end's first message is
 // `{"op":"hello","endpoint":"<id>"}`.
 
-
-
 /// Why a session ended, or why its handshake failed: what a dialer does
 /// next depends on `kind`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,10 +34,10 @@ impl Ended {
     }
 }
 
-#[cfg(not(test))]
-pub(crate) use real::*;
 #[cfg(test)]
 pub(crate) use double::*;
+#[cfg(not(test))]
+pub(crate) use real::*;
 
 #[cfg(not(test))]
 mod real {
@@ -210,10 +208,9 @@ mod double {
             // A failed session is unloaded too.
             let _ = self.view.dispose().await;
             let error = self.view.state().error.map(|error| error.to_string());
-            self.ended
-                .get()
-                .cloned()
-                .unwrap_or_else(|| Ended::new(Kind::Lost, error.unwrap_or("connection lost".into())))
+            self.ended.get().cloned().unwrap_or_else(|| {
+                Ended::new(Kind::Lost, error.unwrap_or("connection lost".into()))
+            })
         }
 
         /// Unload the session and wait until it is unloaded.

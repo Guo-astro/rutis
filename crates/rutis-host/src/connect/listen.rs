@@ -226,6 +226,16 @@ struct Live {
     closer: Arc<Replaceable>,
 }
 
+/// What listen holds for one id.
+enum Slot {
+    Live(Live),
+    /// The older session is unloading; `next` is installed once it is
+    /// (the newest connection of the id that greeted meanwhile).
+    Replacing {
+        next: Option<(Greeted, Arc<Replaceable>)>,
+    },
+}
+
 struct Listening {
     ctx: Ctx,
     row: String,
@@ -235,11 +245,13 @@ struct Listening {
 
 impl Listening {
     async fn run(self, _registered: Registered, mut delivered: mpsc::UnboundedReceiver<Channel>) {
-        let mut live: HashMap<String, Live> = HashMap::new();
+        let mut slots: HashMap<String, Slot> = HashMap::new();
         let mut serial = 0u64;
-        // Handshakes run side by side; one slow far end holds up no other.
+        // Handshakes run side by side, and so do replacements: one slow
+        // far end holds up no other.
         let mut handshakes: JoinSet<(Result<Greeted, Ended>, Arc<Replaceable>)> = JoinSet::new();
         let (ended, mut endings) = mpsc::unbounded_channel::<(String, u64, Ended)>();
+        let (unloaded, mut unloads) = mpsc::unbounded_channel::<String>();
         loop {
             tokio::select! {
                 Some(channel) = delivered.recv() => {
@@ -258,40 +270,81 @@ impl Listening {
                 Some(Ok((greeted, closer))) = handshakes.join_next() => {
                     let Ok(greeted) = greeted else { continue };
                     let id = greeted.id().to_owned();
-                    if let Some(old) = live.remove(&id) {
-                        // §4.2: the old session unloads, every cleanup
-                        // finished; its channel closes as replaced; then
-                        // the new one is installed.
-                        old.closer.replaced.store(true, Ordering::SeqCst);
-                        old.installed.unload().await;
-                        old.closer.close(Close::Replaced);
-                        self.connections.disconnected(&self.row, &id);
-                        (self.print)(format!(
-                            "{}: disconnected {id} (replaced by a new connection)",
-                            self.row
-                        ));
+                    match slots.remove(&id) {
+                        None => {
+                            serial += 1;
+                            let live = self.install(greeted, closer, serial, &ended);
+                            slots.insert(id, Slot::Live(live));
+                        }
+                        Some(Slot::Live(old)) => {
+                            // §4.2: the old session unloads, every cleanup
+                            // finished; its channel closes as replaced; then
+                            // the new one is installed.
+                            old.closer.replaced.store(true, Ordering::SeqCst);
+                            let (unloaded, at) = (unloaded.clone(), id.clone());
+                            tokio::spawn(async move {
+                                old.installed.unload().await;
+                                old.closer.close(Close::Replaced);
+                                let _ = unloaded.send(at);
+                            });
+                            slots.insert(id, Slot::Replacing { next: Some((greeted, closer)) });
+                        }
+                        Some(Slot::Replacing { next }) => {
+                            // A newer connection still: the one waiting is
+                            // replaced before it was installed.
+                            if let Some((_, waiting)) = &next {
+                                waiting.replaced.store(true, Ordering::SeqCst);
+                            }
+                            drop(next);
+                            slots.insert(id, Slot::Replacing { next: Some((greeted, closer)) });
+                        }
                     }
-                    serial += 1;
-                    let installed = Arc::new(session::install(&self.ctx, greeted));
-                    let (watched, ended, at) = (installed.clone(), ended.clone(), serial);
-                    let watching = id.clone();
-                    tokio::spawn(async move {
-                        let why = watched.unloaded().await;
-                        let _ = ended.send((watching, at, why));
-                    });
-                    live.insert(id.clone(), Live { serial, installed, closer });
-                    self.connections.connected(&self.row, &id);
-                    (self.print)(format!("{}: connected {id}", self.row));
+                }
+                Some(id) = unloads.recv() => {
+                    self.connections.disconnected(&self.row, &id);
+                    (self.print)(format!(
+                        "{}: disconnected {id} (replaced by a new connection)",
+                        self.row
+                    ));
+                    if let Some(Slot::Replacing { next: Some((greeted, closer)) }) = slots.remove(&id) {
+                        serial += 1;
+                        let live = self.install(greeted, closer, serial, &ended);
+                        slots.insert(id, Slot::Live(live));
+                    }
                 }
                 Some((id, at, why)) = endings.recv() => {
                     // A replaced session's end was said already.
-                    if live.get(&id).is_some_and(|live| live.serial == at) {
-                        live.remove(&id);
+                    if matches!(slots.get(&id), Some(Slot::Live(live)) if live.serial == at) {
+                        slots.remove(&id);
                         self.connections.disconnected(&self.row, &id);
                         (self.print)(format!("{}: disconnected {id} ({})", self.row, why.reason));
                     }
                 }
             }
+        }
+    }
+
+    /// Install `greeted`, said connected, its end reported to `ended`.
+    fn install(
+        &self,
+        greeted: Greeted,
+        closer: Arc<Replaceable>,
+        serial: u64,
+        ended: &mpsc::UnboundedSender<(String, u64, Ended)>,
+    ) -> Live {
+        let id = greeted.id().to_owned();
+        let installed = Arc::new(session::install(&self.ctx, greeted));
+        let (watched, ended, watching) = (installed.clone(), ended.clone(), id.clone());
+        tokio::spawn(async move {
+            let why = watched.unloaded().await;
+            let _ = ended.send((watching, serial, why));
+        });
+        self.connections.connected(&self.row, &id);
+        (self.print)(format!("{}: connected {id}", self.row));
+        Live {
+            serial,
+            installed,
+            closer,
         }
     }
 }
