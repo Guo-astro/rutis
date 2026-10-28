@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::task::Poll;
 
-use rutis::events::{Call, Listener, Mode, SyncCall};
+use rutis::events::{Call, Listener, SyncCall};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::internal::{CtxInternal, EventKey};
 use rutis::{Ctx, Error, Event};
