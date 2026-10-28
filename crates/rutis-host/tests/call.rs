@@ -1,7 +1,7 @@
 //! `rutis-host call <service>.<method> [arguments…]` (#670): a running
 //! host's service called from the command line, through the socket
-//! `rutis-host status` asks. `dev` accepts calls, `run` only with
-//! `--allow-call`. What it prints is locked word for word (design
+//! `rutis-host status` asks; `run` and `dev` both accept calls. What it
+//! prints is locked word for word (design
 //! try-and-test §八); a service of each language is called once.
 //!
 //! Unix only: `call` is not available on Windows, as `status`.
@@ -288,11 +288,11 @@ fn run_config(dir: &Path, runtimes: serde_json::Value, rows: serde_json::Value) 
     file
 }
 
-/// `run` answers `status` but refuses `call`, saying how to accept it;
-/// `run --allow-call` accepts it; `--config` names the configuration.
+/// `run` accepts `call` as `dev` does; `--config` names the
+/// configuration.
 /// guarantee: host/call
 #[test]
-fn run_accepts_calls_only_when_allowed() {
+fn run_accepts_calls() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir().unwrap();
     let (dir, runtime) = (dir.path(), runtime.path());
@@ -307,42 +307,24 @@ fn run_accepts_calls_only_when_allowed() {
     );
     let elsewhere = tempfile::tempdir().unwrap();
     let config = file.to_str().unwrap();
-    for allow in [false, true] {
-        let mut args = vec!["run", "rutis.json"];
-        if allow {
-            args.push("--allow-call");
-        }
-        let mut host = Host::start_in_env(
-            &args,
-            dir,
-            &[("XDG_RUNTIME_DIR", runtime.to_str().unwrap())],
-        );
-        host.wait_line(|line| (line == "weather: running").then_some(()));
-        let called = call(
-            &["--config", config, "forecast.today", "\"Oslo\""],
-            elsewhere.path(),
-            runtime,
-        );
-        match allow {
-            false => assert_eq!(
-                called,
-                (
-                    Some(1),
-                    String::new(),
-                    "rutis-host: this rutis-host run does not accept calls; start it with \
-                     rutis-host run --allow-call\n"
-                        .into()
-                )
-            ),
-            true => assert_eq!(
-                called,
-                (Some(0), "\"sunny in Oslo\"\n".into(), String::new())
-            ),
-        }
-        signal(&host, libc::SIGTERM, false);
-        let (exit, stderr, _) = host.exit();
-        assert_eq!(exit.code(), Some(0), "{stderr}");
-    }
+    let mut host = Host::start_in_env(
+        &["run", "rutis.json"],
+        dir,
+        &[("XDG_RUNTIME_DIR", runtime.to_str().unwrap())],
+    );
+    host.wait_line(|line| (line == "weather: running").then_some(()));
+    let called = call(
+        &["--config", config, "forecast.today", "\"Oslo\""],
+        elsewhere.path(),
+        runtime,
+    );
+    assert_eq!(
+        called,
+        (Some(0), "\"sunny in Oslo\"\n".into(), String::new())
+    );
+    signal(&host, libc::SIGTERM, false);
+    let (exit, stderr, _) = host.exit();
+    assert_eq!(exit.code(), Some(0), "{stderr}");
 }
 
 /// A Python service, called from the command line.
@@ -489,12 +471,12 @@ fn call_reaches_a_swift_service() {
     );
 }
 
-/// `run --allow-call` the `rutis.json` in `dir`; once its rows run, each
+/// `run` the `rutis.json` in `dir`; once its rows run, each
 /// call of `calls` prints its stdout and stderr (exit 0 when stderr is
 /// empty, else 1).
 fn expect_calls(dir: &Path, runtime: &Path, calls: &[(&[&str], &str, &str)]) {
     let mut host = Host::start_in_env(
-        &["run", "rutis.json", "--allow-call"],
+        &["run", "rutis.json"],
         dir,
         &[("XDG_RUNTIME_DIR", runtime.to_str().unwrap())],
     );

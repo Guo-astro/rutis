@@ -58,7 +58,6 @@ usage:
                                               row's name ([weather]); on in dev, off in run
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
-    run: --allow-call                         accept rutis-host call (dev always does)
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
@@ -234,19 +233,17 @@ fn call_command(args: &[String]) -> Result<Stopped, String> {
     })
 }
 
-/// Answer `rutis-host status` for `target` while the host runs, and
-/// `rutis-host call` when `calls` (`dev`, `run --allow-call`); a host that
-/// cannot says why and runs on.
+/// Answer `rutis-host status` and `rutis-host call` for `target` while the
+/// host runs; a host that cannot says why and runs on.
 pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
-    calls: bool,
 ) -> Option<control::Serving> {
     match control::serve(
         target,
         host.loader.clone(),
         host.status_report(),
-        calls.then(|| host.root()),
+        host.root(),
     ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
@@ -313,7 +310,6 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
     let (watch, args) = take_flag(&args, "--watch-config");
-    let (allow_call, args) = take_flag(&args, "--allow-call");
     // Plugins' output as they write it, unless asked (#678).
     let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
@@ -326,7 +322,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     config.runtimes.prefix_output = prefix;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
-    let _status = answer_status(&path, &host, allow_call);
+    let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
@@ -354,7 +350,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `flag` (`--watch-config`, `--allow-call`, `--debug`) taken out of
+/// `flag` (`--watch-config`, `--debug`) taken out of
 /// `args`: whether it was there, and the rest.
 pub(crate) fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();

@@ -91,7 +91,7 @@ npm 分发自带 Node 运行时（`@arcships/rutis-runtime`），PyPI 分发自�
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
-| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`dev` 接受，`run` 要加 `--allow-call`（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
+| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`run` 和 `dev` 都接受（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
 | `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
@@ -375,7 +375,7 @@ connections:
 - `connections`：`runtimes.remote` 自己连接的远程运行时（没有时不出现这一节）。一台写它的 link 的状态（同 `run` 的 link 行；还没连上时写 `connecting` 或 `waiting for it to connect`），多台写现在连着的 id（没有时写 `none connected`）。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
-`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（`dev` 接受，`run` 加 `--allow-call` 时接受，见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
 
 停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
 
@@ -411,9 +411,8 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
 | 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
 | 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
-| `run` 没加 `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call` |
 
-`call` 能执行任何服务的任何方法，所以 `dev` 接受，`run` 默认不接受：生产环境要用时在启动命令上加 `--allow-call`（只放在命令行，不写进 `rutis.json`）。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
+`run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
 
 ## 输出
 
