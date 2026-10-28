@@ -221,10 +221,18 @@ pub async fn dev(args: &[String]) -> Result<Stopped, String> {
 
 /// The services and the rows providing them, as `Loader::status()` has
 /// them: `rutis-host dev: services: forecast (weather), llm (llm)`, by
-/// name; `host` for one the host provides; `none` when there is none.
+/// name; `host` for one the host provides (`loader`); `none` when no row
+/// provides one, whatever the host does.
 fn services_line(loader: &rutis_loader::Loader) -> String {
-    let services: Vec<String> = loader
-        .status()
+    let status = loader.status();
+    if status
+        .services
+        .iter()
+        .all(|service| service.provider.is_none())
+    {
+        return "rutis-host dev: services: none".to_owned();
+    }
+    let services: Vec<String> = status
         .services
         .iter()
         .map(|service| {
@@ -235,10 +243,7 @@ fn services_line(loader: &rutis_loader::Loader) -> String {
             )
         })
         .collect();
-    match services.is_empty() {
-        true => "rutis-host dev: services: none".to_owned(),
-        false => format!("rutis-host dev: services: {}", services.join(", ")),
-    }
+    format!("rutis-host dev: services: {}", services.join(", "))
 }
 
 /// What `dev --debug` says of each local runtime `config` starts: where its

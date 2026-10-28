@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/arcships/rutis/go/rutis"
@@ -272,13 +274,19 @@ var GoTaker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 	},
 })
 
-// Maker manages a row through the host's `loader`
-// (crates/rutis-loader/tests/loader_service.rs, #185): once started, as a
-// row cannot edit rows while the loader starts it.
-var Maker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+// MakerConfig says where the Python rows' modules are.
+type MakerConfig struct {
+	Dir string `json:"dir"`
+}
+
+// Maker runs the scenario of crates/rutis-loader/tests/loader_service.rs
+// through the host's `loader` (#185), recording what each call returned or
+// threw: once started, as the calls wait for the loader's operation that
+// starts it.
+var Maker = rutis.Define(rutis.Plugin[MakerConfig]{
 	Name:   "go_maker",
 	Inject: []string{"loader", "probe"},
-	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error {
+	Apply: func(ctx *rutis.Ctx, config MakerConfig) error {
 		p, err := probe(ctx)
 		if err != nil {
 			return err
@@ -292,41 +300,74 @@ var Maker = rutis.Define(rutis.Plugin[rutis.NoConfig]{
 		if err := ctx.Use("loader", &loader); err != nil {
 			return err
 		}
-		go func() {
-			fail := func(err error) { _ = p.Record(ctx, "go: "+err.Error()) }
-			id, err := loader.Create(ctx, map[string]any{"id": "from-go", "name": "py:tiny"})
-			if err != nil {
-				fail(err)
-				return
+		record := func(label string, value string, err error) {
+			var remote *rutis.RemoteError
+			switch {
+			case err == nil:
+				_ = p.Record(ctx, strings.TrimSpace(label+": ok "+value))
+			case errors.As(err, &remote):
+				row := ""
+				if data, ok := remote.Data.(map[string]any); ok {
+					row, _ = data["row"].(string)
+				}
+				_ = p.Record(ctx, fmt.Sprintf("%s: %s %s %s | %s", label, remote.Name, remote.Code, row, remote.Message))
+			default:
+				_ = p.Record(ctx, label+": "+err.Error())
 			}
-			if err := loader.Reload(ctx, id); err != nil {
-				fail(err)
-				return
-			}
+		}
+		write := func(name, text string) { _ = os.WriteFile(filepath.Join(config.Dir, name), []byte(text), 0o644) }
+		create := func(label string, options map[string]any) {
+			id, err := loader.Create(ctx, options)
+			record(label, id, err)
+		}
+		row := func(name string) map[string]any { return map[string]any{"id": name, "name": "py:" + name} }
+		states := func(label string) {
 			status, err := loader.Status(ctx)
 			if err != nil {
-				fail(err)
+				record(label, "", err)
 				return
 			}
-			state := ""
+			var parts []string
 			rows, _ := status["rows"].([]any)
-			for _, row := range rows {
-				if row, ok := row.(map[string]any); ok && row["id"] == id {
-					state, _ = row["state"].(string)
+			for _, item := range rows {
+				if item, ok := item.(map[string]any); ok {
+					parts = append(parts, fmt.Sprintf("%v %v", item["id"], item["state"]))
 				}
 			}
-			if err := loader.Remove(ctx, id); err != nil {
-				fail(err)
-				return
-			}
-			err = loader.Remove(ctx, id)
-			var remote *rutis.RemoteError
-			if !errors.As(err, &remote) {
-				fail(fmt.Errorf("expected a remote error, got %v", err))
-				return
-			}
-			_ = p.Record(ctx, fmt.Sprintf("go: %s %s / %s %v %s", id, state, remote.Name, remote.Data, remote.Message))
+			_ = p.Record(ctx, label+": "+strings.Join(parts, ", "))
+		}
+		go func() {
+			write("weather.py", makerV1)
+			create("create", row("weather"))
+			create("create again", row("weather"))
+			create("create unknown", row("wether"))
+			write("fails.py", makerFails)
+			create("create fails", row("fails"))
+			write("syntax.py", makerSyntax)
+			create("create syntax", row("syntax"))
+			write("strict.py", makerStrict)
+			create("create strict", map[string]any{"id": "strict", "name": "py:strict", "config": map[string]any{"units": "kelvin"}})
+			create("create no id", map[string]any{"name": "py:tiny"})
+			write("weather.py", makerSyntax)
+			record("reload syntax", "", loader.Reload(ctx, "weather"))
+			write("weather.py", makerFails)
+			record("reload fails", "", loader.Reload(ctx, "weather"))
+			write("weather.py", makerV2)
+			record("reload", "", loader.Reload(ctx, "weather"))
+			record("reload unknown", "", loader.Reload(ctx, "wether"))
+			states("status")
+			record("remove", "", loader.Remove(ctx, "weather"))
+			record("remove unknown", "", loader.Remove(ctx, "weather"))
+			states("status after")
 		}()
 		return nil
 	},
 })
+
+const (
+	makerV1     = "inject = [\"probe\"]\n\n\ndef apply(ctx, config):\n    ctx.use(\"probe\").record(\"weather v1\")\n"
+	makerSyntax = "inject = [\"probe\"]\n\ndef apply(ctx, config)\n    pass\n"
+	makerV2     = "inject = [\"probe\"]\n\n\ndef apply(ctx, config):\n    ctx.use(\"probe\").record(\"weather version 2\")\n"
+	makerFails  = "def apply(ctx, config):\n    raise KeyError(\"units\")\n"
+	makerStrict = "from rutis import define_plugin\n\n\ndef apply(ctx, config):\n    pass\n\n\nplugin = define_plugin(apply, config={\"type\": \"object\", \"properties\": {\"units\": {\"enum\": [\"metric\", \"imperial\"]}}})\n"
+)

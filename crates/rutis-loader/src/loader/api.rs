@@ -332,9 +332,13 @@ impl Loader {
     /// Resolve a row's module again (a dylib upgrade, say) and apply it.
     /// Changes no layer and persists nothing.
     ///
-    /// All or nothing: if the new module does not resolve, its dry run
-    /// fails, or rows newly fail with it, the previous module stays (and is
-    /// reloaded after a failed apply) and the error is returned.
+    /// If the new module does not resolve or its dry run fails (a syntax
+    /// or import error), the previous module stays and keeps running, and
+    /// the error is returned. If rows newly fail with it in `apply`, the
+    /// previous resolution is put back and the rows reconciled again, and
+    /// the error is returned: a module a runtime loads from its file when
+    /// the row starts (Python, Node) is the new code then, so the row
+    /// fails with it until the code is fixed and reloaded.
     pub async fn reload(&self, id: &str) -> Result<ReconcileReport, LoaderError> {
         self.resolve_again(id, false).await
     }

@@ -2,7 +2,7 @@
 
 [English](design-try-and-test-plugins-2026-10-27.en.md)
 
-状态：定稿，未实现。日期：2026-10-27；2026-10-29：`call` 报找不到服务时列出的名单里多了 rutis 自己提供的 `loader`（#185）。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
+状态：定稿，未实现。日期：2026-10-27；2026-10-29：`call` 报找不到服务时的名单与 `dev` 的服务行里多了 rutis 自己提供的 `loader`（#185）；`dev` 只在没有行提供服务时写 `none`。基准：`main` `103c0d22`（0.17.2 之后）。排期：0.19。
 Issue：[#670](https://github.com/arcships/rutis/issues/670)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 A5、A6、H5）。
 与 0.18 的关系：建在 [0.18 的诊断](design-diagnostics-2026-10-26.md)上，不重复、不改它：`call` 用它 §5.3 的本地 socket 与找法，`dev` 列出的服务就是它 §5.1 `Loader::status()` 的 `services`，出错文字按它 §4（`site`、错误码、§4.5 的禁用词）。依赖 [#678](https://github.com/arcships/rutis/issues/678) 先合并。
 与其他 0.19 设计的关系：从宿主的 `#[rutis::service]` 生成严格假服务、装进测试工具，归 [#684](https://github.com/arcships/rutis/issues/684)；本稿只管插件作者自己写的假依赖和测试工具的 `on`。SDK 默认入口归 [#692](https://github.com/arcships/rutis/issues/692)：本稿不往 SDK 根上加名字，`on` 加在测试工具装载出来的对象上。限制插件能用哪些服务归 [#683](https://github.com/arcships/rutis/issues/683)，它限制的是插件，`call` 是宿主自己的调用。
@@ -107,10 +107,10 @@ rutis-host call [--config <路径>] <服务>.<方法> [参数…]
 - 启动后（所有行 `settled`）打印一行：
 
   ```text
-  rutis-host dev: services: forecast (weather), llm (llm)
+  rutis-host dev: services: forecast (weather), llm (llm), loader (host)
   ```
 
-  按服务名排序，括号里是提供它的行（0.18 的 `provider`；宿主提供的写 `host`）。没有服务时写 `rutis-host dev: services: none`。
+  按服务名排序，括号里是提供它的行（0.18 的 `provider`；宿主提供的写 `host`）。没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。
 - 每次重新加载、重新构建、重读 `rutis.dev.json` 结束（已有的 `settled` 之后）再打印一行，照 issue 的"启动和重载后打印"，不和上一次比较。
 - 数据只来自 `Loader::status().services`，不另建。`run` 不打印（生产输出不变），要看用 `rutis-host status`。
 - 这是 `dev` 输出里新加的一种行，以 `rutis-host dev: ` 开头，和已有的 `rutis-host dev: running …` 一样，不像 `<行>: <状态>`，读状态行的脚本不受影响；已有的行不变。写进 rutis-host.md 的"用 dev 开发插件"一节的输出表。
@@ -166,7 +166,7 @@ weather: built in 1.4s
 weather: running
 llm: running
 rutis-host dev: running weather; changes reload it (Ctrl-C ends)
-rutis-host dev: services: forecast (weather), llm (llm)
+rutis-host dev: services: forecast (weather), llm (llm), loader (host)
 ```
 
 另一个终端：

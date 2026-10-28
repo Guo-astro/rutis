@@ -143,6 +143,7 @@ fn status_says_what_a_running_host_does() {
             "  slow: running",
             "  caller: starting",
             "services:",
+            "  loader: host",
             "  slow: slow",
             "runtimes:",
             &format!("  node: running (pid {node})"),

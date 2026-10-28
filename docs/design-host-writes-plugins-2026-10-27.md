@@ -67,10 +67,11 @@ rutis 照这个做：同一个名字、同样的方法形状、同样谁都能�
 | --- | --- | --- |
 | `create` 前检查 | 已有：`commit` 先试运行（解析、导入新模块；语法、导入错误在这里报出） | 不变 |
 | `create` 失败 | 已有：有行新失败就**退回**原来的层，不留下失败的行，返回错误 | 不变；错误的文字按 0.18 |
-| `reload` 失败时旧版本继续服务 | 已有：`reload` 全有或全无，失败时保留旧模块 | 不变。语法、导入错误在试运行就拦下，旧版本继续运行。新代码能导入、但 `apply` 失败时，loader 退回时重新导入的是文件里现在的代码（Python、Node 的模块按文件解析），所以这一行从此跑的是新代码并以那个错误失败，直到改好再 `reload`——与 [`dev`](guide/rutis-host.md#用-dev-开发插件) 的重新加载相同 |
+| `reload` 失败 | 已有：新模块解析不了或试运行不过（语法、导入错误）时保留旧模块；新代码在 `apply` 里让行失败时，换回旧的解析结果再对账 | 不变，与 `Loader::reload` 的文档同一种说法：语法、导入错误时旧版本继续运行；`apply` 失败时，换回的旧解析结果对按文件加载模块的运行时（Python、Node）来说就是文件里的新代码，所以这一行跑新代码并以那个错误失败，直到改好再 `reload`——与 [`dev`](guide/rutis-host.md#用-dev-开发插件) 的重新加载相同。不另做回滚 |
 | `remove` | 已有：卸载这一行，每项清理执行一次；运行时进程不因此退出（它可能还有别的行） | 不变 |
 | 改动存下 | 已有：`Persist`；**rutis-host 缺可编辑层** | 补：`rutis-host run` 把 `rutis.json` 的 `rows` 作为可编辑层，带一个 `Persist` 把行写回 `rutis.json`。写文件用 #805 的 `rutis-host add` 已有的写回（只改 `rows`，其他字段与键的顺序原样），不另写一份。写回后宿主把写出的内容记为"上次读到的"，`--watch-config` 不把它当作变化 |
 | 文件在宿主读过之后被改过（手改、`rutis-host add`） | 已有：`persist_queue` 的冲突处理 | 不变：`Persist::load` 读回文件里的 `rows`，loader 对账后重做这次改动。`rows` 以外的字段变了的，照旧要 SIGUSR1 或重启宿主才生效（[运行中改配置](guide/rutis-host.md#运行中改配置)） |
+| 在一行自己的 `apply` 里调用 `create` / `reload` / `remove` | loader 的操作等所有行的 `apply` 结束 | 一行在自己的 `apply` 里调 `loader` 的 `create` / `remove` / `reload` 会等到它自己的 `apply` 结束，所以会卡住；在 `apply` 返回后再调用（例如在服务方法或事件里）。不加报错或检查；#771 H3b 改成不卡住 |
 | `rutis-host dev` | 读 `rutis.dev.json` | 不给可编辑层：`dev` 是开发一个插件项目，加、删行改 `rutis.dev.json`。在 `dev` 下 `create` / `remove` 得到 §七 的"没有可编辑的配置"错误；`reload`、`status` 照常 |
 
 ## 六、本地目录的插件怎样加载
@@ -91,22 +92,30 @@ rutis 照这个做：同一个名字、同样的方法形状、同样谁都能�
 
 ### 插件作者
 
-正常时（Python；TypeScript、Go 只是写法不同）：
+正常时（Python；TypeScript、Go 只是写法不同）。调用放在服务方法里，不放在 `apply` 里（§五）：
 
 ```python
-plugin = define_plugin(name="maker", inject=["loader"], apply=apply)
+class Maker:
+    def __init__(self, loader):
+        self.loader = loader
 
-async def apply(ctx, config):
-    loader = ctx.use("loader")
-    row = await loader.create({"id": "weather", "name": "py:weather"})
-    await loader.reload(row)
-    snapshot = await loader.status()
-    await loader.remove(row)
+    async def step(self):
+        row = await self.loader.create({"id": "weather", "name": "py:weather"})
+        await self.loader.reload(row)
+        snapshot = await self.loader.status()
+        await self.loader.remove(row)
+
+
+def apply(ctx, config):
+    ctx.provide("maker", Maker(ctx.use("loader")))
+
+
+plugin = define_plugin(apply, name="maker", inject=["loader"])
 ```
 
 ```ts
 const loader = ctx.use<Loader>('loader')               // inject: ['loader']
-const row = await loader.create({ name: 'py:weather' })
+const row = await loader.create({ name: 'py:weather' })   // 在服务方法里
 ```
 
 ```go
@@ -117,7 +126,7 @@ var loader struct {                                    // Inject: []string{"load
 	Remove func(ctx context.Context, id string) error
 }
 if err := ctx.Use("loader", &loader); err != nil { return err }
-row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
+row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})   // 在服务方法里
 ```
 
 | 调用 | 返回 |
@@ -144,7 +153,7 @@ row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
 | `create` / `remove`，宿主没有可编辑的配置（`rutis-host dev`、不带 `Persist` 的嵌入宿主） | `this host keeps no editable configuration, so rows cannot be added or removed` | — | 在 `rutis.json` / `rutis.dev.json` 里加行 |
 | `create` 已生效，但写回 `rutis.json` 失败 | `weather: added, but rutis.json could not be written: <操作系统的原因>` | 行在运行；文件没有它，宿主重启后就没有 | 修好文件权限后再改一次，或手动加行 |
 
-文字按 0.18 §4.5 的禁用词改写：loader 原来的 `no editable layer`、`no entry "x"`、`apply failed, rolled back: …`、`invalid entry: duplicate id "x"` 换成上面的句子；`<行>: cannot reload: …` 与 `dev` 打印的是同一个函数写出的。插件收到的与宿主在终端打印的是同一段文字。
+重复的 id 与没有的行由 loader 本身报出，Rust 直接调 `Loader::create` / `reload` / `remove` 拿到同一句（`LoaderError::RowExists`、`UnknownEntry`）。文字按 0.18 §4.5 的禁用词改写：loader 原来的 `no editable layer`、`no entry "x"`、`apply failed, rolled back: …`、`invalid entry: duplicate id "x"` 换成上面的句子；`<行>: cannot reload: …` 与 `dev` 打印的是同一个函数写出的。插件收到的与宿主在终端打印的是同一段文字。
 
 要懂的概念：一个服务 `loader` 与它的 4 个方法；行与行名本来就要懂（`rutis.json`）。不新增概念。
 
@@ -155,7 +164,7 @@ row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
 | 插件做的 | 终端 |
 | --- | --- |
 | `create` 成功 | `weather: running`（或 `weather: waiting for …`，与手写的行相同） |
-| `create` 失败 | 行被退回；插件收到上表的错误。退回前状态行可能已打印过（`weather: failed: …`），之后是 `weather: removed` |
+| `create` 失败 | 两行：先 `fails: failed: KeyError: 'units'`（行起不来），再 `fails: removed`（被退回）；插件收到上表的错误 |
 | `reload` 成功，或语法错误（旧版本继续运行） | 不打印：这一行一直是 `running` |
 | `reload`，新代码的 `apply` 失败 | `weather: failed: KeyError: 'units'`；改好再 `reload` 后 `weather: running` |
 | `remove` | `weather: removed` |
@@ -196,7 +205,7 @@ row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
 | PR | 内容 | 完成 | 依赖（#771 的行） |
 | --- | --- | --- | --- |
 | H2 | rutis-host 的可编辑层：`run` 把 `rutis.json` 的 `rows` 作为可编辑层，`Persist` 用 #805 的写回；`dev` 不给；出错文字 `this host keeps no editable configuration, …` 与写回失败一行 | 加、删行后文件逐字节正确、键顺序不变；`--watch-config` 不把写回当作变化；外部改了文件后再改，按冲突处理合并；重启后照常；rutis-host.md "运行中改配置"一节写明 | P2（#805） |
-| H3 | rutis-loader 的 `LoaderService` 与 4 个方法，`LoaderPlugin` 提供它；§七 出错文字（替换 `no editable layer`、`no entry`、`apply failed, rolled back` 的旧说法，所有使用方同一个 PR 改完）；`cannot reload` 的文字由 loader 写出，`dev` 改用它 | Node、Python、Go 各一个测试：`inject` 后 `create` / `reload` / `remove` / `status`，逐字比较 §七 插件作者表的每一行；保证表加 `loader/service` | CL5、CL17（含 C2）、CL21、CL23 |
+| H3 | rutis-loader 的 `LoaderService` 与 4 个方法，`LoaderPlugin` 提供它；§七 出错文字（替换 `no editable layer`、`no entry`、`apply failed, rolled back` 的旧说法，所有使用方同一个 PR 改完）；`cannot reload` 的文字由 loader 写出，`dev` 改用它 | Node、Python、Go 各一个测试：`inject` 后按同一套调用 `create` / `reload` / `remove` / `status`，逐字比较 §七 插件作者表的每一行；"没有可编辑的配置""写回失败"两行各一个端到端测试；保证表加 `loader/service` | CL5、CL17（含 C2）、CL21、CL23 |
 | H4 | S1（§八）；rutis-host.md 与 plugin-api.md 加"用 `loader` 管理插件"一节（中英）；《迁移到 0.19》的一句；关闭 #185 | Linux、macOS 通过，进 nightly | H2、H3；与 G3、G5 改同一批文档，不并行 |
 
 H1 是本次修订（只改两份设计稿，在 #771 加 H2–H4 行）。

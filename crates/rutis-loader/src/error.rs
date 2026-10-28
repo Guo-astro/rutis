@@ -52,6 +52,9 @@ pub enum LoaderError {
     Rejected { id: String, error: Arc<ErrorKind> },
     #[error("no row {0}")]
     UnknownEntry(String),
+    /// `create` with the id of a row there is.
+    #[error("a row {0} already exists")]
+    RowExists(String),
     #[error("invalid entry: {0}")]
     InvalidEntry(String),
     /// The edit cannot be expressed as a patch in the editable layer.
