@@ -212,8 +212,7 @@ impl Host {
         // Each row's line says what it waits for (`status`): the kernel's
         // report of a long wait would say it again.
         root.report_waiting_after(None);
-        let mut catalog = ServiceCatalog::new();
-        catalog.share_by_name();
+        let catalog = ServiceCatalog::new();
 
         // Transports and this node's identity, for the rows that link.
         (&root.plugin(LocalPlugin::new()))

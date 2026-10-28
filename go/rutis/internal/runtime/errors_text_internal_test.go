@@ -154,7 +154,7 @@ func TestUseSaysWhyAServiceIsNotThere(t *testing.T) {
 // guarantee: sdk/error-texts (the Go SDK's own types print as package
 // rutis's, never an internal package's: #677)
 func TestTheTypesAPluginMeetsPrintAsPackageRutis(t *testing.T) {
-	for _, err := range []error{&RemoteError{Name: "E", Message: "m"}, &AggregateError{}, ErrBinding} {
+	for _, err := range []error{&RemoteError{Name: "E", Message: "m"}, &peer.AggregateError{}, ErrBinding} {
 		if got := fmt.Sprintf("%T", err); !strings.HasPrefix(got, "*rutis.") {
 			t.Fatalf("%s", got)
 		}
@@ -170,7 +170,7 @@ func TestTheTypesAPluginMeetsPrintAsPackageRutis(t *testing.T) {
 	if got := fmt.Sprint(ctx); strings.Contains(got, "peer") || !strings.Contains(got, "call chain") {
 		t.Fatal(got)
 	}
-	if reflect.TypeOf(ErrSyncWaitCycle) == nil || !errors.Is(&RemoteError{Name: "SyncWaitCycle"}, ErrSyncWaitCycle) {
+	if reflect.TypeOf(peer.ErrSyncWaitCycle) == nil || !errors.Is(&RemoteError{Name: "SyncWaitCycle"}, peer.ErrSyncWaitCycle) {
 		t.Fatal("SyncWaitCycle")
 	}
 }

@@ -332,8 +332,7 @@ async fn main() -> Main {
     )
     .unwrap();
 
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let log = Log::default();
     let mut builtins = Scoped::new();
     {

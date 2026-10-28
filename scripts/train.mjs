@@ -40,7 +40,7 @@ const versions = {
   'pypi rutis (implementation)': read('python/rutis/rutis/peer.py').match(/^IMPLEMENTATION = \{"name": "rutis", "version": "([^"]+)"\}/m)?.[1],
   // The Go SDK (module go/rutis, released by the tag go/rutis/v<version>):
   // what its runtime and manifests say it is.
-  'go github.com/arcships/rutis/go/rutis': read('go/rutis/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
+  'go github.com/arcships/rutis/go/rutis': read('go/rutis/internal/runtime/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
   // The Kotlin SDK (kotlin/rutis, Maven io.github.arcships:rutis and
   // io.github.arcships:rutis-ksp): its
   // Gradle version, and what its runtime says it is when it greets.

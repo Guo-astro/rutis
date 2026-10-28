@@ -12,7 +12,7 @@
 | 模型部分 | 设计 | 实现 |
 | --- | --- | --- |
 | 控制方 link：拨号、退避重连、按失败类型等待、停止 | [远程插件](../../docs/design-remote-plugins-2026-10-03.md) §3.2；[拨出稿](../../docs/design-remote-runtime-dial-2026-10-14.md) §六 | `crates/rutis-bridge/src/link.rs`：`dialing`、`start` |
-| 运行时的租约与接管顺序（鉴权 → 关闭旧会话 → 清理旧租约 → 回应新 hello） | 远程插件 §4.4 | `python/rutis/rutis/__main__.py` `serve`；`go/rutis/listen.go` `listen`；`node/rutis-runtime/src/serve.mjs` `serve`（Bun 的 `src/remote.ts` 同） |
+| 运行时的租约与接管顺序（鉴权 → 关闭旧会话 → 清理旧租约 → 回应新 hello） | 远程插件 §4.4 | `python/rutis/rutis/__main__.py` `serve`；`go/rutis/internal/runtime/listen.go` `listen`；`node/rutis-runtime/src/serve.mjs` `serve`（Bun 的 `src/remote.ts` 同） |
 | 注册、代次、移交时复核 | 远程插件 §3.2 | `crates/rutis-bridge/src/registration.rs`：`route`、`hand_over` |
 | 接入点：连接即实例、同 id 接管、旧连接释放后再接受新的 | 拨出稿 §四、§六 | `crates/rutis-bridge/src/access_point.rs`：`Shared::connection`、按 id 的 slot |
 | 身份层 | 拨出稿 §五 | `crates/rutis-bridge/src/identity.rs`：`SharedToken` |

@@ -7,13 +7,7 @@
 //	import "github.com/arcships/rutis/go/rutis/advanced"
 //
 //	day := advanced.DateOf(time.Now())
-//
-// Every name here is also in package rutis until the plugin API version
-// changes, marked deprecated; both are the same constant, variable, type
-// or function.
 package advanced
-
-//lint:file-ignore SA1019 the deprecated names in package rutis are what this package forwards to.
 
 import (
 	"net"
@@ -23,6 +17,7 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/convert"
 	"github.com/arcships/rutis/go/rutis/internal/events"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
+	runtime "github.com/arcships/rutis/go/rutis/internal/runtime"
 	"github.com/arcships/rutis/go/rutis/internal/values"
 )
 
@@ -30,15 +25,15 @@ import (
 
 // Version is this SDK's version: the runtime's implementation version and
 // the manifest's `sdk`. The release train checks it.
-const Version = rutis.Version
+const Version = runtime.Version
 
 // PluginAPI is the plugin API this SDK writes plugins against and its
 // runtime supports.
-const PluginAPI = rutis.PluginAPI
+const PluginAPI = runtime.PluginAPI
 
 // Implementation is the name the runtime reports itself by: the module it
 // is published as.
-const Implementation = rutis.Implementation
+const Implementation = runtime.Implementation
 
 // ── Errors of the ways of emitting ───────────────────────────────
 
@@ -67,21 +62,21 @@ type AggregateError = peer.AggregateError
 
 // Manifest is what the plugins `defs` declare, as --rutis-manifest prints
 // it.
-func Manifest(defs ...*rutis.Definition) ([]byte, error) { return rutis.Manifest(defs...) }
+func Manifest(defs ...*rutis.Definition) ([]byte, error) { return runtime.Manifest(defs...) }
 
 // Project is the project directory the host gave this runtime.
-func Project() string { return rutis.Project() }
+func Project() string { return runtime.Project() }
 
 // ServeArgs is Serve with the arguments given, returning instead of
 // exiting: for binaries with commands of their own.
 func ServeArgs(args []string, defs ...*rutis.Definition) error {
-	return rutis.ServeArgs(args, defs...)
+	return runtime.ServeArgs(args, defs...)
 }
 
 // ServeConn serves the plugins `defs` on `conn` (the compat protocol, one
 // message per line) until the session ends, then unloads them.
 func ServeConn(conn net.Conn, defs ...*rutis.Definition) error {
-	return rutis.ServeConn(conn, defs...)
+	return runtime.ServeConn(conn, defs...)
 }
 
 // ── Values ───────────────────────────────────────────────────────
@@ -147,13 +142,13 @@ type Next = events.Next
 
 // Prepend puts the listener before every listener registered so far,
 // instead of after them.
-func Prepend() rutis.ListenOption { return rutis.Prepend() }
+func Prepend() rutis.ListenOption { return runtime.Prepend() }
 
 // Global exempts the listener from emitters' filters (Filter).
-func Global() rutis.ListenOption { return rutis.Global() }
+func Global() rutis.ListenOption { return runtime.Global() }
 
 // Rename gives the Go method `method` the wire name `wire`.
-func Rename(method, wire string) rutis.ShapeOption { return rutis.Rename(method, wire) }
+func Rename(method, wire string) rutis.ShapeOption { return runtime.Rename(method, wire) }
 
 // Function is a function of another process, received where a value of
 // any type was expected.
@@ -165,7 +160,7 @@ type Future = convert.Future
 // Service is a service used by name, or an object with methods of another
 // process received as `any` (#687 §四): its methods call the original
 // object; it has no method table.
-type Service = rutis.Service
+type Service = runtime.Service
 
 // Schemer is a configuration type that gives its own JSON Schema.
-type Schemer = rutis.Schemer
+type Schemer = runtime.Schemer

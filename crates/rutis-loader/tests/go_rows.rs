@@ -19,10 +19,11 @@ use rutis::{Ctx, Error};
 use rutis_bridge::runtime::RuntimeState;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
-use rutis_loader::runtime::go::{
-    GoBinaries, GoResolver, GoRuntimeState, GoRuntimes, GoRuntimesHandle,
+use rutis_loader::runtime::binary::{
+    Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle,
 };
+use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
+use rutis_loader::runtime::go::Go;
 use rutis_loader::runtime::RuntimeRows;
 use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
@@ -68,8 +69,8 @@ fn install(dir: &Path, name: &str, as_name: &str) -> PathBuf {
 struct Fixture {
     root: Ctx,
     loader: Loader,
-    resolver: Arc<GoResolver>,
-    runtimes: GoRuntimesHandle,
+    resolver: Arc<BinaryResolver<Go>>,
+    runtimes: BinaryRuntimesHandle<Go>,
     dir: tempfile::TempDir,
 }
 
@@ -83,7 +84,7 @@ async fn fixture(idle: Option<Duration>, binaries: &[(&str, &str)]) -> Fixture {
     let root = Ctx::root().unwrap();
     let catalog = ServiceCatalog::new();
     let resolver = Arc::new(
-        GoResolver::new(GoBinaries::new().dir(&plugins))
+        BinaryResolver::<Go>::new(Binaries::new().dir(&plugins))
             .with_catalog(&catalog)
             .reserve(["node", "py"]),
     );
@@ -96,7 +97,7 @@ async fn fixture(idle: Option<Duration>, binaries: &[(&str, &str)]) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let go = GoRuntimes::new(resolver.clone(), dir.path()).idle(idle);
+    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path()).idle(idle);
     let runtimes = go.handle();
     root.plugin(go).await.unwrap();
     Fixture {
@@ -130,7 +131,7 @@ fn unresolved(loader: &Loader, id: &str) -> Option<String> {
     }
 }
 
-fn runtime_state(runtimes: &GoRuntimesHandle, name: &str) -> Option<GoRuntimeState> {
+fn runtime_state(runtimes: &BinaryRuntimesHandle<Go>, name: &str) -> Option<BinaryRuntimeState> {
     runtimes
         .runtimes()
         .into_iter()
@@ -252,15 +253,15 @@ async fn rows_find_their_binary_and_call_across_binaries() {
 
     assert_eq!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Running)
+        Some(BinaryRuntimeState::Running)
     );
     assert_eq!(
         runtime_state(&fixture.runtimes, "go-caller"),
-        Some(GoRuntimeState::Running)
+        Some(BinaryRuntimeState::Running)
     );
     assert_eq!(
         runtime_state(&fixture.runtimes, "go-spare"),
-        Some(GoRuntimeState::NotStarted),
+        Some(BinaryRuntimeState::NotStarted),
         "a binary no row uses is not started"
     );
     let meta = fixture.loader.get("ping").unwrap().meta;
@@ -324,7 +325,7 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
 }
 
 /// What `states` says of `name`, when it is down: why.
-fn down(runtimes: &GoRuntimesHandle, name: &str) -> Option<String> {
+fn down(runtimes: &BinaryRuntimesHandle<Go>, name: &str) -> Option<String> {
     runtimes
         .states()
         .into_iter()
@@ -585,7 +586,7 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         || {
             matches!(
                 runtime_state(&runtimes, "go-netkit"),
-                Some(GoRuntimeState::Stopped(_))
+                Some(BinaryRuntimeState::Stopped(_))
             )
             .then_some(())
         },
@@ -633,13 +634,13 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
         .unwrap();
     let runtimes = fixture.runtimes.clone();
     COLD.until(
-        || runtime_state(&runtimes, "go-spare") == Some(GoRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "go-spare") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop of spare",
     )
     .await;
     assert!(matches!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     // What a status line reads: the crashed runtime, down; the other one
     // running; the idle one, not there.
@@ -727,13 +728,13 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
         .unwrap();
     let runtimes = fixture.runtimes.clone();
     COLD.until(
-        || runtime_state(&runtimes, "go-spare") == Some(GoRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "go-spare") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop of spare",
     )
     .await;
     assert_eq!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Running)
+        Some(BinaryRuntimeState::Running)
     );
     let now = service(&fixture.root, "ping").expect("ping's service");
     assert!(
@@ -750,7 +751,7 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 
     fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
     COLD.until(
-        || runtime_state(&runtimes, "go-netkit") == Some(GoRuntimeState::NotStarted),
+        || runtime_state(&runtimes, "go-netkit") == Some(BinaryRuntimeState::NotStarted),
         "the idle stop",
     )
     .await;
@@ -1093,7 +1094,7 @@ async fn a_failed_manifest_read_is_read_again_for_a_missing_plugin_once_it_stood
     std::fs::create_dir_all(&plugins).unwrap();
     let count = dir.path().join("runs");
     failing_once(&plugins.join("later"), &count);
-    let resolver = GoResolver::new(GoBinaries::new().dir(&plugins));
+    let resolver = BinaryResolver::<Go>::new(Binaries::new().dir(&plugins));
 
     for name in ["go:late", "go:late", "go:typo"] {
         match resolver.resolve(name).await {
@@ -1121,7 +1122,7 @@ async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood()
     let count = dir.path().join("runs");
     let binary = dir.path().join("lister");
     failing_once(&binary, &count);
-    let resolver = GoResolver::new(GoBinaries::new().file(&binary));
+    let resolver = BinaryResolver::<Go>::new(Binaries::new().file(&binary));
 
     for _ in 0..2 {
         match resolver.resolve("go-lister:late").await {
@@ -1217,7 +1218,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
     )
     .await;
     match runtime_state(&fixture.runtimes, "go-legacy") {
-        Some(GoRuntimeState::Stopped(why)) => assert!(why.contains(refusal), "{why}"),
+        Some(BinaryRuntimeState::Stopped(why)) => assert!(why.contains(refusal), "{why}"),
         other => panic!("the runtime: {other:?}"),
     }
     // Not started again: by sweeps, by its rows resolving again, by a new
@@ -1264,7 +1265,7 @@ async fn names_of_other_resolvers_are_not_claimed() {
 /// What supervising reported, and when.
 type Ends = Arc<Mutex<Vec<(RuntimeEnd, std::time::Instant)>>>;
 
-fn supervise(runtimes: &GoRuntimesHandle, policy: RestartPolicy) -> Ends {
+fn supervise(runtimes: &BinaryRuntimesHandle<Go>, policy: RestartPolicy) -> Ends {
     let ends: Ends = Arc::default();
     let report = ends.clone();
     runtimes.supervise(policy, move |end| {
@@ -1277,7 +1278,10 @@ fn supervise(runtimes: &GoRuntimesHandle, policy: RestartPolicy) -> Ends {
 }
 
 /// The process of the runtime `name`, while it runs.
-fn process(runtimes: &GoRuntimesHandle, name: &str) -> Option<Arc<rutis_bridge::runtime::Process>> {
+fn process(
+    runtimes: &BinaryRuntimesHandle<Go>,
+    name: &str,
+) -> Option<Arc<rutis_bridge::runtime::Process>> {
     runtimes
         .states()
         .into_iter()
@@ -1378,7 +1382,7 @@ async fn a_crashed_runtime_restarts_on_failure_until_it_gives_up() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(matches!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     assert_eq!(ends.lock().unwrap().len(), 6, "{:?}", ends.lock().unwrap());
     assert_ne!(row_state(&loader, "ping"), Some(FiberState::Active));
@@ -1414,7 +1418,7 @@ async fn a_policy_change_cancels_a_waiting_restart() {
         || {
             matches!(
                 runtime_state(&runtimes, "go-netkit"),
-                Some(GoRuntimeState::Stopped(_))
+                Some(BinaryRuntimeState::Stopped(_))
             )
         },
         "the crashed runtime",
@@ -1425,7 +1429,7 @@ async fn a_policy_change_cancels_a_waiting_restart() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(matches!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     assert_ne!(row_state(&fixture.loader, "ping"), Some(FiberState::Active));
     fixture.root.shutdown().await.unwrap();
@@ -1458,7 +1462,7 @@ async fn exit_reports_the_end_and_unsupervised_runtimes_stay_down() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(matches!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     assert_eq!(ends.lock().unwrap().len(), 1);
 
@@ -1471,7 +1475,7 @@ async fn exit_reports_the_end_and_unsupervised_runtimes_stay_down() {
         || {
             matches!(
                 runtime_state(&runtimes, "go-netkit"),
-                Some(GoRuntimeState::Stopped(_))
+                Some(BinaryRuntimeState::Stopped(_))
             )
         },
         "the crashed runtime",
@@ -1488,7 +1492,7 @@ async fn exit_reports_the_end_and_unsupervised_runtimes_stay_down() {
     );
     assert!(matches!(
         runtime_state(&fixture.runtimes, "go-netkit"),
-        Some(GoRuntimeState::Stopped(_))
+        Some(BinaryRuntimeState::Stopped(_))
     ));
     fixture.root.shutdown().await.unwrap();
 }
@@ -1512,7 +1516,7 @@ async fn a_runtime_that_ended_before_supervising_is_handled_once_it_starts() {
             || {
                 matches!(
                     runtime_state(&runtimes, "go-netkit"),
-                    Some(GoRuntimeState::Stopped(_))
+                    Some(BinaryRuntimeState::Stopped(_))
                 )
             },
             "the crashed runtime",

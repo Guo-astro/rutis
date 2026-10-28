@@ -12,7 +12,7 @@ TLC explores every interleaving of a remote runtime's lease, takeover by a newer
 | Part of the model | Design | Implementation |
 | --- | --- | --- |
 | Controller link: dial, back off and reconnect, wait by failure category, stop | [remote plugins](../../docs/design-remote-plugins-2026-10-03.en.md) §3.2; [dial-out](../../docs/design-remote-runtime-dial-2026-10-14.en.md) §6 | `crates/rutis-bridge/src/link.rs`: `dialing`, `start` |
-| The runtime's lease and takeover order (authenticate → close the old session → clean the old lease → answer the new hello) | remote plugins §4.4 | `python/rutis/rutis/__main__.py` `serve`; `go/rutis/listen.go` `listen`; `node/rutis-runtime/src/serve.mjs` `serve` (Bun's `src/remote.ts` alike) |
+| The runtime's lease and takeover order (authenticate → close the old session → clean the old lease → answer the new hello) | remote plugins §4.4 | `python/rutis/rutis/__main__.py` `serve`; `go/rutis/internal/runtime/listen.go` `listen`; `node/rutis-runtime/src/serve.mjs` `serve` (Bun's `src/remote.ts` alike) |
 | Registrations, generations, the re-check at hand-over | remote plugins §3.2 | `crates/rutis-bridge/src/registration.rs`: `route`, `hand_over` |
 | Access point: a connection is an instance, takeover by the same id, the old connection released before the new one is accepted | dial-out §4, §6 | `crates/rutis-bridge/src/access_point.rs`: `Shared::connection`, slots per id |
 | Identity layer | dial-out §5 | `crates/rutis-bridge/src/identity.rs`: `SharedToken` |
