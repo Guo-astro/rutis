@@ -777,7 +777,7 @@ $ npx rutis-host call commands.run '"count"'
 
 - The fakes of a test go in `load`'s `services`; the fakes of `dev` are rows of `rutis.dev.json`.
 - Authors writing commands in Python use the `jot_types.py` that `--python` writes; the fake jot can stay in TypeScript: rows of different languages sit together in `rutis.dev.json`.
-- The test tools, `dev` and `rutis-host call` are in each language's plugin guide ([TypeScript](typescript-plugin.en.md#3-test), [Python](python-plugin.en.md#3-test)) and in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
+- The test tools, `dev` and `rutis-host call` are in each language's plugin guide ([TypeScript](typescript-plugin.en.md#6-test), [Python](python-plugin.en.md#6-test)) and in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
 ### The development loop
 
