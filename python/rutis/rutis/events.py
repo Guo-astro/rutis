@@ -513,7 +513,7 @@ class Emitter:
 
     def parallel(self, name: str, *args: Any):
         """Await it: start every listener, wait for all. Failures raise
-        `rutis.AggregateError`, in registration order."""
+        `rutis.advanced.AggregateError`, in registration order."""
         reserved(name)
         return self._send("parallel", name, list(args), None, self._keep)
 

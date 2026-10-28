@@ -11,13 +11,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use common::runtimes::{layer, repo, row_state, Probe, COLD};
+use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -110,7 +110,7 @@ async fn fixture_with(install: impl FnOnce(&Path)) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    rows_stage(&root, rows).await;
     Fixture {
         root,
         loader,
@@ -329,6 +329,15 @@ async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
         .await
         .unwrap();
     fixture.probe.wait_for("v1: start").await;
+    // `start` is recorded inside `apply`, before the row runs in rutis, and
+    // `reconcile` does not wait for that when the row waits for the
+    // runtime's rows stage (`RuntimeRows`). A reload that fails changes
+    // nothing, so a row still loading stays `Loading`: wait until it runs.
+    COLD.until(
+        || row_state(&fixture.loader, "e") == Some(FiberState::Active),
+        "the row running in rutis",
+    )
+    .await;
 
     touch("export default {{ this is not TypeScript\n".into(), 5);
     let reload = fixture.loader.reload("e").await;

@@ -15,12 +15,12 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
-use common::runtimes::{kotlin_launcher, layer, repo, row_state, Llm, Probe, COLD};
+use common::runtimes::{kotlin_launcher, layer, repo, row_state, rows_stage, Llm, Probe, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -184,7 +184,7 @@ async fn fixture(
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
     for resolver in resolvers {
-        root.plugin(RuntimeRowsPlugin::new(resolver));
+        rows_stage(&root, resolver).await;
     }
     Fixture {
         root,

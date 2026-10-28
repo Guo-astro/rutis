@@ -6,11 +6,12 @@
 
 | 文件 | 展示什么 |
 | --- | --- |
-| [src/lib.rs](src/lib.rs) | 带标注的 `Calendar`：serde 参数和返回值、异步方法、`Result` 错误、按引用传的函数 |
-| [rows/services.d.ts](rows/services.d.ts) | `rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts` 写出的声明（要提交） |
+| [src/lib.rs](src/lib.rs) | 带标注的 `Calendar`：serde 参数和返回值、异步方法、`Result` 错误、按引用传的函数；`plan`、`addSource` 的参数各取一种值（字符串、布尔、浮点、整数、可省略、列表、元组、映射、结构体、枚举、插件定义） |
+| [rows/services.d.ts](rows/services.d.ts) | `rutis-host types examples/marked-services -o examples/marked-services/rows/services.d.ts --contract examples/marked-services/rows/services.contract.json` 写出的声明（要提交） |
+| [rows/services.contract.json](rows/services.contract.json) | 同一条命令写出的契约描述，测试工具读它检查调用（要提交） |
 | [rows/calendar.ts](rows/calendar.ts) | Node 行，按声明使用 `calendar` |
 | [rows/calendar_row.py](rows/calendar_row.py) | 调用同一个服务的 Python 行 |
-| [tests/rows.rs](tests/rows.rs) | 宿主与检查：两种行、声明是最新的、`tsc --strict` |
+| [tests/rows.rs](tests/rows.rs) | 宿主与检查：两种行、声明和契约描述是最新的、`tsc --strict` |
 
 在仓库根目录运行：
 

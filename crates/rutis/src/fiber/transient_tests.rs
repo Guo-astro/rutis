@@ -1,5 +1,6 @@
-//! 终态释放(0.2.1)单元验证:瞬态子插件退出后,mount 记录与 root 级
-//! provide 的清理记录、provided 记账在长寿 root 上回到基线。
+//! Release of records when short-lived child plugins end: on a long-lived
+//! root, mount records, the cleanup records of root-level provides and the
+//! provided-service accounting return to their baseline.
 
 use super::*;
 use crate::host::CtxHost;
@@ -19,8 +20,8 @@ impl crate::DynPlugin for Noop {
     }
 }
 
-/// mount 记录经子 fiber 退出路径 drain 自摘,root 的 effects 列表
-/// 不随插件 churn 累积。
+/// Mount records remove themselves when the child fiber exits, so the
+/// root's effects list does not grow as plugins come and go.
 #[tokio::test]
 async fn churn_mount_records_release_from_root() {
     let ctx = Ctx::root().expect("runtime in scope");
@@ -43,7 +44,8 @@ async fn churn_mount_records_release_from_root() {
     );
 }
 
-/// root 级 provide 的 evict 清理记录与 provided 记账随 Disposer 释放。
+/// A root-level provide's eviction cleanup record and its provided-service
+/// accounting are released with its `Disposer`.
 #[tokio::test]
 async fn churn_root_provides_release_accounting() {
     let ctx = Ctx::root().expect("runtime in scope");

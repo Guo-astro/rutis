@@ -249,3 +249,22 @@ pub fn kotlin_launcher(project: &Path) -> rutis_bridge::runtime::Launcher {
         .arg(kotlin_jar())
         .cwd(project)
 }
+
+/// Mount the rows stage of the runtime `rows` resolves for, and wait until
+/// it releases the rows (`RuntimeRows`). It does that from a task of its
+/// own, and `reconcile` does not wait for rows still waiting for it: without
+/// this wait a row whose plugin has already recorded a line from its
+/// `apply` may still be `Loading` in rutis. Only for a runtime that starts:
+/// the stage waits for it.
+#[cfg(feature = "runtimes")]
+pub async fn rows_stage(root: &rutis::Ctx, rows: Arc<rutis_loader::runtime::RuntimeResolver>) {
+    use rutis::internal::CtxInternal;
+    use rutis_loader::runtime::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
+    let key = RuntimeRows::key(RowsSource::runtime_name(&*rows));
+    root.plugin(RuntimeRowsPlugin::new(rows));
+    COLD.until(
+        || root.get_key::<RuntimeRows>(key.clone()).is_some(),
+        "the runtime's rows released",
+    )
+    .await;
+}

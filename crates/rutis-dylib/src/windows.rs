@@ -1,7 +1,7 @@
 //! Windows: `LoadLibraryExW` by full path and `GetProcAddress`; the loaded
 //! SDK is found by its module name.
 //!
-//! Verified on windows-2025 (SDK design §十一, Windows feasibility record):
+//! Verified on windows-2025:
 //! a plugin loaded with `LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
 //! LOAD_LIBRARY_SEARCH_SYSTEM32` reuses the `rutis_sdk.dll` and `std-*.dll`
 //! the host already loaded from its own directory; copies planted in the

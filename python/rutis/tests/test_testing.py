@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 import background
 
-from rutis import AggregateError, BindingError, PLUGIN_API, RemoteError, ReservedEvent, define_plugin
+from rutis import BindingError, RemoteError, define_plugin
+from rutis.advanced import PLUGIN_API, AggregateError, ReservedEvent
 from rutis.testing import Bus, PluginTestError, load
 
 
