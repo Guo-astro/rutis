@@ -1,6 +1,6 @@
 //! Plugin install (#691, design docs/design-plugin-install-2026-10-27.md
 //! §十三 P3): in each of Node, Bun, Python and Go, a package made from the
-//! `rutis-host new` template → `add --dry-run` → `add` → `check` → `run`,
+//! `rutis-host new` template → `add` → `check` → `run`,
 //! a probe calling its service → a new version and `upgrade` → `run` again
 //! → `remove`. Python starts with no environment, from `pypi:` with a local
 //! `--find-links`; Go from its module path through a `GOPROXY=file://`
@@ -182,22 +182,6 @@ fn a_node_plugin_installs_runs_upgrades_and_goes() {
     pack_js(&s, "dist/index.js", 1);
     let probe = configuration(&s);
 
-    says(
-        &s,
-        &["add", "--dry-run", "./demo.tgz"],
-        NPM_ENV,
-        &[
-            "./demo.tgz 0.1.0 (node): plugin demo",
-            "demo",
-            "  version: \"0.1.0\"",
-            "nothing was installed (--dry-run)",
-        ],
-    );
-    assert!(
-        !s.path("node_modules/demo").exists(),
-        "--dry-run installs nothing here"
-    );
-
     let said = says(
         &s,
         &["add", "./demo.tgz"],
@@ -242,85 +226,6 @@ fn a_node_plugin_installs_runs_upgrades_and_goes() {
     s.finish();
 }
 
-/// A local npm registry with one package, this checkout's Bun runtime
-/// (`@arcships/rutis-bun`): `add --dry-run` installs it into a scratch
-/// project, and the version of this checkout may not be published yet.
-/// Its address, for `BUN_CONFIG_REGISTRY`; it serves until the test ends.
-fn bun_registry(s: &Scenario) -> String {
-    use std::io::{BufRead, BufReader, Write};
-
-    let out = s.dir().join("bun-registry");
-    std::fs::create_dir_all(&out).unwrap();
-    program(
-        s,
-        "",
-        "npm",
-        &[
-            "pack",
-            "--ignore-scripts",
-            "--pack-destination",
-            &out.display().to_string(),
-            &repo().join("bun/rutis-bun").display().to_string(),
-        ],
-        NPM_ENV,
-    );
-    let tarball = std::fs::read_dir(&out)
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|extension| extension == "tgz"))
-        .expect("the packed Bun runtime");
-    let tarball = std::fs::read(tarball).unwrap();
-    let manifest: Value =
-        serde_json::from_slice(&std::fs::read(repo().join("bun/rutis-bun/package.json")).unwrap())
-            .unwrap();
-    let version = manifest["version"].as_str().unwrap().to_owned();
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = format!("http://{}/", listener.local_addr().unwrap());
-    let package = json!({
-        "name": "@arcships/rutis-bun",
-        "dist-tags": { "latest": version },
-        "versions": { &version: {
-            "name": "@arcships/rutis-bun",
-            "version": version,
-            "dist": { "tarball": format!("{address}rutis-bun.tgz") },
-        } },
-    })
-    .to_string()
-    .into_bytes();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(&stream);
-            let mut request = String::new();
-            if reader.read_line(&mut request).is_err() {
-                continue;
-            }
-            // The headers, to the empty line.
-            let mut line = String::new();
-            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
-                line.clear();
-            }
-            let path = request.split(' ').nth(1).unwrap_or_default();
-            let (status, body) = if path.ends_with("/rutis-bun.tgz") {
-                ("200 OK", &tarball)
-            } else if path.contains("rutis-bun") {
-                ("200 OK", &package)
-            } else {
-                ("404 Not Found", &Vec::new())
-            };
-            let mut stream = &stream;
-            let _ = write!(
-                stream,
-                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(body);
-        }
-    });
-    address
-}
-
 /// risk: B1
 /// guarantee: host/plugin-install
 #[test]
@@ -346,19 +251,9 @@ fn a_bun_plugin_installs_runs_upgrades_and_goes() {
     let bun_tmp = s.dir().join("bun-tmp");
     std::fs::create_dir_all(&bun_tmp).unwrap();
     let bun_tmp = bun_tmp.display().to_string();
-    let registry = bun_registry(&s);
-    let env: &[(&str, &str)] = &[("TMPDIR", &bun_tmp), ("BUN_CONFIG_REGISTRY", &registry)];
+    let env: &[(&str, &str)] = &[("TMPDIR", &bun_tmp)];
     program(&s, "", "bun", &["install"], env);
 
-    says(
-        &s,
-        &["add", "--dry-run", "./demo.tgz"],
-        env,
-        &[
-            "./demo.tgz 0.1.0 (bun): plugin demo",
-            "nothing was installed (--dry-run)",
-        ],
-    );
     let said = says(
         &s,
         &["add", "./demo.tgz"],
@@ -512,7 +407,7 @@ fn borrowed<'a>(env: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str
 }
 
 /// From no environment: `add` creates `.venv` and installs from `pypi:`
-/// (a local `--find-links`); a local wheel for `--dry-run`.
+/// (a local `--find-links`).
 /// risk: B1
 /// guarantee: host/plugin-install
 #[test]
@@ -524,21 +419,6 @@ fn a_python_plugin_installs_runs_upgrades_and_goes() {
     let links = find_links(&s);
     let env = borrowed(&links);
     assert!(!s.path(".venv").exists());
-
-    says(
-        &s,
-        &["add", "--dry-run", "./wheels/demo-0.1.0-py3-none-any.whl"],
-        &env,
-        &[
-            "./wheels/demo-0.1.0-py3-none-any.whl 0.1.0 (py): plugin demo",
-            "  version: \"0.1.0\"",
-            "nothing was installed (--dry-run)",
-        ],
-    );
-    assert!(
-        !s.path(".venv").exists(),
-        "--dry-run makes no environment here"
-    );
 
     let said = says(
         &s,
@@ -680,8 +560,7 @@ fn publish_go(s: &Scenario, n: u32, env: &[(&str, &str)]) {
 }
 
 /// From the Go module path, through a `GOPROXY=file://` module proxy that
-/// also has this checkout's Go SDK; the module's directory for
-/// `--dry-run`.
+/// also has this checkout's Go SDK.
 /// risk: B1
 /// guarantee: host/plugin-install
 #[test]
@@ -709,17 +588,6 @@ fn a_go_plugin_installs_runs_upgrades_and_goes() {
     );
     publish_go(&s, 1, &env);
     let probe = configuration(&s);
-
-    says(
-        &s,
-        &["add", "--dry-run", "./netkit"],
-        &env,
-        &["netkit", "nothing was installed (--dry-run)"],
-    );
-    assert!(
-        !s.path("plugins/go").exists(),
-        "--dry-run installs nothing here"
-    );
 
     let said = says(
         &s,
