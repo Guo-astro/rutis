@@ -48,10 +48,6 @@ pub struct LocalRuntime {
     processes: Processes,
     /// How long its process may take to greet; `None`: the default, 30 s.
     greeting: Option<Duration>,
-    /// The host's limit on calls into it ([`LocalRuntime::call_limit`]).
-    call_limit: Option<Duration>,
-    /// A call over the limit also ends the process.
-    kill_on_timeout: bool,
 }
 
 impl LocalRuntime {
@@ -150,8 +146,6 @@ impl LocalRuntime {
             anchor,
             processes,
             greeting: None,
-            call_limit: None,
-            kill_on_timeout: false,
         }
     }
 
@@ -234,52 +228,6 @@ impl LocalRuntime {
     /// (`python3` for Python, `bun` for Bun).
     pub fn interpreter(mut self, program: impl Into<OsString>) -> Self {
         self.launcher.program = program.into();
-        self
-    }
-
-    /// Limit each call into the runtime's plugin code to `limit`: a call of
-    /// a service one of its rows provides (by name), or of a function one of
-    /// its plugins passed by reference, from the host, a plugin of another
-    /// runtime or a Rust plugin. A call not finished within it is cancelled
-    /// (the runtime is told, as when the caller gives up) and its caller
-    /// gets an error with code `timeout`: `call to weather.tomorrow did not
-    /// finish within 30s (the host's limit for runtime agent); the call was
-    /// cancelled`. Calls between plugins of this runtime are not limited.
-    /// Not set, calls are not limited.
-    pub fn call_limit(mut self, limit: Duration) -> Self {
-        self.call_limit = Some(limit);
-        self.runtime = self.runtime.call_limit(limit, self.kill_on_timeout);
-        self
-    }
-
-    /// With [`LocalRuntime::call_limit`]: a call over the limit also ends
-    /// the runtime's process, for a plugin stuck in synchronous code that
-    /// a cancellation cannot stop. Its other calls in progress fail with
-    /// code `peer-gone`; the runtime is down (`ended by the host: …`) until
-    /// the host restarts it (`FiberView::restart` on the fiber
-    /// `plugin(runtime)` returned).
-    pub fn kill_on_timeout(mut self) -> Self {
-        self.kill_on_timeout = true;
-        if let Some(limit) = self.call_limit {
-            self.runtime = self.runtime.call_limit(limit, true);
-        }
-        self
-    }
-
-    /// Let the runtime's plugins use only these of the services from
-    /// outside it: the host's, Rust plugins', other runtimes' rows'.
-    /// Services its own rows provide each other are not limited, and
-    /// neither are the host's own calls. A row whose plugin injects
-    /// another fails to start, saying so: `uses llm, which the host does
-    /// not let runtime wordcount use (allowed: tools, notes)`. Not set,
-    /// they may use any.
-    pub fn allowed_services<I, S>(mut self, names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let names = names.into_iter().map(Into::into).collect();
-        self.runtime = self.runtime.allowed_services(names);
         self
     }
 

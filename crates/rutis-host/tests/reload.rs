@@ -526,13 +526,15 @@ def apply(ctx, config):
 }
 
 /// A reload adding a listening peer row on the listener a runtime dials in
-/// to, both falling back to RUTIS_TOKEN, is refused, naming both and the
-/// variable to set; nothing changes (#702).
+/// to, with the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, is
+/// refused, naming both and the variables to change; nothing changes
+/// (#702).
 /// guarantee: host/reload-config, host/credentials-from-env
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     let _environment = environment();
-    std::env::set_var("RUTIS_TOKEN", "shared");
+    std::env::set_var("RUTIS_TOKEN_MAIN", "shared");
+    std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
     let phone: HostConfig = serde_json::from_value(json!({
         "id": "office",
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
@@ -551,13 +553,14 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     let error = host.reload(both).await.unwrap_err();
     assert_eq!(
         error,
-        "listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a \
-         connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or \
-         RUTIS_TOKEN_PHONE to a token of its own"
+        "listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone \
+         accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be \
+         told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value"
     );
     assert!(host.loader.entries().iter().all(|entry| entry.id != "main"));
     host.shut_down(HANG_GUARD).await.ok();
-    std::env::remove_var("RUTIS_TOKEN");
+    std::env::remove_var("RUTIS_TOKEN_MAIN");
+    std::env::remove_var("RUTIS_TOKEN_PHONE");
 }
 
 /// A peer row a reload adds dials with the token the environment has for
@@ -567,7 +570,8 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_row_a_reload_adds_presents_its_token() {
     let _environment = environment();
-    std::env::set_var("RUTIS_TOKEN", "shared");
+    std::env::set_var("RUTIS_TOKEN_MAIN", "shared");
+    std::env::set_var("RUTIS_TOKEN_OFFICE", "shared");
     let office: HostConfig = serde_json::from_value(json!({
         "id": "office",
         "listen": [{ "name": "local", "address": "127.0.0.1:0" }],
