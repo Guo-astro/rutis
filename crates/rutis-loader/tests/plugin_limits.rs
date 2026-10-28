@@ -379,12 +379,17 @@ async fn a_runtime_waiting_for_a_debugger_stays_starting() {
     // Well past the time Node takes to greet when nothing stops it.
     tokio::time::sleep(Duration::from_secs(3)).await;
     let status = host.loader.status().to_string();
-    // With its process id, to attach the debugger to.
-    let pid = runtime_of(&host.loader.status(), "wordcount").pid.unwrap();
-    assert_eq!(
-        line(&status, "  wordcount: starting"),
-        format!("  wordcount: starting (pid {pid})")
-    );
+    // With its process id, to attach the debugger to. On Windows a local
+    // runtime's process is known only once it connected back (loopback
+    // handover), so a process that has not greeted shows none.
+    let expected = match cfg!(windows) {
+        false => {
+            let pid = runtime_of(&host.loader.status(), "wordcount").pid;
+            format!("  wordcount: starting (pid {})", pid.expect("a pid"))
+        }
+        true => "  wordcount: starting".to_string(),
+    };
+    assert_eq!(line(&status, "  wordcount: starting"), expected);
     assert_eq!(
         line(&status, "  wordcount: waiting"),
         "  wordcount: waiting for runtime wordcount (starting)"
