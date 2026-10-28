@@ -188,9 +188,6 @@ pub enum DependencyStatus {
     Missing,
     Removing,
     ProviderInactive(FiberState),
-    CheckPending,
-    CheckRejected,
-    CheckPanicked,
     Ready,
 }
 
@@ -201,9 +198,6 @@ impl std::fmt::Display for DependencyStatus {
             Self::Missing => f.write_str("service missing"),
             Self::Removing => f.write_str("service being removed"),
             Self::ProviderInactive(state) => write!(f, "provider inactive ({state:?})"),
-            Self::CheckPending => f.write_str("check pending"),
-            Self::CheckRejected => f.write_str("check rejected"),
-            Self::CheckPanicked => f.write_str("check panicked"),
             Self::Ready => f.write_str("ready"),
         }
     }

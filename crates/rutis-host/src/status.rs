@@ -577,11 +577,12 @@ mod tests {
         let error = rutis_loader::LoaderError::Rejected {
             id: "weather".into(),
             error: std::sync::Arc::new(rutis::host::ErrorKind::PluginFailed(Box::new(
-                rutis::internal::config::decode::<std::collections::BTreeMap<String, u8>>(
-                    &serde_json::json!({ "a": "x" }),
-                    false,
+                rutis::config::check(
+                    &serde_json::json!({ "properties": { "a": { "type": "integer" } } }),
+                    Some(&serde_json::json!({ "a": "x" })),
                 )
-                .unwrap_err(),
+                .error()
+                .unwrap(),
             ))),
         };
         let line = describe(&EntryStatus::Unresolved(error));

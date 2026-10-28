@@ -133,8 +133,6 @@ const PRIMARY_BACKEND: Key<Backend> = Key::named("primary");
 
 `get` / `get_at` 负责查找当前可见的服务，返回 `Option<Arc<T>>`；它不等待服务，也不建立重载关系，诊断里记为未声明的访问。自动重载关系由依赖声明（`Deps`，或 `DynPlugin::injects()`）建立，因此每个必需服务都应写进依赖声明。`Deps` 里的 `Option<Arc<T>>` 是装载时的快照：不等待，之后出现或消失都不重载。
 
-带额外健康条件的服务（同步谓词，条件改变后重新检查依赖，据此调整消费者状态）由 `rutis::internal` 里的 `provide_checked` 和 `refresh` 提供，只给 rutis 自己的 crate 用，不承诺稳定。
-
 ### 选择作用域
 
 按类型提供的服务在 root 内共享。同一个键和作用域对应一个有效服务绑定；重复提供会返回 `ServiceExists`。
@@ -419,7 +417,7 @@ async fn try_shutdown(view: &FiberView, limit: Duration)
 | 插件进入 Failed | `view.state().error` 中的具体原因 |
 | 关闭持续等待 | 初始化是否结束，任务是否响应取消，清理和监听器回调是否完成 |
 
-`diagnostics()` 读取已有状态。使用健康谓词的服务（见[声明依赖](#声明依赖)）在条件变化后先调用 `refresh()`，再观察检查结果。
+`diagnostics()` 读取已有状态。
 
 ### 处理错误
 

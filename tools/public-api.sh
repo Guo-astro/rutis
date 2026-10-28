@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The public API of the rutis kernel (its root, `rutis::events` and
+# The public API of the rutis kernel (its root, `rutis::config`, `rutis::events` and
 # `rutis::host`; the hidden `rutis::internal` is left out), as
 # `cargo public-api --simplified` lists it, against the snapshot in
 # crates/rutis/public-api.txt (design-rust-api-convergence §5, #617). A new

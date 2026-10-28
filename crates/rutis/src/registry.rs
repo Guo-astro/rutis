@@ -1,13 +1,11 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::diagnostics::{BindingDiagnostics, DependencyStatus};
 use crate::error::{Error, ErrorKind};
 use crate::fiber::{FiberInner, FiberState, Intent, PluginId};
 use crate::key::{ScopeId, TypeKey};
-
-pub(crate) type CheckFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Type-erased service value. The value is kept as an `Arc<T>` behind `dyn Any`,
 /// so `T` may be unsized (trait-object registrations).
@@ -33,8 +31,6 @@ pub(crate) struct Binding {
     pub provider: Weak<FiberInner>,
     pub provider_id: PluginId,
     pub provider_gen: u64,
-    pub check: Option<CheckFn>,
-    pub check_status: Mutex<Option<DependencyStatus>>,
     /// Removal has started: strict reads fail at once. The binding stays until its
     /// consumers have drained, so the provider's subtree can still read it.
     pub removing: std::sync::atomic::AtomicBool,
@@ -229,7 +225,7 @@ impl Registry {
         Self::binding_status(&binding)
     }
 
-    /// Cached status of one binding snapshot; never invokes its check callback.
+    /// Status of one binding snapshot.
     pub(crate) fn binding_status(binding: &Binding) -> DependencyStatus {
         if binding.removing.load(std::sync::atomic::Ordering::SeqCst) {
             return DependencyStatus::Removing;
@@ -240,13 +236,6 @@ impl Registry {
         let state = provider.state();
         if state != FiberState::Active {
             return DependencyStatus::ProviderInactive(state);
-        }
-        if binding.check.is_some() {
-            return binding
-                .check_status
-                .lock()
-                .unwrap()
-                .unwrap_or(DependencyStatus::CheckPending);
         }
         DependencyStatus::Ready
     }
@@ -350,25 +339,8 @@ impl Registry {
         }
     }
 
-    /// Asks every fiber that declares dependencies to re-check them (`refresh`,
-    /// when the result of a `check()` predicate changes).
-    pub(crate) fn refresh_all(&self) {
-        let mut seen: HashSet<PluginId> = HashSet::new();
-        let index = self.inject_index.lock().unwrap();
-        for list in index.values() {
-            for weak in list {
-                if let Some(fiber) = weak.upgrade() {
-                    if seen.insert(fiber.id) {
-                        fiber.post(Intent::RefreshDeps);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Gated resolution: the binding exists, is not being removed, its provider is
-    /// active and its `check()` passes (a panicking check does not pass). Returns
-    /// the provider and its generation.
+    /// Gated resolution: the binding exists, is not being removed and its
+    /// provider is active. Returns the provider and its generation.
     pub(crate) fn resolve_dep(
         &self,
         key: &TypeKey,
@@ -381,20 +353,6 @@ impl Registry {
         let provider = binding.provider.upgrade()?;
         if provider.state() != FiberState::Active {
             return None;
-        }
-        if let Some(check) = &binding.check {
-            // check() 是用户回调:panic 视为不就绪(TS 语义:记日志并删除,
-            // fiber.ts:695-698;评审 #6——不得杀调用方所在的驱动任务)
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check()));
-            let passed = result.as_ref().copied().unwrap_or(false);
-            *binding.check_status.lock().unwrap() = Some(match result {
-                Ok(true) => DependencyStatus::Ready,
-                Ok(false) => DependencyStatus::CheckRejected,
-                Err(_) => DependencyStatus::CheckPanicked,
-            });
-            if !passed {
-                return None;
-            }
         }
         Some((binding.provider_id, binding.provider_gen))
     }

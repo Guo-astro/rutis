@@ -269,8 +269,7 @@ impl Inner {
                     continue;
                 }
             };
-            // The filled copy for the rows the loader fills; other
-            // runtimes' SDKs fill their own.
+            // The filled copy, for the rows of every runtime.
             let purpose = match warnings.as_deref_mut() {
                 Some(warnings) => super::config_step::Purpose::Check { warnings },
                 None => super::config_step::Purpose::Run {

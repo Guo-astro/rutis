@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::{id_of, rebase_program, Language, Mount};
 use crate::config::{venv_python, HostConfig, PythonRuntime, Restart, Runtimes, DEFAULT_PYTHON};
 use crate::host::Error;
+use crate::installer::quoted_path as quoted;
 
 pub struct Python;
 
@@ -242,23 +243,9 @@ fn create_venv(venv: &Path) -> String {
     )
 }
 
-/// `path` as a shell takes it: quoted when it has a space or a character
-/// the shell would read.
-fn quoted(path: &Path) -> String {
-    let text = path.display().to_string();
-    let plain = text
-        .chars()
-        .all(|c| c.is_alphanumeric() || "/\\._-:+=@%,~".contains(c));
-    match (plain, cfg!(windows)) {
-        (true, _) => text,
-        (false, true) => format!("\"{text}\""),
-        (false, false) => format!("'{}'", text.replace('\'', "'\\''")),
-    }
-}
-
 /// The virtual environment whose interpreter `interpreter` is, by its
 /// place (`<venv>/bin/python`, on Windows `<venv>\Scripts\python.exe`).
-fn venv_of(interpreter: &Path) -> Option<PathBuf> {
+pub(crate) fn venv_of(interpreter: &Path) -> Option<PathBuf> {
     let dir = interpreter.parent()?;
     let bin = if cfg!(windows) { "Scripts" } else { "bin" };
     let named = interpreter.file_name()?.to_str()?.starts_with("python");

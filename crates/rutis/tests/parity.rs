@@ -342,7 +342,11 @@ async fn coalesces_duplicate_dependency_notifications_without_a_transition() {
         },
     ));
     (&view).await.expect("load");
-    ctx.refresh(); // 重复依赖通知(reflect.notify 的 Rust 面)
+    // 重复依赖通知:另一个隔离作用域里提供同一个键,通知按键到达消费者,
+    // 它自己作用域里的依赖没有变化(reflect.notify 的 Rust 面)
+    ctx.isolate(TypeKey::of::<Foo>(), "elsewhere")
+        .provide(Foo { bar: 2 })
+        .unwrap();
     (&view).await.expect("settle");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(view.state().state, FiberState::Active);

@@ -955,8 +955,8 @@ impl Inner {
                     factory,
                     value: desired.clone(),
                 };
-                // The plugin gets the copy `apply` would: filled for the
-                // rows the loader fills (design §2.2).
+                // The plugin gets the copy `apply` would: the filled one
+                // (design §2.2).
                 let subject = super::config_step::Subject::of(&resolved);
                 let purpose = super::config_step::Purpose::Run {
                     row: &slot.row,

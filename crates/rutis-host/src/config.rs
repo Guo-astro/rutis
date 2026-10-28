@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::installer::Installed;
 use crate::languages::LANGUAGES;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,6 +52,10 @@ pub struct HostConfig {
     /// `rutis-bridge/peer` row).
     #[serde(default)]
     pub listen: Vec<Listener>,
+    /// The plugins `rutis-host add` installed, by row name (`@ana/wordcount`,
+    /// `py:llm`): where each came from. Rows resolve as they always do.
+    #[serde(default)]
+    pub installed: std::collections::BTreeMap<String, Installed>,
     #[serde(default)]
     pub rows: Vec<Value>,
     /// What reading the file found wrong but went on without: the host
@@ -440,6 +445,9 @@ impl HostConfig {
         check_newer_format(text).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut config: Self =
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", path.display()))?;
+        config
+            .name_installed()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         let mut ignored = Vec::new();
         check_rows(&config.rows, "rows", &mut ignored)
             .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -463,6 +471,19 @@ impl HostConfig {
             }
         }
         Ok(config)
+    }
+
+    /// Name each record of `installed` by its key, refusing a key that is
+    /// not a row name `add` writes.
+    fn name_installed(&mut self) -> Result<(), String> {
+        for (row, record) in self.installed.iter_mut() {
+            *record = Installed::of_row(row, record.from.clone()).ok_or_else(|| {
+                format!(
+                    "installed.{row}: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin"
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// Enable, with its defaults, each local runtime that enabled rows use

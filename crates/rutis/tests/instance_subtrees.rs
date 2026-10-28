@@ -200,13 +200,7 @@ async fn instance_keys_enforce_subtree_and_explain_pending_dependency() {
     let (_b, b) = child(&root).await;
     let key_a = Key::<u64>::of().instance(a.instance());
     let key_b = Key::<u64>::of().instance(b.instance());
-    let checks = Arc::new(AtomicUsize::new(0));
-    let check_count = checks.clone();
-    a.provide_checked(key_a.clone(), Arc::new(10u64), move || {
-        check_count.fetch_add(1, Ordering::SeqCst);
-        true
-    })
-    .unwrap();
+    a.provide_at(key_a.clone(), Arc::new(10u64)).unwrap();
     b.provide_at(key_b.clone(), Arc::new(20u64)).unwrap();
 
     assert_eq!(*a.get_at(&key_a).unwrap(), 10);
@@ -240,7 +234,6 @@ async fn instance_keys_enforce_subtree_and_explain_pending_dependency() {
             .map(|p| p.id)
     );
     assert!(node.resolved_dependencies.is_empty());
-    assert_eq!(checks.load(Ordering::SeqCst), 0);
     let probe = b.plugin(ProbeRead(key_a.clone()));
     (&probe).await.unwrap();
     let diag = root.diagnostics();
@@ -540,7 +533,11 @@ async fn dependency_gate_reuses_registration_snapshot() {
         calls: calls.clone(),
     });
     (&view).await.unwrap();
-    root.refresh();
+    // A notification for the key that changes nothing here: the same key
+    // provided in another isolation scope.
+    root.isolate(TypeKey::of::<u64>(), "elsewhere")
+        .provide(2u64)
+        .unwrap();
     (&view).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     view.shutdown().await.unwrap();

@@ -1,7 +1,7 @@
-//! A row's config against its plugin's JSON Schema: defaults filled, then
-//! validated (config schema design §3–§6). The Rust copy of the rules every
-//! language's SDK has; `specs/config-schema/cases.json` keeps them the
-//! same word for word.
+//! A config against its plugin's JSON Schema: defaults filled, then
+//! validated (config schema design §3–§6). The one copy of these rules: the
+//! loader's rows, the bridge's plugin values and `rutis-host check` call
+//! [`check`]; `specs/config-schema/cases.json` locks its text.
 //!
 //! Keywords checked: `type`, `properties`, `required`,
 //! `additionalProperties`, `items`, `enum`, `const`, `minimum`, `maximum`,
@@ -10,35 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rutis::internal::config::value_text;
-use rutis::{ConfigError, ConfigIssue, PathSegment};
 use serde_json::{Map, Value};
 
-pub use crate::loader::ConfigWarnings;
-
-/// How a config is checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Options {
-    /// Missing `required` keys are errors. Off for the manifests of Go
-    /// binaries built with an SDK older than 0.18, which list every field
-    /// without `omitempty` as required (design §7).
-    pub required: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options { required: true }
-    }
-}
-
-impl Options {
-    /// Missing `required` keys are not errors.
-    pub fn without_required(mut self) -> Self {
-        self.required = false;
-        self
-    }
-}
+use super::{closest, value_text, ConfigError, ConfigIssue, PathSegment};
 
 /// What checking a config gives.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +37,7 @@ impl Checked {
 
 /// Fill `config` (`None` or `null`: no config) with the defaults of
 /// `schema`, then validate it.
-pub fn check(schema: &Value, config: Option<&Value>, options: Options) -> Checked {
+pub fn check(schema: &Value, config: Option<&Value>) -> Checked {
     let doc = Document { root: schema };
     let config = config.filter(|value| !value.is_null());
     let root = vec![schema];
@@ -84,7 +58,6 @@ pub fn check(schema: &Value, config: Option<&Value>, options: Options) -> Checke
         &root,
         &mut value,
         &mut Vec::new(),
-        options,
         &mut sink,
         &mut Branches::new(),
     );
@@ -280,7 +253,6 @@ impl<'a> Document<'a> {
         schemas: &[&'a Value],
         value: &mut Value,
         path: &mut Vec<PathSegment>,
-        options: Options,
         sink: &mut Sink,
         tried: &mut Branches,
     ) {
@@ -371,7 +343,7 @@ impl<'a> Document<'a> {
                             let mut copy = value.clone();
                             let mut trial = Sink::default();
                             tried.insert(at, Tried::Trying);
-                            self.validate(&[branch], &mut copy, path, options, &mut trial, tried);
+                            self.validate(&[branch], &mut copy, path, &mut trial, tried);
                             let result = trial.errors.is_empty().then_some(copy);
                             tried.insert(
                                 at,
@@ -402,21 +374,19 @@ impl<'a> Document<'a> {
         }
         match value {
             Value::Object(map) => {
-                if options.required {
-                    for part in &parts {
-                        for key in part
-                            .get("required")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                        {
-                            if !map.contains_key(key) {
-                                path.push(PathSegment::Key(key.to_owned()));
-                                sink.errors
-                                    .push(ConfigIssue::at(path.clone(), "is required"));
-                                path.pop();
-                            }
+                for part in &parts {
+                    for key in part
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                    {
+                        if !map.contains_key(key) {
+                            path.push(PathSegment::Key(key.to_owned()));
+                            sink.errors
+                                .push(ConfigIssue::at(path.clone(), "is required"));
+                            path.pop();
                         }
                     }
                 }
@@ -427,21 +397,14 @@ impl<'a> Document<'a> {
                     path.push(PathSegment::Key(key.clone()));
                     if known.binary_search(key).is_ok() {
                         let below = Self::property(&parts, key);
-                        self.validate(&below, child, path, options, sink, &mut Branches::new());
+                        self.validate(&below, child, path, sink, &mut Branches::new());
                     } else {
                         match additional {
                             Some(Value::Bool(false)) => {
                                 sink.errors.push(extra(path, key, &known));
                             }
                             Some(schema @ Value::Object(_)) => {
-                                self.validate(
-                                    &[schema],
-                                    child,
-                                    path,
-                                    options,
-                                    sink,
-                                    &mut Branches::new(),
-                                );
+                                self.validate(&[schema], child, path, sink, &mut Branches::new());
                             }
                             None if described && sink.warn => {
                                 sink.warnings.push(extra(path, key, &known));
@@ -460,7 +423,7 @@ impl<'a> Document<'a> {
                 if !below.is_empty() {
                     for (index, item) in items.iter_mut().enumerate() {
                         path.push(PathSegment::Index(index));
-                        self.validate(&below, item, path, options, sink, &mut Branches::new());
+                        self.validate(&below, item, path, sink, &mut Branches::new());
                         path.pop();
                     }
                 }
@@ -497,7 +460,7 @@ impl<'a> Document<'a> {
 
 /// `<path> is not a config key`, with a close known key suggested.
 fn extra(path: &[PathSegment], key: &str, known: &[String]) -> ConfigIssue {
-    let reason = match crate::loader::closest(key, known) {
+    let reason = match closest(key, known) {
         Some(like) => format!("is not a config key (did you mean {like}?)"),
         None => "is not a config key".to_owned(),
     };

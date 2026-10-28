@@ -121,9 +121,7 @@ pub trait CtxHost: sealed::Sealed {
     /// changes may therefore mix states or generations from different moments,
     /// even within one plugin's state, dependency, and binding entries. The
     /// result is useful for diagnosis, not an atomic transaction or a change
-    /// stream. Dependency checks are never called here: their status is the
-    /// last result recorded by normal gate resolution, or `CheckPending` if
-    /// that binding has not been checked yet. Reading does not call plugin
+    /// stream. Reading does not call plugin
     /// `name`, `injects`, or other user code and does not advance a fiber.
     /// Its `Display` calls the key namers
     /// ([`name_keys_with`](Self::name_keys_with)) for the names it gives
