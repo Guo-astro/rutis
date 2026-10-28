@@ -136,7 +136,7 @@ func TestEventRegistrationLifecycle(t *testing.T) {
 		},
 	} {
 		err := emit()
-		if !errors.Is(err, ErrReservedEvent) || err.Error() != "rutis/* events are emitted by rutis only: rutis/row" || peer.ErrorName(err) != "ReservedEvent" {
+		if !errors.Is(err, events.ErrReservedEvent) || err.Error() != "rutis/* events are emitted by rutis only: rutis/row" || peer.ErrorName(err) != "ReservedEvent" {
 			t.Fatalf("rutis/* emission: %v", err)
 		}
 	}
@@ -226,7 +226,7 @@ func TestParallelAggregatesInRegistrationOrder(t *testing.T) {
 	var ran atomic.Bool
 	a.On("t/par", func(context.Context, ...any) (any, error) { ran.Store(true); return "C", nil })
 	err := a.Parallel(ctx, "t/par")
-	var aggregate *AggregateError
+	var aggregate *peer.AggregateError
 	if !errors.As(err, &aggregate) || len(aggregate.Errors) != 2 || peer.ErrorName(aggregate.Errors[0]) != "AErr" || peer.ErrorName(aggregate.Errors[1]) != "BErr" || !ran.Load() {
 		t.Fatalf("parallel: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestWaterfallChainsThroughNext(t *testing.T) {
 	ctx := context.Background()
 	link := func(text string) func(context.Context, ...any) (any, error) {
 		return func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(Next)
+			next := args[len(args)-1].(events.Next)
 			rest, err := next(ctx)
 			if err != nil {
 				return nil, err
@@ -320,7 +320,7 @@ func TestWaterfallChainsThroughNext(t *testing.T) {
 		t.Fatalf("the outermost value as it is: %v %v", value, err)
 	}
 	a.On("t/twice", func(ctx context.Context, args ...any) (any, error) {
-		next := args[len(args)-1].(Next)
+		next := args[len(args)-1].(events.Next)
 		if _, err := next(ctx); err != nil {
 			return nil, err
 		}
@@ -328,15 +328,18 @@ func TestWaterfallChainsThroughNext(t *testing.T) {
 	})
 	a.On("t/twice", func(context.Context, ...any) (any, error) { return "b", nil })
 	_, err := a.Waterfall(ctx, "t/twice", nil)
-	if !errors.Is(err, ErrWaterfallNext) || err.Error() != "next of t/twice was already called" {
+	if !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/twice was already called" {
 		t.Fatalf("next twice: %v", err)
 	}
-	var late Next
-	a.On("t/late", func(_ context.Context, args ...any) (any, error) { late = args[len(args)-1].(Next); return "v", nil })
+	var late events.Next
+	a.On("t/late", func(_ context.Context, args ...any) (any, error) {
+		late = args[len(args)-1].(events.Next)
+		return "v", nil
+	})
 	if _, err := a.Waterfall(ctx, "t/late", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := late(ctx); !errors.Is(err, ErrWaterfallNext) || err.Error() != "next of t/late was called after its waterfall ended" {
+	if _, err := late(ctx); !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/late was called after its waterfall ended" {
 		t.Fatalf("next after the end: %v", err)
 	}
 	a.On("t/args", func(_ context.Context, args ...any) (any, error) { return len(args), nil })
@@ -445,7 +448,7 @@ func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := testwait.Within(t, "the dispatch settles", done)
-	var aggregate *AggregateError
+	var aggregate *peer.AggregateError
 	if !errors.As(err, &aggregate) || !errors.Is(aggregate.Errors[0], context.Canceled) {
 		t.Fatalf("the cancelled listener's failure: %v", err)
 	}
@@ -557,9 +560,9 @@ func TestACallForAWithdrawnListenerFails(t *testing.T) {
 func TestNextAfterTheEmitterGaveUpFails(t *testing.T) {
 	_, rows := eventRows(t, "")
 	a := rows[0]
-	held := make(chan Next, 1)
+	held := make(chan events.Next, 1)
 	a.On("t/wf-cancel", func(ctx context.Context, args ...any) (any, error) {
-		held <- args[len(args)-1].(Next)
+		held <- args[len(args)-1].(events.Next)
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
@@ -572,7 +575,7 @@ func TestNextAfterTheEmitterGaveUpFails(t *testing.T) {
 	if err := testwait.Within(t, "the emitter's call ends", done); !errors.Is(err, context.Canceled) {
 		t.Fatalf("waterfall: %v", err)
 	}
-	if _, err := next(context.Background()); !errors.Is(err, ErrWaterfallNext) || err.Error() != "next of t/wf-cancel was called after its waterfall ended" {
+	if _, err := next(context.Background()); !errors.Is(err, events.ErrWaterfallNext) || err.Error() != "next of t/wf-cancel was called after its waterfall ended" {
 		t.Fatalf("next after cancellation: %v", err)
 	}
 }
@@ -744,7 +747,7 @@ func TestTheTerminalGetsTheEventArguments(t *testing.T) {
 	ctx := context.Background()
 	terminal := func(_ context.Context, args ...any) (any, error) { return fmt.Sprint(len(args), args), nil }
 	a.On("t/wf-args", func(ctx context.Context, args ...any) (any, error) {
-		rest, err := args[len(args)-1].(Next)(ctx)
+		rest, err := args[len(args)-1].(events.Next)(ctx)
 		return fmt.Sprint("a:", rest), err
 	})
 	if value, err := a.Waterfall(ctx, "t/wf-args", terminal, "x", 2); err != nil || value != "a:2 [x 2]" {
@@ -764,7 +767,7 @@ func TestNextRunsTheRestWhenCalled(t *testing.T) {
 	j := &journal{}
 	a.On("t/eager", func(ctx context.Context, args ...any) (any, error) {
 		j.add("a:before")
-		rest, err := args[len(args)-1].(Next)(ctx)
+		rest, err := args[len(args)-1].(events.Next)(ctx)
 		j.add("a:after")
 		return rest, err
 	})

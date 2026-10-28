@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rutis", "crates/rutis-macros", "crates/rutis-agent", "crates/rutis-cli", "crates/rutis-dsh", "crates/aimux-llm", "crates/rutis-sdk", "crates/rutis-dylib", "crates/rutis-dylib-meta", "crates/rutis-dylib-launcher", "crates/rutis-xtask", "crates/rutis-bridge", "crates/rutis-host", "crates/rutis-loader", "crates/rutis-dev", "crates/rutis-test-support", "examples/native-mount", "examples/rust-services", "examples/rust-services/calendar", "examples/marked-services", "examples/dsh-baseline", "examples/interop-experiments", "tests/dylib-fixtures/greeter-v1", "tests/dylib-fixtures/greeter-v2", "tests/e2e", "tests/e2e/fixture-host", "tests/e2e/fixture-tenants", "tests/e2e/fixture-toolhost"]
+members = ["crates/rutis", "crates/rutis-macros", "crates/rutis-agent", "crates/rutis-cli", "crates/rutis-dsh", "crates/aimux-llm", "crates/rutis-sdk", "crates/rutis-dylib", "crates/rutis-dylib-meta", "crates/rutis-dylib-launcher", "crates/rutis-xtask", "crates/rutis-bridge", "crates/rutis-host", "crates/rutis-loader", "crates/rutis-test-support", "examples/native-mount", "examples/rust-services", "examples/rust-services/calendar", "examples/marked-services", "examples/dsh-baseline", "examples/interop-experiments", "tests/dylib-fixtures/greeter-v1", "tests/dylib-fixtures/greeter-v2", "tests/e2e", "tests/e2e/fixture-host", "tests/e2e/fixture-tenants", "tests/e2e/fixture-toolhost"]
 
 [workspace.package]
 edition = "2021"

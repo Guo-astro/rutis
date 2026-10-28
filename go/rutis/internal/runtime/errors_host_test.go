@@ -103,7 +103,7 @@ func TestParallelThroughAFutureReturnsAnAggregateError(t *testing.T) {
 	if !awaited {
 		t.Fatalf("the dispatch's future was not awaited: %v", err)
 	}
-	var aggregate *AggregateError
+	var aggregate *peer.AggregateError
 	if !errors.As(err, &aggregate) {
 		t.Fatalf("not an *AggregateError: %#v", err)
 	}

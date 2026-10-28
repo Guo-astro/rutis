@@ -1019,9 +1019,9 @@ pub trait FailCordis {
 }
 impl FailCordis for &&&&Failure<'_, Error> {
     fn __rutis_fail(&self, wire: &'static dyn Wire) -> CallError {
-        // thrown under the name it had in 0.16, as every language reads it
+        // thrown as `Error`, its code the kind's variant
         let code = debug_ident(&format!("{:?}", self.0));
-        wire.failure("CordisError", &code, self.0.to_string(), None)
+        wire.failure("Error", &code, self.0.to_string(), None)
     }
 }
 

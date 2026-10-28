@@ -77,7 +77,7 @@ The first job of `ci.yml`, `changes`, looks at the files the pull request change
 | --- | --- |
 | `all` | `Cargo.lock`, the root `Cargo.toml`, `rust-toolchain.toml`, `.github/workflows/**`. Turns every other switch on too |
 | `code` | Any file except `docs/**` and `*.md` |
-| `dylib` | The dylib crates: `rutis-dylib*`, `rutis-sdk`, `rutis-dev`, `rutis-xtask`, and the files of `rutis-cli` that link the SDK and hold the dylib host tests (`build.rs`, `src/**`, `Cargo.toml`; its documentation and license do not reach the SDK); `tools/*dylib*`, `tools/build-dylib-bundle.sh`, `tools/test-sdk-bundle.sh`, `tools/lib/**`, `tests/dylib-fixtures/**`. **Not the kernel `crates/rutis`**: kernel changes reach the SDK too, but the dylib jobs have not failed in the last 88 runs, so kernel pull requests no longer wait 20 minutes for them; the nightly run checks them |
+| `dylib` | The dylib crates: `rutis-dylib*`, `rutis-sdk`, `rutis-xtask`, and the files of `rutis-cli` that link the SDK and hold the dylib host tests (`build.rs`, `src/**`, `Cargo.toml`; its documentation and license do not reach the SDK); `tools/*dylib*`, `tools/build-dylib-bundle.sh`, `tools/test-sdk-bundle.sh`, `tools/lib/**`, `tests/dylib-fixtures/**`. **Not the kernel `crates/rutis`**: kernel changes reach the SDK too, but the dylib jobs have not failed in the last 88 runs, so kernel pull requests no longer wait 20 minutes for them; the nightly run checks them |
 | `packaging` | `scripts/train.mjs`, every `pyproject.toml` and `package.json`, `crates/*/Cargo.toml`, `node/rutis-host/scripts/**` |
 | `docs` | Any `.md` file |
 | `bun` | `bun/**`, `node/rutis/**`, `crates/rutis-bridge`, `crates/rutis-loader`, `crates/rutis-host` |
