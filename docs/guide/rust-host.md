@@ -142,7 +142,7 @@ impl DynPlugin for Router {
 ### 宿主看到的错误
 
 - 所有签名里的错误都是 `rutis::Error`。宿主的函数返回 `Box<dyn Error>`（或 `Box<dyn Error + Send + Sync>`）时直接 `?`；打开 rutis 的 `anyhow` feature 后，返回 `anyhow::Result` 也直接 `?`。
-- `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等，就是 0.16 的 `CordisError` 改了名字，变体不变），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
+- `err.kind()` 返回 `Option<&host::ErrorKind>`：rutis 自己的失败是 `Some`（`Closed`、`InjectUnsatisfied`、`ListenersFailed` 等），来自插件代码的错误是 `None`，它报到宿主时被包在 `ErrorKind::PluginFailed` 里。
 - 错误不能 `Clone`。几方共同持有的错误是 `Arc<ErrorKind>`：错误汇集（`ErrorSink`）收到的、`take_cleanup_errors()` 返回的、等待 `FiberView`、`dispose()`、`shutdown()` 得到的。
 
 ```rust,no_run
@@ -712,7 +712,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | 没有 serde（或 `untagged`）的枚举 | 类型名 | 变体的 Rust 名（取自 derive 的 `Debug`） | 有 serde 时为 serde 值 |
 | 有 serde 的结构体 | 类型名 | 序列化成的字符串，否则为类型名 | serde 值 |
 | `String` | `Error` | `Error`（字符串是 `message`） | — |
-| `rutis::Error`、`rutis::host::ErrorKind` | `CordisError`（线上的名字不变） | `ErrorKind` 的变体名（插件代码的错误是 `PluginFailed`） | — |
+| `rutis::Error`、`rutis::host::ErrorKind` | `Error`（声明里是 `ErrorThrown`） | `ErrorKind` 的变体名（插件代码的错误是 `PluginFailed`） | — |
 | `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
 | 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
 

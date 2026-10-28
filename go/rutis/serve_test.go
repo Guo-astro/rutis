@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 	"github.com/arcships/rutis/go/rutis/internal/testwait"
 )
@@ -26,7 +27,7 @@ func TestALocalChannelWithAnIDGreetsAsThatEndpoint(t *testing.T) {
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
 	done := make(chan error, 1)
 	go func() {
-		done <- rutis.ServeArgs([]string{"tcp:" + listener.Addr().String(), "--id", "gorun", "--peer", "host", t.TempDir()}, plugin)
+		done <- advanced.ServeArgs([]string{"tcp:" + listener.Addr().String(), "--id", "gorun", "--peer", "host", t.TempDir()}, plugin)
 	}()
 	conn, err := listener.Accept()
 	if err != nil {
@@ -80,7 +81,7 @@ func TestALocalChannelWithAnIDGreetsAsThatEndpoint(t *testing.T) {
 // The id a local channel greets with is checked before it is opened.
 func TestALocalChannelRefusesAnInvalidID(t *testing.T) {
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
-	err := rutis.ServeArgs([]string{"unix:/nowhere", "--id", "Go Run", t.TempDir()}, plugin)
+	err := advanced.ServeArgs([]string{"unix:/nowhere", "--id", "Go Run", t.TempDir()}, plugin)
 	want := "invalid endpoint id Go Run: use lower-case letters, digits and -"
 	if err == nil || err.Error() != want {
 		t.Fatalf("got %v", err)

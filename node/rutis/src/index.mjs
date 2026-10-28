@@ -45,7 +45,3 @@ export function definePlugin(spec) {
   // one) reaches rutis by itself, and is known once it runs.
   return Object.freeze({ ...spec, inject, provides: spec.provides ?? {}, announces: true, api: PLUGIN_API, [PLUGIN]: true })
 }
-
-// Moved to `@arcships/rutis/advanced` in 0.19 (#692); kept here, marked
-// deprecated in index.d.ts, until the plugin API version changes.
-export { PLUGIN_API, PLUGIN, isPlugin, VALUE, datetime, date, time, decimal, uuid } from './advanced.mjs'

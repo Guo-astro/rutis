@@ -15,9 +15,11 @@
 //                                                relative to the example's root
 //
 // Any marker may add `order=<n>` to run out of document order (a command
-// that needs files the text shows after it). Unmarked blocks are not
-// checked. tests/e2e/tests/doc_examples.rs runs the examples with the
-// published packages, after a release (install.yml).
+// that needs files the text shows after it). A block's language may carry
+// attributes after a comma (```rust,no_run is a rust block). Unmarked
+// blocks are not checked. tests/e2e/tests/doc_examples.rs runs the
+// examples with the published packages, after a release (install.yml): the
+// Swift guides' examples on macOS, the others on Linux.
 //
 //   node tools/doc-examples.mjs --check          the markers parse
 //   node tools/doc-examples.mjs --out <file>     write the examples as JSON
@@ -39,7 +41,7 @@ export function examples() {
       }
       const [, name, rest] = marker
       const where = `${file}:${index + 1}`
-      const fence = lines[index + 1]?.match(/^```(\w*)$/)
+      const fence = lines[index + 1]?.match(/^```(\w*)(?:,[\w-]+)*$/)
       if (!fence) return errors.push(`${where}: a marker goes right before a code block`)
       const end = lines.findIndex((text, at) => at > index + 1 && text === '```')
       if (end < 0) return errors.push(`${where}: the code block does not end`)

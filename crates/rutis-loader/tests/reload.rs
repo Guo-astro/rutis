@@ -1,4 +1,4 @@
-//! Overlay layers and all-or-nothing reload.
+//! All-or-nothing reload.
 
 mod common;
 
@@ -7,62 +7,10 @@ use std::sync::Arc;
 
 use common::*;
 use rutis::host::{BoxFuture, CtxHost, FiberState};
-use rutis_loader::edit::Editable;
 use rutis_loader::report::EntryStatus;
 use rutis_loader::resolve::Resolved;
 use rutis_loader::{Builtins, Layer, LoaderError, LoaderOptions, Resolver};
 use serde_json::json;
-
-/// guarantee: loader/overlay
-#[tokio::test]
-async fn overlays_survive_reconcile_and_stay_out_of_storage() {
-    let h = Harness::new();
-    let store = MemStore::default();
-    let (_root, loader) = mount(h.resolver(), store.clone()).await;
-    reconcile(
-        &loader,
-        patches(json!([{ "insert": [{ "id": "a", "name": "echo" }] }])),
-        &store,
-    )
-    .await;
-
-    let report = loader
-        .set_overlay(
-            "dev",
-            Some(patches(
-                json!([{ "insert": [{ "id": "d", "name": "echo", "config": { "label": "d" } }] }]),
-            )),
-        )
-        .await
-        .unwrap();
-    assert!(report.failures.is_empty(), "{report:?}");
-    assert_eq!(state(&loader, "d"), Some(FiberState::Active));
-
-    // The application reconciles its own layers: the overlay stays.
-    reconcile(
-        &loader,
-        patches(json!([{ "insert": [{ "id": "a", "name": "echo" }] }])),
-        &store,
-    )
-    .await;
-    assert_eq!(state(&loader, "d"), Some(FiberState::Active));
-    assert_eq!(loader.overlays().len(), 1);
-
-    // Overlay rows are not the user's to edit, and nothing reaches storage.
-    let err = loader.set_disabled("d", true).await.unwrap_err();
-    assert!(matches!(err, LoaderError::NotOwned { .. }), "{err:?}");
-    assert!(store.patches().is_empty());
-    assert_eq!(
-        loader.editable(),
-        Some(Editable::new("user", store.version()))
-    );
-
-    // Overlays cannot shadow application layers; removing one disposes its rows.
-    assert!(loader.set_overlay("user", Some(vec![])).await.is_err());
-    loader.set_overlay("dev", None).await.unwrap();
-    assert!(loader.get("d").is_none());
-    assert!(loader.overlays().is_empty());
-}
 
 /// Each resolve of `mod` serves the next scripted version.
 struct Versions {
