@@ -45,18 +45,14 @@ impl NameKey {
     /// The key for a copy that runs in `build`'s instances.
     pub(crate) fn key(&self, name: &str, build: &Build) -> Result<TypeKey, LoaderError> {
         match self {
-            // A shared name a runtime connection enclosing the copy
-            // provides is that connection's instance's own.
-            // or that a `#[rutis::service]` type provided in an enclosing
-            // instance is served as, is that instance's own.
+            // A shared name a `#[rutis::service]` type provided in an
+            // enclosing instance is served as is that instance's own.
             #[cfg(feature = "runtimes")]
             NameKey::Global(key) if *key == rutis_bridge::session::host_key(name).erase() => {
-                Ok(crate::runtime::claimed(name, build)
-                    .or_else(|| marked_claim(name, build))
-                    .map_or_else(
-                        || key.clone(),
-                        |instance| key.clone().with_instance(instance),
-                    ))
+                Ok(marked_claim(name, build).map_or_else(
+                    || key.clone(),
+                    |instance| key.clone().with_instance(instance),
+                ))
             }
             NameKey::Global(key) => Ok(key.clone()),
             NameKey::Instance { group, base } => build
@@ -100,10 +96,6 @@ struct Service {
 /// A name is global, or belongs to the instances of one instanced group
 /// (`register_instance`): there it resolves to each instance's own key, and
 /// it does not resolve outside them.
-///
-/// A shared name that a runtime connection's plugins provide is, in the
-/// copies inside that connection's instance, the instance's own
-/// (`RuntimeInstances`, feature `runtimes`): `host_key_in(name, instance)`.
 ///
 /// Every name not registered otherwise is shared by name.
 #[derive(Clone, Default)]
@@ -320,9 +312,8 @@ impl ServiceCatalog {
                 Some((name.clone(), link.instance))
             })
             .collect();
-        // And the shared names the enclosing runtime connections provide,
-        // and those marked Rust services are served as in them.
-        let mut claimed = crate::runtime::claimed_names(build);
+        // And the shared names marked Rust services are served as in them.
+        let mut claimed: Vec<(String, rutis::host::InstanceId)> = Vec::new();
         for link in &build.chain {
             for name in rutis_bridge::exports::claims_in(link.instance) {
                 if !claimed.iter().any(|(known, _)| known == &name) {

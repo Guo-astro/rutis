@@ -18,7 +18,6 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{mpsc, watch};
 
-use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
 use crate::session::plugin::Greet;
 use crate::{identity_key, peer_key, Accepting, Identity, Registered};
@@ -291,6 +290,9 @@ struct Link {
     generation: u64,
 }
 
+/// Undoes what was set up on a session.
+type Undo = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
 /// A ready session and what is held for it. Dropping it closes the
 /// session.
 pub(crate) struct Live {
@@ -299,7 +301,7 @@ pub(crate) struct Live {
     operations: Arc<Operations>,
     /// Undoes what was set up on the session (the provided peer). In a
     /// mutex only to make `Live` shareable while its holder awaits.
-    release: Mutex<Option<Release>>,
+    release: Mutex<Option<Undo>>,
     /// tokio's clock, the same as std's unless paused: a test on the
     /// paused clock can check the reset after `stable` (#231).
     since: tokio::time::Instant,
@@ -310,7 +312,7 @@ impl Live {
         session: Connection,
         closer: Arc<dyn Closer>,
         operations: Arc<Operations>,
-        release: Release,
+        release: Undo,
     ) -> Self {
         Self {
             session,
@@ -374,7 +376,7 @@ impl Link {
         self.state.send_replace(LinkState::Ready {
             generation: self.generation,
         });
-        let release: Release = Box::new(move || {
+        let release: Undo = Box::new(move || {
             Box::pin(async move {
                 let _ = provided.dispose().await;
             })

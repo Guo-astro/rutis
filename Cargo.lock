@@ -3390,7 +3390,6 @@ dependencies = [
 name = "rutis-loader"
 version = "0.18.0"
 dependencies = [
- "futures-util",
  "libc",
  "rutis",
  "rutis-bridge",
@@ -3401,7 +3400,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "url",
 ]
 

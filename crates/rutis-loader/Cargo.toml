@@ -55,9 +55,6 @@ rutis-test-support = { path = "../rutis-test-support" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
 url = "2"
-# The relay of remote_rows.rs: a WebSocket client on each side.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rutis-bridge = { path = "../rutis-bridge", features = ["node", "python", "websocket", "testing"] }
 # The kernel's test hooks (events_conformance.rs waits on a dispatch's
 # selection, #659).

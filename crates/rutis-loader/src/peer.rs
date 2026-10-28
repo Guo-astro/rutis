@@ -472,9 +472,6 @@ struct NodeConfig {
     /// Host the plugins this loader resolves for the peer.
     #[serde(default)]
     host: bool,
-    /// The peer is this runtime instance.
-    #[serde(default)]
-    runtime: Option<String>,
     /// Rows `peer:<peer>/…` of this loader run on the peer.
     #[serde(default)]
     rows: bool,
@@ -566,24 +563,18 @@ impl NodeConfig {
                 Arc::new(move |name: &str| loader.shared_key_in(name, &build).ok())
                     as rutis_bridge::ServiceKeys
             }),
-            runtime: self.runtime.clone(),
         }
     }
 
     /// Refuse what a link in `build`'s instances cannot do: a service
     /// exported or imported by a name that has no key there, and, inside
     /// instances, features that publish keys the rest of the tree uses
-    /// (`rows`, `runtime`): every instance's link would publish the same.
+    /// (`rows`): every instance's link would publish the same.
     fn check(&self, loader: Option<&Loader>, build: &Build) -> Result<(), Error> {
         if build.instances().next().is_some() {
             if self.rows {
                 return Err(refused(
                     "a link inside instances cannot carry rows: put the `rows` link outside instanced groups",
-                ));
-            }
-            if self.runtime.is_some() {
-                return Err(refused(
-                    "a link inside instances cannot be a runtime: put the `runtime` link outside instanced groups",
                 ));
             }
         }
@@ -620,7 +611,6 @@ pub fn node_schema() -> Value {
             "export": names,
             "import": names,
             "host": { "type": "boolean" },
-            "runtime": { "type": "string" },
             "rows": { "type": "boolean" }
         }
     })

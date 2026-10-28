@@ -1,7 +1,7 @@
 use crate::pipe::Stdio;
 use crate::runtime::rpc::{Connection, Dispatch, Reply, Value as RpcValue};
 use crate::runtime::Error;
-use crate::runtime::{CallerRow, HostDispatch, RuntimeSession};
+use crate::runtime::{CallerRow, Carried, HostDispatch};
 use rutis::host::CtxHost;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -992,8 +992,8 @@ impl Process {
     /// Run a mount on `session`, a runtime session something else owns:
     /// its calls into rutis are routed here while the process lives, and
     /// disposing or dropping the process leaves the session open.
-    pub async fn over(
-        session: Arc<dyn RuntimeSession>,
+    pub(crate) async fn over(
+        session: Arc<dyn Carried>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
         Self::routed(session, mount, true).await
@@ -1003,14 +1003,14 @@ impl Process {
     /// the process does not join the bus (a session with a rutis kernel,
     /// whose listeners cross as a node's).
     pub(crate) async fn over_without_bus(
-        session: Arc<dyn RuntimeSession>,
+        session: Arc<dyn Carried>,
         mount: Mount<'_>,
     ) -> Result<Arc<Self>, Error> {
         Self::routed(session, mount, false).await
     }
 
     async fn routed(
-        session: Arc<dyn RuntimeSession>,
+        session: Arc<dyn Carried>,
         mount: Mount<'_>,
         bus: bool,
     ) -> Result<Arc<Self>, Error> {
