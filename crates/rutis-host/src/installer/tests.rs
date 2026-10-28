@@ -21,13 +21,27 @@ struct Bench {
 /// killed.
 static BENCHES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Where [`dispatcher`] is: removed when the tests end.
+static DISPATCHER_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+extern "C" fn remove_dispatcher() {
+    if let Some(dir) = DISPATCHER_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// The one program every recording program links to, written once and run
-/// once before any bench uses it.
+/// once before any bench uses it; its directory is removed when the tests
+/// end.
 fn dispatcher() -> &'static Path {
     static DISPATCHER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DISPATCHER.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("rutis-host-benches-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = DISPATCHER_DIR.get_or_init(|| {
+            std::env::temp_dir().join(format!("rutis-host-benches-{}", std::process::id()))
+        });
+        std::fs::create_dir_all(dir).unwrap();
+        // SAFETY: registers a function that only removes a directory.
+        unsafe { libc::atexit(remove_dispatcher) };
         let path = dir.join("dispatch");
         std::fs::write(
             &path,
@@ -42,7 +56,7 @@ fn dispatcher() -> &'static Path {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         // Until it runs: only this once can it be busy.
         while std::process::Command::new(&path)
-            .current_dir(&dir)
+            .current_dir(dir)
             .status()
             .is_err()
         {
@@ -102,25 +116,27 @@ impl Bench {
 
     fn installer(&self) -> Installer {
         Installer::new(Places {
-            base: Some(self.app()),
-            node: Some(self.app()),
-            bun: Some(self.app()),
-            python: Some(self.app().join(".venv")),
-            go: Some(self.app().join("plugins/go")),
-            swift: Some(self.app().join("plugins/swift")),
+            base: self.app(),
+            node: self.app(),
+            bun: self.app(),
+            python: self.app().join(".venv"),
+            go: Ok(self.app().join("plugins/go")),
+            swift: Ok(self.app().join("plugins/swift")),
         })
         .with_path(format!("{}:/usr/bin:/bin", self.bin().display()))
     }
 
-    /// The language and the package installed (steps 1–3), without
-    /// describing it.
+    /// The language and the package installed (steps 1–3).
     fn install(&self, installer: &Installer, text: &str) -> Result<(Lang, Package), Error> {
         let reference = Reference::parse(text, &self.app())?;
         let (lang, _) = installer.core.language(&reference)?;
-        let package = installer
-            .core
-            .install(&reference, lang, &installer.core.places, false)?;
+        let package = installer.core.install(&reference, lang, false)?;
         Ok((lang, package))
+    }
+
+    /// `$B` for the bench's directory in `text`.
+    fn here(&self, text: &str) -> String {
+        text.replace("$B", &self.dir.path().display().to_string())
     }
 }
 
@@ -258,11 +274,7 @@ fn a_pypi_package_is_python_in_a_new_environment() {
 #[test]
 fn without_uv_or_python_the_environment_cannot_be_made() {
     let bench = Bench::new();
-    let installer = Installer::new(Places {
-        python: Some(bench.app().join(".venv")),
-        ..Places::default()
-    })
-    .with_path(bench.bin());
+    let installer = bench.installer().with_path(bench.bin());
     let error = bench.install(&installer, "pypi:bo-llm").err().unwrap();
     assert_eq!(
         error.to_string(),
@@ -353,14 +365,8 @@ async fn a_local_go_binary_is_copied_in() {
     assert_eq!(package.plugins[0].version.as_deref(), Some("0.4.1"));
     assert!(bench.app().join("plugins/go/netkit").exists());
     assert!(bench.asked().is_empty());
-    // Described from its manifest; removed by deleting it.
-    let schemas = installer
-        .core
-        .describe(lang, &package, &installer.core.places)
-        .await
-        .unwrap();
-    assert_eq!(schemas[0].provides["dns"]["lookup"], "async");
-    let removed = installer.remove(&package.plugins[0]).await.unwrap();
+    // Removed by deleting it.
+    let removed = installer.remove(&package.plugins).await.unwrap();
     assert_eq!(removed.as_deref(), Some("netkit"));
     assert!(!bench.app().join("plugins/go/netkit").exists());
 }
@@ -537,8 +543,8 @@ async fn a_name_taken_by_another_package() {
         language: "py".into(),
         version: None,
     }]);
-    let error = installer.add("npm:wordcount").await.unwrap_err();
-    assert!(!error.to_string().contains("already installed"), "{error}");
+    let added = installer.add("npm:wordcount").await.unwrap();
+    assert_eq!(added.plugins[0].row_name(), "wordcount");
     assert_eq!(bench.asked()[0], "npm [rutis-host] view wordcount --json");
 }
 
@@ -552,6 +558,7 @@ async fn removing_a_node_package() {
         language: "node".into(),
         version: None,
     };
+    let plugin = [plugin];
     // Not there: nothing to uninstall.
     assert_eq!(bench.installer().remove(&plugin).await.unwrap(), None);
     std::fs::create_dir_all(bench.app().join("node_modules/@ana/wordcount")).unwrap();
@@ -585,4 +592,202 @@ fn row_names() {
     for row in ["deno:x", "node:x", "py:", "./x"] {
         assert_eq!(Installed::of_row(row, "x"), None, "{row}");
     }
+}
+
+/// A binary with the Swift SDK's marker is Swift: copied into the Swift
+/// directory, its manifest naming its plugins.
+#[tokio::test]
+async fn a_local_swift_binary_is_copied_in() {
+    let bench = Bench::new();
+    let binary = bench.app().join("clock");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\n# rutis-swift-runtime:1\necho '{\"sdk\":\"0.19.0\",\"pluginApi\":3,\"plugins\":{\"clock\":{\"version\":\"1.0.0\"}}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let installer = bench.installer();
+    let (lang, package) = bench.install(&installer, "./clock").unwrap();
+    assert_eq!(lang, Lang::Swift);
+    assert_eq!(names(&package), [("clock", "./clock", "swift")]);
+    assert_eq!(package.plugins[0].row_name(), "swift:clock");
+    assert_eq!(package.plugins[0].version.as_deref(), Some("1.0.0"));
+    assert!(bench.app().join("plugins/swift/clock").exists());
+    assert!(bench.asked().is_empty());
+}
+
+/// A package of two binaries is removed whole: each binary serving one of
+/// its plugins is deleted, not only the first plugin's.
+#[tokio::test]
+async fn removing_a_go_package_deletes_all_its_binaries() {
+    let bench = Bench::new();
+    let dir = bench.app().join("plugins/go");
+    std::fs::create_dir_all(&dir).unwrap();
+    go_binary(&dir.join("dns"));
+    let http = dir.join("http");
+    go_binary(&http);
+    let text = std::fs::read_to_string(&http)
+        .unwrap()
+        .replace("dns", "http");
+    std::fs::write(&http, text).unwrap();
+    go_binary(&dir.join("other"));
+    let text = std::fs::read_to_string(dir.join("other"))
+        .unwrap()
+        .replace("dns", "other");
+    std::fs::write(dir.join("other"), text).unwrap();
+    let plugins: Vec<Installed> = ["dns", "http"]
+        .into_iter()
+        .map(|name| Installed::of_row(&format!("go:{name}"), "./netkit").unwrap())
+        .collect();
+    let removed = bench.installer().remove(&plugins).await.unwrap();
+    assert_eq!(removed.as_deref(), Some("dns, http"));
+    assert!(!dir.join("dns").exists());
+    assert!(!http.exists());
+    // Another package's binary stays.
+    assert!(dir.join("other").exists());
+}
+
+/// Local directories, npm packs and wheels: the command installing each.
+#[test]
+fn local_packages_are_installed_by_their_package_managers() {
+    let bench = Bench::new();
+    bench.program("npm", "");
+    bench.program("bun", "");
+    bench.program(
+        "uv",
+        &UV.replace("bo-llm", "bo_llm")
+            .replace("\"import rutis\") echo", "\"import rutis\") exit 0; echo"),
+    );
+    let notes = bench.app().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join("package.json"), r#"{"name":"@ana/notes"}"#).unwrap();
+    let clock = bench.app().join("clock");
+    std::fs::create_dir_all(&clock).unwrap();
+    std::fs::write(
+        clock.join("package.json"),
+        r#"{"name":"clock","devDependencies":{"@arcships/rutis-bun":"0.19.0"}}"#,
+    )
+    .unwrap();
+    let packed = bench.dir.path().join("pack/package");
+    std::fs::create_dir_all(&packed).unwrap();
+    std::fs::write(packed.join("package.json"), r#"{"name":"@ana/wordcount"}"#).unwrap();
+    let status = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(bench.app().join("wordcount-1.2.0.tgz"))
+        .arg("-C")
+        .arg(bench.dir.path().join("pack"))
+        .arg("package")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(bench.app().join("bo_llm-0.3.0-py3-none-any.whl"), "").unwrap();
+    // The runtimes are there: only the packages are installed.
+    std::fs::write(bench.app().join("package.json"), "{}").unwrap();
+    for runtime in ["rutis-runtime", "rutis-bun"] {
+        let dir = bench.app().join("node_modules/@arcships").join(runtime);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+    }
+    let installer = bench.installer();
+    let installed: Vec<Vec<(String, String, String)>> = [
+        "./notes",
+        "./clock",
+        "./wordcount-1.2.0.tgz",
+        "./bo_llm-0.3.0-py3-none-any.whl",
+    ]
+    .into_iter()
+    .map(|text| {
+        let (_, package) = bench.install(&installer, text).unwrap();
+        names(&package)
+            .into_iter()
+            .map(|(a, b, c)| (a.to_owned(), b.to_owned(), c.to_owned()))
+            .collect()
+    })
+    .collect();
+    let owned = |items: &[(&str, &str, &str)]| -> Vec<(String, String, String)> {
+        items
+            .iter()
+            .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        installed,
+        [
+            owned(&[("@ana/notes", "./notes", "node")]),
+            owned(&[("clock", "./clock", "bun")]),
+            owned(&[("@ana/wordcount", "./wordcount-1.2.0.tgz", "node")]),
+            owned(&[("llm", "./bo_llm-0.3.0-py3-none-any.whl", "py")]),
+        ]
+    );
+    let python = "$B/app/.venv/bin/python";
+    assert_eq!(
+        bench.asked(),
+        [
+            "npm [app] install $B/app/./notes".to_owned(),
+            "bun [app] add $B/app/./clock".into(),
+            "npm [app] install $B/app/./wordcount-1.2.0.tgz".into(),
+            "uv [rutis-host] --version".into(),
+            "uv [rutis-host] venv $B/app/.venv".into(),
+            format!("uv [rutis-host] pip install --python {python} $B/app/./bo_llm-0.3.0-py3-none-any.whl"),
+            "python query distribution bo_llm".into(),
+        ]
+    );
+}
+
+/// What `npm view` prints is its manifest: anything else is an error, not
+/// a Node package.
+#[test]
+fn npm_view_printing_no_manifest() {
+    let bench = Bench::new();
+    bench.program("npm", r#"case "$1" in view) echo 'not json';; esac"#);
+    let error = bench
+        .install(&bench.installer(), "npm:@ana/wordcount")
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "npm view @ana/wordcount --json: expected ident at line 1 column 2"
+    );
+}
+
+/// A plugin the new version adds whose row name another package's record
+/// has is refused, the new version staying installed; a local path has
+/// no versions to upgrade to.
+#[tokio::test]
+async fn upgrading_into_a_name_taken_by_another_package() {
+    let bench = Bench::new();
+    bench.program(
+        "uv",
+        &UV.replace(r#"["llm"]"#, r#"["chat", "llm"]"#)
+            .replace("\"import rutis\") echo", "\"import rutis\") exit 0; echo"),
+    );
+    let llm = Installed::of_row("py:llm", "pypi:bo-llm").unwrap();
+    let chat = Installed::of_row("py:chat", "pypi:other-chat").unwrap();
+    let installer = bench
+        .installer()
+        .with_installed([llm.clone(), chat.clone()]);
+    let error = installer.upgrade(&llm, None).await.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        bench.here(
+            "py:chat is already installed from pypi:other-chat: remove it first; \
+             it stays installed: uv pip uninstall --python $B/app/.venv/bin/python bo-llm"
+        )
+    );
+    // Its own plugins are no conflict.
+    let installer = bench.installer().with_installed([llm.clone()]);
+    let upgraded = installer.upgrade(&llm, None).await.unwrap();
+    let plugins: Vec<&str> = upgraded.plugins.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(plugins, ["chat", "llm"]);
+
+    let local = Installed::of_row("go:dns", "./netkit").unwrap();
+    let error = bench
+        .installer()
+        .upgrade(&local, Some("1.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "./netkit is a local path, which has no versions: upgrade it without @1.0"
+    );
 }

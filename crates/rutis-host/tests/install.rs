@@ -201,7 +201,8 @@ async fn add_writes_the_file_back_in_its_own_order() {
          wordcount-2 (@ana/wordcount): cannot run: nothing provides notes\n  \
          version: \"1.2.0\"\n  \
          inject: [\"notes\"]\n  \
-         provides: none declared (it may provide more once it runs)\n\
+         provides: {}\n  \
+         notes: add a row that provides it, or import it from a peer (import: [\"notes\"])\n\
          rutis.json: added row wordcount-2, runtimes.node\n"
     );
     assert_eq!(ran.status, 0);
@@ -378,5 +379,179 @@ async fn the_errors_say_what_to_do() {
             "{args:?}"
         );
         let _ = std::fs::remove_dir_all(app.join(".venv"));
+    }
+}
+
+/// The errors of §十一 found only once the package is installed: a Node
+/// package that is not a plugin when imported, a plugin whose row name
+/// another package's record has, and Go not there. Each says how to
+/// uninstall what stays installed; status 1 and the file as it was.
+/// guarantee: host/plugin-install
+#[tokio::test(flavor = "multi_thread")]
+async fn errors_found_after_installing() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    let source = dir.path().join("source");
+    let bin = dir.path().join("bin");
+    write(
+        &source,
+        &[
+            (
+                "package.json",
+                r#"{ "name": "@ana/notes", "version": "1.0.0", "type": "module", "main": "index.mjs" }"#,
+            ),
+            ("index.mjs", "export const notes = 1\n"),
+        ],
+    );
+    let file =
+        "{ \"installed\": { \"py:llm\": { \"from\": \"pypi:other-llm\" } }, \"rows\": [] }\n";
+    write(
+        &app,
+        &[
+            ("rutis.json", file),
+            ("package.json", r#"{ "name": "app", "type": "module" }"#),
+        ],
+    );
+    let node = repo().join("node/rutis-runtime");
+    let npm = format!(
+        "case \"$1\" in view) echo '{{}}';; install) mkdir -p node_modules/@ana/notes && cp '{source}'/* node_modules/@ana/notes/;; esac",
+        source = source.display()
+    );
+    let errors = [
+        (
+            "npm:@ana/notes",
+            Some(("npm", npm)),
+            "rutis-host: cannot load \"@ana/notes\": the default export of <dir>/node_modules/@ana/notes/index.mjs \
+             is not a plugin made with definePlugin; it stays installed: npm uninstall --prefix <dir> @ana/notes",
+        ),
+        (
+            "pypi:bo-llm",
+            Some((
+                "uv",
+                uv(r#"{"name": "bo-llm", "version": "0.3.0", "plugins": ["llm"]}"#),
+            )),
+            "rutis-host: py:llm is already installed from pypi:other-llm: remove it first; \
+             it stays installed: uv pip uninstall --python <dir>/.venv/bin/python bo-llm",
+        ),
+        (
+            "github.com/bo/netkit/cmd/netkit",
+            None,
+            "rutis-host: cannot run go (No such file or directory): install the Go toolchain, \
+             or download the plugin's binary for this platform into <dir>/plugins/go yourself",
+        ),
+    ];
+    for (reference, recording, said) in errors {
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        if let Some((name, body)) = &recording {
+            program(&bin, name, body);
+        }
+        let path = match recording {
+            Some(_) => path_with(&bin),
+            None => bin.clone(),
+        };
+        let ran = host(
+            &app,
+            &["add", reference],
+            Some(&path),
+            &[("RUTIS_NODE_RUNTIME", &node)],
+        )
+        .await;
+        assert_eq!(ran.status, 1, "{reference}: {}", ran.stderr);
+        assert_eq!(ran.stderr.lines().last(), Some(said), "{reference}");
+        assert_eq!(
+            std::fs::read_to_string(app.join("rutis.json")).unwrap(),
+            file,
+            "{reference}"
+        );
+    }
+}
+
+/// `upgrade`: the version before and after, a plugin the new version adds
+/// recorded (with how to add its row), one it dropped unrecorded (naming
+/// its row), the rows unchanged.
+/// guarantee: host/plugin-install
+#[tokio::test(flavor = "multi_thread")]
+async fn upgrade_records_what_the_new_version_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    let bin = dir.path().join("bin");
+    let upgraded = dir.path().join("upgraded");
+    let file = "{ \"installed\": { \"py:llm\": { \"from\": \"pypi:bo-llm\" } }, \"rows\": [ { \"id\": \"llm\", \"name\": \"py:llm\" } ] }\n";
+    write(
+        &app,
+        &[
+            ("rutis.json", file),
+            (
+                ".venv/bin/python",
+                &format!(
+                    "#!/bin/sh\ncase \"$2\" in\n\"import rutis\") exit 0;;\n*) if [ -e '{state}' ]; then echo '{{\"name\": \"bo-llm\", \"version\": \"0.4.0\", \"plugins\": [\"chat\"]}}'; else echo '{{\"name\": \"bo-llm\", \"version\": \"0.3.0\", \"plugins\": [\"llm\"]}}'; fi;;\nesac\n",
+                    state = upgraded.display()
+                ),
+            ),
+        ],
+    );
+    std::fs::set_permissions(
+        app.join(".venv/bin/python"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    program(
+        &bin,
+        "uv",
+        &format!(
+            "echo \"uv $*\" >> '{log}'\n[ \"$1 $2\" = \"pip install\" ] && touch '{state}'\nexit 0",
+            log = dir.path().join("log").display(),
+            state = upgraded.display()
+        ),
+    );
+    let ran = host(&app, &["upgrade"], Some(&path_with(&bin)), &[]).await;
+    assert_eq!(ran.stderr, "");
+    assert_eq!(
+        ran.stdout,
+        "bo-llm: 0.3.0 → 0.4.0\n\
+         bo-llm: new plugin chat: add a row { \"id\": \"chat\", \"name\": \"py:chat\" } to run it\n\
+         llm: the new version has no plugin llm\n\
+         a running host keeps the old versions until it restarts\n"
+    );
+    assert_eq!(ran.status, 0);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(app.join("rutis.json")).unwrap()).unwrap();
+    assert_eq!(
+        written["installed"],
+        serde_json::json!({ "py:chat": { "from": "pypi:bo-llm" } })
+    );
+    assert_eq!(
+        written["rows"],
+        serde_json::json!([{ "id": "llm", "name": "py:llm" }])
+    );
+    let log = std::fs::read_to_string(dir.path().join("log")).unwrap();
+    let last = log.lines().last().unwrap_or_default();
+    assert!(
+        last.starts_with("uv pip install --python ")
+            && last.ends_with("/app/.venv/bin/python --upgrade bo-llm"),
+        "{log}"
+    );
+}
+
+/// A plugin name that plugins of two languages have does not say which
+/// package: refused, naming their rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_of_two_plugins_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = "{ \"installed\": { \"go:dns\": { \"from\": \"./netkit\" }, \"py:dns\": { \"from\": \"pypi:bo-dns\" } }, \"rows\": [] }\n";
+    write(dir.path(), &[("rutis.json", file)]);
+    for command in ["remove", "upgrade"] {
+        let ran = host(dir.path(), &[command, "dns"], None, &[]).await;
+        assert_eq!(ran.status, 1, "{command}");
+        assert_eq!(
+            ran.stderr,
+            "rutis-host: dns is the name of more than one plugin: name it by its row (go:dns, py:dns)\n",
+            "{command}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("rutis.json")).unwrap(),
+            file
+        );
     }
 }

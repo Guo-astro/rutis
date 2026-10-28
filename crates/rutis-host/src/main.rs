@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use rutis_host::{call, config, control, errln, host, languages, new, outln, project, status};
 use rutis_loader::report::{
-    Clash, ConfigStatus, CycleLink, Provider, Requirement, RowStatus, Supply,
+    CheckReport, Clash, ConfigStatus, CycleLink, Provider, Requirement, RowCheck, RowStatus, Supply,
 };
 
 mod dev;
@@ -318,7 +318,13 @@ fn install_command(command: &str, args: &[String]) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
         match command {
-            "add" => rutis_host::install::add(args).await,
+            // Its new rows as `check` prints them.
+            "add" => {
+                rutis_host::install::add(args, |config, report, row| {
+                    print_row(config, report, row, false);
+                })
+                .await
+            }
             "remove" => rutis_host::install::remove(args).await,
             _ => rutis_host::install::upgrade(args).await,
         }
@@ -510,192 +516,9 @@ async fn check(args: &[String]) -> Result<(), String> {
     let mut cannot: std::collections::BTreeSet<&str> =
         report.failing().map(|row| row.id.as_str()).collect();
     let mut failed = 0;
-    // The Cordis rows (the Node runtime's, not leaf plugins): between them a
-    // dependency resolves in Cordis.
-    let cordis: HashSet<&str> = report
-        .rows
-        .iter()
-        .filter(|row| match &row.status {
-            RowStatus::Checked { resolved, .. } => resolved.meta["cordis"] == true,
-            _ => false,
-        })
-        .map(|row| row.id.as_str())
-        .collect();
     for row in &report.rows {
-        let (id, name) = (&row.id, &row.name);
-        // Extra keys in its config: warnings, errors with `--strict`
-        // (printed after the row's lines).
-        let extra: Vec<String> = row
-            .config_warnings
-            .iter()
-            .map(|warning| format!("config: {}", warning.message))
-            .collect();
-        match &row.status {
-            RowStatus::Disabled => outln!("{id} ({name}): disabled"),
-            // A config that does not match its plugin's schema: one line
-            // per problem.
-            RowStatus::Failed(error) if error.config().is_some() => {
-                for line in error.config().into_iter().flat_map(|config| config.lines()) {
-                    outln!("{id} ({name}): cannot run: {line}");
-                }
-            }
-            RowStatus::Failed(error) => {
-                outln!("{id} ({name}): {error}");
-                if let rutis_loader::LoaderError::NotFound { name } = error {
-                    // A compiled language's row with no runtime declared:
-                    // its binaries have to be named (#666).
-                    // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
-                    // remote runtime's rows.)
-                    let remote = config
-                        .runtimes
-                        .remote
-                        .iter()
-                        .any(|remote| name.starts_with(&format!("{}:", remote.name)));
-                    let undeclared = languages::LANGUAGES.iter().find(|language| {
-                        let key = language.key();
-                        let named = name.starts_with(&format!("{key}:"))
-                            || (name.starts_with(&format!("{key}-")) && name.contains(':'));
-                        matches!(key, "go" | "swift")
-                            && named
-                            && !remote
-                            && !language.configured(&config.runtimes)
-                    });
-                    match undeclared {
-                        Some(language) => outln!(
-                            "  declare runtimes.{key} with the binaries that have it \
-                             (\"runtimes\": {{ \"{key}\": {{ \"dir\": \"<directory>\" }} }})",
-                            key = language.key()
-                        ),
-                        None => outln!(
-                            "  install it where its runtime finds it (a runtime under runtimes), \
-                             or correct the row's name"
-                        ),
-                    }
-                }
-            }
-            RowStatus::Checked {
-                resolved,
-                requires,
-                config: checked_config,
-                ..
-            } => {
-                let missing: Vec<&str> = requires
-                    .iter()
-                    .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
-                    .map(|requirement| requirement.service.as_str())
-                    .collect();
-                // Names no row declares, which undeclared services may
-                // provide once the rows run: a warning, an error with
-                // `--strict`.
-                let undeclared: Vec<&Requirement> = requires
-                    .iter()
-                    .filter(|requirement| {
-                        matches!(
-                            requirement.supply,
-                            Supply::Announced(_) | Supply::OnlyDisabled { .. }
-                        )
-                    })
-                    .collect();
-                let strictly = strict && (!undeclared.is_empty() || !extra.is_empty());
-                match (missing.is_empty(), strictly) {
-                    (true, false) => outln!("{id} ({name}): ok"),
-                    (true, true) => {
-                        cannot.insert(id.as_str());
-                        // What no row declares, and what only disabled
-                        // rows do.
-                        let names = |only_disabled: bool| -> Vec<&str> {
-                            undeclared
-                                .iter()
-                                .filter(|requirement| {
-                                    matches!(requirement.supply, Supply::OnlyDisabled { .. })
-                                        == only_disabled
-                                })
-                                .map(|requirement| requirement.service.as_str())
-                                .collect()
-                        };
-                        let mut why = Vec::new();
-                        if !names(false).is_empty() {
-                            why.push(format!("nothing declares {}", names(false).join(", ")));
-                        }
-                        if !names(true).is_empty() {
-                            why.push(format!(
-                                "only disabled rows declare {}",
-                                names(true).join(", ")
-                            ));
-                        }
-                        if !why.is_empty() {
-                            outln!(
-                                "{id} ({name}): cannot run with --strict: {}",
-                                why.join("; ")
-                            );
-                        }
-                        for line in &extra {
-                            outln!("{id} ({name}): cannot run with --strict: {line}");
-                        }
-                    }
-                    (false, _) => {
-                        outln!(
-                            "{id} ({name}): cannot run: nothing provides {}",
-                            missing.join(", ")
-                        );
-                        if strict {
-                            for line in &extra {
-                                outln!("{id} ({name}): cannot run with --strict: {line}");
-                            }
-                        }
-                    }
-                }
-                for requirement in &undeclared {
-                    let line = match &requirement.supply {
-                        Supply::Announced(rows) => {
-                            let between_cordis_rows = cordis.contains(id.as_str())
-                                && rows.iter().any(|row| cordis.contains(row.as_str()));
-                            undeclared_line(id, &requirement.service, rows, between_cordis_rows)
-                        }
-                        Supply::OnlyDisabled { disabled, .. } => {
-                            disabled_line(id, &requirement.service, disabled)
-                        }
-                        _ => continue,
-                    };
-                    errln!(
-                        "rutis-host: {}: {line}{}",
-                        match strict {
-                            true => "error",
-                            false => "warning",
-                        },
-                        did_you_mean(requirement.like.as_deref())
-                    );
-                }
-                // A plugin needing a newer plugin API does not resolve: its
-                // runtime refuses it, saying what to upgrade.
-                let meta = &resolved.meta;
-                for field in ["runtime", "binary", "version", "inject", "provides"] {
-                    if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
-                        outln!("  {field}: {value}");
-                    }
-                }
-                if let Some(schema) = &resolved.schema {
-                    outln!("  config: {schema}");
-                }
-                if matches!(checked_config, ConfigStatus::NotYet) {
-                    outln!("  config not checked: its schema is known only when it runs");
-                }
-                for requirement in requires {
-                    if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
-                        outln!("  {line}{}", did_you_mean(requirement.like.as_deref()));
-                    }
-                }
-            }
-            _ => outln!("{id} ({name}): not checked"),
-        }
-        for line in &extra {
-            errln!(
-                "rutis-host: {}: {id}: {line}",
-                match strict {
-                    true => "error",
-                    false => "warning",
-                }
-            );
+        if print_row(&config, &report, row, strict) {
+            cannot.insert(row.id.as_str());
         }
     }
     // Errors from 0.18 (warnings in 0.17.2, #676): no row of a cycle
@@ -767,6 +590,205 @@ async fn check(args: &[String]) -> Result<(), String> {
         0 => Ok(()),
         n => Err(format!("{n} row(s) or binaries cannot run")),
     }
+}
+
+/// The lines `check` prints for `row` of `report` (of `config`), and
+/// whether it cannot run only because of `strict` (`--strict`); `add`
+/// prints its new rows with it.
+fn print_row(
+    config: &config::HostConfig,
+    report: &CheckReport,
+    row: &RowCheck,
+    strict: bool,
+) -> bool {
+    let mut cannot = false;
+    // The Cordis rows (the Node runtime's, not leaf plugins): between them a
+    // dependency resolves in Cordis.
+    let cordis: HashSet<&str> = report
+        .rows
+        .iter()
+        .filter(|row| match &row.status {
+            RowStatus::Checked { resolved, .. } => resolved.meta["cordis"] == true,
+            _ => false,
+        })
+        .map(|row| row.id.as_str())
+        .collect();
+    let (id, name) = (&row.id, &row.name);
+    // Extra keys in its config: warnings, errors with `--strict`
+    // (printed after the row's lines).
+    let extra: Vec<String> = row
+        .config_warnings
+        .iter()
+        .map(|warning| format!("config: {}", warning.message))
+        .collect();
+    match &row.status {
+        RowStatus::Disabled => outln!("{id} ({name}): disabled"),
+        // A config that does not match its plugin's schema: one line
+        // per problem.
+        RowStatus::Failed(error) if error.config().is_some() => {
+            for line in error.config().into_iter().flat_map(|config| config.lines()) {
+                outln!("{id} ({name}): cannot run: {line}");
+            }
+        }
+        RowStatus::Failed(error) => {
+            outln!("{id} ({name}): {error}");
+            if let rutis_loader::LoaderError::NotFound { name } = error {
+                // A compiled language's row with no runtime declared:
+                // its binaries have to be named (#666).
+                // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
+                // remote runtime's rows.)
+                let remote = config
+                    .runtimes
+                    .remote
+                    .iter()
+                    .any(|remote| name.starts_with(&format!("{}:", remote.name)));
+                let undeclared = languages::LANGUAGES.iter().find(|language| {
+                    let key = language.key();
+                    let named = name.starts_with(&format!("{key}:"))
+                        || (name.starts_with(&format!("{key}-")) && name.contains(':'));
+                    matches!(key, "go" | "swift")
+                        && named
+                        && !remote
+                        && !language.configured(&config.runtimes)
+                });
+                match undeclared {
+                    Some(language) => outln!(
+                        "  declare runtimes.{key} with the binaries that have it \
+                         (\"runtimes\": {{ \"{key}\": {{ \"dir\": \"<directory>\" }} }})",
+                        key = language.key()
+                    ),
+                    None => outln!(
+                        "  install it where its runtime finds it (a runtime under runtimes), \
+                         or correct the row's name"
+                    ),
+                }
+            }
+        }
+        RowStatus::Checked {
+            resolved,
+            requires,
+            config: checked_config,
+            ..
+        } => {
+            let missing: Vec<&str> = requires
+                .iter()
+                .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
+                .map(|requirement| requirement.service.as_str())
+                .collect();
+            // Names no row declares, which undeclared services may
+            // provide once the rows run: a warning, an error with
+            // `--strict`.
+            let undeclared: Vec<&Requirement> = requires
+                .iter()
+                .filter(|requirement| {
+                    matches!(
+                        requirement.supply,
+                        Supply::Announced(_) | Supply::OnlyDisabled { .. }
+                    )
+                })
+                .collect();
+            let strictly = strict && (!undeclared.is_empty() || !extra.is_empty());
+            match (missing.is_empty(), strictly) {
+                (true, false) => outln!("{id} ({name}): ok"),
+                (true, true) => {
+                    cannot = true;
+                    // What no row declares, and what only disabled
+                    // rows do.
+                    let names = |only_disabled: bool| -> Vec<&str> {
+                        undeclared
+                            .iter()
+                            .filter(|requirement| {
+                                matches!(requirement.supply, Supply::OnlyDisabled { .. })
+                                    == only_disabled
+                            })
+                            .map(|requirement| requirement.service.as_str())
+                            .collect()
+                    };
+                    let mut why = Vec::new();
+                    if !names(false).is_empty() {
+                        why.push(format!("nothing declares {}", names(false).join(", ")));
+                    }
+                    if !names(true).is_empty() {
+                        why.push(format!(
+                            "only disabled rows declare {}",
+                            names(true).join(", ")
+                        ));
+                    }
+                    if !why.is_empty() {
+                        outln!(
+                            "{id} ({name}): cannot run with --strict: {}",
+                            why.join("; ")
+                        );
+                    }
+                    for line in &extra {
+                        outln!("{id} ({name}): cannot run with --strict: {line}");
+                    }
+                }
+                (false, _) => {
+                    outln!(
+                        "{id} ({name}): cannot run: nothing provides {}",
+                        missing.join(", ")
+                    );
+                    if strict {
+                        for line in &extra {
+                            outln!("{id} ({name}): cannot run with --strict: {line}");
+                        }
+                    }
+                }
+            }
+            for requirement in &undeclared {
+                let line = match &requirement.supply {
+                    Supply::Announced(rows) => {
+                        let between_cordis_rows = cordis.contains(id.as_str())
+                            && rows.iter().any(|row| cordis.contains(row.as_str()));
+                        undeclared_line(id, &requirement.service, rows, between_cordis_rows)
+                    }
+                    Supply::OnlyDisabled { disabled, .. } => {
+                        disabled_line(id, &requirement.service, disabled)
+                    }
+                    _ => continue,
+                };
+                errln!(
+                    "rutis-host: {}: {line}{}",
+                    match strict {
+                        true => "error",
+                        false => "warning",
+                    },
+                    did_you_mean(requirement.like.as_deref())
+                );
+            }
+            // A plugin needing a newer plugin API does not resolve: its
+            // runtime refuses it, saying what to upgrade.
+            let meta = &resolved.meta;
+            for field in ["runtime", "binary", "version", "inject", "provides"] {
+                if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
+                    outln!("  {field}: {value}");
+                }
+            }
+            if let Some(schema) = &resolved.schema {
+                outln!("  config: {schema}");
+            }
+            if matches!(checked_config, ConfigStatus::NotYet) {
+                outln!("  config not checked: its schema is known only when it runs");
+            }
+            for requirement in requires {
+                if let Some(line) = supply_line(&requirement.service, &requirement.supply) {
+                    outln!("  {line}{}", did_you_mean(requirement.like.as_deref()));
+                }
+            }
+        }
+        _ => outln!("{id} ({name}): not checked"),
+    }
+    for line in &extra {
+        errln!(
+            "rutis-host: {}: {id}: {line}",
+            match strict {
+                true => "error",
+                false => "warning",
+            }
+        );
+    }
+    cannot
 }
 
 /// `check`'s warning for the row `row` waiting for `service`, which no row

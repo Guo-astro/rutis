@@ -22,7 +22,13 @@ pub use crate::languages::GoDev;
 /// its row. A Go project's binaries are built here: its own, and each fake
 /// a directory row of `rutis.dev.json` names ([`crate::languages::go_fakes`]).
 pub fn dev_config(dir: &Path) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, None, &mut |fake| fake.build_saying(1))
+    dev_config_with(dir, None, None, &mut |fake| fake.build_saying(1))
+}
+
+/// [`dev_config`] with `rutis.dev.json` as `text` says, not as on disk:
+/// what `add` checks before it writes the file.
+pub(crate) fn dev_config_of(dir: &Path, text: &str) -> Result<(HostConfig, String), String> {
+    dev_config_with(dir, None, Some(text), &mut |fake| fake.build_saying(1))
 }
 
 /// [`dev_config`] for a compiled project whose first build `binary` is
@@ -33,12 +39,13 @@ pub fn dev_config_built(
     binary: &Path,
     fakes: &mut dyn FnMut(&GoDev) -> Result<PathBuf, String>,
 ) -> Result<(HostConfig, String), String> {
-    dev_config_with(dir, Some(binary), fakes)
+    dev_config_with(dir, Some(binary), None, fakes)
 }
 
 fn dev_config_with(
     dir: &Path,
     built: Option<&Path>,
+    dev_text: Option<&str>,
     fakes: &mut dyn FnMut(&GoDev) -> Result<PathBuf, String>,
 ) -> Result<(HostConfig, String), String> {
     // Absolute, not canonical: on Windows a canonical path is a `\\?\` one,
@@ -72,10 +79,14 @@ fn dev_config_with(
         warnings: Vec::new(),
     };
     let extra = dir.join("rutis.dev.json");
-    if extra.exists() {
-        // Its rows also run in the project's own runtime, which this sets
-        // up: not a runtime the dev file leaves undeclared.
-        let extra = HostConfig::read_beside(&extra, &config.runtimes)?;
+    // Its rows also run in the project's own runtime, which this sets up:
+    // not a runtime the dev file leaves undeclared.
+    let extra = match dev_text {
+        Some(text) => Some(HostConfig::parse_beside(text, &extra, &config.runtimes)?),
+        None if extra.exists() => Some(HostConfig::read_beside(&extra, &config.runtimes)?),
+        None => None,
+    };
+    if let Some(extra) = extra {
         // The dev file may configure the plugin's own rows.
         let (own, mut others): (Vec<Value>, Vec<Value>) = extra
             .rows

@@ -22,12 +22,14 @@ installed @your-name/weather 1.2.0 (node) into /home/me/app
 weather (@your-name/weather): cannot run: nothing provides llm
   version: "1.2.0"
   inject: ["llm"]
-  provides: none declared (it may provide more once it runs)
+  provides: {}
   config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
+  llm: add a row that provides it, or import it from a peer (import: ["llm"])
 rutis.json: added row weather, runtimes.node
 installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
 llm (py:llm): ok
   version: "0.3.0"
+  inject: []
   provides: {"llm":{"complete":"async"}}
 rutis.json: added row llm, runtimes.py
 ```
@@ -148,7 +150,7 @@ a running host keeps the old versions until it restarts
 
 失败时包管理器已经装上的包留在原处，和直接运行 npm、uv 一样；出错文字写明卸掉它的命令。
 
-**只装信任的插件。** `add`、`upgrade` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
+**只装信任的插件。** `add`、`upgrade` 运行包管理器，可能执行包里的安装脚本；`add` 还导入插件代码来检查它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同，rutis 不另做沙箱或审核。
 
 ### 不用 add 时
 

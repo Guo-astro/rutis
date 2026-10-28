@@ -27,7 +27,7 @@ use crate::config::{HostConfig, Restart, Runtimes};
 use crate::host::Error;
 
 mod binary;
-mod bun;
+pub(crate) mod bun;
 mod go;
 pub(crate) mod node;
 pub(crate) mod python;

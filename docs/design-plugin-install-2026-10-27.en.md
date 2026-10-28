@@ -6,6 +6,7 @@ Status: final, not implemented. Date: 2026-10-27. Base: `main` `103c0d22` (after
 Issue: [#691](https://github.com/arcships/rutis/issues/691) (part of [#663](https://github.com/arcships/rutis/issues/663), H2 and O4).
 Changed 2026-10-28 (I6, §6): `add` writes rows with the existing row names (the Node package name, `bun:`, `py:`, `go:`, `swift:`); `installed` is keyed by row name and records `from` only; the layer "a row whose name is a record's key resolves by the record" is gone, and row names resolve exactly as before. Why: rewriting names by the record gave one plugin two row names, and added a naming rule duplicating the existing forms.
 Changed again 2026-10-28 (I1, I8, §8, §9): the embedding API (the `install` feature of `rutis-loader`) and seeing the description before installing (`add --dry-run`, `describe`) are gone; the install code lives inside rutis-host only. Why: see Out of scope.
+Reviewed 2026-10-28 (§5, §8, §11): `add` starts no runtime of its own to describe plugins: before writing the file it works out in memory the configuration as it will be written, checks the new rows with the start and check `run` / `check` use, and writes the file only when they pass; it prints with `check`'s own code, word for word the same.
 Relation to the 0.18 designs: the plugin description `add` prints is the description `check` already prints (version, `inject`, `provides`, config schema), not a second one; rows `add` writes carry no `config`, defaults are filled by the SDK as in [0.18 config schema](design-config-schema-2026-10-27.en.md) C1, and when a required field is missing `add` says so with the same check `check` runs; error text follows [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §4.5.
 Compatibility: fully compatible, not part of "Migrating to 0.19". The old row names (`py:`, `bun:`, `go:`, `swift:` prefixes, npm package names), manual installation and `rutis-host go add` keep working, unconverted.
 
@@ -96,9 +97,9 @@ Why the source and not the language: the source is what the host owner knows (th
 
    `runtimes.go` (`swift`) written without a `dir` is an error: `add` does not know where to install. The package manager's output is shown as it is.
 3. Find the plugins in the package: for Node and Bun, the package name (one plugin per package); for Python, the distribution's entry points in the `rutis.plugins` group (a package can have several); for Go and Swift, the plugins in the binary's manifest.
-4. Describe each plugin: start its runtime and describe the row as `check` does (§8); one that cannot be described is not a plugin (§11). The descriptions are printed in step 6, with what the check finds.
+4. Check each plugin: work out in memory the file as it will be written (the file plus the records, rows and `runtimes` of step 5), start the host's runtimes for it (as `run` and `check` do), and check the new rows with `check`'s own check (§8); a row that does not resolve (a Node package that is not a plugin when imported, say) is not a plugin (§11), and the file is left as it was.
 5. Write the file: add each plugin's record to `installed` (keyed by row name); append a row `{ "id": <id>, "name": <row name> }` per plugin to `rows`, the row name in its existing form (§6), the id from the plugin name (the existing `id_of`), with `-2`, `-3` when taken, and no row when one with the same name exists; when `runtimes` has no entry for the language, write the settings used (I4). Keys keep their order, two-space indent, written to a temporary file and renamed (`--watch-config` never reads a half-written file).
-6. Run `check`'s check on the new rows and print its result: a missing service it needs, or a missing required config field (0.18), shows here. `add` still exits 0: the row is written, and the dependency or config can follow.
+6. Print what step 4 found of the new rows, word for word as `check` prints them (the same code): a missing service it needs, or a missing required config field (0.18), shows here. `add` still exits 0: the row is written, and the dependency or config can follow.
 
 Which file: the second argument; else `rutis.json` in the current directory; else, without `rutis.json` but with `rutis.dev.json` (a plugin project), that one; else a new `rutis.json`.
 
@@ -139,11 +140,10 @@ When any of steps 2 to 4 fails: `rutis.json` is unchanged, exit 1. Packages the 
 
 ## 8. The plugin description
 
-The description `add` prints is what plugins already declare: TypeScript `definePlugin({ inject, provides, config })`, Python `define_plugin(...)`, Go's manifest and `rutis.Plugin`. `check` already prints it as `version`, `inject`, `provides` and `config` lines, and `add` prints it with the same check (§5 step 6).
+The description `add` prints is what plugins already declare: TypeScript `definePlugin({ inject, provides, config })`, Python `define_plugin(...)`, Go's manifest and `rutis.Plugin`. `check` already prints it as `version`, `inject`, `provides` and `config` lines, and `add` calls the code `check` prints a row with (§5 step 6), not a second copy.
 
 - No new manifest format: the existing declarations exist in all four languages, and `check` already uses them; a second one would be one more rutis-specific thing for plugin authors to write.
 - Registry metadata (`npm view`, PyPI's JSON) is not read: the declarations of TypeScript leaf plugins, Python and Go are in code, not in package metadata.
-- Without `provides`, the description says `provides: none declared (it may provide more once it runs)`.
 - Seeing the description before installing (`add --dry-run`) was removed on 2026-10-28; see Out of scope.
 
 ## 9. Where the install code lives
@@ -159,7 +159,7 @@ The description `add` prints is what plugins already declare: TypeScript `define
 - **`dev` (#670)**: in a plugin project `add` writes `rutis.dev.json`, which `dev` reads again by the existing rules: the new row is `added` and starts, the other rows are untouched. When the runtime the new row needs is not running, the `runtimes.<language>` that `add` wrote is refused by the existing rule with a restart hint (`reload rejected: runtimes.py added: restart the host; nothing changed`). The same for `run --watch-config`.
 - **#683**: which process a plugin runs in and which services it may use are #683's options on the runtime (process), unrelated to how it was installed.
 - **#698**: installs go to local runtimes only.
-- **Security**: `add` and `upgrade` run the package manager, which may run install scripts in the package, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
+- **Security**: `add` and `upgrade` run the package manager, which may run install scripts in the package, and `add` imports the plugin's code to check it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review; the guide says: install only plugins you trust.
 
 ## 11. What developers see
 
@@ -172,6 +172,7 @@ wordcount (@ana/wordcount): cannot run: nothing provides notes
   inject: ["notes"]
   provides: {"tools":{"register":"async"}}
   config: {"type":"object","properties":{"limit":{"type":"integer","default":100}}}
+  notes: add a row that provides it, or import it from a peer (import: ["notes"])
 rutis.json: added row wordcount, runtimes.node
 
 $ rutis-host add pypi:bo-llm
@@ -179,7 +180,8 @@ $ rutis-host add pypi:bo-llm
 installed bo-llm 0.3.0 (py) into /app/.venv: plugin llm
 llm (py:llm): ok
   version: "0.3.0"
-  provides: none declared (it may provide more once it runs)
+  inject: []
+  provides: {}
 rutis.json: added row llm, runtimes.py
 
 $ rutis-host remove llm

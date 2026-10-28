@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::installer::Installed;
 use crate::languages::LANGUAGES;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -412,15 +413,6 @@ pub fn venv_python(venv: &Path) -> PathBuf {
 /// The interpreter used when no environment names one.
 pub const DEFAULT_PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
 
-/// A plugin `rutis-host add` installed (`installed.<row name>`): where it
-/// came from.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Installed {
-    /// The reference it was installed from, without a version.
-    pub from: String,
-}
-
 /// `path` as a `file:` URL (percent-encoded, with a drive letter on
 /// Windows); a relative path, which has none, as `file://<path>`.
 pub fn file_url(path: &Path) -> String {
@@ -499,14 +491,15 @@ impl HostConfig {
         Ok(config)
     }
 
-    /// Refuse a key of `installed` that is not a row name `add` writes.
+    /// Name each record of `installed` by its key, refusing a key that is
+    /// not a row name `add` writes.
     fn name_installed(&mut self) -> Result<(), String> {
-        for (row, record) in &self.installed {
-            if crate::installer::Installed::of_row(row, record.from.clone()).is_none() {
-                return Err(format!(
+        for (row, record) in self.installed.iter_mut() {
+            *record = Installed::of_row(row, record.from.clone()).ok_or_else(|| {
+                format!(
                     "installed.{row}: name it by its row: a Node package, or bun:, py:, go: or swift: and the plugin"
-                ));
-            }
+                )
+            })?;
         }
         Ok(())
     }
@@ -625,9 +618,6 @@ impl HostConfig {
         self.runtimes.remote.extend(other.runtimes.remote);
         self.listen.extend(other.listen);
         self.rows.extend(other.rows);
-        for (name, record) in other.installed {
-            self.installed.entry(name).or_insert(record);
-        }
         self.warnings.extend(other.warnings);
     }
 

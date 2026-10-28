@@ -6,6 +6,7 @@
 Issue：[#691](https://github.com/arcships/rutis/issues/691)（属于 [#663](https://github.com/arcships/rutis/issues/663) 的 H2、O4）。
 2026-10-28 调整（I6、§六）：`add` 写行时直接用已有的行名写法（Node 包名、`bun:`、`py:`、`go:`、`swift:`）；`installed` 以行名为键，只记 `from`；去掉"行名是记录里的键时按记录解析"这一层，行名解析完全照旧。原因：按记录换写法让同一个插件有两种行名，还多一条与已有写法重复的名字规则。
 2026-10-28 第二次调整（I1、I8、§八、§九）：去掉嵌入 API（`rutis-loader` 的 `install` feature）与装之前看介绍（`add --dry-run`、`describe`）；安装代码只放在 rutis-host 内部。原因见范围外。
+2026-10-28 复查（§五、§八、§十一）：`add` 不另起运行时描述插件：写文件前在内存里得出写好后的配置，用 `run` / `check` 的同一套启动与检查看新行，过了才写文件；打印用 `check` 的同一段代码，逐字相同。
 与 0.18 设计的关系：`add` 打印的插件介绍就是 `check` 已有的描述（版本、`inject`、`provides`、配置 Schema），不另起一份；新写的行不带 `config`，默认值按 [0.18 配置 Schema](design-config-schema-2026-10-27.md) C1 由 SDK 补，缺必填项时 `add` 用 `check` 的同一段检查说出来；出错文字遵守 [0.18 诊断](design-diagnostics-2026-10-26.md) §4.5。
 兼容：全部兼容，不进《迁移到 0.19》。旧的行名写法（`py:`、`bun:`、`go:`、`swift:` 前缀，npm 包名）、手动安装和 `rutis-host go add` 照常可用，不转换。
 
@@ -96,9 +97,9 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 
    `runtimes.go`（`swift`）写了但没有 `dir` 时报错：`add` 不知道装到哪里。包管理器的输出原样显示。
 3. 找出包里的插件：Node、Bun 是包名（一个包一个插件）；Python 是这个发行包在 `rutis.plugins` 组里的入口点（一个包可以有几个）；Go、Swift 是二进制清单里的插件。
-4. 描述每个插件：启动它的运行时，和 `check` 一样描述这一行（§八）；描述不了的不是插件（§十一）。介绍在第 6 步与检查结果一起打印。
+4. 检查每个插件：在内存里得出写好后的文件（原文件加上第 5 步要写的记录、行与 `runtimes`），按它启动宿主的运行时（与 `run`、`check` 相同），用 `check` 的同一段检查看新加的行（§八）；有一行解析不了（如 Node 包导入后不是插件）就不是插件（§十一），文件不动。
 5. 写文件：`installed` 加上每个插件的记录（键是行名）；`rows` 末尾每个插件加一行 `{ "id": <id>, "name": <行名> }`，行名用已有写法（§六），id 由插件名得出（已有的 `id_of`），已被占用时加 `-2`、`-3`，同名的行已经有了时不再加；`runtimes` 没写这门语言时写上用到的设置（I4）。按原有键的顺序写回，缩进两格，先写临时文件再改名（`--watch-config` 不会读到写了一半的文件）。
-6. 用 `check` 的同一段检查看新加的行，打印它的结果：缺它要用的服务、配置缺必填项（0.18）时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
+6. 打印第 4 步对新行的检查结果，与 `check` 对这些行打印的逐字相同（同一段代码）：缺它要用的服务、配置缺必填项（0.18）时这里就看得到。`add` 仍以 0 退出：行已经写好，接下来补上依赖或配置就行。
 
 写哪个文件：第二个参数；没有时当前目录的 `rutis.json`；没有 `rutis.json`、有 `rutis.dev.json`（插件项目）时写它；都没有时新建 `rutis.json`。
 
@@ -139,11 +140,10 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 
 ## 八、插件介绍
 
-`add` 打印的介绍就是插件已经写下的声明：TypeScript `definePlugin({ inject, provides, config })`、Python `define_plugin(...)`、Go 的清单与 `rutis.Plugin`。`check` 已经把它打印成 `version`、`inject`、`provides`、`config` 几行，`add` 用同一段检查打印（§五 第 6 步）。
+`add` 打印的介绍就是插件已经写下的声明：TypeScript `definePlugin({ inject, provides, config })`、Python `define_plugin(...)`、Go 的清单与 `rutis.Plugin`。`check` 已经把它打印成 `version`、`inject`、`provides`、`config` 几行，`add` 调用 `check` 打印一行的同一段代码（§五 第 6 步），不另写一套。
 
 - 不新增清单格式：现有的声明四种语言都有，`check` 已在用；另起一份，插件作者就要多写一份 rutis 特有的东西。
 - 不读注册表的元数据（`npm view`、PyPI 的 JSON）：TypeScript 叶子插件、Python、Go 的声明都在代码里，包元数据里没有。
-- `provides` 没写时介绍里是 `provides: none declared (it may provide more once it runs)`。
 - 装之前看介绍（`add --dry-run`）2026-10-28 删去，见范围外。
 
 ## 九、安装代码放在哪里
@@ -159,7 +159,7 @@ Cordis 4 本身没有安装命令。Koishi 的插件市场（`@koishijs/plugin-m
 - **与 `dev`（#670）**：`add` 在插件项目里写 `rutis.dev.json`，`dev` 照现有规则重新读它：新行 `added` 并启动，别的行不动。新行要的运行时还没在运行时，`add` 写进的 `runtimes.<语言>` 照现有规则被拒绝、提示重启（`reload rejected: runtimes.py added: restart the host; nothing changed`）。`run --watch-config` 相同。
 - **#683**：各插件在哪个进程运行、能用哪些服务，是 #683 设在运行时（进程）上的选项，与怎样装无关。
 - **#698**：只装到本机运行时。
-- **安全**：`add`、`upgrade` 运行包管理器，可能执行包里的安装脚本，并导入插件代码来描述它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
+- **安全**：`add`、`upgrade` 运行包管理器，可能执行包里的安装脚本；`add` 还导入插件代码来检查它；这与直接运行 `npm install`、`uv pip install`、`go install` 相同。rutis 不另做沙箱或审核，指南写明：只装信任的插件。
 
 ## 十一、开发者看到什么
 
@@ -172,6 +172,7 @@ wordcount (@ana/wordcount): cannot run: nothing provides notes
   inject: ["notes"]
   provides: {"tools":{"register":"async"}}
   config: {"type":"object","properties":{"limit":{"type":"integer","default":100}}}
+  notes: add a row that provides it, or import it from a peer (import: ["notes"])
 rutis.json: added row wordcount, runtimes.node
 
 $ rutis-host add pypi:bo-llm
@@ -179,7 +180,8 @@ $ rutis-host add pypi:bo-llm
 installed bo-llm 0.3.0 (py) into /app/.venv: plugin llm
 llm (py:llm): ok
   version: "0.3.0"
-  provides: none declared (it may provide more once it runs)
+  inject: []
+  provides: {}
 rutis.json: added row llm, runtimes.py
 
 $ rutis-host remove llm

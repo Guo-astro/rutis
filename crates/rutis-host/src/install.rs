@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::installer::{Error as InstallError, Installed, Installer, Places};
-use rutis_loader::report::{RowStatus, Supply};
+use rutis_loader::report::{CheckReport, RowCheck, RowStatus};
 use serde_json::{json, Map, Value};
 
 use crate::config::HostConfig;
@@ -104,21 +104,22 @@ impl Target {
             .unwrap_or_else(|| {
                 project(runtimes.py.as_ref().map(|py| py.project.as_path())).join(".venv")
             });
-        // Declared without a `dir`: no place (an error says so).
-        let binaries =
-            |key: &str, settings: Option<&crate::config::GoRuntime>| match self.declares(key) {
-                true => settings.and_then(|settings| settings.dir.clone()),
-                false => Some(base.join("plugins").join(key)),
-            };
+        // Declared without a `dir`: `add` does not know where.
+        let binaries = |key: &str, settings: Option<&crate::config::GoRuntime>| {
+            match self.declares(key) {
+                true => settings.and_then(|settings| settings.dir.clone()).ok_or_else(|| {
+                    format!(
+                        "runtimes.{key} has no dir to install into: add one, or remove runtimes.{key} to use plugins/{key}"
+                    )
+                }),
+                false => Ok(base.join("plugins").join(key)),
+            }
+        };
         Places {
-            base: Some(base.clone()),
-            node: Some(project(
-                runtimes.node.as_ref().map(|node| node.project.as_path()),
-            )),
-            bun: Some(project(
-                runtimes.bun.as_ref().map(|bun| bun.project.as_path()),
-            )),
-            python: Some(python),
+            base: base.clone(),
+            node: project(runtimes.node.as_ref().map(|node| node.project.as_path())),
+            bun: project(runtimes.bun.as_ref().map(|bun| bun.project.as_path())),
+            python,
             go: binaries("go", runtimes.go.as_ref()),
             swift: binaries("swift", runtimes.swift.as_ref()),
         }
@@ -128,9 +129,9 @@ impl Target {
     fn place(&self, language: &str) -> String {
         let places = self.places();
         let place = match language {
-            "node" => places.node,
-            "bun" => places.bun,
-            "py" => places.python,
+            "node" => Ok(places.node),
+            "bun" => Ok(places.bun),
+            "py" => Ok(places.python),
             "go" => places.go,
             _ => places.swift,
         };
@@ -143,13 +144,19 @@ impl Target {
         Installer::new(self.places()).with_installed(self.installed.values().cloned())
     }
 
-    /// Write it back: its keys in their order, two-space indents, through
-    /// a file renamed into place (`run --watch-config` never reads half of
-    /// it).
+    /// Its text as it is now: its keys in their order, two-space indents.
+    fn text(&self) -> Result<String, String> {
+        Ok(
+            serde_json::to_string_pretty(&Value::Object(self.raw.clone()))
+                .map_err(|error| error.to_string())?
+                + "\n",
+        )
+    }
+
+    /// Write it back ([`Target::text`]) through a file renamed into place
+    /// (`run --watch-config` never reads half of it).
     fn write(&self) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(&Value::Object(self.raw.clone()))
-            .map_err(|error| error.to_string())?
-            + "\n";
+        let text = self.text()?;
         let partial =
             self.path
                 .with_file_name(format!(".{}.{}.tmp", self.name(), std::process::id()));
@@ -224,48 +231,20 @@ fn package_said(plugins: &[Installed]) -> String {
     }
 }
 
-/// What a plugin declares, as `check` says it, indented: its version,
-/// what it injects, what it provides (`none declared` when nothing), its
-/// config schema.
-fn introduction(
-    version: Option<&Value>,
-    inject: &Value,
-    provides: &Value,
-    config: Option<&Value>,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(version) = version.filter(|version| !version.is_null()) {
-        lines.push(format!("  version: {version}"));
-    }
-    if inject.as_array().is_some_and(|inject| !inject.is_empty()) {
-        lines.push(format!("  inject: {inject}"));
-    }
-    match provides
-        .as_object()
-        .is_some_and(|provides| !provides.is_empty())
-    {
-        true => lines.push(format!("  provides: {provides}")),
-        false => lines.push("  provides: none declared (it may provide more once it runs)".into()),
-    }
-    if let Some(config) = config.filter(|config| !config.is_null()) {
-        lines.push(format!("  config: {config}"));
-    }
-    lines
-}
-
 /// The error of an install step, as rutis-host says it.
 fn install_error(error: InstallError, file: &str) -> String {
     match error {
         InstallError::Failed(message) => format!("{message}; {file} is unchanged"),
-        InstallError::NoPlace(language) => format!(
-            "runtimes.{language} has no dir to install into: add one, or remove runtimes.{language} to use plugins/{language}"
-        ),
         other => other.to_string(),
     }
 }
 
-/// `rutis-host add <reference> [rutis.json]`.
-pub async fn add(args: &[String]) -> Result<(), String> {
+/// `rutis-host add <reference> [rutis.json]`; `print_row` prints a new
+/// row's lines as `check` does.
+pub async fn add(
+    args: &[String],
+    print_row: impl Fn(&HostConfig, &CheckReport, &RowCheck),
+) -> Result<(), String> {
     let (reference, file) = match args {
         [reference] => (reference.as_str(), None),
         [reference, file] => (reference.as_str(), Some(file.as_str())),
@@ -278,7 +257,10 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     };
     let mut target = Target::open(file)?;
     let installer = target.installer();
-    let added = installer
+    let crate::installer::Added {
+        plugins: added,
+        uninstall,
+    } = installer
         .add(reference)
         .await
         .map_err(|error| install_error(error, &target.name()))?;
@@ -290,7 +272,7 @@ pub async fn add(args: &[String]) -> Result<(), String> {
         plugins_said(&added)
     );
 
-    // The file: records, rows, the runtime.
+    // The file as it will be: records, rows, the runtime.
     let mut records = target.records();
     for plugin in &added {
         records.insert(plugin.row_name(), json!({ "from": plugin.from }));
@@ -340,13 +322,14 @@ pub async fn add(args: &[String]) -> Result<(), String> {
     if !target.path.exists() {
         target.set("format", json!(crate::config::FORMAT), &["runtimes"]);
     }
-    target.write()?;
 
-    // What `check` says of the plugins' rows.
+    // The plugins' rows checked as `check` does, before the file is
+    // written: a row that does not resolve is not a plugin.
     let names: Vec<String> = added.iter().map(Installed::row_name).collect();
-    if let Err(error) = check_rows(&target, &names).await {
-        errln!("rutis-host: warning: the new rows were not checked: {error}");
-    }
+    check_rows(&target, &names, &print_row)
+        .await
+        .map_err(|error| format!("{error}; it stays installed: {uninstall}"))?;
+    target.write()?;
     if !new_rows.is_empty() {
         said.insert(
             0,
@@ -384,73 +367,73 @@ fn collect_rows(rows: &[Value], ids: &mut Vec<String>, names: &mut Vec<String>) 
     }
 }
 
-/// Check the configuration as `check` does, and say what it says of the
-/// rows named `names`.
-async fn check_rows(target: &Target, names: &[String]) -> Result<(), String> {
+/// Check the configuration as it will be written, as `check` does, and
+/// print the rows named `names`; a row of them that does not resolve
+/// fails.
+async fn check_rows(
+    target: &Target,
+    names: &[String],
+    print_row: &impl Fn(&HostConfig, &CheckReport, &RowCheck),
+) -> Result<(), String> {
+    let text = target.text()?;
     let config = match target.name() == "rutis.dev.json" {
-        true => crate::project::dev_config(&target.base())
-            .map(|(config, _)| config)
-            .or_else(|_| HostConfig::read(&target.path))?,
-        false => HostConfig::read(&target.path)?,
+        true => crate::project::dev_config_of(&target.base(), &text)?.0,
+        false => HostConfig::parse(&text, &target.path)?,
     };
     let host = crate::host::Host::start(&config).await?;
     host.runtimes_ready().await?;
     let report = host.check(config.rows()).await?;
-    for row in report.rows.iter().filter(|row| names.contains(&row.name)) {
-        let (id, name) = (&row.id, &row.name);
+    let rows: Vec<&RowCheck> = report
+        .rows
+        .iter()
+        .filter(|row| names.contains(&row.name))
+        .collect();
+    for row in &rows {
         match &row.status {
-            RowStatus::Disabled => outln!("{id} ({name}): disabled"),
-            RowStatus::Failed(error) if error.config().is_some() => {
-                for line in error.config().into_iter().flat_map(|config| config.lines()) {
-                    outln!("{id} ({name}): cannot run: {line}");
-                }
+            RowStatus::Failed(error) if error.config().is_none() => {
+                return Err(error.to_string());
             }
-            RowStatus::Failed(error) => outln!("{id} ({name}): {error}"),
-            RowStatus::Checked {
-                resolved, requires, ..
-            } => {
-                let missing: Vec<&str> = requires
-                    .iter()
-                    .filter(|requirement| matches!(requirement.supply, Supply::Missing { .. }))
-                    .map(|requirement| requirement.service.as_str())
-                    .collect();
-                match missing.is_empty() {
-                    true => outln!("{id} ({name}): ok"),
-                    false => outln!(
-                        "{id} ({name}): cannot run: nothing provides {}",
-                        missing.join(", ")
-                    ),
-                }
-                let meta = &resolved.meta;
-                for line in introduction(
-                    meta.get("version"),
-                    &meta["inject"],
-                    &meta["provides"],
-                    resolved.schema.as_ref(),
-                ) {
-                    outln!("{line}");
-                }
-            }
-            _ => outln!("{id} ({name}): not checked"),
+            _ => {}
         }
+    }
+    for row in rows {
+        print_row(&config, &report, row);
     }
     Ok(())
 }
 
 /// The records of the package `wanted` names: a plugin's row name, its
-/// name, or its reference (`from`, with no version).
-fn package_of<'a>(target: &'a Target, wanted: &str) -> Option<(String, Vec<&'a Installed>)> {
+/// name (refused when plugins of several languages have it), or its
+/// reference (`from`, with no version).
+fn package_of<'a>(
+    target: &'a Target,
+    wanted: &str,
+) -> Result<Option<(String, Vec<&'a Installed>)>, String> {
     let installed = &target.installed;
-    let from = installed
+    let named: Vec<&Installed> = installed
+        .values()
+        .filter(|record| record.name == wanted)
+        .collect();
+    if installed.get(wanted).is_none() && named.len() > 1 {
+        let rows: Vec<String> = named.iter().map(|record| record.row_name()).collect();
+        return Err(format!(
+            "{wanted} is the name of more than one plugin: name it by its row ({})",
+            rows.join(", ")
+        ));
+    }
+    let Some(from) = installed
         .get(wanted)
-        .or_else(|| installed.values().find(|record| record.name == wanted))
+        .or(named.first().copied())
         .or_else(|| installed.values().find(|record| record.from == wanted))
-        .map(|record| record.from.clone())?;
+        .map(|record| record.from.clone())
+    else {
+        return Ok(None);
+    };
     let plugins = installed
         .values()
         .filter(|record| record.from == from)
         .collect();
-    Some((from, plugins))
+    Ok(Some((from, plugins)))
 }
 
 /// `rutis-host remove <plugin or reference> [rutis.json]`.
@@ -461,7 +444,7 @@ pub async fn remove(args: &[String]) -> Result<(), String> {
         _ => return Err("usage: rutis-host remove <plugin or reference> [rutis.json]".into()),
     };
     let mut target = Target::open(file)?;
-    let Some((from, plugins)) = package_of(&target, wanted) else {
+    let Some((from, plugins)) = package_of(&target, wanted)? else {
         return Err(format!(
             "{wanted} was not installed by add: uninstall it with the package manager that installed it, and remove its row"
         ));
@@ -470,7 +453,7 @@ pub async fn remove(args: &[String]) -> Result<(), String> {
     let place = target.place(&plugins[0].language);
     match target
         .installer()
-        .remove(&plugins[0])
+        .remove(&plugins)
         .await
         .map_err(|error| install_error(error, &target.name()))?
     {
@@ -540,18 +523,18 @@ pub async fn upgrade(args: &[String]) -> Result<(), String> {
     let mut packages: Vec<(String, Option<String>)> = Vec::new();
     match wanted {
         Some(wanted) => {
-            let found = package_of(&target, wanted)
-                .map(|(from, _)| (from, None))
-                .or_else(|| {
-                    let at = wanted.rfind('@').filter(|at| *at > 0)?;
-                    let (from, _) = package_of(&target, &wanted[..at])?;
-                    Some((from, Some(wanted[at + 1..].to_owned())))
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "{wanted} was not installed by add: upgrade it with the package manager that installed it"
-                    )
-                })?;
+            let mut found = package_of(&target, wanted)?.map(|(from, _)| (from, None));
+            if found.is_none() {
+                if let Some(at) = wanted.rfind('@').filter(|at| *at > 0) {
+                    found = package_of(&target, &wanted[..at])?
+                        .map(|(from, _)| (from, Some(wanted[at + 1..].to_owned())));
+                }
+            }
+            let found = found.ok_or_else(|| {
+                format!(
+                    "{wanted} was not installed by add: upgrade it with the package manager that installed it"
+                )
+            })?;
             packages.push(found);
         }
         None => {

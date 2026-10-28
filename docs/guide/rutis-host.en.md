@@ -22,12 +22,14 @@ installed @your-name/weather 1.2.0 (node) into /home/me/app
 weather (@your-name/weather): cannot run: nothing provides llm
   version: "1.2.0"
   inject: ["llm"]
-  provides: none declared (it may provide more once it runs)
+  provides: {}
   config: {"type":"object","properties":{"city":{"type":"string","default":"Oslo"}}}
+  llm: add a row that provides it, or import it from a peer (import: ["llm"])
 rutis.json: added row weather, runtimes.node
 installed your-name-llm 0.3.0 (py) into /home/me/app/.venv: plugin llm
 llm (py:llm): ok
   version: "0.3.0"
+  inject: []
   provides: {"llm":{"complete":"async"}}
 rutis.json: added row llm, runtimes.py
 ```
@@ -148,7 +150,7 @@ On errors (on stderr, exit status 1, `rutis.json` unchanged):
 
 What the package manager installed before a failure stays, as when npm or uv are run directly; the error gives the command that uninstalls it.
 
-**Install only plugins you trust.** `add` and `upgrade` run the package manager, which may run the package's install scripts, and import the plugin's code to describe it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review.
+**Install only plugins you trust.** `add` and `upgrade` run the package manager, which may run the package's install scripts, and `add` imports the plugin's code to check it; the same as running `npm install`, `uv pip install` or `go install` directly. rutis adds no sandbox or review.
 
 ### Without add
 
