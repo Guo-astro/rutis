@@ -57,6 +57,7 @@ def given(case):
 class Cases(unittest.TestCase):
     """Each case through `rutis.config.check`."""
 
+    # guarantee: sdk/config-schema (the shared case list)
     def test_every_case(self):
         for case in CASES:
             with self.subTest(case["name"]):
@@ -153,6 +154,7 @@ class TestingTool(unittest.TestCase):
                 got["error"] = error
         return got, stderr.getvalue()
 
+    # guarantee: sdk/config-schema (the shared case list)
     def test_every_case(self):
         for case in CASES:
             with self.subTest(case["name"]):
@@ -234,6 +236,7 @@ class RuntimeRows(background.TestCase):
     """Each case through the runtime's load of a module row: the same code
     as the testing tool, no warnings (the host's loader warns)."""
 
+    # guarantee: sdk/config-schema (the shared case list)
     def test_every_case(self):
         for index, case in enumerate(CASES):
             with self.subTest(case["name"]):
