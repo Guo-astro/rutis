@@ -17,10 +17,10 @@ use rutis::host::{
 };
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{
     settle, Connection, Dispatch, Endpoint, Error, Format, HostDispatch, Reply, Value as RpcValue,
 };
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     protocol, AccessEvent, AccessPointConfig, AccessPointPlugin, AdmissionPlugin, Credential, Dial,
     Identity, SharedToken, StaticIdentity, Transport,
@@ -332,8 +332,7 @@ async fn main() -> Main {
     )
     .unwrap();
 
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let log = Log::default();
     let mut builtins = Scoped::new();
     {

@@ -9,9 +9,9 @@ use std::time::Duration;
 use rutis::host::{BoxFuture, CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::Error;
 use rutis_bridge::session::{Connection, Endpoint, Format, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, protocol, transport_key, Credential, Dial, Failure, Identity, IdentityPlugin,
     LinkConfig, LinkPlugin, LinkState, Peer, Retry, StaticIdentity, Transport,

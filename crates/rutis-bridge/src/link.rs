@@ -462,7 +462,9 @@ impl Link {
         if self.is_revoked() {
             let reason = self.revoked_reason();
             if let Connect::Listen(_) = self.config.connect {
-                closer.rejected(crate::identity::NOT_ACCEPTED);
+                closer.close(crate::channel::Close::Rejected(
+                    crate::identity::NOT_ACCEPTED.into(),
+                ));
             }
             session.close(Error::Transport(reason.clone()));
             operations.detach();
@@ -583,7 +585,7 @@ impl Link {
             protocol: protocol(),
             deliver: Box::new(move |channel| {
                 if let Err(refused) = sender.send(channel) {
-                    refused.0.closer.close("the link stopped");
+                    refused.0.closer.close(crate::channel::Close::Done);
                 }
             }),
         });
@@ -631,13 +633,13 @@ impl Link {
                     // refused as a wrong credential is, the current
                     // session left to the revocation.
                     if self.is_revoked() {
-                        channel.closer.rejected(crate::identity::NOT_ACCEPTED);
+                        channel.closer.close(crate::channel::Close::Rejected(crate::identity::NOT_ACCEPTED.into()));
                         continue;
                     }
                     // A newer connection of the far end takes over: the old
                     // session ends, and its peer is withdrawn, first.
                     if let Some(old) = current.take() {
-                        old.closer.replaced();
+                        old.closer.close(crate::channel::Close::Replaced);
                         old.end("replaced by a new connection").await;
                     }
                     match self.start(channel).await {

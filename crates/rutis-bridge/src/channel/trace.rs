@@ -4,18 +4,15 @@
 
 use std::sync::Arc;
 
-use crate::channel::{Channel, ChannelError, Closer, Receiver, Sender};
+use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 
 /// Where trace lines go.
 pub type Sink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Wrap `channel` so every send, receive and close is reported to `sink`
-/// under the channel's label.
-pub fn trace(channel: Channel, sink: Sink) -> Channel {
-    let label: Arc<str> = match channel.info.label.as_str() {
-        "" => channel.info.transport.into(),
-        label => format!("{} {label}", channel.info.transport).into(),
-    };
+/// under `label`.
+pub fn trace(channel: Channel, label: &str, sink: Sink) -> Channel {
+    let label: Arc<str> = label.into();
     Channel {
         sender: Box::new(Traced {
             inner: channel.sender,
@@ -32,7 +29,6 @@ pub fn trace(channel: Channel, sink: Sink) -> Channel {
             label,
             sink,
         }),
-        info: channel.info,
     }
 }
 
@@ -72,9 +68,14 @@ impl Receiver for Traced<Box<dyn Receiver>> {
 }
 
 impl Closer for Traced<Arc<dyn Closer>> {
-    fn close(&self, reason: &str) {
-        (self.sink)(&format!("{}: closed: {reason}", self.label));
-        self.inner.close(reason);
+    fn close(&self, why: Close) {
+        let why_text = match &why {
+            Close::Done => "done".to_owned(),
+            Close::Replaced => "replaced".to_owned(),
+            Close::Rejected(reason) => format!("rejected: {reason}"),
+        };
+        (self.sink)(&format!("{}: closed: {why_text}", self.label));
+        self.inner.close(why);
     }
 }
 
@@ -97,7 +98,7 @@ mod tests {
     }
     struct Nothing;
     impl Closer for Nothing {
-        fn close(&self, _: &str) {}
+        fn close(&self, _: Close) {}
     }
 
     #[test]
@@ -110,18 +111,14 @@ mod tests {
                 sender: Box::new(Loop(queue.clone())),
                 receiver: Box::new(Loop(queue)),
                 closer: Arc::new(Nothing),
-                info: crate::channel::ChannelInfo {
-                    transport: "memory",
-                    peer: None,
-                    label: "peer mac".into(),
-                },
             },
+            "memory peer mac",
             Arc::new(move |line: &str| record.lock().unwrap().push(line.to_owned())),
         );
         channel.sender.send(b"{\"token\":\"secret\"}").unwrap();
         channel.receiver.recv().unwrap();
         channel.receiver.recv().unwrap();
-        channel.closer.close("done");
+        channel.closer.close(Close::Done);
         let lines = lines.lock().unwrap();
         assert_eq!(
             *lines,

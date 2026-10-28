@@ -24,9 +24,9 @@ use std::sync::Arc;
 use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
 use rutis::host::CtxHost;
 use rutis::Ctx;
+use rutis_bridge::pipe::Processes;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, settle, HostDispatch, Reply, Value as RpcValue};
-use rutis_bridge::transport::local::Processes;
 use rutis_loader::runtime::RuntimeResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
@@ -293,8 +293,8 @@ async fn fixture() -> Fixture {
     // Go: the multilang binary's plugins, rows `go:<plugin>`.
     #[cfg(feature = "go")]
     let go = Arc::new(
-        rutis_loader::runtime::go::GoResolver::new(
-            rutis_loader::runtime::go::GoBinaries::new().file(common::runtimes::go_binary()),
+        rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::go::Go>::new(
+            rutis_loader::runtime::binary::Binaries::new().file(common::runtimes::go_binary()),
         )
         .with_catalog(&catalog)
         .reserve(["node", "py", "bun", "kt"]),
@@ -318,10 +318,11 @@ async fn fixture() -> Fixture {
     // runtime `swift-multilang`.
     #[cfg(all(feature = "swift", target_os = "macos"))]
     let swift = Arc::new(
-        rutis_loader::runtime::swift::SwiftResolver::new(
-            rutis_loader::runtime::swift::SwiftBinaries::new().file(
-                common::runtimes::swift_binary("RutisMultilang", "multilang"),
-            ),
+        rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::swift::Swift>::new(
+            rutis_loader::runtime::binary::Binaries::new().file(common::runtimes::swift_binary(
+                "RutisMultilang",
+                "multilang",
+            )),
         )
         .with_catalog(&catalog)
         .reserve(["node", "py", "bun", "kt"]),
@@ -358,15 +359,21 @@ async fn fixture() -> Fixture {
     // Stops two seconds after its last row is gone.
     #[cfg(feature = "go")]
     root.plugin(
-        rutis_loader::runtime::go::GoRuntimes::new(go, dir.path())
-            .idle(Some(std::time::Duration::from_secs(2))),
+        rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
+            go,
+            dir.path(),
+        )
+        .idle(Some(std::time::Duration::from_secs(2))),
     )
     .await
     .unwrap();
     #[cfg(all(feature = "swift", target_os = "macos"))]
     root.plugin(
-        rutis_loader::runtime::swift::SwiftRuntimes::new(swift, dir.path())
-            .idle(Some(std::time::Duration::from_secs(2))),
+        rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(
+            swift,
+            dir.path(),
+        )
+        .idle(Some(std::time::Duration::from_secs(2))),
     )
     .await
     .unwrap();

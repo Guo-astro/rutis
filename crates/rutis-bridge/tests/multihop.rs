@@ -10,9 +10,9 @@ use std::time::Duration;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     Credential, ExportPlugin, Identity, IdentityPlugin, ImportPlugin, LinkConfig, LinkPlugin,
     Retry, StaticIdentity,

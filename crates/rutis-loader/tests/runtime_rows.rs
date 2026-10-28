@@ -1032,8 +1032,7 @@ async fn a_service_provided_twice_fails_the_later_row() {
 
 /// [`mount`] with a catalog sharing every name, as rutis-host's does.
 async fn mount_by_name(root: &Ctx) -> (Loader, FiberView) {
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let runtime = LocalRuntime::node(node_package(), node_package().join("package.json"))
         .host("probe", json!({ "record": "sync" }));
     let resolver = Arc::new(RuntimeResolver::node(runtime.handle()).with_catalog(&catalog));

@@ -255,8 +255,6 @@ pub enum LoaderChanged {
     Reconciled,
     Edited(Edit),
     Reloaded(String),
-    /// An overlay layer was set or removed.
-    Overlay(String),
     /// A row's plugin disposed itself; the row was disabled in the editable
     /// layer (`error` when that edit failed, e.g. no editable layer).
     SelfDisposed {
@@ -325,6 +323,13 @@ impl Event for PendingEditDropped {
 #[derive(Clone)]
 pub struct Loader {
     inner: Arc<Inner>,
+}
+
+/// The rows the loader follows right now: its follower map's size, for the
+/// tests of the listener's life (`internal::followed_rows`).
+#[doc(hidden)]
+pub fn followed_rows(loader: &Loader) -> usize {
+    loader.inner.followers.followed()
 }
 
 impl Loader {
@@ -400,6 +405,8 @@ struct Inner {
     warned: config_step::Warned,
     /// Where extra config keys are written ([`Loader::on_config_warning`]).
     config_warnings: Mutex<ConfigWarnings>,
+    /// The rows this loader follows with one `FiberStatusChanged` listener.
+    followers: Arc<crate::framework::Followers>,
     state: Mutex<State>,
 }
 
@@ -407,9 +414,6 @@ struct Inner {
 struct State {
     /// The application's layers, as given to `reconcile`.
     layers: Vec<Layer>,
-    /// Runtime layers composed after the application's (`set_overlay`):
-    /// never persisted, kept across `reconcile`, not editable.
-    overlays: Vec<Layer>,
     editable: Option<usize>,
     version: Version,
     pending: Vec<Edit>,
@@ -525,16 +529,7 @@ struct Running {
 }
 
 impl State {
-    /// The application's layers followed by the overlays.
-    fn composed_layers(&self) -> Vec<Layer> {
-        self.layers.iter().chain(&self.overlays).cloned().collect()
-    }
-
     fn layer_name(&self, index: usize) -> Option<&str> {
-        self.layers
-            .iter()
-            .chain(&self.overlays)
-            .nth(index)
-            .map(|l| l.name.as_str())
+        self.layers.get(index).map(|l| l.name.as_str())
     }
 }
