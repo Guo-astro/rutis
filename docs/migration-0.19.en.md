@@ -2,7 +2,7 @@
 
 [中文](migration-0.19.md)
 
-0.19 is for host owners. The incompatible changes are how remote runtimes connect (the first section below) and the host side's tokens; the rest are new options, off by default, whose sections are added as 0.19's changes land.
+0.19 is for host owners. Three changes are incompatible: how remote runtimes connect (the first section below), the host side's tokens, and the platform cleanup (the last section: removed forms are removed outright, not deprecated, with no conversion or hint); the rest are new options, off by default, whose sections are added as 0.19's changes land.
 
 ## Remote runtimes (#696, #698)
 
@@ -138,6 +138,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 | --- | --- |
 | `LocalRuntime::call_limit`, `kill_on_timeout`, `allowed_services`, error code `timeout` | Callers limit their own calls (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on); when a plugin is still stuck after a timeout, the host ends its process with `processes().kill()` and calls `FiberView::restart()` on the fiber `root.plugin(runtime)` returned; which services a plugin may use is the host's own decision |
 | `Loader::set_overlay`, `overlays()`, `LoaderChanged::Overlay` | Removed; to override a row, write it in a layer of your own (the layer list given to `reconcile`) |
+| The error name on the wire `CordisError`, the generated type `CordisErrorThrown` | `Error`, `ErrorThrown` |
 | `ctx.plugin_from(\|cfg\| …)` | Implement `rutis::host::PluginFactory` and call `ctx.plugin_with(factory, config)` |
 
 ### Tools

@@ -4,7 +4,7 @@
 //! words, broken frames closed with their codes, the heartbeat, a newer
 //! controller taking over, TLS on both ends (`RUTIS_CERT` / `RUTIS_KEY`
 //! listening, `RUTIS_CA` dialing), and the addresses refused before
-//! anything is opened. The same rules as Go's runtime (`go/rutis/listen_test.go`,
+//! anything is opened. The same rules as Go's runtime (`go/rutis/internal/runtime/listen_test.go`,
 //! `dial_test.go`), checked from outside, on the binary.
 #![cfg(all(
     feature = "swift",

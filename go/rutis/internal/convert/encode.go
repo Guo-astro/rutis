@@ -64,7 +64,7 @@ func ToPeerArgs(args []any) ([]any, error) {
 	return out, nil
 }
 
-// The SDK's plugin definitions (*rutis.Definition), set by package rutis
+// The SDK's plugin definitions (*rutis.Definition), set by internal/runtime
 // (docs/design-plugin-values-2026-10-25.md §5): PluginType is their type,
 // PluginToPeer the peer value of one (a peer.Plugin, by reference, not
 // data; a *peer.RemotePlugin for one another process handed over), and
@@ -78,9 +78,9 @@ var (
 	PluginServedAs func(definition any, name string) any
 )
 
-// The SDK's services used by name (*rutis.Service), set by package rutis
-// (#687 §四): ServiceType is their type, ObjectFromPeer the *rutis.Service
-// an object of the far end is received as (into `any` or *rutis.Service),
+// The SDK's services used by name (*advanced.Service), set by
+// internal/runtime (#687 §四): ServiceType is their type, ObjectFromPeer the *advanced.Service
+// an object of the far end is received as (into `any` or *advanced.Service),
 // and ServiceToPeer that object again when such a service is handed over
 // (false for a service that is no object).
 var (
@@ -166,7 +166,7 @@ func toPeerValue(rv reflect.Value, levels, hops int) (any, error) {
 		if t == PluginType && PluginToPeer != nil {
 			return PluginToPeer(rv.Interface()), nil
 		}
-		// A *rutis.Service of an object of the far end is that object.
+		// A *advanced.Service of an object of the far end is that object.
 		if t == ServiceType && ServiceToPeer != nil {
 			if object, ok := ServiceToPeer(rv.Interface()); ok {
 				return object, nil

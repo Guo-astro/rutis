@@ -2,7 +2,7 @@
 
 [English](migration-0.19.en.md)
 
-0.19 面向宿主持有者。不兼容的是远程运行时的连接（下面第一节）与宿主一侧的 token；其余是默认关闭的新选项，各节随 0.19 的改动补齐。
+0.19 面向宿主持有者。不兼容的有三处：远程运行时的连接（下面第一节）、宿主一侧的 token，与平台清理（最后一节：删掉的写法直接删，不标弃用，不做转换或提示）；其余是默认关闭的新选项，各节随 0.19 的改动补齐。
 
 ## 远程运行时（#696、#698）
 
@@ -138,6 +138,7 @@ Kotlin 另有两点：
 | --- | --- |
 | `LocalRuntime::call_limit`、`kill_on_timeout`、`allowed_services`，错误码 `timeout` | 调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）；超时后插件仍卡住时，宿主用 `processes().kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `FiberView::restart()`；能用哪些服务由宿主自己决定 |
 | `Loader::set_overlay`、`overlays()`、`LoaderChanged::Overlay` | 删；要覆盖一行就在自己的层里写（`reconcile` 的层列表） |
+| 线上错误名 `CordisError`、生成类型 `CordisErrorThrown` | `Error`、`ErrorThrown` |
 | `ctx.plugin_from(\|cfg\| …)` | 实现 `rutis::host::PluginFactory`，`ctx.plugin_with(factory, config)` |
 
 ### 工具

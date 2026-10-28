@@ -18,7 +18,7 @@ import (
 // schema as its Schema.
 // guarantee: sdk/config-schema (the shared case list)
 func TestEveryConfigCaseBeforeApply(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "specs", "config-schema", "cases.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "specs", "config-schema", "cases.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
