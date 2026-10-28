@@ -248,7 +248,7 @@ Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `ruti
 
 ## Plugins in one runtime share its process
 
-The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance.
+The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance. A host can put a plugin in a process of its own, limit the time of calls into it and the services it may use: the plugin gets ordinary errors, `timeout` for a call over the limit and `unavailable` for a service the host does not let it use (see [Build a host open to plugins](open-host.en.md#3-keep-plugins-in-check)).
 
 When a service method holds the runtime for 5 seconds in one go (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
 
