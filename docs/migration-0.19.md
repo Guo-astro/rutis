@@ -75,5 +75,5 @@
 ### Rust 嵌入
 
 - `rutis_host::host::Embedding` 新增字段 `transports`。用结构体字面量写全所有字段的代码要加上 `transports: Vec::new()`，或改用 `..Embedding::default()`。
-- `rutis_host::control::serve` 的第二个参数从 `Loader` 改为 `Report`（一个返回状态文字的函数）；用 `Host::status_report()` 得到它。
+- `rutis_host::control::serve` 在 `Loader` 之后多了一个参数 `Report`（一个返回状态文字的函数，`status` 用它回答）；用 `Host::status_report()` 得到它。
 - 运行时一侧、会话协议与 rutis、rutis-loader、rutis-bridge 的 Rust API 都不变。

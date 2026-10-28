@@ -278,6 +278,17 @@ plugin = define_plugin(apply, provides={"llm": FakeLlm})
 
 只重新导入插件模块本身；它导入的其他模块改了，要重启 `rutis-host dev`。
 
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ uv run rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+
 ### 调试
 
 `--debug` 让 Python 运行时读这个终端：插件里的 `breakpoint()` 停在 pdb，在终端里用 `w` 看调用栈、`p <变量>` 看变量、`c` 继续。

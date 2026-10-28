@@ -342,6 +342,17 @@ Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找
 
 这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
 
+### 调用一个方法
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+
 ### 调试
 
 `--debug` 不优化地构建（`-gcflags=all=-N -l`），在 [Delve](https://github.com/go-delve/delve) 下启动运行时：Delve 监听 `127.0.0.1:2345`，程序照常运行，连上后再下断点。先装 Delve：

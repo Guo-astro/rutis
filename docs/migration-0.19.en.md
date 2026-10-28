@@ -75,5 +75,5 @@ Before, one remote runtime took two places: a `runtimes.remote` entry and a `rut
 ### Rust embeddings
 
 - `rutis_host::host::Embedding` has a new field, `transports`. Code that writes every field in a struct literal adds `transports: Vec::new()`, or uses `..Embedding::default()`.
-- `rutis_host::control::serve` takes a `Report` (a function returning the status text) instead of a `Loader` as its second argument; `Host::status_report()` gives it.
+- `rutis_host::control::serve` takes one more argument after the `Loader`: a `Report` (a function returning the status text, which `status` is answered with); `Host::status_report()` gives it.
 - The runtime side, the session protocol, and the Rust APIs of rutis, rutis-loader and rutis-bridge do not change.

@@ -11,6 +11,8 @@ import (
 )
 
 // Schemer is a configuration type that gives its own JSON Schema.
+//
+// Deprecated: moved in 0.19: use advanced.Schemer.
 type Schemer interface {
 	JSONSchema() map[string]any
 }
