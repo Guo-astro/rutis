@@ -30,9 +30,9 @@ final class LocalListener: EventEntry, @unchecked Sendable {
         self.global = global
     }
 
-    var info: Rutis.Listener {
+    var info: Rutis.Advanced.Listener {
         let runtimeName = runtime.flatMap { runtime in runtime.lock.withLock { runtime.runtimeName } }
-        return Rutis.Listener(name: name, plugin: row.definition.name, row: row.name, runtime: runtimeName, scope: row.scope,
+        return Rutis.Advanced.Listener(name: name, plugin: row.definition.name, row: row.name, runtime: runtimeName, scope: row.scope,
                               global: global)
     }
 
@@ -202,14 +202,14 @@ extension Runtime {
     }
 
     /// The fast path's snapshot (§5.1); `lock` is held. Delivery is by name.
-    func snapshot(_ row: Row, _ name: String, keep: ((Rutis.Listener) async throws -> Bool)?) -> Dispatch {
+    func snapshot(_ row: Row, _ name: String, keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) -> Dispatch {
         Dispatch(name: name, entries: listeners[name] ?? [], keep: keep.map(protectedKeep))
     }
 
-    func protectedKeep(_ keep: @escaping (Rutis.Listener) async throws -> Bool) -> (Rutis.Listener) async throws -> Bool { keep }
+    func protectedKeep(_ keep: @escaping (Rutis.Advanced.Listener) async throws -> Bool) -> (Rutis.Advanced.Listener) async throws -> Bool { keep }
 
     /// An `emit` (§5.4): returns at once.
-    func emitNow(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?) throws -> Value {
+    func emitNow(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) throws -> Value {
         try Events.checkEmit(name)
         lock.lock()
         guard rows[row.key] === row else {
@@ -254,7 +254,7 @@ extension Runtime {
 
     /// A queued `emit`, its turn come: through the host or started here,
     /// after its filter.
-    private func emitInTurn(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?) async {
+    private func emitInTurn(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) async {
         lock.lock()
         // Its row gone meanwhile: nothing to emit from.
         guard rows[row.key] === row else {
@@ -283,7 +283,7 @@ extension Runtime {
     }
 
     /// A dispatch other than `emit`.
-    func dispatch(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?,
+    func dispatch(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                   terminal: (([Value]) async throws -> Value)?) async throws -> Value
     {
         try Events.checkEmit(name)
@@ -309,7 +309,7 @@ extension Runtime {
     }
 
     /// The `events.dispatch` record (§5.3).
-    private func record(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?,
+    private func record(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                         terminal: (([Value]) async throws -> Value)?) -> Value
     {
         var fields: [(String, Value)] = [("row", .data(.string(row.key))), ("name", .data(.string(name))),
@@ -325,7 +325,7 @@ extension Runtime {
     /// Sends an `emit` through the host; `lock` is held, and released. Its
     /// later emits of `name` follow it through the host until it is
     /// answered (§5.5). The emitter neither waits for nor cancels it.
-    private func emitViaHost(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?) throws {
+    private func emitViaHost(_ row: Row, _ name: String, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?) throws {
         guard let session else {
             lock.unlock()
             return
@@ -375,7 +375,7 @@ extension Runtime {
     /// Sends `events.dispatch`; `lock` is held, and released. The frame is
     /// queued behind this process's earlier frames, such as the events.on
     /// of a listener registered before (§4.4).
-    private func dispatchViaHost(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Listener) async throws -> Bool)?,
+    private func dispatchViaHost(_ row: Row, _ name: String, _ mode: Mode, _ args: [Value], keep: ((Rutis.Advanced.Listener) async throws -> Bool)?,
                                  terminal: (([Value]) async throws -> Value)?) async throws -> Value
     {
         guard let session else {
@@ -401,9 +401,9 @@ extension Runtime {
 
     /// The function the host calls with the descriptors of a dispatch's
     /// candidates, answering one boolean each (§6).
-    private func selector(_ keep: @escaping (Rutis.Listener) async throws -> Bool) -> SessionFunction {
+    private func selector(_ keep: @escaping (Rutis.Advanced.Listener) async throws -> Bool) -> SessionFunction {
         SessionFunction { args in
-            let descriptors = try Rutis.Arguments(args).decode(0, as: [Rutis.Listener]?.self) ?? []
+            let descriptors = try Rutis._Generated.Arguments(args).decode(0, as: [Rutis.Advanced.Listener]?.self) ?? []
             var answers: [JSON] = []
             for descriptor in descriptors { answers.append(.bool(try await keep(descriptor))) }
             return .data(.array(answers))

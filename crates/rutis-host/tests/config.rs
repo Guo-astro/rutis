@@ -361,7 +361,7 @@ fn unknown_fields_are_refused() {
         ),
         (
             r#"{ "runtimes": { "remote": [{ "name": "gpu", "lang": "python" }] } }"#,
-            "<dir>/rutis.json: unknown field `lang`, expected one of `name`, `language`, `listen`, `instances` at line 1 column 50",
+            "<dir>/rutis.json: unknown field `lang`, expected one of `name`, `language`, `dial`, `listen`, `instances`, `transport` at line 1 column 50",
         ),
         (
             r#"{ "listen": [{ "name": "p", "address": "127.0.0.1:0", "tls": true }] }"#,

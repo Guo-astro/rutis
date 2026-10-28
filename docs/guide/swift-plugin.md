@@ -243,6 +243,19 @@ rutis-host dev
 
 `dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建先打印 `weather: building`，完成后打印 `weather: built in 12.3s`：第一次要编译依赖（包括 SDK 的宏），可能要几分钟。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）；它们的文件变化时只重新加载这些行，不重新构建，Swift 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
 
+### 调用一个方法
+
+`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: weather (weather), llm (llm)`。
+
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
+```
+
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+
 ## 5. 系统权限
 
 程序读日历、通讯录等之前，macOS 会询问用户，并为这个程序记住答复。对 Swift 插件，这个程序是**插件二进制本身**：运行时启动时让自己为自己的请求负责（不论是谁启动它：`rutis-host`、终端、进程管理器），所以提示里是这个二进制的名字，用户的授权只给它，不给宿主或终端。同一个二进制里的插件共享它的授权；需要不同授权的插件放进不同的二进制。

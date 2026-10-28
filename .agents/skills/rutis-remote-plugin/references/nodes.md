@@ -99,19 +99,43 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
 ```json
 {
   "id": "main",
-  "runtimes": { "remote": [{ "name": "gpu", "language": "python" }] },
+  "runtimes": { "remote": [{ "name": "gpu", "language": "python", "dial": "wss://gpu.example.com:7443/rutis" }] },
   "rows": [
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com:7443/rutis", "runtime": "gpu" } },
     { "id": "embedder", "name": "gpu:embedder" }
   ]
 }
 ```
 
+One `runtimes.remote` entry describes a remote runtime whole. Who connects, and whether there is one runtime or many, are each decided by one field:
+
+| Written | Meaning |
+| --- | --- |
+| `dial: <address>` | One runtime, which rutis dials; its `--id` is the runtime's name |
+| `listen: <listener>` | One runtime, which connects in; its `--id` is the runtime's name |
+| `listen` + `instances: <group>` | Many, each connection an instance (see [Runtimes that connect in](#runtimes-that-connect-in)) |
+| none of them | No connection of its own: a node row with `runtime`, or the program embedding the host, provides its session |
+
+`dial` and `listen` cannot both be set, nor `dial` and `instances` (rutis can dial only one runtime). Tokens are as before: `RUTIS_TOKEN_<NAME>`, else `RUTIS_TOKEN`. The optional `transport` picks the transport, `websocket` by default; a host's own way of connecting (a relay, QUIC, …) implements a `Transport`, which the program embedding rutis-host mounts, and `transport` names it ([rutis-host](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#remote-runtimes)).
+
+The form before 0.19 — `runtimes.remote` with only `name` and `language`, plus a `rutis-bridge/peer` row with `"runtime": "gpu"` — still works (see [Migrating to 0.19](https://github.com/arcships/rutis/blob/main/docs/migration-0.19.en.md)).
+
+`run` prints how the connections change, prefixed `runtime <name>`:
+
+```text
+runtime gpu: link connected
+runtime gpu: link down (gpu.example.com:7443: Connection refused); retrying in 2.1s
+runtime worker: connected worker-1
+runtime worker: disconnected worker-1 (connection lost)
+runtime worker: refused (the worker runtime lacks rows.v2 and hosts: …)
+```
+
+The `connections:` part of `rutis-host status` gives their state now. When the remote side does not contain a row's plugin, only that row fails (`runtime gpu: this connection does not contain plugin embedder`); the other rows are not affected.
+
 A remote Python runtime row is named `<runtime-name>:<module>`; the module is resolved on the remote machine. A Node runtime can also run remotely: in the Node project on that machine, run `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <name> --peer <controller> ./package.json` (plugins are resolved from that `package.json`) and set `language` to `node`; likewise a Bun runtime: in the Bun project on that machine, run `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <name> --peer <controller> .` (plugins are resolved from that directory, rows named `<runtime-name>:<module>`) and set `language` to `bun`. A remote runtime serves one controller at a time. When its controller disconnects, it unloads all plugins running for that controller. Every remote runtime (Python, Node, Bun, a Go or Swift binary) prints one line on stderr once it listens, with the address it actually bound: `rutis: listening on <address>`. With port 0 (`listen:ws://127.0.0.1:0/rutis`) the system picks a free port, and a script or test reads it from this line; do not pick a free port first and pass it on, as another process can take it before the runtime binds it. The Python runtime also prints one line `rutis: session ended (<reason>); waiting for a controller` when a session ends (the reason such as `heartbeat timeout`, `connection lost`, `closed (1001): …`), and `rutis: session ended (replaced by a new connection)` when a new connection takes over.
 
 ### Runtimes that connect in
 
-A runtime can also connect to rutis instead: use this when the remote machines are behind NAT, change address, or come and go in numbers (devices, workers that scale). On the rutis side, give the `runtimes.remote` entry `listen` (the listener they connect to) and `instances` (an `instanced` group), and write no node row:
+A runtime can also connect to rutis instead: use this when the remote machines are behind NAT, change address, or come and go in numbers (devices, workers that scale). For one runtime, give the `runtimes.remote` entry only `listen` (the listener it connects to), and give the runtime the runtime's name as its `--id`; when their number changes, add `instances` (an `instanced` group). Either way, write no node row:
 
 ```json
 {

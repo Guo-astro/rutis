@@ -34,7 +34,7 @@ pub(crate) mod python;
 mod swift;
 
 pub use binary::{BinaryHost, DevBuild};
-pub use go::GoDev;
+pub use go::{fakes as go_fakes, GoDev};
 pub use swift::SwiftDev;
 
 /// Every local language, in the order messages list them (`new --lang`)

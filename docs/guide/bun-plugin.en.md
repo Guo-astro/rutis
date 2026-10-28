@@ -78,6 +78,8 @@ test('greets through events', async () => {
 })
 ```
 
+To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope, as in [TypeScript plugins: testing](typescript-plugin.en.md#3-test): the plugin's emissions and the test's own reach it, and it returns the function that stops it.
+
 ### Objects with methods
 
 A class instance, or a plain object with function-valued properties, goes to another language by reference: the far end gets a proxy whose calls reach the original object here. An object another process passes here is a proxy too:
@@ -118,6 +120,19 @@ A host's `rutis.json`:
 - `bun:<npm name or subpath>` resolves from the `node_modules` of `project`; `bun:./path` is relative to `project`. The row `bun:sqlite` names the project's module `sqlite`, not Bun's built-in `bun:sqlite`.
 - Fields of `runtimes.bun`: `project` (default `.`), `runtime` (where `@arcships/rutis-bun` is; by default the project's), `program` (the Bun executable; by default `bun` on `PATH`).
 - It can be configured together with `runtimes.node` and `runtimes.py`; services are shared across runtimes by name.
+
+### Calling a method
+
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: greeter (greeter)`.
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ bunx --bun rutis-host call greeter.hello '"Ada"' '"en"'
+"Hello, Ada!"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ### Debugging
 

@@ -119,6 +119,13 @@ impl Connection {
             Ok(target) => target,
             Err(error) => return self.respond(id, Err(import.gone(error))),
         };
+        // A function of a runtime the host limits, or the future such a
+        // call returned: within the host's limit (`limits`).
+        let deadline = match &call {
+            Relayed::Call(None, _) => import.relayed_deadline(&target, true),
+            Relayed::Await => import.relayed_deadline(&target, false),
+            _ => None,
+        };
         let operation = match call {
             Relayed::Call(method, args) => Operation::Call(import.id, method, args),
             Relayed::Get(property) => Operation::Get(import.id, property),
@@ -143,7 +150,7 @@ impl Connection {
             );
             let result = {
                 let _path = PathGuard::enter(forwarded);
-                target.request_sync(operation)
+                target.request_sync(operation, deadline.as_ref())
             };
             self.respond(id, result.map_err(|error| import.gone(error)));
             drop(flight);
@@ -169,7 +176,13 @@ impl Connection {
         object.executor.handle.spawn(async move {
             tokio::select! {
                 // Dropping the forwarded request cancels it on the target.
-                result = with_path(forwarded, target.request_async(operation)) => {
+                result = with_path(forwarded, async {
+                    let call = target.request_async(operation);
+                    match &deadline {
+                        Some(deadline) => deadline.bound(call).await,
+                        None => call.await,
+                    }
+                }) => {
                     peer.finish_await(id, result.map_err(|error| import.gone(error)))
                 }
                 _ = cancelled => {},

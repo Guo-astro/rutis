@@ -57,6 +57,7 @@ class Loaded(object)(plugin: sdk.Plugin, strict: bool, bus: Bus, row: str, scope
     def bail(self, name: str, *args: Any) -> Any
     def filter(self, predicate: Callable[[dict], Any]) -> Emitter
     property reported: list[Reported]
+    def on(self, name: str, listener: Callable, *, prepend: bool = False, global_: bool = False) -> Callable[[], None]
     def service(self, name: str) -> Any
     def methods(self, name: str) -> dict
     def provided(self) -> list[str]

@@ -510,6 +510,19 @@ let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), 
     .stdout(Stdio::Null);
 ```
 
+### Local runtime options
+
+For keeping third-party plugins in check, all off by default; how to use them is in [Build a host open to plugins: keep plugins in check](open-host.en.md#3-keep-plugins-in-check):
+
+| `LocalRuntime` method | What it does |
+| --- | --- |
+| `.call_limit(limit)` | A call into the runtime's plugin code (by name, of a service its rows provide, or of a function it handed over) over the limit is cancelled, and its caller gets an error with code `timeout` (`data`: `{runtime, limit, service?, method?}`, `limit` in milliseconds). Calls between plugins of the same runtime are not limited |
+| `.kill_on_timeout()` | With `call_limit`: a call over the limit also ends the runtime's process, whose state is `down (ended by the host: …)`; restart it with `restart()` on the runtime's fiber |
+| `.allowed_services([..])` | Its plugins may use only these of the services from outside the runtime; a row whose `inject` holds another fails to start (code `unavailable`). What rows of the same runtime provide each other is not limited |
+| `.greeting(limit)` | How long the process may take to greet once started, 30 s by default; `Duration::MAX` for no limit (a debugger stopped at the first line) |
+
+A process per plugin: a `named` runtime per plugin, its rows through `RuntimeResolver::modules`, named `<runtime name>:<npm name or file>` (Node and Python alike).
+
 ### Go runtimes
 
 Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis-loader`). `GoResolver` reads binaries' manifests (`<binary> --rutis-manifest`) and routes `go:<plugin>` to the binary that has it; `GoRuntimes` starts a binary's runtime when a row uses it and stops it once idle:
