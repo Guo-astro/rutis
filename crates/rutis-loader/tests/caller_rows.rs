@@ -289,7 +289,10 @@ async fn python_rows_are_callers() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_rows_are_callers() {
-    use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimeState, GoRuntimes};
+    use rutis_loader::runtime::binary::{
+        Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes,
+    };
+    use rutis_loader::runtime::go::Go;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -297,20 +300,20 @@ async fn go_rows_are_callers() {
     let mut resolver = None;
     let (root, loader) = loader(&ledger, |_, catalog| {
         let go = Arc::new(
-            GoResolver::new(GoBinaries::new().file(common::runtimes::go_binary()))
+            BinaryResolver::<Go>::new(Binaries::new().file(common::runtimes::go_binary()))
                 .with_catalog(catalog),
         );
         resolver = Some(go.clone());
         Chain::new().with_shared(go)
     })
     .await;
-    let runtimes = GoRuntimes::new(resolver.unwrap(), dir.path()).idle(None);
+    let runtimes = BinaryRuntimes::<Go>::new(resolver.unwrap(), dir.path()).idle(None);
     let go = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     rows_are_callers(&root, &loader, &ledger, "go:go_registrant", || {
         go.runtimes()
             .iter()
-            .any(|runtime| runtime.state == GoRuntimeState::Running)
+            .any(|runtime| runtime.state == BinaryRuntimeState::Running)
     })
     .await;
 }
@@ -319,9 +322,10 @@ async fn go_rows_are_callers() {
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_rows_are_callers() {
-    use rutis_loader::runtime::swift::{
-        SwiftBinaries, SwiftResolver, SwiftRuntimeState, SwiftRuntimes,
+    use rutis_loader::runtime::binary::{
+        Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes,
     };
+    use rutis_loader::runtime::swift::Swift;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -329,7 +333,7 @@ async fn swift_rows_are_callers() {
     let mut resolver = None;
     let (root, loader) = loader(&ledger, |_, catalog| {
         let swift = Arc::new(
-            SwiftResolver::new(SwiftBinaries::new().file(common::runtimes::swift_binary(
+            BinaryResolver::<Swift>::new(Binaries::new().file(common::runtimes::swift_binary(
                 "RutisMultilang",
                 "multilang",
             )))
@@ -339,14 +343,14 @@ async fn swift_rows_are_callers() {
         Chain::new().with_shared(swift)
     })
     .await;
-    let runtimes = SwiftRuntimes::new(resolver.unwrap(), dir.path()).idle(None);
+    let runtimes = BinaryRuntimes::<Swift>::new(resolver.unwrap(), dir.path()).idle(None);
     let swift = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     rows_are_callers(&root, &loader, &ledger, "swift:swift_registrant", || {
         swift
             .runtimes()
             .iter()
-            .any(|runtime| runtime.state == SwiftRuntimeState::Running)
+            .any(|runtime| runtime.state == BinaryRuntimeState::Running)
     })
     .await;
 }

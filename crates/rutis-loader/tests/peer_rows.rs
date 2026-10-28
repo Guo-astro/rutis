@@ -227,7 +227,13 @@ async fn rows_wait_for_the_host_then_run_there_once() {
         "{:?}",
         fibers.map(|fiber| nodes.transitions.of(fiber))
     );
-    let schema = nodes.loader.schema_of("peer:mac/greeter").await.unwrap();
+    let schema = nodes
+        .loader
+        .resolve("peer:mac/greeter")
+        .await
+        .unwrap()
+        .schema
+        .clone();
     assert_eq!(schema.unwrap()["properties"]["text"]["type"], "string");
 
     let missing = eventually(
