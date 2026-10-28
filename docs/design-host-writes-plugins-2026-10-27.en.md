@@ -2,11 +2,11 @@
 
 [English](design-host-writes-plugins-2026-10-27.en.md) · [中文](design-host-writes-plugins-2026-10-27.md)
 
-Status: final, not implemented. Date: 2026-10-27. Base: `main` `103c0d22`. Scheduled: 0.19 (design only); implementation after 0.19.
-Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)). Replaces the [#505](https://github.com/arcships/rutis/pull/505) draft.
+Status: final, not implemented. Date: 2026-10-27; revised 2026-10-28 against [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) (#811) and [0.19 platform cleanup](design-platform-cleanup-2026-10-28.en.md) (#813): implemented within 0.19 in three PRs; the removed `share_by_name` / `share_registered_only`, #683's `allowed_services`, `run --allow-call` and the embedding `Installer` are gone from it; writing `rutis.json` back reuses #805's writer; `status()` follows the 0.19 snapshot; "What developers see" covers every role and error. Base: `main` `212ac7ce`. Scheduled: 0.19.
+Issue: [#185](https://github.com/arcships/rutis/issues/185) (including the merged [#693](https://github.com/arcships/rutis/issues/693)); implementation tracked in [#771](https://github.com/arcships/rutis/issues/771) rows H1–H4. Replaces the [#505](https://github.com/arcships/rutis/pull/505) draft.
 Relation to 0.18: state is [0.18 diagnostics](design-diagnostics-2026-10-26.en.md) §5's `Loader::status()`, error text follows its §4; no new structure.
 
-Out of scope: installing from registries (#691's `rutis-host add` and embedding `Installer`, the host's business); the other `Loader` methods such as `update`, `set_disabled`, `move_to`, `check` (§3, S1 does not use them); any permission layer (a host that wants limits uses #683's `allowed_services`); an agent's tools, prompts or approvals (the agent product's business); a row reloading or removing itself (it would wait for its own call in progress; S1 does not do it); S1 on Windows (#670's `call` is not on Windows).
+Out of scope: installing from registries (#691's `rutis-host add`, inside rutis-host); the other `Loader` methods such as `update`, `set_disabled`, `move_to`, `check` (§3, S1 does not use them); any permission or limit (which plugin may use which service is the business's allocation, not the platform's; see #813 §5.5); an agent's tools, prompts or approvals (the agent product's business); a row reloading or removing itself (it would wait for its own call in progress; S1 does not do it); an editable layer for `rutis-host dev` (§5); S1 on Windows (#670's `call` is not on Windows).
 
 ## 1. What should work, and where it is stuck
 
@@ -17,132 +17,181 @@ The scenario: the host has a Python plugin (an agent, say). It writes a new plug
 Today (`crates/rutis-loader/src/loader/`):
 
 - `LoaderPlugin::apply` (`plugins.rs`) already does `ctx.provide(self.loader.clone())`. A **Rust plugin** gets the `Loader` from its ctx and manages plugins with `create`, `update`, `set_disabled`, `remove`, `reload`, `entries`, `get`, `check` (`api.rs`, `check.rs`).
-- Edits are all or nothing (`commit` in `commit.rs`): rewrite the editable layer → dry run (resolves and imports the new module) → reconcile; if rows newly fail, the previous layer is restored, reconciled again, and the error returned. Changes are stored through `Persist`.
-- `reload(id)` resolves the row's module again, dry-runs and swaps it in; on failure the old module stays and the old version keeps serving.
-- `check(&layers)` checks a candidate configuration without running anything (each row resolves and passes the dry run, every dependency has a provider, no dependency cycle, no duplicate provider).
+- Edits are all or nothing (`commit` in `commit.rs`): rewrite the editable layer → dry run (resolves and imports the new module) → reconcile; if rows newly fail, the previous layer is restored, reconciled again, and the error returned. Changes are stored through `Persist`; when storing finds the file changed by someone else (another version), it reads the file's rows back, reconciles, and redoes the edit (`persist_queue`).
+- `reload(id)`: resolves the row's module again, dry-runs it and puts it in place; on failure the old module stays and the old version keeps serving.
 
 Two things are missing:
 
-1. `Loader` is provided only by its Rust type, **not by name**, so plugins of other languages cannot reach it.
-2. **rutis-host has no editable layer**: it hands `rutis.json` to the loader with `reconcile(layers, None)` (`crates/rutis-host/src/host.rs`), so `create` / `remove` in rutis-host answer `no editable layer`.
+1. `Loader` is provided only by Rust type, **not by name**, so plugins of other languages cannot reach it.
+2. **rutis-host has no editable layer**: it hands `rutis.json` to the loader with `reconcile(layers, None)` (`crates/rutis-host/src/host.rs`), so `create` / `remove` inside rutis-host get `no editable layer`.
 
 ## 2. How Cordis does it
 
-Cordis 4's loader (dsh ships `@deepseek-ai/cordis-plugin-loader`) provides itself as the service `loader` (`ctx.reflect.provide('loader', …)`). A plugin writes `inject: ['loader']` and uses `ctx.loader.create(options, parent, position)`, `ctx.loader.update(id, options, parent?, position?)`, `ctx.loader.remove(id)` (`config/tree.ts`). Each change is written back to the config file (`tree.write()`). There is no permission layer: any plugin may use it. Reloading code is another plugin's job (HMR), not the loader's.
+The Cordis 4 loader (`@deepseek-ai/cordis-plugin-loader`, shipped with dsh) provides itself as the service `loader` (`ctx.reflect.provide('loader', …)`). A plugin writes `inject: ['loader']` and then uses `ctx.loader.create(options, parent, position)`, `ctx.loader.update(id, options, parent?, position?)`, `ctx.loader.remove(id)` (`config/tree.ts`). Every change is written back to the config file (`tree.write()`). There is no permission layer: any plugin may use it. Reloading code is another plugin's job (HMR), not the loader's.
 
-rutis does the same: the same name, the same method shapes, usable by anyone by default; plus one `reload`, because in rutis code reloading already lives on the loader (`dev` uses it).
+rutis does the same: the same name, the same method shapes, usable by anyone; with one extra method, `reload`, because rutis already reloads code in the loader (`dev` uses it). This extends through plugins: `loader` is an ordinary service `LoaderPlugin` provides, not a dedicated entry in the host or the kernel.
 
 ## 3. Decisions
 
 | # | Decision |
 | --- | --- |
-| L1 | `LoaderPlugin` also provides a service named `loader`, by the path that exists since 0.17: a type marked `#[rutis::service(name = "loader")]`, exposed by name automatically when `ctx.provide`d. No new channel |
-| L2 | Only the 4 methods S1 uses, named and shaped after Cordis's `ctx.loader` (table below) |
-| L3 | Any plugin may `inject: ["loader"]` by default, as in Cordis; a host that wants limits uses #683's `allowed_services`. No separate permissions |
-| L4 | Checks and swaps use only the loader's existing behaviour (§5); the only addition is rutis-host's editable layer |
-| L5 | A plugin in a local directory loads by naming it in the row; no installation. Installing from registries is #691's and stays out of the `loader` service |
+| L1 | `LoaderPlugin` also provides a service `loader` by name, along the path that exists since 0.17: a type marked `#[rutis::service(name = "loader")]` is exposed automatically when `ctx.provide`d. No separate channel |
+| L2 | Only the 4 methods S1 needs, with names and arguments close to Cordis's `ctx.loader` (table below) |
+| L3 | Any plugin may `inject: ["loader"]`, as in Cordis. The platform adds no permission or limit: a host that does not want some plugin to manage plugins does not give it the row, or does not put it in its configuration |
+| L4 | Checking and replacing use only what the loader already does (§5); the only addition is rutis-host's editable layer |
+| L5 | A plugin in a local directory loads by writing it in the row name, without installing; installing from registries is rutis-host's `add` (#691) and not part of the `loader` service |
 
 ### Methods
 
 | `loader` method | Arguments | Result | Rust `Loader` | Cordis `ctx.loader` |
 | --- | --- | --- | --- | --- |
 | `create(options, parent?, position?)` | `options`: `{id?, name, config?, disabled?, inject?}`, written as a row of `rutis.json` | row id | `create(NewEntry, parent, position)` | `create(options, parent, position)` |
-| `reload(id)` | row id | none | `reload(id)` | none: Cordis reloads code in its HMR plugin; rutis does it on the loader |
+| `reload(id)` | row id | none | `reload(id)` | none: Cordis reloads code in its HMR plugin; rutis in the loader |
 | `remove(id)` | row id | none | `remove(id)` | `remove(id)` |
-| `status()` | none | 0.18's snapshot: rows with state and reason, services and providers, runtimes, calls in progress | `status()` (0.18) | no method (Cordis plugins read the loader's entry objects directly); objects do not cross processes, so a snapshot |
+| `status()` | none | the state snapshot `rutis-host status` reads: rows with state and reason, services and providers, calls in progress (fields as the 0.19 snapshot has them, after #813 CL21 and #811 S4) | `status()` | no method (Cordis plugins read the loader's entry objects directly); objects do not cross processes, so a snapshot |
 
-- Failures throw: the message is the text rutis prints for people (0.18 §4: which row, why, file and line), and `data` is `{row}`. No new error code.
-- `update`, `set_disabled`, `move_to`, `set_inject`, `entries`, `get`, `check` stay Rust-only; they are added the same way when someone needs them (Cordis's `update` handles both config and moving; follow it then).
+- A failure throws an error whose message is the text rutis prints for people (0.18 §4: which row, why, file and line) and whose `data` is `{row}`. No new error code. Its name is the wire name `Error` after #813 CL5 (in Python a `rutis.RemoteError` whose `name` is `"Error"`).
+- `update`, `set_disabled`, `move_to`, `set_inject`, `entries`, `get` and `check` stay Rust-only; when something needs them they are added the same way (Cordis's `update` handles both config and moving; follow it then).
 
-## 4. How it is provided across languages
+## 4. How it crosses languages
 
-- rutis-loader adds a type `LoaderService` (wrapping a `Loader`), marked `#[rutis::service(name = "loader")]`, with the table's 4 methods as `async fn`s taking and returning serde types. `LoaderPlugin::apply` provides it next to the existing `ctx.provide(self.loader.clone())`. Under the 0.17 rule ([Rust service exposure](design-rust-service-exposure-2026-10-21.en.md)), a marked type is exposed by name when provided, so plugins in Node, Bun, Python, Go, Swift and Kotlin can `inject` it; Rust plugins keep taking `Loader` directly.
-- Why a separate type: `Loader`'s existing methods of the same names (`create(NewEntry, …)`) take Rust types that other languages cannot send, and the macro cannot rename methods, so a thin wrapper type it is.
-- It is visible where the host shares services by name (the default).
+- rutis-loader adds a type `LoaderService` (wrapping `Loader`), marked `#[rutis::service(name = "loader")]`, whose methods are the 4 above as `async fn` with serde arguments and results. `LoaderPlugin::apply` adds `ctx.provide(LoaderService(..))` next to the existing `ctx.provide(self.loader.clone())`. Under the 0.17 rule ([Rust services exposed automatically](design-rust-service-exposure-2026-10-21.en.md)) a marked type is exposed by name when provided, so Node, Bun, Python, Go, Swift and Kotlin plugins can `inject` it; Rust plugins keep taking `Loader` directly.
+- Why a separate type: `Loader`'s existing methods of the same names (`create(NewEntry, …)`) take Rust types that other languages cannot pass, and the macro does not rename methods, so a thin wrapper type.
+- From 0.19 services are always shared by name (#813 CL17 removes `share_by_name` / `share_registered_only`), so every host using `LoaderPlugin` exposes `loader`; there is no switch to turn it off. rutis-dsh's production code does not use `LoaderPlugin` (only the test `profile_loader.rs` does), and its Cordis's own `loader` is unaffected.
+- When another row also provides a service named `loader`, the kernel's existing rule for duplicate names applies (the later provider fails); no extra check or dedicated error (§7 "People assembling plugins with rutis-host").
+- Connection plugins (#811 §5.3) load through this service too: a TS / Python connection plugin an agent writes is added with `create`, and `remove` unloads its sessions and the remote plugins under them. No extra method for it.
 
-## 5. Checks and swaps: what exists and what is missing
+## 5. Checking and replacing: what exists and what is missing
 
 | Needed | Today | This design |
 | --- | --- | --- |
-| A check before `create` | Exists: `commit` dry-runs first (resolves and imports the new module; syntax and import errors are reported here) | Unchanged |
-| A failed `create` | Exists: if rows newly fail, the previous layer is **restored**, no failed row is left behind, and the error is returned | Unchanged; the error text follows 0.18 |
-| The old version keeps serving after a failed `reload` | Exists: `reload` is all or nothing and keeps the old module on failure | Unchanged. Known boundary: when the new code fails in `apply`, the old version is unloaded and loaded again, briefly unavailable in between (syntax and import errors are stopped in the dry run and never get here) |
-| `remove` | Exists: unloads the row, each cleanup running once; its runtime process does not exit for it (it may have other rows) | Unchanged |
-| Checking a candidate configuration before applying | Exists: `Loader::check` | Not in the service (S1 does not use it) |
-| Storing changes | Exists: `Persist`; **rutis-host lacks an editable layer** | Added: rutis-host makes `rutis.json`'s `rows` the editable layer, with a `Persist` writing rows back to `rutis.json` (only `rows`, other fields untouched). What it writes is what a reread produces, so `--watch-config` sees no change next time |
+| Check before `create` | Exists: `commit` dry-runs first (resolves and imports the new module; syntax and import errors are reported here) | Unchanged |
+| `create` fails | Exists: if rows newly fail, the previous layer is **restored**, no failed row is left, the error is returned | Unchanged; error text per 0.18 |
+| The old version keeps serving when `reload` fails | Exists: `reload` is all or nothing, the old module stays on failure | Unchanged. Known edge: when the new code fails in `apply`, the old version is unloaded and loaded again, briefly unavailable in between (syntax and import errors stop at the dry run and never get here) |
+| `remove` | Exists: unloads the row, each cleanup runs once; the runtime process does not exit because of it (it may have other rows) | Unchanged |
+| Changes stored | Exists: `Persist`; **rutis-host lacks an editable layer** | Added: `rutis-host run` uses the `rows` of `rutis.json` as the editable layer, with a `Persist` that writes rows back to `rutis.json`. It writes with the writer #805's `rutis-host add` already has (only `rows` change; other fields and key order stay), not a second one. After writing, the host records what it wrote as "last read", so `--watch-config` does not count it as a change |
+| The file changed after the host read it (by hand, by `rutis-host add`) | Exists: `persist_queue`'s conflict handling | Unchanged: `Persist::load` reads the file's `rows` back, the loader reconciles and redoes the edit. Changes to fields other than `rows` still need SIGUSR1 or a restart ([Changing the configuration while it runs](guide/rutis-host.en.md#changing-the-configuration-while-it-runs)) |
+| `rutis-host dev` | Reads `rutis.dev.json` | No editable layer: `dev` develops one plugin project, and rows are added or removed in `rutis.dev.json`. Under `dev`, `create` / `remove` get §7's "no editable configuration" error; `reload` and `status` work |
 
-## 6. How plugins in local directories load
+## 6. How a plugin in a local directory loads
 
-No installation; the row name points at the local code ([rutis-host guide](guide/rutis-host.en.md), row names):
+No install; the row name points at local code ([rutis-host guide](guide/rutis-host.en.md)'s row name table):
 
 | Language | Row name |
 | --- | --- |
-| Node | `./plugins/weather.ts` (a plugin file relative to `rutis.json`) |
+| Node | `./plugins/weather.ts` (a plugin file relative to `rutis.json`; from 0.19 resolved by the Node runtime itself, #813 CL19) |
 | Bun | `bun:./weather.ts` (relative to `runtimes.bun.project`) |
-| Python | `py:weather`: the module `weather.py` or `weather/__init__.py` in `runtimes.py.project` (the project directory is ahead on the runtime's `PYTHONPATH`) |
+| Python | `py:weather`: module `weather.py` or `weather/__init__.py` in `runtimes.py.project` (the project directory comes first on the runtime's `PYTHONPATH`) |
 
-These rows are exactly like hand-written ones, and the plugin code has nothing rutis-specific in it.
+These rows are exactly like hand-written ones; the plugin code writes nothing rutis-specific.
 
 ## 7. What developers see
 
-The plugin author (Python sketch):
+Roles affected: **plugin authors** (writing a plugin that manages plugins, an agent say) and **people assembling plugins with `rutis-host`** (who watch the terminal and `rutis.json`). Host owners embedding rutis: a host using `LoaderPlugin` has one more service, `loader`; nothing else changes. Deployers see no change.
+
+### Plugin authors
+
+When it works (Python; TypeScript and Go differ only in spelling):
 
 ```python
 plugin = define_plugin(name="maker", inject=["loader"], apply=apply)
 
 async def apply(ctx, config):
     loader = ctx.use("loader")
-    row = await loader.create({"name": "py:weather"})
+    row = await loader.create({"name": "py:weather"})   # "weather"
     await loader.reload(row)
+    snapshot = await loader.status()
     await loader.remove(row)
 ```
 
-| Call | Result |
-| --- | --- |
-| `create({"name": "py:weather"})` | `"weather"` (generated when no `id` is given); `rutis.json` gains a row; the terminal shows `weather: running` |
-| Same, `weather.py` has a syntax error | Throws: `weather: cannot load weather.py: SyntaxError: invalid syntax (weather.py, line 3)`; `rutis.json` unchanged |
-| Same, `apply` fails | Throws: `weather: failed in apply: KeyError: 'units'` + `weather.py:12 in apply`; the row is rolled back |
-| Same, the `id` exists | Throws: `a row weather already exists` |
-| `reload("weather")`, syntax error | Throws: `weather: cannot reload: SyntaxError: invalid syntax (weather.py, line 3); the previous version keeps running` |
-| Same, fixed | Returns; the terminal shows `weather: reloaded` |
-| `remove("weather")` | Returns; `rutis.json` loses the row; the terminal shows `weather: removed` |
-| `reload("wether")` | Throws: `no row wether` |
-| `create` in an embedding host with no editable layer | Throws: `this host keeps no editable configuration, so rows cannot be added or removed` |
-| `status()` | `{rows: [{id: "weather", state: "running"}, …], services: [{name: "weather", provider: "weather"}, …], runtimes: […], calls: […]}` |
+```ts
+const loader = ctx.use<Loader>('loader')               // inject: ['loader']
+const row = await loader.create({ name: 'py:weather' })
+```
 
-The text follows 0.18 §4.5's banned words (loader-internal wording such as `no editable layer` becomes the sentences above). The host owner sees in the terminal the same text the plugin receives.
+```go
+var loader *rutis.Service                              // Inject: []string{"loader"}
+if err := ctx.Use("loader", &loader); err != nil { return err }
+var row string
+err := loader.Call(ctx, "create", &row, map[string]any{"name": "py:weather"})
+```
+
+| Call | Returns |
+| --- | --- |
+| `create({"name": "py:weather"})` | `"weather"` (generated from the row name when no `id` is given) |
+| `create({"id": "w2", "name": "py:weather", "config": {"units": "metric"}})` | `"w2"` |
+| `reload("weather")` (code fixed) | `None` |
+| `remove("weather")` | `None` |
+| `status()` | `{"rows": [{"id": "weather", "state": "running"}, …], "services": [{"name": "weather", "provider": "weather"}, …], "calls": […]}`, the same snapshot as `rutis-host status` |
+
+When it fails: each case throws one error whose `message` is word for word as below, whose `data` is `{"row": <row id>}`, with no error code. The fix is in the last column.
+
+| Trigger | `message` thrown | Where it is recorded | Fix |
+| --- | --- | --- | --- |
+| `create`, `weather.py` has a syntax error | `weather: cannot load weather.py: SyntaxError: invalid syntax (weather.py, line 3)` | no row left | fix the code and `create` again |
+| `create`, `apply` raises | `weather: failed in apply: KeyError: 'units'`, next line `    File "weather.py", line 12, in apply` | the row is rolled back, none left | fix the code or config and `create` again |
+| `create`, config does not match the schema | `weather: config: units should be "metric" or "imperial", got "kelvin"` | none left | fix `config` |
+| `create`, no such plugin | `weather: no plugin named "py:wether"` | none left | fix `name` |
+| `create`, the `id` exists | `a row weather already exists` | the existing row unchanged | another `id`, or `remove` first |
+| `reload("weather")`, syntax error | `weather: cannot reload: SyntaxError: invalid syntax (weather.py, line 3); the previous version keeps running` | the previous version keeps running | fix the code and `reload` again |
+| `reload("weather")`, `apply` raises | `weather: cannot reload: failed in apply: KeyError: 'units'; the previous version keeps running` | the previous version is loaded again | as above |
+| `reload` / `remove` of a row that does not exist | `no row wether` | — | use an id from `status()` |
+| `create` / `remove` when the host has no editable configuration (`rutis-host dev`, an embedding host without `Persist`) | `this host keeps no editable configuration, so rows cannot be added or removed` | — | add the row in `rutis.json` / `rutis.dev.json` |
+| `create` took effect but writing `rutis.json` failed | `weather: added, but rutis.json could not be written: <the operating system's reason>` | the row runs; the file lacks it, so it is gone after the host restarts | fix the file's permissions and change again, or add the row by hand |
+
+The text follows 0.18 §4.5's banned words: the loader's internal `no editable layer`, `no entry "x"` and `apply failed, rolled back: …` become the sentences above. The plugin receives the same text the host prints in its terminal.
+
+Concepts to learn: one service `loader` and its 4 methods; rows and row names are already known (`rutis.json`). No new concept.
+
+### People assembling plugins with rutis-host
+
+The terminal (standard error, in the format of [What run prints](guide/rutis-host.en.md#what-run-prints)):
+
+| What the plugin did | Terminal |
+| --- | --- |
+| `create` succeeded | `weather: running` (or `weather: waiting for …`, as for a hand-written row) |
+| `create` failed | no state line (the row was rolled back); the plugin gets the error above |
+| `reload` succeeded | `weather: reloaded (by row maker)` |
+| `reload` failed | `weather: cannot reload: <reason>; the previous version keeps running` |
+| `remove` | `weather: removed` |
+
+`rutis.json`: after `create`, `rows` ends with `{"id": "weather", "name": "py:weather"}` (`id` always written, the rest only as given); after `remove` the row is gone; other fields and key order unchanged. `rutis-host check rutis.json` treats the written file like a hand-written one.
+
+The name `loader` taken: when another row of `rutis.json` provides a service named `loader`, that row fails with the existing duplicate-name error ([Plugin API](guide/plugin-api.en.md): "a service name has one provider": `service loader is already provided by …: row <row> cannot provide it too`), and the terminal prints `<row>: failed …` as usual. Fix: rename that row's service. No extra check or dedicated error.
+
+Concepts to learn: plugins may rewrite `rutis.json` (only `rows`).
 
 ## 8. Scenario S1 (updated for this design)
 
 Replaces the scenario and assertions in #185's body (the issue itself is not edited).
 
-A scripted Python plugin `maker` stands in for the agent: `inject: ["loader"]`, providing the service `maker` whose `step(n)` does step n of a fixed script. The test starts `rutis-host run --allow-call` (#670), drives with `rutis-host call maker.step <n>`, and uses the new service with `rutis-host call weather.today '"Oslo"'`.
+A scripted Python plugin `maker` stands in for the agent: `inject: ["loader"]`, provides service `maker`, whose `step(n)` does step n of a fixed script. The test starts `rutis-host run`, drives it with `rutis-host call maker.step <n>` (#670), and uses the new service with `rutis-host call weather.today '"Oslo"'`.
 
-| Step | What `maker.step(n)` does | Assertions |
+| Step | What `maker.step(n)` does | Assertion |
 | --- | --- | --- |
 | 1 | Writes `weather.py` in the Python project (provides `weather`, `today` returns `"sunny (v1)"`) | The file exists; no `weather` in `status()` |
-| 2 | `loader.create({"id": "weather", "name": "py:weather"})` | Returns `"weather"`; `rutis.json` gained the row |
+| 2 | `loader.create({"id": "weather", "name": "py:weather"})` | Returns `"weather"`; `rutis.json` has the row; terminal `weather: running` |
 | 3 | (test) `rutis-host call weather.today '"Oslo"'` | `"sunny (v1)"` |
-| 4 | Writes a syntax error, `loader.reload("weather")` | The thrown text starts with `weather: cannot reload: SyntaxError` and contains `weather.py`; `weather.today` still gives `"sunny (v1)"` |
-| 5 | Changes it to return `"rainy (v2)"`, `loader.reload("weather")` | Returns; `weather.today` gives `"rainy (v2)"` |
-| 6 | `loader.remove("weather")`, `status()` | No `weather` row or service; `rutis.json` as at step 1; `weather.today` answers `no row provides weather` |
+| 4 | Writes a syntax error, `loader.reload("weather")` | The thrown text starts with `weather: cannot reload: SyntaxError`, contains `weather.py` and ends with `; the previous version keeps running`; `weather.today` is still `"sunny (v1)"` |
+| 5 | Changes it to return `"rainy (v2)"`, `loader.reload("weather")` | Returns; terminal `weather: reloaded (by row maker)`; `weather.today` is `"rainy (v2)"` |
+| 6 | `loader.remove("weather")`, `status()` | No `weather` row or service; `rutis.json` byte for byte as at step 1; terminal `weather: removed`; `rutis-host call weather.today '"Oslo"'` prints `rutis-host: no row provides weather (services: maker)` |
 
-Also: during step 4 the test calls `weather.today` every 100 ms and no call fails; after step 5 every call gives v2; after the host stops the residue checks pass. Location `tests/e2e/tests/host_writes_plugin.rs` (the E2E framework #175 is done); Linux and macOS, in nightly.
+Also: during step 4 the test calls `weather.today` every 100 ms and none fails; after step 5 all are v2; the leftover check passes after the host stops. In `tests/e2e/tests/host_writes_plugin.rs` (E2E framework #175 is done); Linux and macOS, in nightly.
 
-## 9. Compatibility
+## 9. Compatibility and "Migrating to 0.19"
 
-- New, available by default, as in Cordis: every host that shares names gains a service `loader`.
-- A plugin or host that already provides `loader` by name now clashes with it (the later provider fails, the existing same-name rule). `loader` is a reserved name, as in Cordis; this is not a 0.19 breaking item, only one note in "Migrating to 0.19": rename it.
-- rutis-host: rows added or removed through `loader` while running are written back to `rutis.json`; other fields of the file are unchanged.
+- Hosts using `LoaderPlugin` (rutis-host included) gain a service `loader` every plugin can use.
+- A row already providing `loader` by name collides with it; under the existing duplicate-name rule the later one fails. Both "Migrating to 0.19" documents get one sentence: "`loader` is now a service rutis provides itself; rename a plugin's service of that name". 0.19 keeps no compatibility and no switch.
+- rutis-host: rows added or removed through `loader` while running are written back to `rutis.json`; other fields and key order stay.
 
 ## 10. Implementation
 
-After 0.19, one PR:
+Three PRs, each closed (what it replaces is removed and the docs are changed in the same PR), tracked in #771:
 
-| Content | Done when |
-| --- | --- |
-| `LoaderService` and its 4 methods, provided by `LoaderPlugin`; error text rewritten per 0.18 | One test each in Node, Python, Go: `inject`, then `create` / `reload` / `remove` / `status`, and the text of every row of §7 |
-| rutis-host's editable layer and the `Persist` writing `rutis.json` | After adding and removing rows the file is right, a reread is no change, and a restart works |
-| S1 (§8); a section "managing plugins with `loader`" in rutis-host.md and the plugin API guide (both languages) | Passes on Linux and macOS |
+| PR | Content | Done when | Depends on (#771 rows) |
+| --- | --- | --- | --- |
+| H2 | rutis-host's editable layer: `run` uses the `rows` of `rutis.json` as the editable layer, `Persist` with #805's writer; none under `dev`; the error text `this host keeps no editable configuration, …` and the write-failure line | After adding and removing rows the file is byte-for-byte right with key order kept; `--watch-config` does not count the write as a change; an edit after an outside change merges by the conflict handling; restarts as usual; rutis-host.md "Changing the configuration while it runs" says so | P2 (#805) |
+| H3 | rutis-loader's `LoaderService` with its 4 methods, provided by `LoaderPlugin`; §7's error text (replacing `no editable layer`, `no entry`, `apply failed, rolled back` with every user changed in the same PR); rutis-host's `reloaded (by row …)` line | One test each in Node, Python and Go: `create` / `reload` / `remove` / `status` after `inject`, comparing every row of §7's plugin-author table word for word; guarantee `loader/service` added | CL5, CL17 (with C2), CL21, CL23 |
+| H4 | S1 (§8); a section "Managing plugins with `loader`" in rutis-host.md and plugin-api.md (both languages); the sentence in "Migrating to 0.19"; closes #185 | Passes on Linux and macOS, in nightly | H2, H3; changes the same docs as G3 and G5, not in parallel with them |
 
-Dependencies: 0.18's `Loader::status()` (#678) and error text (#677); S1 uses #670's `call`. No dependency on #683 (only a host that wants limits uses its `allowed_services`) or #691.
+H1 is this revision (the two design documents only, and rows H2–H4 added to #771).

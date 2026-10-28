@@ -317,7 +317,7 @@ async fn a_link_row_still_connects_a_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_runtime_connects_one_way() {
     let _environment = environment();
-    std::env::set_var("RUTIS_TOKEN", "token");
+    std::env::set_var("RUTIS_TOKEN_GPU", "token");
     let start = |remote: Value, rows: Value| async move {
         let config: HostConfig = serde_json::from_value(json!({
             "id": "test",
