@@ -167,6 +167,37 @@ test('plugins hear each other', async () => {
 
 The `t` that `load(plugin)` returns has the five methods and `filter` too, emitting from that plugin's scope. For a plugin in another language listening to an event a TypeScript plugin emits, see [Python plugins: events](python-plugin.en.md#events).
 
+To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; the options are those of `ctx.on` (`prepend`, `global`); it returns the function that stops it, and without it, it stops when the row unloads. Every row `host()` loads has it, on their one bus.
+
+<!-- example: typescript-en file=weather/test/asked.test.ts order=2 -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { load } from '@arcships/rutis/testing'
+
+const asking = definePlugin({
+  apply(ctx, config: { city: string }) {
+    ctx.provide('weather', {
+      async today() {
+        ctx.emit('weather/asked', config.city)
+        return 'sunny'
+      },
+    })
+  },
+})
+
+test('each call emits weather/asked', async () => {
+  const t = await load(asking, { config: { city: 'Oslo' } })
+  const asked: string[] = []
+  const off = t.on('weather/asked', (city: string) => { asked.push(city) })
+  await t.service('weather').today()
+  assert.deepEqual(asked, ['Oslo'])
+  off()
+  await t.unload()
+})
+```
+
 ## 4. Run in a local host
 
 <!-- example: typescript-en run until="weather: running" order=99 -->
@@ -197,6 +228,19 @@ export default definePlugin({
 ```
 
 The row with the same ID as the plugin supplies its configuration; the other rows are additional plugins to run. `npx rutis-host check` lists each row's dependencies, provided services, and configuration schema, and exits with a nonzero status if there is a problem. It is suitable for CI.
+
+### Calling a method
+
+After it starts and after each reload, `dev` prints which services there are and the row that provides each: `rutis-host dev: services: weather (weather), llm (llm)`.
+
+While `dev` runs, in another terminal in the project's directory, call a service the plugin provides, to see what it returns and what it says when it fails, without writing a plugin to call it:
+
+```console
+$ npx rutis-host call weather.today
+"sunny in Oslo"
+```
+
+Each argument is a JSON value (a string with its quotes: `'"Oslo"'`); the result is printed as JSON; an error goes to stderr with exit status 1. See [rutis-host: Calling a service](rutis-host.en.md#calling-a-service).
 
 ### Debugging
 

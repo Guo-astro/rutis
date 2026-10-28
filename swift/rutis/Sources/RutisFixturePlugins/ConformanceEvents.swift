@@ -86,7 +86,7 @@ public struct Participant: Decodable {
 public protocol EventsLog {
     func add(_ entry: String) async throws
     /// Logs `filter:<row>` and keeps the description (filterSees).
-    func filter(_ description: Rutis.Listener) async throws
+    func filter(_ description: Rutis.Advanced.Listener) async throws
 }
 
 @RutisClient
@@ -179,12 +179,12 @@ final class ParticipantRow: @unchecked Sendable {
         }
     }
 
-    func listen(_ args: [Any?], _ next: Rutis.Next<Any>?) async throws -> Any? {
+    func listen(_ args: [Any?], _ next: Rutis.Advanced.Next<Any>?) async throws -> Any? {
         if let entry = entry(args) { await add(entry) }
         return try await does(participant.does ?? .object([:]), args, next)
     }
 
-    func does(_ does: JSONValue, _ args: [Any?], _ next: Rutis.Next<Any>?) async throws -> Any? {
+    func does(_ does: JSONValue, _ args: [Any?], _ next: Rutis.Advanced.Next<Any>?) async throws -> Any? {
         let first = args.first ?? nil
         if let value = does["returns"] { return value }
         if does["returnsNothing"] != nil { return nil }
@@ -222,7 +222,7 @@ final class ParticipantRow: @unchecked Sendable {
             return nil
         }
         if does["calls"] != nil {
-            guard let function = first as? Rutis.RemoteFunction else {
+            guard let function = first as? Rutis.Advanced.RemoteFunction else {
                 throw RutisError(name: "Error", message: "conformance-events: \(participant.label) needs a function, got \(String(describing: first))")
             }
             return try await function.call(["x"], as: Any?.self)
@@ -272,7 +272,7 @@ final class ParticipantRow: @unchecked Sendable {
         let args = ((spec["args"] ?? nil) as? [Any?]) ?? []
         let filter = (spec["filter"] ?? nil) as? [String: Any?]
         let cancel = ((spec["cancel"] ?? nil) as? [String: Any?]).flatMap { ($0["when"] ?? nil) as? String }
-        var keep: ((Rutis.Listener) async throws -> Bool)?
+        var keep: ((Rutis.Advanced.Listener) async throws -> Bool)?
         if let filter {
             let labels = ((filter["keep"] ?? nil) as? [Any?])?.compactMap { $0 as? String } ?? []
             let thrown = (filter["throws"] ?? nil) as? [String: Any?]
@@ -375,7 +375,7 @@ public let conformanceEventsPlugin = Rutis.define(Plugin(
             ctx.provide("emitter-" + participant.label, EventsEmitter(row: row))
         } else {
             ctx.on(participant.name ?? "", prepend: participant.options?.prepend ?? false, global: participant.options?.global ?? false) {
-                (a: Any?, b: Any?, c: Any?, d: Any?, next: Rutis.Next<Any>?) in
+                (a: Any?, b: Any?, c: Any?, d: Any?, next: Rutis.Advanced.Next<Any>?) in
                 try await row.listen([a, b, c, d], next)
             }
         }

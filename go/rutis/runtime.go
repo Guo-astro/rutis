@@ -29,10 +29,14 @@ import (
 var features = []string{"rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values"}
 
 // Future is an asynchronous result of another process.
+//
+// Deprecated: moved in 0.19: use advanced.Future.
 type Future = convert.Future
 
 // Function is a function of another process, received where a value of
 // any type was expected.
+//
+// Deprecated: moved in 0.19: use advanced.Function.
 type Function = convert.Function
 
 // RemoteError is an error thrown in another process.
@@ -40,6 +44,8 @@ type RemoteError = peer.RemoteError
 
 // ErrSyncWaitCycle matches (errors.Is) a SyncWaitCycle error from another
 // process.
+//
+// Deprecated: moved in 0.19: use advanced.ErrSyncWaitCycle.
 var ErrSyncWaitCycle = peer.ErrSyncWaitCycle
 
 // Ref marks v to cross by reference: the other process gets a proxy
@@ -992,6 +998,8 @@ func contains(list []string, item string) bool {
 // Service is a service used by name, or an object with methods of another
 // process received as `any` (#687 §四): its methods call the original
 // object; it has no method table.
+//
+// Deprecated: moved in 0.19: use advanced.Service.
 type Service struct {
 	name    string
 	methods map[string]string
@@ -1121,7 +1129,7 @@ func (s *Service) bind(target any) error {
 		return nil
 	}
 	if value.Kind() != reflect.Struct {
-		return fmt.Errorf("use %s: the target must point to a struct of function fields or a *rutis.Service, not %s", s.name, value.Type())
+		return fmt.Errorf("use %s: the target must point to a struct of function fields or a *advanced.Service, not %s", s.name, value.Type())
 	}
 	for _, field := range reflect.VisibleFields(value.Type()) {
 		if !field.IsExported() || field.Anonymous {

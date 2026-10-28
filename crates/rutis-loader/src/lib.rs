@@ -51,6 +51,16 @@ pub struct RustHostGuide;
 #[doc = include_str!("../../../docs/guide/rust-host.en.md")]
 pub struct RustHostGuideEn;
 
+/// The open-host guide's examples compile against these crates (#671).
+#[cfg(all(doctest, feature = "node"))]
+#[doc = include_str!("../../../docs/guide/open-host.md")]
+pub struct OpenHostGuide;
+
+/// The English open-host guide's examples compile against these crates.
+#[cfg(all(doctest, feature = "node"))]
+#[doc = include_str!("../../../docs/guide/open-host.en.md")]
+pub struct OpenHostGuideEn;
+
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
 pub use framework::RowEvent;
@@ -93,22 +103,3 @@ pub mod internal {
     #[cfg(feature = "swift")]
     pub use crate::runtime::swift::{read_swift_manifest, SWIFT_MARKER, SWIFT_PLUGIN_API};
 }
-
-// The crate's own code reaches every item from the root, as before.
-#[cfg(feature = "peer")]
-#[allow(unused_imports)]
-pub(crate) use crate::peer::*;
-#[cfg(feature = "binary")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::binary::*;
-#[cfg(feature = "go")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::go::*;
-#[cfg(feature = "swift")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::swift::*;
-#[cfg(feature = "runtimes")]
-#[allow(unused_imports)]
-pub(crate) use crate::runtime::*;
-#[allow(unused_imports)]
-pub(crate) use crate::{edit::*, internal::*, report::*, resolve::*};

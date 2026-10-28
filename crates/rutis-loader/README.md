@@ -15,7 +15,7 @@ Plugin sources (`Resolver`):
 | --- | --- | --- |
 | `Builtins` | any registered name | |
 | `runtime::RuntimeResolver::node` | npm package, subpath or file | `node` |
-| `runtime::RuntimeResolver::modules` | `py:<module>` (or `<runtime>:<module>`) | `python` |
+| `runtime::RuntimeResolver::modules` | `<runtime>:<plugin>`: `py:<module>` for Python; for a Node runtime of its own (one process per plugin), `<runtime>:<npm name or file>` | `python` or `node` |
 | `peer::PeerResolver`, `peer::register_peer_node` | `peer:<node>/<plugin>`, `rutis-bridge/peer` | `peer` |
 | `rutis_dylib::DylibResolver` | `dylib:<dir>` | rutis-dylib's `loader` |
 

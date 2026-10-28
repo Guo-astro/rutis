@@ -82,41 +82,41 @@ final class ValueDecoderImpl: Decoder {
         case is URL.Type:
             guard let text = value.string, let url = URL(string: text) else { throw mismatch(type, "a URL") }
             return url
-        case is Rutis.DateTime.Type:
+        case is Rutis.Advanced.DateTime.Type:
             switch value {
             case let .dateTime(v): return v
             case let .data(.string(text)):
-                guard let v = Rutis.DateTime(text) else { throw mismatch(type, "a datetime") }
+                guard let v = Rutis.Advanced.DateTime(text) else { throw mismatch(type, "a datetime") }
                 return v
             default: throw mismatch(type, "a datetime")
             }
-        case is Rutis.CalendarDate.Type:
+        case is Rutis.Advanced.CalendarDate.Type:
             switch value {
             case let .date(v): return v
             case let .data(.string(text)):
-                guard let v = Rutis.CalendarDate(text) else { throw mismatch(type, "a date") }
+                guard let v = Rutis.Advanced.CalendarDate(text) else { throw mismatch(type, "a date") }
                 return v
             default: throw mismatch(type, "a date")
             }
-        case is Rutis.TimeOfDay.Type:
+        case is Rutis.Advanced.TimeOfDay.Type:
             switch value {
             case let .time(v): return v
             case let .data(.string(text)):
-                guard let v = Rutis.TimeOfDay(text) else { throw mismatch(type, "a time") }
+                guard let v = Rutis.Advanced.TimeOfDay(text) else { throw mismatch(type, "a time") }
                 return v
             default: throw mismatch(type, "a time")
             }
-        case is Rutis.BigInt.Type:
+        case is Rutis.Advanced.BigInt.Type:
             switch value {
             case let .bigint(v): return v
             case let .data(.number(text)) where JSONNumber.isIntegerLiteral(text):
-                guard let v = Rutis.BigInt(text) else { throw mismatch(type, "an integer") }
+                guard let v = Rutis.Advanced.BigInt(text) else { throw mismatch(type, "an integer") }
                 return v
             default: throw mismatch(type, "a bigint")
             }
-        case is Rutis.RemoteFunction.Type:
-            if case let .remoteFunction(far) = value { return Rutis.RemoteFunction(far) }
-            if case let .function(function) = value { return Rutis.RemoteFunction(local: function) }
+        case is Rutis.Advanced.RemoteFunction.Type:
+            if case let .remoteFunction(far) = value { return Rutis.Advanced.RemoteFunction(far) }
+            if case let .function(function) = value { return Rutis.Advanced.RemoteFunction(local: function) }
             throw mismatch(type, "a function")
         default:
             return nil

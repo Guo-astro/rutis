@@ -41,9 +41,9 @@ struct WeatherConformanceTests {
     /// An argument as the expectations write it: data, or a callback.
     func argument(_ json: JSON) -> Any? {
         guard let callback = json["$callback"] else { return Value.data(json) }
-        if callback == .string("upper") { return Rutis.export { (day: String) in day.uppercased() } }
+        if callback == .string("upper") { return Rutis._Generated.export { (day: String) in day.uppercased() } }
         let thrown = callback["throws"]
-        return Rutis.export { (_: String) async throws -> String in
+        return Rutis._Generated.export { (_: String) async throws -> String in
             throw RutisError(name: thrown?["name"]?.stringValue ?? "Error", message: thrown?["message"]?.stringValue ?? "")
         }
     }

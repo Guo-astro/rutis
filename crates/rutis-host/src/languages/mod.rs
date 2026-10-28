@@ -34,7 +34,7 @@ mod python;
 mod swift;
 
 pub use binary::{BinaryHost, DevBuild};
-pub use go::GoDev;
+pub use go::{fakes as go_fakes, GoDev};
 pub use swift::SwiftDev;
 
 /// Every local language, in the order messages list them (`new --lang`)
@@ -201,8 +201,7 @@ pub fn by_new_name(name: &str) -> Option<&'static dyn Language> {
 
 /// The names `runtimes.remote[].language` takes for a language that runs
 /// only remotely, its SDK in an application (no runtime, project or
-/// template on this machine): Kotlin, in Android applications
-/// (docs/design-android-runtime-2026-10-12.md §八).
+/// template on this machine): Kotlin, in Android applications.
 const REMOTE_ONLY: &[&[&str]] = &[&["kotlin", "kt"]];
 
 /// A language `runtimes.remote[].language` names.

@@ -5,14 +5,16 @@
 //! rutis-host dev                   run the plugin project here, reloading it as it changes
 //! rutis-host check [rutis.json]    describe every row, and fail on what cannot run
 //! rutis-host status [rutis.json]   what a running host is doing now
+//! rutis-host call <service>.<method> [arguments…]
+//!                                  call a service of a running host
 //! rutis-host new <name> --lang node|bun|python|go|swift
 //! rutis-host go add <module>@<version> [rutis.json]
-//! rutis-host types [crate dir] [-o file]
+//! rutis-host types [crate dir] [-o file] [--contract file]
 //! ```
 
 use std::collections::HashSet;
 
-use rutis_host::{config, control, errln, host, languages, new, outln, project, status};
+use rutis_host::{call, config, control, errln, host, languages, new, outln, project, status};
 use rutis_loader::report::{
     Clash, ConfigStatus, CycleLink, Provider, Requirement, RowStatus, Supply,
 };
@@ -56,6 +58,7 @@ usage:
                                               row's name ([weather]); on in dev, off in run
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
+    run: --allow-call                         accept rutis-host call (dev always does)
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
@@ -64,15 +67,22 @@ usage:
                                               that dev project) does now: each row's state and
                                               why, each service's provider, the runtimes, the
                                               calls not returned yet (not on Windows)
+  rutis-host call [--config <rutis.json | dir>] <service>.<method> [argument...]
+                                              call a method of a service of the host running that
+                                              configuration (or that dev project), as the host;
+                                              each argument a JSON value ('\"Oslo\"', 3, '{\"days\":
+                                              3}'); prints the result as JSON (not on Windows)
   rutis-host new <name> --lang node|bun|python|go|swift
                                               create a plugin project
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
-  rutis-host types [dir] [-o file]            write the TypeScript declarations of the Rust
+  rutis-host types [dir] [-o file] [--contract file]
+                                              write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
                                               dir (default .) and the crates it uses (to stdout,
-                                              or to file)
+                                              or to file); --contract also writes the contract
+                                              description the testing tools check calls against
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
@@ -99,6 +109,7 @@ fn main() {
             Ok(Stopped::Done)
         }
         Some("status") => status_command(&args[1..]).map(|()| Stopped::Done),
+        Some("call") => call_command(&args[1..]),
         Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
@@ -137,15 +148,20 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
     })
 }
 
-/// `rutis-host types [dir] [-o file]`: the declarations of the marked Rust
-/// services, as `build::Exports` writes them.
+/// `rutis-host types [dir] [-o file] [--contract file]`: the declarations
+/// of the marked Rust services, and their contract description, as
+/// `build::Exports` writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
     let mut output = None;
+    let mut contract = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
+            "--contract" => {
+                contract = Some(args.next().ok_or("--contract needs a file")?.to_owned())
+            }
             other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
@@ -157,16 +173,18 @@ fn types(args: &[String]) -> Result<(), String> {
             dir.display()
         ));
     }
-    let typescript = rutis_bridge::build::Exports::new()
-        .declarations(&dir)
-        .map_err(|error| error.to_string())?;
-    match output {
-        Some(file) => std::fs::write(&file, typescript).map_err(|error| format!("{file}: {error}")),
-        None => {
-            outln!("{}", typescript.trim_end());
-            Ok(())
-        }
+    let mut exports = rutis_bridge::build::Exports::new();
+    if let Some(file) = &output {
+        exports = exports.typescript(file);
     }
+    if let Some(file) = &contract {
+        exports = exports.contract(file);
+    }
+    let typescript = exports.write(&dir).map_err(|error| error.to_string())?;
+    if output.is_none() {
+        outln!("{}", typescript.trim_end());
+    }
+    Ok(())
 }
 
 /// `rutis-host status [rutis.json | dir]`: ask the host running that
@@ -186,13 +204,59 @@ fn status_command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Answer `rutis-host status` for `target` while the host runs; a host
-/// that cannot says why and runs on.
+/// `rutis-host call [--config <rutis.json | dir>] <service>.<method>
+/// [argument…]`: call the service on the host running that configuration
+/// (by default the one here), print the result as JSON. Ctrl-C ends it
+/// with 130, which cancels the call on the host.
+fn call_command(args: &[String]) -> Result<Stopped, String> {
+    let usage =
+        "usage: rutis-host call [--config <rutis.json | dir>] <service>.<method> [argument...]";
+    let (target, args) = match args {
+        [flag, target, rest @ ..] if flag == "--config" => (target.as_str(), rest),
+        [flag, ..] if flag == "--config" => return Err(usage.into()),
+        _ => (".", args),
+    };
+    let Some((name, args)) = args.split_first() else {
+        return Err(usage.into());
+    };
+    if cfg!(windows) {
+        errln!("rutis-host call is not available on Windows");
+        return Ok(Stopped::Failed);
+    }
+    let request = call::request(name, args)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let target = std::path::PathBuf::from(target);
+    runtime.block_on(async {
+        tokio::select! {
+            called = control::call(&target, &request) => match called {
+                Ok(result) => {
+                    outln!("{result}");
+                    Ok(Stopped::Done)
+                }
+                Err(control::Refused::NoHost(why) | control::Refused::Error(why)) => Err(why),
+            },
+            _ = tokio::signal::ctrl_c() => std::process::exit(130),
+        }
+    })
+}
+
+/// Answer `rutis-host status` for `target` while the host runs, and
+/// `rutis-host call` when `calls` (`dev`, `run --allow-call`); a host that
+/// cannot says why and runs on.
 pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
+    calls: bool,
 ) -> Option<control::Serving> {
-    match control::serve(target, host.loader.clone()) {
+    match control::serve(
+        target,
+        host.loader.clone(),
+        host.status_report(),
+        calls.then(|| host.root()),
+    ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
         Err(why) => {
@@ -257,7 +321,8 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
-    let (watch, args) = reload::watch_flag(args);
+    let (watch, args) = take_flag(&args, "--watch-config");
+    let (allow_call, args) = take_flag(&args, "--allow-call");
     // Plugins' output as they write it, unless asked (#678).
     let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
@@ -270,7 +335,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     config.runtimes.prefix_output = prefix;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
-    let _status = answer_status(&path, &host);
+    let _status = answer_status(&path, &host, allow_call);
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
@@ -296,6 +361,13 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
         Started::Failed(stopped) => return Ok(stopped.failed()),
     };
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
+}
+
+/// `flag` (`--watch-config`, `--allow-call`, `--debug`) taken out of
+/// `args`: whether it was there, and the rest.
+pub(crate) fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
+    let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();
+    (rest.len() < args.len(), rest)
 }
 
 /// `--prefix-output` and `--no-prefix-output` taken out of `args`: whether
@@ -830,8 +902,21 @@ fn plugin_api_line(go: bool, swift: bool) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{plugin_api_line, runtime_line};
+    use super::{plugin_api_line, runtime_line, take_flag};
     use serde_json::json;
+
+    #[test]
+    fn a_flag_is_taken_out() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            take_flag(&args(&["--watch-config", "a.json"]), "--watch-config"),
+            (true, args(&["a.json"]))
+        );
+        assert_eq!(
+            take_flag(&args(&["a.json"]), "--watch-config"),
+            (false, args(&["a.json"]))
+        );
+    }
 
     /// `check` names the plugin API only for the binaries' languages the
     /// configuration has (#680).

@@ -301,46 +301,69 @@ func TestEvents(t *testing.T) {
 rutis-host dev
 ```
 
-`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件；改了 `.go`、`go.mod`、`go.sum` 就重新构建并只重启这个运行时，构建失败时旧的继续运行。
+`dev` 构建 `cmd/weather`，作为运行时 `go-weather` 运行它的每个插件。
 
-`rutis.dev.json` 里，和插件 id 相同的那一行（这里是 `weather`）不写 `name`，它给插件本身加配置；其他行是一起运行的插件。插件需要的其他服务就写成这样的行，可以是 Python 或 TypeScript 插件，同时在 `runtimes` 里写上它们的语言。例如用 Python 写一个假的 `llm`，放在项目的 `dev/` 里：
+`rutis.dev.json` 里，和插件 id 相同的那一行（这里是 `weather`）不写 `name`，它给插件本身加配置；其他行是一起运行的插件。插件需要的其他服务就写成这样的行。假的服务用 Go 写：项目里一个普通的 main 包，`name` 写它的目录：
+
+```text
+weather/
+  go.mod  plugin.go  plugin_test.go
+  cmd/weather/main.go        # 插件本身
+  dev/fakellm/main.go        # 假的 llm：普通的 Go main 包
+  rutis.dev.json
+```
+
+```go
+// dev/fakellm/main.go
+package main
+
+import (
+	"context"
+
+	"github.com/arcships/rutis/go/rutis"
+)
+
+type llm struct{}
+
+func (llm) Ask(ctx context.Context, question string) (string, error) { return "sunny", nil }
+
+var plugin = rutis.Define(rutis.Plugin[rutis.NoConfig]{
+	Name:  "fakellm",
+	Apply: func(ctx *rutis.Ctx, _ rutis.NoConfig) error { ctx.Provide("llm", llm{}); return nil },
+})
+
+func main() { rutis.Serve(plugin) }
+```
 
 ```json
 {
   "format": 1,
-  "runtimes": { "py": { "project": "dev" } },
   "rows": [
     { "id": "weather", "config": { "city": "Oslo" } },
-    { "id": "llm", "name": "py:fake_llm" }
+    { "id": "llm", "name": "./dev/fakellm" }
   ]
 }
 ```
 
-```python
-# dev/fake_llm.py
-from rutis import define_plugin
+- `name` 以 `./` 开头、指向项目里一个目录的行，是用 Go 写的假依赖：这个目录是同一个 `go.mod` 下的 main 包，只服务一个插件。`dev` 把它构建成 `.rutis/go/fakellm-<n>`，作为它自己的运行时 `go-fakellm` 运行。运行时名取目录名，和项目的相同时（`./dev/weather`）报错，改个目录名。
+- 改了 `.go`、`go.mod`、`go.sum`，`dev` 重新构建项目的每个二进制（每个先打印 `<目录名>: building`），只重启内容变了的那几个运行时：改了 `dev/fakellm/main.go` 只重启 `go-fakellm`（用到 `llm` 的 `weather` 随之重启），`weather` 的二进制没变，不换。构建失败时那个二进制的上一次构建继续运行。
+- 只有 `dev` 和项目里的 `rutis-host check` 认这种行（`check` 也构建它）；`rutis.json` 和 `run` 不认。`dev/fakellm` 是模块里的普通包，`go build ./...`、`go test ./...` 会编译它；发布的工作流只构建 `cmd/<名>`，不受影响。
+- 测试里照旧把一个 Go 值放进 `rutistest.Load` 的 `services`。想和 `dev` 共用同一个类型时，把它放进一个普通包（如 `internal/fake`），`dev/fakellm/main.go` 和测试都导入它。
 
+也可以用 Python 或 TypeScript 写假依赖，同时在 `runtimes` 里写上它们的语言（`"runtimes": { "py": { "project": "dev" } }`，行名 `py:fake_llm`）；这些行的文件变化时只重新加载这些行，不重新构建。`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
 
-class FakeLlm:
-    async def ask(self, question):
-        return "sunny"
+### 调用一个方法
 
+`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: weather (weather), llm (llm)`。
 
-def apply(ctx, config):
-    ctx.provide("llm", FakeLlm())
+`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
 
-
-plugin = define_plugin(apply, provides={"llm": FakeLlm})
+```console
+$ rutis-host call weather.today
+"sunny in Oslo"
 ```
 
-```bash
-uv venv dev/.venv                                  # Python 运行时的环境：<project>/.venv
-uv pip install --python dev/.venv/bin/python "rutis==0.17.2"   # 和你的 rutis-host 同版本
-```
-
-Python 运行时在 `runtimes.py.project`（这里是 `dev`）的 `.venv` 里找解释器，那个环境里要装 `rutis`；`dev/` 下没有 Go 代码，`go build ./...` 不受影响。用 TypeScript 写也一样：`"runtimes": { "node": { "project": "dev" } }`，在 `dev/` 里 `npm install @arcships/rutis`，行名写 `./dev/fake-llm.ts`。
-
-这些行的文件变化时只重新加载这些行，不重新构建，Go 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Go 二进制的插件、版本和插件 API。
+每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
 
 ### 调试
 

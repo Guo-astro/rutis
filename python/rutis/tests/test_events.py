@@ -15,7 +15,8 @@ import unittest
 import background
 from support import HANG_GUARD, within
 
-from rutis import AggregateError, AsyncListener, BindingError, ReservedEvent, WaterfallNext, define_plugin
+from rutis import BindingError, define_plugin
+from rutis.advanced import AggregateError, AsyncListener, ReservedEvent, WaterfallNext
 from rutis.events import Bus, no_result
 from rutis.runner import Runtime
 
