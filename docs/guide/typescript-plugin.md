@@ -273,17 +273,7 @@ npm publish --access public   # 先运行 prepack：tsc 生成 dist/
 
 ## 6. 被宿主使用
 
-宿主把插件包装进它的 Node 项目（和 `@arcships/rutis-runtime` 同一处），然后在配置里加一行，行名就是包名：
-
-```bash
-npm install @your-name/weather
-```
-
-```json
-{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
-```
-
-见 [rutis-host 与 rutis.json](rutis-host.md#宿主怎样装插件)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 已有的 Cordis 插件
 
