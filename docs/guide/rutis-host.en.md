@@ -373,7 +373,7 @@ Every row's listeners, in any language and on linked nodes, are on one event bus
 | `rutis/runtime` | a runtime runs (`running`) or ended (`down`, with `reason`) |
 | `rutis/service` | a service a runtime's row provides appeared, was replaced or went (`available`) |
 
-A runtime of rutis 0.12 or older (or a node) is refused when it connects: `incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later`.
+A runtime of rutis 0.12 or older (or a node) is refused by its protocol version when it connects: `incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`.
 
 ## Checking a configuration
 

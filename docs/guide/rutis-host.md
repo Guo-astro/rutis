@@ -373,7 +373,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `rutis/runtime` | 运行时运行起来（`running`）或结束（`down`，带 `reason`） |
 | `rutis/service` | 运行时的行提供的服务出现、被替换或撤走（`available`） |
 
-rutis 0.12 及更早的运行时（或节点）连进来时被拒绝：`incompatible session: the far end (…) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later`。
+rutis 0.12 及更早的运行时（或节点）连进来时按协议版本被拒绝：`incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end`。
 
 ## 检查配置
 
