@@ -248,6 +248,107 @@ When the host stops, it unloads every plugin, each cleanup runs once, and then t
 
 Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
 
+## Managing plugins with `loader`
+
+A host using `rutis-host` or `LoaderPlugin` provides a service `loader`: with it a plugin adds a row, loads a row's code again, removes a row and reads the current state, to the same effect as writing and changing rows in `rutis.json` by hand. It is an ordinary service: `inject: ["loader"]`, then `ctx.use("loader")`; any plugin in any language can use it, and the platform adds no permission or limit (to keep a plugin from managing plugins, do not add it). Design: [The host writes its own plugins](../design-host-writes-plugins-2026-10-27.en.md).
+
+| Method | Arguments | Returns |
+| --- | --- | --- |
+| `create(options, parent?, position?)` | `options`: `{id?, name, config?, disabled?, inject?}`, written as a row of `rutis.json` is | the row's id; without `id`, a generated one of 8 hex digits, such as `"3f2a91c0"` |
+| `reload(id)` | a row's id | nothing. Loads the row's code again |
+| `remove(id)` | a row's id | nothing. Unloads the row and removes it |
+| `status()` | none | the current state, the same that `rutis-host status` reads: `{"rows": [{"id": "weather", "state": "running"}, …], "services": [{"name": "weather", "provider": "weather"}, …], "calls": […]}` |
+
+`create` is all or nothing: a new row that cannot start (its module not found, a syntax error, its config not matching the schema, `apply` throwing) is not left behind. On `reload`, when the new code cannot load (a syntax or import error), the previous version keeps running; when the new code fails in `apply`, the row runs the new code and fails with that error until it is fixed and reloaded again (as [`rutis-host dev`](rutis-host.en.md#developing-a-plugin-with-dev) reloads).
+
+**When to call it.** The methods of `loader` are called after `apply` returns: in a service method, in an event. A row calling `create`, `reload` or `remove` in its own `apply` waits until that `apply` ends, so it hangs, and nothing reports it. To mount child plugins in `apply`, use `ctx.plugin` (Rust; Cordis plugins in Node): they belong to the row and are unloaded with it.
+
+Python:
+
+```python
+from rutis import define_plugin
+
+
+class Maker:
+    def __init__(self, loader):
+        self.loader = loader
+
+    async def step(self):
+        row = await self.loader.create({"id": "weather", "name": "py:weather"})
+        await self.loader.reload(row)
+        snapshot = await self.loader.status()
+        await self.loader.remove(row)
+
+
+def apply(ctx, config):
+    ctx.provide("maker", Maker(ctx.use("loader")))
+
+
+plugin = define_plugin(apply, name="maker", inject=["loader"])
+```
+
+TypeScript:
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+interface Loader {
+  create(options: { id?: string; name: string; config?: unknown }): Promise<string>
+  reload(id: string): Promise<void>
+  remove(id: string): Promise<void>
+  status(): Promise<{ rows: { id: string; state: string }[] }>
+}
+
+export default definePlugin({
+  name: 'maker',
+  inject: ['loader'],
+  apply(ctx) {
+    const loader = ctx.use<Loader>('loader')
+    ctx.provide('maker', {
+      step: async () => {
+        const row = await loader.create({ name: 'py:weather' })
+        await loader.remove(row)
+      },
+    })
+  },
+})
+```
+
+Go (`Inject: []string{"loader"}`):
+
+```go
+var loader struct {
+	Create func(ctx context.Context, options map[string]any) (string, error)
+	Reload func(ctx context.Context, id string) error
+	Status func(ctx context.Context) (map[string]any, error)
+	Remove func(ctx context.Context, id string) error
+}
+if err := ctx.Use("loader", &loader); err != nil {
+	return err
+}
+// In a service method:
+row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
+```
+
+**Errors.** Each case throws an error: its `name` is `"Error"` (`rutis.RemoteError` in Python, `*rutis.RemoteError` in Go), its `code` is `"Error"`, its `data` is `{"row": <row id>}` (the generated id when none was given), and its `message` is the text rutis prints for people in the terminal:
+
+| Cause | `message` | The row |
+| --- | --- | --- |
+| `create`, `weather.py` has a syntax error | `weather: cannot load weather.py: SyntaxError: expected ':' (weather.py:3)` | not left |
+| `create`, `apply` throws | `weather: KeyError: 'units'` | taken back, not left |
+| `create`, the config does not match the schema | `weather: config: units should be "metric" or "imperial", got "kelvin"` | not left |
+| `create`, no such module | `weather: cannot load "py:wether": ModuleNotFoundError: No module named 'wether'` | not left |
+| `create`, the `id` exists | `a row weather already exists` | the existing row unchanged |
+| `reload`, a syntax error | `weather: cannot reload: cannot load weather.py: SyntaxError: expected ':' (weather.py:3); the previous version keeps running` | the previous version keeps running |
+| `reload`, `apply` throws | `weather: cannot reload: KeyError: 'units'` | runs the new code and fails |
+| `reload` / `remove` of a row that does not exist | `no row wether` | — |
+| `create` / `remove`, the host keeps no editable configuration | `this host keeps no editable configuration, so rows cannot be added or removed` | — |
+| `create` took effect but was not stored | `weather: added, but rutis.json could not be written: <the system's reason>` (`removed` for a removal) | runs; gone after a restart of the host |
+
+**Where changes are kept.** `rutis-host run` writes rows added and removed back into `rutis.json` (only `rows` changes; see [Managing plugins with `loader`](rutis-host.en.md#managing-plugins-with-loader)); `rutis-host dev` and an embedding host without a `Persist` keep no editable configuration: `create` and `remove` get the error above, `reload` and `status` work as usual.
+
+**The name `loader` taken.** A service name has one provider, so another row also providing a service named `loader` fails with the error for a name already provided: `service loader is already provided by …: row <row> cannot provide it too`. Rename that row's service.
+
 ## Plugins in one runtime share its process
 
 The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance. A host can put a plugin in a process of its own (see [Build a host open to plugins](open-host.en.md#3-keep-plugins-in-check)).

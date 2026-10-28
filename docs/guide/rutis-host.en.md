@@ -384,6 +384,44 @@ Credentials are read from the environment when a link dials, or when a far end d
 
 Plugins can add and remove rows too, through the service `loader` (`create`, `remove`; see [The host writes its own plugins](../design-host-writes-plugins-2026-10-27.en.md)). `run` writes these changes back into `rutis.json`: only `rows` changes (a row added goes last, with only the fields the plugin gave, `id` always; a row removed goes), its other fields and the order of its keys stay, written as `rutis-host add` writes it (two-space indents). What it writes is no change to the file: `--watch-config` does not read it again for it. When the file was changed after the host read it (by hand, by `rutis-host add`) and has not been read again, a plugin's next change first reads back the file's `rows` and runs them, then makes the change on them and writes it back; a change outside `rows` still takes SIGUSR1 or `--watch-config`. When the file cannot be written, the row is added or removed all the same, and the plugin's error says `<row>: added, but rutis.json could not be written: <why>` (`removed` for a removal); a restart of the host loses the change. `dev` does not write `rutis.dev.json`: under `dev`, `create` and `remove` get `this host keeps no editable configuration, so rows cannot be added or removed`.
 
+## Managing plugins with `loader`
+
+`rutis-host` provides a service `loader`, with which plugins add and remove rows and load a row's code again while the host runs: an agent, say, writes a new plugin, has it loaded, is told what is wrong when it breaks it, puts the fixed version in, and removes it when done. Any plugin writing `inject: ["loader"]` can use it; to keep a plugin from managing plugins, do not add it. How each language writes it, what each method returns and the full table of errors: [Plugin API](plugin-api.en.md#managing-plugins-with-loader).
+
+| Method | What it does | Returns |
+| --- | --- | --- |
+| `create(options, parent?, position?)` | adds a row and starts it; `options` is `{id?, name, config?, disabled?, inject?}`, written as a row of `rutis.json` is. A row that cannot start is not left behind | the row's id (8 hex digits, generated, when `id` is not given) |
+| `reload(id)` | loads the row's code again: when it cannot load, the previous version keeps running; when the new code fails in `apply`, the row runs the new code and fails, as in [`dev`](#developing-a-plugin-with-dev) | nothing |
+| `remove(id)` | unloads the row and removes it | nothing |
+| `status()` | reads the current state, the same snapshot as [`rutis-host status`](#seeing-the-current-state) | rows, services, calls in progress |
+
+The methods are called after `apply` returns (in a service method, in an event). A row calling `create`, `reload` or `remove` in its own `apply` waits until that `apply` ends, so it hangs; to mount child plugins in `apply`, use `ctx.plugin`.
+
+On failure the plugin gets an error whose `message` is the text the terminal shows, for example:
+
+| Cause | `message` |
+| --- | --- |
+| `create`, `apply` throws | `weather: KeyError: 'units'` |
+| `create`, the `id` exists | `a row weather already exists` |
+| `reload`, a syntax error | `weather: cannot reload: cannot load weather.py: SyntaxError: expected ':' (weather.py:3); the previous version keeps running` |
+| `reload` / `remove` of a row that does not exist | `no row wether` |
+| `create` / `remove` under `dev` | `this host keeps no editable configuration, so rows cannot be added or removed` |
+| the row added, but `rutis.json` cannot be written | `weather: added, but rutis.json could not be written: <the system's reason>` |
+
+**`run` writes back into `rutis.json`.** A row added through `loader` goes at the end of `rows` (`id` always, otherwise only the fields the plugin gave), a row removed goes; the other fields and the order of keys stay, `rutis-host check rutis.json` treats the written file as a hand-written one, and the rows written run again after a restart. The details of writing back (`--watch-config`, a file changed after the host read it): [Changing the configuration while it runs](#changing-the-configuration-while-it-runs). **`dev` keeps no editable configuration**: `dev` develops one plugin project, whose rows are changed in `rutis.dev.json`; `create` and `remove` get the error above, `reload` and `status` work as usual.
+
+What the terminal shows (in the format of [What `run` prints](#what-run-prints)):
+
+| What the plugin did | Terminal |
+| --- | --- |
+| `create` succeeded | `weather: running` (or `weather: waiting for …`, as for a hand-written row) |
+| `create` failed | two lines: `fails: failed: KeyError: 'units'`, then `fails: removed` (taken back) |
+| `reload` succeeded, or hit a syntax error (the previous version keeps running) | nothing: the row stays `running` |
+| `reload`, the new code's `apply` failed | `weather: failed: KeyError: 'units'`; once fixed and reloaded, `weather: running` |
+| `remove` | `weather: removed` |
+
+rutis-host takes the name `loader`: another row in `rutis.json` providing a service named `loader` fails with the error for a name already provided (`service loader is already provided by …: row <row> cannot provide it too`), and the terminal prints `<row>: failed …` as usual. Rename that row's service.
+
 ## Developing a plugin with `dev`
 
 `rutis-host dev [directory]` runs the plugin project in the directory (the current one by default) as rows: the project's own plugin, configured by the row of `rutis.dev.json` with the same id, and the other rows that file adds (fakes of the services the plugin uses, other plugins). It looks at the project's files every 0.4 seconds (not `node_modules`, `.venv`, `venv`, `target`, `dist`, `build`, `__pycache__`, nor hidden files and directories other than `.env`) and follows them:
