@@ -5,8 +5,8 @@ import Foundation
 // operations of the runtime contract (§3, §4).
 
 /// What this runtime supports of the runtime contract. `rows.announce`:
-/// services rows provide without declaring them are announced with their
-/// methods, to a host whose mount says `announce`. `plugin-values`: a plugin
+/// services rows provide without declaring them are announced to the host
+/// with their methods. `plugin-values`: a plugin
 /// definition this runtime handed over comes back to be described
 /// (`plugins.read`) and loaded as a row's entry
 /// (docs/design-plugin-values-2026-10-25.md §5).
@@ -335,11 +335,6 @@ final class Runtime: @unchecked Sendable {
     var held: [String: (queue: SerialQueue, count: Int)] = [:]
     /// What the host calls this runtime (mount `runtime`), for descriptors.
     var runtimeName: String?
-    /// The host takes announced services (mount `announce`).
-    var announce = false
-    /// Mounted by a host; one without `announce` is older than 0.12.
-    var mounted = false
-    var told = Set<String>()
 
     // Frames for the host, queued under `lock` in the order they are taken
     // and sent by flush once `lock` is released.
@@ -474,16 +469,10 @@ final class Runtime: @unchecked Sendable {
         }
         services[id] = Provided(row: row.key, value: value, shape: shape)
         row.provided.append(id)
-        // Not declared: announced, with its methods; a host older than 0.12
-        // does not take it, and the plugin is told, once per name.
+        // Not declared: announced, with its methods.
         if slots[id] == nil, !name.contains("#") {
-            if announce {
-                slots[id] = Slot(row: row.key, name: name, methods: nil, announced: true)
-                row.announced.append(id)
-            } else if mounted, !told.contains(name) {
-                told.insert(name)
-                settings.log("rutis: service \(name) is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host")
-            }
+            slots[id] = Slot(row: row.key, name: name, methods: nil, announced: true)
+            row.announced.append(id)
         }
         refresh(id)
         lock.unlock()
@@ -680,9 +669,7 @@ final class Runtime: @unchecked Sendable {
         case "mount":
             let mount = args.first ?? .undefined
             lock.withLock {
-                announce = mount["announce"].map { if case .data(.bool(true)) = $0 { return true } else { return false } } ?? false
                 runtimeName = mount["runtime"]?.string
-                mounted = true
             }
             return .data(.object([
                 ("services", .object([])),

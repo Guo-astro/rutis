@@ -1494,10 +1494,6 @@ async fn swift_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "swift"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(swift(), main_without_objects("swift")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "swift"))
-        .await
-        .unwrap();
 }
 
 #[cfg(all(feature = "swift", target_os = "macos"))]
