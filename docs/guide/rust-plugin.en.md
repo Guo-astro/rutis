@@ -632,6 +632,8 @@ let mut builtins = Builtins::new();
 builtins.register("weather", Weather::new); // row: { "id": "weather", "name": "weather", "config": { "city": "Oslo" } }
 ```
 
+Before `build`, the loader fills the row's config with the schema's defaults and validates it: a row whose config does not match fails with `config: …`, and the constructor is not called ([plugin API: configuration](plugin-api.en.md#configuration)); extra keys are written on stderr. `Option` fields and fields with `#[serde(default)]` are not required; left out, they take serde's default. A decoding error after the schema passed is written `<path> is not a value the plugin accepts`.
+
 For one copy per instance, `register_with(name, |build, config| …)`. The loader (with `builtins` in its `Chain`), runtimes and rows of other languages: [embed rutis in a Rust application](rust-host.en.md#runtime-and-loader).
 
 ### Debugging
@@ -646,7 +648,7 @@ The same plugin can also be built as a dylib that a host loads at run time. The 
 rutis_sdk::export_plugin!(id: "weather", build: Weather::new);
 ```
 
-- `build:` takes the same constructor as `Builtins::register`; `schema:` optionally gives the config's JSON Schema (a `serde_json::Value`).
+- `build:` takes the same constructor as `Builtins::register`; `schema:` optionally gives the config's JSON Schema (a `serde_json::Value`): with it the config is filled and validated as for `Builtins` rows; without it, only decoded.
 - A dylib plugin derives its event and config types with the SDK's serde: `#[derive(rutis_sdk::rutis::serde::Deserialize)]` with `#[serde(crate = "rutis_sdk::rutis::serde")]`. The plugin's own serde is not the SDK's.
 - A dylib plugin is built with exactly the SDK of its host. Workspace, packing and troubleshooting: the [external plugin guide](../external-plugin-guide.en.md).
 
