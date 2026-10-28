@@ -40,7 +40,7 @@ func TestALocalChannelWithAnIDGreetsAsThatEndpoint(t *testing.T) {
 	}
 	host, err := peer.New(peer.NewLines(conn), peer.Options{
 		Endpoint:     &peer.Endpoint{Local: "host", Expected: "gorun"},
-		Capabilities: append([]string{"sync-wait", peer.EventsCapability}, peer.ValueCapabilities...),
+		Capabilities: peer.ValueCapabilities,
 		Plugins:      true,
 		Dispatch: func(context.Context, string, string, []any) (any, error) {
 			return nil, fmt.Errorf("not served")

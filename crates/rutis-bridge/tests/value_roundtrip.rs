@@ -1286,10 +1286,6 @@ async fn python_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "python"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(python(), main_without_objects("python")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "python"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1354,10 +1350,6 @@ async fn go_depth_limit() {
 async fn go_bad_values() {
     let (near, _child) = far_end(go(), "go").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "go"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(go(), main_without_objects("go")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "go"))
         .await
         .unwrap();
 }

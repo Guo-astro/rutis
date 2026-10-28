@@ -62,24 +62,11 @@ The plugin depends only on `@arcships/rutis`. It does not need to know which hos
 
 `provides` says what the plugin provides, so `rutis-host check` knows without running the plugin that this row provides `weather`: when a host checks its configuration with `check --strict` in CI, the rows that use `weather` pass (the template declares it by default). A declared service follows its declaration: only the declared methods can be called, so add each new method here too; `'sync'` marks a method synchronous. It also runs without one: what `ctx.provide` provides still reaches rutis by itself, its methods the object's functions, all called as `async`; `check` then only knows once the plugin runs, and `--strict` reports an error.
 
-A plugin is itself a value: hand the result of `definePlugin(...)` to a service as an ordinary argument (the application's part registry, say), and the receiver can mount it elsewhere, each mount one copy using what your `apply` prepared. See the [plugin API](plugin-api.en.md#plugin-definitions).
+A plugin is itself a value, to hand to a service and mount elsewhere many times: see [plugin API: plugin definitions](plugin-api.en.md#plugin-definitions).
 
 ### Objects with methods
 
-A class instance, or a plain object with function-valued properties, goes to another language by reference: the far end gets a proxy whose calls reach the original object here. An object another process passes here is a proxy too:
-
-```ts
-const cache = await ctx.use('store').cache()
-await cache.set('a', 1)          // every method is an asynchronous call of the far end's object
-const value = await cache.get('a')
-```
-
-- Every name read on a proxy is a method (but `then`, `toJSON`, `toString`, `valueOf` and symbols: so awaiting a proxy gives the proxy itself, and the object's own methods of these names cannot be called through it); it has no data fields: to get data, have a method return it. `console.log` shows `[remote object]`.
-- One object passed several times is one proxy on the far end; a proxy passed back to its own process is the original object there.
-- An object does not follow its row: after the row that passed it unloads, it can still be called. Once its runtime has exited, calls on it fail with `peer-gone`.
-- Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set)`.
-- `undefined` inside an array or object arrives as `null`; only a whole argument or a whole result keeps it.
-- Rows in the same runtime get the object itself (its methods synchronous as usual, its fields readable). The testing tool's strict mode gives the cross-process proxy.
+A class instance, or a plain object with function-valued properties, goes to another language by reference, the far end getting a proxy: see [plugin API: objects with methods](plugin-api.en.md#objects-with-methods).
 
 ## 3. Test
 
@@ -107,65 +94,11 @@ test('reports the weather of the configured city', async () => {
 npm test
 ```
 
-`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. In strict mode (the default), values follow cross-process rules: data is copied, functions and objects with methods are passed by reference, and a method declared `sync` cannot return a Promise. Code that works only within one process fails here.
+`load` checks the same things as the host: the plugin uses only services declared in `inject`; it does not provide a name already in `services` (the host provides it: `PluginTestError: wordcount: notes is already provided by the host`); its provided service has every method declared in `provides` (an undeclared service is called as rutis calls it, by the object's methods, all async; `t.methods(name)` returns the methods rutis sees); and all cleanup functions run when it unloads. Strict mode is the default: values follow cross-process rules, see [plugin API: strict mode](plugin-api.en.md#strict-mode); the rest of the test tool's interface is in [plugin API: the TypeScript and Bun test tool](plugin-api.en.md#the-typescript-and-bun-test-tool).
 
 ### Events
 
-`ctx.on(name, listener)` listens to an event; `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall` and `ctx.bail` are the five ways to emit. Listeners register themselves with the host and nothing is declared: whether the emitter is another plugin in the same process, a plugin in another language, Rust code in the host or a linked node, the result is the same. The full rules are in [plugin API: events](plugin-api.en.md#events).
-
-The two plugins below share one bus on the test tool's `host()`: `greeter` takes the first result with `serial`, lets other plugins rewrite the greeting with `waterfall` and notifies with `emit`; `shout` is a link of the waterfall and listens to the notification.
-
-<!-- example: typescript-en file=weather/test/events.test.ts order=2 -->
-```ts
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
-import { definePlugin } from '@arcships/rutis'
-import { host } from '@arcships/rutis/testing'
-
-const greeter = definePlugin({
-  apply(ctx) {
-    // undefined / null / false is "no result": serial asks the next listener
-    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
-    ctx.provide('greeter', {
-      async hello(name: string, lang: string) {
-        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
-        // every argument is the event's; `with` gives the terminal, the innermost end of the chain
-        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
-        ctx.emit('greeting/said', name)                  // returns at once, waits for no listener
-        return text
-      },
-    })
-  },
-})
-
-const said: string[] = []
-const shout = definePlugin({
-  apply(ctx) {
-    // a waterfall listener gets next last: it runs the rest of the chain
-    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
-    ctx.on('greeting/said', (name: string) => { said.push(name) })
-  },
-})
-
-test('plugins hear each other', async () => {
-  const h = host()
-  const t = await h.load(greeter)
-  await h.load(shout)
-  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
-  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
-  assert.deepEqual(said, ['Ada', 'Bo'])
-  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // the test can emit too
-  await h.unload()
-})
-```
-
-- `emit` returns at once; a failing listener reaches neither the emitter nor the other listeners and is reported in one line where it runs (in a test, in `h.reported` / `t.reported`). To wait for every listener and get their errors, use `await ctx.parallel(...)`: failures are an `AggregateError` in registration order.
-- `waterfall` returns a Promise whenever a listener is in another process, so always `await` it. `bail` is a synchronous `serial`; an `async` listener fails it with `AsyncListener`.
-- `ctx.filter(d => d.row === 'audit').parallel(...)` delivers only to the listeners the filter keeps; `ctx.on(name, fn, { prepend: true })` goes first, `{ global: true }` is exempt from filters.
-- Scopes: `h.load(plugin, { scope: 't1/s1' })` loads a plugin into an instance; its listeners carry the scope as a descriptor, and a listener receives every event of the name on the root bus, whatever the emitter's instance. A scope is only a descriptor for filters.
-- On unload the plugin's `ctx.signal` is aborted and its running listeners are waited for (up to the shutdown deadline) before the cleanups run.
-
-The `t` that `load(plugin)` returns has the five methods and `filter` too, emitting from that plugin's scope. For a plugin in another language listening to an event a TypeScript plugin emits, see [Python plugins: events](python-plugin.en.md#events).
+`ctx.on(name, listener)` listens to an event, `ctx.emit(name, ...args)` emits one. Listeners register themselves with the host and nothing is declared: whether the emitter is another plugin in the same process, a plugin in another language, Rust code in the host or a linked node, the result is the same. The other ways to emit (`parallel`, `serial`, `waterfall`, `bail`), filters and scopes are in [plugin API: events](plugin-api.en.md#events).
 
 To check that the plugin emits an event, listen with `t.on(name, listener, options)` as the host does, at the root scope: the plugin's emissions and the test's own reach it; in strict mode it gets the arguments as from another process; the options are those of `ctx.on` (`prepend`, `global`); it returns the function that stops it, and without it, it stops when the row unloads. Every row `host()` loads has it, on their one bus.
 
@@ -273,17 +206,7 @@ Declare a version range such as `"@arcships/rutis": "^0.18.0"` (`rutis-host new`
 
 ## 6. Use from a host
 
-Install the plugin in the host's Node project, alongside `@arcships/rutis-runtime`, then add a row named after the package:
-
-```bash
-npm install @your-name/weather
-```
-
-```json
-{ "id": "weather", "name": "@your-name/weather", "config": { "city": "Oslo" } }
-```
-
-See [rutis-host and rutis.json](rutis-host.en.md#how-a-host-installs-plugins), or [Embed in a Rust application](rust-host.en.md) for a Rust host.
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ## Existing Cordis plugins
 

@@ -179,6 +179,10 @@ Two more points for Kotlin:
 
 Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each language's root, every method on `ctx`, the testing tools, Rust. The code Swift macros and Kotlin KSP generate is updated with the SDK and needs no change. The plugin API version is unchanged: plugins built with an older SDK run on the 0.19 runtimes as before.
 
+## The service name `loader` (#185)
+
+A host using `LoaderPlugin` (rutis-host included) now provides a service named `loader` ([Managing plugins with `loader`](guide/plugin-api.en.md#managing-plugins-with-loader)); a row that itself provides a service named `loader` now fails with the existing error for a name already provided (`service loader is already provided by …: row <row> cannot provide it too`): rename its service.
+
 ## Platform cleanup (#694)
 
 0.19 removes what does not belong in the platform ([platform cleanup](design-platform-cleanup-2026-10-28.en.md)). There is no compatibility: a removed Rust API is a compile error.
