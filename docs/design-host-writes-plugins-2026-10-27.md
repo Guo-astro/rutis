@@ -58,7 +58,7 @@ rutis 照这个做：同一个名字、同样的方法形状、同样默认谁�
 
 - rutis-loader 加一个类型 `LoaderService`（包着 `Loader`），标 `#[rutis::service(name = "loader")]`，方法是上表的 4 个 `async fn`，参数、结果都是 serde 类型。`LoaderPlugin::apply` 在已有的 `ctx.provide(self.loader.clone())` 旁边再 `ctx.provide(LoaderService(..))`。按 0.17 的规则（[Rust 服务自动对外](design-rust-service-exposure-2026-10-21.md)），标了的类型被提供时自动按名字对外，Node、Bun、Python、Go、Swift、Kotlin 的插件都能 `inject` 它；Rust 插件照旧直接拿 `Loader`。
 - 为什么另起一个类型：`Loader` 已有的同名方法（`create(NewEntry, …)`）参数是 Rust 类型，不能直接给其他语言；宏不支持给方法改名，所以用一个薄的包装类型。
-- 只在宿主按名字共享服务时可见（rutis-host 是 `share_by_name`）。用 `share_registered_only` 的宿主（例如 rutis-dsh：它的 Cordis 有自己的 `loader`）不受影响。
+- 宿主按名字共享服务（默认）时可见。
 
 ## 五、检查与替换：已有的和缺的
 

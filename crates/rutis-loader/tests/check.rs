@@ -319,8 +319,10 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
             { "id": "cordis", "name": "foreign", "inject": ["shared", "clock"] },
         ])))
         .await;
-    // `shared` is shared by name and nothing provides it; `clock` is the
-    // application's own service, not shared by name, so not checked.
+    // `clock` is the application's own service, not shared by name, so not
+    // checked. With runtimes or peers, `shared` is shared by name and
+    // nothing provides it; without them, rutis shares nothing.
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
     assert_eq!(
         supplies(&report, "cordis"),
         [(
@@ -330,6 +332,8 @@ async fn a_foreign_rows_own_inject_counts_only_names_rutis_shares() {
             }
         )]
     );
+    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    assert_eq!(supplies(&report, "cordis"), []);
 }
 
 /// A `#[rutis::service]` type of the application nothing has provided is

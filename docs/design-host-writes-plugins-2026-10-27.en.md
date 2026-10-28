@@ -58,7 +58,7 @@ rutis does the same: the same name, the same method shapes, usable by anyone by 
 
 - rutis-loader adds a type `LoaderService` (wrapping a `Loader`), marked `#[rutis::service(name = "loader")]`, with the table's 4 methods as `async fn`s taking and returning serde types. `LoaderPlugin::apply` provides it next to the existing `ctx.provide(self.loader.clone())`. Under the 0.17 rule ([Rust service exposure](design-rust-service-exposure-2026-10-21.en.md)), a marked type is exposed by name when provided, so plugins in Node, Bun, Python, Go, Swift and Kotlin can `inject` it; Rust plugins keep taking `Loader` directly.
 - Why a separate type: `Loader`'s existing methods of the same names (`create(NewEntry, …)`) take Rust types that other languages cannot send, and the macro cannot rename methods, so a thin wrapper type it is.
-- It is visible only where the host shares services by name (rutis-host does, `share_by_name`). Hosts using `share_registered_only` (rutis-dsh, whose Cordis has its own `loader`) are unaffected.
+- It is visible where the host shares services by name (the default).
 
 ## 5. Checks and swaps: what exists and what is missing
 
