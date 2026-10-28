@@ -150,7 +150,7 @@ day := advanced.DateOf(time.Now())
 | 语言 | 输入 | 看到 |
 | --- | --- | --- |
 | TypeScript | `import { datetime } from '@arcships/rutis'` | `tsc`：`error TS2305: Module '"@arcships/rutis"' has no exported member 'datetime'.`；直接运行：`SyntaxError: The requested module '@arcships/rutis' does not provide an export named 'datetime'` |
-| Python | `from rutis import AggregateError`，在 pytest 里跑 | `DeprecationWarning: AggregateError moved in 0.19: import it from rutis.advanced. The old name is removed when the plugin API version changes.` |
+| Python | `from rutis import AggregateError` | `ImportError: cannot import name 'AggregateError' from 'rutis' (…/rutis/__init__.py)` |
 | Go | `rutis.DateOf(t)` | `go build`：`undefined: rutis.DateOf` |
 | Swift | `let d: Rutis.DateTime` | `warning: 'DateTime' is deprecated: renamed to 'Rutis.Advanced.DateTime'`，附修改建议 |
 | Kotlin | `RutisFormat.encode(…)` | `w: 'RutisFormat' is deprecated. Moved in 0.19: use arcships.rutis.advanced.RutisFormat.`；IDE 一键替换并补上导入 |

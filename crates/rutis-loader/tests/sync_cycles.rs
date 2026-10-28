@@ -142,7 +142,7 @@ def apply(ctx, config):
 /// Also in the second Python runtime: `s2`, run nested above `s1`, calls
 /// Node back.
 const PY_TWO_BACK: &str = r#"
-from rutis import SyncWaitCycle
+from rutis.advanced import SyncWaitCycle
 
 inject = ["n_back"]
 
@@ -923,7 +923,7 @@ export function apply(ctx) {
 
 /// A in Python (reentrant), the same.
 const PY_A: &str = r#"
-from rutis import SyncWaitCycle
+from rutis.advanced import SyncWaitCycle
 
 inject = ["gate", "c_back"]
 
