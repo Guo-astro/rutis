@@ -122,6 +122,8 @@ runtimes:
   wordcount: starting (pid 4242)
 ```
 
+Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount: starting`。
+
 ### 不是限制的东西
 
 - `ServiceCatalog::share_registered_only` 与读取拦截决定服务按什么名字共享，不是权限：插件能不能用一个服务看 `allowed_services`。

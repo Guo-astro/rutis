@@ -91,8 +91,18 @@ impl Deadline {
         let at = tokio::time::Instant::from_std(self.at);
         match tokio::time::timeout_at(at, call).await {
             Ok(reply) => self.carry(reply),
-            Err(_) => Err(self.limit.ran_out(&self.called)),
+            Err(_) => Err(self.ran_out()),
         }
+    }
+
+    /// How long until it.
+    pub(super) fn left(&self) -> Duration {
+        self.at.saturating_duration_since(Instant::now())
+    }
+
+    /// The call ran past it: the error its caller gets.
+    pub(super) fn ran_out(&self) -> Error {
+        self.limit.ran_out(&self.called)
     }
 
     /// A future the reply holds settles within the same deadline.
@@ -143,45 +153,7 @@ impl Connection {
         deadline: &Deadline,
     ) -> Reply {
         let operation = Operation::Invoke(target.into(), method.into(), args);
-        self.request_sync_within(operation, Some(deadline))
-    }
-
-    /// A synchronous request, given up at `deadline` (if any): the far end
-    /// is told to cancel it and a late reply is discarded.
-    pub(super) fn request_sync_within(
-        &self,
-        call: Operation,
-        deadline: Option<&Deadline>,
-    ) -> Reply {
-        let Some(deadline) = deadline else {
-            return self.request_sync(call);
-        };
-        let (sender, receiver) = mpsc::channel();
-        let id = self.send(
-            call,
-            Waiting::Sync {
-                sender,
-                origins: Vec::new(),
-            },
-        )?;
-        loop {
-            let left = deadline.at.saturating_duration_since(Instant::now());
-            match receiver.recv_timeout(left) {
-                Ok(Message::Reply(result)) => return deadline.carry(result),
-                Ok(Message::Invoke(incoming)) => {
-                    let _pumping = Pumping::enter();
-                    let _runtime = LentRuntime::enter(&self.0.executor);
-                    self.execute(incoming, true)
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.cancel(&id);
-                    return Err(deadline.limit.ran_out(&deadline.called));
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(transport(mpsc::RecvError))
-                }
-            }
-        }
+        self.request_sync(operation, Some(deadline))
     }
 }
 

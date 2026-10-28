@@ -122,6 +122,8 @@ runtimes:
   wordcount: starting (pid 4242)
 ```
 
+On Windows a process has an id here only once it has connected to the host, so the line reads `wordcount: starting`.
+
 ### What is not a limit
 
 - `ServiceCatalog::share_registered_only` and read interception decide the names services are shared by; they are not permissions. Whether a plugin may use a service is `allowed_services`.
