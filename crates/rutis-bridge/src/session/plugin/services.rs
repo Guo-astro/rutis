@@ -20,6 +20,7 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::channel::PeerId;
+use crate::runtime::Process;
 use crate::services::{provider, Announcement, ExportOne};
 use crate::session::rpc::{Connection, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
@@ -77,8 +78,8 @@ impl Exports {
     }
 }
 
-/// Where the services of one plugin of the far end are provided: a remote
-/// plugin `<id>:<plugin>`, or a row this end runs there.
+/// A plugin of the far end here (`<id>:<plugin>`), or a row this end runs
+/// there: what fails it.
 #[derive(Clone)]
 pub(super) struct Target {
     inner: Arc<TargetInner>,
@@ -174,6 +175,8 @@ struct Imported {
     version: u64,
     plugin: String,
     provided: Option<Disposer>,
+    /// Given to the row of this end's process that `plugin` is.
+    routed: bool,
 }
 
 #[derive(Default)]
@@ -181,11 +184,9 @@ struct ImportState {
     services: HashMap<String, Imported>,
     /// The remote plugins, by the far end's name for them.
     plugins: HashMap<String, Target>,
-    /// The rows this end runs there, by key: their services are theirs.
-    runs: HashMap<String, Target>,
-    /// Every key run there so far: a late announcement of a row that is
-    /// gone is not another plugin.
-    ran: HashSet<String>,
+    /// Every row of this end's process whose services came: a late
+    /// announcement of one that is gone is not another plugin.
+    rows: HashSet<String>,
 }
 
 /// What the far end provides, provided here.
@@ -194,6 +195,8 @@ pub(super) struct Imports {
     far: PeerId,
     session: Connection,
     state: tokio::sync::Mutex<ImportState>,
+    /// What runs this end's rows there, once it does.
+    process: Mutex<Option<Arc<Process>>>,
 }
 
 impl Imports {
@@ -203,22 +206,13 @@ impl Imports {
             far,
             session,
             state: tokio::sync::Mutex::default(),
+            process: Mutex::default(),
         })
     }
 
-    /// Row `key`, run there, provides what the far end announces for it
-    /// from `target`.
-    #[allow(dead_code)] // rows run there: the next step
-    pub(super) async fn run(&self, key: &str, target: Target) {
-        let mut state = self.state.lock().await;
-        state.ran.insert(key.to_owned());
-        state.runs.insert(key.to_owned(), target);
-    }
-
-    /// Row `key` is gone.
-    #[allow(dead_code)]
-    pub(super) async fn ran(&self, key: &str) {
-        self.state.lock().await.runs.remove(key);
+    /// This end's rows there run on `process`.
+    pub(super) fn process(&self, process: Arc<Process>) {
+        *self.process.lock().unwrap() = Some(process);
     }
 
     /// Who provides `name` here, in a refusal.
@@ -254,38 +248,61 @@ impl Imports {
         {
             return Ok(());
         }
+        let previous = state.services.remove(&name);
+        let process = self.process.lock().unwrap().clone();
+        // A row of this end's: its projection takes it.
+        if let Some(process) = process.clone().filter(|process| process.has_row(&plugin)) {
+            if let Some(provided) = previous.and_then(|previous| previous.provided) {
+                let _ = provided.dispose().await;
+            }
+            state.rows.insert(plugin.clone());
+            let handle = format!("{}:{name}", super::rows::ROW_FAMILY);
+            let routed =
+                process.announce_row_service(&plugin, &name, &announced.shape(), handle, version);
+            state.services.insert(
+                name,
+                Imported {
+                    version,
+                    plugin,
+                    provided: None,
+                    routed,
+                },
+            );
+            return Ok(());
+        }
         // A replacement: the old one goes first, as the kernel has one
         // provider per name.
-        if let Some(provided) = state
-            .services
-            .get_mut(&name)
-            .and_then(|current| current.provided.take())
-        {
-            let _ = provided.dispose().await;
+        if let Some(previous) = previous {
+            if let Some(provided) = previous.provided {
+                let _ = provided.dispose().await;
+            }
+            if previous.routed {
+                if let Some(process) = &process {
+                    process.withdraw_row_service(&name, version);
+                }
+            }
         }
         let entry = Imported {
             version,
             plugin: plugin.clone(),
             provided: None,
+            routed: false,
         };
-        let target = match state.runs.get(&plugin) {
+        let target = match state.plugins.get(&plugin) {
+            // A row of this end's that is gone: nothing of it comes back.
+            _ if state.rows.contains(&plugin) => None,
             Some(target) => Some(target.clone()),
-            // A row run there and gone: nothing of it is provided again.
-            None if state.ran.contains(&plugin) => None,
-            None => Some(match state.plugins.get(&plugin) {
-                Some(target) => target.clone(),
-                None => {
-                    let target = Target::new();
-                    let view = self.ctx.plugin(RemotePlugin {
-                        name: format!("{}:{plugin}", self.far),
-                        target: target.clone(),
-                    });
-                    target.set_view(view.clone());
-                    state.plugins.insert(plugin.clone(), target.clone());
-                    let _ = view.await;
-                    target
-                }
-            }),
+            None => {
+                let target = Target::new();
+                let view = self.ctx.plugin(RemotePlugin {
+                    name: format!("{}:{plugin}", self.far),
+                    target: target.clone(),
+                });
+                target.set_view(view.clone());
+                state.plugins.insert(plugin.clone(), target.clone());
+                let _ = view.await;
+                Some(target)
+            }
         };
         let provided = match target.filter(|target| !target.failed()) {
             None => None,
@@ -329,6 +346,11 @@ impl Imports {
                 if let Some(provided) = current.provided.take() {
                     let _ = provided.dispose().await;
                 }
+                if std::mem::take(&mut current.routed) {
+                    if let Some(process) = self.process.lock().unwrap().clone() {
+                        process.withdraw_row_service(&name, version);
+                    }
+                }
                 current.plugin.clone()
             }
             // Withdrawn at `version` before it was announced: an older
@@ -340,6 +362,7 @@ impl Imports {
                         version,
                         plugin: String::new(),
                         provided: None,
+                        routed: false,
                     },
                 );
                 return Ok(());

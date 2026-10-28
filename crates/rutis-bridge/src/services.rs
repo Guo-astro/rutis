@@ -435,6 +435,11 @@ pub(crate) struct Announcement {
 }
 
 impl Announcement {
+    /// Its methods, `{ method: "sync" | "async" }`.
+    pub(crate) fn shape(&self) -> Json {
+        self.shape.clone()
+    }
+
     /// Read a `services.announce`'s arguments.
     pub(crate) fn read(args: Value) -> Result<Self, Error> {
         let mut fields = match args.list()?.into_iter().next() {

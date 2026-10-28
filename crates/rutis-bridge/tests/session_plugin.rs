@@ -6,15 +6,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::events::Call;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ChannelError};
 use rutis_bridge::events::{ArgValue, Args};
 use rutis_bridge::session::{
-    call_service, host_key, HostDispatch, Reply, Value, ENDPOINT_PROTOCOL,
+    call_service, host_key, Dispatch, Endpoint, Error as SessionError, Handshake, HostDispatch,
+    Reply, Value, ENDPOINT_PROTOCOL,
 };
-use rutis_bridge::{LocalId, PeerId, Session};
+use rutis_bridge::{
+    catalog_key, session_key, Described, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
+};
 use rutis_test_support::{eventually, within};
 use serde_json::{json, Value as Json};
 
@@ -498,4 +501,297 @@ async fn the_far_end_leaving_unloads_its_plugins() {
     assert!(within("the call", slow).await.unwrap().is_err());
     assert!(plugin(&a, "b:clock").is_none_or(|p| p.0 == FiberState::Disposed));
     assert!(a.get_key::<dyn HostDispatch>(host_key("clock")).is_none());
+}
+
+// ── the handshake's ends ────────────────────────────────────────
+
+/// A greeted session dropped unmounted closes its channel with `Done`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_greeted_session_dropped_unmounted_closes_with_done() {
+    let main = kernel("main");
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let far = far_end(theirs, |channel| {
+        send(channel, hello(ENDPOINT_PROTOCOL, "far"))
+    });
+    let greeted = within("the handshake", Session::handshake(&main, ours))
+        .await
+        .unwrap();
+    drop(greeted);
+    let (frames, ended) = joined(far).await;
+    assert_eq!(frames.len(), 1, "only the greeting: {frames:?}");
+    assert_eq!(ended, Ok(()), "closed with Done");
+}
+
+/// A handshake dropped before the far end greeted (its caller went away)
+/// closes the channel with `Done`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handshake_dropped_midway_closes_with_done() {
+    let main = kernel("main");
+    let (ours, mut theirs) = rutis_bridge::memory::pair();
+    let handshake = tokio::spawn(async move { Session::handshake(&main, ours).await.map(|_| ()) });
+    let channel = tokio::task::spawn_blocking(move || {
+        let first = read(&mut theirs);
+        (first, theirs)
+    });
+    let (first, mut theirs) = within("this end's greeting", channel).await.unwrap();
+    assert_eq!(first.unwrap().unwrap()["op"], "hello");
+    handshake.abort();
+    let end = within(
+        "the channel's end",
+        tokio::task::spawn_blocking(move || read(&mut theirs)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(end, Ok(None), "closed with Done");
+}
+
+/// The handshake's errors are the session's: another version is
+/// incompatible.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handshake_error_keeps_its_kind() {
+    let main = kernel("main");
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let _far = far_end(theirs, |channel| send(channel, hello(3, "old")));
+    let error = match within("the handshake", Session::handshake(&main, ours)).await {
+        Err(error) => error,
+        Ok(_) => panic!("protocol 3 is not a session"),
+    };
+    assert!(
+        matches!(error, SessionError::Handshake(Handshake::Incompatible(_))),
+        "{error:?}"
+    );
+}
+
+// ── run ─────────────────────────────────────────────────────────
+
+/// Builds the plugin `contacts`, which provides `contacts` answering
+/// `office`.
+struct Contacts;
+
+impl PluginFactory<Json> for Contacts {
+    fn name(&self) -> &str {
+        "contacts"
+    }
+
+    fn build(&self, _: &Json) -> Result<Box<dyn DynPlugin>, rutis::Error> {
+        Ok(Box::new(provides("contacts", "contacts", "office")))
+    }
+}
+
+/// The connection row `row`: mounts a session on its channel.
+struct Connection {
+    row: &'static str,
+    channel: std::sync::Mutex<Option<Channel>>,
+}
+
+impl DynPlugin for Connection {
+    fn name(&self) -> &str {
+        self.row
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            ctx.mark_row(self.row)?;
+            let channel = self.channel.lock().unwrap().take().unwrap();
+            ctx.plugin(Session::new(channel));
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A kernel runs a plugin of another from its catalog: it is the plugin
+/// `<id>:<plugin>` there, its services used there; dropping the handle
+/// stops it on both sides. Without a catalog the far end contains nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_on_a_rutis_kernel() {
+    let (main, office) = (kernel("main"), kernel("office"));
+    let catalog: Arc<dyn PluginCatalog> =
+        Arc::new(StaticCatalog::new().with("contacts", Described::default(), Contacts));
+    let _catalog = office.provide_at(catalog_key(), catalog).unwrap();
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let _at_office = office.plugin(Session::new(theirs));
+    // The session under the connection row `office`.
+    main.plugin(Connection {
+        row: "office",
+        channel: std::sync::Mutex::new(Some(ours)),
+    });
+    let handle = eventually(
+        || main.get_at(&session_key("office")),
+        "the session of the row office",
+    )
+    .await;
+    assert_eq!(handle.id(), "office");
+    assert!(handle.process().is_some());
+
+    let row = handle.run("contacts", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    assert_eq!(
+        plugin(&main, "office:contacts").map(|p| p.0),
+        Some(FiberState::Active)
+    );
+    assert_eq!(get(&main, "contacts").await, "office");
+    assert!(plugin(&office, "contacts").is_some(), "running at office");
+
+    drop(row);
+    eventually(
+        || {
+            plugin(&office, "contacts")
+                .is_none_or(|p| p.0 == FiberState::Disposed)
+                .then_some(())
+        },
+        "contacts stopping at office",
+    )
+    .await;
+    eventually(
+        || {
+            main.get_key::<dyn HostDispatch>(host_key("contacts"))
+                .is_none()
+                .then_some(())
+        },
+        "contacts gone at main",
+    )
+    .await;
+
+    // A kernel without a catalog contains no plugin.
+    let lone = kernel("lone");
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let _at_lone = lone.plugin(Session::new(theirs));
+    main.plugin(Connection {
+        row: "lone",
+        channel: std::sync::Mutex::new(Some(ours)),
+    });
+    let handle = eventually(|| main.get_at(&session_key("lone")), "the session of lone").await;
+    let row = handle.run("contacts", json!({})).unwrap();
+    let error = within("the load", row.loaded())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("runtime lone: this connection does not contain plugin contacts"),
+        "{error}"
+    );
+}
+
+/// `run` before the session is mounted fails at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_needs_a_mounted_session() {
+    let (main, office) = (kernel("main"), kernel("office"));
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let _at_office = office.plugin(Session::new(theirs));
+    let greeted = within("the handshake", Session::handshake(&main, ours))
+        .await
+        .unwrap();
+    let handle = greeted.handle();
+    let error = handle.run("contacts", json!({})).err().unwrap().to_string();
+    assert!(
+        error.contains("the session with office is not mounted"),
+        "{error}"
+    );
+    let _session = main.plugin(greeted);
+    eventually(|| handle.process().map(|_| ()), "the session's process").await;
+}
+
+// ── a language runtime ──────────────────────────────────────────
+
+/// A runtime `rt` with the plugin `contacts`, which provides `contacts`
+/// whose `whoami()` answers `rt`, speaking the row contract in-process.
+struct Runtime {
+    tokio: tokio::runtime::Handle,
+    version: std::sync::atomic::AtomicU64,
+}
+
+impl Dispatch for Runtime {
+    fn invoke(
+        &self,
+        peer: &rutis_bridge::session::Connection,
+        target: &str,
+        method: &str,
+        args: Value,
+    ) -> Reply {
+        let args = args.json().unwrap_or(Json::Null);
+        let schema = json!({ "inject": [], "provides": { "contacts": { "whoami": "async" } } });
+        match (target, method) {
+            ("", "mount") => Ok(json!({
+                "services": {},
+                "features": ["rows.v2", "hosts", "leaf"],
+                "plugins": { "contacts": schema },
+            })
+            .into()),
+            ("", "rows.load") => {
+                let key = args[0].as_str().unwrap().to_owned();
+                let version = self
+                    .version
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                let (peer, args) = (
+                    peer.clone(),
+                    json!(["contacts", format!("contacts@{key}"), version]),
+                );
+                self.tokio.spawn(async move {
+                    let _ = peer.invoke_async("", "service", args.into()).await;
+                });
+                Ok(Value::Undefined)
+            }
+            ("", _) => Ok(Value::Undefined),
+            (_, "whoami") => Ok(json!("rt").into()),
+            (target, method) => Err(SessionError::Value(format!("no {target}.{method}"))),
+        }
+    }
+}
+
+/// A language runtime runs a plugin through the row contract: its
+/// services are the plugin `rt:contacts`'s here.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_on_a_language_runtime() {
+    let main = kernel("main");
+    let (ours, theirs) = rutis_bridge::memory::pair();
+    let mut endpoint = Endpoint::rust(id("rt"));
+    endpoint.capabilities.push("runtime".into());
+    let _runtime = rutis_bridge::session::Connection::open(
+        theirs,
+        Arc::new(Runtime {
+            tokio: tokio::runtime::Handle::current(),
+            version: Default::default(),
+        }),
+        endpoint,
+    )
+    .unwrap();
+    let greeted = within("the handshake", Session::handshake(&main, ours))
+        .await
+        .unwrap();
+    let handle = greeted.handle();
+    within("the session", async {
+        (&main.plugin(greeted)).await.unwrap()
+    })
+    .await;
+    assert!(handle.process().is_some(), "mounted with its process");
+    let row = handle.run("contacts", json!({})).unwrap();
+    within("the load", row.loaded()).await.unwrap();
+    assert_eq!(
+        plugin(&main, "rt:contacts").map(|p| p.0),
+        Some(FiberState::Active)
+    );
+    eventually(
+        || {
+            main.get_key::<dyn HostDispatch>(host_key("contacts"))
+                .map(|_| ())
+        },
+        "contacts here",
+    )
+    .await;
+    let who: String = within("the call", call_service(&main, "contacts", "whoami", ()))
+        .await
+        .unwrap();
+    assert_eq!(who, "rt");
+    let error = within(
+        "a missing plugin",
+        handle.run("missing", json!({})).unwrap().loaded(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("runtime rt: this connection does not contain plugin missing"),
+        "{error}"
+    );
 }

@@ -73,7 +73,9 @@ pub use registration::{
     Accepting, Deliver, Refusal, Registered, Registration, RegistrationError, Registrations, Ticket,
 };
 pub use services::{ExportPlugin, ImportPlugin};
-pub use session::plugin::{session_key, Greeted, LocalId, Session, SessionHandle};
+pub use session::plugin::{
+    catalog_key, session_key, Greeted, LocalId, RowHandle, Session, SessionHandle,
+};
 
 /// The error another language threw, inside a rutis error: a row that
 /// failed, a call to a plugin's service that failed. Gives its name, code,

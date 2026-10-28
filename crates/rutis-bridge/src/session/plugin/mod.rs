@@ -15,7 +15,12 @@
 //! unloaded.
 
 mod greet;
+mod rows;
+mod run;
 mod services;
+
+pub use rows::catalog_key;
+pub use run::RowHandle;
 
 pub(crate) use greet::Greet;
 
@@ -28,6 +33,7 @@ use rutis::{Ctx, Error as RutisError};
 
 use crate::channel::{Channel, Close, PeerId};
 use crate::peer::Operations;
+use crate::runtime::{Mount, Process};
 use crate::session::rpc::Connection;
 use crate::session::Error;
 use crate::{peer_key, Peer};
@@ -73,15 +79,22 @@ impl Session {
         }
     }
 
+
     /// Greet the far end on `channel` as the [`LocalId`] `ctx` sees, waiting
     /// at most 10 s for its greeting. Registers nothing: mount the result
     /// to bring the far end in. On failure the far end has this end's
     /// greeting, which says why where the protocol can (its version), and
-    /// the channel is closed with [`Close::Done`].
-    pub async fn handshake(ctx: &Ctx, channel: Channel) -> Result<Greeted, RutisError> {
+    /// the channel is closed with [`Close::Done`]; so it is when the
+    /// handshake is dropped before it ends. Errors as a session's: another
+    /// version or format is [`Handshake::Incompatible`](crate::session::Handshake),
+    /// a far end refusing this end's id (4003) `IdentityMismatch`, no
+    /// greeting in time `Transport("the far end did not greet in time")`.
+    pub async fn handshake(ctx: &Ctx, channel: Channel) -> Result<Greeted, Error> {
         let Some(local) = ctx.get::<LocalId>() else {
             channel.closer.close(Close::Done);
-            return Err(failed("the host provides no id for its sessions"));
+            return Err(Error::refused(
+                "the host provides no id for its sessions".into(),
+            ));
         };
         let greet = Greet {
             local: local.0.clone(),
@@ -90,7 +103,7 @@ impl Session {
             require: &[],
             timeout: HANDSHAKE,
         };
-        let (connection, operations) = greet.open(channel).await.map_err(failed)?;
+        let (connection, operations) = greet.open(channel).await?;
         let far = connection
             .greeting()
             .map(|greeting| greeting.endpoint.clone())
@@ -122,7 +135,7 @@ impl DynPlugin for Session {
             let channel = self.channel.lock().unwrap().take().ok_or_else(|| {
                 failed("a session runs once: its channel is gone with the first run")
             })?;
-            let greeted = Session::handshake(ctx, channel).await?;
+            let greeted = Session::handshake(ctx, channel).await.map_err(failed)?;
             greeted.mount(ctx).await
         })
     }
@@ -197,9 +210,16 @@ struct Shared {
 }
 
 /// A mounted session.
+#[derive(Clone)]
 struct Mounted {
-    #[allow(dead_code)]
+    /// Where its remote plugins are mounted.
     ctx: Ctx,
+    imports: Arc<services::Imports>,
+    /// The far end is a rutis kernel.
+    node: bool,
+    /// What runs plugins there, once it is mounted: none for a far end
+    /// that does not (a device app that only announces services).
+    process: Option<Arc<Process>>,
 }
 
 /// A mounted session, as code that is not one of its plugins uses it.
@@ -212,6 +232,65 @@ impl SessionHandle {
     /// The id the far end greeted with.
     pub fn id(&self) -> &str {
         self.shared.far.as_str()
+    }
+
+    /// Run `plugin` there with `config`: once it loaded, it is the plugin
+    /// `<id>:<plugin>` below the session. Dropping the handle stops it.
+    /// Fails at once only when the session is not mounted (or has ended),
+    /// or the far end runs no plugins; the far end not containing the
+    /// plugin, or its load failing, is [`RowHandle::loaded`]'s.
+    pub fn run(&self, plugin: &str, config: serde_json::Value) -> Result<RowHandle, RutisError> {
+        let far = &self.shared.far;
+        let mounted = self
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| failed(format!("the session with {far} is not mounted")))?;
+        let process = mounted
+            .process
+            .ok_or_else(|| failed(format!("{far} runs no plugins")))?;
+        Ok(run::run(
+            run::Running {
+                ctx: mounted.ctx,
+                far: far.to_string(),
+                process,
+                node: mounted.node,
+            },
+            plugin,
+            config,
+        ))
+    }
+
+    /// What runs plugins there: rutis-loader loads the rows `<row>:<plugin>`
+    /// through it, as a runtime's.
+    #[doc(hidden)]
+    pub fn process(&self) -> Option<Arc<Process>> {
+        self.shared
+            .state
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|mounted| mounted.process.clone())
+    }
+
+    /// Mounted, with `process` running plugins there: provided at
+    /// [`session_key`] of the row the session is under.
+    fn ready(&self, ctx: &Ctx, process: Arc<Process>) -> Result<(), RutisError> {
+        if let Some(mounted) = self.shared.state.lock().unwrap().as_mut() {
+            mounted.imports.process(process.clone());
+            mounted.process = Some(process);
+        }
+        let Some(row) = ctx.row() else {
+            return Ok(());
+        };
+        let key = session_key(&row);
+        if ctx.get_at(&key).is_some() {
+            return Ok(());
+        }
+        ctx.provide_at(key, Arc::new(self.clone()))?;
+        Ok(())
     }
 }
 
@@ -233,22 +312,56 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
     let scoped = ctx.isolate(peer_key(&far), &label);
     scoped.provide_at(peer_key(&far), peer.clone())?;
     let failing = |error: Error| failed(error);
+    let handle = SessionHandle {
+        shared: shared.clone(),
+    };
+    let node = start.connection.supports("node");
 
     // What the far end provides, every far end: it announces services once
     // this end offers `services`.
     let imports = services::Imports::new(&scoped, far.clone(), start.connection.clone());
-    let importing = peer
+    let mut offered = vec![peer
         .register("services", Arc::new(services::Importing(imports.clone())))
-        .map_err(failing)?;
+        .map_err(failing)?];
+    *shared.state.lock().unwrap() = Some(Mounted {
+        ctx: scoped.clone(),
+        imports,
+        node,
+        process: None,
+    });
+    let mut client = None;
+    if start.connection.supports("runtime") {
+        // A language runtime: this end's process on it, its listeners on
+        // this bus.
+        let mount = Mount {
+            ctx: Some(scoped.clone()),
+            runtime: Some(far.to_string()),
+            ..Mount::default()
+        };
+        let process = Process::over(crate::runtime::peer_session(peer.clone()), mount)
+            .await
+            .map_err(failing)?;
+        process.check_rows(far.as_str()).map_err(failing)?;
+        handle.ready(ctx, process)?;
+    } else if node {
+        // A rutis kernel: each runs the other's rows; its listeners and
+        // this bus's are entries of each other's bus, one hop, every name.
+        let (rows, served) = rows::Rows::serve(&scoped, &peer).map_err(failing)?;
+        offered.extend(served);
+        scoped.plugin(crate::LinkEventsPlugin::new(far.clone(), ["*"], ["*"]));
+        client = Some(tokio::spawn(client_once_served(
+            ctx.clone(),
+            scoped.clone(),
+            handle.clone(),
+            rows::Client {
+                peer: peer.clone(),
+                rows,
+            },
+        )));
+    }
     // What this end provides, to every far end: announced to one that
     // offers `services`.
     let exporting = services::Exports::follow(&scoped, peer.clone())?;
-    // A rutis kernel's listeners are entries of this bus, and this bus's of
-    // its: one hop, by every name.
-    let node = start.connection.supports("node");
-    if node {
-        scoped.plugin(crate::LinkEventsPlugin::new(far.clone(), ["*"], ["*"]));
-    }
 
     // The far end leaving unloads the session.
     let leaving = {
@@ -258,16 +371,55 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
             let _ = ending.dispose_self();
         })
     };
-    *shared.state.lock().unwrap() = Some(Mounted { ctx: scoped });
-    let kept = Mutex::new(Some((start, peer, importing, imports)));
+    let kept = Mutex::new(Some((start, peer, offered)));
     ctx.effect(move || async move {
         leaving.abort();
-        shared.state.lock().unwrap().take();
+        if let Some(client) = client {
+            client.abort();
+        }
         let _ = exporting.dispose().await;
+        shared.state.lock().unwrap().take();
         // The far end's plugins here have unloaded (children first): the
         // channel closes last.
         drop(kept.lock().unwrap().take());
         Ok(())
     })?;
     Ok(Effect::Done)
+}
+
+/// This end's process on a far rutis kernel, once that kernel serves rows:
+/// a far end that never does (a Cordis node) runs nothing from here.
+async fn client_once_served(ctx: Ctx, scoped: Ctx, handle: SessionHandle, client: rows::Client) {
+    let mut offers = client.peer.offers();
+    if offers
+        .wait_for(|offers| offers.epoch("rows").is_some())
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let far = handle.shared.far.to_string();
+    let mount = Mount {
+        ctx: Some(scoped),
+        runtime: Some(far.clone()),
+        ..Mount::default()
+    };
+    match Process::over_without_bus(Arc::new(client), mount).await {
+        Ok(process) => {
+            if let Err(error) = process
+                .check_rows(&far)
+                .map_err(failed)
+                .and_then(|()| handle.ready(&ctx, process))
+            {
+                eprintln!("{far}: cannot run plugins there: {error}");
+            }
+        }
+        // Ended meanwhile, or does not run plugins.
+        Err(error) => {
+            if ctx.cancellation_token().is_cancelled() {
+                return;
+            }
+            eprintln!("{far}: cannot run plugins there: {error}");
+        }
+    }
 }

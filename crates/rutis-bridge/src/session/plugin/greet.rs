@@ -23,7 +23,8 @@ pub(crate) struct Greet<'a> {
 impl Greet<'_> {
     /// Open a session on `channel` and wait, at most `timeout`, for the far
     /// end to greet as expected, declaring what is required. On failure the
-    /// session is closed.
+    /// session is closed, and so it is when this is dropped before it ends
+    /// (its channel closed with `Close::Done`).
     pub(crate) async fn open(
         &self,
         channel: Channel,
@@ -35,6 +36,7 @@ impl Greet<'_> {
         endpoint.capabilities.push("node".into());
         endpoint.capabilities.extend(self.declare.iter().cloned());
         let session = Connection::open(channel, operations.clone(), endpoint)?;
+        let closing = Closing(Some(session.clone()));
         let ready = tokio::time::timeout(self.timeout, session.ready()).await;
         match ready {
             Ok(Ok(())) => {}
@@ -64,7 +66,26 @@ impl Greet<'_> {
             session.close(error.clone());
             return Err(error);
         }
+        closing.disarm();
         operations.attach(session.clone());
         Ok((session, operations))
+    }
+}
+
+/// Closes a session whose handshake did not finish: dropped midway (its
+/// caller gone), it ends with its channel.
+struct Closing(Option<Connection>);
+
+impl Closing {
+    fn disarm(mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        if let Some(session) = self.0.take() {
+            session.close(Error::Transport("the handshake was abandoned".into()));
+        }
     }
 }
