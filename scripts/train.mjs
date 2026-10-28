@@ -23,8 +23,6 @@ export const crates = [
   'rutis-dylib',
   'rutis-host',
   'rutis-dylib-launcher',
-  // The migration tool (`cargo install rutis-migrate`, docs/migration-0.17.md).
-  'rutis-migrate',
 ]
 const manifest = name => `crates/${name}/Cargo.toml`
 
