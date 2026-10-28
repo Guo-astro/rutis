@@ -248,6 +248,8 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 
 Rebuild them with SDK 0.18 or later (the `required` exception for binaries built before 0.18 is removed).
 
+The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; write `go:<plugin>` and `swift:<plugin>`. A `rutis.json` still using them is refused when read, with the name to write. When two binaries have a plugin of the same name the row fails naming both files, and the plugins' author renames one.
+
 ### Python
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).

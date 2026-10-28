@@ -142,7 +142,7 @@ Each row runs a plugin:
 | Field | Meaning |
 | --- | --- |
 | `id` | Row name, unique within this file. |
-| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; `go-<binary name>:<plugin>` when two do), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices)), `<connection row>:<plugin>` (a plugin run on a connection's far end), `rutis-bridge/peer` (a node; see [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
+| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; a plugin name is in one binary only), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices)), `<connection row>:<plugin>` (a plugin run on a connection's far end), `rutis-bridge/peer` (a node; see [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
 | `config` | Plugin configuration. |
 | `inject` | Additional service names to wait for. |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |

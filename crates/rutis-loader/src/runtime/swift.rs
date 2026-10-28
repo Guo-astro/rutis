@@ -1,8 +1,7 @@
 //! Swift runtimes: one per binary built with the Swift SDK (`swift/rutis`),
 //! several side by side (docs/design-swift-sdk-2026-10-12.md §3).
 //!
-//! Swift is a [`BinaryLanguage`]: rows `swift:<plugin>` and
-//! `swift-<binary>:<plugin>`, the SDK's marker `rutis-swift-runtime:1`,
+//! Swift is a [`BinaryLanguage`]: rows `swift:<plugin>`, the SDK's marker `rutis-swift-runtime:1`,
 //! runtimes started by [`LocalRuntime::swift`]. Everything else (manifests,
 //! directory scans, the lifecycle, restarts, replaced and refused binaries)
 //! is [`super::binary`]'s, shared with Go: `BinaryResolver<Swift>`,

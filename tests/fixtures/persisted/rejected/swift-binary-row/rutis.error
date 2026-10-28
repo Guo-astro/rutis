@@ -1,0 +1,1 @@
+<dir>/rutis.json: rows[0] (id "clipboard"): the row name swift-MacKit:clipboard names a Swift binary, which rutis 0.19 removed: write swift:clipboard; a plugin name is in one binary only (https://github.com/arcships/rutis/blob/main/docs/migration-0.19.md)

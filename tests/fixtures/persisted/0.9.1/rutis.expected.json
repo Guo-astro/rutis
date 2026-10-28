@@ -56,10 +56,6 @@
       "name": "bun:./fn/edge.ts"
     },
     {
-      "id": "dns",
-      "name": "go-dns:resolver"
-    },
-    {
       "id": "probe",
       "name": "go:probe",
       "disabled": true

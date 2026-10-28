@@ -274,8 +274,8 @@ a running host keeps the old versions until it restarts
 - **TypeScript、JavaScript**：行名是包名（`@your-name/greeter`）或它的子路径。插件包带着它写时那个版本的 `@arcships/rutis`，宿主里几个版本可以并存；插件上标着它所用的插件 API 版本，宿主的运行时比它旧时明确报错。
 - **Bun**：包依赖 `@arcships/rutis-bun` 时 `add` 用 `bun add` 装进 `runtimes.bun.project`。行名 `bun:<npm 名或子路径>` 从这个项目的 `node_modules` 解析，`bun:./路径` 相对于这个项目；`bun:sqlite` 指项目里的模块 `sqlite`，不是 Bun 的内置模块。`runtimes.bun` 可以和 `runtimes.node`、`runtimes.py` 同时配置，服务按名字跨运行时共享。
 - **Python**：行名是插件包在 `rutis.plugins` 组里的入口点名（`py:welcome`），不是发行包名。Python 运行时就是这个环境里的 `rutis`，装成和 `rutis-host` 相同的版本（`rutis-host --version`）。
-- **Go**：二进制放进 `runtimes.go.dir`（`add` 用 `go install`，也可以下载插件发布里本平台的二进制；macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 在所有二进制里查找；两个二进制里有同名插件时写 `go-<二进制名>:<插件名>`。二进制在第一次有行用到时启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。
-- **Swift**（macOS）：从插件的 Release 下载二进制放进 `runtimes.swift.dir`；下载的二进制带隔离属性，`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除。行名 `swift:<插件>`（同名时 `swift-<二进制名>:<插件>`），其余设置与 `runtimes.go` 相同。运行它不需要 Swift 工具链。
+- **Go**：二进制放进 `runtimes.go.dir`（`add` 用 `go install`，也可以下载插件发布里本平台的二进制；macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 在所有二进制里查找；两个二进制里有同名插件时这一行失败，写出两个文件名，由插件作者改名。二进制在第一次有行用到时启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。
+- **Swift**（macOS）：从插件的 Release 下载二进制放进 `runtimes.swift.dir`；下载的二进制带隔离属性，`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除。行名 `swift:<插件>`（一个插件名只能在一个二进制里），其余设置与 `runtimes.go` 相同。运行它不需要 Swift 工具链。
 - **Rust**：Rust 插件编进 Rust 宿主，见 [在 Rust 应用里嵌入](rust-host.md)；Rust 宿主也能运行上面这些语言的插件（例如 Go 的 `BinaryResolver<Go>`、`BinaryRuntimes<Go>`），见 [运行时与加载器](rust-host.md#运行时与加载器)。
 
 ## 命令
@@ -767,7 +767,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
 ```
 
-`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`、`go-<二进制>:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。`rutis-host dev` 里，项目自己的运行时由 `dev` 设置：`rutis.dev.json` 里在这个运行时运行的行（TypeScript 项目的 `./dev/fake-llm.ts`、Python 项目的 `py:fake_llm`）没有告警；由别的运行时运行的行（TypeScript 项目里的 `py:` 行）告警一次，重新读 `rutis.dev.json` 时不再重复。
+`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。`rutis-host dev` 里，项目自己的运行时由 `dev` 设置：`rutis.dev.json` 里在这个运行时运行的行（TypeScript 项目的 `./dev/fake-llm.ts`、Python 项目的 `py:fake_llm`）没有告警；由别的运行时运行的行（TypeScript 项目里的 `py:` 行）告警一次，重新读 `rutis.dev.json` 时不再重复。
 
 这样启用的运行时按默认设置起不来时（例如没有 `package.json`、没装 `@arcships/rutis-runtime`，或 Python 环境里没有 `rutis`），宿主不退出：stderr 写一条告警，说明原因和该怎么做（`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`），它的行和以前一样失败（`unresolved: no plugin named …`），其他行照常运行。在 `runtimes` 里写明的运行时起不来时，仍然启动失败。
 
@@ -800,7 +800,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 | 字段 | 含义 |
 | --- | --- |
 | `id` | 行的名字，在本文件内唯一 |
-| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；两个二进制都有时写 `go-<二进制名>:<插件>`）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）、`<连接行>:<插件>`（在连接的对面运行的插件）、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
+| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；一个插件名只能在一个二进制里）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）、`<连接行>:<插件>`（在连接的对面运行的插件）、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
 | `config` | 插件的配置 |
 | `inject` | 额外要等的服务名 |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |

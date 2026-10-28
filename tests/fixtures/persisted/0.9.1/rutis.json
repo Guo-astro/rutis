@@ -13,7 +13,6 @@
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo", "units": ["metric"] }, "inject": ["llm", "cache"] },
     { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": true } },
     { "id": "edge-fn", "name": "bun:./fn/edge.ts" },
-    { "id": "dns", "name": "go-dns:resolver" },
     { "id": "probe", "name": "go:probe", "disabled": true },
     { "id": "local-tool", "name": "./tools/tool.ts" },
     { "id": "tools", "group": true, "config": [
