@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rutis_bridge::channel::{ConnectError, PeerId};
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketTransport,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketTransport};
 use rutis_bridge::{
     Credential, Dial, Identity, Registered, Registration, StaticIdentity, Transport,
 };

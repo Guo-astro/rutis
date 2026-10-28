@@ -11,9 +11,9 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args, LinkEventsPlugin};
+use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
-use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
 use rutis_bridge::{
     peer_key, Credential, Described, ExportPlugin, HostPlugin, IdentityPlugin, ImportPlugin,
     LinkConfig, LinkPlugin, Peer, Retry, StaticCatalog, StaticIdentity,

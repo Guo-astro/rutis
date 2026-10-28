@@ -34,9 +34,7 @@ use rutis::host::{BoxFuture, CtxHost, FiberView};
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::Value;
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, WebSocketPlugin, WebSocketTransport,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin, WebSocketTransport};
 use rutis_bridge::{
     Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin, Admission,
     AdmissionPlugin, Presented, Registration, Rejection, Release, SharedToken, StaticIdentity,

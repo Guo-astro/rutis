@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, IoSlice, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
-use crate::channel::{Channel, ChannelError, ChannelInfo, Closer, Receiver, Sender};
+use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 
 /// The largest message either way, without its newline: 16 MiB, the
 /// WebSocket transport's default. Over it, the channel closes; a far end
@@ -23,9 +23,8 @@ pub fn channel(
     read: impl Read + Send + 'static,
     write: impl Write + Send + 'static,
     closer: Arc<dyn Closer>,
-    info: ChannelInfo,
 ) -> Channel {
-    limited(read, write, closer, info, MAX_MESSAGE)
+    limited(read, write, closer, MAX_MESSAGE)
 }
 
 /// [`channel`] with messages of at most `max_message` bytes.
@@ -33,7 +32,6 @@ pub(crate) fn limited(
     read: impl Read + Send + 'static,
     write: impl Write + Send + 'static,
     closer: Arc<dyn Closer>,
-    info: ChannelInfo,
     max_message: usize,
 ) -> Channel {
     let write = Arc::new(Writer::new(write));
@@ -50,7 +48,6 @@ pub(crate) fn limited(
         sender: Box::new(LineSender(write, end.clone())),
         receiver: Box::new(LineReceiver(Some(BufReader::new(read)), end)),
         closer,
-        info,
     }
 }
 
@@ -119,18 +116,8 @@ impl<W> Writer<W> {
 }
 
 impl<W: Send> Closer for Releasing<W> {
-    fn close(&self, reason: &str) {
-        self.closer.close(reason);
-        self.release();
-    }
-
-    fn replaced(&self) {
-        self.closer.replaced();
-        self.release();
-    }
-
-    fn rejected(&self, reason: &str) {
-        self.closer.rejected(reason);
+    fn close(&self, why: Close) {
+        self.closer.close(why);
         self.release();
     }
 }
@@ -156,7 +143,7 @@ impl End {
     /// closes with 1009.
     fn too_big(&self, reason: String) -> ChannelError {
         self.ended.store(true, Ordering::SeqCst);
-        self.closer.close(&reason);
+        self.closer.close(Close::Done);
         closed(reason)
     }
 }
@@ -283,16 +270,11 @@ mod tests {
 
     struct Nothing;
     impl Closer for Nothing {
-        fn close(&self, _: &str) {}
+        fn close(&self, _: crate::channel::Close) {}
     }
 
     fn receive(bytes: &[u8]) -> Channel {
-        channel(
-            Cursor::new(bytes.to_vec()),
-            Vec::new(),
-            Arc::new(Nothing),
-            ChannelInfo::default(),
-        )
+        channel(Cursor::new(bytes.to_vec()), Vec::new(), Arc::new(Nothing))
     }
 
     #[test]
@@ -371,12 +353,7 @@ mod tests {
             prefix: Vec::new(),
             read: read.clone(),
         };
-        let mut channel = channel(
-            endless,
-            Vec::new(),
-            Arc::new(Nothing),
-            ChannelInfo::default(),
-        );
+        let mut channel = channel(endless, Vec::new(), Arc::new(Nothing));
         assert!(over_the_limit(channel.receiver.recv()));
         // Read at most the limit and one buffer more.
         assert!(read.load(Ordering::SeqCst) <= MAX_MESSAGE + 64 * 1024);
@@ -395,13 +372,7 @@ mod tests {
         for (length, delivered) in [(0, true), (16, true), (17, false)] {
             let mut stream = vec![b'b'; length];
             stream.push(b'\n');
-            let mut channel = limited(
-                Cursor::new(stream),
-                Vec::new(),
-                Arc::new(Nothing),
-                ChannelInfo::default(),
-                16,
-            );
+            let mut channel = limited(Cursor::new(stream), Vec::new(), Arc::new(Nothing), 16);
             let received = channel.receiver.recv();
             if delivered {
                 assert_eq!(received.unwrap().unwrap().len(), length);
@@ -426,15 +397,7 @@ mod tests {
             }
         }
         let chunks = |parts: &[&[u8]]| Trickle(parts.iter().map(|p| p.to_vec()).collect());
-        let open = |reads| {
-            limited(
-                reads,
-                Vec::new(),
-                Arc::new(Nothing),
-                ChannelInfo::default(),
-                8,
-            )
-        };
+        let open = |reads| limited(reads, Vec::new(), Arc::new(Nothing), 8);
         let mut at_limit = open(chunks(&[b"abcd", b"efgh", b"\n"]));
         assert_eq!(at_limit.receiver.recv().unwrap().unwrap(), b"abcdefgh");
         let mut over = open(chunks(&[b"abcd", b"efgh", b"i\n"]));
@@ -451,7 +414,6 @@ mod tests {
                 Cursor::new(bytes.to_vec()),
                 Vec::new(),
                 Arc::new(Nothing),
-                ChannelInfo::default(),
                 4,
             )
         };
@@ -466,7 +428,7 @@ mod tests {
     fn sending_over_the_limit_is_refused_and_closes() {
         struct Count(Arc<std::sync::atomic::AtomicUsize>);
         impl Closer for Count {
-            fn close(&self, _: &str) {
+            fn close(&self, _: crate::channel::Close) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -475,7 +437,6 @@ mod tests {
             Cursor::new(Vec::new()),
             Vec::new(),
             Arc::new(Count(closed.clone())),
-            ChannelInfo::default(),
             4,
         );
         channel.sender.send(b"1234").unwrap();
@@ -531,12 +492,11 @@ mod tests {
             Handle(Cursor::new(b"{}\n".to_vec()), Arc::clone(&read)),
             Handle(Vec::new(), Arc::clone(&written)),
             Arc::new(Nothing),
-            ChannelInfo::default(),
         );
         channel.sender.send(b"{}").unwrap();
         assert_eq!(channel.receiver.recv().unwrap().unwrap(), b"{}");
         assert!(!read.load(Ordering::SeqCst) && !written.load(Ordering::SeqCst));
-        channel.closer.close("done");
+        channel.closer.close(Close::Done);
         assert!(written.load(Ordering::SeqCst), "the writing handle went");
         assert!(channel.sender.send(b"{}").is_err());
         assert_eq!(channel.receiver.recv().unwrap(), None);
@@ -571,13 +531,12 @@ mod tests {
             Cursor::new(Vec::new()),
             Handle(Stuck(wait, blocked.clone()), Arc::clone(&written)),
             Arc::new(Nothing),
-            ChannelInfo::default(),
         );
         let sending = std::thread::spawn(move || sender.send(b"{}"));
         while !blocked.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
-        closer.close("done");
+        closer.close(Close::Done);
         assert!(!written.load(Ordering::SeqCst), "the send still holds it");
         go.send(()).unwrap();
         assert!(sending.join().unwrap().is_err());
@@ -592,7 +551,7 @@ mod tests {
         use std::net::{Shutdown, TcpListener, TcpStream};
         struct ShutTcp(TcpStream);
         impl Closer for ShutTcp {
-            fn close(&self, _: &str) {
+            fn close(&self, _: crate::channel::Close) {
                 let _ = self.0.shutdown(Shutdown::Both);
             }
         }
@@ -605,7 +564,6 @@ mod tests {
             stream.try_clone().unwrap(),
             stream.try_clone().unwrap(),
             Arc::new(ShutTcp(stream)),
-            ChannelInfo::default(),
         );
         let message = vec![b'x'; 1 << 20];
         let sending = std::thread::spawn(move || while sender.send(&message).is_ok() {});
@@ -613,7 +571,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let (closed, closing) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            closer.close("done");
+            closer.close(Close::Done);
             let _ = closed.send(());
         });
         let returned = closing.recv_timeout(std::time::Duration::from_secs(5));

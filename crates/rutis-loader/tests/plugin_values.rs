@@ -44,7 +44,9 @@ use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in};
 use rutis_loader::edit::Instance;
 #[cfg(feature = "go")]
-use rutis_loader::runtime::go::{GoBinaries, GoResolver, GoRuntimes};
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+#[cfg(feature = "go")]
+use rutis_loader::runtime::go::Go;
 #[cfg(any(
     feature = "node",
     feature = "bun",
@@ -446,9 +448,9 @@ async fn fixture(lang: Lang) -> Fixture {
         #[cfg(feature = "go")]
         Lang::Go => {
             let go = Arc::new(
-                GoResolver::new(GoBinaries::new().file(go_binary())).with_catalog(&catalog),
+                BinaryResolver::<Go>::new(Binaries::new().file(go_binary())).with_catalog(&catalog),
             );
-            let runtimes = GoRuntimes::new(go.clone(), dir.path()).idle(None);
+            let runtimes = BinaryRuntimes::<Go>::new(go.clone(), dir.path()).idle(None);
             let start: Start = Box::new(move |root: &Ctx| {
                 root.plugin(runtimes);
             });
@@ -456,7 +458,8 @@ async fn fixture(lang: Lang) -> Fixture {
         }
         #[cfg(all(feature = "swift", target_os = "macos"))]
         Lang::Swift => {
-            use rutis_loader::runtime::swift::{SwiftBinaries, SwiftResolver, SwiftRuntimes};
+            use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+            use rutis_loader::runtime::swift::Swift;
             let plugins = dir.path().join("plugins");
             std::fs::create_dir_all(&plugins).unwrap();
             std::fs::copy(
@@ -465,9 +468,9 @@ async fn fixture(lang: Lang) -> Fixture {
             )
             .unwrap();
             let swift = Arc::new(
-                SwiftResolver::new(SwiftBinaries::new().dir(&plugins)).with_catalog(&catalog),
+                BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins)).with_catalog(&catalog),
             );
-            let runtimes = SwiftRuntimes::new(swift.clone(), dir.path()).eager();
+            let runtimes = BinaryRuntimes::<Swift>::new(swift.clone(), dir.path()).eager();
             let start: Start = Box::new(move |root: &Ctx| {
                 root.plugin(runtimes);
             });
@@ -976,7 +979,7 @@ mod kotlin {
 mod dialed_in {
     use super::*;
     use common::runtimes::id;
-    use rutis_bridge::transport::websocket::{Config, ListenerConfig, WebSocketPlugin};
+    use rutis_bridge::websocket::{Config, ListenerConfig, WebSocketPlugin};
     use rutis_bridge::{AccessPointConfig, AccessPointPlugin, AdmissionPlugin, SharedToken};
     use rutis_loader::runtime::{RuntimeConnection, RuntimeInstances};
     use rutis_test_support::{scaled, HANG_GUARD};

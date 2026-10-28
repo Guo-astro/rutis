@@ -455,9 +455,15 @@ async fn groups_cascade() {
 #[tokio::test]
 async fn schema_comes_from_the_config_type() {
     let (_h, _store, _root, loader) = setup().await;
-    let schema = loader.schema_of("echo").await.unwrap().unwrap();
+    let schema = loader
+        .resolve("echo")
+        .await
+        .unwrap()
+        .schema
+        .clone()
+        .unwrap();
     assert!(schema["properties"]["label"].is_object(), "{schema}");
-    assert!(loader.schema_of("plain").await.unwrap().is_none());
+    assert!(loader.resolve("plain").await.unwrap().schema.is_none());
     assert!(loader.get("a").unwrap().schema.is_some());
 }
 

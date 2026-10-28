@@ -83,7 +83,7 @@ On Windows a process has an id here only once it has connected to the host, so t
 
 - rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `LocalRuntime::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
 - rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
-- `ServiceCatalog::share_registered_only` and read interception decide the names services are shared by; they are not permissions.
+- Read interception decides the names services are shared by; it is not a permission.
 - Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.
 - A plugin process has all the rights of the host's user (files, network, child processes). rutis has no sandbox and no memory or CPU limits.
 
