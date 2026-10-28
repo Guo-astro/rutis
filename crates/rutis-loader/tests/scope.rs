@@ -47,9 +47,9 @@ impl Expressions for Mini {
 }
 
 fn catalog() -> ServiceCatalog {
-    // Only the names registered: an unknown name is refused, not shared.
+    // With runtimes or peers, a name not registered is shared by name;
+    // without them, it is unknown.
     let mut catalog = ServiceCatalog::new();
-    catalog.share_registered_only();
     catalog
         .register::<Dep>("dep")
         .readable::<Startup>("startup");
@@ -164,12 +164,23 @@ async fn unknown_services_and_intercept_config_are_unresolved() {
         ]),
     )
     .await;
-    assert_eq!(report.failures.len(), 2, "{report:?}");
-    match loader.get("u").unwrap().status {
-        EntryStatus::Unresolved(LoaderError::UnknownService(names)) => {
-            assert_eq!(names, ["other", "nope"]);
+    // With runtimes or peers, names not registered are shared by name: the
+    // row waits for `nope` to be provided.
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    {
+        assert_eq!(report.failures.len(), 1, "{report:?}");
+        assert_eq!(state(&loader, "u"), Some(FiberState::Pending));
+    }
+    // Without them, a name not registered is unknown.
+    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    {
+        assert_eq!(report.failures.len(), 2, "{report:?}");
+        match loader.get("u").unwrap().status {
+            EntryStatus::Unresolved(LoaderError::UnknownService(names)) => {
+                assert_eq!(names, ["other", "nope"]);
+            }
+            other => panic!("{other:?}"),
         }
-        other => panic!("{other:?}"),
     }
     assert!(matches!(
         loader.get("i").unwrap().status,
@@ -201,12 +212,19 @@ async fn changing_the_scope_respawns_and_persists() {
         store.patches(),
         patches(json!([{ "id": "e", "isolate": { "dep": "x" }, "inject": ["dep"] }]))
     );
-    // Unknown names are refused before anything changes.
-    let err = loader
-        .set_inject("e", vec!["nope".into()])
-        .await
-        .unwrap_err();
-    assert!(matches!(err, LoaderError::UnknownService(_)), "{err:?}");
+    // With runtimes or peers, a name not registered is shared by name and
+    // accepted; without them, it is refused before anything changes.
+    let nope = loader.set_inject("e", vec!["nope".into()]).await;
+    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    {
+        nope.unwrap();
+        assert_eq!(state(&loader, "e"), Some(FiberState::Pending));
+    }
+    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    {
+        let err = nope.unwrap_err();
+        assert!(matches!(err, LoaderError::UnknownService(_)), "{err:?}");
+    }
     // Clearing removes the field again.
     loader.set_inject("e", vec![]).await.unwrap();
     assert_eq!(state(&loader, "e"), Some(FiberState::Active));

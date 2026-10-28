@@ -6,7 +6,7 @@
 //! reported as the session's end.
 //!
 //! Runtimes that get their sessions through a link are started by the local
-//! transport ([`crate::transport::local`]), which has its own spawner; this
+//! transport ([`crate::pipe`]), which has its own spawner; this
 //! copy goes with the facade.
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -70,11 +70,11 @@ pub(crate) async fn spawn(
 }
 
 async fn loopback(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
-    use crate::transport::local::spawn::{adopt, Loopback, CHANNEL_TOKEN};
+    use crate::pipe::spawn::{adopt, Loopback, CHANNEL_TOKEN};
     let transport = |error: std::io::Error| Error::Transport(error.to_string());
     let listener = Loopback::bind().await.map_err(transport)?;
     #[cfg(unix)]
-    crate::transport::local::spawn::hand_over(&mut command, None);
+    crate::pipe::spawn::hand_over(&mut command, None);
     let mut child = command
         .env(CHANNEL_TOKEN, listener.token())
         .arg(listener.address())
@@ -158,7 +158,7 @@ impl Sender for ExitSender {
         self.sender.send(message).map_err(|error| {
             // Refused by the framing (over its limit, a raw newline):
             // nothing the process did.
-            if crate::transport::local::lines::refuses(message) {
+            if crate::pipe::lines::refuses(message) {
                 return error;
             }
             // Closed here, before or while waiting: the session ends for
@@ -198,20 +198,15 @@ impl ClosedHere {
 }
 
 impl Closer for ClosedHere {
-    fn close(&self, reason: &str) {
+    fn close(&self, why: crate::channel::Close) {
         self.note();
-        self.closer.close(reason);
-    }
-
-    fn replaced(&self) {
-        self.note();
-        self.closer.replaced();
+        self.closer.close(why);
     }
 }
 
 /// The channel of the process `child` started, ending either way with how
 /// the process ended. It must frame as
-/// [`lines`](crate::transport::local::lines) does, with its default limit.
+/// [`lines`](crate::pipe::lines) does, with its default limit.
 fn on_exit(channel: Channel, child: &Child) -> Channel {
     let mut channel = on_disconnect(channel, Box::new(child.disconnected()));
     let closed = Arc::new(AtomicBool::new(false));
@@ -232,7 +227,7 @@ fn on_exit(channel: Channel, child: &Child) -> Channel {
 fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned, Error> {
     let (ours, theirs) = UnixStream::pair().map_err(transport)?;
     // Only fd 3 (and stdio) crosses exec, whatever other threads opened.
-    crate::transport::local::spawn::hand_over(&mut command, Some(theirs.as_raw_fd()));
+    crate::pipe::spawn::hand_over(&mut command, Some(theirs.as_raw_fd()));
     let child = command
         .arg(format!("fd:{CHANNEL_FD}"))
         .arg(first)
@@ -242,9 +237,7 @@ fn inherit(mut command: tokio::process::Command, first: &Path) -> Result<Spawned
     // The child has its copy; ours would keep the channel open after it exits.
     drop(theirs);
     let child = Child::watch(child);
-    let mut channel = crate::runtime::unix::channel(ours, "")?;
-    channel.info.transport = "fd";
-    let channel = on_exit(channel, &child);
+    let channel = on_exit(crate::runtime::unix::channel(ours)?, &child);
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -260,7 +253,7 @@ async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result
         .map_err(transport)?;
     let socket = directory.path().join("peer.sock");
     let listener = tokio::net::UnixListener::bind(&socket).map_err(transport)?;
-    crate::transport::local::spawn::hand_over(&mut command, None);
+    crate::pipe::spawn::hand_over(&mut command, None);
     let mut child = command
         .arg(&socket)
         .arg(first)
@@ -276,7 +269,7 @@ async fn dial_back(mut command: tokio::process::Command, first: &Path) -> Result
     };
     let stream = stream.into_std().map_err(transport)?;
     let child = Child::watch(child);
-    let channel = on_exit(crate::runtime::unix::channel(stream, "")?, &child);
+    let channel = on_exit(crate::runtime::unix::channel(stream)?, &child);
     Ok(Spawned {
         channel: traced(channel),
         child,
@@ -292,6 +285,7 @@ fn traced(channel: Channel) -> Channel {
     match std::env::var_os(TRACE_VARIABLE) {
         Some(_) => crate::channel::trace::trace(
             channel,
+            "runtime",
             Arc::new(|line: &str| eprintln!("rutis trace: {line}")),
         ),
         None => channel,
@@ -319,7 +313,7 @@ pub(crate) fn command(
             ));
         }
     };
-    use crate::transport::local::OutputStream;
+    use crate::pipe::OutputStream;
     let cannot = |error: std::io::Error| {
         Error::Transport(format!(
             "cannot start {}: {error}",
@@ -354,7 +348,7 @@ pub(crate) fn command(
         command.current_dir(cwd);
     }
     let loopback = !cfg!(unix)
-        || std::env::var_os(crate::transport::local::HANDOVER_VARIABLE)
+        || std::env::var_os(crate::pipe::HANDOVER_VARIABLE)
             .is_some_and(|value| value == "loopback");
     let connect = match (loopback, launcher.inherit_fd) {
         (true, _) => Connect::Loopback,
@@ -498,7 +492,7 @@ fn record_exit(ended: &(Mutex<Option<String>>, Condvar), status: String) {
 /// Waits until the process `pid` ends and reports its status, independently
 /// of any runtime.
 #[cfg(windows)]
-use crate::transport::local::spawn::peek_exit;
+use crate::pipe::spawn::peek_exit;
 
 #[cfg(not(any(unix, windows)))]
 fn peek_exit(_pid: u32) -> Option<std::process::ExitStatus> {
@@ -692,7 +686,7 @@ mod tests {
             "the send waits for the process"
         );
 
-        closer.close("closed here");
+        closer.close(crate::channel::Close::Done);
         let error = send
             .recv_timeout(SETTLED)
             .expect("the close releases the send")
@@ -712,7 +706,7 @@ mod tests {
         let Spawned {
             mut channel, child, ..
         } = inherit(closes_then_waits(&gate), Path::new("first")).unwrap();
-        channel.closer.close("closed here");
+        channel.closer.close(crate::channel::Close::Done);
         let sending = std::time::Instant::now();
         let error = channel.sender.send(b"{}").unwrap_err();
         assert!(
@@ -739,7 +733,7 @@ mod tests {
         assert_eq!(newline.to_string(), "message contains a raw newline");
         let over = channel
             .sender
-            .send(&vec![b'x'; crate::transport::local::lines::MAX_MESSAGE + 1])
+            .send(&vec![b'x'; crate::pipe::lines::MAX_MESSAGE + 1])
             .unwrap_err();
         assert!(over.to_string().contains("exceeds the limit"), "{over}");
         assert!(sending.elapsed() < Duration::from_secs(1), "a send waited");

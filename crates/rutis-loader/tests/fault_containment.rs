@@ -166,8 +166,7 @@ async fn fixture(language: Language, dir: &Path) -> Fixture {
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     root.provide_at(host_key("notes"), Arc::new(Notes)).unwrap();
-    let mut catalog = ServiceCatalog::new();
-    catalog.share_by_name();
+    let catalog = ServiceCatalog::new();
     let (runtime, resolver) = language.runtime(dir);
     let handle = runtime.handle();
     let resolver = Arc::new(resolver.with_catalog(&catalog));

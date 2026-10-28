@@ -84,18 +84,18 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 })
 ```
 
-要点：
+要点（`advanced.*` 在包 `github.com/arcships/rutis/go/rutis/advanced`：写插件少用到的名字，值类型、按名字调用的服务、事件的选项与错误等）：
 
 | 事项 | 规则 |
 | --- | --- |
-| 方法名 | 导出方法的线上名字是首字母小写的形式（`Today` → `today`，`URLFor` → `urlFor`，`HTTPServer` → `httpServer`）；`rutis.Rename` 可以改 |
+| 方法名 | 导出方法的线上名字是首字母小写的形式（`Today` → `today`，`URLFor` → `urlFor`，`HTTPServer` → `httpServer`）；`advanced.Rename` 可以改 |
 | 同步还是异步 | 默认 `async`；`rutis.Sync("Unit")` 标出同步方法。同步方法会让 Node 调用方阻塞事件循环，做 I/O 的方法保持 `async` |
 | 方法签名 | `func (T) M([ctx context.Context,] 参数...) ([结果,] [error])` |
 | 配置 | JSON Schema 由配置类型生成（字段名按 `json` 标签，`doc` 标签是说明），不写 `required`：行的 `config` 里没写的字段是零值，默认值在 `Apply` 里给（上面的 `city`）；要分清「没写」和「写了空值」，用指针字段（`*string`，也接受 `null`）。`Apply` 之前先按 Schema 校验再解码：配置不合格的行以 `config: …` 失败，不调用 `Apply`（[插件 API：配置](plugin-api.md#配置)）；Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。`Schema` 字段可以换成手写的 JSON Schema：它的 `default` 在解码前补上 |
-| 使用服务 | 函数字段的结构体可以只写用到的方法；或用 `*rutis.Service` 按名字调用：`svc.Call(ctx, "ask", &answer, "q")` |
+| 使用服务 | 函数字段的结构体可以只写用到的方法；或用 `*advanced.Service` 按名字调用：`svc.Call(ctx, "ask", &answer, "q")` |
 | `ctx` | `*rutis.Ctx` 是一个 `context.Context`，插件卸载时取消；插件自己起的 goroutine 用 `ctx.Go(...)` 或看 `ctx.Done()` |
 | 并发 | 每个进来的调用在自己的 goroutine 上执行：提供的对象要能被并发调用，调用别的服务时不要持有锁 |
-| 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `rutis.DateTime`、`rutis.Date`、`rutis.TimeOfDay`、`rutis.Decimal`、`rutis.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数（`int64`、`uint64` 等）自动按大整数传，收到的大整数解码进声明的整数类型，到 `any` 时是 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
+| 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `advanced.DateTime`、`advanced.Date`、`advanced.TimeOfDay`、`advanced.Decimal`、`advanced.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数（`int64`、`uint64` 等）自动按大整数传，收到的大整数解码进声明的整数类型，到 `any` 时是 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
 | 错误 | 返回的 `error` 带着类型名跨进程（`*QuotaError` → `QuotaError`，实现 `Name() string` 可以自定）；实现 `Code() string` 和 `Data() any` 时带上 code 和 data，调用方从错误的 `code`、`data` 读到（`Data` 按 JSON 编码）；panic 变成名为 `Panic` 的错误。收到的错误是 `*rutis.RemoteError`，有 `Name`、`Message`、`Code`、`Data` |
 
 **一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。
@@ -124,10 +124,10 @@ return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
 ```go
 off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
 	return nil, nil // nil 和 false 是没有结果，其余都是结果
-}, rutis.Prepend()) // 选项：rutis.Prepend()、rutis.Global()
+}, advanced.Prepend()) // 选项：advanced.Prepend()、advanced.Global()
 
 err := ctx.Emit(callerCtx, "session/created", id)          // 立即返回；err 只报拒绝
-err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*rutis.AggregateError，按登记顺序
+err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*advanced.AggregateError，按登记顺序
 value, err := ctx.Serial(callerCtx, "config/resolve", key)   // 第一个结果
 value, err = ctx.Bail(callerCtx, "config/resolve", key)      // 同步调用的 Serial
 value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil；terminal 是 rutis.Terminal，即 func(ctx context.Context, args ...any) (any, error)，以事件参数调用
@@ -144,6 +144,7 @@ import (
 	"fmt"
 
 	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
 )
 
 type Greeter struct{ ctx *rutis.Ctx }
@@ -178,7 +179,7 @@ var Plugin = rutis.Define(rutis.Plugin[struct{}]{
 			return nil, nil // 没有结果：下一个监听器接着来
 		})
 		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(rutis.Next) // waterfall：最后一个参数是 next
+			next := args[len(args)-1].(advanced.Next) // waterfall：最后一个参数是 next
 			inner, err := next(ctx)
 			if err != nil {
 				return nil, err
@@ -195,18 +196,18 @@ Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就
 
 | 事项 | 规则 |
 | --- | --- |
-| Waterfall | 监听器的最后一个参数是 `next`（`rutis.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
-| 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*rutis.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
+| Waterfall | 监听器的最后一个参数是 `next`（`advanced.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
+| 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*advanced.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
 | 作用域 | 事件按名字在一条总线上送达；`ctx.Scope()` 是过滤用的描述，不是送达规则 |
-| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Prefix`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，不执行任何监听器，这次分发以这个错误失败（`Emit` 不返回它，而是报告一行 `rutis: filter of <name> from row <row> failed: …`）；用 `rutis.Global()` 登记的监听器不经过滤 |
+| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Prefix`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，不执行任何监听器，这次分发以这个错误失败（`Emit` 不返回它，而是报告一行 `rutis: filter of <name> from row <row> failed: …`）；用 `advanced.Global()` 登记的监听器不经过滤 |
 | Context | 监听器的 `ctx` 来自发出方（带调用链），这一行卸载时取消；`Parallel`、`Serial`、`Waterfall`、`Bail` 的发出方放弃时也取消，`Emit` 的监听器不因发出方放弃而取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
 | 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
 
-和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, rutis.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。
+和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, advanced.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。
 
 ### 带方法的对象
 
-结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*rutis.Service`：
+结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*advanced.Service`：
 
 ```go
 type Cache struct {
@@ -223,8 +224,8 @@ func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
 ```
 
 - 函数字段的调用会阻塞，第一个参数是 `context.Context`。结构体里有不是函数的字段，或者参数是别的类型时，这次调用以 `bad-argument` 失败：`warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`。
-- `any` 收到的是 `*rutis.Service`，和 `ctx.Use` 得到的同一个类型：`Call(ctx, method, result, args...)`；对象没有方法表，`Methods()` 返回 `nil`，没有的方法由对象所在的一端回答 `no-method`。
-- 只有 `*rutis.Service` 保持身份：同一个对象收到几次是同一个 `*rutis.Service`，把它交回原来的进程，那边拿到的是原对象。函数字段的结构体是数据，交出去时每个字段变成一个新的函数引用；要交出对象本身，参数写 `any`。
+- `any` 收到的是 `*advanced.Service`，和 `ctx.Use` 得到的同一个类型：`Call(ctx, method, result, args...)`；对象没有方法表，`Methods()` 返回 `nil`，没有的方法由对象所在的一端回答 `no-method`。
+- 只有 `*advanced.Service` 保持身份：同一个对象收到几次是同一个 `*advanced.Service`，把它交回原来的进程，那边拿到的是原对象。函数字段的结构体是数据，交出去时每个字段变成一个新的函数引用；要交出对象本身，参数写 `any`。
 - 对象不跟行走：交出它的行卸载后照常可以调用。但按需启动的运行时在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行；之后的调用以 `peer-gone` 失败：`a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`。要一直可用，让交出它的行保持加载，或者把运行时设成 `eager`。
 - 对象的方法可能被并发调用。
 
@@ -411,7 +412,7 @@ dlv connect 127.0.0.1:2345
 rutis-host go add example.com/weather/cmd/weather@v0.1.0   # 用本机的 Go 工具链 go install
 ```
 
-也可以下载发布里对应平台的二进制放进目录（macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 由宿主在所有二进制里查找；两个二进制里有同名插件时，写成 `go-<二进制名>:<插件名>`。目录里的二进制在第一次有行用到时才启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（`GoResolver`、`GoRuntimes`）。
+也可以下载发布里对应平台的二进制放进目录（macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 由宿主在所有二进制里查找；两个二进制里有同名插件时，写成 `go-<二进制名>:<插件名>`。目录里的二进制在第一次有行用到时才启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。见 [rutis-host 与 rutis.json](rutis-host.md)；Rust 宿主见 [在 Rust 应用里嵌入](rust-host.md)（`BinaryResolver<Go>`、`BinaryRuntimes<Go>`）。
 
 ## 7. 在另一台机器上运行
 

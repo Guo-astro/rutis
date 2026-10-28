@@ -4,8 +4,7 @@
 #   crates.io  rutis (the kernel) and its macros rutis-macros, rutis-bridge,
 #              rutis-loader, rutis-host,
 #              and the dylib toolchain: rutis-sdk, rutis-dylib,
-#              rutis-dylib-meta, rutis-dylib-launcher,
-#              and the migration tool rutis-migrate
+#              rutis-dylib-meta, rutis-dylib-launcher
 #   npm        @arcships/rutis, @arcships/rutis-runtime, @arcships/rutis-bun,
 #              @arcships/rutis-host
 #              (and its platform packages @arcships/rutis-host-<os>-<cpu>)

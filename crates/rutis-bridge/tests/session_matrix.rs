@@ -164,11 +164,10 @@ async fn start(runtime: Runtime, via: Via, dir: &Path, ctx: &Ctx) -> (Arc<Proces
 /// Start the runtime with `Handover::Loopback` through the local transport,
 /// on every platform, and attach.
 async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process> {
-    use rutis_bridge::channel::PeerId;
-    use rutis_bridge::transport::local::{Handover, LocalTransport, Spawn};
+    use rutis_bridge::pipe::{Handover, LocalTransport, Spawn};
     use rutis_bridge::{Dial, Transport};
 
-    let mut spawn = Spawn::new(launcher.program, PeerId::new("runtime").unwrap());
+    let mut spawn = Spawn::new(launcher.program);
     spawn.args = launcher.args;
     spawn.env = launcher.env;
     spawn.cwd = launcher.cwd;
@@ -180,7 +179,6 @@ async fn handed_over(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Proces
         .dial(&Dial::address("spawn:runtime"))
         .await
         .unwrap();
-    assert_eq!(channel.info.transport, "tcp", "a loopback channel");
     let format = rutis_bridge::session::Format::Compat;
     let process = Process::attach(channel, on_bus(ctx), format).await.unwrap();
     // The transport ends its processes when dropped: keep it for the test.
@@ -224,10 +222,9 @@ async fn listening(launcher: Launcher, anchor: &Path, ctx: &Ctx) -> Arc<Process>
         while let Ok(Some(_)) = lines.next_line().await {}
         let _ = child.wait().await;
     });
-    let transport = rutis_bridge::transport::websocket::WebSocketTransport::start(
-        rutis_bridge::transport::websocket::Config::new(),
-    )
-    .unwrap();
+    let transport =
+        rutis_bridge::websocket::WebSocketTransport::start(rutis_bridge::websocket::Config::new())
+            .unwrap();
     let runtime = PeerId::new("runtime").unwrap();
     let identity: Arc<dyn Identity> =
         Arc::new(StaticIdentity::new(PeerId::new("main").unwrap()).present(

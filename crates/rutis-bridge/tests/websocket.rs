@@ -11,7 +11,7 @@ use std::time::Duration;
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, ConnectError, PeerId};
-use rutis_bridge::transport::websocket::{
+use rutis_bridge::websocket::{
     Config, Limits, ListenerConfig, ServerTls, Trust, WebSocketPlugin, WebSocketTransport,
 };
 use rutis_bridge::{
@@ -103,8 +103,6 @@ fn meets_the_channel_contract() {
         let (registered, accepted) = accept(&server, &peer, &peer);
         let dialed = block_on(client.dial(&dial_as(address(&server), &peer, &peer))).unwrap();
         let accepted = recv_within("the accepted connection", &accepted);
-        assert_eq!(dialed.info.peer, Some(id("main")));
-        assert_eq!(accepted.info.peer, Some(id(&peer)));
         kept.lock().unwrap().push(registered);
         (dialed, accepted)
     });
@@ -349,8 +347,8 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
         )
         .await
         .unwrap();
-    let accepted = recv_within("the accepted connection", &accepted);
-    assert_eq!(accepted.info.peer, Some(id("pi")));
+    // Delivered to the registration of pi: the certificate routed it.
+    recv_within("the accepted connection", &accepted);
 }
 
 // Negative TLS (risk E6): a certificate that is expired, not valid yet or
@@ -557,8 +555,7 @@ async fn wss_refuses_an_expired_client_certificate() {
     assert!(reason.contains("CertificateExpired"), "{reason}");
 
     let _dialed = client.dial(&dial_as(address, "mac", SECRET)).await.unwrap();
-    let first = recv_within("the accepted connection", &delivered);
-    assert_eq!(first.info.peer, Some(id("mac")));
+    recv_within("the accepted connection", &delivered);
 }
 
 /// Writes the certificates the Python WebSocket tests serve
@@ -687,7 +684,7 @@ fn meets_the_size_limit_check() {
 #[test]
 fn the_local_limit_is_the_websocket_default() {
     assert_eq!(
-        rutis_bridge::transport::local::MAX_MESSAGE,
+        rutis_bridge::pipe::MAX_MESSAGE,
         Limits::default().max_message
     );
 }
@@ -701,7 +698,7 @@ fn a_takeover_closes_the_old_connection_with_4002() {
     let server = server(Limits::default());
     let client = client(Limits::default());
     let (mut dialed, accepted, _r) = connected(&server, &client);
-    accepted.closer.replaced();
+    accepted.closer.close(rutis_bridge::Close::Replaced);
     let ended = dialed.receiver.recv();
     assert!(
         matches!(&ended, Err(rutis_bridge::channel::ChannelError::Closed { reason }) if reason == "replaced by a new connection"),
@@ -716,7 +713,9 @@ fn a_rejection_closes_with_4003() {
     let server = server(Limits::default());
     let client = client(Limits::default());
     let (mut dialed, accepted, _r) = connected(&server, &client);
-    accepted.closer.rejected("bad id");
+    accepted
+        .closer
+        .close(rutis_bridge::Close::Rejected("bad id".into()));
     let ended = dialed.receiver.recv();
     assert!(
         matches!(&ended, Err(rutis_bridge::channel::ChannelError::Rejected { reason }) if reason == "rejected: bad id"),
@@ -729,7 +728,7 @@ fn an_orderly_close_reads_as_a_normal_end() {
     let server = server(Limits::default());
     let client = client(Limits::default());
     let (mut dialed, accepted, _r) = connected(&server, &client);
-    accepted.closer.close("bye");
+    accepted.closer.close(rutis_bridge::Close::Done);
     assert!(matches!(dialed.receiver.recv(), Ok(None)));
 }
 

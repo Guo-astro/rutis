@@ -6,7 +6,7 @@
 //! controller taking over, TLS on both ends (`RUTIS_CERT` / `RUTIS_KEY`
 //! listening, `RUTIS_CA` dialing), and the addresses refused before
 //! anything is opened. The same rules as Go's runtime
-//! (`go/rutis/listen_test.go`, `dial_test.go`), checked from outside, on
+//! (`go/rutis/internal/runtime/listen_test.go`, `dial_test.go`), checked from outside, on
 //! the conformance jar.
 #![cfg(all(feature = "kotlin", feature = "websocket", feature = "testing"))]
 
@@ -15,9 +15,7 @@ mod kotlin;
 use std::sync::Arc;
 
 use rutis_bridge::channel::PeerId;
-use rutis_bridge::transport::websocket::{
-    Config, ListenerConfig, ServerTls, Trust, WebSocketTransport,
-};
+use rutis_bridge::websocket::{Config, ListenerConfig, ServerTls, Trust, WebSocketTransport};
 use rutis_bridge::{Credential, Dial, Identity, StaticIdentity, Transport};
 use rutis_test_support::within;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};

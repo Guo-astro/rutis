@@ -29,7 +29,7 @@ pub use crate::service::CallError;
 use crate::diagnostics::RuntimeDiagnostics;
 use crate::effect::Disposer;
 use crate::error::Error;
-use crate::{Ctx, Plugin};
+use crate::Ctx;
 
 /// The diagnostics snapshot [`CtxHost::diagnostics`] returns.
 pub mod diagnostics {
@@ -231,16 +231,6 @@ pub trait CtxHost: sealed::Sealed {
         &self,
         key: &Key<T>,
     ) -> Result<Arc<T>, ServiceReadError>;
-
-    /// Mounts a plugin built from `config` by `build`, as
-    /// `Builtins::register` does; the returned view can `update(config)`,
-    /// which builds a new instance with the same function (so `build` only
-    /// constructs). The dependencies are `P::Deps`.
-    fn plugin_from<C, P, B>(&self, build: B, config: C) -> FiberView
-    where
-        C: Send + Sync + 'static,
-        P: Plugin,
-        B: Fn(&C) -> Result<P, Error> + Send + Sync + 'static;
 
     /// The current registrations of the root's event bus, in registration
     /// order.

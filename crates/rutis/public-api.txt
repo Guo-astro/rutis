@@ -908,7 +908,6 @@ pub fn rutis::host::CtxHost::is_shutting_down(&self) -> bool
 pub fn rutis::host::CtxHost::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
 pub fn rutis::host::CtxHost::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
 pub fn rutis::host::CtxHost::name_keys_with(&self, &alloc::rcs::arc::Arc<rutis::host::KeyNamer>)
-pub fn rutis::host::CtxHost::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
 pub fn rutis::host::CtxHost::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
 pub fn rutis::host::CtxHost::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
 pub fn rutis::host::CtxHost::report_waiting_after(&self, core::option::Option<core::time::Duration>)
@@ -938,7 +937,6 @@ pub fn rutis::Ctx::is_shutting_down(&self) -> bool
 pub fn rutis::Ctx::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
 pub fn rutis::Ctx::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
 pub fn rutis::Ctx::name_keys_with(&self, &alloc::rcs::arc::Arc<rutis::host::KeyNamer>)
-pub fn rutis::Ctx::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
 pub fn rutis::Ctx::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
 pub fn rutis::Ctx::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
 pub fn rutis::Ctx::report_waiting_after(&self, core::option::Option<core::time::Duration>)
@@ -1080,7 +1078,6 @@ pub fn rutis::Ctx::is_shutting_down(&self) -> bool
 pub fn rutis::Ctx::isolate(&self, impl core::convert::Into<rutis::host::TypeKey>, &str) -> rutis::Ctx
 pub fn rutis::Ctx::isolate_label(&self, &rutis::host::TypeKey) -> core::option::Option<alloc::string::String>
 pub fn rutis::Ctx::name_keys_with(&self, &alloc::rcs::arc::Arc<rutis::host::KeyNamer>)
-pub fn rutis::Ctx::plugin_from<C, P, B>(&self, B, C) -> rutis::host::FiberView where C: core::marker::Send + core::marker::Sync + 'static, P: rutis::Plugin, B: core::ops::function::Fn(&C) -> core::result::Result<P, rutis::Error> + core::marker::Send + core::marker::Sync + 'static
 pub fn rutis::Ctx::plugin_with<C: core::marker::Send + core::marker::Sync + 'static>(&self, impl rutis::host::PluginFactory<C>, C) -> rutis::host::FiberView
 pub fn rutis::Ctx::provide_at<T: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static>(&self, rutis::host::Key<T>, alloc::rcs::arc::Arc<T>) -> core::result::Result<rutis::Disposer, rutis::Error>
 pub fn rutis::Ctx::report_waiting_after(&self, core::option::Option<core::time::Duration>)

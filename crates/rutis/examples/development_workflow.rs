@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rutis::host::{CtxHost, ErrorKind, FiberState, FiberView};
+use rutis::host::{CtxHost, DynPlugin, ErrorKind, FiberState, FiberView, PluginFactory};
 use rutis::{Ctx, Plugin};
 use tokio::sync::{mpsc, oneshot};
 
@@ -55,10 +55,16 @@ impl Plugin for BackendPlugin {
     }
 }
 
-/// 纯构造：预检查和正式装载都会调用它。构造函数接 `&C`，这里 C 是 `String`。
-#[allow(clippy::ptr_arg)]
-fn backend(label: &String) -> rutis::Result<BackendPlugin> {
-    Ok(BackendPlugin(label.clone()))
+/// 从配置（`String`）构造 BackendPlugin。`build` 是纯构造：预检查和正式装载都会调用它。
+struct BackendFactory;
+impl PluginFactory<String> for BackendFactory {
+    fn name(&self) -> &str {
+        "backend"
+    }
+
+    fn build(&self, label: &String) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(BackendPlugin(label.clone())))
+    }
 }
 
 struct IndexerPlugin;
@@ -131,7 +137,7 @@ async fn exercise(root: &Ctx) -> Result<(), BoxError> {
     (&indexer).await?;
     assert_eq!(indexer.state().state, FiberState::Pending);
 
-    let backend = root.plugin_from(backend, String::from("v1"));
+    let backend = root.plugin_with(BackendFactory, String::from("v1"));
     wait_active(&indexer).await?;
     let old = root.get::<Indexer>().ok_or("missing Indexer")?;
     assert_eq!(old.index("first.txt").await?, "v1: first.txt");

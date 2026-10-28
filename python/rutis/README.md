@@ -35,7 +35,7 @@ def apply(ctx, config):
 
 # elsewhere
 ctx.emit("chat/said", "hi")                # starts every listener, returns at once
-await ctx.parallel("chat/said", "hi")      # waits for all; rutis.AggregateError on failures
+await ctx.parallel("chat/said", "hi")      # waits for all; rutis.advanced.AggregateError on failures
 await ctx.serial("chat/lookup", 7)         # the first result (not None / False)
 await ctx.waterfall("chat/check", "hi", terminal=lambda text: "ok")
 ctx.bail("chat/lookup", 7)                 # serial, synchronously
@@ -44,7 +44,7 @@ await ctx.filter(lambda d: d["row"] == "audit").parallel("chat/said", "hi")
 
 A listener hears every event of the name on the one flat bus; a scope is a descriptor for filters. A failing `emit` listener is reported on stderr, never raised. `rutis/*` events can be listened to, not emitted. On unload a running listener's task is cancelled and waited for (at most `RUTIS_SHUTDOWN_TIMEOUT`).
 
-A filter's descriptor is a dict: `name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`. `plugin` is the name the plugin declares, `define_plugin(apply, name="chat-ui")`; without one, the id of its row in the configuration (`row`). Errors from listeners in other processes arrive as `rutis.RemoteError` (rutis's own, such as `BindingError`, as their classes; `rutis.AggregateError` children too); on the fast path, within one process, the original exception may arrive instead, so match errors by `name` (and `code`), not by class. A row that unloaded cannot emit any more (`BindingError`). `ctx.on`, the emitters and disposers may be called from the plugin's own threads: they run on the runtime's loop, in call order (from a thread, `parallel` / `serial` / `waterfall` return an awaitable for that thread's loop, or a `concurrent.futures.Future` without one).
+A filter's descriptor is a dict: `name`, `prefix`, `plugin`, `row`, `runtime`, `node`, `scope`, `global`. `plugin` is the name the plugin declares, `define_plugin(apply, name="chat-ui")`; without one, the id of its row in the configuration (`row`). Errors from listeners in other processes arrive as `rutis.RemoteError` (rutis's own, such as `BindingError`, as their classes; `rutis.advanced.AggregateError` children too); on the fast path, within one process, the original exception may arrive instead, so match errors by `name` (and `code`), not by class. A row that unloaded cannot emit any more (`BindingError`). `ctx.on`, the emitters and disposers may be called from the plugin's own threads: they run on the runtime's loop, in call order (from a thread, `parallel` / `serial` / `waterfall` return an awaitable for that thread's loop, or a `concurrent.futures.Future` without one).
 
 Test it without a host:
 

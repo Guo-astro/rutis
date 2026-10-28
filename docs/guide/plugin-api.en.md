@@ -248,7 +248,7 @@ Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `ruti
 
 ## Plugins in one runtime share its process
 
-The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance. A host can put a plugin in a process of its own, limit the time of calls into it and the services it may use: the plugin gets ordinary errors, `timeout` for a call over the limit and `unavailable` for a service the host does not let it use (see [Build a host open to plugins](open-host.en.md#3-keep-plugins-in-check)).
+The rows of one runtime (`node`, `py`, `bun`) run in one process: they share memory, global state and the event loop, and a plugin blocking the event loop stops the others too. To isolate a plugin, put it in another runtime instance. A host can put a plugin in a process of its own (see [Build a host open to plugins](open-host.en.md#3-keep-plugins-in-check)).
 
 When a service method holds the runtime for 5 seconds in one go (fixed; from 0.18, #678), the runtime says once on stderr which row's which method it is, that the other rows wait meanwhile, and what to change, for example:
 
@@ -473,7 +473,7 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 Plugins are tagged with the plugin API version they use (`definePlugin` / `define_plugin` / `rutis.Define` adds the tag automatically). If the runtime is older than the plugin requires, loading fails with an explanation of what to upgrade; a newer runtime loads it. How a plugin depends on its SDK:
 
 - JavaScript, TypeScript: a caret range (`"@arcships/rutis": "^0.17.2"`). The plugin uses the SDK of the minor version it was written against; when the host has another version, npm installs the plugin a copy of its own, and several versions work side by side.
-- Python: a lower bound only (`rutis>=0.17`). The plugin and the Python runtime are one `rutis` package in the host's environment, so an upper bound (`<0.18`) would downgrade the runtime when the plugin is installed, or keep the host from upgrading. Therefore Python's `rutis` does not remove or change a name plugins import while the plugin API version stays: a name to be dropped stays, with a deprecation warning when used, until the plugin API version increases.
+- Python: a lower bound only (`rutis>=0.17`). The plugin and the Python runtime are one `rutis` package in the host's environment, so an upper bound (`<0.18`) would downgrade the runtime when the plugin is installed, or keep the host from upgrading. So a release that removes or moves a name plugins import says so in its migration guide, and plugins upgrade together with the host (0.19, for example, moves the advanced names into `rutis.advanced`, see [Migrating to 0.19](../migration-0.19.en.md)).
 - Go, Swift: the SDK is compiled into the binary (`require`, `from:`), whatever version the host installs.
 
 Plugin API 3 (rutis 0.13) adds `parallel`, `serial`, `waterfall`, `bail` and `filter`, and events become one logical bus; 0.13 runtimes still load API 2 plugins, and an older runtime refuses an API 3 plugin with the existing message. The 0.13 event protocol does not mix with runtimes or nodes of 0.12 and earlier (see [mixing with 0.12 and earlier](#mixing-with-012-and-earlier) above). Plugin API 2 added leaf events; API 1 plugins still load.

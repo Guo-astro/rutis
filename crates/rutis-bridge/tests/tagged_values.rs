@@ -35,7 +35,7 @@ fn session(
     right: Endpoint,
     right_dispatch: Arc<dyn Dispatch>,
 ) -> (Connection, Connection) {
-    let (a, b) = rutis_bridge::transport::memory::pair();
+    let (a, b) = rutis_bridge::memory::pair();
     (
         Connection::open_with(a, left_dispatch, Format::Endpoint(left)).unwrap(),
         Connection::open_with(b, right_dispatch, Format::Endpoint(right)).unwrap(),

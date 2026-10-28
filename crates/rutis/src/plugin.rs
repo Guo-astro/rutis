@@ -174,8 +174,8 @@ impl DynPlugin for Box<dyn DynPlugin> {
 /// one to mount.
 ///
 /// A typed build function (`Fn(&C) -> Result<P>` with `P: Plugin`) needs no
-/// factory: `plugin_from`, `Builtins::register` and `export_plugin!(build:)`
-/// take it and declare `P::Deps`.
+/// factory where rutis-loader's `Builtins::register` and
+/// `export_plugin!(build:)` take it: they declare `P::Deps`.
 pub trait PluginFactory<C: Send + Sync + 'static>: Send + Sync + 'static {
     /// Display name, for logs and diagnostics. Read once when the fiber is
     /// created; it does not change across loads.

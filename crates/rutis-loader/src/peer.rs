@@ -772,7 +772,7 @@ mod tests {
     use std::time::Duration;
 
     use rutis::host::FiberState;
-    use rutis_bridge::transport::memory::{MemoryPlugin, MemoryTransport};
+    use rutis_bridge::memory::{MemoryPlugin, MemoryTransport};
     use rutis_bridge::{
         Credential, Described, HostPlugin, IdentityPlugin, LinkConfig, LinkPlugin, Retry,
         StaticCatalog, StaticIdentity,

@@ -142,7 +142,7 @@ def apply(ctx, config):
 /// Also in the second Python runtime: `s2`, run nested above `s1`, calls
 /// Node back.
 const PY_TWO_BACK: &str = r#"
-from rutis import SyncWaitCycle
+from rutis.advanced import SyncWaitCycle
 
 inject = ["n_back"]
 
@@ -332,8 +332,8 @@ async fn fixture(
     #[cfg(feature = "go")]
     let go = go.then(|| {
         Arc::new(
-            rutis_loader::runtime::go::GoResolver::new(
-                rutis_loader::runtime::go::GoBinaries::new().file(go_binary()),
+            rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::go::Go>::new(
+                rutis_loader::runtime::binary::Binaries::new().file(go_binary()),
             )
             .with_catalog(&catalog),
         )
@@ -347,8 +347,8 @@ async fn fixture(
     #[cfg(all(feature = "swift", target_os = "macos"))]
     let swift = swift.then(|| {
         Arc::new(
-            rutis_loader::runtime::swift::SwiftResolver::new(
-                rutis_loader::runtime::swift::SwiftBinaries::new()
+            rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::swift::Swift>::new(
+                rutis_loader::runtime::binary::Binaries::new()
                     .file(common::runtimes::swift_binary("RutisMultilang", "relay")),
             )
             .with_catalog(&catalog),
@@ -385,13 +385,19 @@ async fn fixture(
     }
     #[cfg(feature = "go")]
     if let Some(go) = go {
-        root.plugin(rutis_loader::runtime::go::GoRuntimes::new(go, dir.path()).idle(None))
-            .await
-            .unwrap();
+        root.plugin(
+            rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
+                go,
+                dir.path(),
+            )
+            .idle(None),
+        )
+        .await
+        .unwrap();
     }
     #[cfg(all(feature = "swift", target_os = "macos"))]
     if let Some(swift) = swift {
-        root.plugin(rutis_loader::runtime::swift::SwiftRuntimes::new(swift, dir.path()).idle(None))
+        root.plugin(rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(swift, dir.path()).idle(None))
             .await
             .unwrap();
     }
@@ -917,7 +923,7 @@ export function apply(ctx) {
 
 /// A in Python (reentrant), the same.
 const PY_A: &str = r#"
-from rutis import SyncWaitCycle
+from rutis.advanced import SyncWaitCycle
 
 inject = ["gate", "c_back"]
 

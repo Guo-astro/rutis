@@ -113,8 +113,8 @@ pub fn close_is_idempotent_and_wakes_a_blocked_receive((mut a, _b): (Channel, Ch
     // clock: widen — gives the receive time to block before the close; a
     // close before it is the same contract (the receive still ends).
     std::thread::sleep(Duration::from_millis(50));
-    closer.close("first");
-    closer.close("second");
+    closer.close(crate::channel::Close::Done);
+    closer.close(crate::channel::Close::Done);
     finished
         .recv_timeout(PATIENCE)
         .expect("close must wake a blocked receive");
@@ -142,7 +142,7 @@ pub fn close_wakes_a_blocked_send((mut a, _b): (Channel, Channel)) {
     // clock: widen — gives the send time to block on a full channel before
     // the close; the assertion holds whether it did.
     std::thread::sleep(Duration::from_millis(100));
-    closer.close("closed while sending");
+    closer.close(crate::channel::Close::Done);
     finished
         .recv_timeout(PATIENCE)
         .expect("close must wake a blocked send");
@@ -158,7 +158,7 @@ pub fn the_far_end_closing_ends_the_channel((mut a, mut b): (Channel, Channel)) 
     // this checks the ones that do in practice; a slow machine can only
     // make it pass for the wrong reason, not fail.
     std::thread::sleep(Duration::from_millis(20));
-    a.closer.close("bye");
+    a.closer.close(crate::channel::Close::Done);
     assert_eq!(recv_or_end(&mut b).as_deref(), Some(&b"last words"[..]));
     assert!(
         recv_or_end(&mut b).is_none(),
@@ -195,7 +195,7 @@ pub fn size_limit((mut a, b): (Channel, Channel), limit: usize) {
     });
     let next = |what: &str| {
         delivered.recv_timeout(GUARD).unwrap_or_else(|_| {
-            far_closer.close("the check gave up");
+            far_closer.close(crate::channel::Close::Done);
             panic!("{what}: nothing arrived within {GUARD:?}")
         })
     };
