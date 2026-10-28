@@ -272,8 +272,7 @@ async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
     assert!(report.failures.is_empty(), "{report:?}");
 
     // Objects with methods cross by reference between every language here
-    // (#687): the calls go through. The host's refusal of an end that takes
-    // none is rutis-bridge's (`an_object_goes_only_to_a_far_end_that_takes_objects`).
+    // (#687): the calls go through.
     expect(&fixture, "js object to py: RemoteObject", &[]).await;
     expect(&fixture, "js object to go: *rutis.Service", &[]).await;
     expect(&fixture, "py object to js: object", &[]).await;

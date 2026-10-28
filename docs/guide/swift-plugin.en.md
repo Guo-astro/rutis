@@ -295,16 +295,7 @@ Whoever wants your plugin in a binary of their own depends on your package and s
 
 ## 7. Used by a host
 
-A host names a Swift plugin directory in `rutis.json` and puts binaries there:
-
-```json
-{
-  "runtimes": { "swift": { "dir": "plugins/swift", "restart": "on-failure" } },
-  "rows": [{ "id": "weather", "name": "swift:weather", "config": { "city": "Oslo" } }]
-}
-```
-
-Download the binary from a release into the directory (a downloaded binary is quarantined: `rutis-host check` says so, and `xattr -d com.apple.quarantine <file>` clears it once you trust it). The host finds `swift:<plugin>` in all binaries; when two binaries have a plugin of the same name, write `swift-<binary name>:<plugin>`. The settings are those of `runtimes.go`: a binary starts when a row first uses it and stops after `idle` seconds (60) without one, `"start": "eager"` starts all and keeps them running, `restart` (`no` by default, `on-failure`, `exit`) applies to each runtime on its own, and a replaced binary takes effect when its runtime restarts. Running Swift binaries needs no Swift toolchain. See [rutis-host and rutis.json](rutis-host.en.md); for Rust hosts, [embedding in a Rust application](rust-host.en.md) (`BinaryResolver<Swift>`, `BinaryRuntimes<Swift>` in rutis-loader).
+How a host installs this plugin: [rutis-host: How a host installs plugins](rutis-host.en.md#how-a-host-installs-plugins).
 
 ## 8. Run it on another machine
 

@@ -105,21 +105,7 @@ bunx --bun rutis-host dev
 
 `rutis-host dev` 看到 `bun.lock`、`rutis.dev.json` 里的 `runtimes.bun`，或依赖 `@arcships/rutis-bun`，就用 Bun 运行这个项目，它的文件变化时重新加载；只有文件变了的行重新加载（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。
 
-宿主的 `rutis.json`：
-
-```json
-{
-  "runtimes": { "bun": { "project": "." } },
-  "rows": [
-    { "id": "greeter", "name": "bun:greeter" },
-    { "id": "report", "name": "bun:./report.ts", "inject": ["greeter"] }
-  ]
-}
-```
-
-- `bun:<npm 名或子路径>` 从 `project` 的 `node_modules` 解析，`bun:./路径` 相对于 `project`。行名 `bun:sqlite` 指项目里的模块 `sqlite`，不是 Bun 的内置模块 `bun:sqlite`。
-- `runtimes.bun` 的字段：`project`（默认 `.`）、`runtime`（`@arcships/rutis-bun` 的位置，默认项目里装的）、`program`（Bun 可执行文件，默认 `PATH` 上的 `bun`）。
-- 可以和 `runtimes.node`、`runtimes.py` 同时配置；服务按名字跨运行时共享。
+宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ### 调用一个方法
 
@@ -159,7 +145,7 @@ bunx --bun rutis-host dev --debug
 
 ## 5. 发布
 
-与 TypeScript 插件相同：`npm publish`（先运行 `prepack` 构建；模板的 workflow 在打 `v*` tag 时发布；包名用带作用域的名字，见 [TypeScript 插件 §5](typescript-plugin.md#5-发布)）。宿主用 `bun add` 安装后，加一行 `{ "id": "greeter", "name": "bun:greeter" }`。
+与 TypeScript 插件相同：`npm publish`（先运行 `prepack` 构建；模板的 workflow 在打 `v*` tag 时发布；包名用带作用域的名字，见 [TypeScript 插件 §5](typescript-plugin.md#5-发布)）。宿主怎样装它见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
 
 ## 6. 在别的机器上运行
 

@@ -219,10 +219,10 @@ Go 用 `errors.Is(err, advanced.ErrWaterfallNext)` 等判断，任何进程里�
 
 ### 与 0.12 及更早的端混用
 
-事件协议是 rutis 0.13 的，没有旧路径。0.12 及更早的运行时或节点连进 0.13 的宿主时，在加载任何东西之前就被拒绝：
+事件协议是 rutis 0.13 的，没有旧路径。0.12 及更早的运行时或节点连进当前的宿主时，在加载任何东西之前按协议版本被拒绝：
 
 ```text
-incompatible session: the far end (<name> <version>) does not declare events-v2 (the event protocol of rutis 0.13): upgrade it to rutis 0.13 or later
+incompatible session: the far end speaks protocol 2, this side 4: upgrade the far end
 ```
 
 0.13 的运行时遇到旧宿主时退出（状态 1）：`rutis: refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping`。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)。
@@ -411,7 +411,7 @@ logging.basicConfig(level=logging.INFO)
 | 嵌套超过 64 层的值 | 不能跨进程（这次调用失败，见下） |
 | 编码后超过 16 MiB 的调用或返回值 | 不能跨进程（这次调用失败，见下） |
 
-不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如 0.18 的宿主要把 Node 交出的对象转给 0.18 之前的 Python 运行时时，这次调用得到 `weather.store: argument 2 cannot be sent: an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
+不能跨进程的值只让**这一次调用**失败：错误写明方法、第几个参数（或返回值）和原因，例如参数编码后过大时，这次调用得到 `store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`。会话、运行时、同一会话上的其他调用和其他行都不受影响。错误的名字取决于是哪一方拒绝的、用什么语言写的（宿主是 `BindingError`，Node、Bun 是 `RangeError` 或 `TypeError`，Python 是 `ValueError`，Go、Swift、Kotlin 是 `Error`），不作保证；要判断是哪种失败，看错误码：值传不过去都是 `bad-value`，`data` 写明是参数还是返回值（`{part, argument?, limit?}`），不要看名字或文字。
 
 嵌套深度：一个值最多嵌套 **64 层**。数组 / list / tuple、对象 / dict（含 dataclass）、Map、Set、Go 的切片、map、结构体各算一层，里面有没有引用都一样；作为值传递的 `Error` / 异常也算一层。调用的参数列表本身不算一层：每个参数各自最多 64 层；返回值最多 64 层。更深的值由**要发送它的一方**在发出之前拒绝，只让这次调用失败，错误信息说明上限（`value nested deeper than 64 levels`）：
 
@@ -460,7 +460,6 @@ logging.basicConfig(level=logging.INFO)
 - 声明的参数类型收不了对象时（Go、Swift、Kotlin 的数据类型），这次调用以 `bad-argument` 失败，错误写明对象要怎样收。
 - 生命周期和函数引用相同：收的一方不再持有代理，或它的进程退出后，发出方放掉对象。对象不跟行走：交出它的行卸载后，对象照常可以调用。
 - 发出方的运行时退出或断开后，对它的对象的调用以 `peer-gone` 失败（`a call on an object from py failed: runtime py exited`），只有这些调用失败。
-- 0.18 之前的一端不收对象：要把对象交给它的调用以 `bad-value` 失败（`… an object from node cannot cross to py: py does not take objects (older than rutis 0.18); upgrade it`），会话继续。升级那一端。
 - 各语言的细节见各自的指南：[TypeScript](typescript-plugin.md#带方法的对象)、[Bun](bun-plugin.md#带方法的对象)、[Python](python-plugin.md#带方法的对象)、[Go](go-plugin.md#带方法的对象)、[Swift](swift-plugin.md#带方法的对象)、[Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust](rust-plugin.md#对其他语言提供服务)。
 
 #### 同一个进程与跨进程的差别

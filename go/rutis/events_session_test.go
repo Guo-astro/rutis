@@ -2,10 +2,8 @@ package rutis_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -449,31 +447,4 @@ func TestEmitFailuresAreReported(t *testing.T) {
 		}
 		return false
 	}, func() string { return fmt.Sprint(loaded.Reported()) })
-}
-
-// guarantee: events/handshake (a host without events-v2 is refused, with
-// the line of §2.2)
-func TestAHostOlderThanTheEventProtocolIsRefused(t *testing.T) {
-	runtimeSide, hostSide := net.Pipe()
-	defer hostSide.Close()
-	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{Name: "any", Apply: func(*rutis.Ctx, rutis.NoConfig) error { return nil }})
-	done := make(chan error, 1)
-	go func() { done <- advanced.ServeConn(runtimeSide, "go", plugin) }()
-	hello, _ := json.Marshal(map[string]any{"op": "hello", "version": 4, "endpoint": "main", "capabilities": []string{"sync-wait"}})
-	go func() {
-		buffer := make([]byte, 4096)
-		for {
-			if _, err := hostSide.Read(buffer); err != nil {
-				return
-			}
-		}
-	}()
-	if _, err := hostSide.Write(append(hello, '\n')); err != nil {
-		t.Fatal(err)
-	}
-	err := testwait.Within(t, "the runtime stops", done)
-	want := "refused: incompatible (this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later); stopping"
-	if err == nil || err.Error() != want {
-		t.Fatalf("got %v", err)
-	}
 }
