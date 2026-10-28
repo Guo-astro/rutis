@@ -71,10 +71,10 @@ private fun dataOf(error: Throwable): Pair<Boolean, Any?> {
 private fun isDispatch(frame: StackTraceElement): Boolean {
     val c = frame.className
     return c.startsWith("arcships.rutis.internal.") ||
-        c.startsWith("arcships.rutis.ServiceObject") ||
+        c.startsWith("arcships.rutis.generated.ServiceObject") ||
         c.startsWith("arcships.rutis.LocalHandle") ||
         c.startsWith("arcships.rutis.HostHandle") ||
-        c.startsWith("arcships.rutis.ServiceTable") ||
+        c.startsWith("arcships.rutis.generated.ServiceTable") ||
         c.contains("_RutisService")
 }
 

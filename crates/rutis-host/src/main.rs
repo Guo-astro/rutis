@@ -12,7 +12,7 @@
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host go add <module>@<version> [rutis.json]
-//! rutis-host types [crate dir] [-o file] [--contract file]
+//! rutis-host types [crate dir] [-o file] [--python file]
 //! ```
 
 use std::collections::HashSet;
@@ -61,7 +61,6 @@ usage:
                                               row's name ([weather]); on in dev, off in run
     run: --watch-config                       read rutis.json again when it changes
                                               (SIGUSR1 does too, on Unix)
-    run: --allow-call                         accept rutis-host call (dev always does)
   rutis-host check [rutis.json] [--strict]    describe every row and Go or Swift binary; fail on what
                                               cannot run (in a plugin project without
                                               rutis.json: the project); warn of a service
@@ -90,16 +89,16 @@ usage:
   rutis-host go add <module>@<version> [rutis.json]
                                               install a Go plugin binary into runtimes.go.dir
                                               (go install; needs the Go toolchain)
-  rutis-host types [dir] [-o file] [--contract file]
+  rutis-host types [dir] [-o file] [--python file]
                                               write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
                                               dir (default .) and the crates it uses (to stdout,
-                                              or to file); --contract also writes the contract
-                                              description the testing tools check calls against
+                                              or to file); --python also writes their Python
+                                              types
   rutis-host --version
 
-Credentials for links come from RUTIS_TOKEN (or RUTIS_TOKEN_<PEER>), RUTIS_CA,
-RUTIS_CERT and RUTIS_KEY.
+Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
+RUTIS_KEY.
 
 Exit status: 0 when it ends normally (also on Ctrl-C or SIGTERM once every
 cleanup ran), 1 when it cannot start or run (configuration, loading, a row
@@ -164,20 +163,18 @@ fn quarantine_hint(path: &std::path::Path) -> Option<String> {
     })
 }
 
-/// `rutis-host types [dir] [-o file] [--contract file]`: the declarations
-/// of the marked Rust services, and their contract description, as
-/// `build::Exports` writes them.
+/// `rutis-host types [dir] [-o file] [--python file]`: the declarations of
+/// the marked Rust services and their Python types, as `build::Exports`
+/// writes them.
 fn types(args: &[String]) -> Result<(), String> {
     let mut dir = None;
     let mut output = None;
-    let mut contract = None;
+    let mut python = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => output = Some(args.next().ok_or("-o needs a file")?.to_owned()),
-            "--contract" => {
-                contract = Some(args.next().ok_or("--contract needs a file")?.to_owned())
-            }
+            "--python" => python = Some(args.next().ok_or("--python needs a file")?.to_owned()),
             other if dir.is_none() && !other.starts_with('-') => dir = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
@@ -193,8 +190,8 @@ fn types(args: &[String]) -> Result<(), String> {
     if let Some(file) = &output {
         exports = exports.typescript(file);
     }
-    if let Some(file) = &contract {
-        exports = exports.contract(file);
+    if let Some(file) = &python {
+        exports = exports.python(file);
     }
     let typescript = exports.write(&dir).map_err(|error| error.to_string())?;
     if output.is_none() {
@@ -259,19 +256,17 @@ fn call_command(args: &[String]) -> Result<Stopped, String> {
     })
 }
 
-/// Answer `rutis-host status` for `target` while the host runs, and
-/// `rutis-host call` when `calls` (`dev`, `run --allow-call`); a host that
-/// cannot says why and runs on.
+/// Answer `rutis-host status` and `rutis-host call` for `target` while the
+/// host runs; a host that cannot says why and runs on.
 pub(crate) fn answer_status(
     target: &std::path::Path,
     host: &host::Host,
-    calls: bool,
 ) -> Option<control::Serving> {
     match control::serve(
         target,
         host.loader.clone(),
         host.status_report(),
-        calls.then(|| host.root()),
+        host.root(),
     ) {
         Ok(serving) => Some(serving),
         Err(_) if cfg!(windows) => None,
@@ -359,7 +354,6 @@ fn config_file(args: &[String]) -> std::path::PathBuf {
 async fn run(args: &[String]) -> Result<Stopped, String> {
     let (deadline, args) = stop::deadline(args)?;
     let (watch, args) = take_flag(&args, "--watch-config");
-    let (allow_call, args) = take_flag(&args, "--allow-call");
     // Plugins' output as they write it, unless asked (#678).
     let (prefix, args) = prefix_flag(args, false);
     stop::pass_on(deadline);
@@ -372,7 +366,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     config.runtimes.prefix_output = prefix;
     warn(&config);
     let mut host = host::Host::start(&config).await?;
-    let _status = answer_status(&path, &host, allow_call);
+    let _status = answer_status(&path, &host);
     for line in status::listening(&host.listening) {
         errln!("{line}");
     }
@@ -400,7 +394,7 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `flag` (`--watch-config`, `--allow-call`, `--debug`) taken out of
+/// `flag` (`--watch-config`, `--debug`) taken out of
 /// `args`: whether it was there, and the rest.
 pub(crate) fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();

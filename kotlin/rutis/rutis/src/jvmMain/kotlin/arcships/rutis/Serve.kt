@@ -24,13 +24,15 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.io.IOException
 import kotlin.system.exitProcess
+import arcships.rutis.advanced.manifest
 
 private const val USAGE = "usage: <program> --rutis-manifest | <channel> [--id <endpoint>] [--peer <endpoint>] <project>"
 
 @Volatile
-private var projectDir: String = ""
+internal var projectDir: String = ""
 
 /** The project directory the host gave this runtime (its last argument). */
+@Deprecated("Moved in 0.19: use arcships.rutis.advanced.project.", ReplaceWith("project", "arcships.rutis.advanced.project"))
 val Rutis.project: String get() = projectDir
 
 /**
@@ -60,13 +62,17 @@ fun Rutis.serve(args: Array<String>, vararg plugins: Plugin): Nothing {
 }
 
 /** What the plugins declare, as `--rutis-manifest` prints it. */
-fun Rutis.manifest(vararg plugins: Plugin): String {
-    RuntimeSession.checkPlugins(plugins.toList())
-    val state = arcships.rutis.internal.RuntimeState(plugins.toList())
+@Deprecated("Moved in 0.19: use arcships.rutis.advanced.manifest.", ReplaceWith("manifest(*plugins)", "arcships.rutis.advanced.manifest"))
+fun Rutis.manifest(vararg plugins: Plugin): String = manifestOf(plugins.toList())
+
+/** `Rutis.manifest`. */
+internal fun manifestOf(plugins: List<Plugin>): String {
+    RuntimeSession.checkPlugins(plugins)
+    val state = arcships.rutis.internal.RuntimeState(plugins)
     val manifest = buildJsonObject {
         put("manifest", 1)
-        put("sdk", VERSION)
-        put("pluginApi", PLUGIN_API)
+        put("sdk", arcships.rutis.advanced.VERSION)
+        put("pluginApi", arcships.rutis.advanced.PLUGIN_API)
         put("runtime", "rutis-kotlin-runtime:1")
         put("platform", "jvm")
         put("plugins", JsonObject(plugins.associate { it.name to jsonOf(state.describe(it)) }))

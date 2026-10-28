@@ -10,6 +10,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlin.coroutines.CoroutineContext
+import arcships.rutis.advanced.Emitter
+import arcships.rutis.advanced.Listener
+import arcships.rutis.advanced.Scope
+import arcships.rutis.generated.ServiceHandle
+import arcships.rutis.generated.ServiceTable
+import arcships.rutis.generated.Tables
 
 /**
  * What `apply` receives: the row's services, events and lifetime. It is the

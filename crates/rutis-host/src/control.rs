@@ -2,9 +2,8 @@
 //! local socket that only its user can open (design §5.3). The socket
 //! answers `status` with [`Loader::status`] as printed (and the remote
 //! runtimes' connections), which changes nothing; and `call` (`rutis-host
-//! call`, try-and-test design §4), which `dev` accepts and `run` only with
-//! `--allow-call`. The format on the
-//! socket is rutis-host's own: both ends are the same rutis-host. It sits in
+//! call`, try-and-test design §4). The format on the socket is
+//! rutis-host's own: both ends are the same rutis-host. It sits in
 //! the system's runtime directory
 //! (`$XDG_RUNTIME_DIR`, else the temporary directory), in a directory of
 //! the user's own, named after the configuration's path, so nothing is
@@ -117,8 +116,8 @@ impl Drop for Serving {
 }
 
 /// Answer `status` for the configuration `target` with `loader`'s status,
-/// for as long as the returned value is held; and `call`, made from `calls`
-/// (the host's root) when given, refused otherwise. `Err` says why it
+/// for as long as the returned value is held; and `call`, made from `root`
+/// (the host's root). `Err` says why it
 /// cannot (another host answers for the same configuration, the directory
 /// is not the user's own): the host runs on without it.
 #[cfg(unix)]
@@ -126,9 +125,9 @@ pub fn serve(
     target: &Path,
     loader: Loader,
     report: Report,
-    calls: Option<rutis::Ctx>,
+    root: rutis::Ctx,
 ) -> Result<Serving, String> {
-    serve_in(&base(), target, loader, report, calls)
+    serve_in(&base(), target, loader, report, root)
 }
 
 /// [`serve`] under the runtime directory `base`.
@@ -138,7 +137,7 @@ fn serve_in(
     target: &Path,
     loader: Loader,
     report: Report,
-    calls: Option<rutis::Ctx>,
+    root: rutis::Ctx,
 ) -> Result<Serving, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
@@ -180,9 +179,9 @@ fn serve_in(
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
-            let (loader, report, calls) = (loader.clone(), report.clone(), calls.clone());
+            let (loader, report, root) = (loader.clone(), report.clone(), root.clone());
             tokio::spawn(async move {
-                let _ = answer(stream, &loader, &report, calls.as_ref()).await;
+                let _ = answer(stream, &loader, &report, &root).await;
             });
         }
     });
@@ -200,7 +199,7 @@ async fn answer(
     stream: tokio::net::UnixStream,
     loader: &Loader,
     report: &Report,
-    calls: Option<&rutis::Ctx>,
+    root: &rutis::Ctx,
 ) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -214,12 +213,9 @@ async fn answer(
     let reply = match (read, request.trim_end_matches('\n')) {
         (Ok(Ok(_)), "status") => report(),
         (Ok(Ok(_)), call) if call.starts_with("call ") => {
-            let reply = match (serde_json::from_str(&call["call ".len()..]), calls) {
-                (Err(error), _) => Err(format!("this call cannot be read: {error}")),
-                (Ok(_), None) => Err("this rutis-host run does not accept calls; start it with \
-                     rutis-host run --allow-call"
-                    .to_owned()),
-                (Ok(request), Some(root)) => {
+            let reply = match serde_json::from_str(&call["call ".len()..]) {
+                Err(error) => Err(format!("this call cannot be read: {error}")),
+                Ok(request) => {
                     // `rutis-host call` ends (Ctrl-C): its socket closes, and
                     // the call is dropped, which cancels it on the far end.
                     let mut gone = [0u8; 1];
@@ -347,7 +343,7 @@ pub fn serve(
     _target: &Path,
     _loader: Loader,
     _report: Report,
-    _calls: Option<rutis::Ctx>,
+    _root: rutis::Ctx,
 ) -> Result<Serving, String> {
     Err("rutis-host status is not available on Windows".into())
 }
@@ -382,8 +378,8 @@ mod tests {
         assert_eq!(fnv1a(std::ffi::OsStr::new("")), 0xcbf2_9ce4_8422_2325);
     }
 
-    /// A host answers `status` with its loader's status, refuses `call`
-    /// without its root, and anything else with an error; a second host for the same configuration does
+    /// A host answers `status` with its loader's status, `call` from its
+    /// root, and anything else with an error; a second host for the same configuration does
     /// not take the socket over; once the first stops answering, its
     /// socket is gone and `status` says no host runs it.
     /// guarantee: host/status
@@ -394,6 +390,10 @@ mod tests {
 
         let base = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
+        let root = || {
+            use rutis::host::CtxHost;
+            rutis::Ctx::root().unwrap()
+        };
         let loader = || -> (Loader, Report) {
             let loader = rutis_loader::LoaderPlugin::new(
                 rutis_loader::Chain::new(),
@@ -407,7 +407,7 @@ mod tests {
             )
         };
         let (handle, report) = loader();
-        let serving = serve_in(base.path(), project.path(), handle, report, None).unwrap();
+        let serving = serve_in(base.path(), project.path(), handle, report, root()).unwrap();
         let said = status_in(base.path(), project.path()).await.unwrap();
         assert_eq!(said, rutis_loader::status::Status::default().to_string());
 
@@ -421,7 +421,7 @@ mod tests {
             "error: this socket answers only `status` and `call`\n"
         );
 
-        // Without the host's root, a call is refused.
+        // A call is made from the host's root: here nothing provides it.
         let request = crate::call::Request {
             service: "forecast".into(),
             method: "today".into(),
@@ -430,16 +430,13 @@ mod tests {
         let refused = call_in(base.path(), project.path(), &request)
             .await
             .unwrap_err();
-        assert_eq!(
-            refused,
-            Refused::Error(
-                "this rutis-host run does not accept calls; start it with rutis-host run --allow-call"
-                    .into()
-            )
+        assert!(
+            matches!(&refused, Refused::Error(why) if why.starts_with("no row provides forecast")),
+            "{refused:?}"
         );
 
         let (handle, report) = loader();
-        let second = serve_in(base.path(), project.path(), handle, report, None);
+        let second = serve_in(base.path(), project.path(), handle, report, root());
         assert!(
             second
                 .as_ref()

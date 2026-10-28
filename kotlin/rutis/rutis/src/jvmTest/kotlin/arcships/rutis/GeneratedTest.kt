@@ -12,6 +12,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertSame
+import arcships.rutis.generated.ServiceHandle
+import arcships.rutis.generated.Tables
 
 @Serializable
 data class Point(val x: Int, val y: Int)

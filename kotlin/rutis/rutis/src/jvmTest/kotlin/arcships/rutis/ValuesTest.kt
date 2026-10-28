@@ -33,6 +33,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import arcships.rutis.advanced.RutisFormat
 
 /** The ten tagged values' text, map keys, and RutisFormat (design §3.3). */
 class ValuesTest {

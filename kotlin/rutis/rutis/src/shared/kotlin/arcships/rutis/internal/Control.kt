@@ -2,8 +2,10 @@ package arcships.rutis.internal
 
 import arcships.rutis.Plugin
 import arcships.rutis.Rutis
-import arcships.rutis.Scope
+import arcships.rutis.advanced.Scope
 import arcships.rutis.internal.peer.Undefined
+import arcships.rutis.advanced.IMPLEMENTATION
+import arcships.rutis.advanced.VERSION
 
 /** The control operations rutis drives a runtime with (runtime contract §3, §4). */
 internal object Control {
@@ -29,7 +31,7 @@ internal object Control {
             linkedMapOf(
                 "services" to linkedMapOf<String, Any?>(),
                 "features" to FEATURES,
-                "implementation" to linkedMapOf("name" to Rutis.IMPLEMENTATION, "version" to Rutis.VERSION),
+                "implementation" to linkedMapOf("name" to arcships.rutis.advanced.IMPLEMENTATION, "version" to arcships.rutis.advanced.VERSION),
                 "engine" to engine(),
                 "plugins" to LinkedHashMap<String, Any?>().apply { for ((name, plugin) in rt.plugins) put(name, rt.describe(plugin)) },
             )

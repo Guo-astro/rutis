@@ -177,13 +177,13 @@ a running host keeps the old versions until it restarts
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
-| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`dev` 接受，`run` 要加 `--allow-call`（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
+| `rutis-host call [--config <rutis.json \| 目录>] <服务>.<方法> [参数…]` | 以宿主的身份调用正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 里的一个服务，结果打印成 JSON；`run` 和 `dev` 都接受（见 [调用一个服务](#调用一个服务)）；Windows 上不提供 |
 | `rutis-host new <名字> --lang node\|bun\|python\|go\|swift` | 创建插件项目 |
 | `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host go add <模块>@<版本> [rutis.json]` | 用本机的 Go 工具链把插件二进制 `go install` 到 `runtimes.go.dir` |
-| `rutis-host types [目录] [-o 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；见 [在 Rust 应用里嵌入](rust-host.md#在类型上标注-rutisservice) |
+| `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
 ## run 打印什么
 
@@ -389,7 +389,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 `rutis-host dev [目录]` 把目录（默认当前目录）里的插件项目作为几行运行：项目自己的插件（由 `rutis.dev.json` 里同 id 的那一行配置），加上这个文件里的其他行（插件用到的服务的假实现、其他插件）。它每 0.4 秒看一次项目里的文件（不看 `node_modules`、`.venv`、`venv`、`target`、`dist`、`build`、`__pycache__` 和除 `.env` 以外的隐藏文件、目录），跟着变化：
 
 - 变了的文件是某一行的模块时（`./dev/fake-llm.ts`；Python 的行 `py:fake_llm` 的模块文件，即 Python 运行时项目里的 `fake_llm.py` 或 `fake_llm/__init__.py`），重新加载这一行。项目里其他文件变了（插件的其他模块、`package.json`、`pyproject.toml`），重新加载项目自己的那一行。文件没变的行不动。
-- Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。Go 项目里，`rutis.dev.json` 中 `name` 是项目里一个目录的行（`./dev/fakellm`，同一个模块下只服务一个插件的 main 包）是用 Go 写的假依赖：构建成它自己的二进制，作为它自己的运行时（`go-fakellm`）运行；项目里的 `check` 也构建它，`rutis.json` 没有这种行。源码变了时重新构建每个二进制，只重启内容变了的那几个运行时（见 [Go 指南](go-plugin.md#4-在本地宿主里运行)）。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
+- Go、Swift 项目的源码（`.go`、`go.mod`、`go.sum`；Swift 源码、`Package.swift`、`Package.resolved`）变了，重新构建，并让它的运行时换上新的构建重启；构建失败时上一次的构建继续运行。其他行（`rutis.dev.json` 里的 Python、TypeScript 行）的模块变了，只重新加载那一行，不重新构建；其他文件变了，什么都不做。
 - `rutis.dev.json` 的内容变了就重新读，规则同 `run --watch-config`（全有或全无；运行中改不了的部分被拒绝，提示重启；见 [运行中改配置](#运行中改配置)）；Unix 上 SIGUSR1 也会触发。条目改了的行带着新的内容重启，新增的行启动，删掉的行卸载。
 - 用到某一行所提供服务的行，在这一行重新加载时随它重启，和平时服务消失又回来时一样。
 - 本机运行时（`node`、`py`、`bun`）的进程结束、又没有谁重启它时（`restart` 是默认的 `"no"`，或者 `"on-failure"` 已经放弃），它的某一行下一次变化（文件，或它在 `rutis.dev.json` 里的条目）会重新启动这个运行时，用那时的代码；它的行随之回来。别的行变化不会启动它。`restart` 会重启它（`"on-failure"`，还没放弃）、或者它正在启动时，交给它自己：它的行用那时的代码启动。
@@ -464,7 +464,7 @@ connections:
 - `connections`：`runtimes.remote` 自己连接的远程运行时（没有时不出现这一节）。一台写它的 link 的状态（同 `run` 的 link 行；还没连上时写 `connecting` 或 `waiting for it to connect`），多台写现在连着的 id（没有时写 `none connected`）。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
-`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（`dev` 接受，`run` 加 `--allow-call` 时接受，见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
+`run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
 
 停止没有在截止时间内完成时（见 [停止与退出码](#停止与退出码)），除了还在停止的插件，还列出还没返回的调用：`call not returned: caller → slow.wait  12s`。
 
@@ -500,9 +500,8 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下面是出错的行（`in weather:`）与它的堆栈 |
 | 方法要调用方那一行的 `&Ctx` | `rutis-host: tools.register needs a calling row; call it from a plugin, not from rutis-host call` |
 | 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
-| `run` 没加 `--allow-call` | `rutis-host: this rutis-host run does not accept calls; start it with rutis-host run --allow-call` |
 
-`call` 能执行任何服务的任何方法，所以 `dev` 接受，`run` 默认不接受：生产环境要用时在启动命令上加 `--allow-call`（只放在命令行，不写进 `rutis.json`）。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
+`run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
 
 ## 输出
 
@@ -640,7 +639,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 }
 ```
 
-- token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`），没有时用 `RUTIS_TOKEN`。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
+- token：`RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`）。`dial` 时出示它，`listen` 时用它认连进来的运行时；`listen` 没有 token 时启动报错。
 - `transport`：可选，默认 `websocket`。宿主自己的连接方式（中继、QUIC 等）实现 `Transport`，由嵌入 rutis-host 的 Rust 程序挂上（`Embedding` 的 `transports`），`transport` 写它的名字；一台、多台都用它。用别的传输时，`listen` 写那个传输自己的监听器名，不需要在 `listen` 里有同名的监听器。
 - 启动时报错：`dial` 与 `listen` 同时写（`dial and listen both set`）、`dial` 与 `instances` 同时写（`dial and instances both set`）、`instances` 没有 `listen`、`transport` 没有 `dial` 或 `listen`、`transport` 不是宿主有的、`listen` 的监听器不存在，以及同一个运行时还有一条带 `"runtime"` 的节点行（`link row <id> connects it too`）。
 - 一台的 `listen` 与监听的节点行一样，参与同一 token 的检查（#702、#726）：两个条目会接受同一个 token 时启动报错。
@@ -667,7 +666,7 @@ rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runt
 }
 ```
 
-- 运行时连接时出示 token `RUTIS_TOKEN_<NAME>`（运行时名大写，`-` 写作 `_`；没有时用 `RUTIS_TOKEN`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
+- 运行时连接时出示 token（与 rutis 一侧的 `RUTIS_TOKEN_<NAME>` 相同，运行时名大写，`-` 写作 `_`），并自报一个 id（`[a-z0-9-]`）。token 不对时拒绝连接；id 只用来区分连接，不作凭据。
 - 每条连接是分组的一个实例：连进来时创建，断开时关闭。同一个 id 的新连接接管旧连接：旧实例关闭后再创建新实例。
 - 分组里的 `<name>:<插件>` 行在每个实例里运行在该实例的连接上。连接里没有这个插件时，这一行只在这个实例里失败（`runtime <name>: this connection does not contain plugin <插件>`），不影响其他实例；新增这样的行也不会因此被拒绝。
 - 连接上的插件提供的服务是它所在实例自己的：多条连接带同名插件互不冲突，同一实例里的行（任何语言）按名字用到的是本连接的服务。实例外的行用不到它们，需要时把使用者放进这个分组。
@@ -717,15 +716,14 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `RUTIS_TOKEN` | 连接其他节点时出示的、以及接受其他节点连入时核对的 token |
-| `RUTIS_TOKEN_<节点>` | 只对某个节点（大写，`-` 写作 `_`），优先于 `RUTIS_TOKEN`；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token |
+| `RUTIS_TOKEN_<节点>` | 连接这个节点时出示的、以及它连入时核对的 token（节点名大写，`-` 写作 `_`）；连进来的运行时（`listen` / `instances`）按运行时名，所有连接共用这一个 token。宿主一侧只读按名字的变量，不读单独的 `RUTIS_TOKEN` |
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（例如都没有单独的 token、都用 `RUTIS_TOKEN`），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、给哪一个设 `RUTIS_TOKEN_<名字>`：
+同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、连进来的运行时）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（两个 `RUTIS_TOKEN_<名字>` 设成了同一个值），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、哪两个变量要换一个值：
 
 ```
-rutis-host: listener public: link row main and remote runtime phone both accept RUTIS_TOKEN, so a connection presenting it cannot be told apart: set RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE to a token of its own
+rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
 环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的运行时，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中只切断一个身份要用身份层的吊销钩子，见 [连接节点](nodes.md#安全)。

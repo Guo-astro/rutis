@@ -41,6 +41,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import arcships.rutis.advanced.RemoteFunction
 
 /** An exception with a code and data, as a plugin writes one. */
 class Stormy(val code: String, val data: Any?) : RuntimeException("too windy")

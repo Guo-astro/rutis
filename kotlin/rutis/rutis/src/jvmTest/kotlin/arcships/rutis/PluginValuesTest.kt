@@ -20,6 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import arcships.rutis.generated.Tables
 
 @Serializable
 data class Depth(val depth: Int)
