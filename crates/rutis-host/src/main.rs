@@ -11,7 +11,6 @@
 //! rutis-host add <plugin> [rutis.json]
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
-//! rutis-host go add <module>@<version> [rutis.json]
 //! rutis-host types [crate dir] [-o file] [--python file]
 //! ```
 
@@ -86,9 +85,6 @@ usage:
                                               install the newest version (or the one named) of
                                               what add installed; a running host keeps the old
                                               one until it restarts
-  rutis-host go add <module>@<version> [rutis.json]
-                                              install a Go plugin binary into runtimes.go.dir
-                                              (go install; needs the Go toolchain)
   rutis-host types [dir] [-o file] [--python file]
                                               write the TypeScript declarations of the Rust
                                               services marked #[rutis::service] in the crate in
@@ -110,7 +106,6 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("new") => new_project(&args[1..]).map(|()| Stopped::Done),
-        Some("go") => go_command(&args[1..]).map(|()| Stopped::Done),
         Some("types") => types(&args[1..]).map(|()| Stopped::Done),
         Some("--version" | "-V") => {
             outln!("rutis-host {}", env!("CARGO_PKG_VERSION"));
@@ -415,28 +410,6 @@ fn prefix_flag(args: Vec<String>, default: bool) -> (bool, Vec<String>) {
         }
     }
     (prefix, rest)
-}
-
-/// `rutis-host go add <module>@<version> [rutis.json]`: `go install` the
-/// binary into the configuration's Go plugin directory.
-fn go_command(args: &[String]) -> Result<(), String> {
-    let usage = "usage: rutis-host go add <module>@<version> [rutis.json]";
-    let (Some("add"), Some(module)) = (args.first().map(String::as_str), args.get(1)) else {
-        return Err(usage.into());
-    };
-    if !module.contains('@') {
-        return Err(format!("{module}: name a version, as {module}@latest"));
-    }
-    let config = config::HostConfig::read(&config_file(&args[2..]))?;
-    warn(&config);
-    let dir = config
-        .runtimes
-        .go
-        .and_then(|go| go.dir)
-        .ok_or("the configuration has no runtimes.go.dir to install into")?;
-    rutis_host::install::install_go_module(module, &dir)?;
-    outln!("installed {module} into {}", dir.display());
-    Ok(())
 }
 
 /// How starting went.

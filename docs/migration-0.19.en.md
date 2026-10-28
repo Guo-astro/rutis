@@ -171,6 +171,7 @@ Unchanged: `definePlugin` / `define_plugin` / `Define` / `Rutis.define` at each 
 
 - `rutis-dev` (the dev channel) is removed; use `rutis-host dev` during development.
 - `rutis-migrate` is no longer released with 0.19. The 0.17 migration still works with `cargo install rutis-migrate --version 0.18.0`.
+- `rutis-host go add <module>@<version>` is removed; use `rutis-host add <module>@<version>`, which installs into `runtimes.go.dir` with the same `go install` and adds the row. For the binary without a row, run `GOBIN=<runtimes.go.dir> go install <module>@<version>` yourself.
 
 ### Go plugins
 

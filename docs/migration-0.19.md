@@ -171,6 +171,7 @@ Kotlin 另有两点：
 
 - `rutis-dev`（dev 通道）删除；开发时用 `rutis-host dev`。
 - `rutis-migrate` 不再随 0.19 发布。0.17 的迁移仍可用 `cargo install rutis-migrate --version 0.18.0`。
+- `rutis-host go add <模块>@<版本>` 删除；用 `rutis-host add <模块>@<版本>`，它用同样的 `go install` 装到 `runtimes.go.dir`，并加上行。只要二进制、不要行时，手动 `GOBIN=<runtimes.go.dir> go install <模块>@<版本>`。
 
 ### Go 插件
 

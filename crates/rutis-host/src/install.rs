@@ -652,12 +652,3 @@ fn is_group(row: &Value) -> bool {
         None | Some(Value::Null | Value::Bool(false))
     )
 }
-
-/// `rutis-host go add`: `go install <module>` into `dir`, with the install
-/// code `add` uses; its words as before.
-pub fn install_go_module(module: &str, dir: &Path) -> Result<(), String> {
-    crate::installer::install_go_module(module, dir).map_err(|error| match error {
-        InstallError::Failed(_) => format!("go install {module} failed"),
-        other => other.to_string(),
-    })
-}

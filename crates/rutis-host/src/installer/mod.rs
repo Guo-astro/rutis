@@ -1,7 +1,7 @@
 //! Installing plugins from where they come from: npm, PyPI, Go modules
 //! and local paths, into the places the runtimes use
 //! (docs/design-plugin-install-2026-10-27.md §五). `rutis-host add`,
-//! `remove`, `upgrade` and `go add` use it ([`crate::install`]).
+//! `remove` and `upgrade` use it ([`crate::install`]).
 //!
 //! The package managers run as commands (npm, bun, uv or pip, go), their
 //! output shown as it is; what a runtime lacks is installed with the
@@ -1011,14 +1011,6 @@ fn read_json(path: &Path) -> Result<serde_json::Value, Error> {
 
 // ── Go and Swift ────────────────────────────────────────────────
 
-/// `GOBIN=<dir> go install <module>@<version>` (`rutis-host go add`).
-#[doc(hidden)]
-pub fn install_go_module(module: &str, dir: &Path) -> Result<(), Error> {
-    std::fs::create_dir_all(dir)
-        .map_err(|error| Error::Other(format!("{}: {error}", dir.display())))?;
-    go_install(&Tools::default(), module, dir)
-}
-
 fn go_install(tools: &Tools, module: &str, dir: &Path) -> Result<(), Error> {
     tools.run_or(
         &Run::new("go").args(["install", module]).env("GOBIN", dir),
@@ -1026,7 +1018,7 @@ fn go_install(tools: &Tools, module: &str, dir: &Path) -> Result<(), Error> {
     )
 }
 
-/// rutis-host's words when go cannot be run (`go add`'s).
+/// rutis-host's words when go cannot be run.
 fn no_go(error: &str, dir: &Path) -> String {
     format!(
         "cannot run go ({error}): install the Go toolchain, or download the plugin's binary \
