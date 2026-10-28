@@ -9,7 +9,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{layer, row_state, Probe};
+use common::runtimes::{layer, row_state, rows_stage, Probe};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, TypeKey,
 };
@@ -331,7 +331,8 @@ async fn interop_loader(probe: &Probe) -> (Ctx, Loader, FiberView) {
 }
 
 /// The runtime, the loader and the rows' second stage, with `shared` as
-/// the catalog's shared names. Waits for the loader only.
+/// the catalog's shared names. Waits for the loader and for the rows'
+/// stage (so for the runtime too).
 async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberView) {
     let mut catalog = ServiceCatalog::new();
     for name in shared {
@@ -348,7 +349,7 @@ async fn mount(root: &Ctx, package: PathBuf, shared: &[&str]) -> (Loader, FiberV
     let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
+    rows_stage(root, resolver).await;
     (loader, runtime)
 }
 
@@ -1044,7 +1045,7 @@ async fn mount_by_name(root: &Ctx) -> (Loader, FiberView) {
     let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver.clone()), options);
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(resolver));
+    rows_stage(root, resolver).await;
     (loader, runtime)
 }
 
