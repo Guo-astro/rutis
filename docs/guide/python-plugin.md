@@ -1,6 +1,6 @@
 # 写一个 Python 插件
 
-从创建项目到发布，再到被宿主使用。需要 Python 3.10 或更高；下面用 [uv](https://docs.astral.sh/uv/)，用 pip 和 venv 也可以。
+从创建项目到发布，再到被宿主使用。需要 Python 3.12 或更高；下面用 [uv](https://docs.astral.sh/uv/)，用 pip 和 venv 也可以。
 
 ## 1. 创建项目
 

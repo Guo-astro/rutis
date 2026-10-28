@@ -61,7 +61,7 @@ impl LocalRuntime {
 
     /// A Python runtime named `"py"`: `python3 -m rutis`, importing plugin
     /// modules from `project` and the interpreter's environment. The `rutis`
-    /// package must be installed there; Python 3.10 or later. Choose the
+    /// package must be installed there; Python 3.12 or later. Choose the
     /// interpreter (a project's venv) with [`LocalRuntime::interpreter`].
     #[cfg(feature = "python")]
     pub fn python(project: impl Into<PathBuf>) -> Self {

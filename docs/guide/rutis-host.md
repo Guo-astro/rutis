@@ -4,7 +4,7 @@
 
 ## 快速上手
 
-用两个插件组装一个宿主：TypeScript 写的 `greeter` 提供 `greeter` 服务（`hello(name)`）；Python 写的 `welcome` 用这个服务，提供 `welcome` 服务（`everyone(names)`）。插件平常从 npm、PyPI 装（`npm:@your-name/greeter`、`pypi:your-name-welcome`）；这里两个插件项目由 `rutis-host new` 在本地生成、从文件装，所以每一步都能照原样运行。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
+用两个插件组装一个宿主：TypeScript 写的 `greeter` 提供 `greeter` 服务（`hello(name)`）；Python 写的 `welcome` 用这个服务，提供 `welcome` 服务（`everyone(names)`）。插件平常从 npm、PyPI 装（`npm:@your-name/greeter`、`pypi:your-name-welcome`）；这里两个插件项目由 `rutis-host new` 在本地生成、从文件装，所以每一步都能照原样运行。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.12 或更高。
 
 1. 生成两个插件项目。`greeter` 用模板原样，打成 npm 包（`npm pack` 先运行 `prepack`，用 `tsc` 构建）：
 
@@ -240,7 +240,7 @@ a running host keeps the old versions until it restarts
 
 | 情况 | 输出 |
 | --- | --- |
-| 包管理器不在 | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`；Python 没有 uv 也没有 `python3`：`rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| 包管理器不在 | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`；Python 没有 uv 也没有 `python3`：`rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.12 or later` |
 | 包管理器失败 | 它自己的输出，然后 `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | 不是插件 | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
 | 本地目录认不出 | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |

@@ -85,13 +85,8 @@ def session_failure(error: BaseException | None, far_close: int | None) -> str:
     expected, is an authentication failure; a greeting this side cannot
     speak is incompatible (the session's own handshake errors); anything
     else, being replaced (4002) too, is retryable."""
-    from .peer import Incompatible
-
     if far_close == REJECTED:
         return AUTH_REJECTED
-    # A host that does not speak the event protocol of rutis 0.13.
-    if isinstance(error, Incompatible):
-        return INCOMPATIBLE
     reason = str(error or "")
     if isinstance(error, ValueError) and reason.startswith("incompatible session"):
         return INCOMPATIBLE

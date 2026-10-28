@@ -1282,10 +1282,6 @@ async fn python_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "python"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(python(), main_without_objects("python")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "python"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

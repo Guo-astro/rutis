@@ -4,7 +4,7 @@
 
 ## Quick start
 
-A host made of two plugins: `greeter`, written in TypeScript, provides the `greeter` service (`hello(name)`); `welcome`, written in Python, uses it and provides the `welcome` service (`everyone(names)`). Plugins usually install from npm and PyPI (`npm:@your-name/greeter`, `pypi:your-name-welcome`); here `rutis-host new` makes the two plugin projects locally and they install from files, so every step runs as written. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.10 or later.
+A host made of two plugins: `greeter`, written in TypeScript, provides the `greeter` service (`hello(name)`); `welcome`, written in Python, uses it and provides the `welcome` service (`everyone(names)`). Plugins usually install from npm and PyPI (`npm:@your-name/greeter`, `pypi:your-name-welcome`); here `rutis-host new` makes the two plugin projects locally and they install from files, so every step runs as written. It needs Node 22 or later, and [uv](https://docs.astral.sh/uv/) with Python 3.12 or later.
 
 1. Make the two plugin projects. `greeter` is the template as it is, packed as an npm package (`npm pack` runs `prepack` first, which builds with `tsc`):
 
@@ -240,7 +240,7 @@ On errors (on stderr, exit status 1, `rutis.json` unchanged):
 
 | Case | Output |
 | --- | --- |
-| No package manager | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`; for Python with neither uv nor `python3`: `rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| No package manager | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`; for Python with neither uv nor `python3`: `rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.12 or later` |
 | The package manager fails | its own output, then `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | Not a plugin | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
 | A local directory it does not recognize | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
