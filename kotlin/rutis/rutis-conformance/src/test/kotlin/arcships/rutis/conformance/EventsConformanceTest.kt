@@ -138,7 +138,7 @@ private class Run(val c: Case, val groups: Map<String, String>, val log: EventLo
         spec["filter"]?.let { request["filter"] = it }
         spec["terminal"]?.let { request["terminal"] = it }
         spec["cancel"]?.let { request["cancel"] = it }
-        val method = if (mode == "bail" || mode == "waterfall-sync") "dispatchSync" else "dispatch"
+        val method = if (mode == "bail") "dispatchSync" else "dispatch"
         return runBlocking {
             runCatching { withTimeout(10_000) { loaded.service("emitter-$key").raw(method, listOf(request)) } }
         }

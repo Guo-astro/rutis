@@ -44,15 +44,11 @@ const val ENDPOINT_PROTOCOL: Int = 4
 /** How deep a value crossing a session may nest (#279): each list, record, map or set is a level. */
 const val MAX_DEPTH: Int = 64
 
-/** The event protocol of rutis 0.13 (#464), which both ends of every 0.13 session declare. */
-const val EVENTS_CAPABILITY: String = "events-v2"
-
 /**
- * What this side declares: `signals`; `sync-wait` (its
- * synchronous calls say so); `reentrant-sync` (a thread per incoming call);
- * not `sync-stack`; `events-v2`; every `value-<tag>`.
+ * What this side declares: `reentrant-sync` (a thread per incoming call);
+ * not `sync-stack`; every `value-<tag>`.
  */
-val SESSION_CAPABILITIES: List<String> = listOf("objects", "signals", "reentrant-sync", "sync-wait", EVENTS_CAPABILITY) + VALUE_CAPABILITIES
+val SESSION_CAPABILITIES: List<String> = listOf("reentrant-sync") + VALUE_CAPABILITIES
 
 private val endpointId = Regex("^[a-z0-9-]+$")
 private val endpointOrigin = Regex("^(s[0-9]+/)?[a-z0-9-]+:[1-9][0-9]*$")
@@ -475,7 +471,6 @@ class Peer(private val channel: Channel, private val opts: Options) {
             }
             is Exported -> exportValue(value, "function", value.original, grants, origin)
             is ExportedObject -> {
-                if (!supportsLocked("objects")) throw objectRefused(value.original, greeting?.endpoint)
                 exportValue(value, "object", value.original, grants, origin)
             }
             is Long -> if (value > MAX_SAFE || value < -MAX_SAFE) {
@@ -713,9 +708,9 @@ class Peer(private val channel: Channel, private val opts: Options) {
 
     // ── Outgoing calls ───────────────────────────────────────────
 
-    /** The frame fields of a synchronous call: `sync: true` for a far end that declared `sync-wait`. */
+    /** The frame fields of a synchronous call: `sync: true` (#228). */
     private fun waiting(fields: Map<String, JsonElement>, sync: Boolean): Map<String, JsonElement> =
-        if (sync && supports("sync-wait")) fields + ("sync" to JsonPrimitive(true)) else fields
+        if (sync) fields + ("sync" to JsonPrimitive(true)) else fields
 
     private fun invokeFields(target: String, method: String) =
         mapOf("target" to JsonPrimitive(target), "method" to JsonPrimitive(method))

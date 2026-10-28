@@ -27,7 +27,7 @@ internal object Control {
     suspend fun control(rt: RuntimeState, method: String, args: List<Any?>): Any? = when (method) {
         "mount" -> {
             val mount = record(arg(args, 0))
-            rt.mounted(mount["announce"] == true, mount["runtime"] as? String)
+            rt.mounted(mount["runtime"] as? String)
             linkedMapOf(
                 "services" to linkedMapOf<String, Any?>(),
                 "features" to FEATURES,

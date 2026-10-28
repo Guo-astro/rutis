@@ -192,7 +192,7 @@ class ObjectsTest {
         runtime = Peer(a, Options(dispatch = dispatch, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         assertEquals("hello", read()["op"]?.jsonPrimitive?.content)
-        far.send("""{"op":"hello","version":4,"endpoint":"main","capabilities":["objects","events-v2","sync-wait"]}""".toByteArray())
+        far.send("""{"op":"hello","version":4,"endpoint":"main","capabilities":[]}""".toByteArray())
         runtime.readyFuture.get(5, TimeUnit.SECONDS)
     }
 

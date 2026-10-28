@@ -184,7 +184,7 @@
       "python": "yes",
       "go": "yes",
       "swift": "yes",
-      "kotlin": "yes",
+      "kotlin": "no",
       "rust": "yes"
     },
     {

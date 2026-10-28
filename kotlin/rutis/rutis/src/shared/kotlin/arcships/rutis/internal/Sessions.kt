@@ -3,7 +3,6 @@ package arcships.rutis.internal
 import arcships.rutis.Plugin
 import arcships.rutis.Rutis
 import arcships.rutis.internal.peer.Channel
-import arcships.rutis.internal.peer.EVENTS_CAPABILITY
 import arcships.rutis.internal.peer.Endpoint
 import arcships.rutis.internal.peer.Options
 import arcships.rutis.internal.peer.Peer
@@ -12,10 +11,6 @@ import arcships.rutis.internal.peer.SESSION_CAPABILITIES
 import kotlinx.coroutines.runBlocking
 import arcships.rutis.advanced.IMPLEMENTATION
 import arcships.rutis.advanced.VERSION
-
-/** Why a host that does not declare events-v2 is refused. */
-const val OLD_EVENTS_HOST: String =
-    "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
 
 /** The state line of a refusal: `refused: incompatible (<reason>); stopping`. */
 fun refusedLine(reason: String): String = "refused: incompatible ($reason); stopping"
@@ -65,9 +60,6 @@ class RuntimeSession private constructor(val peer: Peer, val runtime: RuntimeSta
                     endpoint = endpoint,
                     implementation = mapOf("name" to arcships.rutis.advanced.IMPLEMENTATION, "version" to arcships.rutis.advanced.VERSION),
                     capabilities = SESSION_CAPABILITIES,
-                    // A host older than 0.13 is refused right after its handshake (#464 §2.2).
-                    require = listOf(EVENTS_CAPABILITY),
-                    refuse = { OLD_EVENTS_HOST },
                 ),
             )
             runtime.session = peer
