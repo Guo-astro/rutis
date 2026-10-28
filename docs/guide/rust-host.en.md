@@ -243,7 +243,7 @@ const entry = await calendar.add({ title: 'Standup', startsAt: Date.now() })
 - **Unmarked types are not served**: host-internal services (storage, locks, database handles, …) do not reach plugins. When a row waits for a name an unmarked Rust service would have, `Loader::waiting_for(&entry)` lists what the row waits for and says to add `#[rutis::service]` to that type's `impl`. `Loader::check` reports a marked type's name as `Provider::Marked(type)`, served once the type is provided, which a check cannot know (`rutis-host check` prints it as such).
 - **dylib plugins**: a marked type in a dylib (whose crate depends on `rutis-sdk` only and writes `#[rutis_sdk::rutis::service]`, or `use rutis_sdk::rutis::service`) is served once the plugin loads; the host need not know it. On a version swap the old generation's entry point goes with its services and the new one's appears when it provides them. A rebuild needs no new version: two builds of one plugin keep their types' `TypeId`s, and each value is served with the code of the build that provided it, so both can be loaded at once. A build that drops the marker serves its values by name no more, and names are those of the newest build. The host links `rutis-bridge`.
 - **Without rutis-bridge**: serving by name and checking clashes are its work. In a program that does not link it, a marked type is provided by type only, and the first time it is provided the error sink gets one `ErrorKind::NotServedByName` (by default `service calendar is provided by type but not registered by name: depend on rutis-bridge to use it by name and to check clashes`).
-- **TypeScript declarations**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their declarations (`Services['calendar']`, the data types, `<Name>Thrown`). To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency). Calls need no declarations.
+- **Declarations and Python types**: `rutis-host types <crate dir> -o services.d.ts` finds every marked type in the crate and in the crates it uses that depend on rutis, and writes their TypeScript declarations (`Services['calendar']`, the data types, `<Name>Thrown`); add `--python services.py` to write their Python types too. To refresh them on every build, write `rutis_bridge::build::Exports::new().typescript("rows/services.d.ts").generate()` in `build.rs` (feature `exports` of the `rutis-bridge` build dependency), and `.python(…)` likewise. Calls need neither. See [Declarations](#declarations).
 
 A complete example: [`examples/marked-services`](../../examples/marked-services).
 
@@ -665,14 +665,17 @@ Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx:
 
 ## Exported services: reference
 
-Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go): for a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); a type whose source you cannot change is wrapped in a type of your own and marked ([above](#third-party-types-wrap-them-in-a-type-of-your-own)). The rules below say what crosses and how errors are thrown. The generator writes the TypeScript declarations from the source: `rutis-host types`, or `rutis_bridge::build::Exports` in `build.rs` (feature `exports` of the build dependency). Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
+Rust services, used by name from the rows of every language (TypeScript, JavaScript, Python, Go): for a type marked `#[rutis::service]`, the macro generates the dispatcher at compile time and providing the type serves it ([above](#mark-the-type-rutisservice)); a type whose source you cannot change is wrapped in a type of your own and marked ([above](#third-party-types-wrap-them-in-a-type-of-your-own)). The rules below say what crosses and how errors are thrown. The generator writes the TypeScript declarations and the Python types from the source: `rutis-host types`, or `rutis_bridge::build::Exports` in `build.rs` (feature `exports` of the build dependency). Examples: [`examples/marked-services`](../../examples/marked-services), [`examples/rust-services`](../../examples/rust-services).
 
 | `Exports` | Effect |
 | --- | --- |
 | `.typescript(file)` | Write the declarations to `file` (relative to `Cargo.toml`), only when they change |
+| `.python(file)` | Write the Python types to `file` (relative to `Cargo.toml`), only when they change |
 | `.declared(path, typescript)` | The TypeScript type to use for the Rust type at `path`, where the generator cannot derive it |
-| `.generate()` | Write the declarations from `build.rs` (after `.typescript(…)`); Cargo runs it again when the source changes |
-| `.declarations(crate dir)` | The declarations, outside a build script (what `rutis-host types` uses) |
+| `.declared_python(path, python)` | The Python type for the same `path` (after `.declared`); without it, `typing.Any` with a warning |
+| `.generate()` | Write the files named, from `build.rs` (at least one of `.typescript(…)` and `.python(…)`); Cargo runs it again when the source changes |
+| `.write(crate dir)` | Outside a build script, write the files named (relative to the current directory) and return the declarations (what `rutis-host types` uses) |
+| `.declarations(crate dir)` | The declarations, outside a build script |
 
 ### Where the source comes from
 
@@ -723,11 +726,26 @@ A method returning `Result<T, E>` (`std::result::Result`, an alias of it, `anyho
 
 The file `rutis-host types` or `.typescript(…)` writes has an interface per service type, the data types it uses, `RustError`, the `<Name>Thrown` types, and `Services`, the services by name: `ctx.use<Services['calendar']>('calendar')`. It passes `tsc --strict` (both examples check it). Commit it: `build.rs` rewrites it when the Rust side changes; with `rutis-host types`, run it again.
 
+When the host hands plugins to others (or another team) to write in Python, it writes the Python types too, and ships them with the plugin template:
+
+```sh
+rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
+```
+
+In `build.rs` likewise: `Exports::new().typescript(…).python(…)`.
+
+**Python types** (Python 3.10 and later): services are `typing.Protocol`s, structs `TypedDict`s (optional fields in a `total=False` base class; the functional form when a field name is not an identifier), enums of names only `Literal`s, enums with data unions of `TypedDict`s, `Option<T>` is `T | None`, `Vec<T>`, `HashMap<String, T>` and tuples are `list`, `dict[str, T]` and `tuple`, integers and floats `int` and `float`, `serde_json::Value` is `Any`, callbacks are `Callable[[A], R | Awaitable[R]]`, `rutis::Definition` is `rutis.Plugin`, an error type's `<Name>Thrown` is an alias of `rutis.RemoteError` and `<Name>ThrownCode` the `Literal` of its codes. Generic structs have no type parameters in Python (3.10's `TypedDict` cannot be generic); their parameters are `Any`. Plugin authors write `notes: Notes = ctx.use("notes")`, and the editor or pyright checks the calls; without the annotation it runs the same (see [Python plugins: types from the host](python-plugin.en.md#types-from-the-host)). The module passes pyright in strict mode (`examples/marked-services` checks it); commit it too. A `.declared` type without a Python version is written as `Any`, with a warning:
+
+```text
+$ rutis-host types . --python types/deskmate.py
+warning: notes::Text has no Python type: declare it with .declared_python (written as Any)
+```
+
 ### Limits
 
 - The generator does not see what a macro writes: types, `impl` blocks or methods written by a macro (other than derives) are not found. A service type must be a concrete struct or enum (not generic, not a trait object).
 - Methods taking `&mut self`, borrowing a reference out, taking a reference to a function's argument (`Fn(&A)`), a generic parameter other than a function, `impl Trait` other than `Fn`, or a function that does not return a future of a `Result` cannot be bound: the macro fails the compile ([above](#mark-the-type-rutisservice)), and the generator leaves them out of the declarations with a warning.
-- A data type needs a serde derive the generator can read: a hand-written `Serialize`, `#[serde(with / serialize_with / into / remote)]`, or a type of a crate not read (other than `std`, `serde_json`, `chrono`, `uuid`, `url` and the tagged values) needs `.declared(path, typescript)`: until then the methods using it are left out of the declarations (calls are not affected), the warning naming the type.
+- A data type needs a serde derive the generator can read: a hand-written `Serialize`, `#[serde(with / serialize_with / into / remote)]`, or a type of a crate not read (other than `std`, `serde_json`, `chrono`, `uuid`, `url` and the tagged values) needs `.declared(path, typescript)`: until then the methods using it are left out of the declarations (calls are not affected), the warning naming the type. For the Python types, give its Python type with `.declared_python(path, python)` as well.
 - `#[cfg]` is evaluated as above; a `cfg` the generator cannot see is taken as off.
 - A method's future must be `Send` (the compile fails otherwise).
 - The macro sees only the `impl` block: decisions that depend on a type (is it a `Result`, how its error gets a `code`, does a parameter take a function) are left to the expanded, concrete code, so type aliases are recognized. Write an async method as `async fn`, or return `BoxFuture<'_, T>`, `Pin<Box<dyn Future<Output = T> + Send>>` or `impl Future<Output = T>`; an alias of a future as the return type is a compile error. A `&Ctx` parameter is recognized by the name `Ctx`.
