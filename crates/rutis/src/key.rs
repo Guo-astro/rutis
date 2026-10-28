@@ -33,10 +33,11 @@ impl std::fmt::Display for InstanceId {
     }
 }
 
-/// 限定名(D33):双轨——静态路径零分配,动态路径(Arc)承接运行时名字。
-/// PartialEq/Eq/Hash 按**字符串内容**:Static 与 Dynamic 同名等值互通;
-/// Debug 同样只显示内容(不显示变体),与 Eq 语义一致——变体是实现细节,
-/// 打出来会误导调试。
+/// A key's qualifier (channel name): a static name with no allocation, or
+/// an `Arc<str>` for a name built at run time.
+/// `PartialEq`/`Eq`/`Hash` compare the **string content**, so a static and a
+/// dynamic qualifier with the same text are equal. `Debug` likewise shows
+/// only the text, not the variant, which is an implementation detail.
 #[derive(Clone)]
 pub(crate) enum Qualifier {
     Static(&'static str),
@@ -72,11 +73,12 @@ impl std::hash::Hash for Qualifier {
     }
 }
 
-/// 服务键 = TypeId + 可选限定名(D21:`ServiceKey = TypeKey`)。
-/// D33:限定名放宽为双轨,支持运行时构造的名字(桥事件等);
-/// 代价是失去 `Copy`——克隆装载/注册路径,频率低。
-/// 携带构造时捕获的类型名,仅用于诊断(`describe`/错误消息);
-/// 相等与哈希由 TypeId、限定名和实例号决定；类型名只供诊断。
+/// A service key: a `TypeId`, an optional qualifier and an optional instance
+/// id. The qualifier may be a name built at run time (bridge events and
+/// the like), so the key is `Clone` but not `Copy`.
+/// It also carries the type name captured at construction, used only for
+/// diagnostics (`describe`, error messages); equality and hashing use the
+/// `TypeId`, the qualifier and the instance id.
 pub struct TypeKey {
     type_id: TypeId,
     type_name: &'static str,
@@ -138,7 +140,7 @@ impl TypeKey {
         self.type_id
     }
 
-    /// 类型主键(默认,无限定名)。
+    /// The plain key for type `T`, with no qualifier.
     pub fn of<T: ?Sized + 'static>() -> Self {
         Self {
             type_id: TypeId::of::<T>(),
@@ -148,7 +150,8 @@ impl TypeKey {
         }
     }
 
-    /// 带限定名的键:同接口多实例(shaku Keyed 模式)。静态名零分配。
+    /// A key with a static qualifier, for several services of one type
+    /// (like shaku's `Keyed`). Does not allocate.
     pub fn keyed<T: ?Sized + 'static>(qualifier: &'static str) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
@@ -158,8 +161,8 @@ impl TypeKey {
         }
     }
 
-    /// 带动态限定名的键(D33):运行时构造的名字(桥事件名等)。
-    /// 与 `keyed` 同名等值互通。
+    /// A key with a qualifier built at run time (bridge event names and the
+    /// like). Equal to a `keyed` key with the same name.
     pub fn keyed_dynamic<T: ?Sized + 'static>(name: impl Into<Arc<str>>) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
@@ -185,8 +188,9 @@ impl TypeKey {
         self.instance
     }
 
-    /// 诊断描述(不参与分发):类型名 + 限定名(0.2.2 起携带构造时捕获的
-    /// `type_name::<T>()`,错误消息与装配图可读)。
+    /// A readable description for diagnostics, not used for dispatch: the
+    /// type name captured at construction (`type_name::<T>()`), then
+    /// `#qualifier` and `@instance` when present.
     pub fn describe(&self) -> String {
         let base = match &self.qualifier {
             Some(q) => format!("{}#{}", self.type_name, q.as_str()),
@@ -453,7 +457,8 @@ impl<T: ?Sized + 'static> From<&Key<T>> for TypeKey {
     }
 }
 
-/// isolate 作用域标识:同 label 字符串合并为同一作用域(TS 语义,D21)。
+/// An isolate scope id: isolates with the same label string share one scope
+/// (as in Cordis).
 pub(crate) type ScopeId = std::sync::Arc<str>;
 
 #[cfg(test)]
@@ -462,7 +467,7 @@ mod describe_tests {
 
     struct ReadableService;
 
-    /// 0.2.2:describe 携带构造时捕获的类型名与限定名,诊断可读。
+    /// `describe` shows the captured type name and the qualifier.
     #[test]
     fn describe_uses_type_name_and_qualifier() {
         let plain = TypeKey::of::<ReadableService>();

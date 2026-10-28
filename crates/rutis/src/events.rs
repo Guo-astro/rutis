@@ -233,7 +233,8 @@ pub(crate) trait ErasedSync: Send + Sync + 'static {
         -> Result<Option<Value>, Error>;
 }
 
-/// 内联 poll panic 捕获(apply 在驱动任务内联执行,无法经 JoinError 边界)。
+/// Catches a panic while polling a future inline. `apply` runs inline in the
+/// driver task, so there is no `JoinError` to catch it.
 pub(crate) struct CatchUnwind<F>(Pin<Box<F>>);
 
 impl<F> CatchUnwind<F> {

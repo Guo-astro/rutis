@@ -154,7 +154,7 @@ With `listen` (the name of a listener under `listen`) and `instances` (the id of
 
 - A runtime connecting presents the token `RUTIS_TOKEN_<NAME>` (the runtime's name in uppercase, `-` written as `_`; `RUTIS_TOKEN` when that is not set) and reports an id of its own (`[a-z0-9-]`). A wrong token is refused; the id only tells connections apart and is not a credential.
 - Each connection is an instance of the group: created when it connects, closed when it disconnects. A newer connection with the same id takes over: the old instance closes before the new one is created.
-- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
+- The group's `<name>:<plugin>` rows run, in each instance, on that instance's connection. When a connection does not have the plugin, the row fails in that instance only (`runtime <name>: this connection does not contain plugin <plugin>`); other instances are not affected, and adding such a row is not refused because of it.
 - The services a connection's plugins provide belong to its instance: several connections with the same plugin do not collide, and rows in the same instance (in any language) that use the name get their own connection's service. Rows outside the instance cannot use them; put the consumer in the group.
 - No node row is needed. `listen` and `instances` go together; a listener or group that does not exist, a group that is not `instanced`, or a missing token stops the host at startup.
 - `<name>:` rows belong in that group; anywhere else the row fails.

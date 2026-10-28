@@ -1,6 +1,8 @@
 use rutis::host::BoxFuture;
 
-use crate::{Edit, LoaderError, Patch, PersistError};
+use crate::edit::Edit;
+use crate::error::PersistError;
+use crate::{LoaderError, Patch};
 
 /// Opaque version of a stored layer, compared for equality only.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
