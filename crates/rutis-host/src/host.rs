@@ -274,8 +274,10 @@ impl Host {
             }
         }
 
-        // TODO(S3 SessionResolver): add the resolver of the rows
-        // `<connection row>:<plugin>` here, last in the chain.
+        // The rows `<connection row>:<plugin>`, last: a name another
+        // resolver takes stays theirs.
+        let sessions = Arc::new(rutis_loader::runtime::SessionResolver::new(mount.catalog));
+        mount.chain = std::mem::take(&mut mount.chain).with_shared(sessions.clone());
         let Mount {
             chain,
             runtimes,
@@ -294,6 +296,7 @@ impl Host {
             },
         );
         let loader = plugin.handle();
+        sessions.attach(&loader);
         // Extra config keys, in order with what plugins print (config
         // schema design §3.2).
         loader.on_config_warning(std::sync::Arc::new(

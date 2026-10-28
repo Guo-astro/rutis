@@ -234,7 +234,14 @@ async fn apps_on_one_listen_row_bring_their_plugins_the_later_name_refused() {
     host.load(config.rows()).await.unwrap();
     let address = format!("ws://{}/rutis", host.listening[0].1);
     let device = |available: bool| ("device".to_owned(), available);
-    let said = |event: (String, bool)| heard.lock().unwrap().iter().filter(|e| **e == event).count();
+    let said = |event: (String, bool)| {
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| **e == event)
+            .count()
+    };
     let connected = || -> Vec<String> {
         host.connections()
             .into_iter()

@@ -209,7 +209,10 @@ impl Rutis {
             .iter()
             .filter(|name| self.host.service(name).is_some())
             .count();
-        (devices, self.active("watcher") + self.active("watcher-tablet"))
+        (
+            devices,
+            self.active("watcher") + self.active("watcher-tablet"),
+        )
     }
 
     /// Waits until each row of `want` runs in that many instances.
@@ -549,7 +552,10 @@ async fn a_denied_permission_fails_the_plugin_and_reaches_the_caller() {
     // came, and the caller got the denial with its code and permission.
     DEVICE
         .eventually_with(
-            || (rutis.host.service("notify").is_some() && rutis.active("caller") == 1).then_some(()),
+            || {
+                (rutis.host.service("notify").is_some() && rutis.active("caller") == 1)
+                    .then_some(())
+            },
             "notify and its caller",
             || rutis.rows(),
         )
