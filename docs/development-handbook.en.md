@@ -148,7 +148,7 @@ Register providers and consumers in the corresponding contexts to use each bindi
 
 ## Managing Resources
 
-Plugin authors own the full lifecycle of business resources: initialize through `apply`, and register cleanup through `ctx.effect`. Rutis invokes these implementations according to lifecycle rules. See [Responsibility Boundaries](development-guide.md#responsibility-boundaries).
+Plugin authors own the full lifecycle of business resources: initialize through `apply`, and register cleanup through `ctx.effect`. Rutis invokes these implementations according to lifecycle rules. See [Responsibility Boundaries](development-guide.en.md#division-of-responsibility).
 
 ### Registering Cleanup
 

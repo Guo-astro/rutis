@@ -294,7 +294,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 
 Call it again: it returns `"Bonjour, Ada! Welcome."`. Only the row whose files changed reloads; a change to `rutis.dev.json` also takes effect while it runs. Ctrl-C ends `dev`. All of `dev`'s rules are in [rutis-host: developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
-To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).
 
 ## 8. Publish
 

@@ -286,7 +286,7 @@ $ bunx --bun rutis-host call greeter.hello '"Ada"'
 
 Only the rows whose files changed reload; a change to `rutis.dev.json` applies while it runs too. See [rutis-host: Developing a plugin with `dev`](rutis-host.en.md#developing-a-plugin-with-dev).
 
-To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes).
+To run on another machine, see [the remote section of rutis-host.en.md](rutis-host.en.md#remote-runtimes-and-devices).
 
 ## 8. Publish
 
