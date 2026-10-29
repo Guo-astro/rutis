@@ -4,14 +4,14 @@ use crate::session::ENDPOINT_PROTOCOL;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// The greeting of a far end `node` speaking `version`, declaring only
-/// `events-v2` (§2.1).
+/// The greeting of a far end `node` speaking `version`, declaring nothing
+/// (§2.1).
 fn hello(version: u32) -> Frame {
     Frame::Hello {
         version,
         endpoint: Some("node".into()),
         implementation: None,
-        capabilities: Some(vec![EVENTS_CAPABILITY.into()]),
+        capabilities: None,
     }
 }
 
@@ -371,9 +371,9 @@ fn invoke(id: &str, method: &str, sync: bool) -> Frame {
     }
 }
 
-/// What the far ends of the cancellation tests declare: they mark their
-/// synchronous waits and run one stack, not reentrant (Node's profile).
-const ONE_STACK: [&str; 2] = ["sync-wait", "sync-stack"];
+/// What the far ends of the cancellation and object tests declare: they run
+/// one stack, not reentrant (Node's profile).
+const ONE_STACK: [&str; 1] = ["sync-stack"];
 /// How long a step of those tests may take before it counts as hung.
 const STEP: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -748,7 +748,7 @@ async fn references_forwarded_to_another_session_reach_their_owner() {
         paths
     });
     let user = std::thread::spawn(move || {
-        let mut b = Remote::start_declaring(rb, &["objects"]);
+        let mut b = Remote::start(rb);
         let Frame::Invoke {
             id,
             args: WireValue::List(args),
@@ -1034,7 +1034,7 @@ mod endpoint_format {
         main.ready().await.unwrap();
         mac.ready().await.unwrap();
         assert_eq!(main.greeting().unwrap().endpoint, id("mac"));
-        assert!(main.supports("signals") && main.supports(PLUGINS_CAPABILITY));
+        assert!(main.supports("reentrant-sync") && main.supports(PLUGINS_CAPABILITY));
         assert!(!main.supports("teleport"));
 
         let reply = main
@@ -1206,7 +1206,7 @@ mod endpoint_format {
                 version,
                 endpoint: Some("far".into()),
                 implementation,
-                capabilities: Some(vec![EVENTS_CAPABILITY.into()]),
+                capabilities: None,
             },
         );
         let session = Connection::open(local, Arc::new(NoExports), Endpoint::rust(id("main")))
@@ -1631,13 +1631,7 @@ impl Remote {
             version: ENDPOINT_PROTOCOL,
             endpoint: Some(endpoint.into()),
             implementation: None,
-            capabilities: Some(
-                capabilities
-                    .iter()
-                    .chain([&EVENTS_CAPABILITY])
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
+            capabilities: Some(capabilities.iter().map(|c| c.to_string()).collect()),
         });
         remote
     }
@@ -2070,8 +2064,8 @@ async fn a_tagged_value_to_a_far_end_without_its_capability_fails_only_that_call
     let (peer, remote) = connected(Arc::new(Tagging));
     let (answered, calls) = tokio::sync::oneshot::channel();
     let remote = tokio::task::spawn_blocking(move || {
-        // `value-date` only; `objects` means nothing in this format.
-        let mut remote = Remote::start_declaring(remote, &["value-date", "objects"]);
+        // `value-date` only.
+        let mut remote = Remote::start_declaring(remote, &["value-date"]);
         // The first frame read is the date: the bytes were not sent.
         let frame = remote.read_json();
         assert_eq!(
@@ -2144,13 +2138,7 @@ async fn received_tagged_values_are_checked_and_only_their_call_fails() {
             version: ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
-            capabilities: Some(
-                VALUE_CAPABILITIES
-                    .iter()
-                    .chain([&EVENTS_CAPABILITY])
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
+            capabilities: Some(VALUE_CAPABILITIES.iter().map(|c| c.to_string()).collect()),
         });
         let data = |value: Json| json!({ "type": "data", "value": value });
         let refusals = [
@@ -2256,13 +2244,7 @@ async fn a_refused_call_takes_its_id() {
             version: ENDPOINT_PROTOCOL,
             endpoint: Some("far".into()),
             implementation: None,
-            capabilities: Some(
-                VALUE_CAPABILITIES
-                    .iter()
-                    .chain([&EVENTS_CAPABILITY])
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
+            capabilities: Some(VALUE_CAPABILITIES.iter().map(|c| c.to_string()).collect()),
         });
         let invoke = |arg: Json| {
             json!({

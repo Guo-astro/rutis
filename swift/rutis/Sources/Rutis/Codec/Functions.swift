@@ -53,6 +53,17 @@ extension Rutis._Generated {
                 throw Refusal.badArgument(callee, index, expected: Refusal.expected(T.self),
                                           actual: "an object (an object is received only as a @RutisClient protocol or Any)")
             }
+            // An object of this process (a plugin of the same runtime handed
+            // it): itself where its type fits, else as across processes.
+            if case let .object(local) = value, let own = local as? ServiceObject {
+                if let typed = own.service as? T { return typed }
+                if let proxy { return proxy(Rutis.Advanced.Client.of(own: own)) }
+                if T.self != Any.self, T.self != Any?.self {
+                    let callee = callee ?? Refusal.Callee(method: "")
+                    throw Refusal.badArgument(callee, index, expected: Refusal.expected(T.self),
+                                              actual: "an object (an object is received only as a @RutisClient protocol or Any)")
+                }
+            }
             do {
                 return try ValueCodec.decode(type, from: value)
             } catch {

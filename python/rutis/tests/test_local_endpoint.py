@@ -42,7 +42,7 @@ class LocalEndpoint(unittest.TestCase):
                     "version": ENDPOINT_PROTOCOL,
                     "endpoint": "host",
                     "implementation": {"name": "rutis-host", "version": "0.19.0"},
-                    "capabilities": ["signals", "sync-wait", "events-v2"],
+                    "capabilities": [],
                 }
                 connection.sendall(json.dumps(hello).encode() + b"\n")
                 received = b""

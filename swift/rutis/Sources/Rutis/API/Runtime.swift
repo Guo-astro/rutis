@@ -335,6 +335,10 @@ final class Runtime: @unchecked Sendable {
     /// while it offers none; and the version of its offers.
     var servicesOffer: Int?
     var farOffers = 0
+    /// Whether rutis offered `events`: it serves this side a runtime
+    /// session (`host`, `service`, `events` and `rows` come together), and
+    /// an app's own plugins install only from then on.
+    var hosting = false
     /// The services rutis announced to this side, by name: the newest
     /// version it said of each, nil methods once withdrawn (kept so that an
     /// older announcement arriving later does not bring it back).
@@ -556,7 +560,8 @@ final class Runtime: @unchecked Sendable {
     }
 
     /// rutis's offers (`link.offers`): every service shared is announced
-    /// to each new offer of `services`, as rutis nodes do.
+    /// to each new offer of `services`, as rutis nodes do; the first offer
+    /// of `events` lets an app's own plugins install.
     private func offered(_ offers: JSON) {
         lock.lock()
         let version = offers["version"]?.int64Value.map(Int.init) ?? 0
@@ -564,6 +569,10 @@ final class Runtime: @unchecked Sendable {
         farOffers = version
         let families = offers["families"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let offer = families.contains("services") ? (offers["since"]?["services"]?.int64Value.map(Int.init) ?? 0) : nil
+        if families.contains("events"), !hosting {
+            hosting = true
+            reconcile()
+        }
         if offer != servicesOffer {
             servicesOffer = offer
             if offer != nil {
@@ -608,8 +617,12 @@ final class Runtime: @unchecked Sendable {
     }
 
     /// Installs an app's own plugins once rutis greeted: offers `services`
-    /// (rutis's services come to this side), then each plugin, in order,
-    /// with its configuration, once every service it injects is there.
+    /// (rutis's services come to this side), then, once rutis offers
+    /// `events` (the families its plugins call are there then), each
+    /// plugin, in order, with its configuration, once every service it
+    /// injects is there. A far end that never offers `events` serves no
+    /// runtime session: the plugins have nothing to install into and do not
+    /// install.
     func install(_ plugins: [(definition: Rutis.Definition, config: Value)]) {
         guard let session else { return }
         lock.withLock { own = plugins }
@@ -637,7 +650,7 @@ final class Runtime: @unchecked Sendable {
             let next: (Rutis.Definition, Value, Bool)? = lock.withLock {
                 if !closing {
                     for (definition, config) in own {
-                        let ready = definition.inject.allSatisfy(available)
+                        let ready = hosting && definition.inject.allSatisfy(available)
                         switch ownStates[definition.name] ?? .waiting {
                         case .waiting where ready:
                             return (definition, config, true)
@@ -1029,12 +1042,47 @@ extension Rutis.Advanced {
         let invoke: (String, [Value], Bool) async throws -> Value
         /// The far end's object this client calls, if it is one (#687).
         let object: FarObject?
+        /// The object of this process this client calls, if it is one: one
+        /// a plugin of the same runtime handed over, received as a
+        /// `@RutisClient` protocol its type does not implement.
+        let own: ServiceObject?
 
         init(name: String, methods: [String: String], invoke: @escaping (String, [Value], Bool) async throws -> Value) {
             self.name = name
             self.methods = methods
             self.invoke = invoke
             object = nil
+            own = nil
+        }
+
+        /// An object of this process as a client: its methods called by
+        /// name, as another process would call them.
+        init(own: ServiceObject) {
+            name = ""
+            methods = [:]
+            object = nil
+            self.own = own
+            invoke = { method, args, _ in try await own.call(method: method, args: args) }
+        }
+
+        private static let ownLock = Lock()
+        nonisolated(unsafe) private static var owns: [ObjectIdentifier: WeakClient] = [:]
+
+        /// The client of `own`, one per object while it is held (as
+        /// `of(_:)` for an object of another process).
+        static func of(own: ServiceObject) -> Client {
+            ownLock.withLock {
+                if let client = owns[own.identity]?.client { return client }
+                owns = owns.filter { $0.value.client != nil }
+                let client = Client(own: own)
+                owns[own.identity] = WeakClient(client)
+                return client
+            }
+        }
+
+        private final class WeakClient {
+            weak var client: Client?
+            init(_ client: Client) { self.client = client }
         }
 
         /// An object of another process as a client: its methods are
@@ -1043,6 +1091,7 @@ extension Rutis.Advanced {
             name = ""
             methods = [:]
             self.object = object
+            own = nil
             invoke = { method, args, sync in try await object.call(method, args, sync: sync) }
         }
 
@@ -1073,11 +1122,15 @@ extension Rutis.Advanced {
             // An object has no method table: one it lacks is its process's
             // to say (no-method).
             let kind = methods[method]
-            if kind == nil, object == nil {
+            if kind == nil, object == nil, own == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             let value = try await invoke(method, args.map(\.value), kind == "sync")
             if let proxy, case let .remoteObject(far) = value { return proxy(Client.of(far)) }
+            if let proxy, case let .object(local) = value, let own = local as? ServiceObject {
+                if let typed = own.service as? R { return typed }
+                return proxy(Client.of(own: own))
+            }
             return try ValueCodec.decode(R.self, from: value)
         }
 
@@ -1085,7 +1138,7 @@ extension Rutis.Advanced {
         /// result as it came (RutisTest).
         package func callValue(_ method: String, _ args: [Value]) async throws -> Value {
             let kind = methods[method]
-            if kind == nil, object == nil {
+            if kind == nil, object == nil, own == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             return try await invoke(method, args, kind == "sync")

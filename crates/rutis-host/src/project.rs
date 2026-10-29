@@ -324,8 +324,9 @@ mod tests {
         );
     }
 
-    /// A project `rutis-host new --lang go` makes builds, passes its own
-    /// test, and becomes one row per plugin of its binary.
+    /// A project `rutis-host new --lang go` makes builds and becomes one row
+    /// per plugin of its binary (its own test needs `rutis-host test`: it
+    /// runs in `tests/templates.rs`, with the binary just built).
     #[test]
     fn a_go_project_is_built_into_rows() {
         let dir = tempfile::tempdir().unwrap();
@@ -342,7 +343,8 @@ mod tests {
             ),
         )
         .unwrap();
-        for check in [&["vet", "./..."][..], &["test", "./..."][..]] {
+        {
+            let check = ["vet", "./..."];
             let output = std::process::Command::new("go")
                 .args(check)
                 .current_dir(&project)
