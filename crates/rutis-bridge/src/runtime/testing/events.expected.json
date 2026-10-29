@@ -143,6 +143,15 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "SyncWaitCycle"}, "log": ["a", "b"]}}
       ]
     },
+    { "case": "waterfall/sync-wait-across", "rule": "5.4 sync: true", "name": "t/wf-across", "tool": false, "vary": ["a"], "only": [{"e": ["node"], "why": "only a Cordis emitter waits for its waterfall synchronously"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"next": "a"}},
+        {"label": "b", "at": "X", "kind": "sync", "does": {"veto": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "ab", "log": ["a", "b"]}}
+      ]
+    },
     { "case": "waterfall/veto", "rule": "5.4 waterfall", "name": "t/wf-veto", "vary": ["a", "b", "c", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"next": "a"}},
