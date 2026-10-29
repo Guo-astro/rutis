@@ -317,6 +317,155 @@ async fn python_plugins_load_hear_emit_update_and_unload_through_rutis_host_test
     }
 }
 
+/// A command with `fd` as its fd 3.
+#[cfg(unix)]
+fn with_fd3(command: &mut tokio::process::Command, fd: std::os::fd::RawFd) {
+    // SAFETY: between fork and exec only dup2 runs, which is
+    // async-signal-safe.
+    unsafe {
+        command.pre_exec(move || match libc::dup2(fd, 3) {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+}
+
+/// `rutis-host test <tester> --channel <channel>`, the runtime started by
+/// the test tool (here: this test) on the other end, as a test tool that
+/// runs its language's runtime in its own process does: the host is
+/// handed its end as fd 3 (`fd:3`), or dials a loopback address with a
+/// one-time token (`tcp:…`). What the runtime prints (`RESULT`, `OPTIONS`),
+/// the host's exit status, and what the host printed.
+#[cfg(unix)]
+async fn given(
+    tester: &Path,
+    runtime: &[&str],
+    handover: Handover,
+) -> (Vec<String>, i32, Vec<String>) {
+    use std::os::fd::AsRawFd;
+    use tokio::io::AsyncReadExt;
+    let mut host = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"));
+    host.args(["test", &tester.to_string_lossy(), "--channel"])
+        .env_remove("RUTIS_LOCAL_HANDOVER")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut runtime_command = tokio::process::Command::new(runtime[0]);
+    runtime_command
+        .args(&runtime[1..2])
+        .arg("fd:3")
+        .args(["--id", "test"])
+        .args(&runtime[2..])
+        .env_remove("RUTIS_LOCAL_HANDOVER")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let (mut host, mut runtime) = match handover {
+        Handover::Fd => {
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+            host.arg("fd:3");
+            with_fd3(&mut host, ours.as_raw_fd());
+            with_fd3(&mut runtime_command, theirs.as_raw_fd());
+            (host.spawn().unwrap(), runtime_command.spawn().unwrap())
+        }
+        Handover::Loopback => {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            host.arg(format!("tcp:{}", listener.local_addr().unwrap()))
+                .env("RUTIS_CHANNEL_TOKEN", "a-one-time-token");
+            let host = host.spawn().unwrap();
+            let (mut stream, _) = COLD
+                .within("the host's connection", listener.accept())
+                .await
+                .unwrap();
+            let mut token = Vec::new();
+            loop {
+                let byte = stream.read_u8().await.unwrap();
+                if byte == b'\n' {
+                    break;
+                }
+                token.push(byte);
+            }
+            assert_eq!(token, b"a-one-time-token");
+            let stream = stream.into_std().unwrap();
+            stream.set_nonblocking(false).unwrap();
+            with_fd3(&mut runtime_command, stream.as_raw_fd());
+            (host, runtime_command.spawn().unwrap())
+        }
+    };
+    let lines = |stderr| async move {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        let mut said = Vec::new();
+        while let Some(line) = lines.next_line().await.unwrap() {
+            eprintln!("{handover:?}: {line}");
+            said.push(line);
+        }
+        said
+    };
+    let (printed, said) = COLD
+        .within("the runtime's and the host's output", async {
+            tokio::join!(
+                lines(runtime.stderr.take().unwrap()),
+                lines(host.stderr.take().unwrap()),
+            )
+        })
+        .await;
+    let status = COLD.within("the host's exit", host.wait()).await.unwrap();
+    let _ = runtime.wait().await;
+    (printed, status.code().unwrap_or(-1), said)
+}
+
+/// guarantee: host/test-command
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_the_test_tool_runs_itself_is_handed_over_with_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    node_plugins(dir.path());
+    let runner = repo().join("node/rutis-runtime/src/runner.mjs");
+    let anchor = dir.path().join("package.json");
+    let tester = dir.path().join("tester.mjs");
+    for handover in [Handover::Fd, Handover::Loopback] {
+        let (printed, status, said) = given(
+            &tester,
+            &["node", &runner.to_string_lossy(), &anchor.to_string_lossy()],
+            handover,
+        )
+        .await;
+        assert_eq!(
+            printed,
+            [
+                expected("weather", "weather: config: city is required").as_str(),
+                OPTIONS,
+                "runtime test: row tester called process.exit(0)"
+            ],
+            "{handover:?}"
+        );
+        assert_eq!(status, 0, "{handover:?}: {said:?}");
+        assert_eq!(said, Vec::<String>::new(), "{handover:?}");
+    }
+}
+
+/// A channel that is not there: the host says why and exits 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_that_is_not_there_ends_the_host_with_1() {
+    for channel in ["fd:97", "tcp:127.0.0.1:1", "pipe:x"] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            .args(["test", "tester", "--channel", channel])
+            .env("RUTIS_CHANNEL_TOKEN", "t")
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{channel}: {said}");
+        assert!(
+            said.starts_with(&format!("rutis-host: test: {channel}: ")),
+            "{channel}: {said}"
+        );
+    }
+}
+
 /// A runtime that cannot start: the host says why and exits 1.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_cannot_start_ends_the_host_with_1() {
@@ -331,8 +480,8 @@ async fn a_runtime_that_cannot_start_ends_the_host_with_1() {
     );
 }
 
-/// The command needs the plugin, `--`, the runtime's command and its
-/// project.
+/// The command needs the plugin, then `--`, the runtime's command and its
+/// project, or `--channel` and a channel.
 #[test]
 fn the_runtime_command_follows_two_dashes() {
     for args in [
@@ -340,6 +489,8 @@ fn the_runtime_command_follows_two_dashes() {
         &["test", "tester"],
         &["test", "tester", "--", "project"],
         &["test", "a", "b", "--", "node", "project"],
+        &["test", "tester", "--channel"],
+        &["test", "--channel", "fd:3"],
     ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
             .args(args)
@@ -348,7 +499,7 @@ fn the_runtime_command_follows_two_dashes() {
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>\n",
+            "rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>\n       rutis-host test <plugin> --channel <channel>\n",
             "{args:?}"
         );
     }

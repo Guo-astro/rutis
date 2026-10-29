@@ -38,6 +38,13 @@ pub async fn spawn(spawn: &Spawn, processes: &Processes) -> Result<Channel, Conn
     spawn::start(spawn, processes).await
 }
 
+/// Open the channel this process was started on: the channel argument it
+/// was given by a process that started it as [`spawn`] does (`fd:<n>`, or
+/// `tcp:<host>:<port>` with the token in [`CHANNEL_TOKEN`]).
+pub async fn given(channel: &str) -> Result<Channel, ConnectError> {
+    spawn::given(channel).await
+}
+
 pub use spawn::{
     isolate_manifest_command, kill_processes, processes_ended, running_processes, Handover,
     ManifestChild, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
