@@ -276,6 +276,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `ctx.plugin_from(\|cfg\| …)` | Implement `rutis::host::PluginFactory` and call `ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState` (the type of `status::Row::state`) | `rutis_loader::report::EntryStatus`: waiting is `Running` with the `Pending` phase, starting is the `Loading` phase; what `Display` prints is unchanged |
 | `rutis_loader::report::RowState` (the values of the `rutis/row` event) | Renamed `rutis_loader::report::RowEventState`; the values are unchanged |
+| `rutis_loader::internal::*` | `rutis_loader::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning}`, `rutis_loader::runtime::is_runtime_name`, `rutis_loader::runtime::binary::read_binary_manifest`; the plugin API version is `Go::PLUGIN_API`, `Swift::PLUGIN_API` (constants of `BinaryLanguage`) |
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch` | No replacement; to observe, register an ordinary listener |

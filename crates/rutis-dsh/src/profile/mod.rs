@@ -95,7 +95,7 @@ pub fn install_anchor() -> std::path::PathBuf {
 /// The composed rows of `profile` as the entry-list YAML (`!!js` kept), the
 /// output of `rutis-dsh dump-config`.
 pub fn dump(profile: &Profile) -> String {
-    let rows = rutis_loader::internal::apply_patches(&profile.layers).rows;
+    let rows = rutis_loader::patch::apply_patches(&profile.layers).rows;
     yaml::Document::parse("")
         .expect("an empty document")
         .render_fresh(&rows)

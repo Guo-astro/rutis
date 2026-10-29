@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rutis_loader::edit::{Editable, Version};
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use rutis_loader::{Layer, Patch};
 use semver::Version as SemVer;
 use serde_json::{json, Value};

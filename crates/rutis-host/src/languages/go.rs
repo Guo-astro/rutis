@@ -159,7 +159,7 @@ pub(super) fn dev_rows(
     project: &Path,
     what: &str,
 ) -> Result<(Vec<Value>, GoRuntime), String> {
-    let manifest = rutis_loader::internal::read_binary_manifest(binary)
+    let manifest = rutis_loader::runtime::binary::read_binary_manifest(binary)
         .map_err(|error| format!("{}: {error}", binary.display()))?;
     let rows: Vec<Value> = manifest
         .plugins
