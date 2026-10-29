@@ -244,6 +244,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 | `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
+| `rutis_loader::backoff`, `runtime::binary::{RestartPolicy, RuntimeEnd}`, `BinaryRuntimesHandle::supervise` / `unsupervise` | Removed: the loader no longer restarts a crashed Go or Swift runtime. Call `BinaryRuntimesHandle::restart(name)` yourself; the new `runtime::binary::refused(why)` tells a binary whose handshake was refused, which a restart would not start either. With rutis-host, set `runtimes.<key>.restart` |
 
 ### Tools
 

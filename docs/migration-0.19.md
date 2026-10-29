@@ -244,6 +244,7 @@ Kotlin 另有两点：
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 | `internal::provide_checked`、`refresh`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
+| `rutis_loader::backoff`、`runtime::binary::{RestartPolicy, RuntimeEnd}`、`BinaryRuntimesHandle::supervise` / `unsupervise` | 删：加载器不再重启崩溃的 Go/Swift 运行时。自己调用 `BinaryRuntimesHandle::restart(name)`；握手被拒的二进制用新的 `runtime::binary::refused(why)` 判断，重启也起不来。用 rutis-host 时写 `runtimes.<key>.restart` |
 
 ### 工具
 

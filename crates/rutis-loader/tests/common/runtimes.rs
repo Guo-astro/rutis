@@ -288,7 +288,7 @@ pub fn greet_as_main(root: &rutis::Ctx) {
 /// [`greet_as_main`].
 #[cfg(feature = "runtimes")]
 pub struct TestRuntime {
-    name: String,
+    row: String,
     label: String,
     launcher: rutis_bridge::runtime::Launcher,
     anchor: PathBuf,
@@ -303,7 +303,7 @@ impl TestRuntime {
     pub fn new(name: &str, launcher: rutis_bridge::runtime::Launcher, anchor: &Path) -> Self {
         let processes = rutis_bridge::pipe::Processes::default();
         Self {
-            name: name.to_owned(),
+            row: name.to_owned(),
             label: format!("runtime {name}"),
             states: rutis_bridge::runtime::RuntimeStates::new(name, anchor)
                 .processes(processes.clone()),
@@ -357,7 +357,7 @@ impl TestRuntime {
 
     /// The runtime under another name (a Node runtime per plugin, say).
     pub fn named(mut self, name: &str) -> Self {
-        self.name = name.to_owned();
+        self.row = name.to_owned();
         self.label = format!("runtime {name}");
         self.states = rutis_bridge::runtime::RuntimeStates::new(name, &self.anchor)
             .processes(self.processes.clone());
@@ -433,10 +433,10 @@ impl rutis::host::DynPlugin for TestRuntime {
                 self.states.failed(why.clone());
                 rutis::Error::from(ErrorKind::PluginFailed(why.into()))
             };
-            ctx.mark_row(&self.name)?;
+            ctx.mark_row(&self.row)?;
             self.states.announce(ctx);
             self.states.starting();
-            let peer = id(&self.name);
+            let peer = id(&self.row);
             let channel = tokio::select! {
                 started = async {
                     let channel = self
@@ -478,9 +478,9 @@ impl rutis::host::DynPlugin for TestRuntime {
                 }
             }
             let process = ctx
-                .get_at(&rutis_bridge::session_key(&self.name))
+                .get_at(&rutis_bridge::session_key(&self.row))
                 .and_then(|handle| handle.process())
-                .ok_or_else(|| failed(format!("{} runs no plugins", self.name)))?;
+                .ok_or_else(|| failed(format!("{} runs no plugins", self.row)))?;
             self.states.ready(process.clone());
             let (states, owner) = (self.states.clone(), ctx.clone());
             let watcher = tokio::spawn(async move {
