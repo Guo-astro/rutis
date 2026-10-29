@@ -131,9 +131,10 @@ export function install(ctx, Context, bus, where) {
         const filter = thisArg[Context.filter]
         keep = (descriptor, entry) => filter.call(thisArg, entry ? entry.owner : { rutis: descriptor })
       }
-      // Cordis's `waterfall` returns its value at once: dispatched
-      // synchronously (as `bail` is).
-      return bus.dispatch(mode, name, values, { row, keep, thisArg, terminal, gone, sync: mode === 'waterfall' })
+      // Cordis's `emit` calls its listeners before it returns, and its
+      // `waterfall` returns its value at once: both dispatched synchronously
+      // (as `bail` is).
+      return bus.dispatch(mode, name, values, { row, keep, thisArg, terminal, gone, sync: mode === 'waterfall' || mode === 'emit' })
     }
   }
 }

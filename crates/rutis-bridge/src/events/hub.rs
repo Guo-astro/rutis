@@ -535,7 +535,10 @@ impl SessionEvents {
         let filter = reference(&mut fields, "filter")?;
         let terminal = reference(&mut fields, "terminal")?;
         // A Cordis `waterfall`, which returns its value at once: dispatched
-        // synchronously, its reply the value itself (§5.4).
+        // synchronously, its reply the value itself; a Cordis `emit`, which
+        // calls its listeners before it returns: answered once its calls
+        // have started, so those into the emitter's process arrive first
+        // (§5.4).
         let sync = match fields.remove("sync") {
             None | Some(Value::Undefined) => false,
             Some(sync) => crate::session::decode::<bool>(sync.json()?)?,
@@ -601,6 +604,12 @@ impl SessionEvents {
                     }));
                 match self.run_emit(row_key, EmitRun::new(run, cancel)) {
                     true => Ok(Value::Undefined),
+                    false if sync => {
+                        // In turn behind an earlier emit: answered once it
+                        // has started.
+                        let _ = block_on(answered);
+                        Ok(Value::Undefined)
+                    }
                     false => Ok(Value::future(async move {
                         let _ = answered.await;
                         Ok(Value::Undefined)

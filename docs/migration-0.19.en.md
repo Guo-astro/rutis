@@ -310,7 +310,7 @@ A runtime's row (a Node, Bun, Python, Go, Swift or Kotlin plugin) is isolated by
 | `try_filter`, `try_filter_named` of `internal::CtxInternal` | `EventBus::dispatch` / `dispatch_sync` with `Dispatch { filter: Some(BatchFilter), … }` (`rutis::internal`) |
 | feature `anyhow`, `Error::from_anyhow`, `From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`, `cordis::server` | Removed (a Cordis host mounting Rust plugins is no longer supported) |
-| `waterfall_sync`; the event protocol's mode `waterfall-sync` (for those implementing a runtime) | Use `waterfall` (asynchronous) or the synchronous `bail` |
+| `waterfall_sync`; the event protocol's mode `waterfall-sync` (for those implementing a runtime) | Rust's `waterfall_sync` is removed: use `waterfall` (asynchronous) or the synchronous `bail`; Cordis's synchronous `waterfall` works as before (`events.dispatch` with `sync: true`, protocol §5.4) |
 | `internal::intercept_require_as`, `intercept_set_as`, `ServiceIntercept`, the `Intercept*` variants of `ServiceReadFailure` / `ServiceWriteFailure` | No replacement; `internal::CtxInternal::require_provided_as` no longer takes an `actor` argument |
 | `rutis_bridge::build::Exports`, build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`, build-dependency `rutis-types`; API unchanged |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |

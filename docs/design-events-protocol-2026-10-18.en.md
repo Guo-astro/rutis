@@ -188,6 +188,11 @@ Semantics follow Cordis 4.0.4 `events.ts` (the design's table). "Start" means ca
 
 `next` rules: it takes no arguments; calling it a second time, or after its dispatch ended or was cancelled, fails that call with `WaterfallNext` (§11). In `waterfall` the receiving runtime gives the listener a `next` returning a Promise / awaitable / Go blocking call.
 
+**`sync: true` (Cordis's synchronous methods)**: Cordis's `emit` calls its listeners before it returns, and its `waterfall` returns its value at once. So in the Node and Bun runtimes a Cordis plugin's `emit` and `waterfall` send `events.dispatch` as a synchronous call with `sync: true` in the request (the plugin SDK's `ctx.emit` and `ctx.waterfall` do not: they follow the table above). With `sync: true`:
+
+- `waterfall`: the dispatcher runs the chain synchronously, and the reply is its value (not a future). Every invocation is synchronous: `events.call` carries `sync: true`, and the receiving runtime gives the listener a `next` that returns the rest of the chain's value at once; the terminal is called synchronously; an entry of kind `async`, or an `any` entry returning a Promise, fails it with `AsyncListener`, as in `bail`.
+- `emit`: the reply comes once every invocation of this dispatch has started (in turn behind an earlier `emit`, once that one has started). The `events.call` frames into the emitter's process therefore arrive before the reply, and the emitter runs them in arrival order while it waits: when it returns, its process's listeners have been called, as in Cordis. Asynchronous listeners are still not awaited.
+
 Synchronous modes and listener kinds: in `bail` an entry of kind `async` is not invoked; the dispatch fails with `AsyncListener`. An entry of kind `any` is invoked; if it returns a Promise / thenable / awaitable, the listener's runtime discards it (a Python coroutine is closed; a Promise's rejection is caught and ignored) and fails the invocation with `AsyncListener`. Go listeners are `sync`. Rust: `on` entries are `async`, `on_sync` entries `sync`. Every synchronous invocation takes part in wait-cycle detection like a synchronous service call (`SyncWaitCycle`).
 
 ### 5.5 Emit order

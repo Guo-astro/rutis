@@ -188,6 +188,11 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 `next` 的规则：不带参数；第二次调用、在它的分发结束或被取消之后调用，这次调用以 `WaterfallNext` 失败（第十一节）。`waterfall` 中，接收方的运行时给监听器的 `next` 返回 Promise / 可等待对象 / Go 的阻塞调用。
 
+**`sync: true`（Cordis 的同步方法）**：Cordis 的 `emit` 在返回之前调用它的监听器，`waterfall` 当场返回值。Node、Bun 运行时里 Cordis 插件的 `emit` 与 `waterfall` 因此以同步调用发出 `events.dispatch`，请求带 `sync: true`（插件 SDK 的 `ctx.emit`、`ctx.waterfall` 不带，照上表）。带 `sync: true` 时：
+
+- `waterfall`：分发方同步执行这条链，回复就是它的值（不是 future）。每个调用都是同步的：`events.call` 带 `sync: true`，接收方给监听器的 `next` 同步返回链上其余部分的值；终态同步调用；`async` 种类的条目与返回 Promise 的 `any` 条目同 `bail`，以 `AsyncListener` 失败。
+- `emit`：这次分发的每个调用都开始之后才回复（排在前一个 `emit` 之后时，等它开始）。发往发出方进程的 `events.call` 因此先于回复到达，发出方在同步等待中按到达顺序执行它们：返回时本进程的监听器都已被调用，同 Cordis。异步监听器照旧不等。
+
 同步方式与监听器种类：`bail` 中，`async` 种类的条目不被调用，这次分发以 `AsyncListener` 失败。`any` 种类的条目被调用；如果它返回 Promise / thenable / 可等待对象，监听器所在的运行时丢弃它（Python 协程被关闭；Promise 的拒绝被捕获并忽略），这次调用以 `AsyncListener` 失败。Go 的监听器是 `sync`。Rust：`on` 的条目是 `async`，`on_sync` 的是 `sync`。每个同步调用都像同步服务调用一样参加等待环检测（`SyncWaitCycle`）。
 
 ### 5.5 emit 的顺序

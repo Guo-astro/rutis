@@ -290,7 +290,7 @@ export class Bus {
     }
     if (mode === 'waterfall' && terminal) fields.terminal = (...values) => terminal(...values)
     const synchronous = mode === 'bail' || (mode === 'waterfall' && sync)
-    if (mode === 'waterfall' && sync) fields.sync = true
+    if (sync && (mode === 'waterfall' || mode === 'emit')) fields.sync = true
     const peer = this.peer
     if (!peer) {
       if (synchronous) throw hostGone()
@@ -302,6 +302,16 @@ export class Bus {
     if (mode !== 'emit') return peer.callAsync('', 'events.dispatch', [fields])
     // emit: the API has returned already; a failure is reported here.
     const failed = error => { this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(error)}`) }
+    if (sync) {
+      // A Cordis `emit`, which calls its listeners before it returns: the
+      // host answers once this emit's calls have started, and the calls of
+      // listeners here arrive before the answer (§5.4).
+      try {
+        const result = peer.call('', 'events.dispatch', [fields])
+        if (typeof result?.then === 'function') result.then(() => {}, failed)
+      } catch (error) { failed(error) }
+      return undefined
+    }
     try {
       if (peer.callAnswered) {
         peer.callAnswered('', 'events.dispatch', [fields], ({ ok, value }) => {
