@@ -195,7 +195,7 @@ impl App {
 /// `pixel:probe` providing `work`, which a Python row uses; `stop` takes
 /// them away, its user waiting again; `start` again brings both back. The
 /// state follows: connecting, connected, stopped.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins, swift/app-start-stop
 #[tokio::test(flavor = "multi_thread")]
 async fn an_application_stops_and_starts_again() {
     let _environment = common::environment();

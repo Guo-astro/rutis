@@ -617,6 +617,7 @@ impl DynPlugin for NodeEvents {
 mod tests {
     use super::*;
 
+    /// guarantee: events/node-links
     /// The peer's `events.on` can come before its `link.offers` (the offer
     /// is announced on a task, the entry as the peer sees this node's
     /// offer). Its entry stays while the offers this node sees do not show

@@ -44,6 +44,7 @@ async fn failed_with(launcher: Launcher) -> String {
     reason
 }
 
+/// guarantee: core/features.default-output
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_exits_before_greeting_says_how() {
     #[cfg(unix)]
@@ -70,9 +71,12 @@ async fn a_runtime_that_cannot_start_says_why() {
 }
 
 // guarantee: sdk/leaf-events (a leaf listener is on the host's bus, across restarts)
-#[cfg(feature = "node")]
+
 #[tokio::test(flavor = "multi_thread")]
 async fn local_runtime_events_follow_leaf_lifecycle() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use rutis::internal::CtxInternal;
     use rutis_bridge::runtime::row_projection;
     use rutis_test_support::{eventually, within};
@@ -137,9 +141,12 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
 }
 
 // guarantee: events/framework (rutis/runtime)
-#[cfg(all(feature = "node", unix))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_announces_running_and_down() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use std::sync::{Arc, Mutex};
 
     use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};

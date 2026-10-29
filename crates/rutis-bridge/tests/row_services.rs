@@ -126,6 +126,7 @@ export function apply(ctx) {
 }
 "#;
 
+/// guarantee: loader/announced-services
 /// #428: the services a row provides without declaring them are announced
 /// with the methods each object has (own and inherited, `async`; not its
 /// fields), and published before its load returns, each in the scope the

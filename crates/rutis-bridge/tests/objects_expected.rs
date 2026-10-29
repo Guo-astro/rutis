@@ -69,6 +69,7 @@ fn markers() -> BTreeMap<String, BTreeSet<String>> {
     found
 }
 
+/// guarantee: bridge/object-refs
 #[test]
 fn every_enforced_case_is_run_by_a_test() {
     let expected = expected();

@@ -249,7 +249,7 @@ export default definePlugin({
 - 和插件同 id 的那一行（`greeter`）就是这个项目的插件自己，`config` 是给它的配置。
 - 另一行是假的 `translate`：`name` 写插件在哪里。
 
-<!-- example: typescript run until="rutis-host dev: services: greeter (greeter), loader (host), translate (translate)" -->
+<!-- example: typescript run until="rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)" -->
 ```bash
 npx rutis-host dev
 ```
@@ -258,7 +258,7 @@ npx rutis-host dev
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 greeter: starting
 translate: running
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 greeter: running
 ```
 
@@ -272,6 +272,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   node: running (pid 63145)
@@ -289,7 +290,7 @@ $ npx rutis-host call greeter.count
 
 ```text
 greeter: reloaded (src/index.ts changed)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 再调一次，返回 `"Bonjour, Ada! Welcome."`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。Ctrl-C 结束 `dev`。`dev` 的全部规则见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。

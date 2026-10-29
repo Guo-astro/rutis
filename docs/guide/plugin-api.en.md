@@ -702,7 +702,7 @@ A failure nobody waits for is written in one line where it happens (a runtime on
 
 In Go, check with `errors.Is(err, advanced.ErrWaterfallNext)` and the like; an error of that name from any process matches. An error a listener throws crosses with its name, message and error graph, as any call's error.
 
-**Match a listener's error by its name, not its class.** It reaches the emitter through the host, also when the listener runs in the emitter's process, and arrives as the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`.
+**Match a listener's error by its name, not its class.** The host dispatches every event, also when the listener and the emitter are in the same runtime, so what arrives is always the language's remote error (TypeScript: an `Error` of the same built-in class or a plain `Error` with that `name`; Python: `rutis.RemoteError`, rutis's own names as their classes; Go: `*rutis.RemoteError`, `errors.As` then `Name`), with its `name`, `message` and `code`, not the object the listener threw. A match by the plugin's own error class fails, in a test as in a host.
 
 ### Mixing with 0.12 and earlier
 
@@ -902,7 +902,7 @@ Nesting depth: a value nests at most **64 levels**. Each array / list / tuple, o
 - as a result: the caller receives the error the callee throws;
 - the session goes on, and other calls on it (those running at the same time included) are not affected.
 
-All five runtimes (Rust, Node, Bun, Python, Go) and the test tool's strict mode check this limit when sending. The limit binds the sender: the receiving Rust side leaves a margin for a far end that does not keep to it (an older version, say) and reads frames up to 208 levels deep on the wire, so a value **received** from such a far end may nest deeper than 64 levels (up to about 100 levels of arrays holding references, about 206 of data); that margin is not guaranteed and plugins must not rely on it. When such a far end sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
+All five runtimes (Rust, Node, Bun, Python, Go) check this limit when sending; under the test tools the plugin runs in these runtimes and is checked the same. The limit binds the sender: the receiving Rust side leaves a margin for a far end that does not keep to it (an older version, say) and reads frames up to 208 levels deep on the wire, so a value **received** from such a far end may nest deeper than 64 levels (up to about 100 levels of arrays holding references, about 206 of data); that margin is not guaranteed and plugins must not rely on it. When such a far end sends a frame nested too deep for the Rust side to read: if the frame shows which call it belongs to, only that call fails (the far end's call receives an error; a reply to this side's call fails that call), and the references in it are released only when the session ends; if it does not, the session ends, saying why. See [#279](https://github.com/arcships/rutis/issues/279).
 
 Message size: a call (with its arguments) or a result is at most **16 MiB** once encoded (16777216 bytes, the default limit of the local channels and of WebSocket). The side that **would send** a larger message refuses it before sending, failing only that call, with an error naming the method, which argument (the largest) or the result, the size and the limit (`store.put: argument 1 cannot be sent: the message would be 30889096 bytes, over the limit of 16777216 bytes (16 MiB)`): as an argument, the caller's call fails and the far end does not run it; as a result, the caller receives that error; the session goes on and other calls are not affected. Rust, Node, Bun, Python, Go, Swift and Kotlin all check before sending. A far end of an earlier version may still send a message over the limit: the receiver closes that connection as before, which ends that session (a local runtime exits with it); other sessions are not affected. Send large data in pieces, or send where it is (a path, an address).
 
@@ -912,7 +912,7 @@ Numbers have the limits below. They describe current behaviour and are **not gua
 - Python keeps `-0.0`.
 - NaN and ±Infinity cannot cross.
 
-Values are not copied within one process. Code that mutates an object after passing it may work in a unit test but fail across processes. The test tool's strict mode (enabled by default) applies the rules above to expose this early.
+Values are not copied within one process. Code that mutates an object after passing it may work there but fail across processes. Under the test tools, the services a test gives are in the same runtime as the plugin and are not copied either, so a test does not catch this.
 
 ### Objects with methods
 
@@ -1024,7 +1024,7 @@ Swift apps, Kotlin apps and Rust: [Swift app](swift-app.en.md#objects-with-metho
 #### The same process versus across processes
 
 - **In the same process** (rows of the same runtime) the receiver gets the object itself: methods stay synchronous and fields stay readable.
-- **Across processes** there are only methods, and every call is asynchronous. Code that reads a field or relies on a synchronous result works in one process and fails across processes; the test tool's strict mode hands out proxies shaped as across processes, so it fails in tests first.
+- **Across processes** there are only methods, and every call is asynchronous. Code that reads a field or relies on a synchronous result works in one process and fails across processes; under the test tools, the services a test gives are in the plugin's runtime, so the plugin gets the object itself and a test does not catch this.
 - **Idle stop**: an on-demand runtime (Go, Swift) stops `idle` seconds after its last row unloads. Its objects held elsewhere do not keep it running. After it stops, calls on them fail with `peer-gone`: `a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`. To keep them usable, keep the row that passed them loaded, or make the runtime `eager`.
 - **Identity**: one object received several times is one proxy, and handed back home it is the original object, in every language (Go: only through `*advanced.Service`).
 
@@ -1178,28 +1178,17 @@ In tests, a definition a test double receives can be loaded as it is; see each l
 
 ### Where the test tool differs from a real runtime
 
-The test tools (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`) and the real runtimes are checked against the same expectations file: the same calls on the same plugin (sync, async, callbacks, errors, the values in the table above) must give the same results ([`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json)). In strict mode, these are the only known differences:
+Each language's test tool (`@arcships/rutis/testing`, `rutis.testing`, Go's `rutistest`, Swift's and Kotlin's `RutisTest`) runs the plugin as a row of a real host: `rutis-host test` (on `PATH`, or at `RUTIS_HOST`) starts a host, and the plugin runs in its language's real runtime. The host checks the config and fills its defaults, starts the plugin once the services it injects are there, dispatches every event, and unloads by its rules; no switch turns this off. These are the only known differences:
 
 | Difference | Why |
 | --- | --- |
-| A plugin that ends its process (`process.exit`, `os._exit`) ends the test | The test tool runs the plugin in the test's process; the expectations file marks this entry `allowed`, and the test tool does not make that call |
-| No restarts: a config change or a withdrawn injected service does not stop and start the plugin | `load` starts it once; the host decides the lifecycle (see above) |
-| Sync calls do not block, so there is no `SyncWaitCycle`; no cancellation (`AbortSignal`, coroutine cancellation) | The plugin and the test share one event loop |
-| Descriptors call the runtime by the language (`node`, `bun`, `python`, `go`; a host uses the names its configuration gives); unloading waits at most `RUTIS_SHUTDOWN_TIMEOUT`, as a runtime, or the tool's own option: Go `rutistest.RuntimeName` and other options | Each tool follows its language's conventions for options |
-| The 16 MiB message limit is not checked | The tool does not encode values into messages; the real runtimes fail a call whose message is over the limit (see [Passing values](#passing-values)) |
-| Events: every listener is in the test's process (always dispatched locally), with no other process or node, and no `rutis/*` events | The test tool runs the plugins in one process. The five modes, filters, scopes (Go `rutistest.InScope`), unload waiting and cancelling, and reporting `emit` failures (`reported`) are as on a real runtime, checked against the same [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json) |
-
-The ten values cross by the same rules on both sides, so they are not a difference. Nor are objects with methods: in strict mode the test tool of every language hands them over as a proxy shaped as across processes (methods only, every call asynchronous), as a real runtime does. With strict mode off (`strict: false`), values skip the table above and other differences can appear.
+| The test's services, `on` and emitting belong to a test plugin in the same runtime: when the plugin calls a service the test gave, it gets the object itself, and values are not copied | That is how the test tool drives the plugin; behaviour across processes is checked by every runtime against the same expectations files ([`weather.expected.json`](../../crates/rutis-bridge/src/runtime/testing/weather.expected.json), [events expectations file](../../crates/rutis-bridge/src/runtime/testing/events.expected.json)) |
+| The Python, Go, Swift and Kotlin runtimes are in the test's process: a plugin that ends its process (`os._exit` and the like) ends the test | These languages call the plugin under test from the test's process (`rutis-host test --channel`) |
+| Local runtimes only, no remote nodes or devices; tests on a device use the plugins an application installs itself | The test tools start local runtimes only |
 
 ## Test tools
 
 Each language's plugin guide shows loading a plugin with its test tool, getting a service, listening to the events the plugin emits, and unloading. This section is the rest of the interface. Where a test tool differs from a real runtime is [above](#where-the-test-tool-differs-from-a-real-runtime).
-
-### Strict mode
-
-The Python test tool runs the plugin in the test's process, in strict mode by default: values follow cross-process rules, data is copied (a Python dataclass becomes a dict), functions and objects with methods are passed by reference (what is handed over is a proxy: methods only, every call asynchronous), and a method declared `sync` cannot return a Promise / coroutine. Code that works only within one process fails here. `strict=False` turns it off, and values then skip the rules of [passing values](#passing-values).
-
-The TypeScript and Bun test tool (below), Go's `rutistest` and Swift's `RutisTest` run the plugin in its real runtime, values crossing a real session, with no such switch: what works only within one process (passing a struct as an object, sharing a class instance that is not a `@RutisService`, relying on shared memory) fails in the test, as it would in a host.
 
 ### The TypeScript and Bun test tool
 

@@ -89,7 +89,7 @@ func invoke(ctx context.Context, rt *runtimeState, id, name, mode string, args .
 	return rt.control(ctx, "events.call", []any{map[string]any{"listener": id, "dispatch": "d", "own": false, "name": name, "mode": mode, "args": args}})
 }
 
-// guarantee: events/registration (disposers, unload, reserved names)
+// guarantee: sdk/leaf-events (disposers, unload, reserved names)
 func TestReservedNamesAndInactiveRows(t *testing.T) {
 	rt, rows := eventRows(t, "", "")
 	a, b := rows[0], rows[1]
@@ -203,7 +203,7 @@ func TestEmitInvocationsRunInOrderAndFailuresAreReported(t *testing.T) {
 	}
 }
 
-// guarantee: events/unload (cancels and waits, bounded by the deadline)
+// guarantee: sdk/leaf-events (cancels and waits, bounded by the deadline)
 func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 	rt, rows := eventRows(t, "", "")
 	a, b := rows[0], rows[1]
@@ -249,7 +249,7 @@ func TestUnloadCancelsAndWaitsForListeners(t *testing.T) {
 	}
 }
 
-// guarantee: events/cancel (an emitter giving up cancels its listeners:
+// guarantee: sdk/leaf-events (an emitter giving up cancels its listeners:
 // the host's call is cancelled)
 func TestACancelledCallCancelsItsListener(t *testing.T) {
 	rt, rows := eventRows(t, "")
@@ -269,7 +269,7 @@ func TestACancelledCallCancelsItsListener(t *testing.T) {
 	testwait.Within(t, "the listener is cancelled", cancelled)
 }
 
-// guarantee: events/registration (failed load and update)
+// guarantee: sdk/leaf-events (failed load and update)
 func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
 	type config struct {
 		Label string
@@ -317,7 +317,7 @@ func TestFailedApplyAndUpdateRemoveListeners(t *testing.T) {
 	}
 }
 
-// guarantee: events/withdrawn (a call for a listener no longer there)
+// guarantee: sdk/leaf-events (a call for a listener no longer there)
 func TestACallForAWithdrawnListenerFails(t *testing.T) {
 	rt, rows := eventRows(t, "")
 	off := rows[0].On("t/gone", func(context.Context, ...any) (any, error) { return "x", nil })
@@ -383,7 +383,7 @@ func refusingHost(t *testing.T, rt *runtimeState, silent bool) (end func()) {
 	return func() { host.Close(nil); a.Close() }
 }
 
-// guarantee: events/reports (§11: an emit through the host refused, a
+// guarantee: sdk/leaf-events (§11: an emit through the host refused, a
 // registration refused after its row loaded)
 func TestRefusedEmitsAndRegistrationsAreReported(t *testing.T) {
 	reports := captureReports(t)
@@ -406,7 +406,7 @@ func TestRefusedEmitsAndRegistrationsAreReported(t *testing.T) {
 	}
 }
 
-// guarantee: events/registration (§11: a registration the host refuses
+// guarantee: sdk/leaf-events (§11: a registration the host refuses
 // during a row load fails the load instead of being reported)
 func TestARegistrationRefusedDuringTheLoadFailsIt(t *testing.T) {
 	reports := captureReports(t)
@@ -423,7 +423,7 @@ func TestARegistrationRefusedDuringTheLoadFailsIt(t *testing.T) {
 	}
 }
 
-// guarantee: events/reports (§11: an emit through the host the session
+// guarantee: sdk/leaf-events (§11: an emit through the host the session
 // ends before answering)
 func TestAnUnansweredEmitIsReportedWhenTheSessionEnds(t *testing.T) {
 	reports := captureReports(t)
@@ -463,7 +463,7 @@ func TestTheSelectorIgnoresExtraDescriptorFields(t *testing.T) {
 	}
 }
 
-// guarantee: events/unload (a listener its row's unload stops is not a
+// guarantee: sdk/leaf-events (a listener its row's unload stops is not a
 // failure: no report; emitting from an unloaded row is refused)
 func TestAListenerStoppedByItsUnloadIsNotReported(t *testing.T) {
 	rt, rows := eventRows(t, "", "")

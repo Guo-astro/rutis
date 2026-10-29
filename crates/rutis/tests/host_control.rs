@@ -65,6 +65,7 @@ async fn boxed_plugins_mount() {
     assert_eq!(*root.get::<u32>().unwrap(), 7);
 }
 
+/// guarantee: core/D10
 #[tokio::test]
 async fn view_finds_a_fiber_by_id() {
     let root = Ctx::root().unwrap();
@@ -195,6 +196,7 @@ async fn settled(view: &rutis::host::FiberView, state: rutis::host::FiberState) 
     .unwrap_or_else(|_| panic!("never reached {state:?}: {:?}", view.state()));
 }
 
+/// guarantee: core/D9
 #[tokio::test]
 async fn a_stale_context_cannot_dispose_the_next_generation() {
     let root = Ctx::root().unwrap();
@@ -279,6 +281,7 @@ impl rutis::host::PluginFactory<u32> for Recording {
     }
 }
 
+/// guarantee: core/D12
 #[tokio::test]
 async fn set_config_stores_without_restarting() {
     let root = Ctx::root().unwrap();

@@ -170,6 +170,7 @@ where
     .unwrap_or_else(|_| panic!("seed {seed} round {round}: operations hung"));
 }
 
+/// guarantee: core/D5
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_settle_and_dispose_interleave() {
     let seed = seed();

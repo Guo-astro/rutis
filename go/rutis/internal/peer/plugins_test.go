@@ -1,3 +1,4 @@
+// guarantee: bridge/plugin-values
 package peer
 
 import (

@@ -6,12 +6,7 @@
 //! listening, `RUTIS_CA` dialing), and the addresses refused before
 //! anything is opened. The same rules as Go's runtime (`go/rutis/internal/runtime/listen_test.go`,
 //! `dial_test.go`), checked from outside, on the binary.
-#![cfg(all(
-    feature = "swift",
-    feature = "websocket",
-    feature = "testing",
-    target_os = "macos"
-))]
+#![cfg(all(feature = "websocket", feature = "testing", target_os = "macos"))]
 
 use std::path::{Path, PathBuf};
 
@@ -135,6 +130,9 @@ type Refusal<'a> = (&'a str, &'a [(&'a str, &'a str)], u16);
 /// guarantee: bridge/version-refusal
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_connection_says_why_with_its_status() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (_runtime, address) =
         Runtime::listening("listen:ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", TOKEN)]).await;
     let bearer = format!("Bearer {TOKEN}");
@@ -176,6 +174,9 @@ async fn a_refused_connection_says_why_with_its_status() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn addresses_that_cannot_work_are_refused_at_start() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     for (channel, said) in [
         (
             "listen:ws://0.0.0.0:0/rutis",
@@ -291,9 +292,12 @@ impl Client {
     }
 }
 
-/// guarantee: bridge/frame-limits
+/// guarantee: bridge/value-limits
 #[tokio::test(flavor = "multi_thread")]
 async fn broken_frames_close_with_their_code() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (_runtime, address) =
         Runtime::listening("listen:ws://127.0.0.1:0/rutis", &[("RUTIS_TOKEN", TOKEN)]).await;
     let mut unmasked = Client::connect(&address).await;
@@ -314,6 +318,9 @@ async fn broken_frames_close_with_their_code() {
 /// closed with 4002; a silent one is pinged, then dropped (1001).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newer_controller_takes_over_and_a_silent_one_is_dropped() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (_runtime, address) = Runtime::listening(
         "listen:ws://127.0.0.1:0/rutis",
         &[("RUTIS_TOKEN", TOKEN), ("RUTIS_HEARTBEAT", "100,1000")],
@@ -367,6 +374,9 @@ fn pki() -> (String, String, String) {
 /// a controller trusting the CA greets it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_listener_serves_tls() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (ca, certificate, key) = pki();
     let dir = tempfile::tempdir().unwrap();
     let (cert_file, key_file) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
@@ -406,6 +416,9 @@ async fn a_listener_serves_tls() {
 /// authentication failure, retried; RUTIS_CA trusts its CA.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dialer_trusts_rutis_ca() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (ca, certificate, key) = pki();
     // Nobody listening yet: every upgrade past TLS is refused with 503.
     let server = websocket::listen(

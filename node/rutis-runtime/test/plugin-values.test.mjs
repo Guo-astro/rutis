@@ -1,3 +1,4 @@
+// guarantee: bridge/plugin-values
 // Plugin definitions as values (docs/design-plugin-values-2026-10-25.md §5):
 // a leaf plugin crosses as a `plugin` reference, only to a far end that
 // declared `plugins`, and comes back home as itself. Cordis plugins cross as

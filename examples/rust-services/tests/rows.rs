@@ -138,6 +138,16 @@ struct Fixture {
     _rows: tempfile::TempDir,
 }
 
+/// `command` (`rutis_test_support::runtimes`) as a launcher.
+fn launcher(command: rutis_test_support::runtimes::Command) -> Launcher {
+    let mut launcher = Launcher::new(command.program);
+    launcher.args = command.args;
+    launcher.env = command.env;
+    launcher.cwd = command.cwd;
+    launcher.inherit_fd = command.inherit_fd;
+    launcher
+}
+
 async fn fixture(rows: Value) -> Fixture {
     let dir = self::rows();
     let probe = Probe::default();
@@ -158,11 +168,14 @@ async fn fixture(rows: Value) -> Fixture {
 
     let node = SpawnPlugin::new(
         "node",
-        Launcher::node(&repo().join("node/rutis-runtime")),
+        launcher(rutis_test_support::runtimes::node_runtime()),
         repo().join("node/rutis-runtime/package.json"),
     );
-    let python = SpawnPlugin::new("py", Launcher::python(dir.path()), dir.path())
-        .python_path(repo().join("python/rutis"));
+    let python = SpawnPlugin::new(
+        "py",
+        launcher(rutis_test_support::runtimes::python_runtime(dir.path())),
+        dir.path(),
+    );
     let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
     sessions.runtime(node.handle());
     sessions.runtime(python.handle());
@@ -211,6 +224,9 @@ async fn fixture(rows: Value) -> Fixture {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_row_calls_a_rust_service_from_a_dependency_crate() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
     for line in [
         "added Standup meeting team",
@@ -235,6 +251,9 @@ async fn a_node_row_calls_a_rust_service_from_a_dependency_crate() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_rows_handler_settles_before_the_native_side_goes_on() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
     fixture.probe.wait_for("subscribed").await;
     let entry = Entry {
@@ -271,6 +290,9 @@ async fn a_node_rows_handler_settles_before_the_native_side_goes_on() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subscription_goes_when_its_row_unloads() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "calendar", "name": "ROWS/calendar.ts" }])).await;
     fixture.probe.wait_for("subscribed").await;
     assert_eq!(fixture.calendar.subscribers(), 1);
@@ -304,6 +326,9 @@ async fn a_subscription_goes_when_its_row_unloads() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_rows_get_their_own_instances_service() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let fixture = fixture(json!([
         { "id": "session", "group": true, "instanced": true, "config": [
             { "id": "notes", "name": "notes" },
@@ -328,6 +353,9 @@ async fn each_instance_rows_get_their_own_instances_service() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_row_calls_the_same_service() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "py", "name": "py:calendar_row" }])).await;
     fixture.probe.wait_for("py got Planning all_day True").await;
     fixture
@@ -348,6 +376,9 @@ fn the_declarations_pass_tsc_strict() {
         written,
         "rows/services.d.ts is not what the build writes: build again and commit it"
     );
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = rows();
     std::fs::write(
         dir.path().join("tsconfig.json"),

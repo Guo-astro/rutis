@@ -455,6 +455,7 @@ fn refused(info: &EntryInfo) -> Option<String> {
 mod tests {
     use super::base_id;
 
+    /// guarantee: host/test-command
     #[test]
     fn a_rows_id_is_its_files_name() {
         assert_eq!(base_id("/plugins/weather.mjs"), "weather");

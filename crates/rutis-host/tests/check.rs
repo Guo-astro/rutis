@@ -380,7 +380,7 @@ async fn check_fails_on_a_service_nothing_provides() {
 /// the clash's second. Rows of a language whose runtime is not declared
 /// enable it with its defaults, saying so (#666).
 /// risk: A6
-/// guarantee: host/check
+/// guarantee: host/check, host/config-paths-and-defaults
 #[tokio::test(flavor = "multi_thread")]
 async fn check_fails_on_cycles_and_clashes_and_suggests_misspelt_names() {
     let dir = tempfile::tempdir().unwrap();
@@ -624,7 +624,7 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
 /// on a dial row's far end, not connected during the check) is not known
 /// to be missing: check says so and passes.
 /// risk: A6
-/// guarantee: host/check
+/// guarantee: host/check, host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn check_passes_a_service_that_may_come_from_a_connection_row() {
     let dir = tempfile::tempdir().unwrap();

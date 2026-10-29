@@ -1,3 +1,4 @@
+// guarantee: sdk/testing-matches-runtime
 package rutistest
 
 import (

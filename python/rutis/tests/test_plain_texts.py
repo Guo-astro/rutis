@@ -1,3 +1,4 @@
+# guarantee: sdk/error-codes
 """What a plugin author reads uses only what they wrote: service and method
 names, arguments, rows; never this SDK's internals (`HostProxy`,
 `UNDEFINED`, `RemoteFuture`), "Rust", or JSON library text. Each text is

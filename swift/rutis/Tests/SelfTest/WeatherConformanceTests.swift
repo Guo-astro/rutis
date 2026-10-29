@@ -1,3 +1,4 @@
+// guarantee: sdk/testing-matches-runtime
 import Foundation
 @testable import Rutis
 import RutisFixturePlugins

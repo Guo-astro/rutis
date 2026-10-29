@@ -161,6 +161,7 @@ async fn terminal(event: Arc<Ping>) -> Result<Option<u64>, Error> {
     Ok(Some(event.0))
 }
 
+/// guarantee: core/D33
 /// Was `deprecated_named_wrappers_share_keys_order_once_and_waterfall`: the
 /// `*_keyed` wrappers are gone; the order, `once` and waterfall nesting of a
 /// named key remain.
@@ -254,6 +255,7 @@ async fn named_key_keeps_order_once_and_waterfall_nesting() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: core/D2
 #[tokio::test]
 async fn typed_identity_and_prefix_scope_are_distinct() {
     const KEY: EventKey<Ping> = EventKey::named("room/1");
@@ -505,6 +507,7 @@ async fn pattern_only_emit_preserves_each_name_without_global_tail() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: events/order
 /// A `once` listener a short-circuited `bail` never reached is still there
 /// for the next dispatch: it is claimed when its call starts, not when a
 /// dispatch selects it.
@@ -572,6 +575,7 @@ async fn sync_patterns_expose_keys_and_share_order() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: events/serial-bail
 /// A synchronous listener may `bail` its own name again (as Cordis allows;
 /// `ReentrantEvent` is no error of events protocol §11): the inner
 /// dispatch runs on the same stack and calls the listener like any.

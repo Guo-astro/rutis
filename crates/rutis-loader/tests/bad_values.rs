@@ -7,7 +7,7 @@
 //! as a result), an array with empty slots, a message over the limit
 //! either way, and a JavaScript `throw 'a string'` relayed by a Go service
 //! (`return err`).
-#![cfg(all(feature = "node", feature = "python", feature = "go"))]
+#![cfg(feature = "go")]
 
 mod common;
 
@@ -260,6 +260,9 @@ const OVER: &str = "over the limit of 16777216 bytes (16 MiB)";
 /// (an array with empty slots) crosses.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_value_fails_only_its_call_between_node_python_and_go() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture().await;
     let rows = vec![
         named("pt", "py:py_taker"),

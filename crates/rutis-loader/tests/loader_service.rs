@@ -2,7 +2,7 @@
 //! reload their code, read the state and remove them by name, and every
 //! failure throws the text rutis prints for people, with the row in
 //! `data`: each line of §7 of the design, word for word.
-#![cfg(all(feature = "node", feature = "python", feature = "go"))]
+#![cfg(feature = "go")]
 
 mod common;
 
@@ -377,6 +377,9 @@ async fn run_scenario(name: &str, config: Value) {
 /// guarantee: loader/service
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_plugin_manages_rows_through_the_loader_service() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     run_scenario("py:maker", json!({})).await;
 }
 
@@ -384,6 +387,9 @@ async fn a_python_plugin_manages_rows_through_the_loader_service() {
 /// guarantee: loader/service
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_plugin_manages_rows_through_the_loader_service() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     run_scenario("js", Value::Null).await;
 }
 
@@ -391,6 +397,9 @@ async fn a_node_plugin_manages_rows_through_the_loader_service() {
 /// guarantee: loader/service
 #[tokio::test(flavor = "multi_thread")]
 async fn a_go_plugin_manages_rows_through_the_loader_service() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     run_scenario("go:go_maker", Value::Null).await;
 }
 
@@ -399,6 +408,9 @@ async fn a_go_plugin_manages_rows_through_the_loader_service() {
 /// guarantee: loader/service
 #[tokio::test(flavor = "multi_thread")]
 async fn without_an_editable_configuration_rows_cannot_be_added_or_removed() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture(Storage::None, "py:edits", json!({})).await;
     fixture.expect_prefix("edits: done").await;
     let text = "this host keeps no editable configuration, so rows cannot be added or removed";
@@ -418,6 +430,9 @@ async fn without_an_editable_configuration_rows_cannot_be_added_or_removed() {
 /// guarantee: loader/service
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_that_could_not_be_stored_says_so() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture(Storage::Editable { fails: true }, "py:edits", json!({})).await;
     fixture.expect_prefix("edits: done").await;
     let lines = fixture.probe.lines();

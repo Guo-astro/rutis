@@ -1,4 +1,4 @@
-// guarantee: events/node-runtime — the Node runtime on the logical bus
+// guarantee: sdk/leaf-events — the Node runtime on the logical bus
 // (#464), against a host written in JavaScript (fixtures/fake-host.mjs):
 // listeners registered before rows.load answers, every emission
 // dispatched through the host (every mode, filter selector, terminal and

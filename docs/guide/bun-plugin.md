@@ -243,7 +243,7 @@ bunx --bun rutis-host dev
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 greeter: starting
 translate: running
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 greeter: running
 ```
 
@@ -259,6 +259,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   bun: running (pid 66997)
@@ -276,7 +277,7 @@ $ bunx --bun rutis-host call greeter.count
 
 ```text
 greeter: reloaded (src/index.ts changed)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 ```console

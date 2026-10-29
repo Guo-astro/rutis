@@ -1106,6 +1106,7 @@ mod tests {
         assert!(!emits.busy && emits.queue.is_empty());
     }
 
+    /// guarantee: events/hub-lifecycle
     /// A row that unloads while one of its listeners registers (on the
     /// session's thread, the unload on another) takes that listener with
     /// it: none stays on the bus after its row (events protocol §7.1).

@@ -1,3 +1,4 @@
+// guarantee: events/one-bus
 // The event expectations (#464 §13): the real runtimes and the testing
 // tools are checked against the same list. What each expectation means is
 // crates/rutis-bridge/src/runtime/testing/events.rs; this runner follows

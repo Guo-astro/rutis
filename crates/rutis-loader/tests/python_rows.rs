@@ -1,5 +1,5 @@
 //! Python rows alone: no Node runtime is compiled or started.
-#![cfg(feature = "python")]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -24,6 +24,9 @@ fn plugin(version: &str) -> String {
 /// guarantee: loader/reload-all-or-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn reloading_a_row_runs_the_edited_module() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let module = dir.path().join("edited.py");
     std::fs::write(&module, plugin("v1")).unwrap();

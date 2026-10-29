@@ -3,12 +3,7 @@
 //! start cold together and use each other's services; Node and Python call
 //! Swift synchronously while Swift calls back into them; a provider that
 //! goes stops its users first; what a Swift plugin injects gates it.
-#![cfg(all(
-    feature = "node",
-    feature = "python",
-    feature = "swift",
-    target_os = "macos"
-))]
+#![cfg(all(feature = "swift", target_os = "macos"))]
 
 mod common;
 
@@ -271,6 +266,9 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
 /// guarantee: bridge/error-code-and-data
 #[tokio::test(flavor = "multi_thread")]
 async fn errors_with_a_code_and_data_cross_from_swift_and_python() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "swift"]) {
+        return;
+    }
     let fixture = fixture().await;
     let rows = vec![
         named("pp", "py:py_provider"),
@@ -294,6 +292,9 @@ async fn errors_with_a_code_and_data_cross_from_swift_and_python() {
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_start_cold_and_use_each_other() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "swift"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
@@ -321,6 +322,9 @@ async fn three_runtimes_start_cold_and_use_each_other() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_swift_provider_that_goes_stops_its_users_first() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "swift"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     let all = all_rows(&fixture);
@@ -373,6 +377,9 @@ async fn a_swift_provider_that_goes_stops_its_users_first() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_a_swift_plugin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "swift"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     let transitions = common::Transitions::on(&fixture.root);

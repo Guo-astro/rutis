@@ -55,6 +55,7 @@ impl ChainProbe {
 
 const EMITS_PER_EMITTER: usize = 2_000;
 
+/// guarantee: core/D31
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_chain_does_not_fork_under_concurrent_emit() {
     let root = Ctx::root().unwrap();

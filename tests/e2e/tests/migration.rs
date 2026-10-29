@@ -343,7 +343,7 @@ fn end_a(host: A, a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 /// keeps the old implementation), G5 (the host has to restart for the
 /// switch)
 ///
-/// guarantee: core/D14 (a provider withdrawn stops its consumers, which
+/// guarantee: bridge/call-chains-across-processes, core/D14 (a provider withdrawn stops its consumers, which
 /// start again once it is back: `planner` follows each switch, its row
 /// untouched), core/D22 (`planner` waits, without failing, while no
 /// `calendar` runs), bridge/call-chains-across-processes (`planner`'s

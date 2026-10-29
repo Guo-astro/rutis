@@ -546,6 +546,7 @@ mod tests {
     #[error("inner cause")]
     struct InnerCause;
 
+    /// guarantee: core/D25
     #[test]
     fn plugin_failure_display_and_sink_preserve_each_cause_once() {
         let error = ErrorKind::PluginFailed(Box::new(OuterCause { source: InnerCause }));

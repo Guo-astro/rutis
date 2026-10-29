@@ -52,9 +52,11 @@ fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
 }
 
 /// guarantee: bridge/caller-row
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lease_for_a_row_names_it_and_a_shared_one_does_not() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let anchor = write(dir.path(), "package.json", "{}");
     let entry = write(dir.path(), "registrant.mjs", REGISTRANT);

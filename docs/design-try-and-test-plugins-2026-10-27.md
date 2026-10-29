@@ -107,7 +107,7 @@ rutis-host call [--config <路径>] <服务>.<方法> [参数…]
 - 启动后（所有行 `settled`）打印一行：
 
   ```text
-  rutis-host dev: services: forecast (weather), llm (llm), loader (host)
+  rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
   ```
 
   按服务名排序，括号里是提供它的行（0.18 的 `provider`；宿主提供的写 `host`）。没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。
@@ -166,7 +166,7 @@ weather: built in 1.4s
 weather: running
 llm: running
 rutis-host dev: running weather; changes reload it (Ctrl-C ends)
-rutis-host dev: services: forecast (weather), llm (llm), loader (host)
+rutis-host dev: services: forecast (weather), llm (llm), loader (host), sessions (host)
 ```
 
 另一个终端：
@@ -177,7 +177,7 @@ rutis-host dev: services: forecast (weather), llm (llm), loader (host)
 | `rutis-host call forecast.week '{"days": 3}'` | 两格缩进的 JSON，0 |
 | `rutis-host call forecast.today Oslo` | `rutis-host: argument 1 is not JSON: write a string in quotes, as '"Oslo"'`，1 |
 | `rutis-host call forecast` | `rutis-host: name a method, as forecast.<method>`，1 |
-| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)`，1 |
+| `rutis-host call forcast.today '"Oslo"'` | `rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader, sessions)`，1 |
 | `rutis-host call forecast.tomorow '"Oslo"'` | `rutis-host: forecast has no method tomorow (methods: today, week)`，1（0.18 `no-method`） |
 | `rutis-host call forecast.today 3` | `rutis-host: forecast.today: argument 1 should be a string, got 3`，1（0.18 `bad-argument`） |
 | 方法抛错 | `rutis-host: call to forecast.today failed: KeyError: 'region'`，下一行 `weather at plugin.go:31 in Today`，1 |

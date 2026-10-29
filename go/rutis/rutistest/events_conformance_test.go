@@ -684,6 +684,7 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 // and counted so that the tool still runs as many as the file says.
 var knownFailing = map[string]string{}
 
+// guarantee: events/one-bus, sdk/leaf-events
 func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 	data, err := os.ReadFile(filepath.FromSlash(eventExpectations))
 	if err != nil {

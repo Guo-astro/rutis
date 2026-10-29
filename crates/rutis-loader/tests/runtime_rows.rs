@@ -2,19 +2,18 @@
 //! services resolved between rows natively, per-row load/update/unload,
 //! isolate and inject forwarded, schemastery schema exported; services
 //! shared with rutis by name (multilanguage M1).
-#![cfg(feature = "node")]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{greet_as_main, layer, row_state, rows_stage, Probe, TestRuntime};
+use common::runtimes::{greet_as_main, launcher, layer, row_state, rows_stage, Probe, TestRuntime};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, TypeKey,
 };
 use rutis::{Ctx, Error};
-use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Site, Value as RpcValue};
 use rutis_loader::report::{EntryStatus, LoaderChanged, RowStatus, Supply};
@@ -69,6 +68,9 @@ fn row(id: &str, file: &Path, config: Value, extra: Value) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn javascript_rows() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let write = |name: &str, text: &str| {
         let path = dir.path().join(name);
@@ -207,6 +209,9 @@ export function apply(ctx, config) {
 /// guarantee: loader/volatile-in-place
 #[tokio::test(flavor = "multi_thread")]
 async fn volatile_changes_reach_cordis_in_place() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let cosmokit = node_package()
         .join("node_modules/@deepseek-ai/cosmokit/lib/index.js")
@@ -348,7 +353,7 @@ async fn mount_with(root: &Ctx, package: PathBuf, catalog: ServiceCatalog) -> (L
     greet_as_main(root);
     let runtime = TestRuntime::new(
         "node",
-        Launcher::node(&package),
+        launcher(rutis_test_support::runtimes::node(&package)),
         &node_package().join("package.json"),
     );
     let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
@@ -369,6 +374,9 @@ async fn mount_with(root: &Ctx, package: PathBuf, catalog: ServiceCatalog) -> (L
 /// guarantee: loader/volatile-in-place
 #[tokio::test(flavor = "multi_thread")]
 async fn volatile_changes_are_never_dropped() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let cosmokit = node_package()
         .join("node_modules/@deepseek-ai/cosmokit/lib/index.js")
@@ -456,6 +464,9 @@ fn write_plugins(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
 /// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_unload_before_the_runtime() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (provider, consumer, _) = write_plugins(dir.path());
     let probe = Probe::default();
@@ -485,6 +496,9 @@ async fn rows_unload_before_the_runtime() {
 /// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_process_stops_the_rows_until_restart() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (provider, consumer, exit) = write_plugins(dir.path());
     let probe = Probe::default();
@@ -541,6 +555,9 @@ async fn a_dead_process_stops_the_rows_until_restart() {
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_wait_for_their_hosts_not_the_runtime() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (provider, consumer, _) = write_plugins(dir.path());
     let probe = Probe::default();
@@ -601,6 +618,9 @@ impl HostDispatch for RustGreeter {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_resolved_offline_wait_for_what_they_inject() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (_, consumer, _) = write_plugins(dir.path());
     let probe = Probe::default();
@@ -675,6 +695,9 @@ async fn rows_resolved_offline_wait_for_what_they_inject() {
 /// guarantee: loader/runtime-start-failure-isolated
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_cannot_start_does_not_block_resolution() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (provider, _, _) = write_plugins(dir.path());
     let root = Ctx::root().unwrap();
@@ -682,7 +705,7 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     // No Node runtime here: the mount fails.
     let runtime = TestRuntime::new(
         "node",
-        Launcher::node(dir.path()),
+        launcher(rutis_test_support::runtimes::node(dir.path())),
         &node_package().join("package.json"),
     );
     let options = LoaderOptions::default();
@@ -768,13 +791,16 @@ async fn starting(runtime: &FiberView, package: &Path, count: usize) {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_starting_runtime_can_be_disposed_or_restarted() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let package = hanging_runtime(dir.path());
     let root = Ctx::root().unwrap();
     greet_as_main(&root);
     let runtime = TestRuntime::new(
         "node",
-        Launcher::node(&package),
+        launcher(rutis_test_support::runtimes::node(&package)),
         &node_package().join("package.json"),
     );
     let handle = runtime.handle();
@@ -868,6 +894,9 @@ impl DynPlugin for RustUser {
 /// guarantee: loader/services-by-name
 #[tokio::test(flavor = "multi_thread")]
 async fn row_services_are_shared_by_name() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let weather = weather_package(dir.path());
     let forecaster = dir.path().join("forecaster.mjs");
@@ -974,6 +1003,9 @@ impl DynPlugin for StoreUser {
 /// guarantee: loader/announced-services
 #[tokio::test(flavor = "multi_thread")]
 async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.mjs");
     std::fs::write(&store, STORE).unwrap();
@@ -1026,6 +1058,9 @@ async fn cordis_rows_offer_what_they_provide_without_declaring_it() {
 /// guarantee: loader/announced-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_service_provided_twice_fails_the_later_row() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.mjs");
     std::fs::write(&store, STORE).unwrap();
@@ -1080,6 +1115,9 @@ export async function apply(ctx) {
 /// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_restarted_while_loading_is_unloaded_in_the_runtime() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let slow = dir.path().join("slow.mjs");
     std::fs::write(&slow, SLOW).unwrap();
@@ -1148,6 +1186,9 @@ export function apply(ctx) {
 /// guarantee: loader/row-unload-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_that_fails_to_load_releases_its_leases() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let broken = dir.path().join("broken.mjs");
     std::fs::write(&broken, BROKEN).unwrap();
@@ -1203,6 +1244,9 @@ async fn a_row_that_fails_to_load_releases_its_leases() {
 /// guarantee: loader/gated-row-failure
 #[tokio::test(flavor = "multi_thread")]
 async fn a_gated_row_fails_with_its_plugins_error() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let broken = dir.path().join("broken.mjs");
     std::fs::write(&broken, BROKEN).unwrap();
@@ -1241,6 +1285,9 @@ async fn a_gated_row_fails_with_its_plugins_error() {
 /// guarantee: loader/row-failure-keeps-the-error
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_row_keeps_the_plugins_error() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let broken = dir.path().join("broken.mjs");
     std::fs::write(&broken, BROKEN).unwrap();
@@ -1286,9 +1333,12 @@ export function apply(ctx) {
 /// An error a row's service method throws records which row it came from
 /// and which `service.method` it was serving, for the output and the host;
 /// the plugin's own error stays as it was (#677).
-/// guarantee: loader/error-site
+/// guarantee: loader/error-site, bridge/error-codes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_error_from_a_service_method_says_where_it_came_from() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let thrower = dir.path().join("thrower.mjs");
     std::fs::write(&thrower, THROWER).unwrap();
@@ -1358,6 +1408,9 @@ export function apply(ctx, config) {
 /// guarantee: loader/self-dispose
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_that_disposes_itself_ends_its_row() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let quit = dir.path().join("quit.mjs");
     std::fs::write(&quit, QUIT).unwrap();

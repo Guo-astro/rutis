@@ -1,3 +1,4 @@
+//! guarantee: bridge/value-tags
 //! The unified events conformance suite on the real runtimes (#464 step 7):
 //! every case of `events.expected.json`
 //! (`rutis_bridge::runtime::testing::events`) in the placements
@@ -13,12 +14,12 @@
 //!
 //! Each test prints a table of every case with its first failing placement,
 //! and fails if any case fails, or ran in no placement although it has
-//! some for X (a language it needs is not available here).
+//! some for X (a language it needs is not in `RUTIS_TEST_RUNTIMES`).
 //! `RUTIS_EVENTS_CASE=<prefix>[,<prefix>...]` runs only the cases whose id
 //! starts with one of them (each must match a case).
-//! `RUTIS_EVENTS_REQUIRE=<language>[,...]` (CI: `node,python,go,bun`; the
-//! Kotlin job adds `kotlin`)
-//! fails instead of skipping when one of them cannot run here.
+//! The languages are those `RUTIS_TEST_RUNTIMES` lists
+//! (`rutis_test_support::runtimes`): X not listed, the test is skipped; a
+//! listed language whose toolchain is missing fails it.
 //!
 //! The suite runs one test at a time (each starts every runtime; a lock
 //! keeps them from running side by side, whatever `--test-threads` says).
@@ -30,7 +31,7 @@
 //! `events_conformance/rust_participant.rs`; `hold` and the
 //! host's own failure reports are the host bus's test hooks
 //! (`rutis_bridge::events::testing::Tap`).
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -39,7 +40,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::runtimes::{greet_as_main, repo, rows_stage, TestRuntime, COLD};
+use common::runtimes::{greet_as_main, launcher, repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error};
@@ -58,33 +59,18 @@ use serde_json::{json, Value as Json};
 
 // ── Languages ───────────────────────────────────────────────────
 
-/// Whether `language` can run here: Bun, Go and Kotlin need their features
-/// and their programs on PATH (Kotlin: `java`).
+/// Whether `language` runs here: listed in `RUTIS_TEST_RUNTIMES` (Swift:
+/// on macOS only).
 fn available(language: &str) -> bool {
-    let on_path = |program: &str| {
-        std::process::Command::new(program)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
-    };
+    use rutis_test_support::runtimes::enabled;
     match language {
-        "node" | "node-leaf" | "python" => true,
-        "bun" => cfg!(feature = "bun") && on_path("bun"),
-        "go" => cfg!(feature = "go") && on_path("go"),
-        "kotlin" => cfg!(feature = "kotlin") && on_path("java"),
-        "swift" => cfg!(all(feature = "swift", target_os = "macos")) && on_path("swift"),
+        "node" | "node-leaf" => enabled("node"),
+        "python" | "bun" | "go" | "kotlin" => enabled(language),
+        "swift" => cfg!(target_os = "macos") && enabled("swift"),
         _ => false,
     }
 }
 
-fn python() -> String {
-    std::env::var("RUTIS_PYTHON")
-        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
-}
-
-#[cfg(feature = "go")]
 /// The Go fixture runtime (`go/rutis/internal/fixtures/runtime`, serving
 /// `conformance-events` among its test plugins), built once.
 fn go_binary() -> &'static Path {
@@ -104,7 +90,7 @@ fn go_binary() -> &'static Path {
     })
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 /// The Swift fixture runtime (`swift/rutis/Sources/RutisConformance`,
 /// serving `conformance-events` among its test plugins), built once.
 fn swift_binary() -> &'static Path {
@@ -158,19 +144,14 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                 })
                 .collect();
             (
-                Launcher::node(&package),
+                launcher(rutis_test_support::runtimes::node(&package)),
                 package.join("package.json"),
                 modules,
             )
         }
         "python" => {
             let project = repo().join("python/rutis/tests/fixtures");
-            let search =
-                std::env::join_paths([repo().join("python/rutis"), project.clone()]).unwrap();
-            let mut launcher = Launcher::python(&project);
-            launcher.program = python().into();
-            launcher.env.retain(|(name, _)| name != "PYTHONPATH");
-            launcher.env.push(("PYTHONPATH".into(), search));
+            let launcher = launcher(rutis_test_support::runtimes::python_runtime(&project));
             let modules = variants
                 .iter()
                 .map(|v| {
@@ -184,7 +165,6 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                 .collect();
             (launcher, project, modules)
         }
-        #[cfg(feature = "go")]
         "go" => {
             let project = dir.join(format!("{name}-project"));
             std::fs::create_dir_all(&project).unwrap();
@@ -194,12 +174,15 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                 .iter()
                 .map(|v| (*v, "conformance-events".to_owned()))
                 .collect();
-            (Launcher::go(go_binary(), &project), project, modules)
+            (
+                launcher(rutis_test_support::runtimes::binary(go_binary(), &project)),
+                project,
+                modules,
+            )
         }
         // The Kotlin runtime (`Rutis.serve` on the jvm target), started by
         // the generic launcher; one plugin provides every emitter undeclared
         // (its sync method on the wire: `dispatchSync`), as in Go.
-        #[cfg(feature = "kotlin")]
         "kotlin" => {
             let project = dir.join(format!("{name}-project"));
             std::fs::create_dir_all(&project).unwrap();
@@ -213,7 +196,7 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                 modules,
             )
         }
-        #[cfg(all(feature = "swift", target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         "swift" => {
             let project = dir.join(format!("{name}-project"));
             std::fs::create_dir_all(&project).unwrap();
@@ -223,9 +206,15 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                 .iter()
                 .map(|v| (*v, "conformance-events".to_owned()))
                 .collect();
-            (Launcher::swift(swift_binary(), &project), project, modules)
+            (
+                launcher(rutis_test_support::runtimes::binary(
+                    swift_binary(),
+                    &project,
+                )),
+                project,
+                modules,
+            )
         }
-        #[cfg(feature = "bun")]
         "bun" => {
             let project = dir.join(format!("{name}-project"));
             std::fs::create_dir_all(&project).unwrap();
@@ -248,7 +237,7 @@ fn runtime(language: &str, name: &str, dir: &Path) -> (TestRuntime, Modules) {
                     (*v, path(entry))
                 })
                 .collect();
-            let launcher = Launcher::bun(None, &repo().join("bun/rutis-bun"), &project);
+            let launcher = launcher(rutis_test_support::runtimes::bun_runtime(&project));
             (launcher, project, modules)
         }
         other => panic!("no runtime language {other}"),
@@ -1215,17 +1204,6 @@ async fn until(check: impl Fn() -> bool, what: &str) -> Result<(), String> {
 
 // ── The suite ───────────────────────────────────────────────────
 
-/// The languages `RUTIS_EVENTS_REQUIRE` names.
-fn required() -> Vec<String> {
-    std::env::var("RUTIS_EVENTS_REQUIRE")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
 /// One test at a time: each starts every runtime, and the timings of the
 /// cases (`settles`, the log's patience) assume a machine not running
 /// another such host.
@@ -1234,14 +1212,7 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 async fn conformance(x: &str) {
     let _one = ONE_AT_A_TIME.lock().await;
     let expected = events::expected();
-    let required = required();
-    let missing: Vec<&String> = required.iter().filter(|l| !available(l)).collect();
-    assert!(
-        missing.is_empty(),
-        "RUTIS_EVENTS_REQUIRE names {missing:?}, which cannot run here (features, or the program on PATH)"
-    );
     if !available(x) {
-        eprintln!("{x} is not available here: skipped");
         return;
     }
     let started = std::time::Instant::now();
@@ -1275,7 +1246,7 @@ async fn conformance(x: &str) {
                 tally.unrun(
                     case,
                     &format!(
-                        "it ran in no placement: each needs a Y language not available here (available: {ys:?})"
+                        "it ran in no placement: each needs a Y language not in RUTIS_TEST_RUNTIMES (listed: {ys:?})"
                     ),
                 );
             }
@@ -1311,14 +1282,14 @@ async fn conformance(x: &str) {
     assert_eq!(tally.failed(), 0, "X={x}:\n{tally}");
 }
 
-/// guarantee: events/one-bus (#464): every case of events.expected.json
+/// guarantee: events/framework, events/one-bus (#464): every case of events.expected.json
 /// with X a Node Cordis plugin.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_cordis_plugin() {
     conformance("node").await;
 }
 
-/// guarantee: events/one-bus, X a Node leaf plugin.
+/// guarantee: events/one-bus, X a Node leaf plugin., sdk/leaf-events
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_node_leaf_plugin() {
     conformance("node-leaf").await;
@@ -1331,28 +1302,25 @@ async fn events_with_x_a_python_plugin() {
 }
 
 /// guarantee: events/one-bus, X a Go plugin.
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_go_plugin() {
     conformance("go").await;
 }
 
 /// guarantee: events/one-bus, X a Kotlin plugin (the SDK's jvm target).
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_kotlin_plugin() {
     conformance("kotlin").await;
 }
 
 /// guarantee: events/one-bus, X a Swift plugin.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_swift_plugin() {
     conformance("swift").await;
 }
 
 /// guarantee: events/one-bus, X a Bun plugin.
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn events_with_x_a_bun_plugin() {
     conformance("bun").await;

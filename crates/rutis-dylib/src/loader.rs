@@ -1,3 +1,4 @@
+//! guarantee: bridge/marked-services
 //! Optional in-process loader for trusted, first-party Rust dylib plugins.
 //! A verified, immutable bundle launcher must run the host before this API is
 //! used: a mismatched SDK can execute during Rust startup, before `Loader::new`.

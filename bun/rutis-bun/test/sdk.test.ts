@@ -1,3 +1,5 @@
+// guarantee: sdk/config-schema
+// guarantee: sdk/testing-matches-runtime
 // The plugin SDK (`@arcships/rutis`, from this checkout) works under
 // `bun test`: its test tool runs the plugin in this Bun runtime, on a real
 // host (`rutis-host test`).

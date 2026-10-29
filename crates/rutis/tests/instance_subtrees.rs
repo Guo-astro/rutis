@@ -544,6 +544,7 @@ async fn dependency_gate_reuses_registration_snapshot() {
     root.shutdown().await.unwrap();
 }
 
+/// guarantee: events/flat
 /// Events are one flat bus, so both sibling scopes' listeners hear every
 /// emit; shutting one scope down waits for its own listener's running call
 /// and leaves the other's alone.
@@ -1004,6 +1005,7 @@ impl DynPlugin for Use {
     }
 }
 
+/// guarantee: core/D14
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn closing_subtree_disposes_consumer_before_provider() {
     let root = Ctx::root().unwrap();

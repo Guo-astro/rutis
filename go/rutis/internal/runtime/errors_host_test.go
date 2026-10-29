@@ -1,3 +1,4 @@
+// guarantee: sdk/error-positions
 package rutis
 
 import (
@@ -75,7 +76,7 @@ func (f *futureHost) Send(message []byte) error {
 	return f.Channel.Send(message)
 }
 
-// guarantee: events/via-host (a Parallel the host answers with a future
+// guarantee: sdk/leaf-events (a Parallel the host answers with a future
 // that fails with an AggregateError returns an *AggregateError, its
 // failures in order: #677)
 func TestParallelThroughAFutureReturnsAnAggregateError(t *testing.T) {

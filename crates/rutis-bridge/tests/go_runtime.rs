@@ -1,4 +1,3 @@
-#![cfg(feature = "go")]
 //! The Go runtime speaks the same protocol and row contract as the Node and
 //! Python ones, and carries Go's values across: describe, load with exports,
 //! lease hosts, sync and async calls, callbacks, cancellation reaching the
@@ -10,11 +9,14 @@ use std::sync::{Arc, OnceLock};
 
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::runtime::{row_projection, Launcher, Mount, Process};
+use rutis_bridge::runtime::{row_projection, Mount, Process};
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_test_support::until;
 use serde_json::{json, Value};
+
+mod common;
+use common::runtime::launcher;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -56,7 +58,7 @@ impl HostDispatch for Clock {
 }
 
 async fn go(project: &Path) -> Arc<Process> {
-    let launcher = Launcher::go(binary(), project);
+    let launcher = launcher(rutis_test_support::runtimes::binary(binary(), project));
     Process::mount(
         &repo().join("go/rutis"),
         Mount {
@@ -101,6 +103,9 @@ async fn service(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn go_rows_follow_the_row_contract() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = go(dir.path()).await;
     for feature in ["rows.v2", "hosts", "leaf", "scopes"] {
@@ -198,6 +203,9 @@ async fn go_rows_follow_the_row_contract() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_async_call_cancels_the_methods_context() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = go(dir.path()).await;
     let ctx = Ctx::root().unwrap();
@@ -245,6 +253,9 @@ async fn a_dropped_async_call_cancels_the_methods_context() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn errors_cross_with_their_names_and_panics_with_their_stack() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = go(dir.path()).await;
     let ctx = Ctx::root().unwrap();
@@ -290,6 +301,9 @@ async fn errors_cross_with_their_names_and_panics_with_their_stack() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn data_is_copied_and_objects_cross_by_reference() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = go(dir.path()).await;
     let ctx = Ctx::root().unwrap();

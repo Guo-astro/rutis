@@ -1,7 +1,7 @@
 //! `Loader::status()` with a Python runtime: the rows, the services, the
 //! runtime with its process id, a call in progress; a runtime that exits
 //! makes its rows wait for it.
-#![cfg(feature = "python")]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -46,6 +46,9 @@ const NEEDY: &str = "inject = [\"missing\"]\n\ndef apply(ctx, config):\n    pass
 /// guarantee: loader/status
 #[tokio::test(flavor = "multi_thread")]
 async fn the_status_names_rows_services_runtimes_and_calls() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("slow.py"), SLOW).unwrap();
     std::fs::write(dir.path().join("needy.py"), NEEDY).unwrap();

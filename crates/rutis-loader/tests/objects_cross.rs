@@ -12,9 +12,10 @@
 //! when idle, and calls on its objects say so.
 //!
 //! Node and Python are always there; the Bun, Go, Swift and Kotlin cases
-//! run with their features (CI runs the Swift ones in the Swift job, the
-//! Kotlin ones in the Kotlin job).
-#![cfg(all(unix, feature = "node", feature = "python"))]
+//! run when `RUTIS_TEST_RUNTIMES` lists their language (CI runs the Swift
+//! ones in the Swift job, the Kotlin ones in the Kotlin job), each case
+//! starting only the runtimes it uses.
+#![cfg(all(unix, feature = "runtimes"))]
 
 mod common;
 
@@ -234,16 +235,16 @@ struct Fixture {
     loader: Loader,
     probe: Probe,
     node: Processes,
-    #[cfg(feature = "bun")]
-    bun: Processes,
+    bun: Option<Processes>,
     py: Processes,
-    #[cfg(feature = "kotlin")]
-    kt: Processes,
+    kt: Option<Processes>,
     dir: PathBuf,
     _dir: tempfile::TempDir,
 }
 
-async fn fixture() -> Fixture {
+/// Node and Python, and the runtime `other` (`bun`, `go`, `swift` or
+/// `kt`) when there is one.
+async fn fixture(other: Option<&str>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -284,42 +285,44 @@ async fn fixture() -> Fixture {
     let (node_processes, py_processes) = (node.processes(), python.processes());
     let chain = Chain::new();
     // Bun, rows `bun:<module>`.
-    #[cfg(feature = "bun")]
-    let bun = TestRuntime::bun(dir.path());
-    #[cfg(feature = "bun")]
-    let bun_processes = bun.processes();
-    #[cfg(feature = "bun")]
-    sessions.runtime(bun.handle());
-    #[cfg(feature = "bun")]
-    root.plugin(bun);
+    let bun_processes = (other == Some("bun")).then(|| {
+        let bun = TestRuntime::bun(dir.path());
+        let processes = bun.processes();
+        sessions.runtime(bun.handle());
+        root.plugin(bun);
+        processes
+    });
     // Go: the multilang binary's plugins, rows `go:<plugin>`.
     #[cfg(feature = "go")]
-    let go = Arc::new(
-        rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::go::Go>::new(
-            rutis_loader::runtime::binary::Binaries::new().file(common::runtimes::go_binary()),
+    let go = (other == Some("go")).then(|| {
+        Arc::new(
+            rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::go::Go>::new(
+                rutis_loader::runtime::binary::Binaries::new().file(common::runtimes::go_binary()),
+            )
+            .with_catalog(&catalog)
+            .reserve(["node", "py", "bun", "kt"]),
         )
-        .with_catalog(&catalog)
-        .reserve(["node", "py", "bun", "kt"]),
-    );
+    });
     #[cfg(feature = "go")]
-    let chain = chain.with_shared(go.clone());
+    let chain = match &go {
+        Some(go) => chain.with_shared(go.clone()),
+        None => chain,
+    };
     // Kotlin: the conformance jar's plugins, rows `kt:<plugin>`.
-    #[cfg(feature = "kotlin")]
-    let kotlin = {
+    let kt_processes = (other == Some("kt")).then(|| {
         let project = dir.path().join("kt");
         std::fs::create_dir_all(&project).unwrap();
-        TestRuntime::new("kt", common::runtimes::kotlin_launcher(&project), &project)
-    };
-    #[cfg(feature = "kotlin")]
-    let kt_processes = kotlin.processes();
-    #[cfg(feature = "kotlin")]
-    sessions.runtime(kotlin.handle());
-    #[cfg(feature = "kotlin")]
-    root.plugin(kotlin);
+        let kotlin = TestRuntime::new("kt", common::runtimes::kotlin_launcher(&project), &project);
+        let processes = kotlin.processes();
+        sessions.runtime(kotlin.handle());
+        root.plugin(kotlin);
+        processes
+    });
     // Swift: the multilang binary's plugins, rows `swift:<plugin>`, in the
     // runtime `swift-multilang`.
     #[cfg(all(feature = "swift", target_os = "macos"))]
-    let swift = Arc::new(
+    let swift = (other == Some("swift")).then(|| {
+        Arc::new(
         rutis_loader::runtime::binary::BinaryResolver::<rutis_loader::runtime::swift::Swift>::new(
             rutis_loader::runtime::binary::Binaries::new().file(common::runtimes::swift_binary(
                 "RutisMultilang",
@@ -328,13 +331,17 @@ async fn fixture() -> Fixture {
         )
         .with_catalog(&catalog)
         .reserve(["node", "py", "bun", "kt"]),
-    );
+    )
+    });
     sessions.runtime(python.handle());
     sessions.runtime(node.handle());
     root.plugin(python);
     root.plugin(node);
     #[cfg(all(feature = "swift", target_os = "macos"))]
-    let chain = chain.with_shared(swift.clone());
+    let chain = match &swift {
+        Some(swift) => chain.with_shared(swift.clone()),
+        None => chain,
+    };
     let chain = chain.with_shared(sessions.clone());
     let plugin = LoaderPlugin::new(
         chain,
@@ -349,42 +356,43 @@ async fn fixture() -> Fixture {
     for runtime in ["py", "node"] {
         rows_stage(&root, &sessions, runtime).await;
     }
-    #[cfg(feature = "bun")]
-    rows_stage(&root, &sessions, "bun").await;
-    #[cfg(feature = "kotlin")]
-    rows_stage(&root, &sessions, "kt").await;
+    if let Some(other @ ("bun" | "kt")) = other {
+        rows_stage(&root, &sessions, other).await;
+    }
     // Stops two seconds after its last row is gone.
     #[cfg(feature = "go")]
-    root.plugin(
-        rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
-            go,
-            dir.path(),
-            common::runtimes::spawner(),
+    if let Some(go) = go {
+        root.plugin(
+            rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
+                go,
+                dir.path(),
+                common::runtimes::spawner(),
+            )
+            .idle(Some(std::time::Duration::from_secs(2))),
         )
-        .idle(Some(std::time::Duration::from_secs(2))),
-    )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
+    }
     #[cfg(all(feature = "swift", target_os = "macos"))]
-    root.plugin(
-        rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(
-            swift,
-            dir.path(),
-            common::runtimes::spawner(),
+    if let Some(swift) = swift {
+        root.plugin(
+            rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(
+                swift,
+                dir.path(),
+                common::runtimes::spawner(),
+            )
+            .idle(Some(std::time::Duration::from_secs(2))),
         )
-        .idle(Some(std::time::Duration::from_secs(2))),
-    )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
+    }
     Fixture {
         root,
         loader,
         probe,
         node: node_processes,
-        #[cfg(feature = "bun")]
         bun: bun_processes,
         py: py_processes,
-        #[cfg(feature = "kotlin")]
         kt: kt_processes,
         dir: dir.path().to_owned(),
         _dir: dir,
@@ -428,8 +436,35 @@ fn rows(fixture: &Fixture, owner: &str, holder: &str, with_owner: bool) -> Vec<V
     rows
 }
 
+/// The language of the runtime `runtime` (`node`, `py`, `bun`, `go`,
+/// `swift` or `kt`), as `RUTIS_TEST_RUNTIMES` names it.
+fn language(runtime: &str) -> &str {
+    match runtime {
+        "py" => "python",
+        "kt" => "kotlin",
+        other => other,
+    }
+}
+
+/// Whether this run uses Node, Python and `other`'s language: the
+/// fixture's runtimes, and the one of the case.
+fn enabled(other: &str) -> bool {
+    rutis_test_support::runtimes::all_enabled(&["node", "python", language(other)])
+}
+
+/// The runtime of `owner` and `holder` that is neither Node nor Python.
+fn other<'a>(owner: &'a str, holder: &'a str) -> Option<&'a str> {
+    [owner, holder]
+        .into_iter()
+        .find(|runtime| !matches!(*runtime, "node" | "py"))
+}
+
 async fn objects_cross(owner: &str, holder: &str) {
-    let fixture = fixture().await;
+    let other = other(owner, holder);
+    if !enabled(other.unwrap_or("node")) {
+        return;
+    }
+    let fixture = fixture(other).await;
     let report = fixture
         .loader
         .reconcile(layer(rows(&fixture, owner, holder, true)), None)
@@ -485,10 +520,8 @@ async fn objects_cross(owner: &str, holder: &str) {
             match owner {
                 "node" => fixture.node.kill(),
                 "py" => fixture.py.kill(),
-                #[cfg(feature = "kotlin")]
-                "kt" => fixture.kt.kill(),
-                #[cfg(feature = "bun")]
-                "bun" => fixture.bun.kill(),
+                "kt" => fixture.kt.as_ref().unwrap().kill(),
+                "bun" => fixture.bun.as_ref().unwrap().kill(),
                 other => panic!("no runtime {other}"),
             }
             format!("peer-gone: a call on an object from {owner} failed: runtime {owner} exited")
@@ -514,7 +547,6 @@ async fn objects_cross(owner: &str, holder: &str) {
 /// objects-case(node): owner-killed-peer-gone
 /// objects-case(rust): owner-killed-peer-gone
 /// guarantee: bridge/object-refs
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_object_crosses_to_bun() {
     objects_cross("node", "bun").await;
@@ -527,7 +559,6 @@ async fn a_node_object_crosses_to_bun() {
 /// objects-case(bun): outlives-its-row
 /// objects-case(bun): owner-killed-peer-gone
 /// guarantee: bridge/object-refs
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bun_object_crosses_to_node() {
     objects_cross("bun", "node").await;
@@ -586,7 +617,10 @@ async fn a_node_object_crosses_to_go() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_go_parameter_that_takes_no_object_says_so() {
-    let fixture = fixture().await;
+    if !enabled("go") {
+        return;
+    }
+    let fixture = fixture(Some("go")).await;
     fixture
         .loader
         .reconcile(layer(rows(&fixture, "node", "go", true)), None)
@@ -616,7 +650,10 @@ async fn a_go_object_whose_runtime_exited_is_peer_gone() {
 /// was called: calls on the object fail with `peer-gone`, saying it exited.
 #[cfg(any(feature = "go", all(feature = "swift", target_os = "macos")))]
 async fn runtime_exited(owner: &str) {
-    let fixture = fixture().await;
+    if !enabled(owner) {
+        return;
+    }
+    let fixture = fixture(Some(owner)).await;
     fixture
         .loader
         .reconcile(layer(rows(&fixture, owner, "node", true)), None)
@@ -679,7 +716,6 @@ async fn a_swift_object_whose_runtime_exited_is_peer_gone() {
 /// objects-case(kotlin): outlives-its-row
 /// objects-case(kotlin): owner-killed-peer-gone
 /// guarantee: bridge/object-refs
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_kotlin_object_crosses_to_node() {
     objects_cross("kt", "node").await;
@@ -690,7 +726,6 @@ async fn a_kotlin_object_crosses_to_node() {
 /// objects-case(kotlin): third-language
 /// objects-case(kotlin): return-array-event
 /// guarantee: bridge/object-refs
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_object_crosses_to_kotlin() {
     objects_cross("node", "kt").await;
