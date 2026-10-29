@@ -72,6 +72,7 @@ async fn run(path: &Path) -> i32 {
         })),
         identity: None,
         rows_file: None,
+        observe: None,
     };
     let mut host = match Host::start_with(&config, embedding).await {
         Ok(host) => host,
