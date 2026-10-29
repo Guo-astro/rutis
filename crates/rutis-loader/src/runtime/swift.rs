@@ -2,19 +2,19 @@
 //! several side by side (docs/design-swift-sdk-2026-10-12.md §3).
 //!
 //! Swift is a [`BinaryLanguage`]: rows `swift:<plugin>`, the SDK's marker `rutis-swift-runtime:1`,
-//! runtimes started by [`Launcher::swift`]. Everything else (manifests,
+//! runtimes started by the binary itself, in the project, on an inherited socket. Everything else (manifests,
 //! directory scans, the lifecycle, restarts, replaced and refused binaries)
 //! is [`super::binary`]'s, shared with Go: `BinaryResolver<Swift>`,
 //! `BinaryRuntimes<Swift>` and so on.
 //!
 //! A runtime is named after its file (`swift-<name>`, see
-//! [`rutis_bridge::runtime::swift_runtime_name`]). While a runtime runs,
+//! [`swift_runtime_name`]). While a runtime runs,
 //! rows resolve from the manifest it started with; a binary replaced on
 //! disk takes effect when the runtime restarts.
 
 use std::path::Path;
 
-use rutis_bridge::runtime::{swift_runtime_name, Launcher};
+use rutis_bridge::runtime::Launcher;
 
 use super::binary::BinaryLanguage;
 
@@ -37,6 +37,12 @@ impl BinaryLanguage for Swift {
     }
 
     fn launch(binary: &Path, project: &Path) -> Launcher {
-        Launcher::swift(binary, project)
+        Launcher::new(binary).cwd(project).inherit_fd()
     }
+}
+
+/// The name of the Swift runtime the binary at `path` runs as: `swift-<its file
+/// name>` ([`super::binary::runtime_name`]).
+pub fn swift_runtime_name(path: &Path) -> String {
+    super::binary::runtime_name("swift", path)
 }

@@ -26,11 +26,11 @@ use crate::connect::SpawnPlugin;
 use crate::host::Error;
 
 mod binary;
-pub(crate) mod bun;
-mod go;
-pub(crate) mod node;
-pub(crate) mod python;
-mod swift;
+pub mod bun;
+pub mod go;
+pub mod node;
+pub mod python;
+pub mod swift;
 
 pub use binary::{BinaryHost, DevBuild};
 pub use go::GoDev;
@@ -262,7 +262,12 @@ impl Mount<'_> {
     /// [`Mount::prefix_output`], the runtime starts each line with the row
     /// that wrote it.
     pub fn local(&mut self, name: &str, runtime: SpawnPlugin) {
-        let mut runtime = runtime.stdio(Stdio::Null, Stdio::Lines, Stdio::Lines);
+        use crate::output::{lines, OutputStream};
+        let mut runtime = runtime.stdio(
+            Stdio::Null,
+            lines(OutputStream::Stdout, None),
+            lines(OutputStream::Stderr, None),
+        );
         if self.prefix_output {
             runtime = runtime.env(PREFIX_OUTPUT, "1");
         }

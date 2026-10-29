@@ -1,6 +1,6 @@
 // `bun --no-install --no-env-file src/main.ts <channel> --id <endpoint>
 // [--peer <endpoint>] <project>`: one runtime process, started by a rutis
-// host (rutis-bridge's `Launcher::bun`), or a remote one.
+// host (rutis-host's `languages::bun::launcher`), or a remote one.
 //
 // The channel is `fd:<n>`, a socket inherited from the process that started
 // this one; `unix:<path>` (or a bare path), a socket to dial;

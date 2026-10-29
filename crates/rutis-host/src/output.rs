@@ -1,6 +1,7 @@
-//! A started process's output passed on a whole line at a time
-//! ([`Stdio::Lines`](super::Stdio::Lines)), and this process's own lines
-//! written the same way ([`write_line`]).
+//! A runtime process's output passed on a whole line at a time
+//! ([`lines`]: the [`Stdio::Pipe`](rutis_bridge::pipe::Stdio::Pipe) it
+//! writes into), and this process's own lines written the same way
+//! ([`write_line`], [`outln!`](crate::outln), [`errln!`](crate::errln)).
 //!
 //! A process that shares this process's output writes when it likes: a
 //! Python `print` writes its text and its newline separately, and a line
@@ -29,8 +30,7 @@ pub const MAX_LINE: usize = 64 * 1024;
 
 /// Write `line` and a newline to this process's `stream` in one write,
 /// holding the locks of both stdout and stderr (in that order), as every
-/// line passed on from a process started with
-/// [`Stdio::Lines`](super::Stdio::Lines) is: no such line, nor another line
+/// line passed on from a process started with [`lines`] is: no such line, nor another line
 /// written this way, lands inside it, also when stdout and stderr are the
 /// same file (`2>&1`). An error (a closed stream) is ignored, as there is
 /// nowhere left to say it.
@@ -64,6 +64,14 @@ fn emit(stream: OutputStream, bytes: &[u8]) {
     }
 }
 
+/// A process's `stream` passed on a whole line at a time, each line after
+/// `prefix` (`[go-weather] `) if any: the stream to give the process, a
+/// pipe for each process started.
+pub fn lines(stream: OutputStream, prefix: Option<&str>) -> rutis_bridge::pipe::Stdio {
+    let prefix = prefix.map(str::to_owned);
+    rutis_bridge::pipe::Stdio::Pipe(std::sync::Arc::new(move || pipe(stream, prefix.as_deref())))
+}
+
 /// The pipes being passed on, until each has ended and its last line is
 /// written.
 static OPEN: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
@@ -72,10 +80,7 @@ static OPEN: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 /// passes on what it writes, a line at a time, each after `prefix` if any,
 /// until every process holding the pipe has closed it (the process, and
 /// any process it started that kept the stream).
-pub(crate) fn pipe(
-    stream: OutputStream,
-    prefix: Option<&str>,
-) -> std::io::Result<std::process::Stdio> {
+fn pipe(stream: OutputStream, prefix: Option<&str>) -> std::io::Result<std::process::Stdio> {
     let (reader, writer) = std::io::pipe()?;
     let prefix = prefix.map(|prefix| prefix.as_bytes().to_vec());
     *OPEN.0.lock().unwrap() += 1;
@@ -95,9 +100,9 @@ pub(crate) fn pipe(
 }
 
 /// Wait up to `guard` until the output of every process started with
-/// [`Stdio::Lines`](super::Stdio::Lines) has ended and all of it has been
+/// [`lines`] has ended and all of it has been
 /// written: what a host that is ending does once its processes have ended
-/// ([`processes_ended`](super::processes_ended)), so that their last lines
+/// ([`processes_ended`](rutis_bridge::pipe::processes_ended)), so that their last lines
 /// are not lost when it exits. False when some is still open after `guard`:
 /// a process they started that is still running holds it.
 pub fn output_ended(guard: Duration) -> bool {

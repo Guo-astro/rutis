@@ -222,3 +222,80 @@ pub fn launcher(command: rutis_test_support::runtimes::Command) -> Launcher {
     launcher.inherit_fd = command.inherit_fd;
     launcher
 }
+
+/// The process of a runtime on `channel`, one this side did not start
+/// (listening on a WebSocket, a memory channel's far end): a [`Session`]
+/// on it under a fiber marked as the row `row`, below `ctx` (whose root
+/// has [`greet_as_main`]). The session greets as `main` and names the
+/// runtime by the id it greets with.
+pub async fn attached(
+    ctx: &Ctx,
+    row: &str,
+    channel: rutis_bridge::Channel,
+) -> Result<std::sync::Arc<rutis_bridge::runtime::Process>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    ctx.plugin(Attached {
+        row: row.to_owned(),
+        channel: std::sync::Mutex::new(Some(channel)),
+        sender: std::sync::Mutex::new(Some(sender)),
+    });
+    receiver
+        .await
+        .map_err(|_| format!("the row {row} ended before its session was mounted"))?
+}
+
+type Mounted = Result<std::sync::Arc<rutis_bridge::runtime::Process>, String>;
+
+struct Attached {
+    row: String,
+    channel: std::sync::Mutex<Option<rutis_bridge::Channel>>,
+    sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Mounted>>>,
+}
+
+impl Attached {
+    async fn mount(&self, ctx: &Ctx) -> Mounted {
+        ctx.mark_row(&self.row).map_err(|error| error.to_string())?;
+        let channel = self.channel.lock().unwrap().take().expect("one run");
+        let session = ctx.plugin(Session::new(channel));
+        let mut watch = session.watch();
+        let snapshot = watch
+            .wait_for(|s| {
+                matches!(
+                    s.state,
+                    FiberState::Active | FiberState::Failed | FiberState::Disposed
+                )
+            })
+            .await
+            .map_err(|_| "the session ended as it started".to_owned())?
+            .clone();
+        if snapshot.state != FiberState::Active {
+            return Err(snapshot
+                .error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "the session ended as it started".into()));
+        }
+        ctx.get_at(&session_key(&self.row))
+            .and_then(|handle| handle.process())
+            .ok_or_else(|| format!("{} runs no plugins", self.row))
+    }
+}
+
+impl DynPlugin for Attached {
+    fn platform(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        &self.row
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let mounted = self.mount(ctx).await;
+            if let Some(sender) = self.sender.lock().unwrap().take() {
+                let _ = sender.send(mounted);
+            }
+            Ok(Effect::Done)
+        })
+    }
+}

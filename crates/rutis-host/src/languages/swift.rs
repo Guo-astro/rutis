@@ -164,7 +164,7 @@ impl SwiftDev {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "plugin".into())
             });
-        let runtime = rutis_bridge::runtime::swift_runtime_name(Path::new(&product));
+        let runtime = rutis_loader::runtime::swift::swift_runtime_name(Path::new(&product));
         Some(Self {
             dir: dir.to_owned(),
             product,
@@ -330,6 +330,14 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/swift/.github/workflows/release.yml"),
     ),
 ];
+
+/// One Swift binary's runtime: `binary`, in `project`, on an inherited socket
+/// (on Windows, a loopback address), as the Swift runtimes start.
+pub fn launcher(binary: &Path, project: &Path) -> rutis_bridge::runtime::Launcher {
+    <rutis_loader::runtime::swift::Swift as rutis_loader::runtime::binary::BinaryLanguage>::launch(
+        binary, project,
+    )
+}
 
 #[cfg(test)]
 mod tests {

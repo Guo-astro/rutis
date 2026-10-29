@@ -25,4 +25,4 @@ A host starts it as one process and runs plugins in it as rows named `bun:<modul
 
 Bun 1.4 or later. Besides running on the host's machine (local channels), it runs as a remote runtime: listening (`listen:ws://…`, `listen:wss://…`) or dialing a rutis access point (`dial:ws://…`, `dial:wss://…`); see the Bun plugin guide.
 
-Embedding hosts start it with `rutis_host::connect::SpawnPlugin::new("bun", rutis_bridge::runtime::Launcher::bun(…), project)` (Rust, feature `bun` of rutis-bridge).
+Embedding hosts start it with `rutis_host::connect::SpawnPlugin::new("bun", rutis_host::languages::bun::launcher(…), project)` (Rust).

@@ -118,14 +118,14 @@ cd kotlin/rutis
 
 The testing tool's tests run on `rutis-host test`: `RUTIS_HOST`, else the repository's `target/debug/rutis-host` (`cargo build -p rutis-host`).
 
-The android target is built only where an Android SDK is installed (`ANDROID_HOME`, or `sdk.dir` in `local.properties`). The Rust suites with Kotlin take the feature `kotlin` and build `rutis-conformance/build/libs/rutis-conformance-all.jar` (or use the one `RUTIS_KOTLIN_JAR` names):
+The android target is built only where an Android SDK is installed (`ANDROID_HOME`, or `sdk.dir` in `local.properties`). The Rust suites with Kotlin run when `RUTIS_TEST_RUNTIMES` names `kotlin`, and build `rutis-conformance/build/libs/rutis-conformance-all.jar` (or use the one `RUTIS_KOTLIN_JAR` names):
 
 ```sh
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test dial_conformance kotlin::
-cargo test -p rutis-bridge --features testing,websocket,kotlin --test kotlin_remote
-cargo test -p rutis-bridge --features testing,kotlin --test kotlin_runtime
-cargo test -p rutis-loader --features node,python,kotlin --test events_conformance --test multilang_kotlin
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test runtime_conformance --test value_roundtrip --test session_matrix kotlin_
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-host --features kotlin --test dial_conformance kotlin::
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_remote
+RUTIS_TEST_RUNTIMES=kotlin cargo test -p rutis-bridge --all-features --test kotlin_runtime
+RUTIS_TEST_RUNTIMES=kotlin,node,python cargo test -p rutis-loader --all-features --test events_conformance --test multilang_kotlin
 ```
 
 On an Android device or emulator (`adb`; `tools/android-emulator.sh start` boots one): the SDK's device tests, and the sample application dialing a rutis-host (Python 3.10+ for its other row):

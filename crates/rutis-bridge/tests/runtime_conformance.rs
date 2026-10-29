@@ -308,11 +308,17 @@ async fn contract(command: tokio::process::Command, via: Via, far: &str) {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn node_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::UnixSocket, "node").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::Loopback, "node").await;
 }
 
@@ -322,23 +328,35 @@ async fn node_meets_the_session_contract_on_loopback() {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn python_meets_the_session_contract_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::UnixSocket, "python").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_meets_the_session_contract_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::Loopback, "python").await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_meets_the_session_contract_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     contract(node(), Via::WebSocket, "node").await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_meets_the_session_contract_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     contract(python(), Via::WebSocket, "python").await;
 }
 
@@ -469,11 +487,17 @@ async fn ends_on_malformed(command: fn() -> tokio::process::Command, via: Via) {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn node_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::UnixSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::Loopback).await;
 }
 
@@ -483,23 +507,35 @@ async fn node_ends_the_session_on_malformed_frames_on_loopback() {
     ignore = "Unix socket column: Windows runtimes connect on loopback TCP"
 )]
 async fn python_ends_the_session_on_malformed_frames_on_a_unix_socket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::UnixSocket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_loopback() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::Loopback).await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_ends_the_session_on_malformed_frames_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     ends_on_malformed(node, Via::WebSocket).await;
 }
 
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_ends_the_session_on_malformed_frames_on_a_websocket() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     ends_on_malformed(python, Via::WebSocket).await;
 }
 

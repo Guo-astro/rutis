@@ -29,9 +29,10 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::{Launcher, Stdio};
+use rutis_bridge::runtime::Stdio;
 use rutis_bridge::{LocalId, PeerId};
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
@@ -177,7 +178,7 @@ async fn start() -> Result<(Ctx, Arc<Tools>), String> {
     // stdout: its answers are whole lines.
     let node = SpawnPlugin::new(
         "node",
-        Launcher::node(&node_package),
+        languages::node::launcher(&node_package),
         dir.join("package.json"),
     )
     .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);

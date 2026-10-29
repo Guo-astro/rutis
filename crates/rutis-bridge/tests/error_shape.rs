@@ -3,12 +3,15 @@
 use std::io::Write;
 use std::path::Path;
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{Error, Value};
 use serde_json::json;
 
 #[tokio::test(flavor = "current_thread")]
 async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin
         .write_all(
@@ -48,11 +51,13 @@ async fn nested_aggregate_cause_and_shared_identity_survive_a_rust_roundtrip() {
         )
         .unwrap();
     let node = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-    let peer = Process::launch(
+    let peer = Process::mount(
         &node,
-        plugin.path(),
-        json!({}),
-        json!({ "errors": ["native", "fail", "relay"] }),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "errors": ["native", "fail", "relay"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();

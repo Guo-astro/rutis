@@ -110,7 +110,7 @@ pub const OUTPUT_GUARD: Duration = Duration::from_secs(2);
 /// has all been passed on: what a program running a [`Host`] does last,
 /// so that their last lines are not lost when it exits (#332).
 pub fn output_written() {
-    rutis_bridge::pipe::output_ended(OUTPUT_GUARD);
+    crate::output::output_ended(OUTPUT_GUARD);
 }
 
 /// How long killed runtime processes may take to be gone.

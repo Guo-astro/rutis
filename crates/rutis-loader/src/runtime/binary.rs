@@ -35,9 +35,7 @@ use rutis::host::{
 };
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::{isolate_manifest_command, ManifestChild, Processes};
-use rutis_bridge::runtime::{
-    Launcher, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
-};
+use rutis_bridge::runtime::{Launcher, RowSchema, RuntimeHandle, RuntimeState};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -68,6 +66,32 @@ pub trait BinaryLanguage: Send + Sync + 'static {
     /// How `binary` is started in `project` (its channel an inherited fd,
     /// or loopback).
     fn launch(binary: &Path, project: &Path) -> Launcher;
+}
+
+/// The name of the runtime the binary at `path` runs as: `<prefix>-<its
+/// file name>`, the file name without `.exe`, lowercased, with every
+/// character outside `[a-z0-9-]` as `-` (`go`, `net.kit_v1.exe` ->
+/// `go-net-kit-v1`). It is the only name users see for it.
+pub fn runtime_name(prefix: &str, path: &Path) -> String {
+    let file = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // By bytes: a name need not be ASCII, and `.exe` is.
+    let exe = file.len() > 4 && file.as_bytes()[file.len() - 4..].eq_ignore_ascii_case(b".exe");
+    let stem = match exe {
+        true => &file[..file.len() - 4],
+        false => &file[..],
+    };
+    let name: String = stem
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .map(|c| match c {
+            'a'..='z' | '0'..='9' | '-' => c,
+            _ => '-',
+        })
+        .collect();
+    format!("{prefix}-{name}")
 }
 
 /// A runtime started as the far end of a session: the plugin that starts
@@ -1267,10 +1291,6 @@ struct Inner<L: BinaryLanguage> {
 struct Settings {
     idle: Option<Duration>,
     eager: bool,
-    /// Each runtime process's standard output and error.
-    output: (RuntimeStdio, RuntimeStdio),
-    /// Whether each line of that output starts with `[<runtime>] `.
-    prefix_output: bool,
 }
 
 #[derive(Default)]
@@ -1374,8 +1394,6 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                 settings: Mutex::new(Settings {
                     idle: Some(Duration::from_secs(60)),
                     eager: false,
-                    output: (RuntimeStdio::Inherit, RuntimeStdio::Inherit),
-                    prefix_output: false,
                 }),
                 ctx: Mutex::new(None),
                 slots: Mutex::default(),
@@ -1399,23 +1417,6 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
         settings.idle = None;
         settings.eager = true;
         drop(settings);
-        self
-    }
-
-    /// Where each runtime process's standard output and error go: this
-    /// process's by default ([`RuntimeStdio::Inherit`]), as
-    /// [`Launcher::stdout`] and [`Launcher::stderr`].
-    pub fn output(self, stdout: RuntimeStdio, stderr: RuntimeStdio) -> Self {
-        self.inner.settings.lock().unwrap().output = (stdout, stderr);
-        self
-    }
-
-    /// Start each line a runtime process writes with `[<runtime>] `
-    /// (`[go-weather] `), when its output is passed on a line at a time
-    /// ([`RuntimeStdio::Lines`]): one plugin runs in each process, so the
-    /// runtime's name says which wrote it. Off by default.
-    pub fn prefix_output(self, prefix: bool) -> Self {
-        self.inner.settings.lock().unwrap().prefix_output = prefix;
         self
     }
 
@@ -1691,16 +1692,12 @@ impl<L: BinaryLanguage> Inner<L> {
             .clone()
             .ok_or_else(|| (None, format!("the {} runtimes are not running", L::TITLE)))?;
         let (binary, launched) = self.resolver.read(runtime)?;
-        // Read once: a guard taken in the literal below lives to its end.
-        let settings = *self.settings.lock().unwrap();
         let mut runtime_plugin = BinaryRuntime::<L> {
             label: format!("{runtime} ({})", L::PREFIX),
             runtime: runtime.to_owned(),
             binary: binary.clone(),
             stamp: Some(launched.stamp.clone()),
             project: self.project.clone(),
-            output: settings.output,
-            prefix_output: settings.prefix_output,
             resolver: self.resolver.clone(),
             spawn: self.spawn.clone(),
             first: Mutex::new(None),
@@ -1971,10 +1968,6 @@ struct BinaryRuntime<L: BinaryLanguage> {
     /// that file when its process starts (#539).
     stamp: Option<Stamp>,
     project: PathBuf,
-    /// Its process's standard output and error.
-    output: (RuntimeStdio, RuntimeStdio),
-    /// Whether each line of that output starts with its name.
-    prefix_output: bool,
     resolver: Arc<BinaryResolver<L>>,
     spawn: Spawn,
     /// The runtime whose handle the slot watches, for the first start.
@@ -1983,13 +1976,7 @@ struct BinaryRuntime<L: BinaryLanguage> {
 
 impl<L: BinaryLanguage> BinaryRuntime<L> {
     fn spawned(&self) -> Spawned {
-        let launcher = L::launch(&self.binary, &self.project)
-            .stdout(self.output.0)
-            .stderr(self.output.1);
-        let launcher = match self.prefix_output {
-            true => launcher.output_prefix(&self.runtime),
-            false => launcher,
-        };
+        let launcher = L::launch(&self.binary, &self.project);
         (self.spawn)(&self.runtime, launcher, &self.project)
     }
 }
@@ -2037,6 +2024,22 @@ impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_names_come_from_file_names() {
+        for (prefix, file, name) in [
+            ("go", "netkit", "go-netkit"),
+            ("go", "net.kit_v1.exe", "go-net-kit-v1"),
+            ("go", "NetKit.EXE", "go-netkit"),
+            ("go", "天气", "go---"),
+            ("go", "天气.exe", "go---"),
+            ("go", "a天", "go-a-"),
+            ("swift", "weather", "swift-weather"),
+            ("swift", "Net.Kits_v1", "swift-net-kits-v1"),
+        ] {
+            assert_eq!(super::runtime_name(prefix, Path::new(file)), name, "{file}");
+        }
+    }
+
     use super::*;
 
     fn busy() -> std::io::Error {

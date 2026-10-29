@@ -31,8 +31,8 @@ pub const CHANNEL_TOKEN: &str = "RUTIS_CHANNEL_TOKEN";
 
 /// Where a process's standard input, output or error goes. The process
 /// that starts a runtime owns it: a stream is this process's own, nothing,
-/// or (output only) this process's own a whole line at a time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// or (output only) the write end of a pipe the caller reads.
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum Stdio {
     /// None: no input to read, output discarded (the null device).
@@ -42,33 +42,35 @@ pub enum Stdio {
     /// group, so a Ctrl-C in the terminal reaches it as well (otherwise it
     /// gets a group of its own, out of the terminal's reach).
     Inherit,
-    /// Output only: this process's own stream, a whole line at a time. The
-    /// process writes into a pipe; this process reads it as it comes and
-    /// writes each complete line to its own stream (standard output for
-    /// standard output, standard error for standard error) in one write,
-    /// as [`write_line`](super::write_line) does, so lines of processes
-    /// and of this process never run into each other. A last line without
-    /// a newline gets one when the output ends; a line longer than
-    /// [`MAX_LINE`](super::MAX_LINE) is passed on in pieces. The process
-    /// does not see a terminal. A host waits for what is left with
-    /// [`output_ended`](super::output_ended) before it exits. As standard
-    /// input, it is [`Stdio::Null`]. With an output prefix
-    /// ([`Spawn::output_prefix`]), each line is passed on after it.
-    Lines,
+    /// Output only: the stream [`Pipe`] makes for each process started (the
+    /// write end of a pipe whose reader passes the output on: rutis-host's,
+    /// a whole line at a time). The process does not see a terminal. As
+    /// standard input, it is [`Stdio::Null`].
+    Pipe(Pipe),
+}
+
+/// What makes the stream of a process's output for [`Stdio::Pipe`], once
+/// per process started.
+pub type Pipe = std::sync::Arc<dyn Fn() -> std::io::Result<std::process::Stdio> + Send + Sync>;
+
+impl std::fmt::Debug for Stdio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Stdio::Null => "Null",
+            Stdio::Inherit => "Inherit",
+            Stdio::Pipe(_) => "Pipe",
+        })
+    }
 }
 
 impl Stdio {
-    /// The stream to give the process as its `stream` (`None`: its input),
-    /// each line of [`Stdio::Lines`] passed on after `prefix`, if any.
-    pub(crate) fn process(
-        self,
-        stream: Option<super::OutputStream>,
-        prefix: Option<&str>,
-    ) -> std::io::Result<std::process::Stdio> {
-        Ok(match (self, stream) {
-            (Stdio::Null, _) | (Stdio::Lines, None) => std::process::Stdio::null(),
-            (Stdio::Inherit, _) => std::process::Stdio::inherit(),
-            (Stdio::Lines, Some(stream)) => super::output::pipe(stream, prefix)?,
+    /// The stream to give the process: its input when `output` is false.
+    pub(crate) fn process(&self, output: bool) -> std::io::Result<std::process::Stdio> {
+        Ok(match self {
+            Stdio::Null => std::process::Stdio::null(),
+            Stdio::Pipe(_) if !output => std::process::Stdio::null(),
+            Stdio::Inherit => std::process::Stdio::inherit(),
+            Stdio::Pipe(pipe) => pipe()?,
         })
     }
 }
@@ -94,9 +96,6 @@ pub struct Spawn {
     pub stderr: Stdio,
     /// Arguments after the channel.
     pub trailing: Vec<OsString>,
-    /// What each line of its output passed on as [`Stdio::Lines`] starts
-    /// with (`[go-weather] `, say): none by default.
-    pub output_prefix: Option<String>,
 }
 
 /// How the process gets its channel. On Windows, every process gets
@@ -127,28 +126,18 @@ impl Spawn {
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
             trailing: Vec::new(),
-            output_prefix: None,
         }
     }
 
     fn command(&self) -> Result<tokio::process::Command, ConnectError> {
-        use super::OutputStream;
         let cannot = |error| cannot_start(self, error);
         let mut command = tokio::process::Command::new(&self.program);
         command
             .args(&self.args)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
-            .stdin(self.stdin.process(None, None).map_err(cannot)?)
-            .stdout(
-                self.stdout
-                    .process(Some(OutputStream::Stdout), self.output_prefix.as_deref())
-                    .map_err(cannot)?,
-            )
-            .stderr(
-                self.stderr
-                    .process(Some(OutputStream::Stderr), self.output_prefix.as_deref())
-                    .map_err(cannot)?,
-            )
+            .stdin(self.stdin.process(false).map_err(cannot)?)
+            .stdout(self.stdout.process(true).map_err(cannot)?)
+            .stderr(self.stderr.process(true).map_err(cannot)?)
             .kill_on_drop(true);
         // Out of the terminal's reach: Ctrl-C there signals this process,
         // which unloads the process's plugins over the channel, and not the
@@ -1005,6 +994,15 @@ impl Processes {
             .last()
             .filter(|exit| !exit.ended())
             .and_then(|exit| exit.5.get().copied())
+    }
+
+    /// How the last one started ended (`exited normally`, `exited with exit
+    /// status: 1`), once it has.
+    pub fn status(&self) -> Option<String> {
+        let started = self.0.lock().unwrap();
+        started
+            .last()
+            .and_then(|exit| exit.0.lock().unwrap().clone())
     }
 
     /// Whether one of them has not ended yet.
