@@ -71,6 +71,7 @@ fn embedding() -> Embedding {
             builtins.register::<Json, _, _>("scanner", |config| Ok(Provides(config.clone())));
         })),
         rows_file: None,
+        observe: None,
     }
 }
 
