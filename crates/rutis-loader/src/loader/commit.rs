@@ -246,7 +246,13 @@ impl Inner {
                     check(Err(misplaced.clone()))?;
                     continue;
                 }
-                super::desired::BoundScope::default()
+                match row.foreign_scope(&self.catalog, &build) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        check(Err(error))?;
+                        continue;
+                    }
+                }
             } else {
                 match row
                     .scope

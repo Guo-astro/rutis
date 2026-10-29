@@ -359,44 +359,52 @@ def apply(ctx, config):
     ctx.use("probe").record("keeper: provided")
 "#;
 
-/// The same in a scope rows share by isolating `notes` with one label: the
-/// host's `notes` there waits for the name while a row holds it, the rows
-/// using the host's run meanwhile, and the host's is there once that row
-/// has gone, whose withdrawal only that scope hears (#682).
-/// guarantee: loader/announced-services
-async fn a_name_held_in_an_isolated_scope_comes_back_to_the_host(language: Language) {
+/// A name rows isolate with one label is that isolate's: a row of the box
+/// injects what a row of the box provides there, not the host's `notes`
+/// outside; once that row has gone, the box has none and its row waits,
+/// while a row outside the box has the host's all along.
+/// guarantee: loader/announced-services, loader/isolate-and-inject
+async fn a_name_a_row_isolates_is_seen_in_its_isolate_only(language: Language) {
     let dir = tempfile::tempdir().unwrap();
     language.write(dir.path(), "keeper", KEEPS_NOTES_JS, KEEPS_NOTES_PY);
     language.write(dir.path(), "user", USES_NOTES_JS, USES_NOTES_PY);
-    language.write(dir.path(), "peeker", PEEKS_JS, PEEKS_PY);
     let fixture = fixture(language, dir.path()).await;
     let (loader, probe) = (&fixture.loader, &fixture.probe);
-    let row = |id: &str| {
+    let boxed = |id: &str| {
         json!({
             "id": id,
             "name": language.row_name(dir.path(), id),
             "isolate": { "notes": "box" },
         })
     };
-    loader
-        .reconcile(layer(vec![row("keeper"), row("user")]), None)
-        .await
-        .unwrap();
-    probe.wait_for("keeper: provided").await;
-    // The user starts while the keeper holds the name in the box.
+    // The same reader, outside the box.
+    let outside = json!({ "id": "outsider", "name": language.row_name(dir.path(), "user") });
     let _gate = fixture
         .root
         .provide_at(host_key("gate"), Arc::new(Gate))
         .unwrap();
-    probe.wait_for("user: host").await;
-    // The keeper goes: in the box, the name is the host's again.
     loader
-        .reconcile(layer(vec![row("user"), row("peeker")]), None)
+        .reconcile(
+            layer(vec![boxed("keeper"), boxed("user"), outside.clone()]),
+            None,
+        )
         .await
         .unwrap();
-    probe.wait_for("peeker: host").await;
+    probe.wait_for("keeper: provided").await;
+    probe.wait_for("user: kept").await;
+    probe.wait_for("user: host").await;
+    // The keeper goes: the box has no `notes`, and its user waits.
+    loader
+        .reconcile(layer(vec![boxed("user"), outside]), None)
+        .await
+        .unwrap();
+    COLD.until(
+        || row_state(loader, "user") == Some(FiberState::Pending),
+        "the box's user waiting",
+    )
+    .await;
     assert_eq!(
-        row_state(loader, "user"),
+        row_state(loader, "outsider"),
         Some(FiberState::Active),
         "{language:?}"
     );
@@ -405,20 +413,20 @@ async fn a_name_held_in_an_isolated_scope_comes_back_to_the_host(language: Langu
 
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
-async fn node_a_name_held_in_an_isolated_scope_comes_back_to_the_host() {
-    a_name_held_in_an_isolated_scope_comes_back_to_the_host(Language::Node).await;
+async fn node_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Node).await;
 }
 
 #[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
-async fn python_a_name_held_in_an_isolated_scope_comes_back_to_the_host() {
-    a_name_held_in_an_isolated_scope_comes_back_to_the_host(Language::Python).await;
+async fn python_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Python).await;
 }
 
 #[cfg(all(unix, feature = "bun"))]
 #[tokio::test(flavor = "multi_thread")]
-async fn bun_a_name_held_in_an_isolated_scope_comes_back_to_the_host() {
-    a_name_held_in_an_isolated_scope_comes_back_to_the_host(Language::Bun).await;
+async fn bun_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Bun).await;
 }
 
 // ── A runtime whose process exits ───────────────────────────────

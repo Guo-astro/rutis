@@ -394,7 +394,12 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
         // RutisTest runs the plugin as a row of `rutis-host test`.
         Kind::Swift => {
             let host = rutis_e2e::host_program();
-            s.program("demo", "swift", ["test"], &[("RUTIS_HOST", &host.to_string_lossy())])
+            s.program(
+                "demo",
+                "swift",
+                ["test"],
+                &[("RUTIS_HOST", &host.to_string_lossy())],
+            )
         }
     }
 }
