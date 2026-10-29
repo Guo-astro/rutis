@@ -53,6 +53,8 @@ Nodes connect with connection rows too: `rutis-host/dial` on one end, `rutis-hos
 office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 ```
 
+A 0.18 row `peer:<peer>/<plugin>` is not refused in 0.19: it shows `waiting for peer`, as it is read as a row on a connection row named `peer`, and there is no such row. Rewrite it as `<connection row>:<plugin>` (`peer:office/scanner` becomes `office:scanner`, `office` being the id of the row connecting to the far end).
+
 ```json
 // 0.18: main's side
 { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "import": ["clock"], "rows": true } },
@@ -79,7 +81,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 - Tokens go by the connection row's id: `main`'s row `office` presents `RUTIS_TOKEN_OFFICE`, `office`'s row `main` checks `RUTIS_TOKEN_MAIN` (it was the node row's `peer`, usually the same name).
 - One name on both sides: an `import` of a name already provided here used to be refused; now the kernel's rule refuses the one registered later, and that remote plugin fails: `office:weather: weather is provided here by row weather: not registered from office`.
 - **Giving out a token allows the other side to run, on this node, any plugin this node can resolve** (the far end used to need `host: true`; who may connect is decided by the connection row's token, and a connected node is trusted). Connected nodes see each other's shareable services: connect only to trusted nodes; use `isolate` on the row providing a service the far end should not see.
-- A service a node gets over one connection reaches a third node over another (services and events used to go one hop).
+- A service a node gets over one connection reaches a third node over another (services used to go one hop).
 - `run`'s output: `office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` become `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`; the listening side writes `main: connected main`, `main: disconnected main (…)`.
 
 ### What behaves differently
@@ -288,6 +290,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 | `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
 | `rutis_loader::backoff`, `runtime::binary::{RestartPolicy, RuntimeEnd}`, `BinaryRuntimesHandle::supervise` / `unsupervise` | Removed: the loader no longer restarts a crashed Go or Swift runtime. Call `BinaryRuntimesHandle::restart(name)` yourself; the new `runtime::binary::refused(why)` tells a binary whose handshake was refused, which a restart would not start either. With rutis-host, set `runtimes.<key>.restart` |
+| `get_key`, `require_key`, `provide_key` of `internal::CtxInternal` (keyed by `TypeKey`) | Hold a `rutis::host::Key<T>` and use `get_at`, `require_at`, `provide_at` of `CtxHost`. Along with it these take a `Key`: the `key` argument of `ServiceCatalog::register_keyed` and `readable_keyed`; `SessionRows::key(row)` returns `Key<SessionRows>`; the `key` argument of `Projection::service_keyed` and `service_keyed_occupied`; the `key` function of `row_projection_with` and `row_projection_of` returns `Key<dyn HostDispatch>` (pass `host_key` itself). Where a `TypeKey` is needed (`DynPlugin::injects`), use `key.erase()` |
 
 ### Tools
 
