@@ -386,12 +386,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-          cache-dependency-path: go/rutis/go.mod
-      - run: go test ./...
-        working-directory: go/rutis
+      # The Go tests ran in `ci` (they need rutis-host, built there).
       - name: tag go/rutis
         run: |
           tag="go/rutis/$GITHUB_REF_NAME"
