@@ -30,7 +30,7 @@
 | 3 | 方法不存在、参数个数或类型错 | 2 个测试 | 2 个测试 | 3 个测试 | 2 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
 | 4 | `apply` 里出错 | 3 个测试 | 2 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
 | 5 | 语法 / 导入 / 编译错误 | 2 个测试 | 3 个测试 | 3 个测试 | 1 个测试 | 1 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
-| 6 | 跨语言传对面接不住的值 | 3 个测试 | 3 个测试 | 3 个测试 | 3 个测试 | 2 个测试 | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
+| 6 | 跨语言传对面接不住的值 | 3 个测试 | 3 个测试 | 3 个测试 | 2 个测试 | 2 个测试 | [#675](https://github.com/arcships/rutis/issues/675) [#687](https://github.com/arcships/rutis/issues/687) |
 | 7 | 事件监听器出错 | 1 个测试 | 1 个测试 | 1 个测试 | 1 个测试 | 2 个测试 | [#677](https://github.com/arcships/rutis/issues/677) |
 | 8 | 调用一直不返回 | 4 个测试 | 3 个测试 | 6 个测试 | 无测试 | 2 个测试 | [#678](https://github.com/arcships/rutis/issues/678) |
 | 9 | 互相调用、互相依赖 | 2 个测试 | 1 个测试 | 2 个测试 | 1 个测试 | 2 个测试 | [#676](https://github.com/arcships/rutis/issues/676) [#228](https://github.com/arcships/rutis/issues/228) |
@@ -85,7 +85,7 @@
 - TypeScript（Node）：`crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`，`crates/rutis-bridge/tests/value_roundtrip.rs` `node_bad_values`，`crates/rutis-loader/tests/objects_cross.rs` `a_node_object_crosses_to_python`
 - Bun：`crates/rutis-bridge/tests/value_roundtrip.rs` `bun_bad_values`，`crates/rutis-loader/tests/objects_cross.rs` `a_bun_object_crosses_to_node`，`bun/rutis-bun/test/bad-values.test.ts` “a value that cannot be sent carries code bad-value and its part (#677)”
 - Python：`crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`，`crates/rutis-bridge/tests/value_roundtrip.rs` `python_bad_values`，`crates/rutis-loader/tests/objects_cross.rs` `a_python_object_crosses_to_node`
-- Go：`crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`，`crates/rutis-loader/tests/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`，`go/rutis/internal/peer/crossing_test.go` `TestAnObjectGoesOnlyToAFarEndThatTakesObjects`
+- Go：`crates/rutis-loader/tests/bad_values.rs` `a_bad_value_fails_only_its_call_between_node_python_and_go`，`crates/rutis-loader/tests/objects_cross.rs` `a_go_parameter_that_takes_no_object_says_so`
 - Rust（插件与嵌入）：`crates/rutis-bridge/src/session/rpc/tests/objects.rs` `a_rust_service_refuses_an_object_argument`，`crates/rutis-bridge/tests/value_roundtrip.rs` `rust_relays_a_thrown_value`
 
 ### 7. 事件监听器出错

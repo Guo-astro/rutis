@@ -2,6 +2,8 @@
 
 应用要给插件提供自己的 Rust 服务、或者把 rutis 放进已有的 Rust 程序时，直接用 crate 组装宿主。不需要这些时用 [rutis-host](rutis-host.md) 即可，配置的行格式相同。
 
+本文是 API 参考。从头做一个开放插件的宿主，按 [做一个开放插件的宿主](open-host.md) 一步步来。
+
 ## 依赖
 
 ```toml

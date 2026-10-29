@@ -36,7 +36,7 @@
 
 import { PLUGIN_API, isPlugin } from './advanced.mjs'
 import { checkConfig, configError, schemaOf } from './config.mjs'
-import { Bus, kindOf, refuseRemoved } from './events.mjs'
+import { Bus, kindOf } from './events.mjs'
 import { ValueError, bytesOf, checkKeys, checkText, constructedTag, instantFromText, instantText, keyOf, tagOf } from './values.mjs'
 
 export class PluginTestError extends Error {
@@ -466,8 +466,7 @@ function emitters(bus, row, crossing, keep, errors = crossing) {
  * seconds, else 10 s, as the runtimes); `runtime` is what descriptors call
  * the runtime (`node`, or `bun` under Bun, by default).
  */
-export function host({ services = {}, strict = true, scopes = {}, deadline = shutdownDeadline(), runtime = defaultRuntime(), ...rest } = {}) {
-  refuse(rest)
+export function host({ services = {}, strict = true, scopes = {}, deadline = shutdownDeadline(), runtime = defaultRuntime() } = {}) {
   const reported = []
   const bus = new Bus({ runtime, report: (line, details = {}) => { reported.push({ line, ...details }) } })
   const rows = new Map()
@@ -490,8 +489,7 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
     /** The failures `emit` reported (§5.6): `{ line, event, row, error }`. */
     get reported() { return [...reported] },
     /** Load `plugin` as a row (key `row`, scope path `scope`), with `config` and its own `services`. */
-    async load(plugin, { config, services: own = {}, scope, row: key, ...more } = {}) {
-      refuse(more)
+    async load(plugin, { config, services: own = {}, scope, row: key } = {}) {
       if (closed) throw new PluginTestError('the host is unloaded')
       plugin = isPlugin(plugin) ? plugin : plugin?.default
       if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
@@ -691,18 +689,12 @@ export function host({ services = {}, strict = true, scopes = {}, deadline = shu
   return self
 }
 
-// What a 0.12 test passed and 0.13 removed (#464).
-function refuse(options) {
-  try { refuseRemoved(options) } catch (error) { throw new PluginTestError(error.message) }
-}
-
 /**
  * Load `plugin` (what definePlugin returns, or a module whose default export
  * it is) with `config` and the services in `services`, as one row of a host
  * of its own (`host()`), in the scope path `scope`.
  */
-export async function load(plugin, { config, services = {}, strict = true, scope, deadline, runtime, ...rest } = {}) {
-  refuse(rest)
+export async function load(plugin, { config, services = {}, strict = true, scope, deadline, runtime } = {}) {
   return host({ services, strict, deadline, runtime }).load(plugin, { config, scope })
 }
 

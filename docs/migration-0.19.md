@@ -182,6 +182,10 @@ Kotlin 另有两点：
 
 不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
 
+## 服务名 `loader`（#185）
+
+用 `LoaderPlugin` 的宿主（包括 rutis-host）现在提供一个名叫 `loader` 的服务（[用 `loader` 管理插件](guide/plugin-api.md#用-loader-管理插件)）；自己也提供名叫 `loader` 的服务的行，现在以已有的同名错误（`service loader is already provided by …: row <行> cannot provide it too`）失败，给它的服务改名。
+
 ## 平台清理（#694）
 
 0.19 删去不属于平台的东西（[平台清理](design-platform-cleanup-2026-10-28.md)）。不做兼容：删掉的 Rust API 是编译错误。
@@ -220,3 +224,7 @@ Kotlin 另有两点：
 ### Go 插件
 
 用 0.18 及以后的 SDK 重新构建（0.18 前构建的二进制的 `required` 例外删除）。
+
+### Python
+
+最低版本 3.12（3.10、3.11 不再支持）。

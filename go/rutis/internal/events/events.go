@@ -97,25 +97,21 @@ type Terminal = func(ctx context.Context, args ...any) (any, error)
 type Mode string
 
 const (
-	ModeEmit          Mode = "emit"
-	ModeParallel      Mode = "parallel"
-	ModeSerial        Mode = "serial"
-	ModeWaterfall     Mode = "waterfall"
-	ModeBail          Mode = "bail"
-	ModeWaterfallSync Mode = "waterfall-sync"
+	ModeEmit      Mode = "emit"
+	ModeParallel  Mode = "parallel"
+	ModeSerial    Mode = "serial"
+	ModeWaterfall Mode = "waterfall"
+	ModeBail      Mode = "bail"
 )
 
 // Valid reports whether m is a mode of the protocol.
 func (m Mode) Valid() bool {
 	switch m {
-	case ModeEmit, ModeParallel, ModeSerial, ModeWaterfall, ModeBail, ModeWaterfallSync:
+	case ModeEmit, ModeParallel, ModeSerial, ModeWaterfall, ModeBail:
 		return true
 	}
 	return false
 }
-
-// Waterfall reports whether listeners get `next` in this mode.
-func (m Mode) Waterfall() bool { return m == ModeWaterfall || m == ModeWaterfallSync }
 
 // Call runs one reserved invocation of an entry: with the event's arguments
 // and, in a waterfall, `next`.
@@ -346,8 +342,7 @@ func (d *Dispatch) Serial(ctx context.Context, mode Mode, args []any) (any, erro
 // Waterfall calls the outermost entry with `next`, each `next` calling
 // the entry after it and the last one `terminal` with the event's
 // arguments (nil: no result), and returns the outermost value as it is.
-// `mode` is waterfall or waterfall-sync.
-func (d *Dispatch) Waterfall(ctx context.Context, mode Mode, args []any, terminal Terminal) (any, error) {
+func (d *Dispatch) Waterfall(ctx context.Context, args []any, terminal Terminal) (any, error) {
 	entries, err := d.selected()
 	if err != nil {
 		return nil, err
@@ -376,7 +371,7 @@ func (d *Dispatch) Waterfall(ctx context.Context, mode Mode, args []any, termina
 			if !ok {
 				continue
 			}
-			return call(ctx, mode, args, next(i+1))
+			return call(ctx, ModeWaterfall, args, next(i+1))
 		}
 		if terminal != nil {
 			return terminal(ctx, append([]any(nil), args...)...)

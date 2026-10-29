@@ -228,10 +228,7 @@ func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 		Arrive:         rt.arrive,
 		Endpoint:       endpoint,
 		Implementation: map[string]string{"name": Implementation, "version": Version},
-		Capabilities:   append([]string{"objects", "signals", "reentrant-sync", "sync-wait", peer.EventsCapability}, peer.ValueCapabilities...),
-		// A host older than 0.13 is refused right after its handshake (#464 §2.2).
-		Require: []string{peer.EventsCapability},
-		Refuse:  func(string) string { return oldEventsHost },
+		Capabilities:   append([]string{"reentrant-sync"}, peer.ValueCapabilities...),
 	})
 	if err != nil {
 		return nil, err
@@ -283,9 +280,6 @@ func serveChannel(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definit
 	}
 	return ended
 }
-
-// oldEventsHost is why a host that does not declare events-v2 is refused.
-const oldEventsHost = "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
 
 // refusal is the *refusedError a session ended with when this side refused
 // the far end at its handshake, else nil.

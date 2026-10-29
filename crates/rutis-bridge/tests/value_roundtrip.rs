@@ -1247,10 +1247,6 @@ async fn node_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "node"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(node(), main_without_objects("node")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "node"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1284,10 +1280,6 @@ async fn python_depth_limit() {
 async fn python_bad_values() {
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "python"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(python(), main_without_objects("python")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "python"))
         .await
         .unwrap();
 }
@@ -1354,10 +1346,6 @@ async fn go_depth_limit() {
 async fn go_bad_values() {
     let (near, _child) = far_end(go(), "go").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "go"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(go(), main_without_objects("go")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "go"))
         .await
         .unwrap();
 }
@@ -1557,10 +1545,6 @@ async fn bun_depth_limit() {
 async fn bun_bad_values() {
     let (near, _child) = far_end(bun(), "bun").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "bun"))
-        .await
-        .unwrap();
-    let (near, _second) = far_end_with(bun(), main_without_objects("bun")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "bun"))
         .await
         .unwrap();
 }

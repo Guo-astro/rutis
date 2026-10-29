@@ -98,24 +98,9 @@ var Plugin = rutis.Define(rutis.Plugin[Config]{
 | 值 | 数据（数字、字符串、切片、map、结构体）复制，结构体字段与切片、map 的元素逐个检查（字段名按 `json` 标签）；`time.Time`（时间点，UTC）、`[]byte`、`*big.Int`、键不是字符串的 map、`map[K]struct{}`（Set）与 `advanced.DateTime`、`advanced.Date`、`advanced.TimeOfDay`、`advanced.Decimal`、`advanced.UUID` 按各自的值传，见[值怎样传递](plugin-api.md#值怎样传递)；超出 ±(2^53−1) 的整数（`int64`、`uint64` 等）自动按大整数传，收到的大整数解码进声明的整数类型，到 `any` 时是 `*big.Int`；函数按引用；对象要按引用传时写 `rutis.Ref(v)` |
 | 错误 | 返回的 `error` 带着类型名跨进程（`*QuotaError` → `QuotaError`，实现 `Name() string` 可以自定）；实现 `Code() string` 和 `Data() any` 时带上 code 和 data，调用方从错误的 `code`、`data` 读到（`Data` 按 JSON 编码）；panic 变成名为 `Panic` 的错误。收到的错误是 `*rutis.RemoteError`，有 `Name`、`Message`、`Code`、`Data` |
 
-**一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。`rutis-host dev` 下，丢了调用链的调用会在 stderr 警告一次。
+**一定把 ctx 传下去。** 调用链（`path`）放在 `context.Context` 里：Node 同步调用你的方法、你的方法又同步回调 Node 时，只有带着收到的 ctx，Node 才认得出这是它正在等的调用链；换成 `context.Background()` 两边会互相等。
 
-**插件本身也是一个值。** `rutis.Define(...)` 的结果（`*rutis.Definition`）可以照常作为参数交给一个服务（比如应用的部件登记处），函数字段的参数类型直接写 `*rutis.Definition`；收的一方就能在别处挂它，每挂一次是一份，每一份在这个进程里运行，用的是 `Apply` 里准备好的东西。只用来交出的定义可以不写 `Name`：
-
-```go
-var parts struct {
-	Register func(ctx context.Context, scope string, def *rutis.Definition) error
-}
-if err := ctx.Use("parts", &parts); err != nil {
-	return err
-}
-return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
-	Inject: []string{"history"},
-	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* 直接用 pool */ return nil },
-}))
-```
-
-这一行卸载、重载时，从它交出的定义挂出的每一份先结束。见 [插件 API](plugin-api.md#插件定义)。
+**插件本身也是一个值**，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
 
 ### 事件
 
@@ -124,110 +109,16 @@ return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
 ```go
 off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
 	return nil, nil // nil 和 false 是没有结果，其余都是结果
-}, advanced.Prepend()) // 选项：advanced.Prepend()、advanced.Global()
-
-err := ctx.Emit(callerCtx, "session/created", id)          // 立即返回；err 只报拒绝
-err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*advanced.AggregateError，按登记顺序
-value, err := ctx.Serial(callerCtx, "config/resolve", key)   // 第一个结果
-value, err = ctx.Bail(callerCtx, "config/resolve", key)      // 同步调用的 Serial
-value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil；terminal 是 rutis.Terminal，即 func(ctx context.Context, args ...any) (any, error)，以事件参数调用
-value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
-```
-
-一个完整的例子：插件回答 `greeting/pick`、在 `greeting/format` 的 waterfall 里加一环，它提供的服务用 `Serial` 取第一个结果、用 `Waterfall` 让别的插件（任何语言）改写问候语、用 `Emit` 通知：
-
-```go
-package greeter
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/arcships/rutis/go/rutis"
-	"github.com/arcships/rutis/go/rutis/advanced"
-)
-
-type Greeter struct{ ctx *rutis.Ctx }
-
-func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
-	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // 第一个结果；nil 表示没有
-	if err != nil {
-		return "", err
-	}
-	if word == nil {
-		word = "Hello"
-	}
-	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
-		return args[0], nil // 终态：链的最里面
-	}, fmt.Sprintf("%v, %s", word, name))
-	if err != nil {
-		return "", err
-	}
-	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // 立即返回
-		return "", err
-	}
-	return text.(string), nil
-}
-
-var Plugin = rutis.Define(rutis.Plugin[struct{}]{
-	Name: "greeter",
-	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
-		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
-			if args[0] == "sv" {
-				return "Hej", nil
-			}
-			return nil, nil // 没有结果：下一个监听器接着来
-		})
-		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
-			next := args[len(args)-1].(advanced.Next) // waterfall：最后一个参数是 next
-			inner, err := next(ctx)
-			if err != nil {
-				return nil, err
-			}
-			return fmt.Sprintf("%v!", inner), nil
-		})
-		ctx.Provide("greeter", &Greeter{ctx: ctx})
-		return nil
-	},
 })
+
+err := ctx.Emit(callerCtx, "session/created", id) // 立即返回；err 只报拒绝
 ```
 
-Python、TypeScript 插件或宿主里的 Rust 代码监听同样的名字，就加入同一条链；写法见 [插件 API：事件](plugin-api.md#事件)。
-
-| 事项 | 规则 |
-| --- | --- |
-| Waterfall | 监听器的最后一个参数是 `next`（`advanced.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
-| 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*advanced.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
-| 作用域 | 事件按名字在一条总线上送达；`ctx.Scope()` 是过滤用的描述，不是送达规则 |
-| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Prefix`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，不执行任何监听器，这次分发以这个错误失败（`Emit` 不返回它，而是报告一行 `rutis: filter of <name> from row <row> failed: …`）；用 `advanced.Global()` 登记的监听器不经过滤 |
-| Context | 监听器的 `ctx` 来自发出方（带调用链），这一行卸载时取消；`Parallel`、`Serial`、`Waterfall`、`Bail` 的发出方放弃时也取消，`Emit` 的监听器不因发出方放弃而取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
-| 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
-
-和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, advanced.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。
+和调用服务一样，把调用方给你的 context 传下去。其余发出方式（`Parallel`、`Serial`、`Waterfall`、`Bail`）、过滤、监听器的选项、规则和一个完整的例子见 [插件 API：事件](plugin-api.md#go)。
 
 ### 带方法的对象
 
-结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*advanced.Service`：
-
-```go
-type Cache struct {
-	Get func(ctx context.Context, key string) (any, error)
-	Set func(ctx context.Context, key string, value any) error
-}
-
-func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
-	if err := cache.Set(ctx, "a", 1); err != nil {
-		return nil, err
-	}
-	return cache.Get(ctx, "a")
-}
-```
-
-- 函数字段的调用会阻塞，第一个参数是 `context.Context`。结构体里有不是函数的字段，或者参数是别的类型时，这次调用以 `bad-argument` 失败：`warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`。
-- `any` 收到的是 `*advanced.Service`，和 `ctx.Use` 得到的同一个类型：`Call(ctx, method, result, args...)`；对象没有方法表，`Methods()` 返回 `nil`，没有的方法由对象所在的一端回答 `no-method`。
-- 只有 `*advanced.Service` 保持身份：同一个对象收到几次是同一个 `*advanced.Service`，把它交回原来的进程，那边拿到的是原对象。函数字段的结构体是数据，交出去时每个字段变成一个新的函数引用；要交出对象本身，参数写 `any`。
-- 对象不跟行走：交出它的行卸载后照常可以调用。但按需启动的运行时在最后一行卸载 `idle` 秒后停下，别处持有它的对象不让它保持运行；之后的调用以 `peer-gone` 失败：`a call on an object from go-netkit failed: runtime go-netkit stopped because it was idle`。要一直可用，让交出它的行保持加载，或者把运行时设成 `eager`。
-- 对象的方法可能被并发调用。
+结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
 
 ## 3. 测试
 
@@ -268,33 +159,9 @@ go test ./...
 
 `Provides` 写出插件提供什么，`rutis-host check` 不运行插件就知道 `weather` 由这一行提供：宿主在 CI 里用 `check --strict` 检查配置时，用到 `weather` 的行才能通过（模板默认就写了）。写了就按声明（`Sync` 标出同步方法、`Rename` 改名）。不写也能运行：`ctx.Provide` 提供的服务照样自动对外，方法取值的导出方法，都按 `async` 调用，只是 `check` 要等插件运行才知道，`--strict` 会报错。
 
-测试里的事件：测试一侧就是总线的宿主。`loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail` 和 `Filter` 从这一行的作用域发出；`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis）；`loaded.Load(config, rutistest.InScope("t1/s1"))` 在一个作用域里再加载一行；`loaded.Update(config)` 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败）；`loaded.Reported()` 是运行时报告的 `Emit` 监听器失败。上面的 `greeter` 的测试：
-
-```go
-func TestEvents(t *testing.T) {
-	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
-	said := make(chan any, 1)
-	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
-		said <- args[0] // 测试一侧像宿主一样监听
-		return nil, nil
-	})
-	var text string
-	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
-		t.Fatal(err)
-	}
-	if text != "Hej, Ada!" || <-said != "Ada" {
-		t.Fatalf("got %q", text)
-	}
-	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // 测试自己发出
-	if err != nil || word != nil {
-		t.Fatalf("got %v, %v", word, err)
-	}
-}
-```
+测试里的事件：测试一侧就是总线的宿主，`loaded.On(name, fn)` 像宿主一样监听（插件发出这个名字的事件随后经测试一侧，就像经 rutis），`loaded.Emit` 从这一行发出。其余接口（`Serial` 等、作用域、`Update`、`Reported`、交给替身的插件定义）见 [插件 API：Go 的测试工具](plugin-api.md#go-的测试工具)。
 
 `Load` 会检查宿主会检查的事：插件只用 `Inject` 里声明的服务；提供的服务是 `Provides` 声明的类型（没有声明的服务，像 rutis 一样按导出方法、都按 async 调用）；卸载时清理都成功。只在同一个进程里才成立的写法（例如把结构体当对象传、靠共享内存）在这里就会失败。
-
-插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务；它在 `Provides` 里声明的服务也只属于这一份。所以只提供声明过的服务时，同一个定义的几份可以同时加载；没声明的服务名提前不知道，不隔离。描述和报告里，副本的行用来源行的 id。定义属于交出它（作为参数、作为它提供的服务的返回值，或在它发出的事件里）的那一行：这一行卸载或被 `Update`（重启）时，这些副本先卸载，之后再 `Load` 这个定义会失败。副本的配置挂上后不变：在副本上调用 `Update` 或 `Load` 会失败。没有 `Name` 的定义也可以直接 `rutistest.Load`。
 
 ## 4. 在本地宿主里运行
 

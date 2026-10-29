@@ -12,12 +12,8 @@ import { refuseReserved } from './events.mjs'
 import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
 import { checkConfig, configError, schemaOf } from './config.mjs'
 
-// The plugin APIs this runtime runs: a plugin written against a newer one
-// is refused, naming both.
-// 2: ctx.on and ctx.emit (leaf events). A runtime that supports only 1
-// refuses such a plugin at load instead of failing in apply.
-// 3: the unified events of rutis 0.13 (#464): ctx.parallel, serial,
-// waterfall, bail and filter, and ctx.signal. Plugins of API 2 still load.
+// The plugin API this runtime runs: a plugin written against a newer one
+// is refused, naming both. 3: the unified events of rutis 0.13 (#464).
 export const PLUGIN_API = 3
 
 const PLUGIN = Symbol.for('rutis.leaf-plugin')
@@ -26,9 +22,8 @@ export const isLeaf = value => value?.[PLUGIN] === true
 
 // Refuse a plugin that needs a newer plugin API than this runtime's.
 export function supported(plugin, name) {
-  const api = plugin?.api ?? 1
-  if (api > PLUGIN_API) {
-    throw new Error(`plugin ${name} needs plugin API ${api}; this runtime supports ${PLUGIN_API}: upgrade @arcships/rutis-runtime where the host runs`)
+  if (plugin.api > PLUGIN_API) {
+    throw new Error(`plugin ${name} needs plugin API ${plugin.api}; this runtime supports ${PLUGIN_API}: upgrade @arcships/rutis-runtime where the host runs`)
   }
   return plugin
 }
@@ -68,29 +63,12 @@ export { UNDECLARED }
 // told: `forecast is already provided by a` (§8.1 row 13).
 export const ALREADY_PROVIDED = (name, provider) => `${name} is already provided by ${provider}`
 
-// What a leaf plugin providing a service its `provides` does not declare
-// is told when the host, older than 0.12, mounted the runtime without
-// `announce`: such a host does not take the service, which stays in this
-// process.
-export const OLD_HOST = name => `rutis: service ${name} is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`
-
-// A function telling OLD_HOST once per name, with `write`.
-export function oncePerName(write) {
-  const told = new Set()
-  return name => {
-    if (told.has(name)) return
-    told.add(name)
-    write(`${OLD_HOST(name)}\n`)
-  }
-}
-
 // The Cordis plugin that runs a leaf plugin. Events are the Context's:
 // `context.on` owns listener cleanup through the plugin's fiber.
-// `undeclared(name)`: the plugin provides `name`, which its `provides` does
-// not declare. `rowInject`: the names its row's own `inject` adds.
+// `rowInject`: the names its row's own `inject` adds.
 // `providerOf(context, name)`: who already provides `name` there (a row's
 // name, or `the host`), to say so when the plugin provides it too.
-export function toCordis(spec, undeclared, rowInject = [], providerOf) {
+export function toCordis(spec, rowInject = [], providerOf) {
   return {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
@@ -107,8 +85,6 @@ export function toCordis(spec, undeclared, rowInject = [], providerOf) {
           return value
         },
         provide: (name, value) => {
-          // A keyed name (`#`) is never announced, by any host.
-          if (undeclared && !name.includes('#') && !Object.hasOwn(spec.provides ?? {}, name)) undeclared(name)
           try {
             return context.provide(name, value)
           } catch (error) {

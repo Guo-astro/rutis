@@ -4,7 +4,7 @@
 
 ## 快速上手
 
-用两个插件组装一个宿主：TypeScript 写的 `greeter` 提供 `greeter` 服务（`hello(name)`）；Python 写的 `welcome` 用这个服务，提供 `welcome` 服务（`everyone(names)`）。插件平常从 npm、PyPI 装（`npm:@your-name/greeter`、`pypi:your-name-welcome`）；这里两个插件项目由 `rutis-host new` 在本地生成、从文件装，所以每一步都能照原样运行。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.10 或更高。
+用两个插件组装一个宿主：TypeScript 写的 `greeter` 提供 `greeter` 服务（`hello(name)`）；Python 写的 `welcome` 用这个服务，提供 `welcome` 服务（`everyone(names)`）。插件平常从 npm、PyPI 装（`npm:@your-name/greeter`、`pypi:your-name-welcome`）；这里两个插件项目由 `rutis-host new` 在本地生成、从文件装，所以每一步都能照原样运行。需要 Node 22 或更高，以及 [uv](https://docs.astral.sh/uv/) 和 Python 3.12 或更高。
 
 1. 生成两个插件项目。`greeter` 用模板原样，打成 npm 包（`npm pack` 先运行 `prepack`，用 `tsc` 构建）：
 
@@ -240,7 +240,7 @@ a running host keeps the old versions until it restarts
 
 | 情况 | 输出 |
 | --- | --- |
-| 包管理器不在 | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`；Python 没有 uv 也没有 `python3`：`rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.10 or later` |
+| 包管理器不在 | `rutis-host: cannot run npm (No such file or directory): install Node.js 22 or later`；Python 没有 uv 也没有 `python3`：`rutis-host: cannot create the Python environment /app/.venv: install uv, or Python 3.12 or later` |
 | 包管理器失败 | 它自己的输出，然后 `rutis-host: npm install @ana/wordcount failed (exit status 1); rutis.json is unchanged` |
 | 不是插件 | `rutis-host: bo-utils has no rutis.plugins entry point: it is not a plugin; it stays installed: uv pip uninstall --python /app/.venv/bin/python bo-utils` |
 | 本地目录认不出 | `rutis-host: ./plugins/notes has no package.json, pyproject.toml or go.mod` |
@@ -292,6 +292,8 @@ a running host keeps the old versions until it restarts
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
 | `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
+
+每个命令后加 `--help` 或 `-h` 打印它的用法（只有这个命令的那几行），以 0 退出，不做别的事；`rutis-host --help` 打印全部。
 
 ## run 打印什么
 
@@ -490,6 +492,46 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
 凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
+
+插件也能经服务 `loader` 加、删行（`create`、`remove`，见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)）。`run` 把这些改动写回 `rutis.json`：只改 `rows`（加的行写在末尾，只写插件给出的字段，`id` 总是写上；删的行去掉），其他字段与键的顺序不变，写法与 `rutis-host add` 写的一样（两格缩进）。写回的内容不算文件变化，`--watch-config` 不因它重新读。宿主读过文件之后文件又被改过（手改、`rutis-host add`）而还没有重新读时，插件的下一次改动先读回文件里的 `rows` 并照它运行，再在它上面改，然后写回；`rows` 以外的改动照旧要 SIGUSR1 或 `--watch-config` 才生效。写不了文件时行照样加上或删掉，插件收到的错误写明 `<行>: added, but rutis.json could not be written: <原因>`（删时是 `removed`），宿主重启后就没有这一改动。`dev` 不写 `rutis.dev.json`：在 `dev` 下 `create`、`remove` 得到 `this host keeps no editable configuration, so rows cannot be added or removed`。
+
+## 用 `loader` 管理插件
+
+`rutis-host` 提供一个服务 `loader`，插件用它在宿主运行中加、删行和重新加载行的代码，例如一个 agent 写出新插件、装上、改坏了知道错在哪、修好后换上、不要了删掉。任何插件写 `inject: ["loader"]` 就能用；不想让某个插件管理插件，就不放它。各语言的写法、返回值和完整的错误表见 [插件 API](plugin-api.md#用-loader-管理插件)。
+
+| 方法 | 做什么 | 返回 |
+| --- | --- | --- |
+| `create(options, parent?, position?)` | 加一行并启动它；`options` 是 `{id?, name, config?, disabled?, inject?}`，与 `rutis.json` 一行的写法相同。起不来时不留下这一行 | 行 id（没给 `id` 时生成 8 位十六进制） |
+| `reload(id)` | 重新加载这一行的代码：加载不了时旧版本继续运行；新代码在 `apply` 里失败时这一行跑新代码并失败，与 [`dev`](#用-dev-开发插件) 相同 | 无 |
+| `remove(id)` | 卸载并删掉这一行 | 无 |
+| `status()` | 读当前状态，与 [`rutis-host status`](#查看当前状态) 同一份快照 | 行、服务、进行中的调用 |
+
+方法在 `apply` 返回后调用（服务方法、事件里）。一行在自己的 `apply` 里调用 `create`、`reload`、`remove` 会等到这个 `apply` 结束，所以会卡住；在 `apply` 里挂子插件用 `ctx.plugin`。
+
+失败时插件收到一个错误，`message` 与终端打印的文字相同，例如：
+
+| 怎样触发 | `message` |
+| --- | --- |
+| `create`，`apply` 抛错 | `weather: KeyError: 'units'` |
+| `create`，`id` 已存在 | `a row weather already exists` |
+| `reload`，语法错误 | `weather: cannot reload: cannot load weather.py: SyntaxError: expected ':' (weather.py:3); the previous version keeps running` |
+| `reload` / `remove` 一个没有的行 | `no row wether` |
+| `dev` 下 `create` / `remove` | `this host keeps no editable configuration, so rows cannot be added or removed` |
+| 行已加上，但 `rutis.json` 写不了 | `weather: added, but rutis.json could not be written: <操作系统的原因>` |
+
+**`run` 写回 `rutis.json`。** 经 `loader` 加的行写在 `rows` 末尾（`id` 总是写上，其余只写插件给出的字段），删的行去掉；其他字段与键的顺序不变，`rutis-host check rutis.json` 对写回的文件与手写的一样，宿主重启后写回的行照常运行。写回的细节（`--watch-config`、文件在宿主读过之后被改过）见 [运行中改配置](#运行中改配置)。**`dev` 没有可编辑的配置**：`dev` 是开发一个插件项目，加、删行改 `rutis.dev.json`，`create`、`remove` 得到上表的错误；`reload`、`status` 照常。
+
+终端里看到的（[run 打印什么](#run-打印什么)的格式）：
+
+| 插件做的 | 终端 |
+| --- | --- |
+| `create` 成功 | `weather: running`（或 `weather: waiting for …`，与手写的行相同） |
+| `create` 失败 | 两行：`fails: failed: KeyError: 'units'`，再 `fails: removed`（被退回） |
+| `reload` 成功，或语法错误（旧版本继续运行） | 不打印：这一行一直是 `running` |
+| `reload`，新代码的 `apply` 失败 | `weather: failed: KeyError: 'units'`；改好再 `reload` 后 `weather: running` |
+| `remove` | `weather: removed` |
+
+名字 `loader` 被 rutis-host 占用：`rutis.json` 里另有一行提供名叫 `loader` 的服务时，那一行以同名错误失败（`service loader is already provided by …: row <行> cannot provide it too`），终端照旧打印 `<行>: failed …`。给那一行的服务换名。
 
 ## 用 dev 开发插件
 

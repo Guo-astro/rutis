@@ -340,11 +340,11 @@ export const Events = {
           const entries = selected(name, Boolean(prefix), exported).map(([selectedName, selectedPrefix]) => events.onRemote({
             name: selectedName, prefix: selectedPrefix, kind, global, plugin, row, runtime, node: peer, scope: [],
             invoke(mode, dispatched, args) {
-              const waterfall = mode === 'waterfall' || mode === 'waterfall-sync'
+              const waterfall = mode === 'waterfall'
               const values = waterfall ? args.slice(0, -1) : args
               const request = { listener: id, dispatch: `d${++calls}`, own: false, name: dispatched, mode, args: values }
               if (waterfall) request.next = args.at(-1)
-              if (mode === 'bail' || mode === 'waterfall-sync') return link.call('', 'events.call', [request])
+              if (mode === 'bail') return link.call('', 'events.call', [request])
               return link.callAsync('', 'events.call', [request])
             },
           }))

@@ -316,7 +316,7 @@ fn without_uv_or_python_the_environment_cannot_be_made() {
     assert_eq!(
         error.to_string(),
         format!(
-            "cannot create the Python environment {}: install uv, or Python 3.10 or later",
+            "cannot create the Python environment {}: install uv, or Python 3.12 or later",
             bench.app().join(".venv").display()
         )
     );

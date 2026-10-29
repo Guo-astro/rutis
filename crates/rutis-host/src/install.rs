@@ -18,7 +18,7 @@ use crate::{errln, outln};
 
 /// The configuration `add`, `remove` and `upgrade` change: its text as
 /// written (keys in their order) and as read.
-struct Target {
+pub(crate) struct Target {
     path: PathBuf,
     /// The file as written; `{}` for one not there yet.
     raw: Map<String, Value>,
@@ -43,8 +43,13 @@ impl Target {
             true => crate::config::read_text(&path)?,
             false => "{}".to_owned(),
         };
-        let config = HostConfig::parse(&text, &path)?;
-        let raw = match serde_json::from_str(&text) {
+        Self::parse(path, &text)
+    }
+
+    /// The file at `path`, its content `text`.
+    pub(crate) fn parse(path: PathBuf, text: &str) -> Result<Self, String> {
+        let config = HostConfig::parse(text, &path)?;
+        let raw = match serde_json::from_str(text) {
             Ok(Value::Object(raw)) => raw,
             _ => return Err(format!("{}: not a JSON object", path.display())),
         };
@@ -151,21 +156,28 @@ impl Target {
     /// Write it back ([`Target::text`]) through a file renamed into place
     /// (`run --watch-config` never reads half of it).
     fn write(&self) -> Result<(), String> {
-        let text = self.text()?;
+        self.store()
+            .map(|_| ())
+            .map_err(|error| format!("{}: {error}", self.path.display()))
+    }
+
+    /// [`Target::write`], returning the text written, or why it was not.
+    pub(crate) fn store(&self) -> std::io::Result<String> {
+        let text = self.text().map_err(std::io::Error::other)?;
         let partial =
             self.path
                 .with_file_name(format!(".{}.{}.tmp", self.name(), std::process::id()));
-        std::fs::write(&partial, text)
+        std::fs::write(&partial, &text)
             .and_then(|()| std::fs::rename(&partial, &self.path))
-            .map_err(|error| {
+            .inspect_err(|_| {
                 let _ = std::fs::remove_file(&partial);
-                format!("{}: {error}", self.path.display())
-            })
+            })?;
+        Ok(text)
     }
 
     /// Set `key` to `value`; a new key goes before the first of `before`
     /// there is, else last.
-    fn set(&mut self, key: &str, value: Value, before: &[&str]) {
+    pub(crate) fn set(&mut self, key: &str, value: Value, before: &[&str]) {
         if let Some(slot) = self.raw.get_mut(key) {
             *slot = value;
             return;
@@ -190,7 +202,7 @@ impl Target {
         }
     }
 
-    fn rows(&self) -> Vec<Value> {
+    pub(crate) fn rows(&self) -> Vec<Value> {
         match self.raw.get("rows") {
             Some(Value::Array(rows)) => rows.clone(),
             _ => Vec::new(),
