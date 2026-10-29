@@ -294,6 +294,8 @@ pub struct TestRuntime {
     anchor: PathBuf,
     states: rutis_bridge::runtime::RuntimeStates,
     processes: rutis_bridge::pipe::Processes,
+    /// How long its process may take to greet (rutis-host's default).
+    greeting: std::time::Duration,
 }
 
 #[cfg(feature = "runtimes")]
@@ -308,7 +310,15 @@ impl TestRuntime {
             launcher,
             anchor: anchor.to_owned(),
             processes,
+            greeting: std::time::Duration::from_secs(30),
         }
+    }
+
+    /// How long its process may take to greet: 30 s, as rutis-host's;
+    /// `Duration::MAX` for as long as it takes.
+    pub fn greeting(mut self, limit: std::time::Duration) -> Self {
+        self.greeting = limit;
+        self
     }
 
     /// The Python runtime `py` of `project`, the repository's rutis
@@ -331,6 +341,17 @@ impl TestRuntime {
             "node",
             rutis_bridge::runtime::Launcher::node(&repo().join("node/rutis-runtime")),
             anchor,
+        )
+    }
+
+    /// The Bun runtime `bun` of the repository's `bun/rutis-bun`, the `bun`
+    /// on PATH, in `project`.
+    #[cfg(feature = "bun")]
+    pub fn bun(project: &Path) -> Self {
+        Self::new(
+            "bun",
+            rutis_bridge::runtime::Launcher::bun(None, &repo().join("bun/rutis-bun"), project),
+            project,
         )
     }
 
@@ -417,9 +438,14 @@ impl rutis::host::DynPlugin for TestRuntime {
             self.states.starting();
             let peer = id(&self.name);
             let channel = tokio::select! {
-                started = self.launcher.start(&peer, &self.anchor, &self.processes) => {
-                    started.map_err(|error| failed(error.to_string()))?
-                }
+                started = async {
+                    let channel = self
+                        .launcher
+                        .start(&peer, &self.anchor, &self.processes)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    rutis_bridge::pipe::greeted(channel, self.greeting).await
+                } => started.map_err(failed)?,
                 () = ctx.cancelled() => {
                     self.states.stopped();
                     return Ok(Effect::Done);

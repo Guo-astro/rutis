@@ -440,6 +440,7 @@ impl Launcher {
 
 /// `first` ahead of the search path `rest` (`PATH` syntax for the
 /// platform: `:` or `;` between entries).
+#[cfg(feature = "python")]
 pub(crate) fn search_path(
     first: std::ffi::OsString,
     rest: Option<&std::ffi::OsStr>,

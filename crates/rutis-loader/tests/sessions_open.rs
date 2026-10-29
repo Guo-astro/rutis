@@ -9,12 +9,11 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{repo, rows_stage, COLD};
+use common::runtimes::{repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, Receiver, Sender};
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{
     call_service, host_key, settle, HostDispatch, Reply, Value as RpcValue,
 };
@@ -22,7 +21,7 @@ use rutis_bridge::{
     catalog_key, Described, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::{RuntimeResolver, SessionResolver};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::within;
 use serde_json::{json, Value};
@@ -205,20 +204,26 @@ async def apply(ctx, config):
 "#;
 
 /// rutis `main` with `sessions`, `wire` and the rows `relay` (named
-/// `relay`) and `relay:contacts`, its runtime `rows` and the session
-/// resolver last in its chain.
+/// `relay`) and `relay:contacts`, `relay` on the local runtime `runtime`:
+/// one session resolver for the runtime's rows and the connection's
+/// (with `npm`, the Node names on the runtime too).
 async fn main(
     root: &Ctx,
-    rows: Arc<RuntimeResolver>,
+    runtime: TestRuntime,
+    npm: bool,
     relay: &str,
     catalog: ServiceCatalog,
 ) -> Loader {
     root.plugin(Session::service());
-    let sessions = Arc::new(SessionResolver::new(&catalog));
+    let name = runtime.handle().name().to_owned();
+    let sessions = Arc::new(match npm {
+        true => SessionResolver::npm(&catalog, &name),
+        false => SessionResolver::new(&catalog),
+    });
+    sessions.runtime(runtime.handle());
+    root.plugin(runtime);
     let plugin = LoaderPlugin::new(
-        Chain::new()
-            .with_shared(rows.clone())
-            .with_shared(sessions.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
@@ -227,7 +232,7 @@ async fn main(
     let loader = plugin.handle();
     sessions.attach(&loader);
     (&root.plugin(plugin)).await.unwrap();
-    rows_stage(root, rows).await;
+    rows_stage(root, &sessions, &name).await;
     let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
         { "id": "relay", "name": relay, "config": {} },
         { "id": "contacts", "name": "relay:contacts", "config": {} },
@@ -309,13 +314,8 @@ async fn a_node_relay_opens_a_session() {
     std::fs::write(&relay, JS_RELAY.replace("PLUGIN", &sdk)).unwrap();
     let catalog = catalog();
     let (root, office) = wired();
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    root.plugin(node);
-    let loader = main(&root, rows, &relay.to_string_lossy(), catalog).await;
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let loader = main(&root, node, true, &relay.to_string_lossy(), catalog).await;
     contacts_run_there(&root, &loader).await;
     root.shutdown().await.unwrap();
     office.shutdown().await.unwrap();
@@ -329,10 +329,8 @@ async fn a_python_relay_opens_a_session() {
     std::fs::write(dir.path().join("relay.py"), PY_RELAY).unwrap();
     let catalog = catalog();
     let (root, office) = wired();
-    let python = LocalRuntime::python(dir.path()).python_path(repo().join("python/rutis"));
-    let rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
-    root.plugin(python);
-    let loader = main(&root, rows, "py:relay", catalog).await;
+    let python = TestRuntime::python(dir.path());
+    let loader = main(&root, python, false, "py:relay", catalog).await;
     contacts_run_there(&root, &loader).await;
     root.shutdown().await.unwrap();
     office.shutdown().await.unwrap();

@@ -15,6 +15,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState};
 use rutis::internal::CtxInternal;
@@ -25,6 +26,9 @@ use rutis_bridge::runtime::{
 };
 use rutis_bridge::{session_key, PeerId, Session};
 
+/// How long a runtime's process may take to greet, by default.
+const GREETING: Duration = Duration::from_secs(30);
+
 /// One local runtime: what starts its process, and its state.
 pub struct SpawnPlugin {
     name: String,
@@ -33,6 +37,8 @@ pub struct SpawnPlugin {
     anchor: PathBuf,
     states: RuntimeStates,
     processes: Processes,
+    /// How long its process may take to greet.
+    greeting: Duration,
     /// What watches the running session, until the plugin unloads.
     watching: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -51,8 +57,18 @@ impl SpawnPlugin {
             launcher,
             anchor,
             processes,
+            greeting: GREETING,
             watching: Arc::default(),
         }
+    }
+
+    /// How long its process may take to greet once started: 30 s by
+    /// default; [`Duration::MAX`] waits for as long as it takes, for a
+    /// process stopped at its first line for a debugger (`--inspect-brk`),
+    /// which stays starting meanwhile.
+    pub fn greeting(mut self, limit: Duration) -> Self {
+        self.greeting = limit;
+        self
     }
 
     /// Put `directory` ahead on the process's `PYTHONPATH`: a source checkout
@@ -136,6 +152,17 @@ impl DynPlugin for SpawnPlugin {
                 }
             };
             let channel = started.map_err(|error| self.failed(error.to_string()))?;
+            // A cold interpreter, or one stopped for a debugger, may take
+            // longer than a session's handshake waits.
+            let channel = tokio::select! {
+                greeted = rutis_bridge::pipe::greeted(channel, self.greeting) => {
+                    greeted.map_err(|why| self.failed(why))?
+                }
+                () = ctx.cancelled() => {
+                    self.states.stopped();
+                    return Ok(Effect::Done);
+                }
+            };
             let session = ctx.plugin(Session::new(channel));
             // Running once the session is: it greeted, and runs plugins.
             let mut states = session.watch();
@@ -195,5 +222,65 @@ impl DynPlugin for SpawnPlugin {
             })?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use rutis::host::CtxHost;
+
+    /// A runtime whose process never greets.
+    fn mute(dir: &Path) -> SpawnPlugin {
+        let launcher = Launcher::new("sh").arg("-c").arg("sleep 60").inherit_fd();
+        SpawnPlugin::new("mute", launcher, dir)
+    }
+
+    /// A process that never greets: with `greeting(1s)` the runtime is down
+    /// within a few seconds, not the default 30.
+    // guarantee: host/plugin-limits (greeting bounds the start)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_short_greeting_limit_ends_a_silent_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = mute(dir.path()).greeting(Duration::from_secs(1));
+        let handle = runtime.handle();
+        let root = Ctx::root().unwrap();
+        let started = std::time::Instant::now();
+        let view = root.plugin(runtime);
+        tokio::time::timeout(Duration::from_secs(10), &view)
+            .await
+            .expect("down within the greeting limit")
+            .unwrap_err();
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert!(
+            matches!(handle.state(), RuntimeState::Down(why) if why == "the runtime did not greet within 1s"),
+            "{:?}",
+            handle.state()
+        );
+        root.shutdown().await.unwrap();
+    }
+
+    /// With `greeting(Duration::MAX)` a process that has not greeted yet (one
+    /// stopped at its first line for a debugger) stays starting, past the
+    /// session's own 10 s handshake; stopping it does not wait for it.
+    // guarantee: host/plugin-limits (greeting(Duration::MAX) waits)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unbounded_greeting_waits_for_a_silent_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = mute(dir.path()).greeting(Duration::MAX);
+        let handle = runtime.handle();
+        let root = Ctx::root().unwrap();
+        let view = root.plugin(runtime);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(12), &view)
+                .await
+                .is_err(),
+            "still starting"
+        );
+        assert!(matches!(handle.state(), RuntimeState::Starting));
+        tokio::time::timeout(Duration::from_secs(5), root.shutdown())
+            .await
+            .expect("stopped at once")
+            .unwrap();
     }
 }
