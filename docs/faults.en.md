@@ -7,7 +7,7 @@ The debugging evaluation of [#663](https://github.com/arcships/rutis/issues/663)
 ## Where they run
 
 - Every test in the table is in a job of `ci.yml`: the tests of rutis, rutis-host, rutis-loader and rutis-bridge in `rust`, the end-to-end scenarios in `e2e`, the Node and Python packages in `js-py`, Bun in `runtimes-bun`, Go in `runtimes-go`. The release gate (release.yml) and the nightly run (nightly.yml) both call `ci.yml` with `all=true`, so when one of them fails in a release, the gate fails and nothing is published; a nightly failure opens an issue ([CI](ci.en.md) §7).
-- None skips quietly: the Go Delve test runs in the `rust` job with `RUTIS_TEST_DELVE=required`, so a missing `dlv` fails it; the event conformance tests run with `RUTIS_EVENTS_REQUIRE=node,python,go,bun`, so a missing language fails them; the Unix-only tests run on Linux.
+- None skips quietly: the Go Delve test runs in the `rust` job with `RUTIS_TEST_DELVE=required`, so a missing `dlv` fails it; the event conformance tests run with `RUTIS_TEST_RUNTIMES=node,python,go,bun`, so a missing language fails them; the Unix-only tests run on Linux.
 - The `links` job runs `node tools/check-faults.mjs`: it fails when a test the table lists is renamed or removed, or this page differs from `tests/faults.json`; it also writes the table into the run's summary.
 
 ## Updating it

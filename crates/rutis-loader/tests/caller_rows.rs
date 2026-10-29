@@ -203,7 +203,7 @@ export default definePlugin({{
 /// guarantee: bridge/caller-row
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
-    if !node_rows_are_callers=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
@@ -250,7 +250,7 @@ async fn node_rows_are_callers() {
 /// guarantee: bridge/caller-row
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
-    if !node_rows_are_callers=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
@@ -290,7 +290,7 @@ async fn python_rows_are_callers() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_rows_are_callers() {
-    if !node_rows_are_callers=node {
+    if !rutis_test_support::runtimes::enabled("go") {
         return;
     }
     use rutis_loader::runtime::binary::{
@@ -329,7 +329,7 @@ async fn go_rows_are_callers() {
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_rows_are_callers() {
-    if !node_rows_are_callers=node {
+    if !rutis_test_support::runtimes::enabled("swift") {
         return;
     }
     use rutis_loader::runtime::binary::{
@@ -372,7 +372,7 @@ async fn swift_rows_are_callers() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
-    if !node_rows_are_callers=node {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};

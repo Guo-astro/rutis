@@ -287,7 +287,7 @@ impl Fixture {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_across_languages() {
-    if !each_instance_sees_its_own_services_across_languages=node,python {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
         return;
     }
     let fixture = fixture().await;
@@ -342,7 +342,7 @@ async fn each_instance_sees_its_own_services_across_languages() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
-    if !each_instance_sees_its_own_services_across_languages=node,python {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
         return;
     }
     let fixture = fixture().await;
@@ -378,7 +378,7 @@ async fn a_removed_instance_leaves_nothing_behind() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn removed_instances_leave_no_tasks_behind() {
-    if !each_instance_sees_its_own_services_across_languages=node,python {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
         return;
     }
     let fixture = fixture().await;
@@ -411,7 +411,7 @@ async fn removed_instances_leave_no_tasks_behind() {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_language_row_outside_its_instances_is_unresolved() {
-    if !each_instance_sees_its_own_services_across_languages=node,python {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
         return;
     }
     let fixture = fixture().await;

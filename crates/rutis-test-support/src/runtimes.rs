@@ -69,8 +69,9 @@ fn listed() -> &'static [String] {
 
 /// Whether `language`'s toolchain runs here: why not, once per language.
 fn toolchain(language: &str) -> Result<(), String> {
-    static CHECKED: OnceLock<std::sync::Mutex<Vec<(String, Result<(), String>)>>> =
-        OnceLock::new();
+    /// Each language checked so far, and what was found.
+    type Checked = std::sync::Mutex<Vec<(String, Result<(), String>)>>;
+    static CHECKED: OnceLock<Checked> = OnceLock::new();
     let checked = CHECKED.get_or_init(Default::default);
     let mut checked = checked.lock().unwrap();
     if let Some((_, result)) = checked.iter().find(|(name, _)| name == language) {
@@ -81,7 +82,10 @@ fn toolchain(language: &str) -> Result<(), String> {
         "node" => ("node".into(), &["--version"]),
         "python" => (
             python.into_os_string(),
-            &["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"],
+            &[
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)",
+            ],
         ),
         "bun" => ("bun".into(), &["--version"]),
         "go" => ("go".into(), &["version"]),
@@ -100,7 +104,10 @@ fn toolchain(language: &str) -> Result<(), String> {
             program.to_string_lossy()
         )),
         Ok(status) => Err(format!("{} failed ({status})", program.to_string_lossy())),
-        Err(error) => Err(format!("{} does not run ({error})", program.to_string_lossy())),
+        Err(error) => Err(format!(
+            "{} does not run ({error})",
+            program.to_string_lossy()
+        )),
     };
     checked.push((language.to_owned(), result.clone()));
     result
@@ -221,7 +228,12 @@ mod tests {
     fn the_commands_start_as_the_runtimes_expect() {
         let node = node_runtime();
         assert_eq!(node.program, "node");
-        assert!(node.args.last().unwrap().to_string_lossy().ends_with("src/runner.mjs"));
+        assert!(node
+            .args
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("src/runner.mjs"));
         assert!(node.inherit_fd);
         let dir = Path::new("/tmp/project");
         let py = python_runtime(dir);

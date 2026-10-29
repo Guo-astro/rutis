@@ -8,34 +8,17 @@
 //! `tests/fixtures/go/plugins/values`,
 //! `swift/rutis/Sources/RutisFixturePlugins/PluginValues.swift`,
 //! `kotlin/rutis/rutis-conformance/.../plugins/PluginValues.kt`).
-#![cfg(all(
-    unix,
-    any(
-        feature = "node",
-        feature = "bun",
-        feature = "python",
-        feature = "go",
-        all(feature = "swift", target_os = "macos"),
-        feature = "kotlin"
-    )
-))]
+//! Each case runs when `RUTIS_TEST_RUNTIMES` lists its language.
+#![cfg(all(unix, feature = "runtimes"))]
 
 mod common;
 
-#[cfg(any(feature = "node", feature = "bun"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "go")]
 use common::runtimes::go_binary;
-#[cfg(any(feature = "node", feature = "bun", feature = "python"))]
 use common::runtimes::repo;
-#[cfg(any(
-    feature = "node",
-    feature = "bun",
-    feature = "python",
-    feature = "kotlin"
-))]
 use common::runtimes::TestRuntime;
 use common::runtimes::{greet_as_main, title, NoConfig, Probe, Title, Tools, COLD};
 use common::Scoped;
@@ -47,12 +30,6 @@ use rutis_loader::edit::Instance;
 use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
 #[cfg(feature = "go")]
 use rutis_loader::runtime::go::Go;
-#[cfg(any(
-    feature = "node",
-    feature = "bun",
-    feature = "python",
-    feature = "kotlin"
-))]
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, Resolver, ServiceCatalog,
@@ -218,7 +195,6 @@ fn builtins(mounted: Arc<Mutex<Vec<FiberView>>>) -> Scoped {
 
 /// The origin: prepares a value, hands a session part using it to `parts`,
 /// and provides `maker`, whose `make` returns another one.
-#[cfg(any(feature = "node", feature = "bun"))]
 const ORIGIN: &str = r#"
 import { definePlugin } from 'PLUGIN'
 export default definePlugin({
@@ -249,7 +225,6 @@ export default definePlugin({
 
 /// A Cordis plugin handing over Cordis plugins as they are written: an
 /// object with `apply`, a function and a class (Node only).
-#[cfg(feature = "node")]
 const CORDIS: &str = r#"
 export const inject = ['parts', 'probe']
 export async function apply(ctx) {
@@ -274,7 +249,6 @@ export async function apply(ctx) {
 const CRASH: &str = "export function apply() { setTimeout(() => process.exit(17), 200) }\n";
 
 /// ORIGIN in Python.
-#[cfg(feature = "python")]
 const PY_ORIGIN: &str = r#"
 import inspect
 
@@ -319,17 +293,13 @@ async def apply(ctx, config):
 "#;
 
 /// CRASH in Python.
-#[cfg(feature = "python")]
 const PY_CRASH: &str = "import os, threading\n\n\ndef apply(ctx, config):\n    threading.Timer(0.2, lambda: os._exit(17)).start()\n";
 
 #[derive(Clone, Copy, Debug)]
 enum Lang {
-    #[cfg(feature = "node")]
     Node,
-    #[cfg(feature = "bun")]
     Bun,
     /// The origin is `py:origin`.
-    #[cfg(feature = "python")]
     Python,
     /// The origin and the crash are plugins of the Go fixture binary
     /// (`tests/fixtures/go/plugins/values`).
@@ -341,8 +311,23 @@ enum Lang {
     Swift,
     /// The origin and the crash are plugins of the Kotlin conformance jar:
     /// `values_origin`, `values_crash`.
-    #[cfg(feature = "kotlin")]
     Kotlin,
+}
+
+impl Lang {
+    /// The language as `RUTIS_TEST_RUNTIMES` names it.
+    fn language(self) -> &'static str {
+        match self {
+            Lang::Node => "node",
+            Lang::Bun => "bun",
+            Lang::Python => "python",
+            #[cfg(feature = "go")]
+            Lang::Go => "go",
+            #[cfg(all(feature = "swift", target_os = "macos"))]
+            Lang::Swift => "swift",
+            Lang::Kotlin => "kotlin",
+        }
+    }
 }
 
 struct Fixture {
@@ -357,10 +342,6 @@ struct Fixture {
     extra: Mutex<Vec<serde_json::Value>>,
     /// The rows' sources (or, for Go, the runtimes' directory), kept until
     /// the fixture ends.
-    #[cfg_attr(
-        not(any(feature = "node", feature = "bun", feature = "python")),
-        allow(dead_code)
-    )]
     dir: tempfile::TempDir,
 }
 
@@ -370,12 +351,6 @@ type Start = Box<dyn FnOnce(&Ctx, &Loader)>;
 /// The rows of the local runtime `runtime` (`SessionResolver`, with `npm`
 /// the Node names too), mounted now: the resolver, and what attaches the
 /// loader and releases the rows once it is mounted.
-#[cfg(any(
-    feature = "node",
-    feature = "bun",
-    feature = "python",
-    feature = "kotlin"
-))]
 fn session_rows(
     root: &Ctx,
     runtime: TestRuntime,
@@ -398,7 +373,6 @@ fn session_rows(
 }
 
 /// The JavaScript origin, `origin.mjs` in `dir`.
-#[cfg(any(feature = "node", feature = "bun"))]
 fn js_origin(dir: &std::path::Path) -> PathBuf {
     std::fs::write(dir.join("package.json"), "{}").unwrap();
     let sdk = repo()
@@ -414,7 +388,11 @@ fn js_origin(dir: &std::path::Path) -> PathBuf {
     file
 }
 
-async fn fixture(lang: Lang) -> Fixture {
+/// The fixture of `lang`, when this run uses it (`RUTIS_TEST_RUNTIMES`).
+async fn fixture(lang: Lang) -> Option<Fixture> {
+    if !rutis_test_support::runtimes::enabled(lang.language()) {
+        return None;
+    }
     let dir = tempfile::tempdir().unwrap();
 
     let probe = Probe::default();
@@ -433,21 +411,18 @@ async fn fixture(lang: Lang) -> Fixture {
     let mounted = Arc::new(Mutex::new(Vec::new()));
     // `start` starts what runs the rows, once the loader is mounted.
     let (rows, origin, start): (Arc<dyn Resolver>, _, Start) = match lang {
-        #[cfg(feature = "node")]
         Lang::Node => {
             let file = js_origin(dir.path());
             let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
             let (rows, start) = session_rows(&root, node, &catalog, true);
             (rows, json!(file.to_string_lossy()), start)
         }
-        #[cfg(feature = "bun")]
         Lang::Bun => {
             js_origin(dir.path());
             let bun = TestRuntime::bun(dir.path());
             let (rows, start) = session_rows(&root, bun, &catalog, false);
             (rows, json!("bun:./origin.mjs"), start)
         }
-        #[cfg(feature = "python")]
         Lang::Python => {
             std::fs::write(dir.path().join("origin.py"), PY_ORIGIN).unwrap();
             let python = TestRuntime::python(dir.path());
@@ -492,7 +467,6 @@ async fn fixture(lang: Lang) -> Fixture {
             });
             (swift, json!("swift:values_origin"), start)
         }
-        #[cfg(feature = "kotlin")]
         Lang::Kotlin => {
             let project = dir.path().join("kt");
             std::fs::create_dir_all(&project).unwrap();
@@ -521,7 +495,7 @@ async fn fixture(lang: Lang) -> Fixture {
         .unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     parts.wait_for(1).await;
-    Fixture {
+    Some(Fixture {
         root,
         loader,
         probe,
@@ -531,7 +505,7 @@ async fn fixture(lang: Lang) -> Fixture {
         lang,
         extra: Mutex::default(),
         dir,
-    }
+    })
 }
 
 /// The rows: the origin (when given), `extra`, and the session group.
@@ -567,18 +541,15 @@ impl Fixture {
     /// runtime: CRASH there is the crash of each language.
     async fn add(&self, id: &str, source: &str) {
         let name = match self.lang {
-            #[cfg(feature = "node")]
             Lang::Node => {
                 let file = self.dir.path().join(format!("{id}.mjs"));
                 std::fs::write(&file, source).unwrap();
                 json!(file.to_string_lossy())
             }
-            #[cfg(feature = "bun")]
             Lang::Bun => {
                 std::fs::write(self.dir.path().join(format!("{id}.mjs")), source).unwrap();
                 json!(format!("bun:./{id}.mjs"))
             }
-            #[cfg(feature = "python")]
             Lang::Python => {
                 assert_eq!(source, CRASH, "only the crash has a Python version");
                 std::fs::write(self.dir.path().join(format!("{id}.py")), PY_CRASH).unwrap();
@@ -594,7 +565,6 @@ impl Fixture {
                 assert_eq!(source, CRASH, "only the crash is in the Swift binary");
                 json!("swift:values_crash")
             }
-            #[cfg(feature = "kotlin")]
             Lang::Kotlin => match source == CRASH {
                 true => json!("kt:values_crash"),
                 // The jar's other plugins, by their name: `values_<id>`.
@@ -622,7 +592,9 @@ impl Fixture {
 }
 
 async fn each_instance_mounts_its_own_copy(lang: Lang) {
-    let fixture = fixture(lang).await;
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
     let definition = fixture.parts.of("session").pop().unwrap();
     assert!(!definition.is_ended());
     fixture.create("A").await;
@@ -660,7 +632,9 @@ async fn each_instance_mounts_its_own_copy(lang: Lang) {
 }
 
 async fn the_origin_s_unload_ends_its_copies_first(lang: Lang) {
-    let fixture = fixture(lang).await;
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
     let definition = fixture.parts.of("session").pop().unwrap();
     fixture.create("A").await;
     fixture.create("B").await;
@@ -705,7 +679,9 @@ async fn the_origin_s_unload_ends_its_copies_first(lang: Lang) {
 }
 
 async fn a_returned_definition_belongs_to_the_row_providing_the_service(lang: Lang) {
-    let fixture = fixture(lang).await;
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
     let key = host_key("maker");
     let maker = COLD
         .eventually_with(|| fixture.root.get_at(&key), "maker provided", String::new)
@@ -746,7 +722,9 @@ async fn a_returned_definition_belongs_to_the_row_providing_the_service(lang: La
 }
 
 async fn a_dead_process_ends_its_copies(lang: Lang) {
-    let fixture = fixture(lang).await;
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
     let definition = fixture.parts.of("session").pop().unwrap();
     fixture.create("A").await;
     fixture
@@ -763,7 +741,6 @@ async fn a_dead_process_ends_its_copies(lang: Lang) {
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 mod node {
     use super::*;
 
@@ -771,7 +748,9 @@ mod node {
     /// copies run as Cordis plugins.
     #[tokio::test(flavor = "multi_thread")]
     async fn cordis_plugins_are_handed_over_as_they_are() {
-        let fixture = fixture(Lang::Node).await;
+        let Some(fixture) = fixture(Lang::Node).await else {
+            return;
+        };
         fixture.add("cordis", CORDIS).await;
         fixture.parts.wait_for(4).await;
         fixture.create("A").await;
@@ -814,7 +793,9 @@ export default definePlugin({
     /// sent to the runtime: `def.at` itself fails with the config error.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_bad_config_of_a_plugin_value_is_refused_by_the_bridge() {
-        let fixture = fixture(Lang::Node).await;
+        let Some(fixture) = fixture(Lang::Node).await else {
+            return;
+        };
         let sdk = repo()
             .join("node/rutis/src/index.mjs")
             .canonicalize()
@@ -865,7 +846,6 @@ export default definePlugin({
     }
 }
 
-#[cfg(feature = "bun")]
 mod bun {
     use super::*;
 
@@ -890,7 +870,6 @@ mod bun {
     }
 }
 
-#[cfg(feature = "python")]
 mod python {
     use super::*;
 
@@ -942,9 +921,10 @@ mod go {
 
 /// The origin asked `parts.latest` for what it registered: a Rust
 /// parameter and result going home, decoded by the SDK's client.
-#[cfg(any(all(feature = "swift", target_os = "macos"), feature = "kotlin"))]
 async fn a_definition_comes_home_as_itself(lang: Lang) {
-    let fixture = fixture(lang).await;
+    let Some(fixture) = fixture(lang).await else {
+        return;
+    };
     // The origin records either line: a wrong value fails here at once.
     let line = COLD
         .eventually_with(
@@ -993,7 +973,6 @@ mod swift {
     }
 }
 
-#[cfg(feature = "kotlin")]
 mod kotlin {
     use super::*;
 
@@ -1002,7 +981,9 @@ mod kotlin {
     /// waits, and the call is answered.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_blocking_call_hands_over_a_definition() {
-        let fixture = fixture(Lang::Kotlin).await;
+        let Some(fixture) = fixture(Lang::Kotlin).await else {
+            return;
+        };
         fixture.add("blocking", "").await;
         fixture.probe.wait_for("blocking register answered").await;
         assert_eq!(fixture.parts.of("blocking").len(), 1);

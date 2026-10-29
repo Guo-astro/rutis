@@ -471,7 +471,12 @@ async fn a_bun_too_old_for_the_package_is_refused() {
         }
     }
     // The runtime has no dependencies, so the copy needs no `node_modules`.
-    let Err(error) = mount(launcher(rutis_test_support::runtimes::bun(&copy, dir.path())), dir.path()).await else {
+    let Err(error) = mount(
+        launcher(rutis_test_support::runtimes::bun(&copy, dir.path())),
+        dir.path(),
+    )
+    .await
+    else {
         panic!("an old Bun is refused");
     };
     // It says why on stderr, and exits before greeting.

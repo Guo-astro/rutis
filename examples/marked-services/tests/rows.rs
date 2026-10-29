@@ -91,6 +91,16 @@ struct Fixture {
     _rows: tempfile::TempDir,
 }
 
+/// `command` (`rutis_test_support::runtimes`) as a launcher.
+fn launcher(command: rutis_test_support::runtimes::Command) -> Launcher {
+    let mut launcher = Launcher::new(command.program);
+    launcher.args = command.args;
+    launcher.env = command.env;
+    launcher.cwd = command.cwd;
+    launcher.inherit_fd = command.inherit_fd;
+    launcher
+}
+
 async fn fixture(rows: Value) -> Fixture {
     let dir = self::rows();
     let probe = Probe::default();
@@ -108,11 +118,14 @@ async fn fixture(rows: Value) -> Fixture {
     let catalog = ServiceCatalog::new();
     let node = SpawnPlugin::new(
         "node",
-        Launcher::node(&repo().join("node/rutis-runtime")),
+        launcher(rutis_test_support::runtimes::node_runtime()),
         repo().join("node/rutis-runtime/package.json"),
     );
-    let python = SpawnPlugin::new("py", Launcher::python(dir.path()), dir.path())
-        .python_path(repo().join("python/rutis"));
+    let python = SpawnPlugin::new(
+        "py",
+        launcher(rutis_test_support::runtimes::python_runtime(dir.path())),
+        dir.path(),
+    );
     let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
     sessions.runtime(node.handle());
     sessions.runtime(python.handle());
@@ -152,6 +165,9 @@ async fn fixture(rows: Value) -> Fixture {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_typescript_row_calls_the_marked_service() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "ts", "name": "ROWS/calendar.ts" }])).await;
     fixture
         .probe
@@ -167,6 +183,9 @@ async fn a_typescript_row_calls_the_marked_service() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_row_calls_the_same_service() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let fixture = fixture(json!([{ "id": "py", "name": "py:calendar_row" }])).await;
     fixture.probe.wait_for("py: Planning True").await;
     fixture
@@ -190,6 +209,9 @@ fn the_declarations_are_current_and_pass_tsc_strict() {
         written,
         "rows/services.d.ts is stale: run `{TYPES}`"
     );
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = rows();
     std::fs::write(
         dir.path().join("tsconfig.json"),
@@ -241,6 +263,9 @@ fn the_python_types_are_current_and_pass_pyright_strict() {
         "rows/services.py is stale: run `{TYPES}`"
     );
     std::fs::remove_file(&file).unwrap();
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let pyright = |dir: &Path| {
         std::fs::write(
             dir.join("pyrightconfig.json"),

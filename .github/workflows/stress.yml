@@ -312,7 +312,7 @@ jobs:
   # so each job takes about 15 to 25 minutes. With the input `events_case`
   # every job runs the placements of those cases instead (a small run to
   # check this job). The runtimes of the `rust` job of ci.yml; every
-  # language must be there (RUTIS_EVENTS_REQUIRE). Each job writes its
+  # language must be there (RUTIS_TEST_RUNTIMES). Each job writes its
   # table of cases and its time to the summary.
   events-all:
     name: events-all (${{ matrix.x }}, ${{ matrix.cases }})
@@ -352,7 +352,6 @@ jobs:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ inputs.events || 'all' }}
           RUTIS_EVENTS_CASE: ${{ matrix.cases }}
-          RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
           X: ${{ matrix.x }}
         run: |

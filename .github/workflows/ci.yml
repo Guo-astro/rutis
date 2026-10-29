@@ -526,7 +526,6 @@ jobs:
         env:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
-          RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --all-features
 
@@ -546,7 +545,6 @@ jobs:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_LOCAL_HANDOVER: loopback
           RUTIS_EVENTS_PLACEMENTS: written
-          RUTIS_EVENTS_REQUIRE: node,python,go,bun
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --all-features --test runtime_rows --test python_rows --test multilang --test instance_runtimes --test go_rows --test go_stop --test multilang_go --test instance_go --test sync_cycles --test events_conformance
       - name: job time
@@ -1100,7 +1098,6 @@ jobs:
         env:
           RUTIS_TEST_RUNTIMES: kotlin,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
-          RUTIS_EVENTS_REQUIRE: node,python,kotlin
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: cargo test -p rutis-loader --all-features --test events_conformance
       - name: self-hosted runner, end
@@ -1213,7 +1210,6 @@ jobs:
       - name: cargo test (events conformance, X Swift)
         env:
           RUTIS_TEST_RUNTIMES: node,python,swift
-          RUTIS_EVENTS_REQUIRE: swift
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
         run: cargo test -p rutis-loader --all-features --test events_conformance events_with_x_a_swift_plugin
       - name: self-hosted runner, end
@@ -1429,7 +1425,6 @@ jobs:
           RUTIS_TEST_RUNTIMES: bun,go,node,python
           ALL: ${{ needs.changes.outputs.all }}
           RUTIS_EVENTS_PLACEMENTS: ${{ needs.changes.outputs.all == 'true' && 'sampled' || 'written' }}
-          RUTIS_EVENTS_REQUIRE: node,python,go,bun
         run: |
           BRIDGE_TESTS= LOADER_TESTS=
           if [ "$ALL" != true ]; then
@@ -1815,7 +1810,6 @@ jobs:
           RUTIS_TEST_RUNTIMES: go,node,python
           ALL: ${{ needs.changes.outputs.all }}
           RUTIS_EVENTS_PLACEMENTS: written
-          RUTIS_EVENTS_REQUIRE: node,python,go
           RUTIS_EVENTS_SETTLE_SCALE: '2'
         run: |
           LOADER_TESTS=

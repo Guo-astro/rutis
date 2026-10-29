@@ -184,7 +184,7 @@ async fn fixture() -> Fixture {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_in_go() {
-    if !each_instance_sees_its_own_services_in_go=go {
+    if !rutis_test_support::runtimes::enabled("go") {
         return;
     }
     let fixture = fixture().await;

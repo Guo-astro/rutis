@@ -1,4 +1,4 @@
-//! The Kotlin SDK's programs for the conformance tests (feature `kotlin`):
+//! The Kotlin SDK's programs for the conformance tests (`kotlin` in `RUTIS_TEST_RUNTIMES`):
 //! one jar (`kotlin/rutis/rutis-conformance`, Gradle task `fatJar`) holding
 //! the session fixture and the runtime that serves the test plugins through
 //! `Rutis.serve`, started by `java` (design K-P1: the generic launcher, no

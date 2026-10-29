@@ -86,7 +86,12 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
             std::fs::write(&anchor, "{}").unwrap();
             let entry = dir.join("lingering.mjs");
             std::fs::write(&entry, NODE).unwrap();
-            (package.clone(), launcher(runtimes::node(&package)), anchor, entry)
+            (
+                package.clone(),
+                launcher(runtimes::node(&package)),
+                anchor,
+                entry,
+            )
         }
         Runtime::Python => {
             let sdk = repo().join("python/rutis");
@@ -283,27 +288,27 @@ def apply(ctx, config):
     /// guarantee: host/killed-host-leaves-no-runtimes
     #[tokio::test(flavor = "multi_thread")]
     async fn node_kept_busy_ends_when_its_host_goes_away() {
-    if !rutis_test_support::runtimes::enabled("node") {
-        return;
-    }
+        if !rutis_test_support::runtimes::enabled("node") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Node).await;
     }
 
     /// guarantee: host/killed-host-leaves-no-runtimes
     #[tokio::test(flavor = "multi_thread")]
     async fn python_kept_busy_ends_when_its_host_goes_away() {
-    if !rutis_test_support::runtimes::enabled("python") {
-        return;
-    }
+        if !rutis_test_support::runtimes::enabled("python") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Python).await;
     }
 
     /// guarantee: host/killed-host-leaves-no-runtimes
     #[tokio::test(flavor = "multi_thread")]
     async fn bun_kept_busy_ends_when_its_host_goes_away() {
-    if !rutis_test_support::runtimes::enabled("bun") {
-        return;
-    }
+        if !rutis_test_support::runtimes::enabled("bun") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Bun).await;
     }
 }

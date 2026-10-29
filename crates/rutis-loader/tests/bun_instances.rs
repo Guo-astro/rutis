@@ -232,7 +232,7 @@ impl Fixture {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services() {
-    if !each_instance_sees_its_own_services=bun {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     let fixture = fixture().await;
@@ -261,7 +261,7 @@ async fn each_instance_sees_its_own_services() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
-    if !each_instance_sees_its_own_services=bun {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     let fixture = fixture().await;

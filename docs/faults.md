@@ -7,7 +7,7 @@
 ## 在哪里运行
 
 - 表里的测试都在 `ci.yml` 的任务里运行：Rust、rutis-host、rutis-loader、rutis-bridge 的测试在 `rust`，端到端场景在 `e2e`，Node 与 Python 的包在 `js-py`，Bun 在 `runtimes-bun`，Go 在 `runtimes-go`。发布门（release.yml）和每晚运行（nightly.yml）都以 `all=true` 调用 `ci.yml`，所以发布时其中任何一个失败，发布门就不通过，什么都不发布；每晚运行失败时开问题单（[CI](ci.md) §7）。
-- 不会悄悄跳过：Go 的 Delve 测试在 `rust` 任务里设了 `RUTIS_TEST_DELVE=required`，没装 `dlv` 就失败；事件一致性测试设了 `RUTIS_EVENTS_REQUIRE=node,python,go,bun`，少了哪种语言就失败；只在 Unix 上运行的测试在 Linux 上运行。
+- 不会悄悄跳过：Go 的 Delve 测试在 `rust` 任务里设了 `RUTIS_TEST_DELVE=required`，没装 `dlv` 就失败；事件一致性测试设了 `RUTIS_TEST_RUNTIMES=node,python,go,bun`，少了哪种语言就失败；只在 Unix 上运行的测试在 Linux 上运行。
 - `links` 任务运行 `node tools/check-faults.mjs`：表里列的测试改了名或删掉了、或者本页与 `tests/faults.json` 不一致，就失败；它还把下表写进这次运行的摘要。
 
 ## 怎样更新

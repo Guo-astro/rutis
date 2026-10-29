@@ -303,7 +303,7 @@ async fn a_clashing_provide_fails_only_its_row(language: Language) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_clashing_provide_fails_only_its_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     a_clashing_provide_fails_only_its_row(Language::Node).await;
@@ -311,7 +311,7 @@ async fn node_a_clashing_provide_fails_only_its_row() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_clashing_provide_fails_only_its_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     a_clashing_provide_fails_only_its_row(Language::Python).await;
@@ -320,7 +320,7 @@ async fn python_a_clashing_provide_fails_only_its_row() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_clashing_provide_fails_only_its_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     a_clashing_provide_fails_only_its_row(Language::Bun).await;
@@ -404,7 +404,7 @@ async fn a_name_a_row_isolates_is_seen_in_its_isolate_only(language: Language) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Node).await;
@@ -412,7 +412,7 @@ async fn node_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Python).await;
@@ -421,7 +421,7 @@ async fn python_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Bun).await;
@@ -656,7 +656,7 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_runtime_that_exits_blames_no_other_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     a_runtime_that_exits_blames_no_other_row(Language::Node).await;
@@ -664,7 +664,7 @@ async fn node_a_runtime_that_exits_blames_no_other_row() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_runtime_that_exits_blames_no_other_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     a_runtime_that_exits_blames_no_other_row(Language::Python).await;
@@ -673,7 +673,7 @@ async fn python_a_runtime_that_exits_blames_no_other_row() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_runtime_that_exits_blames_no_other_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     a_runtime_that_exits_blames_no_other_row(Language::Bun).await;
@@ -871,7 +871,7 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dev_an_unhandled_error_fails_only_its_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     an_unhandled_error_fails_only_its_row(Language::NodeDev).await;
@@ -879,7 +879,7 @@ async fn node_dev_an_unhandled_error_fails_only_its_row() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_an_unhandled_error_fails_only_its_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     an_unhandled_error_fails_only_its_row(Language::Python).await;
@@ -1043,7 +1043,7 @@ async fn an_error_in_a_called_rows_code_is_charged_to_no_row(language: Language)
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_no_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     an_error_in_a_called_rows_code_is_charged_to_no_row(Language::NodeDev).await;
@@ -1051,7 +1051,7 @@ async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_no_row() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_an_error_in_a_called_rows_code_is_charged_to_no_row() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("python") {
         return;
     }
     an_error_in_a_called_rows_code_is_charged_to_no_row(Language::Python).await;
@@ -1127,7 +1127,7 @@ async fn an_unhandled_error_from_an_unknown_row_is_reported(language: Language) 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_an_unhandled_error_from_an_unknown_row_is_reported() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("node") {
         return;
     }
     an_unhandled_error_from_an_unknown_row_is_reported(Language::Node).await;
@@ -1136,7 +1136,7 @@ async fn node_an_unhandled_error_from_an_unknown_row_is_reported() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_an_unhandled_error_from_an_unknown_row_is_reported() {
-    if !node_a_clashing_provide_fails_only_its_row=node {
+    if !rutis_test_support::runtimes::enabled("bun") {
         return;
     }
     an_unhandled_error_from_an_unknown_row_is_reported(Language::Bun).await;
