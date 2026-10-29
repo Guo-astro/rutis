@@ -262,30 +262,6 @@ class PeerTest {
     }
 
     /**
-     * #675: an object with methods crosses only to a far end that declared
-     * `objects`: to any other, only its call fails, naming the far end.
-     */
-    // objects-case(kotlin): no-objects-declared
-    @Test
-    fun anObjectGoesOnlyToAFarEndThatTakesObjects() {
-        val (a, b) = MemoryChannel.pair()
-        runtime = Peer(a, Options(dispatch = ::serve, endpoint = Endpoint("kotlin", "main")))
-        // A far end older than 0.18: it does not declare `objects`.
-        host = Peer(b, Options(endpoint = Endpoint("main", "kotlin"), capabilities = arcships.rutis.internal.peer.SESSION_CAPABILITIES - "objects"))
-        runtime.start()
-        host.start()
-        host.readyFuture.get(5, TimeUnit.SECONDS)
-        runtime.readyFuture.get(5, TimeUnit.SECONDS)
-        val error = assertFailsWith<RutisException> { host.call("t", "object", emptyList(), true) }
-        assertEquals(
-            "t.object: the result cannot be sent: an object with methods (Counter) cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18",
-            error.message,
-        )
-        assertEquals(JsonPrimitive("after"), host.call("t", "echo", listOf(JsonPrimitive("after")), true))
-        assertEquals(0, runtime.references().first, "the object is left exported")
-    }
-
-    /**
      * #675: a thrown value that is not an error (a JavaScript `throw 'a string'`)
      * crosses again whole when thrown on: its name, message and graph, whose
      * nodes stay a list.

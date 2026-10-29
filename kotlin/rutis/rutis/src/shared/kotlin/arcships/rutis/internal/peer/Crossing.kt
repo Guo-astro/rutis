@@ -41,11 +41,3 @@ internal fun ofResult(reason: String?, call: String?, limit: Int? = null): Value
 internal fun ofArguments(reason: String?, call: String, limit: Int? = null): ValueException =
     ValueException("$call: the arguments cannot be sent: $reason", "bad-value",
         listOfNotNull("part" to "arguments", limit?.let { "limit" to it }).toMap())
-
-/** An object with methods sent to a far end that did not declare `objects`. */
-internal fun objectRefused(original: Any?, far: String?): ValueException {
-    val type = original?.javaClass?.simpleName?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""
-    val to = far ?: "the far end"
-    // One older than rutis 0.18 takes none.
-    return ValueException("an object with methods$type cannot cross to $to; pass plain data or a function instead, or upgrade $to to rutis 0.18")
-}

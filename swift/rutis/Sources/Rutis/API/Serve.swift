@@ -1,8 +1,5 @@
 import Foundation
 
-/// Why a host that does not declare events-v2 is refused.
-let oldEventsHost = "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later"
-
 let serveUsage = "usage: <binary> --rutis-manifest | <channel> --id <endpoint> [--peer <endpoint>] <project>"
 
 /// A session this side refused at its handshake (an old host): the runtime
@@ -131,8 +128,7 @@ extension Rutis {
     }
     #endif
 
-    /// Starts a session serving `plugins`: a host older than 0.13 is
-    /// refused right after its handshake.
+    /// Starts a session serving `plugins`.
     static func startSession(channel: Channel, project: String, _ plugins: [Definition], endpoint: Endpoint,
                              settings: Events.Settings = Events.Settings()) throws -> (Peer, Runtime)
     {
@@ -144,8 +140,6 @@ extension Rutis {
             return try await runtime.dispatch(target, method, args)
         }
         options.arrive = { [weak runtime] method, args in runtime?.arrive(method, args) }
-        options.require = [eventsCapability]
-        options.refuse = { _ in oldEventsHost }
         let session = try Peer(channel: channel, options: options)
         runtime.session = session
         try session.start()

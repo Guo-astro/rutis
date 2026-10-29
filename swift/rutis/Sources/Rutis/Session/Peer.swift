@@ -13,14 +13,9 @@ import Foundation
 package let endpointProtocol = 4
 package let maxSafe: Int64 = 9_007_199_254_740_991
 
-/// The event protocol of rutis 0.13 (#464), which both ends of every 0.13
-/// session declare.
-package let eventsCapability = "events-v2"
-
-/// What every runtime of this SDK declares. `sync-wait`: its synchronous
-/// calls say so (`sync: true`). Not `sync-stack`: every incoming call runs
-/// in a Task of its own.
-package let runtimeCapabilities = ["objects", "signals", "reentrant-sync", "sync-wait", eventsCapability] + valueCapabilities
+/// What every runtime of this SDK declares. Not `sync-stack`: every
+/// incoming call runs in a Task of its own.
+package let runtimeCapabilities = ["reentrant-sync"] + valueCapabilities
 
 /// How deep a value crossing a session may nest (#279): each array, object,
 /// map or set is a level, so 64 nested arrays cross and 65 do not; a call's
@@ -715,19 +710,6 @@ package final class Peer: @unchecked Sendable {
         case let .function(function):
             return export(.function(function), kind: "function", identity: ObjectIdentifier(function), origin: origin, grants: &grants)
         case let .object(object):
-            // Only to a far end that can call its methods; only this call
-            // fails (#675).
-            if !declared.contains("objects") {
-                let shown: String
-                if let service = object as? ServiceObject {
-                    shown = String(describing: Swift.type(of: service.service))
-                } else {
-                    shown = String(describing: Swift.type(of: object))
-                }
-                let far = greeting?.endpoint ?? "the far end"
-                // One older than rutis 0.18 takes none.
-                throw ValueError("an object with methods (\(shown)) cannot cross to \(far); pass plain data or a function instead, or upgrade \(far) to rutis 0.18")
-            }
             return export(.object(object), kind: "object", identity: object.identity, origin: origin, grants: &grants)
         case let .plugin(definition):
             // A test host hands a definition of the far end back home.
@@ -913,10 +895,9 @@ package final class Peer: @unchecked Sendable {
     // ── Outgoing calls ───────────────────────────────────────────────
 
     /// Marks a synchronous call's frame: this Task waits for the reply, and
-    /// a host that checks for wait cycles needs to know. Only for a far end
-    /// that declared `sync-wait`: others would refuse the field.
+    /// a host that checks for wait cycles needs to know.
     func waiting(_ fields: [(String, JSON)], _ sync: Bool) -> [(String, JSON)] {
-        if sync, supports("sync-wait") { return fields + [("sync", .bool(true))] }
+        if sync { return fields + [("sync", .bool(true))] }
         return fields
     }
 

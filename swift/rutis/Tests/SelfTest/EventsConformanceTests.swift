@@ -139,7 +139,7 @@ private final class EventRun: @unchecked Sendable {
                 if let value = spec[field] { request.append((field, .data(value))) }
             }
             let mode = spec["mode"]?.stringValue ?? ""
-            let method = mode == "bail" || mode == "waterfall-sync" ? "dispatchSync" : "dispatch"
+            let method = mode == "bail" ? "dispatchSync" : "dispatch"
             let service = try await loaded.service("emitter-" + key)
             let value = try await service.callValue(method, [.record(of: request)])
             return Outcome(value: value)

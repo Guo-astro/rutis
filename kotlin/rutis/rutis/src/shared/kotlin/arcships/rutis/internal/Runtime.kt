@@ -31,21 +31,12 @@ import arcships.rutis.advanced.PLUGIN_API
 
 /**
  * What this runtime supports of the runtime contract. `rows.announce`:
- * services rows provide without declaring them are announced with their
- * methods, to a host whose mount says `announce`. Events are the capability
- * `events-v2` (#464), not a feature. `plugin-values`: a plugin definition
+ * services rows provide without declaring them are announced to the host
+ * with their methods. `plugin-values`: a plugin definition
  * this runtime handed over comes back to be described (`plugins.read`) and
  * loaded as a row's entry (docs/design-plugin-values-2026-10-25.md §5).
  */
 val FEATURES: List<String> = listOf("rows.v2", "hosts", "leaf", "scopes", "rows.announce", "plugin-values")
-
-/** Where a plugin is told that the host does not take an undeclared service. */
-@Volatile
-var oldHostOutput: (String) -> Unit = { System.err.println(it) }
-
-/** What a plugin providing the undeclared service `name` is told by a host older than 0.12. */
-fun oldHost(name: String): String =
-    "rutis: service $name is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host"
 
 /** How the service `name` is identified in the scope `label`: the name, or the name, NUL and the label. */
 fun scopedId(name: String, label: String?, scoped: Boolean): String {
@@ -191,13 +182,6 @@ class RuntimeState(plugins: List<Plugin>) {
     @Volatile
     internal var runtimeName: String? = null
 
-    /** The host takes announced services (mount `announce`). */
-    private var announce = false
-
-    /** Mounted by a host; one without `announce` is older than 0.12. */
-    private var mounted = false
-    private val told = HashSet<String>()
-
     /** An application's own plugins, in order, with their configurations, and where each stands. */
     private var own: List<Pair<Plugin, Any?>> = emptyList()
     private val ownStates = HashMap<String, OwnState>()
@@ -304,14 +288,9 @@ class RuntimeState(plugins: List<Plugin>) {
                 if (row.own) {
                     share(row, id, value, table, shape)
                 } else if (slots[id] == null && '#' !in name) {
-                    // Not declared: announced, with its methods; a host older than
-                    // 0.12 does not take it, and the plugin is told, once per name.
-                    if (announce) {
-                        slots[id] = Slot(row.key, name, null, announced = true)
-                        row.announced.add(id)
-                    } else if (mounted && told.add(name)) {
-                        oldHostOutput(oldHost(name))
-                    }
+                    // Not declared: announced, with its methods.
+                    slots[id] = Slot(row.key, name, null, announced = true)
+                    row.announced.add(id)
                 }
                 refresh(id)
             }
@@ -768,10 +747,8 @@ class RuntimeState(plugins: List<Plugin>) {
         return entry.table.serve(entry.obj, method, args, entry.name)
     }
 
-    internal fun mounted(announce: Boolean, runtime: String?) = synchronized(lock) {
-        this.announce = announce
+    internal fun mounted(runtime: String?) = synchronized(lock) {
         this.runtimeName = runtime
-        this.mounted = true
     }
 
     internal fun released(handle: String) = synchronized(lock) {

@@ -108,7 +108,6 @@ public final class Warmer: @unchecked Sendable {
 - A `@RutisClient` protocol nested in another type, and a parameter of a data type, do not take objects: the call fails with `bad-argument` (`argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`). `[any Cache]` is not supported in 0.18; objects inside arrays and dictionaries arrive through `Any` as `Rutis.Advanced.Client`.
 - A received proxy passed on sends the original object; passed back to its process, it is the original there.
 - Objects the app hands over live in the app's process: after the app calls `stop()` or disconnects, calls on them elsewhere fail with `peer-gone`.
-- Objects cannot go to a rutis older than 0.18: the call fails with `bad-value`, and the error says to upgrade.
 
 ## 3. Start and stop
 

@@ -122,7 +122,7 @@ class EventEmitter internal constructor(private val row: ParticipantRow) {
     /** Emits `spec` from the row, natively, and returns the result. */
     suspend fun dispatch(spec: Spec): Any? = row.dispatch(spec)
 
-    /** [dispatch] for `bail` and `waterfall-sync`. */
+    /** [dispatch] for `bail`. */
     suspend fun dispatchSync(spec: Spec): Any? = row.dispatch(spec)
 }
 

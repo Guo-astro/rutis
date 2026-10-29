@@ -47,7 +47,7 @@ class LocalEndpointTest {
             host.readyFuture.get(10, TimeUnit.SECONDS)
             assertEquals("kotlinrun", host.greeting()?.endpoint)
             assertTrue(host.supports("runtime"))
-            val mounted = host.call("", "mount", listOf(JsonObject(mapOf("announce" to JsonPrimitive(true), "runtime" to JsonPrimitive("kotlinrun")))), false)
+            val mounted = host.call("", "mount", listOf(JsonObject(mapOf("runtime" to JsonPrimitive("kotlinrun")))), false)
             val features = ((mounted as JsonElement) as JsonObject)["features"] as JsonArray
             assertTrue(JsonPrimitive("rows.v2") in features, "mount answered $mounted")
             // The host goes: the runtime's session ends and serving returns 0.
@@ -79,7 +79,7 @@ class LocalEndpointTest {
         val runtime = Peer(a, Options(dispatch = { _, _, _ -> null }, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         far.recv() // its hello
-        far.send("""{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":["events-v2"]}""".toByteArray())
+        far.send("""{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":[]}""".toByteArray())
         runtime.closedFuture.get(5, TimeUnit.SECONDS)
         val error = runtime.error
         assertTrue(error is IncompatibleException, "ended with $error")

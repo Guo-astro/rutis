@@ -304,7 +304,8 @@ internal object EventsRuntime {
                 // one: an emit a later frame starts sees it answered (§5.5).
                 session.sendAnswered("", "events.dispatch", listOf(record)) { value, error ->
                     if (error == null && value is RemoteFuture) {
-                        // An older host answers with a future: its settlement.
+                        // The host queues an emit while one of the same row runs,
+                        // and answers with a future: its settlement.
                         Thread({
                             answered(runCatching { session.settle(value) }.exceptionOrNull())
                         }, "rutis-emit").apply { isDaemon = true }.start()
@@ -455,7 +456,7 @@ internal object EventsRuntime {
         var next: Next? = null
         if (mode.waterfall) {
             val remote = record["next"] as? RemoteFunction ?: return { throw IllegalArgumentException("events.call: a ${mode.wire} needs next") }
-            next = { remote.peer.callFunctionSuspend(remote, emptyList(), mode == Mode.WaterfallSync) }
+            next = { remote.peer.callFunctionSuspend(remote, emptyList(), false) }
         }
         val call = listener.begin() ?: return { throw withdrawn }
         return { call(mode, values, next) }
