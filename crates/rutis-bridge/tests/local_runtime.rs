@@ -192,3 +192,79 @@ async fn a_runtime_announces_running_and_down() {
     })
     .await;
 }
+
+/// A down and the next start in quick succession are both announced: the
+/// announcing task sees every change, not only the latest (#771 nightly:
+/// a Go runtime killed and restarted at once announced neither).
+// guarantee: events/framework (rutis/runtime)
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_down_and_restart_in_quick_succession_are_both_announced() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
+    use std::sync::{Arc, Mutex};
+
+    use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};
+    use rutis_bridge::runtime::RuntimeStates;
+    use rutis_test_support::{eventually, within};
+
+    within("rutis/runtime", async {
+        // A process to be `Ready` with: a Node runtime's.
+        let runtime = TestRuntime::node();
+        let handle = runtime.handle();
+        let root = root();
+        let view = root.plugin(runtime);
+        (&view).await.unwrap();
+        let RuntimeState::Ready(process) = handle.state() else {
+            panic!("the runtime runs");
+        };
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = heard.clone();
+        root.on::<RuntimeEvent>(move |event, _| {
+            if event.runtime == "flicker" {
+                into.lock()
+                    .unwrap()
+                    .push((event.state, event.reason.clone()));
+            }
+            std::future::ready(Ok(None))
+        })
+        .unwrap();
+        // On a runtime of one thread, the announcing task runs only once
+        // every change is made.
+        let (states, ctx) = (RuntimeStates::new("flicker", "."), root.clone());
+        let announced = std::thread::spawn(move || {
+            let tasks = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            tasks.block_on(async {
+                states.announce(&ctx);
+                states.starting();
+                states.ready(process.clone());
+                states.failed("killed");
+                states.starting();
+                states.ready(process);
+                for _ in 0..100 {
+                    tokio::task::yield_now().await;
+                }
+            });
+        });
+        announced.join().unwrap();
+        eventually(
+            || (heard.lock().unwrap().len() == 3).then_some(()),
+            "three changes",
+        )
+        .await;
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [
+                (RuntimeEventState::Running, None),
+                (RuntimeEventState::Down, Some("killed".into())),
+                (RuntimeEventState::Running, None),
+            ]
+        );
+        root.shutdown().await.unwrap();
+    })
+    .await;
+}
