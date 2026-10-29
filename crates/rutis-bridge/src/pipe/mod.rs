@@ -103,12 +103,9 @@ pub async fn greeted(channel: Channel, limit: std::time::Duration) -> Result<Cha
     };
     let (first, receiver) = match limit {
         std::time::Duration::MAX => read.await?,
-        limit => tokio::time::timeout(limit, read).await.map_err(|_| {
-            format!(
-                "the runtime did not greet within {}s",
-                limit.as_secs_f64()
-            )
-        })??,
+        limit => tokio::time::timeout(limit, read)
+            .await
+            .map_err(|_| format!("the runtime did not greet within {}s", limit.as_secs_f64()))??,
     };
     let first = match first {
         Ok(Some(first)) => first,
