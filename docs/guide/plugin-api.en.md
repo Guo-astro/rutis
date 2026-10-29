@@ -1010,7 +1010,6 @@ final class Warmer: @unchecked Sendable {
 - Only a `@RutisClient` protocol declared at file level receives objects: the `rutisObjectProxy` overload the macro generates for it is visible to Swift only at file scope. A `@RutisClient` protocol nested in another type still works with `ctx.use`, but a parameter typed with it does not take an object (`bad-argument`). An optional parameter or result (`(any Cache)?`) does not take an object in 0.18 either; write `any Cache`.
 - A parameter of a data type (a `Codable` type, `String` and so on) fails the call with `bad-argument`: `warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`.
 - A received proxy or `Rutis.Advanced.Client` passed on sends the original object.
-- Objects cannot go to an end older than 0.18: connected directly to one, the call fails with `bad-value` (`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`), and the session goes on.
 
 Swift apps, Kotlin apps and Rust: [Swift app](swift-app.en.md#objects-with-methods), [Kotlin app](kotlin-app.en.md#objects-with-methods), [Rust plugin](rust-plugin.en.md#serve-a-service-to-other-languages).
 
