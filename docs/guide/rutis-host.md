@@ -291,6 +291,7 @@ a running host keeps the old versions until it restarts
 | `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
+| `rutis-host test [--listen <地址>] [<插件>]` | 给各 SDK 的测试工具用：起一个自己没有行的宿主，在标准输入输出上与启动它的进程建一条 session（`--listen` 时是设备连进来的连接），服务 `rutis-host/test` 让插件在对面运行；session 结束时退出（见 [在测试里运行插件](#在测试里运行插件rutis-host-test)） |
 | `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
 每个命令后加 `--help` 或 `-h` 打印它的用法（只有这个命令的那几行），以 0 退出，不做别的事；`rutis-host --help` 打印全部。
@@ -668,6 +669,53 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
 
 `run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
+
+## 在测试里运行插件：`rutis-host test`
+
+`rutis-host test` 给各 SDK 的测试工具用：被测插件跑在真实的运行时里、面对真实的 rutis 内核，测试看到的就是宿主做的事。插件作者不用自己运行它，由测试工具运行。测试工具在 `PATH` 上找它，或用 `RUTIS_HOST` 指定的路径。
+
+```console
+rutis-host test [--listen <地址>] [<插件>]
+```
+
+- 它起一个自己没有行的宿主，在标准输入输出上与启动它的进程建一条 session：每行一条 JSON 消息，与本机运行时的通道是同一种分帧。标准输出只用于 session；它要说的话写在 stderr。
+- 对面是测试工具所用语言的运行时（由测试工具启动）。宿主的 id 是 `host`。
+- 宿主里有插件 `rutis-host/test`，提供服务 `rutis-host/test`：
+
+| 方法 | 做什么 |
+| --- | --- |
+| `load(name, config?)` | 按 session 的 `run`，让对面以 `config` 运行插件 `name`（对面认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行；返回这一行的 id：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`），不留下这一行 |
+| `update(id, config)` | 像改了一行的配置那样给这一行 `config`：插件以它重启。插件拒绝它（这一行保留原配置）或以它失败时失败 |
+| `unload(id)` | 删掉这一行；插件在对面卸载完才返回 |
+| `reported(id)` | 宿主报告过的这一行的事：它的监听器在 `emit` 里失败、它的 `emit` 的过滤器失败，文字与宿主打印的相同（`weather: listener of weather/ask failed: Error: boom`） |
+
+- `<插件>` 在对面最先加载（等同 `load(<插件>)`），在对面完成握手之后：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
+- 这样加载的插件与驱动测试的插件在对面同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。
+- session 结束（对面关闭了它，或对面不在了）时退出：所有清理都完成时退出码 0。对面始终不握手：`rutis-host: test: <原因>`，退出码 1。Ctrl-C 与 SIGTERM 的停止方式与 `run` 相同。
+
+测试工具要做的：
+
+1. 以一对已连接的 socket 的一端作为通道，启动本语言的运行时：`node <runner.mjs> fd:<n> --id <id> <锚点>`、`python3 -m rutis fd:<n> --id <id> <项目>`（`<id>` 是运行时自己的，如 `node`、`py`；对面的插件是 `<id>:<插件>`）。
+2. 以另一端作为标准输入和标准输出，启动 `rutis-host test <驱动测试的插件>`。
+3. 关掉自己手里的两端：运行时或宿主关闭自己那一端时 session 结束。
+4. 测试完成后结束运行时（或关闭它的通道）：宿主卸载所有行，session 结束，宿主以 0 退出。
+
+Windows 上的运行时不接受一对管道作为通道：那里的测试工具自己在两个进程之间转发消息。
+
+`--listen <地址>`：给设备上的测试工具（Android instrumented 测试、iOS 模拟器），那里不能运行 `rutis-host` 进程。宿主在 `<地址>` 上监听（TLS 用 `RUTIS_CERT` 与 `RUTIS_KEY`，与 `listen` 里的监听器相同），连接行是一个 `rutis-host/listen` 行，token 是 `RUTIS_TOKEN_TEST`；测试工具像真实的应用那样拨号连它，它自己装上并报出的插件注册为 `<id>:<插件>`。listen 行的 session 不运行这一端的行，所以 `load` 在这里加的行会等待（`waiting for test`）。它一直运行到 Ctrl-C。
+
+```console
+$ RUTIS_TOKEN_TEST=… rutis-host test --listen 0.0.0.0:7443
+rutis-host: listening on test 0.0.0.0:7443
+test: connected phone-1
+```
+
+| 情况 | 输出 |
+| --- | --- |
+| 对面在握手前离开 | `rutis-host: test: peer disconnected`（退出码 1） |
+| `--listen` 而没有 `RUTIS_TOKEN_TEST` | `rutis-host: test: set RUTIS_TOKEN_TEST: the token the far ends present when they connect`（退出码 1） |
+| 驱动测试的插件起不来 | `rutis-host: ` 加上它那一行的状态行，与 `load` 失败相同（`rutis-host: tester: unresolved: …`；退出码 1） |
+| 对不是 `load` 加的行 `update` 或 `unload` | `no row weather was loaded` |
 
 ## 输出
 
