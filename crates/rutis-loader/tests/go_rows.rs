@@ -1028,7 +1028,7 @@ async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
     let (began, began_rx) = oneshot::channel();
     let (release, release_rx) = oneshot::channel();
     let gate = fixture.root.plugin(Gate {
-        injects: [SessionRows::key("go-netkit")],
+        injects: [SessionRows::key("go-netkit").erase()],
         hold: Arc::new(Mutex::new(Some((began, release_rx)))),
     });
     COLD.until(|| gate.state().state == FiberState::Active, "the gate")

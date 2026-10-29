@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{Process, Projection};
 use rutis_bridge::session::{decode, decode_value, Error};
@@ -76,17 +76,13 @@ impl DynPlugin for Mount {
         Box::pin(async move {
             let projection = Projection::new();
             let on_drop = self.on_drop.clone();
-            projection.service_keyed(
-                "counter",
-                TypeKey::of::<Counter>(),
-                move |process, handle| {
-                    Arc::new(Counter {
-                        process,
-                        handle,
-                        on_drop: on_drop.clone(),
-                    })
-                },
-            );
+            projection.service_keyed("counter", Key::<Counter>::of(), move |process, handle| {
+                Arc::new(Counter {
+                    process,
+                    handle,
+                    on_drop: on_drop.clone(),
+                })
+            });
             let process = Process::launch_observed(
                 &package(),
                 &self.plugin,

@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use common::runtimes::{repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, PluginFactory};
-use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::{Channel, Receiver, Sender};
 use rutis_bridge::session::{
@@ -57,7 +56,7 @@ impl DynPlugin for Contacts {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
         Box::pin(async move {
-            ctx.provide_key::<dyn HostDispatch>(host_key("contacts"), Arc::new(Answer))?;
+            ctx.provide_at(host_key("contacts"), Arc::new(Answer))?;
             Ok(Effect::Done)
         })
     }
@@ -287,10 +286,7 @@ async fn contacts_run_there(root: &Ctx, loader: &Loader) {
     .await;
     // Its services come as the far end announces them.
     COLD.until(
-        || {
-            root.get_key::<dyn HostDispatch>(host_key("contacts").erase())
-                .is_some()
-        },
+        || root.get_at(&host_key("contacts")).is_some(),
         "contacts here",
     )
     .await;

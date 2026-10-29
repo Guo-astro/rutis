@@ -28,7 +28,7 @@ use crate::peer::Offered;
 use crate::peer::Peer;
 use crate::runtime::{Carried, Process, Routed, RowSchema};
 use crate::session::rpc::{Connection, Dispatch, Reply, Value};
-use crate::session::{host_key, Error, HostDispatch};
+use crate::session::{host_key, Error};
 
 /// The key a host provides the plugins a far rutis kernel may run here at
 /// (rutis-loader: its loader's catalog). Without one, a session answers
@@ -211,16 +211,13 @@ impl Server {
     /// A call of a far end's row into the service `name` its row here
     /// provides (or any service by that name here).
     fn call(&self, name: &str, method: &str, args: Value) -> Reply {
-        let service = self
-            .ctx
-            .get_key::<dyn HostDispatch>(host_key(name).erase())
-            .ok_or_else(|| {
-                Error::binding(
-                    crate::session::code::UNAVAILABLE,
-                    format!("service {name} is not available"),
-                    Some(json!({ "service": name })),
-                )
-            })?;
+        let service = self.ctx.get_at(&host_key(name)).ok_or_else(|| {
+            Error::binding(
+                crate::session::code::UNAVAILABLE,
+                format!("service {name} is not available"),
+                Some(json!({ "service": name })),
+            )
+        })?;
         service.invoke(method, args)
     }
 

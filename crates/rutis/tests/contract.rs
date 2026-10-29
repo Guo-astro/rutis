@@ -1173,9 +1173,9 @@ async fn mismatched_service_key_never_satisfies_injection() {
         "needs-dep1",
         vec![key.clone()],
         move |ctx: &Ctx| {
-            let key = TypeKey::keyed::<Dep1>("session-1");
+            let key = Key::<Dep1>::named("session-1");
             Box::pin(async move {
-                assert!(ctx.get_key::<Dep1>(key).is_some());
+                assert!(ctx.get_at(&key).is_some());
                 Ok(Effect::Done)
             })
         },
@@ -1183,7 +1183,10 @@ async fn mismatched_service_key_never_satisfies_injection() {
     soon(async { (&consumer).await }).await.unwrap();
     assert_eq!(consumer.state().state, FiberState::Pending);
 
-    let err = ctx.provide_key(key.clone(), Arc::new(Dep2)).unwrap_err();
+    // Only an erased key can name another type.
+    let Err(err) = ctx.provide_mut_at(key.clone(), Arc::new(Dep2)) else {
+        panic!("a Dep2 under a Dep1 key was accepted");
+    };
     let ErrorKind::Validation { issues } = &*err else {
         panic!("expected a type validation error");
     };
@@ -1191,9 +1194,10 @@ async fn mismatched_service_key_never_satisfies_injection() {
     assert!(issues[0].contains("Dep1"));
     assert!(issues[0].contains("Dep2"));
     assert_eq!(consumer.state().state, FiberState::Pending);
-    assert!(ctx.get_key::<Dep1>(key.clone()).is_none());
+    let key = Key::<Dep1>::dynamic("session-1");
+    assert!(ctx.get_at(&key).is_none());
 
-    ctx.provide_key(key, Arc::new(Dep1)).unwrap();
+    ctx.provide_at(key, Arc::new(Dep1)).unwrap();
     soon(async { (&consumer).await }).await.unwrap();
     assert_eq!(consumer.state().state, FiberState::Active);
 }
