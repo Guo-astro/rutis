@@ -315,7 +315,7 @@ fn ios_apps_host_plugins_per_device_stop_in_the_background_and_its_health_access
         json!({ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }),
     ];
     for (id, name) in [("sim-a", "a"), ("sim-b", "b")] {
-        s.write(&format!("coach_{name}.py"), &COACH.replace("__ID__", id));
+        s.write(format!("coach_{name}.py"), COACH.replace("__ID__", id));
         rows.push(json!({ "id": format!("coach-{name}"), "name": format!("py:coach_{name}"), "config": { "dir": records } }));
     }
     s.write_json(
