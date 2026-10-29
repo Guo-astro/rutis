@@ -335,6 +335,10 @@ final class Runtime: @unchecked Sendable {
     /// while it offers none; and the version of its offers.
     var servicesOffer: Int?
     var farOffers = 0
+    /// Whether rutis offered `events`: it serves this side a runtime
+    /// session (`host`, `service`, `events` and `rows` come together), and
+    /// an app's own plugins install only from then on.
+    var hosting = false
     /// The services rutis announced to this side, by name: the newest
     /// version it said of each, nil methods once withdrawn (kept so that an
     /// older announcement arriving later does not bring it back).
@@ -556,7 +560,8 @@ final class Runtime: @unchecked Sendable {
     }
 
     /// rutis's offers (`link.offers`): every service shared is announced
-    /// to each new offer of `services`, as rutis nodes do.
+    /// to each new offer of `services`, as rutis nodes do; the first offer
+    /// of `events` lets an app's own plugins install.
     private func offered(_ offers: JSON) {
         lock.lock()
         let version = offers["version"]?.int64Value.map(Int.init) ?? 0
@@ -564,6 +569,10 @@ final class Runtime: @unchecked Sendable {
         farOffers = version
         let families = offers["families"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let offer = families.contains("services") ? (offers["since"]?["services"]?.int64Value.map(Int.init) ?? 0) : nil
+        if families.contains("events"), !hosting {
+            hosting = true
+            reconcile()
+        }
         if offer != servicesOffer {
             servicesOffer = offer
             if offer != nil {
@@ -608,8 +617,12 @@ final class Runtime: @unchecked Sendable {
     }
 
     /// Installs an app's own plugins once rutis greeted: offers `services`
-    /// (rutis's services come to this side), then each plugin, in order,
-    /// with its configuration, once every service it injects is there.
+    /// (rutis's services come to this side), then, once rutis offers
+    /// `events` (the families its plugins call are there then), each
+    /// plugin, in order, with its configuration, once every service it
+    /// injects is there. A far end that never offers `events` serves no
+    /// runtime session: the plugins have nothing to install into and do not
+    /// install.
     func install(_ plugins: [(definition: Rutis.Definition, config: Value)]) {
         guard let session else { return }
         lock.withLock { own = plugins }
@@ -637,7 +650,7 @@ final class Runtime: @unchecked Sendable {
             let next: (Rutis.Definition, Value, Bool)? = lock.withLock {
                 if !closing {
                     for (definition, config) in own {
-                        let ready = definition.inject.allSatisfy(available)
+                        let ready = hosting && definition.inject.allSatisfy(available)
                         switch ownStates[definition.name] ?? .waiting {
                         case .waiting where ready:
                             return (definition, config, true)
