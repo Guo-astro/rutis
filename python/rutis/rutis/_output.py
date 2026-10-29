@@ -113,8 +113,9 @@ def blocking_text(runtime: str, row: str, method: str, seconds: float) -> str:
 class BlockingWatch:
     """`held(row, method, call)` runs `call()` as a call of row `row`'s
     `method` (`forecast.tomorrow`); one that runs for `limit` seconds is
-    said once, on stderr, by a thread (started with the first call).
-    `runtime()`: the runtime's name. Off (`call()` alone) when `quiet`."""
+    said once, on stderr, by a thread (started with the first call, ended
+    by `close()`). `runtime()`: the runtime's name. Off (`call()` alone)
+    when `quiet`."""
 
     def __init__(self, runtime: Callable[[], str], limit: float | None = None, quiet: bool | None = None) -> None:
         self.runtime = runtime
@@ -126,6 +127,13 @@ class BlockingWatch:
         self._calls = 0
         self._depth = 0
         self._thread: threading.Thread | None = None
+        self._closed = False
+
+    def close(self) -> None:
+        """End the watching thread: the runtime it watches is gone."""
+        with self._changed:
+            self._closed = True
+            self._changed.notify_all()
 
     def held(self, row: str, method: str, call: Callable[[], Any]) -> Any:
         if self.quiet:
@@ -137,7 +145,7 @@ class BlockingWatch:
                 self._calls += 1
                 self._held = (row, method, self._calls)
                 self._changed.notify_all()
-            if self._thread is None:
+            if self._thread is None and not self._closed:
                 self._thread = threading.Thread(target=self._watch, name="rutis-blocking", daemon=True)
                 self._thread.start()
         try:
@@ -160,11 +168,13 @@ class BlockingWatch:
     def _watch(self) -> None:
         with self._changed:
             while True:
-                self._changed.wait_for(lambda: self._held is not None)
+                self._changed.wait_for(lambda: self._closed or self._held is not None)
+                if self._closed:
+                    return
                 row, method, number = self._held  # type: ignore[misc]
 
                 def ended() -> bool:
-                    return self._held is None or self._held[2] != number
+                    return self._closed or self._held is None or self._held[2] != number
 
                 if not self._changed.wait_for(ended, timeout=self.limit):
                     try:
