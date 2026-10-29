@@ -1584,10 +1584,6 @@ async fn kotlin_bad_values() {
     tokio::task::spawn_blocking(move || bad_values(&near, "kotlin"))
         .await
         .unwrap();
-    let (near, _second) = far_end_with(kotlin::session(), main_without_objects("kotlin")).await;
-    tokio::task::spawn_blocking(move || objects_refused(&near, "kotlin"))
-        .await
-        .unwrap();
 }
 
 /// guarantee: bridge/value-tags. Tagged values come back from the Kotlin

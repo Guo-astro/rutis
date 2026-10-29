@@ -461,7 +461,6 @@ public final class arcships/rutis/internal/Mode : java/lang/Enum {
 	public static final field Parallel Larcships/rutis/internal/Mode;
 	public static final field Serial Larcships/rutis/internal/Mode;
 	public static final field Waterfall Larcships/rutis/internal/Mode;
-	public static final field WaterfallSync Larcships/rutis/internal/Mode;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public final fun getWaterfall ()Z
 	public final fun getWire ()Ljava/lang/String;
@@ -494,12 +493,9 @@ public final class arcships/rutis/internal/Report {
 
 public final class arcships/rutis/internal/RuntimeKt {
 	public static final fun getFEATURES ()Ljava/util/List;
-	public static final fun getOldHostOutput ()Lkotlin/jvm/functions/Function1;
 	public static final fun handleOf (Ljava/lang/String;I)Ljava/lang/String;
-	public static final fun oldHost (Ljava/lang/String;)Ljava/lang/String;
 	public static final fun printable (Ljava/lang/String;)Ljava/lang/String;
 	public static final fun scopedId (Ljava/lang/String;Ljava/lang/String;Z)Ljava/lang/String;
-	public static final fun setOldHostOutput (Lkotlin/jvm/functions/Function1;)V
 }
 
 public final class arcships/rutis/internal/RuntimeSession {
@@ -537,7 +533,6 @@ public final class arcships/rutis/internal/Schema {
 }
 
 public final class arcships/rutis/internal/SessionsKt {
-	public static final field OLD_EVENTS_HOST Ljava/lang/String;
 	public static final fun refusedLine (Ljava/lang/String;)Ljava/lang/String;
 }
 
@@ -701,7 +696,6 @@ public final class arcships/rutis/internal/peer/Peer {
 
 public final class arcships/rutis/internal/peer/PeerKt {
 	public static final field ENDPOINT_PROTOCOL I
-	public static final field EVENTS_CAPABILITY Ljava/lang/String;
 	public static final field MAX_DEPTH I
 	public static final fun getSESSION_CAPABILITIES ()Ljava/util/List;
 	public static final fun jsonDepth (Lkotlinx/serialization/json/JsonElement;)I
