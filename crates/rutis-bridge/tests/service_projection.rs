@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
 use rutis::{Ctx, Error as RutisError};
-use rutis_bridge::runtime::{Process, Projection};
+use rutis_bridge::runtime::{Mount as RuntimeMount, Process, Projection};
 use rutis_bridge::session::{decode, Error};
 use rutis_test_support::until;
 use serde_json::json;
@@ -66,12 +66,14 @@ impl DynPlugin for Mount {
             let projection = Projection::new();
             projection.service::<Counter>("counter", |process, handle| Counter { process, handle });
             let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-            let process = Process::launch_observed(
+            let process = Process::mount(
                 &package,
-                &self.plugin,
-                json!({}),
-                json!({ "counter": ["current", "swap", "assign"], "control": ["withdraw", "restore"] }),
-                Some(projection.clone()),
+                RuntimeMount {
+                    plugins: vec![(&self.plugin, json!({}))],
+                    services: json!({ "counter": ["current", "swap", "assign"], "control": ["withdraw", "restore"] }),
+                    observer: Some(projection.clone()),
+                    ..RuntimeMount::default()
+                },
             )
             .await?;
             let owner = process.clone();
@@ -89,6 +91,9 @@ impl DynPlugin for Mount {
 
 #[tokio::test(flavor = "current_thread")]
 async fn projected_service_follows_replacement_and_withdrawal() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut file = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     file.write_all(PLUGIN).unwrap();
     let ctx = Ctx::root().unwrap();

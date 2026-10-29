@@ -13,11 +13,13 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::events::{ArgValue, Args};
-use rutis_bridge::runtime::{Mount, Process};
+use rutis_bridge::runtime::Process;
 use rutis_bridge::session::{settle, Connection, Dispatch, Endpoint, Error, Reply, Value};
 use rutis_test_support::within;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+
+mod common;
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
@@ -89,20 +91,18 @@ struct Rig {
     far: Connection,
 }
 
-async fn rig_with(root: Ctx, endpoint: Endpoint) -> Result<Rig, Error> {
+async fn rig_with(root: Ctx, mut endpoint: Endpoint) -> Result<Rig, Error> {
     let (a, b) = rutis_bridge::memory::pair();
     let fake = Arc::new(Fake::default());
+    // A language runtime, which the session mounts a process on.
+    endpoint.capabilities.push("runtime".into());
     let far = Connection::open(b, fake.clone(), endpoint).unwrap();
-    let process = Process::attach(
-        a,
-        Mount {
-            ctx: Some(root.clone()),
-            runtime: Some("rt".into()),
-            ..Mount::default()
-        },
-        Endpoint::rust(id("host")),
-    )
-    .await?;
+    if root.get::<rutis_bridge::LocalId>().is_none() {
+        common::runtime::greet_as_main(&root);
+    }
+    let process = common::runtime::attached(&root, "rt", a)
+        .await
+        .map_err(Error::Transport)?;
     Ok(Rig {
         root,
         process,
@@ -239,7 +239,7 @@ async fn a_runtime_hears_what_is_elsewhere() {
         let rig = rig_with(root.clone(), Endpoint::rust(id("rt")))
             .await
             .unwrap();
-        // Sent before `attach` returns, as a one-way message: the far side
+        // Sent before the session is mounted, as a one-way message: the far side
         // handles it in its own time.
         eventually(|| !rig.elsewhere().is_empty(), "t/before").await;
         assert_eq!(rig.elsewhere()[0], json!({ "add": ["t/before"] }));

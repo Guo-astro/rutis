@@ -1,13 +1,16 @@
 use std::io::Write;
 use std::path::Path;
 
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::Error;
 use rutis_test_support::{scaled, within, HANG_GUARD};
 use serde_json::json;
 
 #[tokio::test(flavor = "current_thread")]
 async fn cleanup_releases_an_in_flight_call() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin
         .write_all(
@@ -25,11 +28,13 @@ async fn cleanup_releases_an_in_flight_call() {
         )
         .unwrap();
     let node_package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-    let process = Process::launch(
+    let process = Process::mount(
         &node_package,
-        plugin.path(),
-        json!({}),
-        json!({"lifecycle": ["wait", "started"]}),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({"lifecycle": ["wait", "started"]}),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -54,6 +59,9 @@ async fn cleanup_releases_an_in_flight_call() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_handle_keeps_its_object_after_the_slot_is_replaced() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     plugin
         .write_all(
@@ -69,11 +77,13 @@ async fn a_handle_keeps_its_object_after_the_slot_is_replaced() {
         )
         .unwrap();
     let node_package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-    let process = Process::launch(
+    let process = Process::mount(
         &node_package,
-        plugin.path(),
-        json!({}),
-        json!({"counter": ["current", "replace", "nativeCurrent"]}),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({"counter": ["current", "replace", "nativeCurrent"]}),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -96,6 +106,9 @@ async fn a_handle_keeps_its_object_after_the_slot_is_replaced() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn process_exit_fails_both_pending_and_subsequent_calls() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let mut plugin = tempfile::Builder::new().suffix(".mjs").tempfile().unwrap();
     // A native plugin: no protocol callbacks or wire declarations in its code.
     plugin
@@ -116,11 +129,13 @@ async fn process_exit_fails_both_pending_and_subsequent_calls() {
         .join("../../node/rutis-runtime")
         .canonicalize()
         .unwrap();
-    let process = Process::launch(
+    let process = Process::mount(
         &node_package,
-        plugin.path(),
-        json!({}),
-        json!({ "lifecycle": ["wait", "started", "crash"] }),
+        Mount {
+            plugins: vec![(plugin.path(), json!({}))],
+            services: json!({ "lifecycle": ["wait", "started", "crash"] }),
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -137,7 +152,7 @@ async fn process_exit_fails_both_pending_and_subsequent_calls() {
         Err(Error::Transport(message)) => {
             // `exit status: 17` on Unix, `exit code: 17` on Windows.
             assert!(
-                message.starts_with("Cordis process exited with exit ") && message.ends_with(" 17"),
+                message.starts_with("the process exited with exit ") && message.ends_with(" 17"),
                 "{message}"
             )
         }

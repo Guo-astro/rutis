@@ -161,7 +161,7 @@ fn runtime(node: &NodeRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
                 node.project.display()
             )
         })?;
-    let mut launcher = Launcher::node(&package);
+    let mut launcher = launcher(&package);
     if debug {
         launcher
             .args
@@ -198,3 +198,16 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/node/.github/workflows/publish.yml"),
     ),
 ];
+
+/// The Node runtime of the npm package `package` (`node/rutis-runtime`, or
+/// an installed `@arcships/rutis-runtime`): `node --import tsx
+/// src/runner.mjs` in the package, on an inherited socket (on Windows, a
+/// loopback address).
+pub fn launcher(package: &Path) -> Launcher {
+    Launcher::new("node")
+        .arg("--import")
+        .arg("tsx")
+        .arg(package.join("src/runner.mjs"))
+        .cwd(package)
+        .inherit_fd()
+}

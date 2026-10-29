@@ -86,6 +86,9 @@ async fn python(project: &Path) -> Arc<Process> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_follow_the_row_contract() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("weather_plugin.py"), WEATHER).unwrap();
     let process = python(dir.path()).await;
@@ -169,6 +172,9 @@ async fn python_rows_follow_the_row_contract() {
 /// one clear error, instead of every row failing later.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_the_row_contract_fails_to_start() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = std::env::join_paths([sdk(), dir.path().to_path_buf()]).unwrap();
     // The Python runtime, made to report no features, like an old runner.
@@ -199,6 +205,9 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
 /// made to drop it, which is the latest it can be.
 #[tokio::test(flavor = "multi_thread")]
 async fn unloading_a_row_withdraws_its_services_without_waiting_for_the_runtime() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("weather_plugin.py"), WEATHER).unwrap();
     let path = std::env::join_paths([sdk(), dir.path().to_path_buf()]).unwrap();

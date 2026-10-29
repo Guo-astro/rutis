@@ -9,9 +9,9 @@ This is the API reference. To build a host open to plugins from the start, follo
 ```toml
 [dependencies]
 rutis = "0.19"
-rutis-loader = { version = "0.19", features = ["node", "python"] }
-rutis-bridge = { version = "0.19", features = ["python", "websocket"] }   # node is enabled by default
-rutis-host = "0.19"                # connect::SpawnPlugin starts the local language runtimes
+rutis-loader = { version = "0.19", features = ["node"] }
+rutis-bridge = { version = "0.19", features = ["websocket"] }
+rutis-host = "0.19"                # connect::SpawnPlugin and languages start the local language runtimes
 schemars = "1"                     # the config types Builtins::register decodes derive schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -20,12 +20,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | Crate / feature | Contents |
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
-| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages (and `<connection row>:<plugin>` rows). |
-| `rutis-host` | Its `connect::SpawnPlugin` starts a local language runtime and opens a session on its channel, as rutis-host's `runtimes` do. |
-| `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `testing` enables compatibility tests. |
+| `rutis-loader` | Loads plugins from data rows. `runtimes` enables rows of other languages (`<runtime row>:<plugin>`, `<connection row>:<plugin>`); `node` enables Node rows (npm names and files); `go` / `swift` enable Go and Swift rows. |
+| `rutis-host` | Its `connect::SpawnPlugin` starts a local language runtime and opens a session on its channel, as rutis-host's `runtimes` do; `languages::<language>::launcher` is the command that starts each language's runtime. |
+| `rutis-bridge` | Connects processes, languages, and machines, with no language of its own. `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `testing` enables compatibility tests. |
 | `rutis-types` | In `[build-dependencies]`: writes the TypeScript declarations and Python types of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`. |
 
-Enable only the language features you use so the application compiles and starts only the required components.
+Enable only the rutis-loader language features you use so the application compiles and starts only the required components.
 
 ## Mount Rust plugins
 
@@ -439,9 +439,9 @@ for def in parts.of("session") {
 # let mut builtins = Builtins::new();
 # builtins.register("weather", Weather::new);
 use std::sync::Arc;
-use rutis_bridge::runtime::Launcher;
 use rutis_bridge::{LocalId, PeerId};
 use rutis_host::connect::SpawnPlugin;
+use rutis_host::languages;
 use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 
@@ -455,9 +455,9 @@ root.provide(LocalId(PeerId::new("main")?))?;
 
 // Local Node runtime (row `node`): the @arcships/rutis-runtime package that runs, and the package.json plugins resolve from.
 // Events need no configuration: listeners in the runtime register themselves on the host's bus (see "Events" below).
-let node = SpawnPlugin::new("node", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
+let node = SpawnPlugin::new("node", languages::node::launcher(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
-let python = SpawnPlugin::new("py", Launcher::python(&app.join("plugins")), app.join("plugins"))
+let python = SpawnPlugin::new("py", languages::python::launcher(&app.join("plugins")), app.join("plugins"))
     .interpreter(app.join(".venv/bin/python"));
 // The rows on the runtimes: `py:<module>` on py; npm names and files on node.
 let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
@@ -522,16 +522,16 @@ for failure in &report.failures {
 - A runtime process gets no standard input, and writes to the application's standard output and error. A plugin that reads the terminal (a terminal UI, Python's `input()`) needs the terminal itself, since it checks that its input is one and sets the terminal's modes: give its runtime this process's streams with `stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit)`. The setting covers the whole runtime process, so every plugin in it can read the input. Load such a plugin into a runtime of its own (a `SpawnPlugin` under another name), and give the terminal to one runtime at most: processes reading the same terminal race for each key. `Stdio::Null` as their standard output and error keeps the other runtimes from writing over it. `Launcher` has the same settings (`stdin`, `stdout`, `stderr`).
 
 ```rust,no_run
-# use rutis_bridge::runtime::Launcher;
 # use rutis_host::connect::SpawnPlugin;
+# use rutis_host::languages;
 # let app = std::path::PathBuf::from("/srv/app");
 use rutis_bridge::runtime::Stdio;
 
 // A terminal UI in its own runtime, reading the keyboard; the plugins' runtime writes no output over it.
 let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
-let tui = SpawnPlugin::new("tui", Launcher::node(&runtime_package), app.join("package.json"))
+let tui = SpawnPlugin::new("tui", languages::node::launcher(&runtime_package), app.join("package.json"))
     .stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
-let node = SpawnPlugin::new("node", Launcher::node(&runtime_package), app.join("package.json"))
+let node = SpawnPlugin::new("node", languages::node::launcher(&runtime_package), app.join("package.json"))
     .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
 ```
 
@@ -541,7 +541,7 @@ For keeping third-party plugins in check; how to use them is in [Build a host op
 
 | `SpawnPlugin` method | What it does |
 | --- | --- |
-| `new(name, launcher, anchor)` | The runtime `name`: the row its fiber is, and the id its process greets with. `launcher` starts the process (`Launcher::node`, `::python`, `::bun`, `::go`, `::swift`, or `Launcher::new`); `anchor` is where its plugins resolve from |
+| `new(name, launcher, anchor)` | The runtime `name`: the row its fiber is, and the id its process greets with. `launcher` starts the process (`node::launcher`, `python::launcher`, `bun::launcher`, `go::launcher`, `swift::launcher` of `rutis_host::languages`, or `rutis_bridge::runtime::Launcher::new`); `anchor` is where its plugins resolve from |
 | `.interpreter(program)` | Run the process with `program` instead of the launcher's (a Python interpreter, a Node executable) |
 | `.python_path(dir)` | Put `dir` ahead on the process's `PYTHONPATH` |
 | `.env(name, value)` | Set an environment variable of the process |
@@ -596,7 +596,7 @@ root.plugin(go_runtimes).await?;
 - The loader does not restart a crashed runtime: it shows as stopped (`control.runtimes()`), and its rows wait. `control.restart("go-netkit")` starts it again. rutis-host's `restart` setting does this for you (see [rutis-host: When a runtime ends](rutis-host.en.md#when-a-runtime-ends)). A binary whose handshake was refused (an old SDK) would not start on a restart either; `rutis_loader::runtime::binary::refused(why)` tells this case, and it is not started again until its file changes.
 - Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts: `launch` returns a `Launcher`); Go is `L` = `Go`.
 
-- To run one fixed binary, it also works as Python does: `SpawnPlugin::new(name, Launcher::go(&binary, &project), &project)` with `SessionResolver` (rows `<runtime name>:<plugin>`).
+- To run one fixed binary, it also works as Python does: `SpawnPlugin::new(name, languages::go::launcher(&binary, &project), &project)` with `SessionResolver` (rows `<runtime name>:<plugin>`).
 
 ## Debugging
 

@@ -223,7 +223,7 @@ impl GoDev {
                 .map(|command| format!("./cmd/{command}"))
                 .unwrap_or_else(|| ".".into())
         };
-        let runtime = rutis_bridge::runtime::go_runtime_name(Path::new(&name));
+        let runtime = rutis_loader::runtime::go::go_runtime_name(Path::new(&name));
         Some(Self {
             dir: dir.to_owned(),
             name,
@@ -327,7 +327,7 @@ impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
     const PLUGIN_API: u64 = rutis_loader::runtime::go::Go::PLUGIN_API;
 
     fn runtime_name(path: &Path) -> String {
-        rutis_bridge::runtime::go_runtime_name(path)
+        rutis_loader::runtime::go::go_runtime_name(path)
     }
 
     fn launch(binary: &Path, project: &Path) -> Launcher {
@@ -366,3 +366,11 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/go/.github/workflows/release.yml"),
     ),
 ];
+
+/// One Go binary's runtime: `binary`, in `project`, on an inherited socket
+/// (on Windows, a loopback address), as the Go runtimes start.
+pub fn launcher(binary: &Path, project: &Path) -> rutis_bridge::runtime::Launcher {
+    <rutis_loader::runtime::go::Go as rutis_loader::runtime::binary::BinaryLanguage>::launch(
+        binary, project,
+    )
+}

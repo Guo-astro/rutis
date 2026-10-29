@@ -1,4 +1,4 @@
-use rutis_bridge::runtime::Process;
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::{Error, Value};
 use rutis_test_support::within;
 use serde_json::json;
@@ -33,7 +33,7 @@ async fn launch() -> (tempfile::NamedTempFile, Arc<Process>) {
         )
         .unwrap();
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime");
-    let peer = Process::launch(&package, plugin.path(), json!({}), json!({"callbacks": ["apply", "nested", "save", "fire", "clear", "same", "echo", "getFunction", "onlyInvoke", "awaitCallback", "current"]})).await.unwrap();
+    let peer = Process::mount(&package, Mount { plugins: vec![(plugin.path(), json!({}))], services: json!({"callbacks": ["apply", "nested", "save", "fire", "clear", "same", "echo", "getFunction", "onlyInvoke", "awaitCallback", "current"]}), ..Mount::default() }).await.unwrap();
     (plugin, peer)
 }
 fn number(value: Value) -> f64 {
@@ -45,6 +45,9 @@ fn args(values: Vec<Value>) -> Value {
 
 #[tokio::test(flavor = "current_thread")]
 async fn sync_wait_pumps_original_thread_callback_and_nested_calls() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, peer) = launch().await;
     let caller = std::thread::current().id();
     let connection = peer.connection().clone();
@@ -76,6 +79,9 @@ async fn sync_wait_pumps_original_thread_callback_and_nested_calls() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn saved_callbacks_and_live_proxy_identity_survive_the_first_call() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, peer) = launch().await;
     let callback =
         Value::callback(|values| Ok(json!(number(values.list()?.remove(0)) + 1.0).into()));
@@ -151,6 +157,9 @@ async fn saved_callbacks_and_live_proxy_identity_survive_the_first_call() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invoke_keeps_future_lazy_and_async_wait_uses_original_executor() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, peer) = launch().await;
     let polled = Arc::new(AtomicBool::new(false));
     let observed = polled.clone();
@@ -185,6 +194,9 @@ async fn invoke_keeps_future_lazy_and_async_wait_uses_original_executor() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn sync_await_reports_known_executor_cycle_but_allows_ready_future() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, peer) = launch().await;
     for ready in [true, false] {
         let callback = Value::callback(move |_| {
@@ -278,6 +290,9 @@ fn rpc_client() -> std::path::PathBuf {
 /// or a loopback address); the channel's end says how it exited.
 #[tokio::test(flavor = "current_thread")]
 async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use rutis_bridge::pipe::{Processes, Spawn};
 
     let mut spawn = Spawn::new("node");
@@ -347,6 +362,9 @@ mod websocket {
     /// The same session, Node dialing a Rust listener over WebSocket.
     #[tokio::test(flavor = "current_thread")]
     async fn node_dialing_a_rust_listener() {
+        if !rutis_test_support::runtimes::enabled("node") {
+            return;
+        }
         let (sender, accepted) = std::sync::mpsc::channel();
         let sender = Mutex::new(sender);
         let listener = websocket::listen(
@@ -383,6 +401,9 @@ mod websocket {
     /// The same session, Rust dialing a Node listener over WebSocket.
     #[tokio::test(flavor = "current_thread")]
     async fn rust_dialing_a_node_listener() {
+        if !rutis_test_support::runtimes::enabled("node") {
+            return;
+        }
         let mut child = tokio::process::Command::new("node")
             .arg(rpc_client())
             .arg("listen:ws://127.0.0.1:0/rutis")
@@ -435,6 +456,9 @@ mod websocket {
 
 #[tokio::test(flavor = "current_thread")]
 async fn sync_wait_detects_an_async_callback_already_running_on_its_runtime() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (_file, peer) = launch().await;
     let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let callback = Value::callback(move |_| {
@@ -463,6 +487,9 @@ async fn sync_wait_detects_an_async_callback_already_running_on_its_runtime() {
 /// it on its waiting thread; a misrouted or queued callback deadlocks.
 #[tokio::test(flavor = "current_thread")]
 async fn a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_owner() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use rutis_bridge::runtime::Host;
     use rutis_bridge::session::HostDispatch;
     use rutis_bridge::session::{Connection, Reply};
@@ -517,12 +544,14 @@ async fn a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_o
         methods: json!({ "run": "sync" }),
         dispatch,
     };
-    let b = Process::launch_mount(
+    let b = Process::mount(
         &package,
-        &[(user.path(), json!({}))],
-        json!({ "callbacks": ["apply"] }),
-        None,
-        vec![host("inner", Arc::new(Inner))],
+        Mount {
+            plugins: vec![(user.path(), json!({}))],
+            services: json!({ "callbacks": ["apply"] }),
+            hosts: vec![host("inner", Arc::new(Inner))],
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();
@@ -530,12 +559,14 @@ async fn a_function_forwarded_between_two_node_runtimes_calls_back_its_waiting_o
         source: OnceLock::new(),
         target: b.connection().clone(),
     });
-    let a = Process::launch_mount(
+    let a = Process::mount(
         &package,
-        &[(owner.path(), json!({}))],
-        json!({ "caller": ["go"] }),
-        None,
-        vec![host("bridge", bridge.clone())],
+        Mount {
+            plugins: vec![(owner.path(), json!({}))],
+            services: json!({ "caller": ["go"] }),
+            hosts: vec![host("bridge", bridge.clone())],
+            ..Mount::default()
+        },
     )
     .await
     .unwrap();

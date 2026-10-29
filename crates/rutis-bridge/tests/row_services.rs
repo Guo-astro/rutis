@@ -82,6 +82,9 @@ async fn rows_process(dir: &Path) -> Arc<Process> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn describe_reports_config_inject_and_provides() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     assert!(process.supports("rows.v2") && process.supports("hosts"));
@@ -133,6 +136,9 @@ export function apply(ctx) {
 /// unloading withdraws them.
 #[tokio::test(flavor = "multi_thread")]
 async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     assert!(process.supports("rows.announce"));
@@ -186,6 +192,9 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_services_reach_rutis_and_hosts_are_leased() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "weather.mjs", WEATHER);
@@ -375,6 +384,9 @@ async fn load_held(
 /// to drop it, and the service stayed in rutis after its row was gone.
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "greeter.mjs", GREETER);
@@ -411,6 +423,9 @@ async fn closing_keeps_a_withdrawal_reported_during_a_publication() {
 /// once and leave the service in rutis.
 #[tokio::test(flavor = "multi_thread")]
 async fn withdraw_waits_for_a_publication_under_way() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let process = rows_process(dir.path()).await;
     let entry = write(dir.path(), "greeter.mjs", GREETER);

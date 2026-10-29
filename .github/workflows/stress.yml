@@ -211,7 +211,7 @@ jobs:
           # events_conformance runs in events-all instead: one round of
           # it takes longer than a test binary may here.
           # shellcheck disable=SC2046 # the list splits into test names
-          build rutis-loader "--features node,python,go,bun" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
+          build rutis-loader "--features node,go" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
           cut -f1,3 "$list"
           # No binaries would make every round pass without running anything.
           [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }

@@ -1182,6 +1182,9 @@ async fn rust_releases_balance() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || round_trip(&near, "node", Numbers::Doubles))
         .await
@@ -1190,6 +1193,9 @@ async fn node_values_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_tagged_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "node"))
         .await
@@ -1198,6 +1204,9 @@ async fn node_tagged_values_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "node"))
         .await
@@ -1207,6 +1216,9 @@ async fn node_depth_limit() {
 /// guarantee: bridge/bad-values (#675).
 #[tokio::test(flavor = "multi_thread")]
 async fn node_bad_values() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "node"))
         .await
@@ -1215,6 +1227,9 @@ async fn node_bad_values() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_releases_balance() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let (near, _child) = far_end(node(), "node").await;
     tokio::task::spawn_blocking(move || releases_balance(&near, "node"))
         .await
@@ -1225,6 +1240,9 @@ async fn node_releases_balance() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || round_trip(&near, "python", Numbers::Exact))
         .await
@@ -1233,6 +1251,9 @@ async fn python_values_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "python"))
         .await
@@ -1242,6 +1263,9 @@ async fn python_depth_limit() {
 /// guarantee: bridge/bad-values (#675).
 #[tokio::test(flavor = "multi_thread")]
 async fn python_bad_values() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "python"))
         .await
@@ -1250,6 +1274,9 @@ async fn python_bad_values() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn python_releases_balance() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let (near, _child) = far_end(python(), "python").await;
     tokio::task::spawn_blocking(move || releases_balance(&near, "python"))
         .await

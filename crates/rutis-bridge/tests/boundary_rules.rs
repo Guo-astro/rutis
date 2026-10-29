@@ -121,6 +121,9 @@ fn strings(value: &Json) -> Vec<String> {
 /// class the plugin declares, which natively it is.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_service_is_a_proxy_not_an_instance_of_the_declared_class() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let log = Log::default();
     let mounted = Mounted::new(&log).await;
     let bridged = mounted.call("host").await.unwrap();

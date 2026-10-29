@@ -168,7 +168,7 @@ fn runtime(py: &PythonRuntime) -> Result<SpawnPlugin, Error> {
         });
     }
     let mut runtime =
-        SpawnPlugin::new("py", Launcher::python(&py.project), &py.project).interpreter(interpreter);
+        SpawnPlugin::new("py", launcher(&py.project), &py.project).interpreter(interpreter);
     if let Some(source) = source {
         runtime = runtime.python_path(source);
     }
@@ -322,6 +322,28 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../templates/python/.github/workflows/publish.yml"),
     ),
 ];
+
+/// The Python runtime: `python3 -m rutis` (`python` on Windows; the `rutis`
+/// package installed where that interpreter finds it), with `project`
+/// ahead of the inherited `PYTHONPATH`, in `project`, on an inherited socket
+/// (on Windows, a loopback address).
+pub fn launcher(project: &Path) -> Launcher {
+    let mut entries = vec![project.to_owned()];
+    if let Some(inherited) = std::env::var_os("PYTHONPATH").filter(|path| !path.is_empty()) {
+        entries.extend(std::env::split_paths(&inherited));
+    }
+    let path = std::env::join_paths(&entries).unwrap_or_else(|_| project.as_os_str().to_owned());
+    Launcher::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg("-m")
+        .arg("rutis")
+        .env("PYTHONPATH", path)
+        .env("PYTHONUNBUFFERED", "1")
+        // A plugin imported again after an edit must not come from a
+        // bytecode file written in the same second as the old source.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .cwd(project)
+        .inherit_fd()
+}
 
 #[cfg(test)]
 mod tests {

@@ -137,21 +137,21 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
   | `Transport`、`Dial`、`transport_key`；`LocalPlugin`、`MemoryPlugin`、`WebSocketPlugin` 与它们的 `*Transport`；`websocket::Config` | `websocket::dial`、`websocket::listen`、`pipe::spawn`、`memory::pair` 直接给出 `Channel` |
   | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote`；`RuntimeSession`、`runtime_session_key`、`RuntimeAccessPlugin` | 连接插件里 `ctx.plugin(Session::new(websocket::dial(...)?))`（或 `Session::handshake(&ctx, channel).await` 后 `ctx.plugin(greeted)`），行 `<名>:<插件>` |
   | `AccessPointPlugin`、`AccessPointConfig`、`AccessEvent`、`Accept`、`Accepted`、`Release`；loader 的 `RuntimeInstances`、`AcceptInstances`、`RuntimeConnection` | `rutis-host/listen`，或自己的连接插件 |
-  | `rutis_bridge::runtime::LocalRuntime`（`node`、`python`、`go`、`swift`、`bun`、`launcher`、`named`、`env`、`interpreter`、`python_path`、`stdin` / `stdout` / `stderr`、`greeting`、`handle`、`processes`） | `rutis_host::connect::SpawnPlugin::new(名字, launcher, anchor)`，即插件 `rutis-host/spawn`（依赖 `rutis-host`）：`launcher` 是 `rutis_bridge::runtime::Launcher::node(&包)`、`::python`、`::go`、`::swift`、`::bun` 或 `Launcher::new`，`名字` 是原来 `named` 给的（默认 `node`、`py` 等）；`.interpreter`、`.python_path`、`.env`、`.stdio(stdin, stdout, stderr)`、`.greeting(时限)`、`.handle()`、`.processes()`；`output_prefix` 在 `Launcher` 上。用 `root.plugin(spawn)` 挂上；根上提供会话问候用的 id：`root.provide(rutis_bridge::LocalId(PeerId::new("main")?))` |
+  | `rutis_bridge::runtime::LocalRuntime`（`node`、`python`、`go`、`swift`、`bun`、`launcher`、`named`、`env`、`interpreter`、`python_path`、`stdin` / `stdout` / `stderr`、`greeting`、`handle`、`processes`） | `rutis_host::connect::SpawnPlugin::new(名字, launcher, anchor)`，即插件 `rutis-host/spawn`（依赖 `rutis-host`）：`launcher` 是 `rutis_host::languages` 的 `node::launcher(&包)`、`python::launcher`、`go::launcher`、`swift::launcher`、`bun::launcher`，或 `rutis_bridge::runtime::Launcher::new`，`名字` 是原来 `named` 给的（默认 `node`、`py` 等）；`.interpreter`、`.python_path`、`.env`、`.stdio(stdin, stdout, stderr)`、`.greeting(时限)`、`.handle()`、`.processes()`。用 `root.plugin(spawn)` 挂上；根上提供会话问候用的 id：`root.provide(rutis_bridge::LocalId(PeerId::new("main")?))` |
   | `RuntimePlugin`（`session`、`named`、`host`、`starting`、`stopped`、`failed`、`handle`），服务 `runtime::Runtime`（`Runtime::key`、`host_methods`） | 删：运行时是一个会话的对面。它的状态由 `rutis_bridge::runtime::RuntimeStates` 保存（`new(名字, anchor)`、`starting`、`ready`、`failed`、`stopped`，`announce(ctx)` 发 `rutis/runtime` 事件），通过它的 `RuntimeHandle`（`handle()`）读取；`ended_status(&process)` 说明进程怎样结束 |
   | `RuntimePlugin::host(名字, methods)`、`LocalRuntime::host` | 宿主服务用 `HostDispatch::methods()` 给出它的方法 |
   | `rutis_loader::runtime::RuntimeResolver::node(handle)` / `::modules(handle)`、`with_catalog`；`invalidate`、`invalidate_all`，rutis-host 的 `Host::invalidate`；`runtime::resolve_entry` | 所有运行时共用一个 `rutis_loader::runtime::SessionResolver`，放在 chain 最后（`Chain::new().with(builtins).with_shared(sessions.clone())`）：`SessionResolver::npm(&catalog, "node")`（npm 名、子路径、`file:` URL、绝对路径也认，放在行 `node` 上）或 `SessionResolver::new(&catalog)`（行 `<行>:<插件>`，如 `py:shout`）；每个本机运行时调一次 `.runtime(handle)`（`Loader::status` 列出它，等它的行写 `waiting for runtime py (starting)`）；挂载 loader 之前 `.attach(&loader)`。Rust 不再解析 npm 名，也不再按 `package.json` 缓存：由 Node 运行时在每次解析时做；改了插件代码直接 `Loader::reload(行)` |
   | `RuntimeRows`（`RuntimeRows::key`）、`RowsSource` | `SessionRows`、`SessionRows::key(行)` |
   | `RuntimeRowsPlugin::new(resolver)` | loader 运行后 `SessionResolver::follow_row(名字)`；运行时重启后，它的行自己重新解析 |
   | `BinaryLanguage::launch` 返回 `LocalRuntime`；`BinaryRuntimes::new(resolver, project)` | `launch` 返回 `Launcher`；`BinaryRuntimes::new(resolver, project, spawn)`，`spawn` 是 `rutis_loader::runtime::binary::Spawn`（`Arc<dyn Fn(&str, Launcher, &Path) -> Spawned>`，`Spawned { plugin, handle, processes }`）；rutis-host 传入的是做出 `SpawnPlugin` 的那个 |
-  | `LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（一个固定的二进制） | `SpawnPlugin::new(名字, Launcher::go(&binary, &project), &project)`，行 `<名字>:<插件>` 经 `SessionResolver` 解析 |
+  | `LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（一个固定的二进制） | `SpawnPlugin::new(名字, rutis_host::languages::go::launcher(&binary, &project), &project)`，行 `<名字>:<插件>` 经 `SessionResolver` 解析 |
   | `Admission`、`AdmissionPlugin`、`admission_key`、`SharedToken`、`Rejection` | 连接插件自己的认证；id 来自握手 |
   | `ListenerConfig::new(名字, 地址, 本端 id)` | `ListenerConfig::new(名字, 地址)` |
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
   | `Channel` 的 `info`（`ChannelInfo`）、`Spawn::new(程序, peer)` | 删；对方 id 只来自会话握手；`Spawn::new(程序)` |
   | `rutis_host::host::Embedding` 的 `transports` | 删；自己的连接方式与凭据写成连接插件，经 `Embedding.builtins` 注册 |
   | `Connection::open(channel, dispatch)`、`Connection::open_with(channel, dispatch, Format::Endpoint(e))`、`Format` | `Connection::open(channel, dispatch, e)`：只有 endpoint 格式，本端总要报自己的 id |
-  | `Process::attach(channel, mount, Format::Endpoint(e))` | `Process::attach(channel, mount, e)` |
+  | `Process::attach(channel, mount, Format::Endpoint(e))` | 删：在通道上开一个会话，`ctx.plugin(Session::new(channel))`（见下面的“平台清理”） |
   | `session::PROTOCOL`（2）、`cordis::PROTOCOL`；`session::ENDPOINT_PROTOCOL` 为 3 | 删；`session::ENDPOINT_PROTOCOL` 与 `cordis::ENDPOINT_PROTOCOL` 为 4 |
   | `LinkPlugin`、`LinkConfig`（及其 `compat`）、`LinkState`、`Connect`、`Dialer`、`Failure`、`Retry`；`pipe::dial`、`memory::dialer`、`websocket::admit_registered`、`protocol()` | 删：去连与重连在 `rutis-host/dial`，或自己的连接插件；子协议是 `format!("rutis.{}", session::ENDPOINT_PROTOCOL)` |
   | `PeerPlugin`、`PeerHandle`、`Features`；`Peer`、`peer_key`、`Handler`、`Offered`、`Offers`、`family()` | 删：节点也是一个 `Session`，对面的插件是 `<id>:<插件>` |
@@ -292,6 +292,13 @@ Kotlin 另有两点：
 | `internal::provide_checked`、`refresh`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
 | `rutis_loader::backoff`、`runtime::binary::{RestartPolicy, RuntimeEnd}`、`BinaryRuntimesHandle::supervise` / `unsupervise` | 删：加载器不再重启崩溃的 Go/Swift 运行时。自己调用 `BinaryRuntimesHandle::restart(name)`；握手被拒的二进制用新的 `runtime::binary::refused(why)` 判断，重启也起不来。用 rutis-host 时写 `runtimes.<key>.restart` |
 | `internal::CtxInternal` 的 `get_key`、`require_key`、`provide_key`（键是 `TypeKey`） | 持有 `rutis::host::Key<T>`，用 `CtxHost` 的 `get_at`、`require_at`、`provide_at`。随之改为 `Key`：`ServiceCatalog::register_keyed`、`readable_keyed` 的 `key` 参数；`SessionRows::key(行)` 返回 `Key<SessionRows>`；`Projection::service_keyed`、`service_keyed_occupied` 的 `key` 参数；`row_projection_with`、`row_projection_of` 的 `key` 函数返回 `Key<dyn HostDispatch>`（直接传 `host_key`）。要 `TypeKey` 时（`DynPlugin::injects`）用 `key.erase()` |
+| rutis-bridge 的 feature `node`、`python`、`go`、`bun`、`swift`、`kotlin` | 删，不用开：bridge 不带任何语言（`cordis` 也不再带上 `node`） |
+| rutis-loader 的 feature `python`、`bun`、`kotlin` | 删；这些语言的行用 `runtimes`（`node` 也带上它） |
+| `rutis_bridge::runtime::Launcher::node`、`::python`、`::go`、`::swift`、`::bun` | `rutis_host::languages::node::launcher(&包)`、`python::launcher(&项目)`、`go::launcher(&二进制, &项目)`、`swift::launcher(&二进制, &项目)`、`bun::launcher(&程序, &包, &项目)`，交给 `rutis_host::connect::SpawnPlugin::new`；rutis 自己的测试用 `rutis-test-support` |
+| `rutis_bridge::runtime::{go_runtime_name, swift_runtime_name}` | `rutis_loader::runtime::go::go_runtime_name`、`rutis_loader::runtime::swift::swift_runtime_name` |
+| `Process::launch`、`launch_observed`、`launch_group`、`launch_mount`、`attach` | 挂 Cordis 插件用 `Process::mount`；其他进程拿到 `Channel` 后开一个会话：`ctx.plugin(Session::new(channel))` |
+| `Launcher::output_prefix`、`pipe::Stdio::Lines` | `pipe::Stdio::Pipe(工厂)`；按整行转写（可带前缀）用 rutis-host 的 `rutis_host::output::lines(流, 前缀)`，它返回这样一个 `Stdio` |
+| `BinaryRuntimes::output(..)`、`prefix_output(..)` | 删：标准流由 `spawn` 里的 `SpawnPlugin::stdio(..)` 决定 |
 
 ### 工具
 
