@@ -14,7 +14,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 rutis-bridge = { path = "../../crates/rutis-bridge" }
 rutis-host = { path = "../../crates/rutis-host" }
-rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
+rutis-loader = { path = "../../crates/rutis-loader", features = ["runtimes"] }
 rutis-test-support = { path = "../../crates/rutis-test-support" }
 # Only to check rows/services.d.ts is current; the service needs none of it.
 rutis-types = { path = "../../crates/rutis-types" }

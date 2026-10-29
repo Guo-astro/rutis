@@ -1261,13 +1261,11 @@ async fn python_releases_balance() {
 /// The Go fixture echoes the raw JSON (`json.RawMessage`): this checks the
 /// Go session, not how `encoding/json` decodes into Go types (the table's
 /// Go row).
-#[cfg(feature = "go")]
 async fn go_far_end() -> (Connection, tokio::process::Child) {
     far_end(go(), "go").await
 }
 
 /// The Go session fixture, built once per test binary.
-#[cfg(feature = "go")]
 fn go() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let binary = BINARY.get_or_init(|| {
@@ -1286,18 +1284,22 @@ fn go() -> tokio::process::Command {
     tokio::process::Command::new(binary)
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let (near, _child) = go_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "go", Numbers::Exact))
         .await
         .unwrap();
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let (near, _child) = go_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "go"))
         .await
@@ -1305,9 +1307,11 @@ async fn go_depth_limit() {
 }
 
 /// guarantee: bridge/bad-values (#675).
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_bad_values() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let (near, _child) = far_end(go(), "go").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "go"))
         .await
@@ -1317,7 +1321,6 @@ async fn go_bad_values() {
 /// `value` as a far end that holds lists and records of data as data
 /// sends it back: a list or record holding no tagged value is data (on the
 /// wire, the two are the same value).
-#[cfg(any(feature = "go", feature = "kotlin"))]
 fn as_data(value: Value) -> Value {
     match value {
         Value::List(items) => {
@@ -1360,9 +1363,11 @@ fn as_data(value: Value) -> Value {
 /// guarantee: bridge/value-tags. Tagged values come back from the Go
 /// session's echo as sent: lists and records holding none come back as
 /// the same data.
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_tagged_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let (near, _child) = go_far_end().await;
     tokio::task::spawn_blocking(move || {
         check("go tagged round trip", tagged_value(), |sent| {
@@ -1384,13 +1389,13 @@ async fn go_tagged_values_round_trip() {
 /// built once per test binary with the `swift` on PATH. Its echo returns
 /// the value as the session received it, so tagged values come back
 /// exactly as sent.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 async fn swift_far_end() -> (Connection, tokio::process::Child) {
     far_end(swift(), "swift").await
 }
 
 /// The Swift session fixture, built once per test binary.
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn swift() -> tokio::process::Command {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let binary = BINARY.get_or_init(|| {
@@ -1411,27 +1416,36 @@ fn swift() -> tokio::process::Command {
     tokio::process::Command::new(binary)
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (near, _child) = swift_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "swift", Numbers::Exact))
         .await
         .unwrap();
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_tagged_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (near, _child) = swift_far_end().await;
     tokio::task::spawn_blocking(move || tagged_round_trip(&near, "swift"))
         .await
         .unwrap();
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (near, _child) = swift_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "swift"))
         .await
@@ -1439,30 +1453,34 @@ async fn swift_depth_limit() {
 }
 
 /// guarantee: bridge/bad-values (#675).
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_bad_values() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (near, _child) = far_end(swift(), "swift").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "swift"))
         .await
         .unwrap();
 }
 
-#[cfg(all(feature = "swift", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_releases_balance() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     let (near, _child) = swift_far_end().await;
     tokio::task::spawn_blocking(move || releases_balance(&near, "swift"))
         .await
         .unwrap();
 }
 
-#[cfg(feature = "bun")]
 async fn bun_far_end() -> (Connection, tokio::process::Child) {
     far_end(bun(), "bun").await
 }
 
-#[cfg(feature = "bun")]
 fn bun() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("bun");
     command
@@ -1472,27 +1490,33 @@ fn bun() -> tokio::process::Command {
     command
 }
 
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "bun", Numbers::Doubles))
         .await
         .unwrap();
 }
 
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_tagged_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || javascript_tagged_round_trip(&near, "bun"))
         .await
         .unwrap();
 }
 
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let (near, _child) = bun_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "bun"))
         .await
@@ -1500,9 +1524,11 @@ async fn bun_depth_limit() {
 }
 
 /// guarantee: bridge/bad-values (#675).
-#[cfg(feature = "bun")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_bad_values() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let (near, _child) = far_end(bun(), "bun").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "bun"))
         .await
@@ -1511,29 +1537,31 @@ async fn bun_bad_values() {
 
 // ── Kotlin: values only (its fixture has no reference tables) ────────
 
-#[cfg(feature = "kotlin")]
 mod kotlin;
 
 /// The Kotlin session fixture (the SDK's jvm target), which echoes the
 /// session values it decodes: data as its JSON, tagged values as the JDK
 /// values they decode to.
-#[cfg(feature = "kotlin")]
 async fn kotlin_far_end() -> (Connection, tokio::process::Child) {
     far_end(kotlin::session(), "kotlin").await
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let (near, _child) = kotlin_far_end().await;
     tokio::task::spawn_blocking(move || round_trip(&near, "kotlin", Numbers::Exact))
         .await
         .unwrap();
 }
 
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_depth_limit() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let (near, _child) = kotlin_far_end().await;
     tokio::task::spawn_blocking(move || depth_limit(&near, "kotlin"))
         .await
@@ -1541,9 +1569,11 @@ async fn kotlin_depth_limit() {
 }
 
 /// guarantee: bridge/bad-values (#675).
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_bad_values() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let (near, _child) = far_end(kotlin::session(), "kotlin").await;
     tokio::task::spawn_blocking(move || bad_values(&near, "kotlin"))
         .await
@@ -1553,9 +1583,11 @@ async fn kotlin_bad_values() {
 /// guarantee: bridge/value-tags. Tagged values come back from the Kotlin
 /// session's echo as sent: lists and records holding none come back as the
 /// same data.
-#[cfg(feature = "kotlin")]
 #[tokio::test(flavor = "multi_thread")]
 async fn kotlin_tagged_values_round_trip() {
+    if !rutis_test_support::runtimes::enabled("kotlin") {
+        return;
+    }
     let (near, _child) = kotlin_far_end().await;
     tokio::task::spawn_blocking(move || {
         check("kotlin tagged round trip", tagged_value(), |sent| {

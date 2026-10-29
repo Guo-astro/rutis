@@ -3,13 +3,7 @@
 //! service registers on a caller's `Ctx` goes when that row unloads while
 //! the runtime keeps running, and a call from Rust names no row. The same
 //! in every runtime: Node, Python, Go, Bun and Swift.
-#![cfg(any(
-    feature = "node",
-    feature = "python",
-    feature = "go",
-    feature = "bun",
-    feature = "swift"
-))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -188,7 +182,6 @@ async fn rows_are_callers(
 }
 
 /// A leaf plugin written with the SDK, imported from this checkout.
-#[cfg(any(feature = "node", feature = "bun"))]
 fn sdk_plugin() -> String {
     let sdk = common::runtimes::repo()
         .join("node/rutis/src/index.mjs")
@@ -208,9 +201,11 @@ export default definePlugin({{
 }
 
 /// guarantee: bridge/caller-row
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
     use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;
@@ -253,9 +248,11 @@ async fn node_rows_are_callers() {
 }
 
 /// guarantee: bridge/caller-row
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
     use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;
@@ -293,6 +290,9 @@ async fn python_rows_are_callers() {
 #[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_rows_are_callers() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     use rutis_loader::runtime::binary::{
         Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes,
     };
@@ -329,6 +329,9 @@ async fn go_rows_are_callers() {
 #[cfg(all(feature = "swift", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn swift_rows_are_callers() {
+    if !rutis_test_support::runtimes::enabled("swift") {
+        return;
+    }
     use rutis_loader::runtime::binary::{
         Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes,
     };
@@ -366,9 +369,12 @@ async fn swift_rows_are_callers() {
 }
 
 /// guarantee: bridge/caller-row
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
     use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;

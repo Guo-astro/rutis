@@ -2,7 +2,7 @@
 //! up only its own rows (#678, from #682): the loader resolves every row
 //! without waiting for it, the other runtime's rows start, and its own
 //! rows wait for it.
-#![cfg(all(feature = "python", unix))]
+#![cfg(all(feature = "runtimes", unix))]
 
 mod common;
 
@@ -27,6 +27,9 @@ const FAST: &str = "inject = [\"probe\"]\n\ndef apply(ctx, config):\n    ctx.use
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_still_starting_holds_up_only_its_own_rows() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("fast.py"), FAST).unwrap();
     let probe = Probe::default();

@@ -299,9 +299,11 @@ fn spawned_processes_started_at_once_hold_only_their_own_channel() {
 /// guarantee: bridge/spawned-processes-own-channel (issue #184, risk C11,
 /// Q6.5.2): Node runtimes launched at once through the `Process` facade
 /// each start and hold their own channel only.
-#[cfg(feature = "node")]
 #[test]
 fn node_runtimes_launched_at_once_hold_only_their_own_channel() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     use rutis_bridge::runtime::Process;
     use serde_json::json;
     use std::io::Write;

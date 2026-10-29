@@ -3,7 +3,7 @@
 //! `sessions.open({ send, close })` over the Rust service `wire`, one end
 //! of a memory channel whose other end is a session in the kernel
 //! `office`; the row `relay:contacts` then runs `contacts` there.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -300,6 +300,9 @@ async fn contacts_run_there(root: &Ctx, loader: &Loader) {
 /// its far end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_relay_opens_a_session() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -321,6 +324,9 @@ async fn a_node_relay_opens_a_session() {
 /// its far end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_python_relay_opens_a_session() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("relay.py"), PY_RELAY).unwrap();
     let catalog = catalog();

@@ -197,6 +197,9 @@ async fn call(root: &Ctx, name: &str, method: &str, args: Value) -> Result<Value
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_find_their_binary_and_call_across_binaries() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(
         None,
         &[
@@ -291,6 +294,9 @@ async fn rows_find_their_binary_and_call_across_binaries() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_in_two_binaries_fails_naming_both_files() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit"), ("dup", "dup")]).await;
     fixture
         .loader
@@ -327,6 +333,9 @@ fn down(runtimes: &BinaryRuntimesHandle<Go>, name: &str) -> Option<String> {
 /// guarantee: loader/runtime-down-stops-its-rows, loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_start_keeps_the_old_runtime_and_stays_stopped() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(Some(Duration::from_millis(300)), &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -396,6 +405,9 @@ async fn a_failed_start_keeps_the_old_runtime_and_stays_stopped() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_runtime_keeps_its_start_manifest() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -530,6 +542,9 @@ async fn a_missing_binary_is_tried_again_only_when_its_file_changes() {
 /// guarantee: loader/runtime-down-stops-its-rows, loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     // The idle stop of spare, once unused, is the marker that sweeps ran.
     let fixture = fixture(
         Some(Duration::from_millis(300)),
@@ -675,6 +690,9 @@ async fn a_crash_stops_only_its_runtimes_rows_and_is_not_restarted() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_runtime_stops_and_starts_again_when_used() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(
         Some(Duration::from_millis(300)),
         &[("netkit", "netkit"), ("spare", "spare")],
@@ -769,6 +787,9 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -840,6 +861,9 @@ async fn a_replaced_binary_takes_effect_when_its_runtime_restarts() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_build_takes_effect_when_its_runtime_restarts() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -880,6 +904,9 @@ async fn a_new_build_takes_effect_when_its_runtime_restarts() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_given_up_half_way_leaves_the_runtime_usable() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -985,6 +1012,9 @@ async fn poll_once<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_given_up_half_way_still_finishes_before_the_next() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     fixture
         .loader
@@ -1233,6 +1263,9 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn names_of_other_resolvers_are_not_claimed() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     let fixture = fixture(None, &[("netkit", "netkit")]).await;
     use rutis_loader::Resolver;
     for name in ["py:weather", "go-nowhere:ping", "weather", "go:"] {

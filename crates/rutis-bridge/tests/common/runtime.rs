@@ -63,30 +63,31 @@ impl TestRuntime {
 
     /// The Node runtime `node` of the repository's `node/rutis-runtime`,
     /// its plugins resolved from that package.
-    #[cfg(feature = "node")]
     pub fn node() -> Self {
         let package = repo().join("node/rutis-runtime");
         Self::new(
             "node",
-            Launcher::node(&package),
+            launcher(rutis_test_support::runtimes::node_runtime()),
             &package.join("package.json"),
         )
     }
 
     /// The Python runtime `py` of `project`, the repository's rutis package
     /// on its path.
-    #[cfg(feature = "python")]
     pub fn python(project: &Path) -> Self {
-        Self::new("py", Launcher::python(project), project).python_path(repo().join("python/rutis"))
+        Self::new(
+            "py",
+            launcher(rutis_test_support::runtimes::python_runtime(project)),
+            project,
+        )
     }
 
     /// The Bun runtime `bun` of the repository's `bun/rutis-bun`, importing
     /// plugin modules from `project`.
-    #[cfg(feature = "bun")]
     pub fn bun(project: &Path) -> Self {
         Self::new(
             "bun",
-            Launcher::bun(None, &repo().join("bun/rutis-bun"), project),
+            launcher(rutis_test_support::runtimes::bun_runtime(project)),
             project,
         )
     }
@@ -210,4 +211,14 @@ impl DynPlugin for TestRuntime {
             Ok(Effect::Done)
         })
     }
+}
+
+/// `command` (`rutis_test_support::runtimes`) as a launcher.
+pub fn launcher(command: rutis_test_support::runtimes::Command) -> Launcher {
+    let mut launcher = Launcher::new(command.program);
+    launcher.args = command.args;
+    launcher.env = command.env;
+    launcher.cwd = command.cwd;
+    launcher.inherit_fd = command.inherit_fd;
+    launcher
 }

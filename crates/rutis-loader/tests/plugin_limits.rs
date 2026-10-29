@@ -2,7 +2,7 @@
 //! (`docs/design-host-plugin-limits-2026-10-27.md`): one Node process per
 //! plugin, each a runtime of its own (`<name>:<file>` rows), and a runtime waiting for a
 //! debugger as `Loader::status` shows it.
-#![cfg(feature = "node")]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -139,6 +139,9 @@ export default definePlugin({
 // guarantee: host/plugin-limits (a process per plugin)
 #[tokio::test(flavor = "multi_thread")]
 async fn each_plugin_runs_in_its_own_process() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let host = host(vec![node("alpha"), node("beta")], true).await;
     let a = host.plugin("a.mjs", &PING.replace("NAME", "a"));
     let b = host.plugin("b.mjs", &PING.replace("NAME", "b"));
@@ -177,6 +180,9 @@ async fn each_plugin_runs_in_its_own_process() {
 // guarantee: host/plugin-limits (greeting(Duration::MAX) in the status)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_waiting_for_a_debugger_stays_starting() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let runtime = node("wordcount")
         .launcher(|launcher| launcher.env("NODE_OPTIONS", "--inspect-brk=127.0.0.1:0"))
         .greeting(Duration::MAX);

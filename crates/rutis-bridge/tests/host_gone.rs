@@ -7,16 +7,18 @@
 //!
 //! Each plugin starts such work, and its cleanup writes a marker file and,
 //! with `hang`, never returns.
-// The Node rows run in every case; the other runtimes add theirs.
-#![cfg(feature = "node")]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rutis_bridge::runtime::{Launcher, Mount, Process};
+use rutis_bridge::runtime::{Mount, Process};
 use rutis_bridge::session::Error;
 use rutis_test_support::eventually;
 use serde_json::json;
+
+mod common;
+use common::runtime::launcher;
+use rutis_test_support::runtimes;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -33,7 +35,6 @@ export function apply(ctx, config) {
 }
 "#;
 
-#[cfg(feature = "python")]
 const PYTHON: &str = r#"
 import asyncio
 import threading
@@ -54,7 +55,7 @@ def apply(ctx, config):
     return cleanup
 "#;
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 const BUN: &str = r#"
 import { writeFileSync } from 'node:fs'
 export function apply(ctx, config) {
@@ -69,11 +70,9 @@ export function apply(ctx, config) {
 #[derive(Clone, Copy, Debug)]
 enum Runtime {
     Node,
-    #[cfg(feature = "python")]
     Python,
-    #[cfg(feature = "go")]
     Go,
-    #[cfg(all(unix, feature = "bun"))]
+    #[cfg(unix)]
     Bun,
 }
 
@@ -87,37 +86,34 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
             std::fs::write(&anchor, "{}").unwrap();
             let entry = dir.join("lingering.mjs");
             std::fs::write(&entry, NODE).unwrap();
-            (package.clone(), Launcher::node(&package), anchor, entry)
+            (
+                package.clone(),
+                launcher(runtimes::node(&package)),
+                anchor,
+                entry,
+            )
         }
-        #[cfg(feature = "python")]
         Runtime::Python => {
             let sdk = repo().join("python/rutis");
             std::fs::write(dir.join("lingering.py"), PYTHON).unwrap();
-            let path = std::env::join_paths([sdk.clone(), dir.to_owned()]).unwrap();
-            let python = std::env::var("RUTIS_PYTHON")
-                .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into());
-            let launcher = Launcher::new(python)
-                .arg("-m")
-                .arg("rutis")
-                .env("PYTHONPATH", path);
+            let launcher = launcher(runtimes::python_runtime(dir));
             (sdk, launcher, dir.to_owned(), PathBuf::from("lingering"))
         }
-        #[cfg(feature = "go")]
         Runtime::Go => {
             let binary = go_binary("./internal/fixtures/lingering");
             (
                 repo().join("go/rutis"),
-                Launcher::go(&binary, dir),
+                launcher(runtimes::binary(&binary, dir)),
                 dir.to_owned(),
                 PathBuf::from("lingering"),
             )
         }
-        #[cfg(all(unix, feature = "bun"))]
+        #[cfg(unix)]
         Runtime::Bun => {
             let package = repo().join("bun/rutis-bun");
             let entry = dir.join("lingering.ts");
             std::fs::write(&entry, BUN).unwrap();
-            let launcher = Launcher::bun(None, &package, dir);
+            let launcher = launcher(runtimes::bun(&package, dir));
             (package, launcher, dir.to_owned(), entry)
         }
     };
@@ -137,7 +133,6 @@ async fn start(runtime: Runtime, dir: &Path, deadline: &str) -> (Arc<Process>, P
 
 /// The Go package `package` (under `go/rutis`), built into a fresh
 /// directory with the `go` on PATH.
-#[cfg(feature = "go")]
 fn go_binary(package: &str) -> PathBuf {
     let directory = tempfile::tempdir().unwrap().keep();
     let binary = directory.join(format!("runtime{}", std::env::consts::EXE_SUFFIX));
@@ -222,7 +217,6 @@ export function apply(ctx, config) {
 }
 "#;
 
-    #[cfg(feature = "python")]
     const PYTHON_BUSY: &str = r#"
 import asyncio
 
@@ -240,12 +234,10 @@ def apply(ctx, config):
     /// The busy plugin's row entry, written next to the lingering one.
     fn busy_entry(runtime: Runtime, dir: &Path) -> PathBuf {
         match runtime {
-            #[cfg(feature = "python")]
             Runtime::Python => {
                 std::fs::write(dir.join("busy.py"), PYTHON_BUSY).unwrap();
                 PathBuf::from("busy")
             }
-            #[cfg(feature = "go")]
             Runtime::Go => {
                 unreachable!("a busy goroutine does not keep the Go runtime from its end")
             }
@@ -283,7 +275,6 @@ def apply(ctx, config):
         .await;
         let took = gone.elapsed();
         match runtime {
-            #[cfg(feature = "python")]
             Runtime::Python => assert_eq!(status, "exited with exit status: 1", "{runtime:?}"),
             _ => assert_eq!(status, "exited with signal: 9 (SIGKILL)", "{runtime:?}"),
         }
@@ -297,66 +288,93 @@ def apply(ctx, config):
     /// guarantee: host/killed-host-leaves-no-runtimes
     #[tokio::test(flavor = "multi_thread")]
     async fn node_kept_busy_ends_when_its_host_goes_away() {
+        if !rutis_test_support::runtimes::enabled("node") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Node).await;
     }
 
     /// guarantee: host/killed-host-leaves-no-runtimes
-    #[cfg(feature = "python")]
     #[tokio::test(flavor = "multi_thread")]
     async fn python_kept_busy_ends_when_its_host_goes_away() {
+        if !rutis_test_support::runtimes::enabled("python") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Python).await;
     }
 
     /// guarantee: host/killed-host-leaves-no-runtimes
-    #[cfg(all(unix, feature = "bun"))]
     #[tokio::test(flavor = "multi_thread")]
     async fn bun_kept_busy_ends_when_its_host_goes_away() {
+        if !rutis_test_support::runtimes::enabled("bun") {
+            return;
+        }
         a_busy_runtime_ends_when_its_host_goes_away(Runtime::Bun).await;
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     exits_after_its_cleanups(Runtime::Node).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn node_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     gives_up_a_cleanup_at_its_deadline(Runtime::Node).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     exits_after_its_cleanups(Runtime::Python).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     gives_up_a_cleanup_at_its_deadline(Runtime::Python).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     exits_after_its_cleanups(Runtime::Go).await;
 }
 
-#[cfg(feature = "go")]
 #[tokio::test(flavor = "multi_thread")]
 async fn go_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("go") {
+        return;
+    }
     gives_up_a_cleanup_at_its_deadline(Runtime::Go).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_exits_after_its_cleanups_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     exits_after_its_cleanups(Runtime::Bun).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_gives_up_a_cleanup_at_its_deadline_when_its_host_goes_away() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     gives_up_a_cleanup_at_its_deadline(Runtime::Bun).await;
 }

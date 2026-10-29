@@ -3,7 +3,7 @@
 //! their `apply` call each other's services synchronously while the others
 //! start: the Bun runtime runs incoming calls while its own synchronous call
 //! waits, so no two runtimes wait for each other for ever.
-#![cfg(all(unix, feature = "bun", feature = "node", feature = "python"))]
+#![cfg(all(unix, feature = "runtimes"))]
 
 mod common;
 
@@ -201,6 +201,9 @@ async fn fixture() -> Fixture {
 /// guarantee: loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn three_runtimes_start_cold_and_use_each_other() {
+    if !rutis_test_support::runtimes::all_enabled(&["bun", "python", "node"]) {
+        return;
+    }
     let fixture = fixture().await;
     let js = |file: &str| fixture.js.join(file).to_string_lossy().into_owned();
     let report = fixture
@@ -252,6 +255,9 @@ async fn three_runtimes_start_cold_and_use_each_other() {
 /// the first Bun call still waits.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_synchronous_chain_crosses_bun_and_python_and_back() {
+    if !rutis_test_support::runtimes::all_enabled(&["bun", "python", "node"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
