@@ -11,50 +11,19 @@ import (
 	"github.com/arcships/rutis/go/rutis/internal/peer"
 )
 
-// configured is the config `t` a row's Apply gets (config schema design
-// §2.2): with a schema (`schema`, normalised), its defaults filled and the
-// config validated, then decoded; without one, the config decoded as it
-// came. A config that does not match fails with a `bad-config`
-// BindingError, before Apply runs; so does one the schema passes that does
-// not decode into `t` (the schema and the type disagree), written
-// `<path> is not a value the plugin accepts`, never the decoder's text
-// (§3.3). Extra keys are the host's loader's to warn about.
-func configured(schema, given any, t reflect.Type) (reflect.Value, error) {
-	if schema == nil {
-		return convert.FromPeer(given, t)
+// configured is the config `t` a row's Apply gets: the config as it came,
+// decoded. The host's loader validated it against the plugin's schema and
+// filled its defaults in (config schema design §2.1). With a schema
+// (`schema`), a config that does not decode into `t` (the schema and the
+// type disagree) fails with a `bad-config` BindingError, before Apply
+// runs, written `<path> is not a value the plugin accepts`, never the
+// decoder's text (§3.3); without one, with the decoder's error.
+func configured(schema bool, given any, t reflect.Type) (reflect.Value, error) {
+	decoded, err := convert.FromPeer(given, t)
+	if err == nil || !schema {
+		return decoded, err
 	}
-	value, err := configValue(given)
-	if err != nil {
-		return reflect.Value{}, badConfig([]config.Issue{config.At(nil, "is not a value the plugin accepts")})
-	}
-	checked := config.Check(schema, value, true)
-	if len(checked.Errors) > 0 {
-		return reflect.Value{}, badConfig(checked.Errors)
-	}
-	data, err := json.Marshal(checked.Config)
-	if err != nil {
-		return reflect.Value{}, badConfig([]config.Issue{config.At(nil, "is not a value the plugin accepts")})
-	}
-	decoded, err := convert.FromPeer(json.RawMessage(data), t)
-	if err != nil {
-		return reflect.Value{}, badConfig([]config.Issue{config.At(decoderPath(err, t), "is not a value the plugin accepts")})
-	}
-	return decoded, nil
-}
-
-// configValue is a row's config as the config package reads it: nil for
-// none.
-func configValue(given any) (any, error) {
-	switch x := given.(type) {
-	case nil, peer.UndefinedType:
-		return nil, nil
-	case json.RawMessage:
-		if string(x) == "null" {
-			return nil, nil
-		}
-		return config.Decode(x)
-	}
-	return config.Normalize(given)
+	return reflect.Value{}, badConfig([]config.Issue{config.At(decoderPath(err, t), "is not a value the plugin accepts")})
 }
 
 // decoderPath is where encoding/json says a value did not decode, as far

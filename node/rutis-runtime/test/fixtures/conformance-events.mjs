@@ -1,8 +1,7 @@
 // The events conformance plugin `conformance-events` (#464), for the Node
 // runtime: docs/design-events-protocol-2026-10-18.en.md §13.1. What it
 // does is in crates/rutis-bridge/src/runtime/testing/events.expected.json;
-// the real runtimes and the testing tool (@arcships/rutis/testing,
-// node/rutis/test/events-conformance.test.mjs) are both checked against it.
+// the real runtimes are checked against it.
 //
 // Each participant is one row; its config is the participant. A listener
 // row registers one listener as `does` says; an emitter row

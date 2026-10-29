@@ -22,6 +22,8 @@ use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_test_support::{recv_within, scaled, until, within, HANG_GUARD};
 use serde_json::{json, Value};
 
+mod common;
+
 const WEATHER: &str = r#"
 export const inject = ['clock']
 export const config = { type: 'object', properties: { city: { type: 'string', default: 'Paris' } } }
@@ -469,13 +471,13 @@ fn fixture_launcher(fixture: &str, project: &Path) -> Launcher {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_without_the_row_contract_fails_to_start() {
     let dir = tempfile::tempdir().unwrap();
-    let runtime = rutis_bridge::runtime::LocalRuntime::launcher(
+    let runtime = common::runtime::TestRuntime::new(
         "old",
         fixture_launcher("old-runtime.ts", dir.path()),
         dir.path(),
     );
     let handle = runtime.handle();
-    let ctx = Ctx::root().unwrap();
+    let ctx = common::runtime::root();
     let view = ctx.plugin(runtime);
     let _ = (&view).await;
     assert_eq!(view.state().state, rutis::host::FiberState::Failed);

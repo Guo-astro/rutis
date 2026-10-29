@@ -17,12 +17,12 @@ use std::sync::Arc;
 use rutis::host::{BoxFuture, FiberView};
 use rutis::Ctx;
 use rutis_bridge::pipe::Processes;
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_bridge::runtime::{RuntimeHandle, Stdio};
 use rutis_loader::{Chain, Resolver, ServiceCatalog};
 use serde_json::Value;
 
 use crate::config::{HostConfig, Restart, Runtimes};
+use crate::connect::SpawnPlugin;
 use crate::host::Error;
 
 mod binary;
@@ -54,7 +54,8 @@ pub static LANGUAGES: &[&dyn Language] = &[
 /// One local language.
 pub trait Language: Sync {
     /// Its field under `runtimes` in `rutis.json`, and the name of the
-    /// runtime it starts (rows `<key>:<module>`; Node's take npm names).
+    /// runtime it starts: the id of its `rutis-host/spawn` row (rows
+    /// `<key>:<module>`; Node's take npm names).
     fn key(&self) -> &'static str;
 
     /// Whether `runtimes` configures it.
@@ -96,26 +97,20 @@ pub trait Language: Sync {
     /// Take `other`'s settings when `runtimes` has none.
     fn merge(&self, runtimes: &mut Runtimes, other: &mut Runtimes);
 
-    /// The resolver of the rows of its runtime `runtime`: by default
-    /// `<runtime>:<module>`.
-    fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
-        RuntimeResolver::modules(runtime)
-    }
-
     /// Its runtime as `runtimes` configures it, found (its package, its
-    /// interpreter) and ready to mount; `None` when it is not configured.
-    /// One runtime per language: a language with several overrides
-    /// [`Language::start`] instead.
-    fn runtime(&self, _runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+    /// interpreter) and ready to mount: the `rutis-host/spawn` row
+    /// [`Language::key`]; `None` when it is not configured. One runtime per
+    /// language: a language with several overrides [`Language::start`]
+    /// instead.
+    fn runtime(&self, _runtimes: &Runtimes) -> Option<Result<SpawnPlugin, Error>> {
         None
     }
 
     /// Mount what `config` configures of it: by default its
-    /// [`Language::runtime`], its rows resolved by [`Language::rows`].
+    /// [`Language::runtime`], its rows `<key>:<module>` on its session.
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
         if let Some(runtime) = self.runtime(&config.runtimes) {
-            let runtime = runtime?;
-            mount.local(self.key(), runtime, |handle| self.rows(handle));
+            mount.local(self.key(), runtime?);
         }
         Ok(())
     }
@@ -226,8 +221,6 @@ pub struct Mount<'a> {
     pub chain: Chain,
     /// The local runtimes by name, to wait for until they run.
     pub runtimes: Vec<(String, RuntimeHandle)>,
-    /// The runtimes' row resolvers, to invalidate after a change.
-    pub resolvers: Vec<Arc<RuntimeResolver>>,
     /// The local runtimes' plugins by name, to stop one.
     pub fibers: Vec<(String, FiberView)>,
     /// The processes each local runtime started, by name.
@@ -262,23 +255,18 @@ impl Mount<'_> {
         self.chain = std::mem::take(&mut self.chain).with_shared(resolver);
     }
 
-    /// Mount the local runtime `runtime` as `name`, its rows resolved by
-    /// the resolver `rows` makes, its output passed on a whole line at a
-    /// time: a line a plugin writes in pieces (a Python `print` writes its
-    /// newline separately) never has one of this host's lines, or another
-    /// runtime's, inside it (#332). With [`Mount::prefix_output`], the
-    /// runtime starts each line with the row that wrote it.
-    pub fn local(
-        &mut self,
-        name: &str,
-        runtime: LocalRuntime,
-        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
-    ) {
-        let mut runtime = runtime.stdout(Stdio::Lines).stderr(Stdio::Lines);
+    /// Mount the local runtime `runtime` as the row `name`, its output
+    /// passed on a whole line at a time: a line a plugin writes in pieces
+    /// (a Python `print` writes its newline separately) never has one of
+    /// this host's lines, or another runtime's, inside it (#332). With
+    /// [`Mount::prefix_output`], the runtime starts each line with the row
+    /// that wrote it.
+    pub fn local(&mut self, name: &str, runtime: SpawnPlugin) {
+        let mut runtime = runtime.stdio(Stdio::Null, Stdio::Lines, Stdio::Lines);
         if self.prefix_output {
             runtime = runtime.env(PREFIX_OUTPUT, "1");
         }
-        self.local_as_is(name, runtime, rows);
+        self.local_as_is(name, runtime);
     }
 
     /// [`Mount::local`] for a runtime that reads this terminal (a debugger
@@ -286,36 +274,20 @@ impl Mount<'_> {
     /// process's, and its output is not held back until a line ends, or a
     /// prompt would not show. Nor is it prefixed: the prompt would not be
     /// the debugger's.
-    pub fn local_terminal(
-        &mut self,
-        name: &str,
-        runtime: LocalRuntime,
-        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
-    ) {
-        let runtime = runtime
-            .stdin(Stdio::Inherit)
-            .stdout(Stdio::Inherit)
-            .stderr(Stdio::Inherit);
-        self.local_as_is(name, runtime, rows);
+    pub fn local_terminal(&mut self, name: &str, runtime: SpawnPlugin) {
+        let runtime = runtime.stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
+        self.local_as_is(name, runtime);
     }
 
-    fn local_as_is(
-        &mut self,
-        name: &str,
-        mut runtime: LocalRuntime,
-        rows: impl FnOnce(RuntimeHandle) -> RuntimeResolver,
-    ) {
+    fn local_as_is(&mut self, name: &str, mut runtime: SpawnPlugin) {
         if self.debug {
             runtime = runtime.env(DEBUGGING, "1");
         }
         let handle = runtime.handle();
-        let rows = Arc::new(rows(handle.clone()).with_catalog(self.catalog));
         self.processes.push((name.to_owned(), runtime.processes()));
         self.fibers
             .push((name.to_owned(), self.root.plugin(runtime)));
-        self.resolve(rows.clone());
         self.runtimes.push((name.to_owned(), handle));
-        self.resolvers.push(rows);
     }
 }
 

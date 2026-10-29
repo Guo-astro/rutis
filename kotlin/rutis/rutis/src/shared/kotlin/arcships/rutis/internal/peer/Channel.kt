@@ -87,7 +87,7 @@ class LineChannel(
     }
 }
 
-/** Two channels, each delivering what the other sends: the testing tool's. */
+/** Two channels, each delivering what the other sends (tests). */
 object MemoryChannel {
     private val END = ByteArray(0)
 

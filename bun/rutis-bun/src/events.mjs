@@ -14,15 +14,9 @@
 // This file is the same in the Node runtime (node/rutis-runtime) and the
 // Bun runtime (bun/rutis-bun); a test checks the copies are equal. It
 // knows nothing of Cordis or of the session: the runtime passes in what it
-// needs. A Cordis application linked to other nodes has a bus of its own
-// (./bridge/bus.mjs).
+// needs.
 
 export const MODES = ['emit', 'parallel', 'serial', 'waterfall', 'bail']
-
-// On the AggregateError of a `parallel` a linked Cordis application
-// dispatched (./bridge/bus.mjs): where each of its children failed
-// (`row <row>` / `node <peer>`), in the same order.
-export const FAILED = Symbol.for('rutis.events.failed')
 
 // "No result" (§1): undefined, null or false; anything else is a result.
 export const isResult = value => value !== undefined && value !== null && value !== false

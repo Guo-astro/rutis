@@ -3,6 +3,9 @@
 # in-memory sessions, RutisTest's conformance) on the iOS simulator: built
 # for it with SwiftPM, run with `simctl spawn` in a simulator made for the
 # run and deleted after it. Needs Xcode with an iOS simulator runtime.
+# RutisTest there is an app installing its own plugins, connected to a host
+# on this Mac: the script runs one (`rutis-host run` with a
+# `rutis-host/listen` row; RUTIS_HOST, else `cargo build -p rutis-host`).
 #
 #   bash tools/ios-selftest.sh
 set -euo pipefail
@@ -29,4 +32,24 @@ udid=$(xcrun simctl create "rutis-selftest-$$" "$kind" "$runtime")
 trap 'xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true; xcrun simctl delete "$udid" || true' EXIT
 xcrun simctl boot "$udid"
 xcrun simctl bootstatus "$udid" -b >/dev/null
-xcrun simctl spawn "$udid" "$binary"
+# The host RutisTest connects to, on loopback (the simulator shares it).
+host="${RUTIS_HOST:-}"
+if [ -z "$host" ]; then
+  cargo build -p rutis-host
+  host="$PWD/target/debug/rutis-host"
+fi
+project=$(mktemp -d)
+port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+cat > "$project/rutis.json" <<JSON
+{
+  "id": "host",
+  "listen": [{ "name": "test", "address": "127.0.0.1:$port" }],
+  "rows": [{ "id": "device", "name": "rutis-host/listen", "config": { "listener": "test" } }]
+}
+JSON
+token=$(uuidgen)
+RUTIS_TOKEN_DEVICE="$token" "$host" run "$project/rutis.json" &
+host_pid=$!
+trap 'kill "$host_pid" 2>/dev/null || true; rm -rf "$project"; xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true; xcrun simctl delete "$udid" || true' EXIT
+SIMCTL_CHILD_RUTIS_TEST_CONNECT="ws://127.0.0.1:$port/rutis" SIMCTL_CHILD_RUTIS_TEST_TOKEN="$token" \
+  xcrun simctl spawn "$udid" "$binary"

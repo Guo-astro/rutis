@@ -62,7 +62,9 @@ func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
 	if chain := testwait.Within(t, "host event callback", chains); len(chain) != 2 {
 		t.Fatalf("host callback chain: %v", chain)
 	}
-	if chain := testwait.Within(t, "reentrant local emission", local); len(chain) != 3 {
+	// Through the host and back once more: the plugin's own emission goes
+	// through the host too.
+	if chain := testwait.Within(t, "reentrant emission", local); len(chain) != 4 {
 		t.Fatalf("local listener chain: %v", chain)
 	}
 	err := loaded.Parallel(ctx, "failed")
@@ -215,7 +217,7 @@ func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	if value, err := run("serial", "t/serial", "rutistest"); err != nil || value != "T" {
 		t.Fatalf("filtered through the host: %v %v", value, err)
 	}
-	if got := fmt.Sprint(state.Log()); got != "[filter:emitting/go filter:rutistest/]" {
+	if got := fmt.Sprint(state.Log()); got != "[filter:emitting/test filter:rutistest/test]" {
 		t.Fatalf("the filter ran in the emitter's process, once per listener, before any: %s", got)
 	}
 }
@@ -285,72 +287,6 @@ func TestEmitOrderAcrossTheFastPath(t *testing.T) {
 	}
 }
 
-type scoped struct {
-	Label string `json:"label"`
-}
-
-// guarantee: events/flat (rows in scopes, the testing tool's emissions
-// from a row's scope)
-func TestRowsInScopesHearEveryEvent(t *testing.T) {
-	var mu sync.Mutex
-	var heard []string
-	plugin := rutis.Define(rutis.Plugin[scoped]{
-		Name: "scoped",
-		Apply: func(c *rutis.Ctx, config scoped) error {
-			c.On("t/scope", func(context.Context, ...any) (any, error) {
-				mu.Lock()
-				heard = append(heard, config.Label)
-				mu.Unlock()
-				return nil, nil
-			})
-			return nil
-		},
-	})
-	root := rutistest.Load(t, plugin, scoped{"r"}, nil)
-	t1 := root.Load(scoped{"u"}, rutistest.InScope("t1", "tenant"))
-	s1 := root.Load(scoped{"s"}, rutistest.InScope("t1/s1", "tenant", "session"))
-	t2 := root.Load(scoped{"v"}, rutistest.InScope("t2", "tenant"))
-	ctx := context.Background()
-	for _, step := range []struct {
-		from *rutistest.Loaded
-		want string
-	}{{s1, "[r s u v]"}, {t1, "[r s u v]"}, {t2, "[r s u v]"}, {root, "[r s u v]"}} {
-		mu.Lock()
-		heard = nil
-		mu.Unlock()
-		if err := step.from.Parallel(ctx, "t/scope"); err != nil {
-			t.Fatal(err)
-		}
-		mu.Lock()
-		got := append([]string{}, heard...)
-		mu.Unlock()
-		sortStrings(got)
-		if fmt.Sprint(got) != step.want {
-			t.Fatalf("from %v: %v, want %s", step.from.Scope(), got, step.want)
-		}
-	}
-	if scope := s1.Scope(); len(scope) != 2 || scope[1] != (rutis.Scope{ID: "t1/s1", Group: "session"}) {
-		t.Fatalf("scope %v", scope)
-	}
-	var seen []rutis.Listener
-	if _, err := s1.Filter(func(l rutis.Listener) (bool, error) { seen = append(seen, l); return false, nil }).Serial(ctx, "t/scope"); err != nil {
-		t.Fatal(err)
-	}
-	if len(seen) != 4 || seen[2].Row != "test-3" || seen[2].Runtime != "go" || len(seen[2].Scope) != 2 {
-		t.Fatalf("descriptors %+v", seen)
-	}
-}
-
-func sortStrings(list []string) {
-	for i := range list {
-		for j := i + 1; j < len(list); j++ {
-			if list[j] < list[i] {
-				list[i], list[j] = list[j], list[i]
-			}
-		}
-	}
-}
-
 // guarantee: events/unload (the testing tool unloads a row while its
 // listener runs: cancelled, waited for)
 func TestUnloadingARowCancelsItsRunningListener(t *testing.T) {
@@ -380,10 +316,9 @@ func TestUnloadingARowCancelsItsRunningListener(t *testing.T) {
 	}
 }
 
-// guarantee: events/tool (the testing tool names the runtime "go" in
-// descriptors unless told, waits for running listeners up to
-// RUTIS_SHUTDOWN_TIMEOUT, and gives filters copies of scopes)
-func TestTheTestingToolsRuntimeNameDeadlineAndScopes(t *testing.T) {
+// guarantee: events/tool (descriptors name the row by its id; the
+// runtime waits for running listeners up to RUTIS_SHUTDOWN_TIMEOUT)
+func TestTheTestingToolsDescriptorsAndDeadline(t *testing.T) {
 	t.Setenv("RUTIS_SHUTDOWN_TIMEOUT", "0.05")
 	started := make(chan struct{}, 1)
 	stuck := make(chan struct{})
@@ -395,28 +330,25 @@ func TestTheTestingToolsRuntimeNameDeadlineAndScopes(t *testing.T) {
 			return nil
 		},
 	})
-	loaded := rutistest.Load(t, plugin, nil, nil, rutistest.RuntimeName("go-alt"), rutistest.InScope("t1", "tenant"))
+	loaded := rutistest.Load(t, plugin, nil, nil)
 	ctx := context.Background()
 	var seen []string
 	keep := func(l rutis.Listener) (bool, error) {
-		seen = append(seen, l.Runtime+"/"+l.Plugin+"/"+l.Row+"/"+l.Scope[0].ID)
-		l.Scope[0].ID = "changed"
+		seen = append(seen, l.Plugin+"/"+l.Row)
 		return false, nil
 	}
-	for range 2 {
-		if _, err := loaded.Filter(keep).Serial(ctx, "t/stuck"); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := loaded.Filter(keep).Serial(ctx, "t/stuck"); err != nil {
+		t.Fatal(err)
 	}
-	if fmt.Sprint(seen) != "[go-alt/stuck/test/t1 go-alt/stuck/test/t1]" || loaded.Scope()[0].ID != "t1" {
-		t.Fatalf("descriptors %v, scope %v", seen, loaded.Scope())
+	if fmt.Sprint(seen) != "[stuck/stuck]" {
+		t.Fatalf("descriptors %v", seen)
 	}
 	if err := loaded.Emit(ctx, "t/stuck"); err != nil {
 		t.Fatal(err)
 	}
 	testwait.Within(t, "the listener starts", started)
 	loaded.Unload()
-	want := "rutis: listeners of row test still running after 0.05s; unloading anyway"
+	want := "rutis: listeners of row stuck still running after 0.05s; unloading anyway"
 	if got := loaded.Reported(); !slices.Contains(got, want) {
 		t.Fatalf("reported %q", got)
 	}
@@ -438,7 +370,7 @@ func TestEmitFailuresAreReported(t *testing.T) {
 	if err := loaded.Emit(context.Background(), "t/emit-error"); err != nil {
 		t.Fatal(err)
 	}
-	want := "rutis: listener of t/emit-error in row test failed: Boom: a failed"
+	want := "rutis: listener of t/emit-error in row reporting failed: Boom: a failed"
 	testwait.Eventually(t, "the failure is reported", func() bool {
 		for _, line := range loaded.Reported() {
 			if line == want {

@@ -1269,18 +1269,21 @@ TypeScript、Bun 的测试工具（见下）、Go 的 `rutistest` 和 Swift 的 
 
 ### Go 的测试工具
 
-`github.com/arcships/rutis/go/rutis/rutistest`。测试一侧就是总线的宿主：
+`github.com/arcships/rutis/go/rutis/rutistest`。测试进程跑 Go 运行时，并启动一次 `rutis-host test`（`rutis-host` 在 `PATH` 上，或由 `RUTIS_HOST` 给出路径）：一个自己没有行的宿主，与这个运行时建一条会话（Unix 上是一对 socket，`--channel fd:3`；Windows 上与 `RUTIS_LOCAL_HANDOVER=loopback` 下是一条回环连接）。每次 `Load` 都是这个宿主的一行：宿主检查它的配置并补上默认值，等它注入的服务，分发它的事件。测试给的服务、测试的监听和发出，都是测试自己在同一个运行时里的插件，用的是每个插件都用的接口。行在所属测试结束时卸载；宿主留给下一个测试，随测试进程结束。测试与插件之间的调用，是同一个 Go 运行时里两行之间的调用。
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail`、`Filter` | 从这一行的作用域发出 |
-| `loaded.On(name, fn, options...)` | 像宿主一样监听：插件发出这个名字的事件随后经测试一侧，就像经 rutis；选项是 `advanced.Prepend()`、`advanced.Global()`；返回撤销函数 |
-| `loaded.Load(config, options...)` | 在同一个运行时里再加载一行 |
-| `loaded.Update(config)` | 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败） |
-| `loaded.Reported()` | 运行时报告的 `Emit` 监听器失败 |
-| `loaded.Provided()`、`loaded.Scope()`、`loaded.Unload()` | 插件现在提供的服务名；这一行的作用域链；卸载 |
-| `loaded.Service(name)` | `Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
-| `Load`、`TryLoad`、`loaded.Load` 的选项 | `rutistest.InScope("t1/s1", groups...)` 加载到一个作用域；`InChain(chain...)` 加载到一条作用域链（最外层在前）；`Row(key)` 行名（默认 `test`，然后 `test-2`、`test-3`……）；`RuntimeName(name)` 描述里的运行时名（默认 `go`，只有 `Load` 的算数：所有行都在一个运行时里） |
+| `loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail`、`Filter` | 从测试的插件、在宿主的总线上发出 |
+| `loaded.On(name, fn, options...)` | 以测试的插件监听；选项是 `advanced.Prepend()`、`advanced.Global()`；返回撤销函数 |
+| `loaded.Load(config, options...)` | 再加载插件的一行，用同样的服务 |
+| `loaded.Update(config)` | 像 rutis 对 Go 的行那样改配置，也就是重启；Schema 不接受的配置让测试失败，这一行保持原配置 |
+| `loaded.Reported()` | 这一行加载以来运行时和宿主报告的：失败的 `Emit` 监听器、过滤器、发出 |
+| `loaded.Provided()`、`loaded.Unload()` | 这一行现在提供的服务名；卸载 |
+| `loaded.Service(name)` | 注入它的插件拿到的那个服务：`Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
+| `TryLoad` | 行起不来时交回它那一行（`weather: config: city is required`）的 `Load` |
+| `Load`、`TryLoad`、`loaded.Load` 的选项 | `Row(key)` 给行 id（默认插件名，然后 `<名字>-2`、`<名字>-3`……） |
+
+宿主里一个服务名只有一个提供者：测试给两次 `Load` 的同名服务，两行都还加载着时是同一个提供者，两行拿到同一个值；给另一个值时第二次 `Load` 失败。用它的最后一行卸载时，提供者随之卸载。
 
 [上面 Go 的 `greeter`](#go) 的测试：
 
@@ -1289,7 +1292,7 @@ func TestEvents(t *testing.T) {
 	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
 	said := make(chan any, 1)
 	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
-		said <- args[0] // 测试一侧像宿主一样监听
+		said <- args[0] // 测试的插件在宿主的总线上监听
 		return nil, nil
 	})
 	var text string
@@ -1306,7 +1309,7 @@ func TestEvents(t *testing.T) {
 }
 ```
 
-插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务；它在 `Provides` 里声明的服务也只属于这一份。所以只提供声明过的服务时，同一个定义的几份可以同时加载；没声明的服务名提前不知道，不隔离。描述和报告里，副本的行用来源行的 id。定义属于交出它（作为参数、作为它提供的服务的返回值，或在它发出的事件里）的那一行：这一行卸载或被 `Update`（重启）时，这些副本先卸载，之后再 `Load` 这个定义会失败。副本的配置挂上后不变：在副本上调用 `Update` 或 `Load` 会失败。没有 `Name` 的定义也可以直接 `rutistest.Load`。
+插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西。没有 `Name` 的定义也可以直接 `rutistest.Load`。
 
 ### Swift 的测试工具
 
@@ -1314,13 +1317,15 @@ func TestEvents(t *testing.T) {
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 从这一行的作用域发出 |
-| `loaded.on(name, prepend:, global:) { ... }` | 像宿主一样监听 |
-| `loaded.load(config:row:scope:)` | 再装载一行；作用域写 `RutisTest.scope("t1/s1")` |
-| `loaded.update(config:)` | 像 rutis 一样改一行的配置 |
-| `loaded.reported` | 运行时报告的 `emit` 监听器失败 |
-| `loaded.provided`、`loaded.row`、`loaded.scope`、`loaded.unload()`、`loaded.close()` | 插件现在提供的服务名；行名；作用域；卸载这一行；结束测试的宿主 |
-| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` 是描述里的运行时名 |
+| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 像同一运行时里的插件一样发出 |
+| `loaded.on(name, prepend:, global:) { ... }` | 像同一运行时里的插件一样监听 |
+| `loaded.load(config:row:isolate:)` | 再装载插件的一行 |
+| `loaded.update(config:)` | 改一行的配置：宿主检查它，插件重新 apply |
+| `await loaded.reported` | 测试开始以来报告的：运行时写的 `emit` 监听器失败的行，再加宿主为测试的行写的行 |
+| `loaded.provided`、`loaded.row`、`loaded.unload()`、`loaded.close()` | 这一行现在提供的服务名；行 id；卸载这一行；卸载测试的所有行 |
+| `RutisTest.load(_:config:services:row:isolate:)` | `row` 是行 id（默认是插件名）；`isolate` 是这一行的 `isolate`（服务名：`true` 或标签），与 rutis.json 相同 |
+
+插件作为真实宿主的一行运行：测试进程跑 Swift 运行时，`rutis-host test`（在 `PATH` 上，或 `RUTIS_HOST` 给的路径）跑一个与它建会话的宿主。宿主检查这一行的配置并填默认值，等它 inject 的服务都在了才启动它，并分发所有事件。测试一方（它的服务、`on` 与五种发出）是同一运行时里的一个插件，所以测试与插件之间的值不跨进程；跨进程的行为由各运行时自己的测试检查。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。行都装在根上：测试工具不把行放进作用域。设备和 iOS 模拟器上没有 `rutis-host`：在那里用自己装插件的应用（`RutisApp`，[Swift 应用指南](swift-app.md)）测试。
 
 替身收到的插件定义就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
 

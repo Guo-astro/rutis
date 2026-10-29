@@ -282,7 +282,7 @@ a running host keeps the old versions until it restarts
 
 | 命令 | 作用 |
 | --- | --- |
-| `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、节点行 link 的状态和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
+| `rutis-host run [rutis.json]` | 按配置运行（Unix 上 SIGUSR1 或加 `--watch-config` 时运行中重新读配置，见 [运行中改配置](#运行中改配置)），打印每一行状态的变化、连接行的连接变化和本机运行时的结束（见 [run 打印什么](#run-打印什么)）；Ctrl-C 结束（见 [停止与退出码](#停止与退出码)） |
 | `rutis-host dev [目录]` | 在插件项目里运行这个插件（加上 `rutis.dev.json`），并跟着项目的变化：哪个文件变了，就重新加载以它为模块的行；`rutis.dev.json` 变了就重新读。Go、Swift 项目的源码变了时重新构建（`go build`、`swift build`），只重启它的运行时（见 [用 dev 开发插件](#用-dev-开发插件)） |
 | `rutis-host check [rutis.json] [--strict]` | 不运行任何插件，检查每一行能不能运行（见 [检查配置](#检查配置)），打印版本、依赖、提供的服务、配置 Schema，并列出每个 Go 与 Swift 二进制（运行时名、平台、SDK、插件 API、插件；rutis 0.13 以前的 SDK 构建的二进制不能运行）；有不能运行的行或二进制时以非零状态退出。没有行声明、只可能在运行时由别的行提供的依赖是告警，加 `--strict` 时算错误。在没有 rutis.json 的插件项目里检查这个项目 |
 | `rutis-host status [rutis.json \| 目录]` | 问正在运行这份配置（或这个 `dev` 项目）的 `rutis-host` 现在在做什么：每一行的状态与原因、每个服务由谁提供、各运行时、还没返回的调用（见 [查看当前状态](#查看当前状态)）；Windows 上不提供 |
@@ -291,7 +291,7 @@ a running host keeps the old versions until it restarts
 | `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
-| `rutis-host test [--listen <地址>] [<插件>]` | 给各 SDK 的测试工具用：起一个自己没有行的宿主，在标准输入输出上与启动它的进程建一条 session（`--listen` 时是设备连进来的连接），服务 `rutis-host/test` 让插件在对面运行；session 结束时退出（见 [在测试里运行插件](#在测试里运行插件rutis-host-test)） |
+| `rutis-host test <插件> -- <运行时命令…> <项目>` | 给各 SDK 的测试工具用：起一个自己没有行的宿主，像本机运行时那样启动运行时，在那里加载 `<插件>` 驱动测试，服务 `rutis-host/test` 让插件在这个运行时里运行；运行时结束时退出（见 [在测试里运行插件](#在测试里运行插件rutis-host-test)） |
 | `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
 每个命令后加 `--help` 或 `-h` 打印它的用法（只有这个命令的那几行），以 0 退出，不做别的事；`rutis-host --help` 打印全部。
@@ -324,7 +324,7 @@ rutis-host: listening on <监听器名> <地址:端口>
 | `waiting for llm (row model's runtime py is down)` / `… is not running yet` / `(row model waits for its runtime gpu)` | 提供它的行在等自己的运行时（宿主不知道远程运行时的状态，只写在等它） |
 | `waiting for bsvc (row b waits for asvc from this row: they inject each other)` | 两行互相 `inject` 对方的服务，谁也起不来 |
 | `waiting for llm (row model waits too, for x)` | 提供它的行自己也在等 |
-| `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如节点行的 link 断了） |
+| `waiting for llm (row model is starting)` / `(row model has not provided it)` | 提供它的行正在启动；或在运行但还没有提供（例如它在连接的对面运行，连接断了） |
 | `waiting for its services` | rutis 说不出在等什么时 |
 
 原因变化时（例如提供者从 `starting` 变成失败）再打印一行。
@@ -339,21 +339,6 @@ rutis-host: listening on <监听器名> <地址:端口>
 一个运行时停在 `down` 时只打印一次；重新启动后又结束的，再打印一次，不论它运行了多久。括号里的原因是给人看的，不保证措辞。
 
 运行时结束后，它的各行只是在等它，不管是哪个插件让进程退出的；运行时结束时还在启动的行不会报成 `failed`。正在进行的、对这些行的调用失败时写明进程怎样结束。运行时自己写出的内容（例如错误和调用栈）和以前一样在输出里。
-
-节点行（`rutis-bridge/peer`）的状态只说明这一行在运行；它的 link 连没连上另打一行，在 link 的状态变化时打印：
-
-| 输出 | 含义 |
-| --- | --- |
-| `<行 id>: link connected` | 会话就绪，对端可用 |
-| `<行 id>: link down (<原因>); retrying in 2.1s` | 连不上或连接断了（对端没起来、网络断开、连接结束），按退避在给出的时间后重试 |
-| `<行 id>: link refused: auth-rejected (<原因>); retrying in 30s` | 被拒绝：token 不对、证书不受信任（名字不符、过期、CA 不认）、身份对不上；30 秒后再试 |
-| `<行 id>: link stopped: incompatible (<原因>)` | 不兼容：协议、地址写法、对端缺少要求的能力（如 `runtime`）；不再重试，改配置后重新加载 |
-| `<行 id>: link down (the connection ended)` | 监听方：连接结束，等对端重新连进来（监听方不重试，不带 `retrying in`） |
-
-- 类别（`auth-rejected`、`incompatible`）来自 link 对失败的分类，不靠错误文字；括号里的原因是给人看的细节，例如证书被拒时写明证书的问题，不保证措辞。
-- 输出里不会出现 token 或其他凭据。
-- 等待时间整秒写成 `30s`，否则保留一位小数。
-- 状态每 200 毫秒检查一次，只打印变化：和上一行一样的不再打印（例如每 30 秒一次的同一个拒绝只打印一次）；持续不到 200 毫秒的状态可能不打印。拨号方还没有结果（正在连接）、监听方还没有对端连进来时不打印。
 
 连接行（`rutis-host/dial`、`rutis-host/listen`，见 [远程运行时与设备](#远程运行时与设备)）的连接变化以行 id 开头打印，只用 `connected`、`disconnected` 两个词，原因写在括号里：
 
@@ -377,6 +362,7 @@ phone: disconnected phone-1 (replaced by a new connection)
 | `<行 id>: disconnected <id> (<原因>)` | listen：这条连接断开，它的远程插件全部卸载 |
 | `<行 id>: disconnected <id> (replaced by a new connection)` | listen：同一 id 的新连接握手完成；旧连接的远程插件先全部卸载 |
 
+- 输出里不会出现 token 或其他凭据；等待时间整秒写成 `30s`，否则保留一位小数。
 - listen 上握手失败的连接（token 不对，升级时以 401 / 403 拒绝；协议不兼容）什么都不打印：它没有碰到已有的连接，原因由拨号方那一端写出。
 - 宿主停止、这一行被删或停下时，它的连接随之关闭，不打印 `disconnected`。
 
@@ -399,10 +385,10 @@ rutis 0.12 及更早的运行时（或节点）连进来时按协议版本被拒
 `check` 对每一行（被禁用的行除外）检查：
 
 - 插件能找到并解析；
-- 行的设置能通过加载前的检查（作用域、内置插件如节点行的配置）；
-- 它等待的每个服务（插件的 `inject`，加上行自己的 `inject`）有别的行提供：按插件声明的 `provides`，节点行提供它 `import` 的服务。
+- 行的设置能通过加载前的检查（作用域、内置插件如连接行的配置）；
+- 它等待的每个服务（插件的 `inject`，加上行自己的 `inject`）有别的行提供：按插件声明的 `provides`。
 
-一个服务没有任何行提供、也没有行可能在运行时提供时，这一行永远停在等待依赖：`check` 写明缺哪个服务、怎么处理，并以 1 退出；只有被禁用的行提供它时会指出是哪些行。有的行提供什么在检查时还不知道——别的机器上的运行时（检查时不连接）、`peer:` 行——这时缺的服务只提示可能来自它们，不算失败。
+一个服务没有任何行提供、也没有行可能在运行时提供时，这一行永远停在等待依赖：`check` 写明缺哪个服务、怎么处理，并以 1 退出；只有被禁用的行提供它时会指出是哪些行。有的行提供什么在检查时还不知道——在连接对面运行的行（检查时不连接）——这时缺的服务只提示可能来自它们，不算失败。
 
 插件 `ctx.provide` 的服务不用声明就投到 rutis（0.12 起四种 SDK 写的插件都是，声明了 `provides` 的也可以多提供；没有声明 `rutis.provides` 的 Cordis 行也是），这些服务运行时才知道。一个服务没有行声明、但有这样的行时，`check` 在 stderr 写一条告警，仍以 0 退出：
 
@@ -450,7 +436,7 @@ rutis-host: warning: weather: config: cty is not a config key (did you mean city
 ```
 
 - Cordis 行（导出 `Config` 的 Cordis 插件）加载时由 Cordis 用它自己的 `Config` 校验；`check` 打印它的 Schema，不检查它的配置。
-- Schema 要运行时才知道的行（没连上的远端运行时、对端不在的 `peer:` 行）写 `config not checked: its schema is known only when it runs`，这不是警告。
+- Schema 要运行时才知道的行（在没连上的连接对面运行的行）写 `config not checked: its schema is known only when it runs`，这不是警告。
 
 `run`、`dev` 用同样的规则：配置不合格的行失败（`weather: config: …`，每个问题一行），等它的行写明原因（`chat: waiting for weather (row weather failed: config: …)`）；多余的键每行每个配置值警告一次。
 
@@ -508,7 +494,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 
 行的状态变化照常由状态行打印。重新读取进行中又收到 SIGUSR1、文件又变了，等这一次结束后再读一次；进行中收到终止信号，宿主照常停止。
 
-凭据在拨号和对端连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的节点行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
+凭据在拨号和对面连进来时才从环境变量读（见 [凭据](#凭据)），所以重新读取新增的连接行也能连上。环境变量在进程运行期间不变，换 token 仍要重启宿主。
 
 插件也能经服务 `loader` 加、删行（`create`、`remove`，见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)）。`run` 把这些改动写回 `rutis.json`：只改 `rows`（加的行写在末尾，只写插件给出的字段，`id` 总是写上；删的行去掉），其他字段与键的顺序不变，写法与 `rutis-host add` 写的一样（两格缩进）。写回的内容不算文件变化，`--watch-config` 不因它重新读。宿主读过文件之后文件又被改过（手改、`rutis-host add`）而还没有重新读时，插件的下一次改动先读回文件里的 `rows` 并照它运行，再在它上面改，然后写回；`rows` 以外的改动照旧要 SIGUSR1 或 `--watch-config` 才生效。写不了文件时行照样加上或删掉，插件收到的错误写明 `<行>: added, but rutis.json could not be written: <原因>`（删时是 `removed`），宿主重启后就没有这一改动。`dev` 不写 `rutis.dev.json`：在 `dev` 下 `create`、`remove` 得到 `this host keeps no editable configuration, so rows cannot be added or removed`。
 
@@ -601,7 +587,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 - `dev` 用同样的规则和默认值；在 `rutis.dev.json` 里写 `"runtimes": { "py": { "restart": "on-failure" } }`（或 `"go"`、`"swift"` 等）（项目自己的那个运行时只取 `restart`）。在 `dev` 里停着的运行时，它的某一行下一次变化时也会重新启动（见 [用 dev 开发插件](#用-dev-开发插件)）。
 
 - Go：`runtimes.go.restart` 对每个 Go 运行时生效，各算各的（各自的等待和上限；打印 `runtime go-<名字>: restarting`）。空闲停下的运行时不算自己结束；握手被拒（旧 SDK）的二进制也不算，文件改变前不再启动。不论 `restart` 怎么写，崩溃的 Go 运行时换了二进制后有行用到时也会再启动。运行中改 `runtimes.go` 仍要重启宿主。`runtimes.swift.restart` 对 Swift 运行时相同（打印 `runtime swift-<名字>: restarting`）。
-- `rutis-host/dial` 的行和节点行的 link 自己重连，不受它影响。
+- `rutis-host/dial` 的行自己重连，不受它影响。
 
 ## 查看当前状态
 
@@ -675,46 +661,37 @@ $ rutis-host call forecast.week '{"days": 3}'
 `rutis-host test` 给各 SDK 的测试工具用：被测插件跑在真实的运行时里、面对真实的 rutis 内核，测试看到的就是宿主做的事。插件作者不用自己运行它，由测试工具运行。测试工具在 `PATH` 上找它，或用 `RUTIS_HOST` 指定的路径。
 
 ```console
-rutis-host test [--listen <地址>] [<插件>]
+rutis-host test <插件> -- <运行时命令…> <项目>
+rutis-host test <插件> --channel <通道>
 ```
 
-- 它起一个自己没有行的宿主，在标准输入输出上与启动它的进程建一条 session：每行一条 JSON 消息，与本机运行时的通道是同一种分帧。标准输出只用于 session；它要说的话写在 stderr。
-- 对面是测试工具所用语言的运行时（由测试工具启动）。宿主的 id 是 `host`。
+- 它起一个自己没有行的宿主（id 是 `host`），并像启动任何本机运行时那样启动运行时：`<运行时命令…> <通道> --id test <项目>`，通道在 fd 3 上；Windows 上（以及设了 `RUTIS_LOCAL_HANDOVER=loopback` 时）是一个本机回环地址加一次性 token。Node 是 `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`，Python 是 `python3 -m rutis <项目目录>`。运行时的输出与本机运行时一样整行转出。
 - 宿主里有插件 `rutis-host/test`，提供服务 `rutis-host/test`：
 
 | 方法 | 做什么 |
 | --- | --- |
-| `load(name, config?)` | 按 session 的 `run`，让对面以 `config` 运行插件 `name`（对面认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行；返回这一行的 id：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`），不留下这一行 |
+| `load(name, config?, options?)` | 让运行时以 `config` 运行插件 `name`（运行时认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行（`test:<name>`，按 session 的 `run`）；返回这一行的 id。`options` 给这一行的字段：`id`（已有这一行时：`a row oslo is loaded already`），`isolate`，与 `rutis.json` 里一行的相同（`{ "forecast": true }`，或一个标签）。没有 `id` 时：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`），不留下这一行 |
 | `update(id, config)` | 像改了一行的配置那样给这一行 `config`：插件以它重启。插件拒绝它（这一行保留原配置）或以它失败时失败 |
-| `unload(id)` | 删掉这一行；插件在对面卸载完才返回 |
+| `unload(id)` | 删掉这一行；插件在运行时里卸载完才返回 |
 | `reported(id)` | 宿主报告过的这一行的事：它的监听器在 `emit` 里失败、它的 `emit` 的过滤器失败，文字与宿主打印的相同（`weather: listener of weather/ask failed: Error: boom`） |
 
-- `<插件>` 在对面最先加载（等同 `load(<插件>)`），在对面完成握手之后：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
-- 这样加载的插件与驱动测试的插件在对面同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。
-- session 结束（对面关闭了它，或对面不在了）时退出：所有清理都完成时退出码 0。对面始终不握手：`rutis-host: test: <原因>`，退出码 1。Ctrl-C 与 SIGTERM 的停止方式与 `run` 相同。
+- `<插件>` 在运行时完成握手后最先加载（等同 `load(<插件>)`）：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
+- 这样加载的插件与驱动测试的插件在同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。
+- 运行时结束时它退出：所有清理都完成时退出码 0。驱动测试的插件以结束自己的运行时来结束测试（Node `process.exit(0)`，Python `os._exit(0)`），运行时会说出来（`runtime test: row tester called process.exit(0)`）。Ctrl-C 与 SIGTERM 的停止方式与 `run` 相同。
 
-测试工具要做的：
+测试工具要做的：运行 `rutis-host test <驱动测试的插件> -- <运行时命令…> <项目>`，从输出里读驱动测试的插件报告的结果，等它退出。
 
-1. 以一对已连接的 socket 的一端作为通道，启动本语言的运行时：`node <runner.mjs> fd:<n> --id <id> <锚点>`、`python3 -m rutis fd:<n> --id <id> <项目>`（`<id>` 是运行时自己的，如 `node`、`py`；对面的插件是 `<id>:<插件>`）。
-2. 以另一端作为标准输入和标准输出，启动 `rutis-host test <驱动测试的插件>`。
-3. 关掉自己手里的两端：运行时或宿主关闭自己那一端时 session 结束。
-4. 测试完成后结束运行时（或关闭它的通道）：宿主卸载所有行，session 结束，宿主以 0 退出。
+要在测试进程里调用被测插件的语言（Go、Swift、Kotlin）在自己的进程里跑运行时，用 `--channel`：测试工具像宿主启动本机运行时那样把通道交给 `rutis-host test`，`<通道>` 是 `fd:<n>`（继承的 socket，Unix）或 `tcp:<主机>:<端口>`（测试工具在本机回环地址上监听，`rutis-host` 连上后先发 `RUTIS_CHANNEL_TOKEN` 里的一次性 token 和换行；Windows 上只有这一种），运行时以 id `test` 打招呼。其余与上面相同；运行时的输出由测试工具自己处理。
 
-Windows 上的运行时不接受一对管道作为通道：那里的测试工具自己在两个进程之间转发消息。
-
-`--listen <地址>`：给设备上的测试工具（Android instrumented 测试、iOS 模拟器），那里不能运行 `rutis-host` 进程。宿主在 `<地址>` 上监听（TLS 用 `RUTIS_CERT` 与 `RUTIS_KEY`，与 `listen` 里的监听器相同），连接行是一个 `rutis-host/listen` 行，token 是 `RUTIS_TOKEN_TEST`；测试工具像真实的应用那样拨号连它，它自己装上并报出的插件注册为 `<id>:<插件>`。listen 行的 session 不运行这一端的行，所以 `load` 在这里加的行会等待（`waiting for test`）。它一直运行到 Ctrl-C。
-
-```console
-$ RUTIS_TOKEN_TEST=… rutis-host test --listen 0.0.0.0:7443
-rutis-host: listening on test 0.0.0.0:7443
-test: connected phone-1
-```
+0.19 里测试工具只用本机运行时。设备上的测试（Android instrumented 测试、iOS 模拟器）不用 `rutis-host test`：那里由应用自己装插件。
 
 | 情况 | 输出 |
 | --- | --- |
-| 对面在握手前离开 | `rutis-host: test: peer disconnected`（退出码 1） |
-| `--listen` 而没有 `RUTIS_TOKEN_TEST` | `rutis-host: test: set RUTIS_TOKEN_TEST: the token the far ends present when they connect`（退出码 1） |
+| 运行时起不来 | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)`（退出码 1） |
+| 运行时在握手前结束 | `rutis-host: test: <原因>`（退出码 1） |
 | 驱动测试的插件起不来 | `rutis-host: ` 加上它那一行的状态行，与 `load` 失败相同（`rutis-host: tester: unresolved: …`；退出码 1） |
+| 没有 `--`，或运行时命令之后没有项目 | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`，下一行是 `--channel` 的用法（退出码 1） |
+| `--channel` 的通道不在或写法不对 | `rutis-host: test: fd:97: no such descriptor`、`rutis-host: test: tcp:127.0.0.1:1: Connection refused (os error 61)`、`rutis-host: test: pipe:x: a channel is fd:<n> or tcp:<host>:<port>`（退出码 1） |
 | 对不是 `load` 加的行 `update` 或 `unload` | `no row weather was loaded` |
 
 ## 输出
@@ -772,7 +749,6 @@ Node、Bun、Python 运行时里，一个服务方法一口气占住运行时 5 
     { "id": "dns", "name": "go:dns" },
     { "id": "calendar", "name": "swift:calendar" },
     { "id": "local-tool", "name": "./tools/tool.ts" },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
     { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com/rutis" } },
     { "id": "embedder", "name": "gpu:embedder" },
     { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
@@ -848,7 +824,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 | 字段 | 含义 |
 | --- | --- |
 | `id` | 行的名字，在本文件内唯一 |
-| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；一个插件名只能在一个二进制里）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）、`<连接行>:<插件>`（在连接的对面运行的插件）、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
+| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；一个插件名只能在一个二进制里）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）（节点也这样连，见 [连接节点](nodes.md)）、`<连接行>:<插件>`（在连接的对面运行的插件） |
 | `config` | 插件的配置 |
 | `inject` | 额外要等的服务名 |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |
@@ -884,7 +860,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 - 宿主不为每条连接建实例。要每台设备各算一份的逻辑放在设备上，或由宿主上的插件自己按设备区分（例子见 [Swift 应用](swift-app.md#每台设备各算一份)）。
 - token 是 `RUTIS_TOKEN_<行 id>`（大写，`-` 写作 `_`）：dial 出示它（没有设时不带 token 去连）；listen 用它核对连进来的对面，所有连进来的共用这一个。listen 没有 token 时这一行失败：`phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`。宿主一侧不读单独的 `RUTIS_TOKEN`。
 - dial 额外信任 `RUTIS_CA` 里的 CA（自签证书时用）。
-- listen 的监听器不存在时这一行失败：`no listener named private: add it to listen`。一个监听器上可以有多个 listen 行（和监听的节点行），连接按 token 分给它们；两个条目会接受同一个 token 时启动前报错（见 [凭据](#凭据)）。
+- listen 的监听器不存在时这一行失败：`no listener named private: add it to listen`。一个监听器上可以有多个 listen 行，连接按 token 分给它们；两个条目会接受同一个 token 时启动前报错（见 [凭据](#凭据)）。
 - 顶替：listen 上同一个 id 的新连接握手完成后，先把旧连接的远程插件全部卸载（逆序，清理全部执行），再以关闭码 4002 关闭旧连接，然后才注册新连接的插件。握手失败的连接不影响已有的连接。
 - 宿主停止或这一行停下时，它的连接以关闭码 1000 关闭；对面按自己的规则重连。
 - 两个插件的配置都不收别的字段：写错的字段由 `check` 按 Schema 报出。
@@ -894,21 +870,21 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 
 ## 凭据
 
-凭据不写在文件里，在拨号和对端连进来时从环境变量读：
+凭据不写在文件里，在拨号和对面连进来时从环境变量读：
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `RUTIS_TOKEN_<名字>` | 按名字的 token（名字大写，`-` 写作 `_`）：`rutis-host/dial`、`rutis-host/listen` 的行按行 id，dial 时出示，listen 时核对连进来的对面（所有连进来的共用这一个）；节点行按节点名，连接它时出示、它连入时核对。宿主一侧只读按名字的变量，不读单独的 `RUTIS_TOKEN` |
+| `RUTIS_TOKEN_<名字>` | 按名字的 token（名字大写，`-` 写作 `_`）：`rutis-host/dial`、`rutis-host/listen` 的行按行 id，dial 时出示，listen 时核对连进来的对面（所有连进来的共用这一个）。宿主一侧只读按名字的变量，不读单独的 `RUTIS_TOKEN` |
 | `RUTIS_CA` | 额外信任的 CA 证书（PEM），用于 `wss://` 连接 |
 | `RUTIS_CERT` / `RUTIS_KEY` | 监听器的证书和私钥（`listen` 里没有写时） |
 
-同一个监听器上，每个用这些环境变量接受连接的条目（监听的节点行、`rutis-host/listen` 的行）要接受不同的 token；监听的节点行之间，不在同一个监听器上也要不同（它们共用宿主的一个身份；自带身份或传输的行也算，只要另一行用宿主的身份），被禁用的行也算（重新启用时就会撞上）。两个条目会接受同一个 token 时（两个 `RUTIS_TOKEN_<名字>` 设成了同一个值），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两个条目、哪两个变量要换一个值：
+同一个监听器上，每个 `rutis-host/listen` 行要接受不同的 token，被禁用的行也算（重新启用时就会撞上）。两个行会接受同一个 token 时（两个 `RUTIS_TOKEN_<名字>` 设成了同一个值），连接到达时分不出是给谁的，`run`、`check` 和重新读配置都在启动前报错，写明是哪两行、哪两个变量要换一个值：
 
 ```
-rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
+rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value
 ```
 
-环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个对端或连进来的设备，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中断开现有连接靠停掉那一行：连接它的那一行停掉，它的连接随之关闭。
+环境变量在进程外改不了，所以这些 token 运行中不能吊销：要切断一个相连的节点或连进来的设备，换掉 token 后重启 `rutis-host`，重启会断开所有连接。运行中断开现有连接靠停掉那一行：连接它的那一行停掉，它的连接随之关闭。
 
 ## 部署
 

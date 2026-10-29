@@ -20,11 +20,11 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Disposer, Error as RutisError};
 
 use crate::channel::PeerId;
+use crate::peer::Peer;
 use crate::runtime::Process;
 use crate::services::{provider, Announcement, ExportOne};
 use crate::session::rpc::{Connection, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use crate::Peer;
 
 /// The name of the host service `key` is, if it is one a session shares:
 /// `host_key(name)` outside any instance.
@@ -386,7 +386,7 @@ impl Imports {
 /// `services.*` from the far end.
 pub(super) struct Importing(pub(super) Arc<Imports>);
 
-impl crate::Handler for Importing {
+impl crate::peer::Handler for Importing {
     fn invoke(&self, _: &Connection, _: &str, method: &str, args: Value) -> Reply {
         let imports = self.0.clone();
         match method {

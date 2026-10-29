@@ -15,14 +15,16 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, rows_stage, swift_binary, Llm, Probe};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, spawner, swift_binary, Llm, Probe,
+    TestRuntime,
+};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
 use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
 use rutis_loader::runtime::swift::Swift;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -154,19 +156,18 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in ["probe", "llm", "py_weather", "js_weather", "swift_weather"] {
         catalog.register_shared(name);
     }
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let swift = Arc::new(
         BinaryResolver::<Swift>::new(
             Binaries::new().file(swift_binary("RutisMultilang", "multilang")),
@@ -179,18 +180,18 @@ async fn fixture() -> Fixture {
     let plugin = LoaderPlugin::new(
         Chain::new()
             .with_shared(swift.clone())
-            .with_shared(python_rows.clone())
-            .with_shared(node_rows.clone()),
+            .with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, node_rows).await;
-    rows_stage(&root, python_rows).await;
-    let runtimes = BinaryRuntimes::<Swift>::new(swift, dir.path()).idle(None);
+    rows_stage(&root, &sessions, "node").await;
+    rows_stage(&root, &sessions, "py").await;
+    let runtimes = BinaryRuntimes::<Swift>::new(swift, dir.path(), spawner()).idle(None);
     let swift = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     Fixture {

@@ -191,11 +191,11 @@ impl DynPlugin for LoaderPlugin {
             ctx.provide(super::LoaderService(self.loader.clone()))?;
             // What a far rutis kernel may run here through a session
             // (`rutis-bridge/session`): the plugins this loader resolves.
-            #[cfg(feature = "peer")]
+            #[cfg(feature = "runtimes")]
             rutis::host::CtxHost::provide_at(
                 ctx,
                 rutis_bridge::catalog_key(),
-                Arc::new(crate::peer::LoaderCatalog::new(self.loader.clone()))
+                Arc::new(crate::runtime::LoaderCatalog::new(self.loader.clone()))
                     as Arc<dyn rutis_bridge::PluginCatalog>,
             )?;
             // Copies of plugin definitions other languages hand over are
@@ -216,7 +216,7 @@ impl DynPlugin for LoaderPlugin {
             };
             // `rutis/service` for the rows' services, Rust ones included
             // (events protocol §8).
-            #[cfg(any(feature = "runtimes", feature = "peer"))]
+            #[cfg(feature = "runtimes")]
             let bus = rutis_bridge::events::join_bus(ctx).map_err(Error::from)?;
             // A long wait's report names what rows wait for as they do: a
             // service by its name, a runtime as `runtime <name>` (#676).
@@ -238,7 +238,7 @@ impl DynPlugin for LoaderPlugin {
             let weak = Arc::downgrade(&self.loader.inner);
             Ok(Effect::Disposer(Box::new(move || {
                 drop(namer);
-                #[cfg(any(feature = "runtimes", feature = "peer"))]
+                #[cfg(feature = "runtimes")]
                 drop(bus);
                 #[cfg(feature = "runtimes")]
                 drop(rekeying);

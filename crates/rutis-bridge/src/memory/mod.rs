@@ -1,4 +1,4 @@
-//! Channels within one process, for tests and in-process links:
+//! Channels within one process, for tests and in-process sessions:
 //! bounded, [`CAPACITY`] messages per direction.
 //!
 //! [`pair`] makes two connected channels.
@@ -6,8 +6,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::channel::{Channel, ChannelError, Close, Closer, ConnectError, Receiver, Sender};
-use crate::{Presented, Refusal, Registrations};
+use crate::channel::{Channel, ChannelError, Close, Closer, Receiver, Sender};
 
 /// Messages buffered per direction before `send` blocks.
 pub const CAPACITY: usize = 64;
@@ -182,58 +181,6 @@ pub fn pair() -> (Channel, Channel) {
 fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
     let (a, b): (Arc<Direction>, Arc<Direction>) = (Arc::default(), Arc::default());
     (end(&a, &b), end(&b, &a), b, a)
-}
-
-/// Dial `listener` of `registrations` in this process, presenting the
-/// bearer token the link's identity gives: routed as a network connection
-/// is, to the registration whose identity verifies it. Transitional
-/// (#695 S2): goes with links.
-#[doc(hidden)]
-pub fn dialer(registrations: Registrations, listener: &str) -> crate::Dialer {
-    let listener = listener.to_owned();
-    std::sync::Arc::new(move |credential: Option<crate::Credential>| {
-        let result = dial_registered(&registrations, &listener, credential);
-        Box::pin(async move { result })
-    })
-}
-
-fn dial_registered(
-    registrations: &Registrations,
-    listener: &str,
-    credential: Option<crate::Credential>,
-) -> Result<Channel, ConnectError> {
-    let Some(crate::Credential::Bearer(token)) = credential else {
-        return Err(ConnectError::AuthRejected {
-            reason: format!("memory:{listener}: credentials required"),
-        });
-    };
-    let ticket = registrations
-        .route(listener, Presented::Bearer(&token))
-        .map_err(|refusal| match refusal {
-            Refusal::NotListening => ConnectError::Retryable {
-                reason: format!("memory:{listener}: not listening for this peer yet"),
-            },
-            Refusal::Unauthenticated => ConnectError::AuthRejected {
-                reason: format!("memory:{listener}: not accepted here"),
-            },
-            Refusal::Ambiguous => ConnectError::AuthRejected {
-                reason: format!("memory:{listener}: ambiguous credentials"),
-            },
-        })?;
-    if ticket.protocol != crate::protocol() {
-        return Err(ConnectError::Incompatible {
-            reason: format!("memory:{listener} speaks {}", ticket.protocol),
-        });
-    }
-    let (dialed, accepted) = pair();
-    match registrations.hand_over(&ticket, accepted) {
-        Ok(()) => Ok(dialed),
-        // Revoked since it was routed: nobody listens for it now, as when
-        // it was never registered.
-        Err(_) => Err(ConnectError::Retryable {
-            reason: format!("memory:{listener}: registration revoked"),
-        }),
-    }
 }
 
 #[cfg(test)]

@@ -130,6 +130,35 @@ class RuntimeTest {
         return rt
     }
 
+    /**
+     * An application's own plugin's config is not checked by rutis: a key
+     * left out takes its constructor default, and what the type cannot take
+     * names the key as rutis's check words it.
+     */
+    @Test
+    fun anOwnPluginsConfigTakesItsDefaultsAndNamesTheKey() = runBlocking<Unit> {
+        val seen = Collections.synchronizedList(ArrayList<Settings>())
+        val plugin = Rutis.define<Settings>(name = "own-settings") { _, config -> seen.add(config) }
+        val rt = RuntimeState(listOf(plugin))
+        fun config(json: String) = Json.parseToJsonElement(json)
+        rt.load("own", "own", plugin.name, config("""{"city":"Oslo"}"""), emptyMap(), emptyMap(), emptyList(), own = true)
+        assertEquals(listOf(Settings("Oslo")), seen)
+        rt.unload("own")
+        val missing = assertFailsWith<RutisException> {
+            rt.load("own", "own", plugin.name, config("""{"days":2}"""), emptyMap(), emptyMap(), emptyList(), own = true)
+        }
+        assertEquals("config: city is required", missing.message)
+        assertEquals("bad-config", missing.code)
+        val wrong = assertFailsWith<RutisException> {
+            rt.load("own", "own", plugin.name, config("""{"city":"Oslo","days":"x"}"""), emptyMap(), emptyMap(), emptyList(), own = true)
+        }
+        assertEquals("config: days should be an integer, got \"x\"", wrong.message)
+        val nested = assertFailsWith<RutisException> {
+            rt.load("own", "own", plugin.name, config("""{"city":"Oslo","home":{"lat":"north","lon":1}}"""), emptyMap(), emptyMap(), emptyList(), own = true)
+        }
+        assertEquals("config: home.lat should be a number, got \"north\"", nested.message)
+    }
+
     @Test
     fun disposeBoundsListenersStuckInSeveralRowsByOneBudget() = runBlocking<Unit> {
         // Every row has a listener invocation that never finishes: unload

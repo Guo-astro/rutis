@@ -22,6 +22,9 @@
 // the same runtime, the test tool's own. The plugin is loaded from its
 // module, which must export it as default.
 
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { PLUGIN_API, isPlugin } from './advanced.mjs'
 
 export class PluginTestError extends Error {
@@ -40,15 +43,27 @@ function dispatch(target, method, args) {
   return target.startsWith('listener:') ? object(...args) : object[method](...args)
 }
 
+// `specifier` as the project in the current directory resolves it, as a
+// file URL, if it does.
+function fromProject(specifier) {
+  try {
+    return pathToFileURL(createRequire(join(process.cwd(), 'package.json')).resolve(specifier)).href
+  } catch {
+    return undefined
+  }
+}
+
 // The host and runtime of this process, started at the first `load`.
 let started
 function runtime() {
   started ??= (async () => {
     const bun = typeof globalThis.Bun !== 'undefined'
     const name = bun ? '@arcships/rutis-bun' : '@arcships/rutis-runtime'
+    // The project's runtime (a dev dependency of the project, not of this
+    // package), else one this package can import.
     let start
     try {
-      ({ start } = await import(`${name}/testing`))
+      ({ start } = await import(fromProject(`${name}/testing`) ?? `${name}/testing`))
     } catch (error) {
       if (error?.code !== 'ERR_MODULE_NOT_FOUND' && error?.code !== 'MODULE_NOT_FOUND' && !/Cannot find (module|package)/.test(error?.message)) throw error
       throw new PluginTestError(`the test tool runs plugins in ${name}: add it as a dev dependency`)

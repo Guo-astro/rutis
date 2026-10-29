@@ -8,9 +8,10 @@ This is the API reference. To build a host open to plugins from the start, follo
 
 ```toml
 [dependencies]
-rutis = "0.17"
-rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node is enabled by default
+rutis = "0.19"
+rutis-loader = { version = "0.19", features = ["node", "python"] }
+rutis-bridge = { version = "0.19", features = ["python", "websocket"] }   # node is enabled by default
+rutis-host = "0.19"                # connect::SpawnPlugin starts the local language runtimes
 schemars = "1"                     # the config types Builtins::register decodes derive schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -19,7 +20,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | Crate / feature | Contents |
 | --- | --- |
 | `rutis` | Core: plugins, dependencies, and services. |
-| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages; `peer` enables node rows and `peer:` rows. |
+| `rutis-loader` | Loads plugins from data rows. `node` / `python` / `go` enable rows for those languages (and `<connection row>:<plugin>` rows). |
+| `rutis-host` | Its `connect::SpawnPlugin` starts a local language runtime and opens a session on its channel, as rutis-host's `runtimes` do. |
 | `rutis-bridge` | Connects processes, languages, and machines. `node` (default), `python` and `go` enable local runtimes; `websocket` enables the WebSocket transport; `cordis` mounts Cordis plugins and generates Rust bindings (see [Cordis](cordis.en.md)); `testing` enables compatibility tests. |
 | `rutis-types` | In `[build-dependencies]`: writes the TypeScript declarations and Python types of [marked Rust services](#mark-the-type-rutisservice) from `build.rs`. |
 
@@ -330,7 +332,7 @@ Services provided by plugins also appear in rutis under `host_key(name)`, so Rus
 
 ### Call a service by name from Rust
 
-A host, or a test, calls any service provided by name (a marked type, a service of a row of any language, a peer's, a hand-written `HostDispatch`) in one line with `rutis_bridge::session::call_service`, as a row of another language would:
+A host, or a test, calls any service provided by name (a marked type, a service of a row of any language, a connected node's, a hand-written `HostDispatch`) in one line with `rutis_bridge::session::call_service`, as a row of another language would:
 
 ```rust
 # use rutis::host::*;
@@ -393,7 +395,7 @@ impl HostDispatch for Tools {
 ```
 
 - Two rows of one runtime are two callers, with different `key()` and `instance()`.
-- A call from Rust, from a peer node (including `peer:` rows, whose calls arrive through the services between nodes), from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
+- A call from Rust, from a connected node, from a runtime outside any row (a service from `Mount::hosts`), or from code of a row that uses the service without declaring it (a Cordis `ctx.get`, which finds the registration shared by all rows) is `None`.
 - Read it in `invoke` itself: a future that `invoke` returns runs later, elsewhere, and does not see it.
 - It comes from how rutis-loader's rows lease services (`Process::lease_host_for`): each row has the services it leases registered in a scope of its own (besides the registration shared by all rows, as before), so the wire is unchanged and it works with Node, Bun, Python and Go runtimes, 0.11 ones included. When you load rows with `Process` yourself, lease with `lease_host_for` and isolate the name under `HostLease::label()`; calls through `lease_host` / `lease_host_in` are `None`.
 
@@ -437,8 +439,10 @@ for def in parts.of("session") {
 # let mut builtins = Builtins::new();
 # builtins.register("weather", Weather::new);
 use std::sync::Arc;
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_bridge::{LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 
 // Absolute paths: each runtime's process starts in a directory of its own (see below).
@@ -446,27 +450,34 @@ let app = std::env::current_dir()?.join("app");
 
 // Every service name is shared across languages by name, as in rutis-host.
 let catalog = ServiceCatalog::new();
+// The id this end greets each runtime with: a runtime's process is the far end of a session.
+root.provide(LocalId(PeerId::new("main")?))?;
 
-// Local Node runtime: the directory containing @arcships/rutis-runtime and the package.json used for resolution.
+// Local Node runtime (row `node`): the @arcships/rutis-runtime package that runs, and the package.json plugins resolve from.
 // Events need no configuration: listeners in the runtime register themselves on the host's bus (see "Events" below).
-let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"));
-let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
+let node = SpawnPlugin::new("node", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
 // Local Python runtime: plugin module directory and an interpreter with rutis installed.
-let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
-let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+let python = SpawnPlugin::new("py", Launcher::python(&app.join("plugins")), app.join("plugins"))
+    .interpreter(app.join(".venv/bin/python"));
+// The rows on the runtimes: `py:<module>` on py; npm names and files on node.
+let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+sessions.runtime(node.handle());
+sessions.runtime(python.handle());
 let runtimes = [node.handle(), python.handle()];
 root.plugin(node);
 root.plugin(python);
 
 let loader = LoaderPlugin::new(
-    // Asked in order: the Rust plugins registered in `builtins` ("Mount Rust plugins" above), then the runtimes.
-    Chain::new().with(builtins).with_shared(python_rows.clone()).with_shared(node_rows.clone()),
+    // Asked in order: the Rust plugins registered in `builtins` ("Mount Rust plugins" above), then the runtimes' rows, last.
+    Chain::new().with(builtins).with_shared(sessions.clone()),
     LoaderOptions { catalog, ..LoaderOptions::default() },
 );
 let handle = loader.handle();
+sessions.attach(&handle);
 root.plugin(loader).await?;
-root.plugin(RuntimeRowsPlugin::new(node_rows));
-root.plugin(RuntimeRowsPlugin::new(python_rows));
+// Release a runtime's rows as soon as it runs.
+sessions.follow_row("node");
+sessions.follow_row("py");
 
 let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
     { "id": "forecast", "name": "weather", "config": { "city": "Oslo" } },   // the Rust plugin in builtins
@@ -501,37 +512,45 @@ for failure in &report.failures {
 - `reconcile` returns once every row has been through its load, as `view.await` does for each: a row whose services are there has run its plugin's `apply` (in its runtime, for a row of another language), or failed, and is in the report's `failures`; a row waiting for a service no row provides yet waits on, and `Loader::waits(&entry)` says what for. A runtime still starting (one waiting for its debugger, say) is not waited for: its rows wait for it, the others start, and the report has nothing yet of how its rows load; for the full report, wait for `RuntimeHandle::ready()` first, as above. `Chain` asks its resolvers in order, so a row name both `builtins` and a runtime know goes to `builtins`.
 - Configs: for every row with a schema (`Builtins` rows, dylib rows with a `schema:`, rows your own resolver gives a schema with `Resolved::with_schema`, rows of other language runtimes; not Cordis rows), the loader fills the config with defaults and validates it before `build`, and the plugin gets the filled config; a row that does not match fails with `config: …` and is listed in `failures` ([plugin API: configuration](plugin-api.en.md#configuration)). Extra keys are written on stderr by default (`<row>: config: …`), once per row and config value; `Loader::on_config_warning(Arc::new(|row, issue| …))` hands them to you instead.
 - Paths: each runtime's process starts in a directory of its own (Python and Go: their project; Node: the runtime's package), and is given the paths as written. Relative paths would then be read from that directory, not the application's: give absolute ones, as above.
-- A runtime is a plugin. Its process starts with the plugin and exits when the plugin is unloaded. If the process exits unexpectedly, the runtime stops and its rows wait; `RuntimeHandle::state()` reports `Down(reason)`, including why the process ended. The application decides whether to restart it by calling `restart` on the runtime fiber.
+- A local runtime is a plugin, `SpawnPlugin` (rutis-host's `rutis-host/spawn`): it starts the process (`Launcher::start`, `--id <name>` and the anchor last), mounts `rutis_bridge::Session::new(channel)` under it, and its fiber is the row named after the runtime. Its process starts with the plugin and exits when the plugin is unloaded. If the process exits unexpectedly, the runtime stops and its rows wait; `RuntimeHandle::state()` reports `Down(reason)`, including why the process ended. The application decides whether to restart it by calling `restart` on the runtime fiber.
 - No row is blamed for its runtime ending: a row that was still loading in it waits for it as the others do, it does not fail. The runtime's `Down` reason says how its process ended, and calls in progress to its rows fail saying so.
-- Runtime processes do not outlive the application. Dropping its tokio runtime kills them. Killed by a signal it does not handle (Ctrl-C, SIGTERM) or by `kill -9`, it leaves runtimes that unload their rows and exit within `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), and end themselves a second after that when a plugin keeps one busy. A `shutdown_with_timeout` may not finish while a plugin keeps its runtime busy (its rows cannot unload): end what is left with `LocalRuntime::processes().kill()`, or every runtime process with `rutis_bridge::pipe::kill_processes()`, as rutis-host does.
+- Runtime processes do not outlive the application. Dropping its tokio runtime kills them. Killed by a signal it does not handle (Ctrl-C, SIGTERM) or by `kill -9`, it leaves runtimes that unload their rows and exit within `RUTIS_SHUTDOWN_TIMEOUT` (10 seconds by default), and end themselves a second after that when a plugin keeps one busy. A `shutdown_with_timeout` may not finish while a plugin keeps its runtime busy (its rows cannot unload): end what is left with `SpawnPlugin::processes().kill()`, or every runtime process with `rutis_bridge::pipe::kill_processes()`, as rutis-host does.
 - A remote runtime is joined by a connection plugin: it gets a Channel and calls `ctx.plugin(rutis_bridge::Session::new(channel))` (or `Session::handshake(&ctx, channel).await` first, to see the far end's id, then `ctx.plugin(greeted)`); the loader finds that session for the rows `<connection row>:<plugin>` and has the far end run them. rutis-host's `rutis-host/dial` and `rutis-host/listen` are written so. When the session ends and comes back, its rows are resolved again by the new session before they start, so a plugin upgraded over there brings its new config schema and declarations.
 - For the full row format (groups, `isolate`, `inject`, expressions, imperative updates, and persistence), see the [rutis-loader design](../design-rutis-loader-2026-10-02.en.md).
-- To pick up plugin code changes, call `RuntimeResolver::invalidate_all()` and then `Loader::reload(row)`. Node and Python both reimport only the plugin's entry module.
+- To pick up plugin code changes, call `Loader::reload(row)`. Node and Python both reimport only the plugin's entry module.
 - With `RUTIS_TRACE` set, each runtime-channel message produces a line on stderr with its direction and length, but not its contents.
-- A runtime process gets no standard input, and writes to the application's standard output and error. A plugin that reads the terminal (a terminal UI, Python's `input()`) needs the terminal itself, since it checks that its input is one and sets the terminal's modes: give its runtime this process's input with `stdin(Stdio::Inherit)`. The setting covers the whole runtime process, so every plugin in it can read the input. Load such a plugin into a runtime of its own (`named`), and give the terminal to one runtime at most: processes reading the same terminal race for each key. `stdout(Stdio::Null)` and `stderr(Stdio::Null)` keep the other runtimes from writing over it. The same settings exist on `Launcher`.
+- A runtime process gets no standard input, and writes to the application's standard output and error. A plugin that reads the terminal (a terminal UI, Python's `input()`) needs the terminal itself, since it checks that its input is one and sets the terminal's modes: give its runtime this process's streams with `stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit)`. The setting covers the whole runtime process, so every plugin in it can read the input. Load such a plugin into a runtime of its own (a `SpawnPlugin` under another name), and give the terminal to one runtime at most: processes reading the same terminal race for each key. `Stdio::Null` as their standard output and error keeps the other runtimes from writing over it. `Launcher` has the same settings (`stdin`, `stdout`, `stderr`).
 
 ```rust,no_run
-# use rutis_bridge::runtime::LocalRuntime;
+# use rutis_bridge::runtime::Launcher;
+# use rutis_host::connect::SpawnPlugin;
 # let app = std::path::PathBuf::from("/srv/app");
 use rutis_bridge::runtime::Stdio;
 
 // A terminal UI in its own runtime, reading the keyboard; the plugins' runtime writes no output over it.
-let tui = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .named("tui")
-    .stdin(Stdio::Inherit);
-let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .stdout(Stdio::Null);
+let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
+let tui = SpawnPlugin::new("tui", Launcher::node(&runtime_package), app.join("package.json"))
+    .stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
+let node = SpawnPlugin::new("node", Launcher::node(&runtime_package), app.join("package.json"))
+    .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
 ```
 
 ### Local runtime options
 
 For keeping third-party plugins in check; how to use them is in [Build a host open to plugins: keep plugins in check](open-host.en.md#3-keep-plugins-in-check):
 
-| `LocalRuntime` method | What it does |
+| `SpawnPlugin` method | What it does |
 | --- | --- |
+| `new(name, launcher, anchor)` | The runtime `name`: the row its fiber is, and the id its process greets with. `launcher` starts the process (`Launcher::node`, `::python`, `::bun`, `::go`, `::swift`, or `Launcher::new`); `anchor` is where its plugins resolve from |
+| `.interpreter(program)` | Run the process with `program` instead of the launcher's (a Python interpreter, a Node executable) |
+| `.python_path(dir)` | Put `dir` ahead on the process's `PYTHONPATH` |
+| `.env(name, value)` | Set an environment variable of the process |
+| `.stdio(stdin, stdout, stderr)` | Where the process's standard streams go |
+| `.handle()` | The runtime's state, `RuntimeHandle`: `state()`, `ready()`, `pid()`; give it to `SessionResolver::runtime` |
+| `.processes()` | The processes it started: `kill()` ends them |
 | `.greeting(limit)` | How long the process may take to greet once started, 30 s by default; `Duration::MAX` for no limit (a debugger stopped at the first line) |
 
-A process per plugin: a `named` runtime per plugin, its rows through `RuntimeResolver::modules`, named `<runtime name>:<npm name or file>` (Node and Python alike).
+A process per plugin: a `SpawnPlugin` per plugin under its own name, its rows named `<runtime name>:<npm name or file>`, resolved by `SessionResolver` (Node and Python alike).
 
 ### Go runtimes
 
@@ -547,7 +566,10 @@ Go plugins are compiled binaries, one runtime per binary (feature `go` of `rutis
 # let root = rutis::Ctx::root()?;
 # let catalog = ServiceCatalog::new();
 # let app = std::env::current_dir()?.join("app");
-use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+# root.provide(rutis_bridge::LocalId(rutis_bridge::PeerId::new("main")?))?;
+use std::path::Path;
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes, Spawn, Spawned};
 use rutis_loader::runtime::go::Go;
 
 let go = Arc::new(
@@ -555,8 +577,13 @@ let go = Arc::new(
         .with_catalog(&catalog)
         .reserve(["node", "py"]),              // other runtimes' names, which no Go runtime may take
 );
+// What starts a binary's runtime: a SpawnPlugin, as in rutis-host.
+let spawn: Spawn = Arc::new(|name: &str, launcher, anchor: &Path| {
+    let plugin = SpawnPlugin::new(name, launcher, anchor);
+    Spawned { handle: plugin.handle(), processes: plugin.processes(), plugin: Box::new(plugin) }
+});
 // In the loader's Chain: Chain::new().with_shared(go.clone())…; after mounting the loader:
-let go_runtimes = BinaryRuntimes::<Go>::new(go, &app).idle(Some(Duration::from_secs(60)));
+let go_runtimes = BinaryRuntimes::<Go>::new(go, &app, spawn).idle(Some(Duration::from_secs(60)));
 let control = go_runtimes.handle();            // restart("go-netkit"), runtimes()
 root.plugin(go_runtimes).await?;
 # let _ = control;
@@ -566,10 +593,10 @@ root.plugin(go_runtimes).await?;
 
 - A runtime is named after its file (`netkit` → `go-netkit`). When two binaries have a plugin of the same name, the row fails naming both files.
 - While a process runs, rows resolve from the manifest it started with; a replaced binary takes effect after `control.restart("go-netkit")`.
-- A crashed runtime is not restarted automatically by default. After `control.supervise(RestartPolicy::OnFailure, |end| …)` (`rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd}`), a runtime whose process ended on its own starts again after a wait (1 s, doubling each time up to 30 s, back to 1 s after 60 s of running; after 5 restarts within 5 minutes one more end gives up), each runtime counted on its own; `RestartPolicy::Exit` only reports the end to the callback (`RuntimeEnd::Exit`), for the application to stop. `end.line()` is the line rutis-host prints; `control.unsupervise()` stops supervising, and a restart waiting out its wait does not happen. A runtime that ended before the first `supervise` (it crashed while the application was starting) is handled by `supervise` all the same, only its latest end kept; an application that will not supervise calls `control.unsupervise()` once, and those ends are no longer kept. A binary whose handshake was refused (an old SDK) did not end on its own and is not restarted.
-- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts); Go is `L` = `Go`.
+- The loader does not restart a crashed runtime: it shows as stopped (`control.runtimes()`), and its rows wait. `control.restart("go-netkit")` starts it again. rutis-host's `restart` setting does this for you (see [rutis-host: When a runtime ends](rutis-host.en.md#when-a-runtime-ends)). A binary whose handshake was refused (an old SDK) would not start on a restart either; `rutis_loader::runtime::binary::refused(why)` tells this case, and it is not started again until its file changes.
+- Compiled languages other than Go (Swift, later) share the implementation: `BinaryResolver<L>` and `BinaryRuntimes<L>` of `rutis_loader::runtime::binary`, where `L` implements `BinaryLanguage` (the row prefix, the SDK's marker, how a binary starts: `launch` returns a `Launcher`); Go is `L` = `Go`.
 
-- To run one fixed binary, it also works as Python does: `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (rows `<runtime name>:<plugin>`).
+- To run one fixed binary, it also works as Python does: `SpawnPlugin::new(name, Launcher::go(&binary, &project), &project)` with `SessionResolver` (rows `<runtime name>:<plugin>`).
 
 ## Debugging
 
@@ -578,7 +605,7 @@ The host is an ordinary Rust program, and the Rust plugins compiled into it and 
 Three things show what happens in the host:
 
 - **Default output**: a load that fails, a dependency that does not come for a long time, and a language runtime that exits are written to standard error by default, each line beginning with the plugin, row or runtime name, with no `[rutis]` prefix (it can be turned off, see [default output](#default-output)). `shutdown_with_timeout` running out names the plugins and cleanups not finished.
-- **Current state**: `Loader::status()` returns a snapshot: each row's state and why, which plugin provides each service, each runtime (its state, why, and a local runtime's pid), and the calls in progress. It implements `Display`, one item a line, ready to print (the format: [rutis-host guide, "Seeing the current state"](rutis-host.en.md#seeing-the-current-state)). Under `rutis-host`, `rutis-host status` prints the same. The runtimes come from the loader's resolvers: `RuntimeResolver` and the Go and Swift `BinaryResolver` list theirs; a `Resolver` of your own lists its runtimes by implementing `runtimes()`. Calls are recorded on the runtime's side: calls within one runtime are not seen. `rutis_bridge::runtime::RuntimeState` implements `Debug`.
+- **Current state**: `Loader::status()` returns a snapshot: each row's state and why, which plugin provides each service, each runtime (its state, why, and a local runtime's pid), and the calls in progress. It implements `Display`, one item a line, ready to print (the format: [rutis-host guide, "Seeing the current state"](rutis-host.en.md#seeing-the-current-state)). Under `rutis-host`, `rutis-host status` prints the same. The runtimes come from the loader's resolvers: `SessionResolver` lists the local runtimes given to it with `runtime(handle)`, and the Go and Swift `BinaryResolver` list theirs; a `Resolver` of your own lists its runtimes by implementing `runtimes()`. Calls are recorded on the runtime's side: calls within one runtime are not seen. `rutis_bridge::runtime::RuntimeState` implements `Debug`.
 - **Kernel diagnostics**: `root.diagnostics()`'s `Display` is one item a line: the plugins (their state, what they wait for) and the services (who provides them), by the plugins' and rows' names, without rutis's own plugins and the root by default; `{:#}` lists those too. Its fields (`PluginDiagnostics::platform`, `row` and the rest) are for programs.
 
 The language runtimes (Node, Bun, Python, Go) are processes of their own, each debugged with its own debugger: run the plugin project with `rutis-host dev --debug` (see the [TypeScript](typescript-plugin.en.md#debugging), [Bun](bun-plugin.en.md#debugging), [Python](python-plugin.en.md#debugging) and [Go](go-plugin.en.md#debugging) guides), or attach the debugger to the running process by the pid in the state.
@@ -591,7 +618,7 @@ In 0.19 a remote connection has one shape ([Remote connections: one session plug
 
 ```rust,ignore
 use rutis::host::FiberState;
-use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+use rutis_bridge::{websocket, LocalId, PeerId, Session};
 
 root.provide(LocalId(PeerId::new("main")?));
 
@@ -599,8 +626,8 @@ root.provide(LocalId(PeerId::new("main")?));
 loop {
     let channel = websocket::dial(
         "wss://office.example.com/rutis",
-        &rutis_bridge::protocol(),
-        Some(&Credential::Bearer(token.clone())),
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&websocket::Credential::Bearer(token.clone())),
         &websocket::Trust::default(),
         &websocket::Limits::default(),
     )
@@ -616,7 +643,7 @@ loop {
 - Without this end's id the session fails: `the host provides no id for its sessions`. rutis-host provides it (rutis.json's `id`, `main` by default).
 - Plugins in other languages hand over a connection through the `open` of the service `sessions`; see [Plugin API: your own connection](plugin-api.en.md#your-own-connection-sessionsopen).
 
-The 0.18 node form still works in 0.19 and is being replaced: For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. A remote runtime goes through a connection plugin: a `rutis-host/dial` or `rutis-host/listen` row, or your own connection plugin calling `Session::new(channel)`; its rows are `<connection row>:<plugin>`. See [Connect nodes](nodes.en.md) for concepts and security.
+With rutis-loader, the rows `<connection row>:<plugin>` are resolved by `rutis_loader::runtime::SessionResolver`: put `SessionResolver::new(&catalog)` last in the chain (`Chain::with_shared`) and `attach(&loader)` before mounting the loader. The loader gives sessions the plugins it can resolve (`rutis_loader::runtime::LoaderCatalog`), so a far rutis can have this side run them: connect only to trusted nodes. rutis-host's `rutis-host/dial` and `rutis-host/listen` rows are such connection plugins. See [Connect nodes](nodes.en.md) for concepts and security.
 
 ## Events
 
@@ -675,9 +702,9 @@ off.dispose().await?;
 | Failures | A failing `emit` listener reaches the error sink as `ErrorKind::ListenerFailed` (`Ctx::root_with_sink`), and `rutis_bridge::events::report_line` gives the line rutis-host prints; `parallel` gives `ErrorKind::ListenersFailed` (registration order); errors of listeners elsewhere arrive with their name and message |
 | Unload and cancellation | When a plugin unloads, its listeners leave the bus, running calls see `ctx.cancelled()`, and the unload waits for them (up to the shutdown deadline). Dropping the future of `parallel` / `serial` / `waterfall` cancels the dispatch |
 | Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `ctx.on`; emitting `rutis/*` fails with `ReservedEvent` |
-| Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
+| Nodes | A connected node's listeners are entries of this bus, every name, without any list, see [nodes](#nodes) and [connecting nodes](nodes.en.md#once-connected) |
 
-Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#6-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
+Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#6-test)). Listeners in runtimes need a real runtime (`SpawnPlugin`), as in production.
 
 ## Exported services: reference
 
@@ -720,7 +747,7 @@ Arguments are decoded with serde (any `Deserialize`), results encoded with serde
 
 **Cancellation:** a call the caller stops waiting for (an `AbortSignal`, a dropped future) drops the method's future on the Rust side, as for every call.
 
-**The calling row's context:** a parameter `&rutis::Ctx` (or `Ctx`) is not a parameter in TypeScript: it is the context of the row making the call (`rutis_bridge::session::caller_row()`), so what the method registers on it (`ctx.effect`, a listener) is that row's and goes when the row unloads or restarts, for example a subscription. Called from outside any row (from Rust, from a peer node), such a method fails, saying it needs the calling row's context.
+**The calling row's context:** a parameter `&rutis::Ctx` (or `Ctx`) is not a parameter in TypeScript: it is the context of the row making the call (`rutis_bridge::session::caller_row()`), so what the method registers on it (`ctx.effect`, a listener) is that row's and goes when the row unloads or restarts, for example a subscription. Called from outside any row (from Rust, from a connected node), such a method fails, saying it needs the calling row's context.
 
 ### Errors
 

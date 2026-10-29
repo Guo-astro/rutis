@@ -21,13 +21,14 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
+};
 use rutis::host::CtxHost;
 use rutis::Ctx;
 use rutis_bridge::pipe::Processes;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, settle, HostDispatch, Reply, Value as RpcValue};
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -274,20 +275,21 @@ async fn fixture() -> Fixture {
     for name in ["probe", "poker", "owner", "holder"] {
         catalog.register_shared(name);
     }
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
+    greet_as_main(&root);
+    // One resolver for every local runtime's rows: `<runtime>:<module>`,
+    // and npm names / paths on `node`.
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
     let (node_processes, py_processes) = (node.processes(), python.processes());
     let chain = Chain::new();
     // Bun, rows `bun:<module>`.
     #[cfg(feature = "bun")]
-    let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
+    let bun = TestRuntime::bun(dir.path());
     #[cfg(feature = "bun")]
     let bun_processes = bun.processes();
     #[cfg(feature = "bun")]
-    let bun_rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
+    sessions.runtime(bun.handle());
     #[cfg(feature = "bun")]
     root.plugin(bun);
     // Go: the multilang binary's plugins, rows `go:<plugin>`.
@@ -306,12 +308,12 @@ async fn fixture() -> Fixture {
     let kotlin = {
         let project = dir.path().join("kt");
         std::fs::create_dir_all(&project).unwrap();
-        LocalRuntime::launcher("kt", common::runtimes::kotlin_launcher(&project), &project)
+        TestRuntime::new("kt", common::runtimes::kotlin_launcher(&project), &project)
     };
     #[cfg(feature = "kotlin")]
     let kt_processes = kotlin.processes();
     #[cfg(feature = "kotlin")]
-    let kt_rows = Arc::new(RuntimeResolver::modules(kotlin.handle()).with_catalog(&catalog));
+    sessions.runtime(kotlin.handle());
     #[cfg(feature = "kotlin")]
     root.plugin(kotlin);
     // Swift: the multilang binary's plugins, rows `swift:<plugin>`, in the
@@ -327,19 +329,13 @@ async fn fixture() -> Fixture {
         .with_catalog(&catalog)
         .reserve(["node", "py", "bun", "kt"]),
     );
-    let py_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
+    sessions.runtime(python.handle());
+    sessions.runtime(node.handle());
     root.plugin(python);
     root.plugin(node);
     #[cfg(all(feature = "swift", target_os = "macos"))]
     let chain = chain.with_shared(swift.clone());
-    #[cfg(feature = "kotlin")]
-    let chain = chain.with_shared(kt_rows.clone());
-    #[cfg(feature = "bun")]
-    let chain = chain.with_shared(bun_rows.clone());
-    let chain = chain
-        .with_shared(py_rows.clone())
-        .with_shared(node_rows.clone());
+    let chain = chain.with_shared(sessions.clone());
     let plugin = LoaderPlugin::new(
         chain,
         LoaderOptions {
@@ -348,20 +344,22 @@ async fn fixture() -> Fixture {
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    for rows in [py_rows, node_rows] {
-        rows_stage(&root, rows).await;
+    for runtime in ["py", "node"] {
+        rows_stage(&root, &sessions, runtime).await;
     }
     #[cfg(feature = "bun")]
-    rows_stage(&root, bun_rows).await;
+    rows_stage(&root, &sessions, "bun").await;
     #[cfg(feature = "kotlin")]
-    rows_stage(&root, kt_rows).await;
+    rows_stage(&root, &sessions, "kt").await;
     // Stops two seconds after its last row is gone.
     #[cfg(feature = "go")]
     root.plugin(
         rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
             go,
             dir.path(),
+            common::runtimes::spawner(),
         )
         .idle(Some(std::time::Duration::from_secs(2))),
     )
@@ -372,6 +370,7 @@ async fn fixture() -> Fixture {
         rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(
             swift,
             dir.path(),
+            common::runtimes::spawner(),
         )
         .idle(Some(std::time::Duration::from_secs(2))),
     )

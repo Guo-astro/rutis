@@ -4,14 +4,19 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '../../rutis/src/index.mjs'
 import { supported, toCordis } from '../src/leaf.mjs'
-import { Bus } from '../src/bridge/bus.mjs'
+import { Bus } from '../src/events.mjs'
 import { install } from '../src/cordis-events.mjs'
+import { fakePeer } from './fixtures/fake-peer.mjs'
 
 test('leaf events delegate to the shared Cordis bus and leave with their fiber', async () => {
-  // A bus that dispatches here on the root (a Cordis node's, ../src/bridge/bus.mjs).
+  // The runtime's logical bus on the root, as the runner installs it; its
+  // host dispatches every emission and calls the listeners back.
   const root = new Context()
   const reported = []
-  install(root, Context, new Bus({ report: line => reported.push(line) }), () => ({ row: null, scope: [], signal: undefined }))
+  const host = fakePeer()
+  const bus = new Bus({ runtime: 'node', peer: host, report: line => reported.push(line) })
+  host.connect(bus)
+  install(root, Context, bus, () => ({ row: null, scope: [], signal: undefined }))
   const received = []
   const seen = []
   let leaf
@@ -33,20 +38,28 @@ test('leaf events delegate to the shared Cordis bus and leave with their fiber',
   assert.throws(() => leaf.on(null, () => {}), TypeError)
   assert.throws(() => leaf.emit(null, 'internal/service'), TypeError)
   assert.throws(() => leaf.emit({}, 'internal/service'), TypeError)
-  // emit never throws: every listener runs, the failure is reported (§5.6).
-  leaf.emit('e')
+  // emit never throws: every listener runs, the failure goes to the host,
+  // which reports it (§5.6).
+  assert.equal(leaf.emit('e'), undefined)
+  await host.settled()
   assert.deepEqual(seen, [1, 2])
-  assert.match(reported.join('\n'), /rutis: listener of e in .* failed: Error: sync failure/)
+  assert.deepEqual(host.failures.map(error => error.message), ['sync failure'])
+  assert.deepEqual(reported, [])
   await root.parallel('root-event', 2)
   assert.deepEqual(received, [['root', 1], ['leaf', 2]])
   await plugin.dispose()
   await root.parallel('root-event', 3)
   assert.deepEqual(received, [['root', 1], ['leaf', 2]], 'unload removes the leaf listener')
+  assert.ok(!host.entries.some(entry => entry.name === 'root-event'), 'and the host forgets it')
 })
 
 // guarantee: sdk/leaf-events (failed load and update)
 test('a failed apply and an update remove the leaf listeners, as the runner drives the fiber', async () => {
   const root = new Context()
+  const host = fakePeer()
+  const bus = new Bus({ runtime: 'node', peer: host, report: () => {} })
+  host.connect(bus)
+  install(root, Context, bus, () => ({ row: null, scope: [], signal: undefined }))
   const seen = []
   const spec = definePlugin({
     apply(ctx, config) {
@@ -63,6 +76,7 @@ test('a failed apply and an update remove the leaf listeners, as the runner driv
   await assert.rejects(failed.await(), /apply failed/)
   await root.parallel('tick')
   assert.deepEqual(seen, ['updated'])
+  assert.equal(host.entries.filter(entry => entry.name === 'tick').length, 1, 'the host has the updated listener only')
   await failed.dispose()
   await plugin.dispose()
 })

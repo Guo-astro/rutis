@@ -1,8 +1,10 @@
 //! A two-machine smoke test of the network stack, run by hand: one side
-//! listens (wss), exports `clock`; the other dials, imports it and calls it
-//! every second. Both print every change of their link, so cutting the
-//! network, restarting either side or presenting a wrong token shows what a
-//! link does about it.
+//! listens (wss) and provides `clock`; the other dials, mounts a session on
+//! each connection and calls the clock, which the session brings over,
+//! every second, dialing again a second after a session ends. Both print
+//! every session that starts and ends, so cutting the network, restarting
+//! either side or presenting a wrong token shows what a session does about
+//! it.
 //!
 //! ```text
 //! # on the listening machine (certificate and key for its host name)
@@ -21,16 +23,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rutis::host::CtxHost;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::channel::PeerId;
+use rutis_bridge::channel::{Channel, Close, PeerId};
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value};
-use rutis_bridge::websocket::{self, Limits, ListenerConfig, ServerTls, Trust};
-use rutis_bridge::{
-    Accepting, Credential, Dialer, ExportPlugin, IdentityPlugin, ImportPlugin, LinkConfig,
-    LinkPlugin, LinkState, Registrations, StaticIdentity,
+use rutis_bridge::websocket::{
+    self, Admitted, Credential, Limits, ListenerConfig, Refused, ServerTls, Trust, Upgrade,
 };
+use rutis_bridge::{LocalId, Session};
 use serde_json::{json, Value as Json};
 
 struct Clock(AtomicU64);
@@ -82,38 +83,65 @@ fn read(path: &str) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
-/// Print every state the link goes through, with the time since start.
-fn report(link: &LinkPlugin, started: Instant) {
-    let mut state = link.state();
-    tokio::spawn(async move {
-        loop {
-            let now = state.borrow_and_update().clone();
-            let line = match now {
-                LinkState::Ready { generation } => format!("ready, session {generation}"),
-                LinkState::Waiting {
-                    failure,
-                    error,
-                    retry_in,
-                } => format!("waiting {retry_in:.1?} after {failure:?}: {error}"),
-                other => format!("{other:?}"),
-            };
-            println!("[{:>7.1?}] link: {line}", started.elapsed());
-            if state.changed().await.is_err() {
-                return;
-            }
+/// Provides `clock` (a plugin's service is shared with far ends; the
+/// root's would not be).
+struct ClockPlugin;
+
+impl DynPlugin for ClockPlugin {
+    fn name(&self) -> &str {
+        "clock"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            ctx.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Wait until the session `view` unloads; why it ended.
+async fn ended(view: &FiberView) -> String {
+    let mut watch = view.watch();
+    loop {
+        if matches!(
+            watch.borrow_and_update().state,
+            FiberState::Disposed | FiberState::Failed
+        ) {
+            break;
         }
+        if watch.changed().await.is_err() {
+            break;
+        }
+    }
+    view.state().error.map_or_else(
+        || "the connection ended".to_owned(),
+        |error| error.to_string(),
+    )
+}
+
+/// Mount a session on `channel` and print when it starts and ends.
+fn mount(root: &Ctx, channel: Channel, started: Instant) -> FiberView {
+    let view = root.plugin(Session::new(channel));
+    let watched = view.clone();
+    tokio::spawn(async move {
+        println!("[{:>7.1?}] session: started", started.elapsed());
+        let why = ended(&watched).await;
+        println!("[{:>7.1?}] session: ended ({why})", started.elapsed());
     });
+    view
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = args()?;
     let started = Instant::now();
-    let (main_id, mac_id) = (PeerId::new("main")?, PeerId::new("mac")?);
     let root = Ctx::root()?;
+    let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
 
     match args.mode.as_str() {
         "listen" => {
+            root.provide(LocalId(PeerId::new("main")?))?;
             let mut config = ListenerConfig::new("public", args.address.parse()?);
             if let (Some(cert), Some(key)) = (&args.cert, &args.key) {
                 config = config.tls(ServerTls {
@@ -122,70 +150,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     client_ca_pem: None,
                 });
             }
-            let registrations = Registrations::new();
-            let _listener = websocket::listen(
-                &config,
-                &Limits::default(),
-                websocket::admit_registered(registrations.clone(), "public"),
-            )?;
-            root.provide_at(host_key("clock"), Arc::new(Clock(AtomicU64::new(0))))?;
-            root.plugin(IdentityPlugin::new(
-                "main",
-                StaticIdentity::new(main_id.clone())
-                    .accept_token(args.token.as_str(), mac_id.clone()),
-            ));
-            let link = LinkPlugin::new(LinkConfig::listen(
-                mac_id.clone(),
-                "main",
-                Accepting {
-                    registrations,
-                    listener: "public".into(),
-                    local: main_id,
-                },
-            ));
-            report(&link, started);
-            root.plugin(link);
-            root.plugin(ExportPlugin::new(mac_id, ["clock"]));
+            let (sender, mut accepted) = tokio::sync::mpsc::unbounded_channel::<Channel>();
+            let token = args.token.clone();
+            let admit: websocket::Admit = Arc::new(move |upgrade: Upgrade<'_>| {
+                if upgrade.bearer != Some(token.as_str()) {
+                    return Err(Refused::Forbidden("not accepted here".into()));
+                }
+                let sender = sender.clone();
+                Ok(Admitted {
+                    protocol: protocol.clone(),
+                    deliver: Box::new(move |channel| {
+                        if let Err(refused) = sender.send(channel) {
+                            refused.0.closer.close(Close::Done);
+                        }
+                    }),
+                })
+            });
+            let _listener = websocket::listen(&config, &Limits::default(), admit)?;
+            root.plugin(ClockPlugin);
             println!(
-                "listening on {}; exporting clock (Ctrl-C ends it)",
+                "listening on {}; providing clock (Ctrl-C ends it)",
                 args.address
             );
-            std::future::pending::<()>().await;
+            // A newer connection replaces the older one.
+            let mut current: Option<FiberView> = None;
+            while let Some(channel) = accepted.recv().await {
+                if let Some(old) = current.take() {
+                    let _ = old.dispose().await;
+                }
+                current = Some(mount(&root, channel, started));
+            }
         }
         "dial" => {
+            root.provide(LocalId(PeerId::new("mac")?))?;
             let trust = match &args.ca {
                 Some(ca) => Trust::only(read(ca)),
                 None => Trust::default(),
             };
-            let address = args.address.clone();
-            let dialer: Dialer = Arc::new(move |credential: Option<Credential>| {
-                let (address, trust) = (address.clone(), trust.clone());
-                Box::pin(async move {
-                    websocket::dial(
+            let (address, credential) =
+                (args.address.clone(), Credential::Bearer(args.token.clone()));
+            let dialing = root.clone();
+            tokio::spawn(async move {
+                loop {
+                    match websocket::dial(
                         &address,
-                        &rutis_bridge::protocol(),
-                        credential.as_ref(),
+                        &protocol,
+                        Some(&credential),
                         &trust,
                         &Limits::default(),
                     )
                     .await
-                })
+                    {
+                        Ok(channel) => {
+                            let view = mount(&dialing, channel, started);
+                            ended(&view).await;
+                            let _ = view.dispose().await;
+                        }
+                        Err(error) => println!("[{:>7.1?}] dial: {error}", started.elapsed()),
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
             });
-            root.plugin(IdentityPlugin::new(
-                "mac",
-                StaticIdentity::new(mac_id)
-                    .present(main_id.clone(), Credential::Bearer(args.token.clone())),
-            ));
-            let link = LinkPlugin::new(LinkConfig::dial(main_id.clone(), "mac", dialer));
-            report(&link, started);
-            root.plugin(link);
-            root.plugin(ImportPlugin::new(main_id, ["clock"]));
             // Until Ctrl-C ends it.
             let mut ticks = tokio::time::interval(Duration::from_secs(1));
             loop {
                 ticks.tick().await;
                 let Some(clock) = root.get_at::<dyn HostDispatch>(&host_key("clock")) else {
-                    println!("[{:>7.1?}] clock: not imported", started.elapsed());
+                    println!("[{:>7.1?}] clock: not here", started.elapsed());
                     continue;
                 };
                 let sent = Instant::now();

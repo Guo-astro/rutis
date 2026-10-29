@@ -284,19 +284,6 @@ impl Builtins {
         self.insert_resolved(name, factory, schema, None)
     }
 
-    /// Register a factory taking the raw JSON config, built per copy from
-    /// the instances it runs in.
-    #[cfg(feature = "peer")]
-    pub(crate) fn register_raw_with(
-        &mut self,
-        name: impl Into<String>,
-        factory: Arc<dyn PluginFactory<Value>>,
-        scoped: ScopedFactory,
-        schema: Option<Value>,
-    ) -> &mut Self {
-        self.insert_resolved(name, factory, schema, Some(scoped))
-    }
-
     fn insert_resolved(
         &mut self,
         name: impl Into<String>,
@@ -366,7 +353,7 @@ impl Chain {
     }
 
     /// Add a resolver that something else holds too, such as an
-    /// `RuntimeResolver` shared with its `RuntimeRowsPlugin`.
+    /// `SessionResolver` the loader is attached to.
     pub fn with_shared(mut self, resolver: Arc<dyn Resolver>) -> Self {
         self.resolvers.push(resolver);
         self

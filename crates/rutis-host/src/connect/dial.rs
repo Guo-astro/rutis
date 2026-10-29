@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use rutis::host::{BoxFuture, DynPlugin, Effect};
 use rutis::{Ctx, Error};
+use rutis_bridge::websocket::Credential;
 use rutis_bridge::websocket::{Limits, Trust};
-use rutis_bridge::{Channel, ConnectError, Credential};
+use rutis_bridge::{Channel, ConnectError};
 
 use super::session::{self, Kind};
 use super::{Connections, Print, Tokens};

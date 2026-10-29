@@ -1,27 +1,22 @@
 //! A running host: the kernel, the local language runtimes the
-//! configuration names, the listeners and identity links use, and the
-//! loader that runs the rows.
+//! configuration names, the listeners connection rows use, and the loader
+//! that runs the rows.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, TypeKey};
 use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::websocket::{Limits, ListenerConfig, ServerTls, Trust};
-use rutis_bridge::{
-    Accepting, Connect as Reach, Credential, Dialer, Identity, IdentityPlugin, LocalId, PeerId,
-    Presented, Registrations, Session,
-};
-use rutis_loader::peer::{register_peer_node, Address, PeerResolver};
-use rutis_loader::runtime::binary::RuntimeEnd;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+use rutis_bridge::{LocalId, PeerId, Session};
+use rutis_loader::runtime::{SessionResolver, SessionRows};
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
 
-use crate::config::{token, HostConfig, Restart};
+use crate::config::{HostConfig, Restart};
 use crate::errln;
 use crate::languages::{BinaryHost, Mount, LANGUAGES};
 
@@ -30,8 +25,8 @@ pub struct Host {
     root: Ctx,
     pub loader: Loader,
     pub runtimes: Vec<(String, RuntimeHandle)>,
-    /// The resolvers of the runtimes' rows, to invalidate after a change.
-    pub resolvers: Vec<Arc<RuntimeResolver>>,
+    /// What resolves the rows on sessions, the local runtimes' among them.
+    sessions: Arc<SessionResolver>,
     /// The compiled languages' binaries and runtimes (Go, Swift), those
     /// the configuration has.
     pub binaries: Vec<BinaryHost>,
@@ -41,18 +36,12 @@ pub struct Host {
     /// The processes each local runtime started, by name: to wait for its
     /// own once it is stopped ([`Host::reload`]).
     processes: Vec<(String, rutis_bridge::pipe::Processes)>,
-    /// The `rutis-bridge/peer` rows' resolver, which also knows their links'
-    /// states ([`PeerResolver::link_state`]).
-    pub peers: Arc<PeerResolver>,
     /// Each configured listener (`listen`) and the address it is bound to,
     /// in the configuration's order: with port 0, the port picked.
     pub listening: Vec<(String, std::net::SocketAddr)>,
     /// The configuration it runs: as started, then as last reloaded
     /// ([`Host::reload`]).
     config: HostConfig,
-    /// The peers whose links this host's identity accepts (peer rows that
-    /// listen); none when an embedding brought its own identity.
-    accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
     /// The file plugins' row edits are written back into.
@@ -62,8 +51,10 @@ pub struct Host {
     connections: crate::connect::Connections,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
-    supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+    supervisors: Supervisors,
 }
+
+type Supervisors = Arc<Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>>;
 
 /// The local runtimes whose `restart` is `exit` that ended
 /// ([`Host::supervise`]).
@@ -89,13 +80,10 @@ pub type ObserveErrors = Arc<dyn Fn(&rutis::host::ErrorKind) + Send + Sync>;
 /// names (the E2E fixture host, `tests/e2e/fixture-host`).
 #[derive(Default)]
 pub struct Embedding {
-    /// Rows compiled into the program, next to `rutis-bridge/peer`.
+    /// Rows compiled into the program, next to `rutis-host/dial` and
+    /// `rutis-host/listen`: a connection plugin of its own, say (a
+    /// [`Session`] on a channel it opens).
     pub builtins: Option<RegisterBuiltins>,
-    /// The identity links use instead of the host's own, which presents
-    /// and accepts the tokens of the configuration's peer rows from the
-    /// environment. A host with one of its own does not change it on
-    /// [`Host::reload`].
-    pub identity: Option<IdentityPlugin>,
     /// The file whose rows plugins may add and remove through the service
     /// `loader`, written back into it (`run`'s `rutis.json`); without one,
     /// they cannot.
@@ -157,7 +145,7 @@ impl Host {
 
     /// [`Host::start`], with what an embedding program adds.
     pub async fn start_with(config: &HostConfig, embedding: Embedding) -> Result<Self, Error> {
-        config.check_listener_tokens(embedding.identity.is_none())?;
+        config.check_listener_tokens()?;
         // Event failures print as the protocol says (`rutis: listener of
         // <name> in <where> failed: <ErrorName>: <message>`); the rest as
         // the kernel prints them. A row that failed to start and a runtime
@@ -199,62 +187,32 @@ impl Host {
         root.report_waiting_after(None);
         let catalog = ServiceCatalog::new();
 
-        // The listeners and this node's identity, for the rows that connect.
+        // The listeners and this node's id, for the rows that connect.
         let local = PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?;
         // The id every session greets with, and the `sessions` service.
         root.provide(LocalId(local.clone()))
             .map_err(|error| format!("id: {error}"))?;
         root.plugin(Session::service());
         let (trust, listeners) = websocket(config)?;
-        let registrations = Registrations::new();
         let router = crate::connect::Router::new(listeners.iter().map(|l| l.name.clone()));
         let mut listening = Vec::new();
         let mut bound = Vec::new();
         for listener in &listeners {
-            // A listen row's token, else a link row's (`rutis-bridge/peer`);
-            // refused by both, as a listen row refuses it.
-            let ours = router.admit(&listener.name);
-            let links =
-                rutis_bridge::websocket::admit_registered(registrations.clone(), &listener.name);
-            let admit: rutis_bridge::websocket::Admit = Arc::new(move |upgrade| {
-                ours(upgrade).or_else(|refused| links(upgrade).map_err(|_| refused))
-            });
+            // The listen rows' tokens.
+            let admit = router.admit(&listener.name);
             let started = rutis_bridge::websocket::listen(listener, &Limits::default(), admit)?;
             listening.push((listener.name.clone(), started.local_addr()));
             bound.push(started);
         }
         // Stopping, the listeners close; then the close frames of the
         // connections go out.
-        let stopping = registrations.clone();
         root.effect(move || async move {
             drop(bound);
-            stopping.clear();
             rutis_bridge::websocket::closed(Duration::from_secs(1)).await;
             Ok(())
         })
         .map_err(|error| format!("the WebSocket listeners: {error}"))?;
-        let reach = Reaching {
-            local: local.clone(),
-            registrations,
-            listeners: config.listen.iter().map(|l| l.name.clone()).collect(),
-            trust: trust.clone(),
-        };
-        let accepted = match embedding.identity {
-            Some(identity) => {
-                root.plugin(identity);
-                None
-            }
-            None => {
-                let identity = EnvIdentity::new(config)?;
-                let accepted = identity.accepted.clone();
-                root.plugin(IdentityPlugin::new("host", identity));
-                Some(accepted)
-            }
-        };
-
-        let peers = Arc::new(PeerResolver::new(reach.resolver()));
         let mut builtins = Builtins::new();
-        register_peer_node(&mut builtins, peers.clone());
         crate::connect::register(
             &mut builtins,
             &crate::connect::Connect {
@@ -269,9 +227,8 @@ impl Host {
         let mut mount = Mount {
             root: &root,
             catalog: &catalog,
-            chain: Chain::new().with(builtins).with_shared(peers.clone()),
+            chain: Chain::new().with(builtins),
             runtimes: Vec::new(),
-            resolvers: Vec::new(),
             fibers: Vec::new(),
             processes: Vec::new(),
             later: Vec::new(),
@@ -301,14 +258,21 @@ impl Host {
             }
         }
 
-        // The rows `<connection row>:<plugin>`, last: a name another
-        // resolver takes stays theirs.
-        let sessions = Arc::new(rutis_loader::runtime::SessionResolver::new(mount.catalog));
+        // The rows `<row>:<plugin>` (a connection row's, a local runtime's),
+        // and with a Node runtime the names no runtime prefixes. Last: a
+        // name another resolver takes stays theirs.
+        let node = mount.runtimes.iter().any(|(name, _)| name == "node");
+        let sessions = Arc::new(match node {
+            true => SessionResolver::npm(mount.catalog, "node"),
+            false => SessionResolver::new(mount.catalog),
+        });
+        for (_, handle) in &mount.runtimes {
+            sessions.runtime(handle.clone());
+        }
         mount.chain = std::mem::take(&mut mount.chain).with_shared(sessions.clone());
         let Mount {
             chain,
             runtimes,
-            resolvers,
             fibers,
             processes,
             later,
@@ -338,8 +302,9 @@ impl Host {
         (&root.plugin(plugin))
             .await
             .map_err(|error| format!("the loader: {error}"))?;
-        for rows in &resolvers {
-            root.plugin(RuntimeRowsPlugin::new(rows.clone()));
+        // The local runtimes' rows are released once each runs.
+        for (name, _) in &runtimes {
+            sessions.follow_row(name);
         }
         let restarts = LANGUAGES
             .iter()
@@ -352,7 +317,7 @@ impl Host {
             })
             .collect();
         // What waits for the loader: the compiled languages' runtimes, many,
-        // coming and going: their plugins supervise them ([`Host::supervise`]).
+        // coming and going ([`Host::supervise`]).
         let mut binaries = Vec::new();
         for later in later {
             binaries.extend(later(root.clone()).await?);
@@ -361,52 +326,65 @@ impl Host {
             root,
             loader,
             runtimes,
-            resolvers,
+            sessions,
             binaries,
             fibers,
             processes,
-            peers,
             listening,
             config: config.clone(),
-            accepted,
             restarts,
             rows_file: embedding.rows_file,
             connections,
-            supervisors: Mutex::default(),
+            supervisors: Supervisors::default(),
         })
     }
 
     /// Watch each local runtime as its `restart` says, from now on
     /// ([`crate::restart::supervise`]): `on-failure` starts it again when
     /// its process ends on its own; one whose `restart` is `exit` comes out
-    /// of the [`Exits`] returned when it ends, for the host to stop. The
-    /// runtimes of compiled languages (Go, Swift), which start and stop as
-    /// rows use them, are supervised by their plugin
-    /// ([`rutis_loader::runtime::binary::BinaryRuntimesHandle::supervise`]), each on its
-    /// own, with the same numbers and lines.
+    /// of the [`Exits`] returned when it ends, for the host to stop. Each
+    /// runtime of a compiled language (Go, Swift), which start and stop as
+    /// rows use them, is watched on its own, those that start later too,
+    /// its backoff kept across its starts.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
         for binaries in &self.binaries {
-            if let Restart::No = binaries.restart {
-                // None will come: the ends noted while starting are not
-                // kept for it.
-                binaries.unsupervise();
+            let restart = binaries.restart;
+            if restart == Restart::No {
                 continue;
             }
-            let send = send.clone();
-            binaries.supervise(
-                binaries.restart.into(),
-                Box::new(move |end| match end {
-                    RuntimeEnd::Exit { runtime, why } => {
-                        let _ = send.send((runtime, why));
-                    }
-                    end => {
-                        if let Some(line) = end.line() {
-                            errln!("{line}");
+            let (send, supervisors) = (send.clone(), self.supervisors.clone());
+            let (host, tokio) = (binaries.clone(), tokio::runtime::Handle::current());
+            binaries.starts.watch(move |name, starts| {
+                let (host, runtime) = (host.clone(), name.to_owned());
+                let runtime = crate::restart::Compiled::new(starts, move || {
+                    let (host, runtime) = (host.clone(), runtime.clone());
+                    Box::pin(async move {
+                        // A failure is said by the restart itself.
+                        let _ = host.restart_runtime(&runtime).await;
+                    })
+                });
+                let (name, send) = (name.to_owned(), send.clone());
+                let task = tokio.spawn({
+                    let name = name.clone();
+                    async move {
+                        use crate::restart::{supervise, Backoff, Supervised};
+                        let mut backoff = Backoff::default();
+                        let exit = loop {
+                            match supervise(&name, &runtime, restart, &mut backoff).await {
+                                // Its next start is watched again.
+                                Supervised::GaveUp => {}
+                                Supervised::Exit(why) => break Some(why),
+                                Supervised::Closed => break None,
+                            }
+                        };
+                        if let Some(why) = exit {
+                            let _ = send.send((name, why));
                         }
                     }
-                }),
-            );
+                });
+                supervisors.lock().unwrap().push((name, task));
+            });
         }
         let mut supervisors = self.supervisors.lock().unwrap();
         for (name, restart) in &self.restarts {
@@ -417,14 +395,17 @@ impl Host {
             else {
                 continue;
             };
-            let (name, fiber, handle, restart) =
-                (name.clone(), fiber.clone(), handle.clone(), *restart);
-            let send = send.clone();
+            let runtime = crate::restart::Local {
+                handle: handle.clone(),
+                fiber: fiber.clone(),
+            };
+            let (name, restart, send) = (name.clone(), *restart, send.clone());
             let task = tokio::spawn({
                 let name = name.clone();
                 async move {
+                    let mut backoff = crate::restart::Backoff::default();
                     let supervised =
-                        crate::restart::supervise(&name, &handle, &fiber, restart).await;
+                        crate::restart::supervise(&name, &runtime, restart, &mut backoff).await;
                     if let crate::restart::Supervised::Exit(why) = supervised {
                         let _ = send.send((name, why));
                     }
@@ -440,10 +421,9 @@ impl Host {
     fn unsupervise(&self, name: Option<&str>) {
         if name.is_none() {
             for binaries in &self.binaries {
-                binaries.unsupervise();
+                binaries.starts.unwatch();
             }
         }
-
         self.supervisors.lock().unwrap().retain(|(runtime, task)| {
             let stop = name.is_none_or(|name| name == runtime);
             if stop {
@@ -465,6 +445,7 @@ impl Host {
         self.unsupervise(Some(name));
         let (_, fiber) = self.fibers.remove(index);
         self.runtimes.retain(|(runtime, _)| runtime != name);
+        self.sessions.forget_runtime(name);
         fiber
             .dispose()
             .await
@@ -500,8 +481,8 @@ impl Host {
     /// whose process ended and that nothing restarts (`restart` is `no`, or
     /// `on-failure` gave up), and wait until it runs and its rows may start
     /// ([`Host::runtimes_ready`]), or say why it did not start. Its rows
-    /// come back by themselves, resolved again first when
-    /// [`Host::invalidate`] was called: their code as it is now.
+    /// come back by themselves, resolved again first: their code as it is
+    /// now.
     pub async fn start_runtime_again(&self, name: &str) -> Result<(), Error> {
         let fiber = self
             .fibers
@@ -534,7 +515,7 @@ impl Host {
         if let RuntimeState::Down(reason) = state {
             return Err(format!("the {name} runtime did not start: {reason}"));
         }
-        // A running runtime releases its rows ([`RuntimeRows`]) once it
+        // A running runtime releases its rows ([`SessionRows`]) once it
         // has resolved again those resolved before it ran. Rows loaded
         // before then wait for it, and the host would say it runs while
         // they do (#314). A plugin injecting it applies once it is there.
@@ -542,7 +523,7 @@ impl Host {
         // Disposed however the wait ends, a signal dropping it included:
         // left mounted, it would count among what still runs.
         let mut waiter = Unmount(Some(self.root.plugin(Released {
-            injects: [RuntimeRows::key(name)],
+            injects: [SessionRows::key(name)],
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
@@ -614,11 +595,11 @@ impl Host {
     ///   gone, and its process has ended when this returns.
     ///
     /// Refused, nothing changed (rows brought back are restarted), and the
-    /// error says why. Credentials are read when links dial or are
-    /// dialed, so a peer row `new` adds presents its token.
+    /// error says why. Tokens are read when connection rows dial or take a
+    /// connection, so a row `new` adds has its token.
     pub async fn reload(&mut self, new: HostConfig) -> Result<Reloaded, Error> {
         restart_needed(&self.config, &new)?;
-        new.check_listener_tokens(self.accepted.is_some())?;
+        new.check_listener_tokens()?;
         let removed: Vec<&'static str> = LANGUAGES
             .iter()
             .filter(|language| {
@@ -660,12 +641,10 @@ impl Host {
             return Err(rejection(&failing));
         }
 
-        let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
         // The rows as they run: those plugins added or removed too.
         let (layers, editable) = (self.loader.layers(), self.loader.editable());
         let running = rutis_loader::internal::apply_patches(&layers).rows;
         let old = std::mem::replace(&mut self.config, new);
-        self.accept(accepted);
         let applied = self
             .loader
             .reconcile(vec![layer(self.config.rows())?], self.editable())
@@ -685,7 +664,6 @@ impl Host {
         if let Some(why) = failed {
             // The old rows again: what failed was new.
             self.config = old;
-            self.accept(accepted_before);
             self.loader
                 .reconcile(layers, editable)
                 .await
@@ -734,13 +712,6 @@ impl Host {
                     RUNTIME_EXIT.as_secs()
                 )
             })
-    }
-
-    /// Accept the links of `peers` (those of the peer rows that listen).
-    fn accept(&self, peers: Vec<PeerId>) {
-        if let Some(accepted) = &self.accepted {
-            *accepted.write().unwrap() = peers;
-        }
     }
 
     /// The configuration this host runs.
@@ -871,7 +842,7 @@ impl Host {
                 _ => waiting += 1,
             }
         }
-        // What is not a row (a runtime, a link) and still stops is named
+        // What is not a row (a runtime, a session) and still stops is named
         // too; the rest of rutis's own plugins are not counted.
         for plugin in self.root.diagnostics().plugins {
             if Some(plugin.id) == root || rows.contains(&plugin.id) {
@@ -906,12 +877,11 @@ impl Host {
         self.binaries.iter().find(|binaries| binaries.key == key)
     }
 
-    /// What the status lines follow ([`crate::status::follow`]): the rows,
-    /// their links, and the runtimes.
+    /// What the status lines follow ([`crate::status::follow`]): the rows
+    /// and the runtimes.
     pub fn followed(&self) -> crate::status::Followed {
         crate::status::Followed {
             loader: self.loader.clone(),
-            peers: self.peers.clone(),
             runtimes: self.runtimes.clone(),
             binaries: self.binaries.clone(),
         }
@@ -934,82 +904,9 @@ impl Host {
     pub fn connections(&self) -> Vec<crate::connect::Row> {
         self.connections.rows()
     }
-
-    /// Forget what the runtimes' resolvers cached, so changed plugins are
-    /// described again.
-    pub fn invalidate(&self) {
-        for rows in &self.resolvers {
-            rows.invalidate_all();
-        }
-    }
 }
 
-/// How links reach their far ends: by dialing a WebSocket address (or a
-/// Unix socket), or by being accepted on one of the host's listeners.
-/// Transitional (#695 S2): goes with links.
-#[derive(Clone)]
-struct Reaching {
-    local: PeerId,
-    registrations: Registrations,
-    listeners: Vec<String>,
-    trust: Trust,
-}
-
-impl Reaching {
-    fn websocket(&self, address: &str) -> Dialer {
-        let (address, trust) = (address.to_owned(), self.trust.clone());
-        Arc::new(move |credential: Option<Credential>| {
-            let (address, trust) = (address.clone(), trust.clone());
-            Box::pin(async move {
-                rutis_bridge::websocket::dial(
-                    &address,
-                    &rutis_bridge::protocol(),
-                    credential.as_ref(),
-                    &trust,
-                    &Limits::default(),
-                )
-                .await
-            })
-        })
-    }
-
-    fn unix(&self, address: &str) -> Dialer {
-        let address = address.to_owned();
-        Arc::new(move |_| {
-            let address = address.clone();
-            Box::pin(async move { rutis_bridge::pipe::dial(&address).await })
-        })
-    }
-
-    fn accepting(&self, listener: &str) -> Accepting {
-        Accepting {
-            registrations: self.registrations.clone(),
-            listener: listener.to_owned(),
-            local: self.local.clone(),
-        }
-    }
-
-    /// For the `rutis-bridge/peer` rows.
-    fn resolver(&self) -> rutis_loader::peer::Reach {
-        let reaching = self.clone();
-        Arc::new(move |_peer: &PeerId, address: Address<'_>| match address {
-            Address::Dial(address)
-                if address.starts_with("ws://") || address.starts_with("wss://") =>
-            {
-                Ok(Reach::Dial(reaching.websocket(address)))
-            }
-            Address::Dial(address) => Ok(Reach::Dial(reaching.unix(address))),
-            Address::Listen(listener) if reaching.listeners.iter().any(|l| l == listener) => {
-                Ok(Reach::Listen(reaching.accepting(listener)))
-            }
-            Address::Listen(listener) => {
-                Err(format!("no listener named {listener}: add it to listen"))
-            }
-        })
-    }
-}
-
-/// Who a dialing link trusts (`RUTIS_CA`, besides the system's roots), and
+/// Who a dialing row trusts (`RUTIS_CA`, besides the system's roots), and
 /// the listeners of `listen`.
 fn websocket(config: &HostConfig) -> Result<(Trust, Vec<ListenerConfig>), Error> {
     // A PEM file, and where it was named (a field, or an environment
@@ -1238,66 +1135,6 @@ pub fn row_changes(
         .collect()
 }
 
-/// The peers of `config`'s peer rows that listen: their links are
-/// accepted with their tokens.
-fn listening_peers(config: &HostConfig) -> Result<Vec<PeerId>, Error> {
-    config
-        .peers()
-        .into_iter()
-        .filter(|(_, dials)| !dials)
-        .map(|(peer, _)| PeerId::new(peer.clone()).map_err(|error| format!("peer {peer}: {error}")))
-        .collect()
-}
-
-/// The peers whose links an [`EnvIdentity`] accepts.
-type Accepted = Arc<RwLock<Vec<PeerId>>>;
-
-/// This host's identity. Each peer's token comes from the environment
-/// ([`token`]: `RUTIS_TOKEN_<PEER>`) when a link dials
-/// it, or when a peer that a listening peer row names dials in: a peer row
-/// a reload adds has its token too.
-struct EnvIdentity {
-    local: PeerId,
-    accepted: Accepted,
-}
-
-impl EnvIdentity {
-    fn new(config: &HostConfig) -> Result<Self, Error> {
-        Ok(Self {
-            local: PeerId::new(config.id.clone()).map_err(|error| format!("id: {error}"))?,
-            accepted: Arc::new(RwLock::new(listening_peers(config)?)),
-        })
-    }
-}
-
-impl Identity for EnvIdentity {
-    fn local(&self) -> &PeerId {
-        &self.local
-    }
-
-    fn credential(&self, peer: &PeerId) -> Option<Credential> {
-        token(peer.as_str()).map(Credential::Bearer)
-    }
-
-    fn verify(&self, presented: Presented<'_>) -> Option<PeerId> {
-        let Presented::Bearer(presented) = presented else {
-            return None;
-        };
-        // Every peer is compared, each in constant time, so timing tells
-        // nothing about which token came close; the last one matching wins.
-        let mut found = None;
-        for peer in self.accepted.read().unwrap().iter() {
-            let Some(token) = token(peer.as_str()) else {
-                continue;
-            };
-            if constant_time_eq(token.as_bytes(), presented.as_bytes()) {
-                found = Some(peer.clone());
-            }
-        }
-        found
-    }
-}
-
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -1429,7 +1266,6 @@ mod tests {
         assert_eq!(greeting(&host).await, "Hello, Ada");
         // A different size, so the edit shows even within the same instant.
         std::fs::write(&entry, node_plugin("Welcome")).unwrap();
-        host.invalidate();
         host.loader.reload("greeter").await.unwrap();
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
@@ -1474,7 +1310,7 @@ mod tests {
     }
 
     /// Once `runtimes_ready` returns, the rows of each runtime may start:
-    /// what they wait for ([`rutis_loader::RuntimeRows`]) is there, so a row
+    /// what they wait for ([`SessionRows`]) is there, so a row
     /// loaded then runs once loading returns. It used to return once the
     /// runtime process was ready, and such a row could still wait: `run`
     /// said it was running, and printed its state, while it did (#314).
@@ -1510,7 +1346,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_key::<RuntimeRows>(RuntimeRows::key("py"));
+        let rows = host.root.get_key::<SessionRows>(SessionRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await
@@ -1657,42 +1493,6 @@ mod tests {
             reloaded(0).to_string(),
             "0 rows changed, runtime py stopped"
         );
-    }
-
-    /// A peer's token is read when its link dials, or when it dials in: one
-    /// set after the host started counts, and a peer that a listening row
-    /// names is accepted with its own token once a reload adds the row.
-    /// guarantee: host/credentials-from-env
-    #[test]
-    fn tokens_are_read_when_links_need_them() {
-        let config = parsed(json!({ "id": "main" }));
-        let identity = EnvIdentity::new(&config).unwrap();
-        let peer = PeerId::new("reload-dial-test").unwrap();
-        assert!(identity.credential(&peer).is_none());
-        std::env::set_var("RUTIS_TOKEN_RELOAD_DIAL_TEST", "dial-secret");
-        assert!(matches!(
-            identity.credential(&peer),
-            Some(Credential::Bearer(token)) if token == "dial-secret"
-        ));
-        std::env::remove_var("RUTIS_TOKEN_RELOAD_DIAL_TEST");
-
-        std::env::set_var("RUTIS_TOKEN_RELOAD_LISTEN_TEST", "listen-secret");
-        assert_eq!(identity.verify(Presented::Bearer("listen-secret")), None);
-        let reloaded = parsed(json!({
-            "id": "main",
-            "rows": [{ "id": "in", "name": "rutis-bridge/peer", "config": { "peer": "reload-listen-test", "listen": "public" } }]
-        }));
-        *identity.accepted.write().unwrap() = listening_peers(&reloaded).unwrap();
-        assert_eq!(
-            identity.verify(Presented::Bearer("listen-secret")),
-            Some(PeerId::new("reload-listen-test").unwrap())
-        );
-        assert_eq!(identity.verify(Presented::Bearer("listen-secre")), None);
-        assert_eq!(
-            identity.verify(Presented::Certificate(b"listen-secret")),
-            None
-        );
-        std::env::remove_var("RUTIS_TOKEN_RELOAD_LISTEN_TEST");
     }
 
     /// Go binaries in a directory: a row names a plugin, and its binary's

@@ -1,7 +1,8 @@
 //! Where a runtime process's standard streams go: its input is none unless
 //! its launcher gives it this process's (for a plugin that reads the
 //! terminal), and its output and error are this process's unless discarded.
-//! Both ways a runtime is started: `LocalRuntime` and the `Process` facade
+//! Both ways a runtime is started: `Launcher::start` under a session (as
+//! rutis-host's `rutis-host/spawn` does) and the `Process` facade
 //! (`Mount::launcher`).
 //!
 //! Its own test binary: while a probe runs, the test points this process's
@@ -17,8 +18,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use rutis::host::CtxHost;
-use rutis::Ctx;
-use rutis_bridge::runtime::{Launcher, LocalRuntime, Mount, Process, Stdio};
+use rutis_bridge::runtime::{Launcher, Mount, Process, Stdio};
+
+mod common;
+use common::runtime::{root, TestRuntime};
 
 /// This process's `fd` replaced by `with` until dropped.
 struct Swapped {
@@ -97,8 +100,8 @@ fn launcher(dir: &Path, name: &str) -> Launcher {
         .inherit_fd()
 }
 
-async fn local(runtime: LocalRuntime) {
-    let root = Ctx::root().unwrap();
+async fn local(runtime: TestRuntime) {
+    let root = root();
     let view = root.plugin(runtime);
     let _ = (&view).await;
     root.shutdown().await.unwrap();
@@ -111,24 +114,21 @@ async fn a_runtime_process_gets_the_standard_streams_its_launcher_names() {
 
     // By default: no input (the line stays unread), output and error shown.
     let seen = probe(dir, "default", async {
-        local(LocalRuntime::launcher(
-            "probe",
-            launcher(dir, "default"),
-            dir,
-        ))
-        .await
+        local(TestRuntime::new("probe", launcher(dir, "default"), dir)).await
     })
     .await;
     assert_eq!(seen.read, "");
     assert!(seen.out && seen.err, "output and error are this process's");
 
-    // LocalRuntime's builders: this process's input, output and error discarded.
+    // The launcher's streams: this process's input, output and error discarded.
     let seen = probe(dir, "local", async {
         local(
-            LocalRuntime::launcher("probe", launcher(dir, "local"), dir)
-                .stdin(Stdio::Inherit)
-                .stdout(Stdio::Null)
-                .stderr(Stdio::Null),
+            TestRuntime::new("probe", launcher(dir, "local"), dir).launcher(|launcher| {
+                launcher
+                    .stdin(Stdio::Inherit)
+                    .stdout(Stdio::Null)
+                    .stderr(Stdio::Null)
+            }),
         )
         .await
     })

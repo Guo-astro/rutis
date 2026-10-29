@@ -21,7 +21,7 @@ test('a filter sees each listener\'s descriptor', async () => {
   const t = await h.load(listener)
   const seen = []
   assert.equal(await h.filter(descriptor => { seen.push(descriptor); return false }).serial('ask', 'Oslo'), undefined)
-  assert.deepEqual(seen.map(({ plugin, row, runtime }) => ({ plugin, row, runtime })), [{ plugin: 'listener', row: t.row, runtime: 'node' }])
+  assert.deepEqual(seen.map(({ plugin, row, runtime }) => ({ plugin, row, runtime })), [{ plugin: 'listener', row: t.row, runtime: 'test' }])
   await h.unload()
 })
 

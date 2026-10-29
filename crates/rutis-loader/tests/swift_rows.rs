@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::runtimes::{layer, row_state, swift_binary, COLD};
+use common::runtimes::{greet_as_main, layer, row_state, spawner, swift_binary, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
@@ -20,7 +20,6 @@ use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::binary::{
     Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle,
 };
-use rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd};
 use rutis_loader::runtime::swift::Swift;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
@@ -57,6 +56,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
         install(&plugins, product, name);
     }
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     let catalog = ServiceCatalog::new();
     let resolver = Arc::new(
         BinaryResolver::<Swift>::new(Binaries::new().dir(&plugins))
@@ -72,7 +72,7 @@ async fn fixture(start: Start, binaries: &[(&str, &str)]) -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let swift = BinaryRuntimes::<Swift>::new(resolver.clone(), dir.path());
+    let swift = BinaryRuntimes::<Swift>::new(resolver.clone(), dir.path(), spawner());
     let swift = match start {
         Start::Eager => swift.eager(),
         Start::OnDemand(idle) => swift.idle(idle),
@@ -401,123 +401,6 @@ async fn an_idle_runtime_stops_and_starts_again_when_used() {
             .unwrap(),
         json!("netkit pong again")
     );
-    fixture.root.shutdown().await.unwrap();
-}
-
-/// What supervising reported.
-type Ends = Arc<std::sync::Mutex<Vec<RuntimeEnd>>>;
-
-fn supervise(runtimes: &BinaryRuntimesHandle<Swift>, policy: RestartPolicy) -> Ends {
-    let ends: Ends = Arc::default();
-    let report = ends.clone();
-    runtimes.supervise(policy, move |end| report.lock().unwrap().push(end));
-    ends
-}
-
-/// Wait until `ping` runs with its service published, then crash its
-/// runtime (`exit(17)` in the plugin).
-async fn crash_ping(fixture: &Fixture) {
-    let loader = fixture.loader.clone();
-    COLD.until(
-        || {
-            row_state(&loader, "ping") == Some(FiberState::Active)
-                && service(&fixture.root, "ping").is_some()
-        },
-        "ping and its service",
-    )
-    .await;
-    let _ = call(&fixture.root, "ping", "crash", json!([])).await;
-}
-
-/// `restart: on-failure` (design S5, #274): a Swift runtime whose process
-/// ends is started again after the backoff (1 s first), its row coming
-/// back with it; an idle stop is not an end, and starts nothing.
-/// guarantee: loader/swift-runtimes, host/runtime-restart
-#[tokio::test(flavor = "multi_thread")]
-async fn a_crashed_runtime_restarts_on_failure_and_an_idle_stop_does_not() {
-    let fixture = fixture(
-        Start::OnDemand(Some(Duration::from_millis(300))),
-        &[("RutisPing", "netkit")],
-    )
-    .await;
-    let ends = supervise(&fixture.runtimes, RestartPolicy::OnFailure);
-    fixture
-        .loader
-        .reconcile(layer(vec![row("ping", "swift:ping")]), None)
-        .await
-        .unwrap();
-    crash_ping(&fixture).await;
-    let reported = ends.clone();
-    COLD.until(|| !reported.lock().unwrap().is_empty(), "the restart")
-        .await;
-    assert_eq!(
-        ends.lock().unwrap()[0],
-        RuntimeEnd::Restarting {
-            runtime: "swift-netkit".into()
-        }
-    );
-    let loader = fixture.loader.clone();
-    COLD.until(
-        || {
-            row_state(&loader, "ping") == Some(FiberState::Active)
-                && service(&fixture.root, "ping").is_some()
-        },
-        "ping back",
-    )
-    .await;
-    assert_eq!(
-        call(&fixture.root, "ping", "echo", json!(["back"]))
-            .await
-            .unwrap(),
-        json!("netkit pong back")
-    );
-
-    // Unused, it stops once idle: not an end, not restarted.
-    fixture.loader.reconcile(layer(vec![]), None).await.unwrap();
-    let runtimes = fixture.runtimes.clone();
-    COLD.until(
-        || runtime_state(&runtimes, "swift-netkit") == Some(BinaryRuntimeState::NotStarted),
-        "the idle stop",
-    )
-    .await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(ends.lock().unwrap().len(), 1, "{:?}", ends.lock().unwrap());
-    assert_eq!(
-        runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(BinaryRuntimeState::NotStarted)
-    );
-    fixture.root.shutdown().await.unwrap();
-}
-
-/// `restart: exit`: a Swift runtime whose process ends is reported with
-/// why, for the application to stop, and stays down.
-/// guarantee: loader/swift-runtimes, host/runtime-restart
-#[tokio::test(flavor = "multi_thread")]
-async fn exit_reports_a_crashed_runtime() {
-    let fixture = fixture(Start::OnDemand(None), &[("RutisPing", "netkit")]).await;
-    let ends = supervise(&fixture.runtimes, RestartPolicy::Exit);
-    fixture
-        .loader
-        .reconcile(layer(vec![row("ping", "swift:ping")]), None)
-        .await
-        .unwrap();
-    crash_ping(&fixture).await;
-    let reported = ends.clone();
-    COLD.until(|| !reported.lock().unwrap().is_empty(), "the end")
-        .await;
-    match &ends.lock().unwrap()[0] {
-        RuntimeEnd::Exit { runtime, why } => {
-            assert_eq!(runtime, "swift-netkit");
-            assert!(!why.is_empty());
-        }
-        other => panic!("{other:?}"),
-    }
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert!(matches!(
-        runtime_state(&fixture.runtimes, "swift-netkit"),
-        Some(BinaryRuntimeState::Stopped(_))
-    ));
-    assert_eq!(ends.lock().unwrap().len(), 1);
     fixture.root.shutdown().await.unwrap();
 }
 
