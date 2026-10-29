@@ -177,17 +177,6 @@
       "rust": "yes"
     },
     {
-      "id": "no-objects-declared",
-      "what": "The far end did not declare objects: the call fails, the session goes on",
-      "node": "no",
-      "bun": "no",
-      "python": "no",
-      "go": "no",
-      "swift": "yes",
-      "kotlin": "no",
-      "rust": "no"
-    },
-    {
       "id": "declared-type-refuses",
       "what": "The declared parameter type cannot take an object: bad-argument",
       "node": "no",

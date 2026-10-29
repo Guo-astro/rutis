@@ -108,9 +108,6 @@ protocol NextConstructible {
 /// How a dispatch runs its listeners.
 package enum Mode: String, Sendable {
     case emit, parallel, serial, waterfall, bail
-    case waterfallSync = "waterfall-sync"
-
-    var isWaterfall: Bool { self == .waterfall || self == .waterfallSync }
 }
 
 /// The rest of a waterfall, as the dispatch runs it.

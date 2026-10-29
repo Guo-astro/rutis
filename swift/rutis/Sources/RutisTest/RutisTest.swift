@@ -107,7 +107,7 @@ final class BusEntry: EventEntry, @unchecked Sendable {
     func call(_ mode: Mode, _ args: [Value], _ next: NextFunction?) async throws -> Value {
         if let local { return try await local(args, next) }
         let value = try await host().session.call(target: "", method: "events.call", args: [record(mode, args, next)],
-                                                   sync: mode == .bail || mode == .waterfallSync)
+                                                   sync: mode == .bail)
         return try await settle(value)
     }
 
@@ -170,7 +170,7 @@ final class Invocation: EventEntry, @unchecked Sendable {
         return { [self] mode, args, next in
             if let local = entry.local { return try await local(args, next) }
             let value = try await entry.host().session.call(target: "", method: "events.call", args: [record(mode, args, next)],
-                                                             sync: mode == .bail || mode == .waterfallSync)
+                                                             sync: mode == .bail)
             return try await settle(value)
         }
     }
@@ -265,10 +265,10 @@ final class Harness: @unchecked Sendable {
         await session.ready()
         if let error = session.error { throw error }
         // As a host does: the names with listeners elsewhere before the
-        // mount (none yet); undeclared services are announced.
+        // mount (none yet).
         _ = try await session.call(target: "", method: "events.elsewhere", args: [.data(.object([("add", .array([]))]))], sync: false)
         _ = try await session.call(target: "", method: "mount", args: [.data(.object([
-            ("announce", .bool(true)), ("runtime", .string(runtimeName)),
+            ("runtime", .string(runtimeName)),
         ]))], sync: false)
         for name in harness.declaredInject {
             let methods = JSON.object(services[name]!.rutisMethods().keys.sorted().map { ($0, .string("sync")) })
@@ -434,7 +434,7 @@ final class Harness: @unchecked Sendable {
         case .parallel:
             try await dispatch.parallel(args)
             return .undefined
-        case .waterfall, .waterfallSync:
+        case .waterfall:
             return try await dispatch.waterfall(mode, args, terminal: terminal)
         default:
             return try await dispatch.serial(mode, args)
@@ -444,7 +444,7 @@ final class Harness: @unchecked Sendable {
     /// Serves the runtime's `events.dispatch` (§5.3).
     func dispatchFromRuntime(_ record: Value) async throws -> Value {
         guard let row = record["row"]?.string, let name = record["name"]?.string, let modeText = record["mode"]?.string,
-              let mode = Mode(rawValue: modeText), mode != .waterfallSync else {
+              let mode = Mode(rawValue: modeText) else {
             throw RutisError(name: "Error", message: "events.dispatch: a row, a name and a mode")
         }
         try Events.checkEmit(name)

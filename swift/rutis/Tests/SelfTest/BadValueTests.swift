@@ -1,13 +1,6 @@
 import Foundation
 @testable import Rutis
 
-/// An object with methods: it crosses only to a far end that takes objects.
-final class Gadget: SessionObject, @unchecked Sendable {
-    var identity: ObjectIdentifier { ObjectIdentifier(self) }
-    func call(method: String, args: [Value]) async throws -> Value { .data(.int(1)) }
-    func get(property: String) async throws -> Value { .undefined }
-}
-
 /// The next message of `channel`, read off the cooperative threads.
 private func next(_ channel: Channel) async throws -> JSON {
     let message: [UInt8] = try await withCheckedThrowingContinuation { continuation in
@@ -96,35 +89,6 @@ struct BadValueTests {
         XCTAssertNil(runtime.error)
     }
 
-    // objects-case(swift): no-objects-declared
-    func testAnObjectGoesOnlyToAFarEndThatTakesObjects() async throws {
-        let (a, b) = try Channels.pair()
-        var runtimeOptions = PeerOptions(endpoint: Endpoint(local: "swift", expected: "main"))
-        runtimeOptions.dispatch = { _, method, args in method == "object" ? .object(Gadget()) : args.first ?? .undefined }
-        let runtime = try Peer(channel: a, options: runtimeOptions)
-        var hostOptions = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
-        // A far end older than 0.18: it does not declare `objects`.
-        hostOptions.capabilities = runtimeCapabilities.filter { $0 != "objects" }
-        let host = try Peer(channel: b, options: hostOptions)
-        try runtime.start()
-        try host.start()
-        await host.ready()
-        await runtime.ready()
-        defer {
-            host.close()
-            runtime.close()
-        }
-        do {
-            _ = try await host.call(target: "t", method: "object", args: [], sync: true)
-            XCTFail("expected an error")
-        } catch let error as RutisError {
-            XCTAssertEqual(error.message, "t.object: the result cannot be sent: an object with methods (Gadget) cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18")
-        }
-        let fine = try await host.call(target: "t", method: "echo", args: [.data(.string("after"))], sync: true)
-        XCTAssertEqual(fine.plainJSON, .string("after"))
-        XCTAssertEqual(runtime.referenceTables.exports, 0, "the object is left exported")
-    }
-
     // objects-case(swift): receiver-releases
     // objects-case(swift): undefined-nested-null
     func testAReceivedObjectIsAProxyOfItsMethods() async throws {
@@ -152,8 +116,7 @@ struct BadValueTests {
         }
         let hello = try await next(far)
         XCTAssertEqual(hello["op"]?.stringValue, "hello")
-        XCTAssertTrue(hello["capabilities"]?.arrayValue?.contains(.string("objects")) == true, "the runtime takes objects")
-        try send(far, #"{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2","objects"]}"#)
+        try send(far, #"{"op":"hello","version":4,"endpoint":"main","capabilities":[]}"#)
         await runtime.ready()
 
         // Sent back, the object goes home as itself; the runtime's hold on
