@@ -1015,6 +1015,11 @@ jobs:
           java-version: '17'
           cache: ${{ runner.environment == 'github-hosted' && 'gradle' || '' }}
           cache-dependency-path: kotlin/rutis/**/*.gradle.kts
+      # The testing tool runs the plugins under test on rutis-host test.
+      - name: rutis-host for the testing tool
+        run: |
+          cargo build -p rutis-host
+          echo "RUTIS_HOST=$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/debug/rutis-host" >> "$GITHUB_ENV"
       - name: gradle build (the SDK, the processor, the testing tool, the conformance programs)
         working-directory: kotlin/rutis
         run: |

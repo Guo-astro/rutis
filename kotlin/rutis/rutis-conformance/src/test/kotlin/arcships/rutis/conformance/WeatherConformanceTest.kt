@@ -44,7 +44,7 @@ class WeatherConformanceTest {
                     problems.add("$what ($why): expected $returns, got $it")
                     return
                 }
-                var got = written(value)
+                var got = try { written(value) } catch (e: AssertionError) { problems.add("$what ($why): ${e.message}"); return }
                 val ignore = (entry["ignore"] as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
                 if (got is JsonObject) got = JsonObject(got.filterKeys { it !in ignore })
                 if (got != normalized(returns)) problems.add("$what ($why): got $got, want $returns")
@@ -92,6 +92,8 @@ class WeatherConformanceTest {
             for (name in names) {
                 val entry = expected["samples"]!!.jsonArray.map { it.jsonObject }.firstOrNull { it["sample"]?.jsonPrimitive?.content == name }
                     ?: fail("the expectations list no sample $name")
+                // Only between processes: the test plugin is in the same runtime.
+                if ((entry["crossing"] as? JsonPrimitive)?.content == "true") continue
                 check("sample $name", entry, call(service, "sample", listOf(JsonPrimitive(name))))
             }
             for (event in expected["events"]!!.jsonArray.map { it.jsonObject }) {

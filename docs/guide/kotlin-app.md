@@ -21,6 +21,9 @@ plugins {
 dependencies {
     implementation("io.github.arcships:rutis:0.18.0")
     ksp("io.github.arcships:rutis-ksp:0.18.0")
+    // 测试工具，在 JVM 上跑插件的单元测试（§7）。
+    testImplementation("io.github.arcships:rutis-testing:0.18.0")
+    kspTest("io.github.arcships:rutis-ksp:0.18.0")
 }
 ```
 
@@ -64,9 +67,9 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   }
   ```
 
-  每一份在应用的进程里运行。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`；替身交回时插件拿到的也是原来那个。参数或返回值要直接是 `Plugin`（或 `Plugin?`），`List<Plugin>` 这类放在集合或数据类里的插件定义不支持，要交几个就调用几次。规则见 [插件 API](plugin-api.md#插件定义)。
+  每一份在应用的进程里运行。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身（同一个运行时里的插件）时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`；替身交回时插件拿到的也是原来那个。参数或返回值要直接是 `Plugin`（或 `Plugin?`），`List<Plugin>` 这类放在集合或数据类里的插件定义不支持，要交几个就调用几次。规则见 [插件 API](plugin-api.md#插件定义)。
 
-- 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；配置由应用在 `RutisApp` 里给出（§3），解码之前先按 Schema 补默认值、校验，配置不合格的插件以 `config: …` 装载失败（[插件 API：配置](plugin-api.md#配置)）。有默认参数或可空的字段不必填；默认参数由 kotlinx 解码时补上（Schema 里看不到）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
+- 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；配置由应用在 `RutisApp` 里给出（§3）。SDK 只解码：没给的键用构造参数的默认值（没有默认值的可空字段为 null），不按 Schema 校验；缺必填的键、值的类型不对时，插件装载失败，按 rutis 的措辞点名这个键：`config: city is required`、`config: days should be an integer, got "x"`（[插件 API：配置](plugin-api.md#配置)）。rutis 装载的行（宿主 `rutis.json` 里的插件、测试的行）由 rutis 先按 Schema 校验、补默认值，运行时再解码；之后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
 
 ### 带方法的对象
 
@@ -98,7 +101,7 @@ class Warmer {
 - 代理上没有数据字段：要数据，让方法返回它。调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set, size)`。
 - 同一个对象交出几次，这里拿到同一个代理；把收到的代理或 `RemoteObject` 再交出去，发出的是原来那个对象，交回原来的进程，那边拿到的是原对象。
 - 对象不跟行走：交出它的行卸载后照常可以调用。应用交出的对象在应用的进程里：应用 `stop()` 或断开后，别处对它的调用以 `peer-gone` 失败；对方的进程退出后，这里的调用同样以 `peer-gone` 失败。
-- 同一个进程里拿到的是对象本身。`RutisTest` 按跨进程的样子给代理。规则见 [插件 API](plugin-api.md#带方法的对象)。
+- 同一个进程里，对象的类实现了该接口时拿到的是对象本身，否则是在本进程里调它的代理；`RutisTest` 的测试替身是同一个运行时里的插件，也是这样。规则见 [插件 API](plugin-api.md#带方法的对象)。
 
 ## 3. 接入 rutis
 
@@ -213,8 +216,8 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 ## 7. 测试
 
-- 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。装载出来的 `loaded.on(name) { args -> ... }` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
-- 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各自装上插件；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
+- 插件的单元测试在 JVM 上用测试工具 `arcships.rutis.testing.RutisTest`（构件 `io.github.arcships:rutis-testing`，见 kotlin/README）：插件在测试进程里的真实运行时中运行，是 `rutis-host test`（`PATH` 上或 `RUTIS_HOST`）的一行，每个测试进程起一个宿主。装载出来的 `loaded.on(name) { args -> ... }` 在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
+- 设备上没有 `rutis-host` 进程：测试像应用一样用 `RutisApp` 装自己的插件，拨到开发机上的 rutis（一个 `rutis-host/listen` 行，经 `adb reverse`），插件之间经它用对方的服务和事件。仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.address=<ws 地址> -Pandroid.testInstrumentationRunnerArguments.token=<token>`（SDK 的主线程规则；没有 `address` 时跳过），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各自装上插件；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
 
 ## 8. 真机验收清单
 

@@ -295,8 +295,9 @@ class ObjectsTest {
     }
 
     // objects-case(kotlin): strict-testing-tool
-    // The testing tool hands the plugin an object across its session, as
-    // between processes: the plugin's interface proxy calls the original.
+    // The testing tool hands the plugin an object of the test (a plugin of
+    // the same runtime): the plugin's interface proxy calls the original,
+    // and back home it is the original.
     @Test
     fun theTestingToolPassesObjectsAsBetweenProcesses() = kotlinx.coroutines.runBlocking<Unit> {
         val plugin = Rutis.define<Rutis.NoConfig>(name = "warmer", provides = mapOf("warmer" to service<Warmer>())) { ctx, _ ->

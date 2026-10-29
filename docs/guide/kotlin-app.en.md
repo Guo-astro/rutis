@@ -21,6 +21,9 @@ plugins {
 dependencies {
     implementation("io.github.arcships:rutis:0.18.0")
     ksp("io.github.arcships:rutis-ksp:0.18.0")
+    // The testing tool, for the plugins' unit tests on the JVM (§7).
+    testImplementation("io.github.arcships:rutis-testing:0.18.0")
+    kspTest("io.github.arcships:rutis-ksp:0.18.0")
 }
 ```
 
@@ -64,9 +67,9 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   }
   ```
 
-  Each copy runs in the application's process. It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+  Each copy runs in the application's process. It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest` (a plugin of the same runtime), the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
 
-- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the application gives the config in `RutisApp` (§3); before it is decoded, the Schema's defaults are filled in and it is validated, and a plugin whose config does not match fails to load with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
+- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the application gives the config in `RutisApp` (§3). The SDK only decodes it: a key left out takes the constructor's default argument (a nullable field without one is null), and no Schema is checked; a required key missing, or a value the type cannot take, fails the plugin's load with the key named as rutis words it: `config: city is required`, `config: days should be an integer, got "x"` ([plugin API: configuration](plugin-api.en.md#configuration)). The rows rutis loads (a plugin in a host's `rutis.json`, a test's rows) are checked against the Schema and filled with its defaults by rutis before the runtime decodes them; a decoder error after that is `<path> is not a value the plugin accepts`.
 
 ### Objects with methods
 
@@ -98,7 +101,7 @@ class Warmer {
 - A proxy has no data fields: to get data, have a method return it. Calling a method the object lacks fails that call with `no-method`: `Cache has no method gett (methods: get, set, size)`.
 - One object passed several times is one proxy here; a received proxy or `RemoteObject` passed on sends the original object, and passed back to its process it is the original there.
 - An object does not follow its row: after the row that passed it unloads, it can still be called. Objects the application hands over live in its process: after the application calls `stop()` or disconnects, calls on them elsewhere fail with `peer-gone`; once the far end's process has exited, calls here fail with `peer-gone` too.
-- In the same process you get the object itself. `RutisTest` gives the cross-process proxy. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
+- In the same process you get the object itself when its class implements the interface, else a proxy that calls it here; so does a test double of `RutisTest`, a plugin of the same runtime. The rules: [the plugin API](plugin-api.en.md#objects-with-methods).
 
 ## 3. Connecting to rutis
 
@@ -213,8 +216,8 @@ Battery optimization:
 
 ## 7. Testing
 
-- Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device. On what it loads, `loaded.on(name) { args -> ... }` listens as the host does, at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
-- The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each installing their plugins; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
+- Unit tests of a plugin, on the JVM, use the testing tool `arcships.rutis.testing.RutisTest` (artifact `io.github.arcships:rutis-testing`, see kotlin/README): the plugin runs in its real runtime in the test process, as a row of `rutis-host test` (on `PATH` or at `RUTIS_HOST`), started once per test process. On what it loads, `loaded.on(name) { args -> ... }` listens at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
+- On a device there is no `rutis-host` process: as the application does, the test installs its own plugins with `RutisApp`, dialing a rutis on the development machine (a `rutis-host/listen` row, reached through `adb reverse`), and its plugins use one another's services and events through it. The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.address=<ws address> -Pandroid.testInstrumentationRunnerArguments.token=<token>` (the SDK's main-thread rule; skipped without `address`) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each installing their plugins; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
 
 ## 8. Acceptance on real devices
 

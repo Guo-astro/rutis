@@ -40,8 +40,8 @@ const versions = {
   // The Go SDK (module go/rutis, released by the tag go/rutis/v<version>):
   // what its runtime and manifests say it is.
   'go github.com/arcships/rutis/go/rutis': read('go/rutis/internal/runtime/version.go').match(/^const Version = "([^"]+)"/m)?.[1],
-  // The Kotlin SDK (kotlin/rutis, Maven io.github.arcships:rutis and
-  // io.github.arcships:rutis-ksp): its
+  // The Kotlin SDK (kotlin/rutis, Maven io.github.arcships:rutis,
+  // io.github.arcships:rutis-ksp and io.github.arcships:rutis-testing): its
   // Gradle version, and what its runtime says it is when it greets.
   'maven io.github.arcships:rutis': read('kotlin/rutis/gradle.properties').match(/^version=(.+)$/m)?.[1],
   'maven io.github.arcships:rutis (implementation)': read('kotlin/rutis/rutis/src/shared/kotlin/arcships/rutis/advanced/Versions.kt').match(/const val VERSION: String = "([^"]+)"/)?.[1],

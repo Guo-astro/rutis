@@ -3,7 +3,7 @@
 // the runtime serving the test plugins through Rutis.serve (`java -jar <jar>
 // <channel> <project>`) and the session fixture (`java -cp <jar>
 // arcships.rutis.conformance.SessionKt <channel>`). Its tests check the
-// testing tool against the expectations the real runtimes meet.
+// testing tool (rutis-testing) against the expectations the real runtimes meet.
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
@@ -26,6 +26,7 @@ dependencies {
     // The session fixture serves the session layer directly: its data is JSON.
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     ksp(project(":rutis-ksp"))
+    testImplementation(project(":rutis-testing"))
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
@@ -33,10 +34,14 @@ dependencies {
 }
 
 // The testing tool against the expectations the real runtimes are checked
-// against (crates/rutis-bridge/src/runtime/testing/*.expected.json).
+// against (crates/rutis-bridge/src/runtime/testing/*.expected.json), on
+// rutis-host test: RUTIS_HOST, else the repository's debug build.
 tasks.test {
     useJUnitPlatform()
     systemProperty("rutis.repo", rootProject.projectDir.resolve("../..").canonicalPath)
+    (System.getenv("RUTIS_HOST")?.takeIf { it.isNotEmpty() }
+        ?: rootProject.projectDir.resolve("../../target/debug/rutis-host").takeIf { it.isFile }?.canonicalPath)
+        ?.let { environment("RUTIS_HOST", it) }
 }
 
 val fatJar by tasks.registering(Jar::class) {
