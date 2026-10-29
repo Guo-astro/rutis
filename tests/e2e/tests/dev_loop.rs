@@ -408,7 +408,14 @@ fn template_tests(s: &Scenario, kind: Kind) -> Host {
                 &[("PYTHONPATH", &path), ("RUTIS_HOST", &host)],
             )
         }
-        Kind::Go => s.program("demo", "go", ["test", "./..."], GO_ENV),
+        // rutistest runs the plugin as a row of `rutis-host test`.
+        Kind::Go => {
+            let host = rutis_e2e::host_program();
+            let host = host.to_string_lossy();
+            let mut env = GO_ENV.to_vec();
+            env.push(("RUTIS_HOST", &host));
+            s.program("demo", "go", ["test", "./..."], &env)
+        }
         // The Command Line Tools (the self-hosted runners' toolchain) have
         // neither XCTest nor Swift Testing's macro plugin: there the test
         // target cannot build, and only the plugin and its binary are built.
