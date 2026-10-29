@@ -1,6 +1,6 @@
 # 写一个 Python 插件
 
-从创建项目到发布，再到被宿主使用。需要 Python 3.10 或更高；下面用 [uv](https://docs.astral.sh/uv/)，用 pip 和 venv 也可以。
+从创建项目到发布，再到被宿主使用。需要 Python 3.12 或更高；下面用 [uv](https://docs.astral.sh/uv/)，用 pip 和 venv 也可以。
 
 ## 1. 创建项目
 
@@ -59,36 +59,11 @@ plugin = define_plugin(
 
 `ctx.use("llm")` 拿到的服务：同一个进程里的插件提供的，就是对象本身；其他语言或其他机器提供的，是代理，方法按声明同步返回或返回可 await 的结果。能做什么、值怎样传递，见 [插件 API](plugin-api.md)。
 
-插件本身也是一个值：把 `define_plugin(...)` 的结果照常作为参数交给一个服务（比如应用的部件登记处），收的一方就能在别处挂它，每挂一次是一份，每一份在这个进程里运行，用的是你在 `apply` 里准备好的东西：
-
-```python
-async def apply(ctx, config):
-    pool = await open_pool()
-
-    def session(ctx, config):
-        ctx.provide("gitStatus", GitStatus(pool, config["depth"]))
-
-    ctx.use("parts").register("session", define_plugin(session, inject=["history"]))
-```
-
-这一行卸载、重载时，从它交出的定义挂出的每一份先结束。测试工具里，替身收到的定义可以直接交给 `load` 装上。见 [插件 API](plugin-api.md#插件定义)。
+插件本身也是一个值，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
 
 ### 带方法的对象
 
-数据（`dict`、`list`、`tuple`、dataclass）复制；其他类的实例按引用交给别的语言：对方拿到代理，调用的是这里的原对象。别的进程交来的对象，这里拿到的也是代理：
-
-```python
-cache = await ctx.use("store").cache()
-await cache.set("a", 1)          # 方法都是 async，调用的是对方的原对象
-value = await cache.get("a")
-```
-
-- 代理上任何公开名字都是方法（和 `ctx.use` 一样），没有数据字段：要数据，让方法返回它。`repr` 是 `<remote object>`。
-- 同一个对象交出几次，对方拿到同一个代理（`is`）；代理交回原来的进程，那边拿到的是原对象。
-- 对象不跟行走：交出它的行卸载后，对象照常可以调用。对方的运行时退出后，对它的调用以 `peer-gone` 失败。
-- 调用对象没有的方法，这次调用以 `no-method` 失败：`Cache has no method gett (methods: get, set)`。
-- 列表、字典里的 `undefined`（JavaScript 发来的）到这里是 `None`，不论在哪一层。
-- 同一个运行时里的行拿到的是对象本身。测试工具的严格模式按跨进程的样子给代理。
+数据（`dict`、`list`、`tuple`、dataclass）复制；其他类的实例按引用交给别的语言，对方拿到代理：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
 
 ## 3. 测试
 
@@ -122,34 +97,9 @@ class Weather(unittest.TestCase):
 uv run python -m unittest discover -s tests
 ```
 
-`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认的严格模式下，值按跨进程的规则传递：数据被复制（dataclass 变成 dict），函数和带方法的对象按引用传递，`sync` 方法不能返回协程。只在同一进程里才成立的写法，在这里就会失败。
+`load` 会检查宿主会检查的事：插件只用 `inject` 里声明的服务；不提供 `services` 里已有的名字（那是宿主提供的：`PluginTestError: wordcount: notes is already provided by the host`）；提供的服务带着 `provides` 里声明的每个方法（没有声明的服务，像 rutis 一样按对象的公开方法、都按 async 调用；`t.methods(name)` 返回 rutis 看到的方法）；退出 `async with` 时清理函数都运行了。默认是严格模式，值按跨进程的规则传递，见 [插件 API：严格模式](plugin-api.md#严格模式)。
 
-测试工具的全部接口（取自 `rutis/testing.py` 的文档字符串）：
-
-| `load(plugin, *, …)` 的参数 | 作用 |
-| --- | --- |
-| `config` | 插件的配置；有 `config` 声明时补默认值并校验 |
-| `services` | 插件 `inject` 的服务，按名字给 |
-| `strict` | 值按跨进程的规则传递（默认 `True`） |
-| `bus` | 与同一个 `Bus` 上的插件共用事件（默认自己一个） |
-| `scope` | 加载到哪个作用域路径（`t1/s1`，默认根） |
-| `row` | 在总线上的行名（默认插件声明的名字，否则模块名） |
-| `runtime` | 监听器描述里的 `runtime`（默认 `"python"`） |
-| `deadline` | 卸载时等正在运行的监听器多少秒（默认 `RUTIS_SHUTDOWN_TIMEOUT`，10） |
-
-| `Loaded`（`async with load(...) as t`）的成员 | 作用 |
-| --- | --- |
-| `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的公开方法，都按 async |
-| `t.methods(name)` | rutis 看到的方法：`{"today": "async"}` |
-| `t.provided()` | 插件现在提供的服务名 |
-| `t.on(name, listener, *, prepend=False, global_=False)` | 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；返回撤销函数，不撤销时随插件卸载撤掉 |
-| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行和作用域发出事件 |
-| `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
-| `t.reported` | 没人接收的失败（`emit` 里出错的监听器、过滤函数） |
-| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行 |
-| `await t.unload()` | 像运行时那样卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
-
-`Bus(scopes=...)`：一条测试用的总线，同一个 `bus` 上的插件互相听得到；`scopes` 给作用域路径起组名。它的 `reported`、`listeners(name)`（过滤函数看到的描述）、`emitter(row=..., strict=...)`（以某一行的身份发出）。`Reported`：没人接收的一次失败，字段 `kind`（`"listener"` 或 `"filter"`）、`name`、`row`、`error`。`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事，是 `AssertionError` 的子类。
+测试工具的其余接口（`Bus`、作用域、`update` 等）见 [插件 API：Python 的测试工具](plugin-api.md#python-的测试工具)。
 
 测试要确认插件发出了某个事件，用 `t.on` 加一个列表：
 
@@ -189,114 +139,7 @@ class Asked(unittest.TestCase):
 
 ### 事件
 
-`ctx.on(name, listener)` 监听事件；`ctx.emit`、`await ctx.parallel`、`await ctx.serial`、`await ctx.waterfall`、`ctx.bail` 是发出的五种方式。监听器自动登记给宿主，什么都不用声明：发出方在同一个进程、另一种语言的运行时、宿主里还是相连的节点上，结果都一样。完整的规则见 [插件 API：事件](plugin-api.md#事件)。
-
-下面两个插件在同一个 `Bus` 上：`greeter` 用 `serial` 取第一个结果、用 `waterfall` 让别的插件改写问候语、用 `emit` 通知；`shout` 是 waterfall 的一环，并监听通知。
-
-<!-- example: python file=weather/tests/test_events.py order=2 -->
-```python
-import asyncio
-import unittest
-
-from rutis import define_plugin
-from rutis.testing import Bus, load
-
-
-def greeter_apply(ctx, config):
-    # 返回 None 或 False 是"没有结果"，serial 接着问下一个监听器
-    ctx.on("greeting/pick", lambda lang: "Hej" if lang == "sv" else None)
-
-    class Greeter:
-        async def hello(self, name, lang):
-            word = await ctx.serial("greeting/pick", lang) or "Hello"
-            # terminal：链的最里面，收到事件参数
-            text = await ctx.waterfall("greeting/format", f"{word}, {name}", terminal=lambda text: text)
-            ctx.emit("greeting/said", name)      # 立即返回，不等监听器
-            return text
-
-    ctx.provide("greeter", Greeter())
-
-
-greeter = define_plugin(greeter_apply)
-said = []
-
-
-def shout_apply(ctx, config):
-    async def exclaim(text, next):           # waterfall 的监听器最后一个参数是 next
-        return f"{await next()}!"
-
-    ctx.on("greeting/format", exclaim)
-    ctx.on("greeting/said", said.append)
-
-
-shout = define_plugin(shout_apply)
-
-
-class Events(unittest.TestCase):
-    def test_plugins_hear_each_other(self):
-        async def go():
-            bus = Bus()                          # 同一个 bus 上的插件互相听得到
-            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
-                self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
-                self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
-                self.assertEqual(said, ["Ada", "Bo"])
-                self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # 测试自己也能发出
-
-        asyncio.run(go())
-```
-
-- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
-- `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.advanced.AsyncListener` 失败。
-- `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
-- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器收到这个 root 总线上的所有同名事件；作用域只是描述，供过滤使用。
-- 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
-
-**跨语言**：TypeScript 插件发出、Python 插件监听，什么都不用改。宿主的 `rutis.json`：
-
-```json
-{
-  "runtimes": { "node": { "project": "web" }, "py": { "project": "plugins" } },
-  "rows": [
-    { "id": "sessions", "name": "sessions" },
-    { "id": "audit", "name": "py:audit" }
-  ]
-}
-```
-
-`web/` 里的 TypeScript 插件 `sessions` 发出事件，并用 `serial` 问别人要配额：
-
-```ts
-ctx.provide('sessions', {
-  async create(user: string) {
-    const quota = (await ctx.serial<number>('session/quota', user)) ?? 1
-    const id = crypto.randomUUID()
-    await ctx.parallel('session/created', id, user, quota)   // 等每个监听器，不论在哪种语言
-    return id
-  },
-})
-```
-
-`plugins/audit.py` 回答配额、记录创建：
-
-```python
-import sys
-
-from rutis import define_plugin
-
-
-def apply(ctx, config):
-    ctx.on("session/quota", lambda user: 10 if user == "ada" else None)
-
-    async def created(session_id, user, quota):
-        print(f"session {session_id} for {user}, quota {quota}", file=sys.stderr)
-
-    ctx.on("session/created", created)
-
-
-plugin = define_plugin(apply)
-```
-
-参数按[值怎样传递](plugin-api.md#值怎样传递)跨进程；Python 监听器抛出的错误在 TypeScript 一侧是同名的错误（`parallel` 里是 `AggregateError` 的子错误）。
+`ctx.on(name, listener)` 监听事件，`ctx.emit(name, *args)` 发出事件（上面的 `test_asked.py`）。监听器自动登记给宿主，什么都不用声明：发出方在同一个进程、另一种语言的运行时、宿主里还是相连的节点上，结果都一样，TypeScript 插件发出、Python 插件监听，什么都不用改。其余发出方式（`parallel`、`serial`、`waterfall`、`bail`）、过滤、作用域和跨语言的例子见 [插件 API：事件](plugin-api.md#事件)。
 
 ## 4. 在本地宿主里运行
 

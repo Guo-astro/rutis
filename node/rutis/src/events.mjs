@@ -52,18 +52,6 @@ export function refuseReserved(name) {
   if (typeof name === 'string' && name.startsWith('rutis/')) throw named('ReservedEvent', RESERVED(name))
 }
 
-// The config fields a 0.13 runtime refuses (§2.4).
-export const REMOVED_FIELD = field => `the config field ${field} was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)`
-export function refuseRemoved(config) {
-  for (const field of ['events', 'emits']) {
-    if (config !== null && typeof config === 'object' && Object.hasOwn(config, field)) throw new Error(REMOVED_FIELD(field))
-  }
-}
-
-// §2.2: what a 0.13 runtime says of a host that does not declare events-v2.
-export const EVENTS_V2 = 'events-v2'
-export const NO_EVENTS_V2 = 'this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later'
-
 const errorText = error => `${error?.name ?? 'Error'}: ${error?.message ?? String(error)}`
 
 // How many dispatch ids this process remembers having fired
@@ -521,7 +509,7 @@ export class Bus {
     if (!own && this.dispatched && !this.#seen.has(dispatch)) {
       this.#seen.add(dispatch)
       if (this.#seen.size > SEEN) this.#seen.delete(this.#seen.values().next().value)
-      this.dispatched(mode === 'waterfall-sync' ? 'waterfall' : mode, entry.name, values)
+      this.dispatched(mode, entry.name, values)
     }
     switch (mode) {
       case 'emit': return this.#emitTo(entry, values, null)
@@ -537,15 +525,9 @@ export class Bus {
         }
         return this.#invoke(entry, [...values, onward], null)
       }
-      case 'bail': case 'waterfall-sync': {
+      case 'bail': {
         if (entry.kind === 'async') throw this.#asynchronous(entry, mode)
-        let called = false
-        const onward = () => {
-          if (called) throw named('WaterfallNext', `next of ${entry.name} was already called`)
-          called = true
-          return next()
-        }
-        const result = this.#invoke(entry, mode === 'bail' ? values : [...values, onward], null)
+        const result = this.#invoke(entry, values, null)
         if (isThenable(result)) {
           Promise.resolve(result).catch(() => {})
           throw this.#asynchronous(entry, mode)

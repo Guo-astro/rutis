@@ -33,27 +33,17 @@ import uuid
 import weakref
 from typing import Any, Callable
 
-from . import _eager, _values
+from . import _values
 from .plugin import Plugin
 from .channel import MAX_MESSAGE, SocketChannel
 
 # The session protocol: endpoint ids in the handshake and the call ids,
 # capabilities, either side calling the other.
 ENDPOINT_PROTOCOL = 4
-# What this implementation supports. `objects`: it
-# takes objects with methods, as a proxy whose methods call them (#687). `sync-wait`: its
-# synchronous calls say so (`sync: true`), for the host's wait-cycle check;
-# `sync-stack`: calls run while it waits are stacked on its one thread;
-# `value-<tag>`: it takes every tagged value (#308, `rutis._values`);
-# `events-v2`: it speaks the event protocol of rutis 0.13 (#464), which the
-# runtime requires of its host too (`require`).
-CAPABILITIES = ["objects", "signals", "reentrant-sync", "sync-wait", "sync-stack", "events-v2", *_values.CAPABILITIES]
-# Why a runtime ends a session with a host that does not declare
-# `events-v2` (docs/design-events-protocol-2026-10-18.md §2.2).
-EVENTS_REFUSAL = (
-    "this host does not declare events-v2 (the event protocol of rutis 0.13): "
-    "upgrade rutis-host to 0.13 or later"
-)
+# What this implementation supports. `sync-stack`: calls run while it
+# waits are stacked on its one thread; `value-<tag>`: it takes every tagged
+# value (#308, `rutis._values`).
+CAPABILITIES = ["reentrant-sync", "sync-stack", *_values.CAPABILITIES]
 IMPLEMENTATION = {"name": "rutis", "version": "0.18.0"}
 
 
@@ -219,11 +209,6 @@ class SyncWaitCycle(RemoteError):
         return self.message
 
 
-class Incompatible(ValueError):
-    """The far end greeted, but this side cannot work with it: it lacks a
-    capability this side requires (`events-v2`). Retrying cannot fix it."""
-
-
 class _Named(RemoteError):
     """An error of rutis's own with a fixed name, raised on either side of
     a session and decoded back into its class."""
@@ -268,8 +253,7 @@ _NAMED = {named.NAME: named for named in (BindingError, AsyncListener, Waterfall
 
 
 class AggregateError(Exception):
-    """Ordered listener failures, also on Python 3.10 (no ExceptionGroup):
-    what `parallel` raises when any listener failed, with the failures in
+    """Ordered listener failures: what `parallel` raises when any listener failed, with the failures in
     `errors` in registration order (also when just one failed). It crosses
     as Cordis's AggregateError, its children in `errors`; one decoded from
     the far end is an AggregateError again, its children RemoteErrors."""
@@ -864,16 +848,11 @@ class Peer:
         reentrant: bool = True,
         *,
         endpoint: dict,
-        require: dict | None = None,
     ):
         """`endpoint` ({"local", "expected"?, "verified"?, "declare"?}): this
         side's endpoint id, the far end's it expects, and the capabilities it
-        declares beyond the session's (`declare`, such as the contract).
-        `require` ({capability: why}): the session ends right after the
-        handshake, with `Incompatible(why)`, when the far end does not declare
-        one of them (the runtime requires `events-v2`)."""
+        declares beyond the session's (`declare`, such as the contract)."""
         self._reentrant = reentrant
-        self._require = dict(require or {})
         self.loop = asyncio.get_running_loop()
         self._thread = threading.get_ident()
         # A socket is a newline-framed channel.
@@ -981,12 +960,6 @@ class Peer:
             "capabilities": capabilities if isinstance(capabilities, list) else [],
         }
         self._declared = self.greeting["capabilities"]
-        self._required()
-
-    def _required(self) -> None:
-        for capability, why in self._require.items():
-            if capability not in self._declared:
-                raise Incompatible(why)
 
     def _read(self) -> None:
         try:
@@ -1128,14 +1101,6 @@ class Peer:
                     if callable(value)
                     else "object"
                 )
-                if kind == "object" and not self.supports("objects"):
-                    # Only a far end that declared `objects` can call its
-                    # methods (#675).
-                    far = self.greeting["endpoint"]
-                    raise ValueError(
-                        f"an object with methods ({type(value).__name__}) cannot cross to "
-                        f"{far}; pass plain data or a function instead, or upgrade {far} to rutis 0.18"
-                    )
                 entry = _Export(value, kind, list(self._path()), business, owner=self.owner())
                 # The result of a call: awaiting it is awaiting that call.
                 if kind == "future" and self._answering is not None and self._answering[1] is value:
@@ -1414,9 +1379,9 @@ class Peer:
         try:
             path = list(dict.fromkeys([*self._path(), *(origin or [])]))
             frame = {"op": op, "id": call, "path": path, **fields}
-            # This thread waits for the reply: a host that checks for wait
-            # cycles needs to know (#228); older hosts would refuse the field.
-            if sync and "sync-wait" in self._declared:
+            # This thread waits for the reply: the host checks for wait
+            # cycles (#228).
+            if sync:
                 frame["sync"] = True
             described = _described(op, fields)
             if op != "await":
@@ -1797,13 +1762,9 @@ class Peer:
 
     def _task(self, coroutine: Any, call: str | None = None) -> asyncio.Future:
         """A task for a returned coroutine, started at once like a JS async
-        function, so a coroutine that never suspends is already done. 3.10
-        and 3.11 have no native eager start: `_eager` does the same."""
+        function, so a coroutine that never suspends is already done."""
         context = contextvars.copy_context()
-        if sys.version_info >= (3, 12):
-            task = asyncio.Task(coroutine, loop=self.loop, context=context, eager_start=True)
-        else:
-            task = _eager.start(self.loop, coroutine, context)
+        task = asyncio.Task(coroutine, loop=self.loop, context=context, eager_start=True)
         if call is not None and not task.done():
             self._tasks[call] = task
             task.add_done_callback(lambda _done: self._tasks.pop(call, None))

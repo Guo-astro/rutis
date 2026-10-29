@@ -444,7 +444,7 @@ jobs:
       # oldest websockets (rutis[network]).
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
@@ -599,7 +599,7 @@ jobs:
       # (rutis[network]); the scenarios use the checkout's python/rutis.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # The older of the two Go releases supported.
       - uses: actions/setup-go@v5
@@ -683,19 +683,19 @@ jobs:
       # The Python package on the oldest Python (requires-python) and
       # the oldest websockets.
       # setup-python's macOS builds install only under /Users/runner: a
-      # self-hosted runner takes uv's Python 3.10, in a virtual environment
+      # self-hosted runner takes uv's Python 3.12, in a virtual environment
       # with pip.
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted runner)
+      - name: Python 3.12 (self-hosted runner)
         if: runner.environment == 'self-hosted'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       # WebSocket channels of the Python runtime (rutis[network]).
       - run: python3 -m pip install "websockets==15.*"
@@ -933,19 +933,19 @@ jobs:
           node-version: '22'
       - run: npm --prefix node/rutis-runtime ci
       # setup-python's macOS builds install only under /Users/runner (the
-      # hosted image's user): the self-hosted Macs take uv's Python 3.10, in
+      # hosted image's user): the self-hosted Macs take uv's Python 3.12, in
       # a virtual environment with pip (as js-py).
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted' || runner.os != 'macOS'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted' && runner.os == 'macOS'
-      - name: Python 3.10 (self-hosted macOS)
+      - name: Python 3.12 (self-hosted macOS)
         if: runner.environment == 'self-hosted' && runner.os == 'macOS'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - run: python3 -m pip install "websockets==15.*"
       - name: gofmt
@@ -1035,7 +1035,7 @@ jobs:
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted' || runner.os != 'macOS'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: python3 -m pip install "websockets==15.*"
       # Only the Kotlin tests of the contract suites: the other runtimes run
       # in their own jobs.
@@ -1135,16 +1135,16 @@ jobs:
       - run: npm --prefix node/rutis-runtime ci
       - uses: astral-sh/setup-uv@v6
         if: runner.environment == 'self-hosted'
-      - name: Python 3.10 (self-hosted macOS)
+      - name: Python 3.12 (self-hosted macOS)
         if: runner.environment == 'self-hosted'
         run: |
-          uv python install 3.10
-          uv venv --seed --python-preference only-managed --python 3.10 "$RUNNER_TEMP/python"
+          uv python install 3.12
+          uv venv --seed --python-preference only-managed --python 3.12 "$RUNNER_TEMP/python"
           echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v5
         if: runner.environment == 'github-hosted'
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - name: cargo test (Swift rows)
         run: |
           cargo test -p rutis-loader --features node,python,swift --test swift_rows --test multilang_swift

@@ -855,7 +855,7 @@ impl Core {
             };
             self.tools.run_or(&create, |_| {
                 format!(
-                    "cannot create the Python environment {}: install uv, or Python 3.10 or later",
+                    "cannot create the Python environment {}: install uv, or Python 3.12 or later",
                     venv.display()
                 )
             })?;

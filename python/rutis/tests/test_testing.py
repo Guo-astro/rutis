@@ -211,9 +211,6 @@ class Testing(background.TestCase):
                     for mode in ("emit", "parallel", "serial", "waterfall", "bail"):
                         with self.assertRaisesRegex(ReservedEvent, "^rutis/\\* events are emitted by rutis only: rutis/row$"):
                             getattr(emitter, mode)("rutis/row")
-            with self.assertRaisesRegex(PluginTestError, "^the load option emits was removed in rutis 0.13: listeners register themselves"):
-                async with load(define_plugin(lambda ctx, config: None), emits=["tick"]):
-                    pass
 
         run(go())
 

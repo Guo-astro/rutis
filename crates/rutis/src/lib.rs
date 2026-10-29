@@ -117,6 +117,16 @@ pub struct RustPluginGuide;
 #[doc = include_str!("../../../docs/guide/rust-plugin.en.md")]
 pub struct RustPluginGuideEn;
 
+/// The plugin API reference's Rust examples compile against this crate.
+#[cfg(doctest)]
+#[doc = include_str!("../../../docs/guide/plugin-api.md")]
+pub struct PluginApi;
+
+/// The English plugin API reference's Rust examples compile against this crate.
+#[cfg(doctest)]
+#[doc = include_str!("../../../docs/guide/plugin-api.en.md")]
+pub struct PluginApiEn;
+
 /// The README's Rust examples compile against this crate.
 #[cfg(doctest)]
 #[doc = include_str!("../../../README.md")]

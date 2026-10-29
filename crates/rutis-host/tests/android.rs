@@ -1,7 +1,7 @@
 //! An Android application hosting rutis plugins, on a device or emulator
 //! (feature `android`; needs `adb` with one device attached, or
 //! `ANDROID_SERIAL`; JDK 17 and the Android SDK for the Gradle build;
-//! Python 3.10+): kotlin/rutis/android-sample dials this test's host
+//! Python 3.12+): kotlin/rutis/android-sample dials this test's host
 //! through `adb reverse`, to the `rutis-host/listen` row `phone`; the
 //! application installs its plugins, which rutis sees as `<id>:<plugin>`
 //! providing their services, and a Python row uses its `device`.

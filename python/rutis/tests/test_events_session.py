@@ -20,8 +20,7 @@ from support import HANG_GUARD, LOCAL, eventually, hello, within
 
 from rutis import BindingError
 from rutis.advanced import AggregateError, AsyncListener
-from rutis.dialing import INCOMPATIBLE, session_failure
-from rutis.peer import CAPABILITIES, EVENTS_REFUSAL, Incompatible, Peer
+from rutis.peer import Peer
 from rutis.runner import Runtime
 
 
@@ -55,12 +54,12 @@ def data(item):
 class Host:
     """The host's end of a session with a real runtime."""
 
-    def __init__(self, capabilities=("objects", "events-v2", "sync-wait")):
+    def __init__(self, capabilities=()):
         ours, self.sock = socket.socketpair()
         self.sock.settimeout(HANG_GUARD)
         self.capabilities = list(capabilities)
         self.runtime = Runtime()
-        self.peer = Peer(ours, self.runtime.dispatch, endpoint=LOCAL, require={"events-v2": EVENTS_REFUSAL})
+        self.peer = Peer(ours, self.runtime.dispatch, endpoint=LOCAL)
         self.runtime.peer = self.peer
         self.frames: queue.Queue = queue.Queue()
         self.held: list = []
@@ -196,39 +195,10 @@ class Session(background.IsolatedAsyncioTestCase):
 
 
 class Handshake(Session):
-    async def test_the_runtime_declares_events_v2(self):
-        self.assertIn("events-v2", CAPABILITIES)
-
-    async def test_mount_has_no_events_feature_and_refuses_the_0_12_declarations(self):
+    async def test_mount_has_no_events_feature(self):
         outcome, reply = await self.mount()
         self.assertEqual(outcome, "return")
         self.assertNotIn("events", reply["features"])
-        for field in ("emits", "events"):
-            call = self.host.invoke("mount", data({field: ["tick"]}))
-            outcome, error = await self.host.outcome(call)
-            self.assertEqual(outcome, "throw")
-            self.assertEqual(
-                error["message"],
-                f"the mount argument {field} was removed in rutis 0.13: listeners register themselves; "
-                "emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)",
-            )
-
-
-class OldHost(background.IsolatedAsyncioTestCase):
-    async def test_a_host_without_events_v2_ends_the_session_after_the_handshake(self):
-        # §2.2: the runtime sends nothing more and says which end to upgrade.
-        host = Host(capabilities=["sync-wait"])
-        self.addCleanup(host.close)
-        await asyncio.to_thread(host.start)
-        await within("the session end", host.peer.closed)
-        self.assertIsInstance(host.peer.closed_error, Incompatible)
-        self.assertEqual(
-            str(host.peer.closed_error),
-            "this host does not declare events-v2 (the event protocol of rutis 0.13): upgrade rutis-host to 0.13 or later",
-        )
-        self.assertEqual(session_failure(host.peer.closed_error, None), INCOMPATIBLE, "a dialing runtime stops")
-        with self.assertRaises(ConnectionError):
-            await asyncio.to_thread(host.take, lambda frame: True)
 
 
 class Registration(Session):
@@ -436,7 +406,7 @@ class ThroughTheHost(Session):
         answering.start()
         self.assertEqual(self.contexts["a"].bail("t/b"), "B")
         answering.join(HANG_GUARD)
-        self.assertTrue(seen[0].get("sync"), "a synchronous call says so (sync-wait)")
+        self.assertTrue(seen[0].get("sync"), "a synchronous call says so")
         self.assertEqual(value(seen[0]["args"])[0]["mode"], "bail")
 
 

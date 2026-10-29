@@ -55,6 +55,8 @@ pub struct Host {
     accepted: Option<Accepted>,
     /// What each local runtime's `restart` says, by name.
     restarts: Vec<(String, Restart)>,
+    /// The file plugins' row edits are written back into.
+    rows_file: Option<Arc<crate::rows_file::RowsFile>>,
     /// What each connection row (`rutis-host/dial`, `rutis-host/listen`)
     /// has connected.
     connections: crate::connect::Connections,
@@ -91,6 +93,10 @@ pub struct Embedding {
     /// environment. A host with one of its own does not change it on
     /// [`Host::reload`].
     pub identity: Option<IdentityPlugin>,
+    /// The file whose rows plugins may add and remove through the service
+    /// `loader`, written back into it (`run`'s `rutis.json`); without one,
+    /// they cannot.
+    pub rows_file: Option<Arc<crate::rows_file::RowsFile>>,
 }
 
 pub type Error = String;
@@ -292,6 +298,10 @@ impl Host {
             chain,
             LoaderOptions {
                 catalog,
+                persist: match &embedding.rows_file {
+                    Some(file) => file.clone(),
+                    None => Arc::new(rutis_loader::edit::NoPersist),
+                },
                 ..LoaderOptions::default()
             },
         );
@@ -339,6 +349,7 @@ impl Host {
             config: config.clone(),
             accepted,
             restarts,
+            rows_file: embedding.rows_file,
             connections,
             supervisors: Mutex::default(),
         })
@@ -550,13 +561,19 @@ impl Host {
         self.load(rows).await
     }
 
-    /// Load `rows` (replacing what was loaded before).
+    /// Load `rows` (replacing what was loaded before): those of the rows
+    /// file as last read, when the host has one.
     pub async fn load(&self, rows: Vec<serde_json::Value>) -> Result<(), Error> {
         self.loader
-            .reconcile(vec![layer(rows)?], None)
+            .reconcile(vec![layer(rows)?], self.editable())
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    /// The layer plugins edit, at the rows file's content last read.
+    fn editable(&self) -> Option<rutis_loader::edit::Editable> {
+        self.rows_file.as_ref().map(|file| file.editable())
     }
 
     /// Run `new` instead of the configuration this host runs, all or
@@ -623,11 +640,14 @@ impl Host {
         }
 
         let (accepted, accepted_before) = (listening_peers(&new)?, listening_peers(&self.config)?);
+        // The rows as they run: those plugins added or removed too.
+        let (layers, editable) = (self.loader.layers(), self.loader.editable());
+        let running = rutis_loader::internal::apply_patches(&layers).rows;
         let old = std::mem::replace(&mut self.config, new);
         self.accept(accepted);
         let applied = self
             .loader
-            .reconcile(vec![layer(self.config.rows())?], None)
+            .reconcile(vec![layer(self.config.rows())?], self.editable())
             .await
             .map_err(|error| error.to_string());
         let failed = match applied {
@@ -645,14 +665,15 @@ impl Host {
             // The old rows again: what failed was new.
             self.config = old;
             self.accept(accepted_before);
-            self.load(self.config.rows())
+            self.loader
+                .reconcile(layers, editable)
                 .await
                 .map_err(|error| format!("{why}; and the old rows did not load again: {error}"))?;
             return Err(why);
         }
 
         let mut reloaded = Reloaded {
-            rows: changed_rows(&old.rows, &self.config.rows),
+            rows: changed_rows(&running, &self.config.rows()),
             stopped: Vec::new(),
             warnings: Vec::new(),
         };

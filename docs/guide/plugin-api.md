@@ -94,8 +94,19 @@ Node 的 `waterfall` 只要有监听器在本进程之外就返回 Promise，所
 同一个 waterfall 监听器在五种语言里：
 
 ```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Format(pub String);
+# impl Event for Format {
+#     const NAME: &'static str = "greeting/format";
+#     type Value = String;
+# }
+# fn demo(ctx: &Ctx) -> rutis::Result {
 // Format: impl Event, Value = String
 ctx.on::<Format>(|_, call| async move { Ok(call.next().await?.map(|text| format!("{text}!"))) })?;
+# Ok(())
+# }
 ```
 
 ```ts
@@ -120,7 +131,473 @@ ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
 })
 ```
 
-每种语言的完整例子在它的指南里：[TypeScript](typescript-plugin.md#事件)、[Bun](bun-plugin.md#事件)、[Python](python-plugin.md#事件)、[Go](go-plugin.md#事件)、[Cordis](cordis.md#事件)、[Rust](rust-plugin.md#事件)。
+### 例子
+
+每种语言一个完整的例子，做同一件事：插件回答 `greeting/pick`，在 `greeting/format` 的 waterfall 里加一环；它提供的 `greeter` 用 `serial` 取第一个结果，用 `waterfall` 让别的插件（任何语言）改写问候语，用 `emit` 通知。Cordis 插件的写法见 [Cordis](cordis.md#事件)。
+
+#### TypeScript
+
+例子是一个测试文件，放进 `rutis-host new` 生成的项目里运行：
+
+<!-- example: plugin-api-ts run -->
+```bash
+npx @arcships/rutis-host new greeter --lang node
+cd greeter
+npm install
+```
+
+`greeter` 和 `shout` 两个插件在测试工具的 `host()` 上共享一条总线：`shout` 是 waterfall 的一环，并监听通知。
+
+<!-- example: plugin-api-ts file=greeter/test/events.test.ts -->
+```ts
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { definePlugin } from '@arcships/rutis'
+import { host } from '@arcships/rutis/testing'
+
+const greeter = definePlugin({
+  apply(ctx) {
+    // 返回 undefined / null / false 是"没有结果"，serial 接着问下一个监听器
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        // 参数都是事件的；终态用 `with` 给出：链的最里面
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
+        ctx.emit('greeting/said', name)                  // 立即返回，不等监听器
+        return text
+      },
+    })
+  },
+})
+
+const said: string[] = []
+const shout = definePlugin({
+  apply(ctx) {
+    // waterfall 的监听器最后一个参数是 next：执行链上其余部分
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.on('greeting/said', (name: string) => { said.push(name) })
+  },
+})
+
+test('plugins hear each other', async () => {
+  const h = host()
+  const t = await h.load(greeter)
+  await h.load(shout)
+  assert.equal(await t.service('greeter').hello('Ada', 'sv'), 'Hej, Ada!')
+  assert.equal(await t.service('greeter').hello('Bo', 'en'), 'Hello, Bo!')
+  assert.deepEqual(said, ['Ada', 'Bo'])
+  assert.equal(await h.serial('greeting/pick', 'sv'), 'Hej')   // 测试自己也能发出
+  await h.unload()
+})
+```
+
+<!-- example: plugin-api-ts run -->
+```bash
+npm test
+```
+
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `h.reported` / `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `AggregateError`，按登记顺序。
+- `waterfall` 只要有监听器在别的进程就返回 Promise，所以总是 `await` 它。`bail` 是同步的 `serial`，遇到 `async` 监听器以 `AsyncListener` 失败。
+- `ctx.filter(d => d.row === 'audit').parallel(...)` 只送达过滤函数留下的监听器；`ctx.on(name, fn, { prepend: true })` 排到最前，`{ global: true }` 不受过滤。
+- 作用域：`h.load(plugin, { scope: 't1/s1' })` 把插件加载到一个实例里，它的监听器把作用域作为描述带上；监听器收到这个 root 总线上的所有同名事件，与发出方在哪个实例无关。
+- 卸载时插件的 `ctx.signal` 被中止，正在运行的监听器被等待（最多到关闭截止时间），然后才运行清理。
+- `load(plugin)` 返回的 `t` 也有这五个方法和 `filter`，从这个插件的作用域发出。
+
+#### Bun
+
+与 TypeScript 相同的 SDK 和测试工具，测试用 `bun test`。Node、Python、Go 插件和宿主里的 Rust 代码发出的事件同样到达 Bun 里的监听器，反过来也一样。
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+export default definePlugin({
+  apply(ctx) {
+    ctx.on('greeting/pick', (lang: string) => (lang === 'sv' ? 'Hej' : undefined))   // 没有结果时返回 undefined
+    ctx.on('greeting/format', async (text: string, next: () => Promise<string>) => `${await next()}!`)
+    ctx.provide('greeter', {
+      async hello(name: string, lang: string) {
+        const word = (await ctx.serial<string>('greeting/pick', lang)) ?? 'Hello'
+        const text = await ctx.waterfall.with((text: string) => text)<string>('greeting/format', `${word}, ${name}`)
+        ctx.emit('greeting/said', name)                                               // 立即返回
+        return text
+      },
+    })
+  },
+})
+```
+
+几个插件共享一条总线用 `host()`：
+
+```ts
+import { expect, test } from 'bun:test'
+import { host } from '@arcships/rutis/testing'
+import plugin from '../src/index.ts'
+
+test('greets through events', async () => {
+  const h = host()
+  const t = await h.load(plugin)
+  expect(await t.service('greeter').hello('Ada', 'sv')).toBe('Hej, Ada!')
+  expect(await h.serial('greeting/pick', 'en')).toBeUndefined()
+  await h.unload()
+})
+```
+
+#### Python
+
+例子是一个测试文件，放进 `rutis-host new` 生成的项目里运行：
+
+<!-- example: plugin-api-py run -->
+```bash
+uvx rutis-host new greeter --lang python
+cd greeter
+uv sync
+```
+
+`greeter` 和 `shout` 两个插件在同一个 `Bus` 上：
+
+<!-- example: plugin-api-py file=greeter/tests/test_events.py -->
+```python
+import asyncio
+import unittest
+
+from rutis import define_plugin
+from rutis.testing import Bus, load
+
+
+def greeter_apply(ctx, config):
+    # 返回 None 或 False 是"没有结果"，serial 接着问下一个监听器
+    ctx.on("greeting/pick", lambda lang: "Hej" if lang == "sv" else None)
+
+    class Greeter:
+        async def hello(self, name, lang):
+            word = await ctx.serial("greeting/pick", lang) or "Hello"
+            # terminal：链的最里面，收到事件参数
+            text = await ctx.waterfall("greeting/format", f"{word}, {name}", terminal=lambda text: text)
+            ctx.emit("greeting/said", name)      # 立即返回，不等监听器
+            return text
+
+    ctx.provide("greeter", Greeter())
+
+
+greeter = define_plugin(greeter_apply)
+said = []
+
+
+def shout_apply(ctx, config):
+    async def exclaim(text, next):           # waterfall 的监听器最后一个参数是 next
+        return f"{await next()}!"
+
+    ctx.on("greeting/format", exclaim)
+    ctx.on("greeting/said", said.append)
+
+
+shout = define_plugin(shout_apply)
+
+
+class Events(unittest.TestCase):
+    def test_plugins_hear_each_other(self):
+        async def go():
+            bus = Bus()                          # 同一个 bus 上的插件互相听得到
+            async with load(greeter, bus=bus, row="greeter") as t, load(shout, bus=bus, row="shout"):
+                self.assertEqual(await t.service("greeter").hello("Ada", "sv"), "Hej, Ada!")
+                self.assertEqual(await t.service("greeter").hello("Bo", "en"), "Hello, Bo!")
+                self.assertEqual(said, ["Ada", "Bo"])
+                self.assertEqual(await t.serial("greeting/pick", "sv"), "Hej")  # 测试自己也能发出
+
+        asyncio.run(go())
+```
+
+<!-- example: plugin-api-py run -->
+```bash
+uv run python -m unittest discover -s tests
+```
+
+- `emit` 立即返回；监听器出错不影响发出方和别的监听器，在监听器所在处报告一行（测试里在 `t.reported`）。要等全部监听器、拿到它们的错误，用 `await ctx.parallel(...)`：失败是 `rutis.advanced.AggregateError`，`errors` 按登记顺序。
+- `bail` 是同步的 `serial`：遇到 `async def` 监听器（或返回协程的函数）以 `rutis.advanced.AsyncListener` 失败。
+- `ctx.filter(lambda d: d["row"] == "audit")` 返回带这五个方法的对象，只送达过滤函数留下的监听器；`ctx.on(name, fn, prepend=True)` 排到最前，`global_=True` 不受过滤。
+- 作用域：`load(plugin, bus=bus, scope="t1/s1")` 把插件加载到一个实例里（`Bus(scopes={"t1": "tenant"})` 给出组名）；监听器收到这个 root 总线上的所有同名事件。
+- 卸载时正在运行的监听器的任务被取消并被等待（最多 `RUTIS_SHUTDOWN_TIMEOUT`），然后才运行清理。发出方放弃时（它的任务被取消），进行中的监听器同样被取消。
+
+#### Go
+
+```go
+off := ctx.On("session/created", func(ctx context.Context, args ...any) (any, error) {
+	return nil, nil // nil 和 false 是没有结果，其余都是结果
+}, advanced.Prepend()) // 选项：advanced.Prepend()、advanced.Global()
+
+err := ctx.Emit(callerCtx, "session/created", id)          // 立即返回；err 只报拒绝
+err = ctx.Parallel(callerCtx, "session/created", id)        // 等全部；*advanced.AggregateError，按登记顺序
+value, err := ctx.Serial(callerCtx, "config/resolve", key)   // 第一个结果
+value, err = ctx.Bail(callerCtx, "config/resolve", key)      // 同步调用的 Serial
+value, err = ctx.Waterfall(callerCtx, "chat/reply", terminal, msg) // terminal 可为 nil；terminal 是 rutis.Terminal，即 func(ctx context.Context, args ...any) (any, error)，以事件参数调用
+value, err = ctx.Filter(func(l rutis.Listener) (bool, error) { return l.Row == "chat", nil }).Serial(callerCtx, "config/resolve", key)
+```
+
+完整的例子：
+
+```go
+package greeter
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/arcships/rutis/go/rutis"
+	"github.com/arcships/rutis/go/rutis/advanced"
+)
+
+type Greeter struct{ ctx *rutis.Ctx }
+
+func (g *Greeter) Hello(ctx context.Context, name, lang string) (string, error) {
+	word, err := g.ctx.Serial(ctx, "greeting/pick", lang) // 第一个结果；nil 表示没有
+	if err != nil {
+		return "", err
+	}
+	if word == nil {
+		word = "Hello"
+	}
+	text, err := g.ctx.Waterfall(ctx, "greeting/format", func(_ context.Context, args ...any) (any, error) {
+		return args[0], nil // 终态：链的最里面
+	}, fmt.Sprintf("%v, %s", word, name))
+	if err != nil {
+		return "", err
+	}
+	if err := g.ctx.Emit(ctx, "greeting/said", name); err != nil { // 立即返回
+		return "", err
+	}
+	return text.(string), nil
+}
+
+var Plugin = rutis.Define(rutis.Plugin[struct{}]{
+	Name: "greeter",
+	Apply: func(ctx *rutis.Ctx, _ struct{}) error {
+		ctx.On("greeting/pick", func(_ context.Context, args ...any) (any, error) {
+			if args[0] == "sv" {
+				return "Hej", nil
+			}
+			return nil, nil // 没有结果：下一个监听器接着来
+		})
+		ctx.On("greeting/format", func(ctx context.Context, args ...any) (any, error) {
+			next := args[len(args)-1].(advanced.Next) // waterfall：最后一个参数是 next
+			inner, err := next(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return fmt.Sprintf("%v!", inner), nil
+		})
+		ctx.Provide("greeter", &Greeter{ctx: ctx})
+		return nil
+	},
+})
+```
+
+它的测试见 [Go 的测试工具](#go-的测试工具)。
+
+| 事项 | 规则 |
+| --- | --- |
+| Waterfall | 监听器的最后一个参数是 `next`（`advanced.Next`，即 `func(context.Context) (any, error)`）；调用它执行链上其余部分，不调用就否决其余；第二次调用以 `WaterfallNext` 失败。返回最外层的值，原样 |
+| 失败 | `Emit` 的监听器失败不影响发出方和其他监听器，在监听器所在处报告（stderr：`rutis: listener of <name> in row <row> failed: …`）。`Parallel` 全部跑完，返回 `*advanced.AggregateError`（只有一个失败也是）；`Serial`、`Bail`、`Waterfall` 遇到第一个错误停止并返回它 |
+| 作用域 | 事件按名字在一条总线上送达；`ctx.Scope()` 是过滤用的描述，不是送达规则 |
+| 过滤 | `Filter(keep)` 在任何监听器执行之前，按登记顺序对每个监听器调用一次 `keep`，传入它的 `rutis.Listener`（`Name`、`Prefix`、`Plugin`、`Row`、`Runtime`、`Node`、`Scope`、`Global`）；`keep` 返回 `(bool, error)`：它返回错误（或 panic）时，不执行任何监听器，这次分发以这个错误失败（`Emit` 不返回它，而是报告一行 `rutis: filter of <name> from row <row> failed: …`）；用 `advanced.Global()` 登记的监听器不经过滤 |
+| Context | 监听器的 `ctx` 来自发出方（带调用链），这一行卸载时取消；`Parallel`、`Serial`、`Waterfall`、`Bail` 的发出方放弃时也取消，`Emit` 的监听器不因发出方放弃而取消。卸载等正在运行的监听器结束，最多 `RUTIS_SHUTDOWN_TIMEOUT` |
+| 名字 | `internal/*` 是运行时自己的；`rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
+
+和调用服务一样，把调用方给你的 context 传下去。`errors.Is(err, advanced.ErrWaterfallNext)`（以及 `ErrReservedEvent`、`ErrAsyncListener`、`ErrBinding`）匹配任何进程里的同名错误。
+
+#### Swift
+
+监听器的参数就是事件的参数，按声明的类型解码（缺的为 `nil`，多的忽略）；waterfall 里最后一个参数是 `Rutis.Advanced.Next<R>`。
+
+```swift
+let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }   // 选项：prepend:、global:
+
+try ctx.emit("session/created", id)                                   // 立即返回；只在发出被拒时抛出
+try await ctx.parallel("session/created", id)                         // 等全部；失败是名为 AggregateError 的 RutisError
+let value = try await ctx.serial("config/resolve", key, as: String.self)   // 第一个结果（nil 和 false 以外的）
+let first = try await ctx.bail("config/resolve", key, as: String.self)     // 以同步调用进行的 serial
+let text = try await ctx.waterfall("chat/reply", message, as: String.self) { (message: String) in message }   // terminal：链的末端
+let some = try await ctx.filter { $0.row == "chat" }.serial("config/resolve", key, as: String.self)
+```
+
+完整的例子：
+
+```swift
+import Rutis
+
+@RutisService
+public final class Greeter: @unchecked Sendable {
+    let ctx: Rutis.Ctx
+    init(ctx: Rutis.Ctx) { self.ctx = ctx }
+
+    public func hello(_ name: String, _ lang: String) async throws -> String {
+        let word = try await ctx.serial("greeting/pick", lang, as: String.self) ?? "Hello"
+        let text = try await ctx.waterfall("greeting/format", "\(word), \(name)", as: String.self) { (text: String) in text }
+        try ctx.emit("greeting/said", name)
+        return text ?? ""
+    }
+}
+
+public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
+    ctx.on("greeting/pick") { (lang: String) -> String? in lang == "sv" ? "Hej" : nil }   // nil：交给下一个监听器
+    ctx.on("greeting/format") { (text: String, next: Rutis.Advanced.Next<String>) in
+        (try await next() ?? text) + "!"                                                // next 运行链的其余部分
+    }
+    ctx.provide("greeter", Greeter(ctx: ctx))
+})
+```
+
+规则（waterfall、失败、作用域、过滤、取消、保留名）与上面 Go 的表相同。在 Swift 里，监听器的 Task 在它的行卸载时被取消，`parallel`、`serial`、`waterfall`、`bail` 的发出方放弃时也被取消；监听器一律按同步监听器调用，所以 `bail` 在任何地方都能到达 Swift 监听器。
+
+#### Rust
+
+事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
+
+```rust
+use rutis::events::Mode;
+use rutis::{Ctx, Event, Plugin, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct Created(pub String, pub u32);
+
+impl Event for Created {
+    const NAME: &'static str = "session/created";
+    type Value = String; // serial、bail、waterfall 返回的结果
+}
+
+struct Audit;
+
+impl Plugin for Audit {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        ctx.on::<Created>(|event, call| async move {
+            if call.mode() == Mode::Waterfall {
+                let inner = call.next().await?; // 中间件：先执行链上其余部分
+                return Ok(inner.map(|text| format!("[{text}]")));
+            }
+            Ok(Some(format!("audited {}", event.0))) // Ok(None) 是没有结果
+        })?;
+        ctx.on_sync::<Created>(|event, _| Ok(Some(format!("sync {}", event.1))))?;
+        ctx.listen::<Created>().prefix("session/").on(|_, call| async move {
+            println!("{}", call.name()); // 前缀监听器：实际的名字
+            Ok(None)
+        })?;
+        Ok(())
+    }
+}
+```
+
+发出事件的五种方式与过滤：
+
+```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+# async fn demo(ctx: &Ctx) -> rutis::Result {
+ctx.emit(Created("s1".into(), 3))?;                         // 立即返回
+ctx.parallel(Created("s1".into(), 3)).await?;               // 等全部完成
+let first = ctx.serial(Created("s1".into(), 3)).await?;     // 第一个结果
+let out = ctx
+    .waterfall(Created("s1".into(), 3))
+    .terminal(|e| async move { Ok(Some(format!("saved {}", e.0))) }) // 可省略
+    .await?;
+let quick = ctx.bail(Created("s1".into(), 3))?;             // 同步
+let from_python = ctx
+    .filter(|l| l.runtime.as_deref() == Some("py"))
+    .serial(Created("s1".into(), 3))
+    .await?;
+# let _ = (first, out, quick, from_python);
+# Ok(())
+# }
+```
+
+| 事项 | 规则 |
+| --- | --- |
+| 监听器 | 闭包，参数是 `(Arc<E>, Call<E>)`，同步监听器是 `(Arc<E>, SyncCall<'_, E>)`；返回 `Result<Option<E::Value>>`，`Ok(None)` 和 `Ok(Some(false))` 是没有结果。参数类型由编译器推断，块里可以对任何错误用 `?`。闭包会被调用多次，要移进 `async move` 的东西先在闭包里克隆 |
+| `call` | `mode()` 是这次分发的方式；`name()` 是分发用的名字；`next()` 只在 `waterfall` 里可用（否则 `WaterfallNext`），执行链上其余部分，不调用就否决其余；`ctx()` 是登记这个监听器的 `Ctx`，在它上面登记的东西属于这个插件 |
+| 同步与异步 | `on_sync` 的监听器所有方式都能调用，但在异步 `waterfall` 里不能调 `next`；`on` 的监听器不能被 `bail` 调用（`AsyncListener`） |
+| 名字 | 以 `E::NAME` 登记和发出。`listen::<E>().name(n)` 在另一个名字下监听；`.prefix(p)` 收这个前缀下的所有名字，都按 `E` 解码，形状不同的事件让这次调用以 `EventValue` 失败 |
+| 发出 | `emit`、`parallel`、`serial`、`waterfall`、`bail` 接受 `E` 或 `Arc<E>`；`waterfall` 返回一个构建器，可以先写 `.terminal(…)` 再 `.await`，没有终态时最后一个 `next()` 得到 `None`。`ctx.filter(keep)` 给出同样五个方法，`keep` 收到每个监听器的 `ListenerInfo` |
+| 失败 | `emit` 的监听器失败不影响发出方，报给宿主；`parallel` 全部跑完，返回 `ListenersFailed`（按登记顺序，只有一个失败也是）；`serial`、`bail`、`waterfall` 遇到第一个错误停止并返回它 |
+| 卸载 | 插件停下时它的监听器撤下；正在运行的调用看到 `call.ctx().cancelled()`，卸载等它们结束，最多到关闭截止时间。丢弃 `parallel`、`serial`、`waterfall` 的 future 即取消这次分发 |
+| 保留的名字 | `rutis/*`（`rutis/service`、`rutis/row`、`rutis/runtime`）可以监听，不能发出（`ReservedEvent`） |
+
+`once`、`prepend`、`global`：
+
+```rust
+# use rutis::{Ctx, Event};
+# use serde::{Deserialize, Serialize};
+# #[derive(Serialize, Deserialize)]
+# pub struct Created(pub String, pub u32);
+# impl Event for Created {
+#     const NAME: &'static str = "session/created";
+#     type Value = String;
+# }
+# fn demo(ctx: &Ctx) -> rutis::Result {
+ctx.listen::<Created>().once().on(|_, _| async move { Ok(None) })?;    // 最多调用一次
+ctx.listen::<Created>().prepend().on_sync(|_, _| Ok(None))?;           // 排在这个名字已有的监听器之前
+ctx.listen::<Created>().global().on(|_, _| async move { Ok(None) })?;  // 不经过滤
+# Ok(())
+# }
+```
+
+选项可以连着写，最后是 `.on(…)` 或 `.on_sync(…)`。没有固定名字的事件类型（名字由值决定）把 `NAME` 写成 `""`，重写 `fn name(&self) -> &str` 返回这个值的名字，监听时用 `.name(…)` 给出名字。
+
+#### 跨语言
+
+TypeScript 插件发出、Python 插件监听，什么都不用改。宿主的 `rutis.json`：
+
+```json
+{
+  "runtimes": { "node": { "project": "web" }, "py": { "project": "plugins" } },
+  "rows": [
+    { "id": "sessions", "name": "sessions" },
+    { "id": "audit", "name": "py:audit" }
+  ]
+}
+```
+
+`web/` 里的 TypeScript 插件 `sessions` 发出事件，并用 `serial` 问别人要配额：
+
+```ts
+ctx.provide('sessions', {
+  async create(user: string) {
+    const quota = (await ctx.serial<number>('session/quota', user)) ?? 1
+    const id = crypto.randomUUID()
+    await ctx.parallel('session/created', id, user, quota)   // 等每个监听器，不论在哪种语言
+    return id
+  },
+})
+```
+
+`plugins/audit.py` 回答配额、记录创建：
+
+```python
+import sys
+
+from rutis import define_plugin
+
+
+def apply(ctx, config):
+    ctx.on("session/quota", lambda user: 10 if user == "ada" else None)
+
+    async def created(session_id, user, quota):
+        print(f"session {session_id} for {user}, quota {quota}", file=sys.stderr)
+
+    ctx.on("session/created", created)
+
+
+plugin = define_plugin(apply)
+```
+
+参数按[值怎样传递](#值怎样传递)跨进程；Python 监听器抛出的错误在 TypeScript 一侧是同名的错误（`parallel` 里是 `AggregateError` 的子错误）。
 
 ### 作用域
 
@@ -242,11 +719,110 @@ incompatible session: the far end speaks protocol 2, this side 4: upgrade the fa
 
 一个服务名在 rutis 里只有一个提供者：别的插件（任何语言、任何节点）已经提供同名服务时，后提供的插件失败（装载时提供的装载失败，装载后才提供的在提供时失败），错误写明双方，例如 `service weather is already provided by row forecast: row weather cannot provide it too`。只有这个插件失败：其他插件（同一运行时里的也一样）继续用原来的提供者。没有声明的服务在插件运行后才出现，依赖它的插件照常等它出现；`rutis-host check` 对这类依赖写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算，见 [检查配置](rutis-host.md#检查配置)）。从线程或 goroutine 里在 `apply` 返回前提供的也一样：插件装载完成前宿主已经处理完它，重名时装载就失败。
 
-0.12 的运行时被比 0.12 旧的宿主挂载时，宿主不接收没有声明的服务，它们只在本进程里可见；插件提供这样的服务时，运行时按名字只在 stderr 提示一次：`rutis: service <名字> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`。在 `provides` 里声明它，或者升级 rutis-host。
-
 宿主停止时卸载所有插件，每个清理执行一次，然后运行时进程退出。宿主没有卸载就没了（被强制结束、崩溃）时，运行时发现和宿主的连接断开，自己卸载所有插件，然后退出进程；插件留下的定时器、套接字、线程、goroutine 不会让它继续运行。
 
 清理有截止时间：宿主停止时是 `rutis-host` 的 `--shutdown-timeout`（默认 10 秒，见 [rutis-host](rutis-host.md#停止与退出码)）；宿主没了时，运行时用同一个时间（`rutis-host` 把它放在环境变量 `RUTIS_SHUTDOWN_TIMEOUT` 里传给运行时，没有时 10 秒）。过了截止时间还没完成的清理，以及排在它后面的，不再等待：运行时在 stderr 写一行说明，以退出码 1 退出。所以必须完成的工作不要只靠清理；清理里不要无限等待。Node 和 Bun 里，同步阻塞的清理（死循环）占住线程，截止时间无法打断。
+
+## 用 `loader` 管理插件
+
+用 `rutis-host` 或 `LoaderPlugin` 的宿主提供一个服务 `loader`：插件用它加一行、重新加载一行的代码、删一行、读当前状态，与在 `rutis.json` 里手写、改动行的效果相同。它是一个普通的服务：`inject: ["loader"]`，再 `ctx.use("loader")`；任何语言的任何插件都能用，平台不加权限或限制（不想让某个插件管理插件，就不放它）。设计见 [宿主自己写插件](../design-host-writes-plugins-2026-10-27.md)。
+
+| 方法 | 参数 | 返回 |
+| --- | --- | --- |
+| `create(options, parent?, position?)` | `options`：`{id?, name, config?, disabled?, inject?}`，与 `rutis.json` 一行的写法相同 | 行 id；没给 `id` 时生成 8 位十六进制，例如 `"3f2a91c0"` |
+| `reload(id)` | 行 id | 无。重新加载这一行的代码 |
+| `remove(id)` | 行 id | 无。卸载并删掉这一行 |
+| `status()` | 无 | 当前状态，与 `rutis-host status` 读的是同一份：`{"rows": [{"id": "weather", "state": "running"}, …], "services": [{"name": "weather", "provider": "weather"}, …], "calls": […]}` |
+
+`create` 全有或全无：新的行起不来（找不到模块、语法错误、配置不合 Schema、`apply` 抛错）时不留下这一行。`reload` 时新代码加载不了（语法、导入错误），旧版本继续运行；新代码在 `apply` 里失败，这一行跑新代码并以那个错误失败，改好后再 `reload`（与 [`rutis-host dev`](rutis-host.md#用-dev-开发插件) 的重新加载相同）。
+
+**什么时候调用。** `loader` 的方法在 `apply` 返回后调用：在服务方法里、事件里。一行在自己的 `apply` 里调用 `create`、`reload`、`remove` 会等到这个 `apply` 结束，所以会卡住，不报错。要在 `apply` 里挂子插件，用 `ctx.plugin`（Rust；Node 里的 Cordis 插件）：子插件属于这一行，随这一行卸载。
+
+Python：
+
+```python
+from rutis import define_plugin
+
+
+class Maker:
+    def __init__(self, loader):
+        self.loader = loader
+
+    async def step(self):
+        row = await self.loader.create({"id": "weather", "name": "py:weather"})
+        await self.loader.reload(row)
+        snapshot = await self.loader.status()
+        await self.loader.remove(row)
+
+
+def apply(ctx, config):
+    ctx.provide("maker", Maker(ctx.use("loader")))
+
+
+plugin = define_plugin(apply, name="maker", inject=["loader"])
+```
+
+TypeScript：
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+interface Loader {
+  create(options: { id?: string; name: string; config?: unknown }): Promise<string>
+  reload(id: string): Promise<void>
+  remove(id: string): Promise<void>
+  status(): Promise<{ rows: { id: string; state: string }[] }>
+}
+
+export default definePlugin({
+  name: 'maker',
+  inject: ['loader'],
+  apply(ctx) {
+    const loader = ctx.use<Loader>('loader')
+    ctx.provide('maker', {
+      step: async () => {
+        const row = await loader.create({ name: 'py:weather' })
+        await loader.remove(row)
+      },
+    })
+  },
+})
+```
+
+Go（`Inject: []string{"loader"}`）：
+
+```go
+var loader struct {
+	Create func(ctx context.Context, options map[string]any) (string, error)
+	Reload func(ctx context.Context, id string) error
+	Status func(ctx context.Context) (map[string]any, error)
+	Remove func(ctx context.Context, id string) error
+}
+if err := ctx.Use("loader", &loader); err != nil {
+	return err
+}
+// 在服务方法里：
+row, err := loader.Create(ctx, map[string]any{"name": "py:weather"})
+```
+
+**出错时。** 每种情况抛出一个错误：`name` 是 `"Error"`（Python 里是 `rutis.RemoteError`，Go 里是 `*rutis.RemoteError`），`code` 是 `"Error"`，`data` 是 `{"row": <行 id>}`（没给 `id` 时是生成的 id），`message` 是 rutis 在终端打印给人看的同一段文字：
+
+| 怎样触发 | `message` | 这一行 |
+| --- | --- | --- |
+| `create`，`weather.py` 有语法错误 | `weather: cannot load weather.py: SyntaxError: expected ':' (weather.py:3)` | 不留下 |
+| `create`，`apply` 抛错 | `weather: KeyError: 'units'` | 被退回，不留下 |
+| `create`，配置不合 Schema | `weather: config: units should be "metric" or "imperial", got "kelvin"` | 不留下 |
+| `create`，没有这个模块 | `weather: cannot load "py:wether": ModuleNotFoundError: No module named 'wether'` | 不留下 |
+| `create`，`id` 已存在 | `a row weather already exists` | 原来的行不变 |
+| `reload`，语法错误 | `weather: cannot reload: cannot load weather.py: SyntaxError: expected ':' (weather.py:3); the previous version keeps running` | 旧版本继续运行 |
+| `reload`，`apply` 抛错 | `weather: cannot reload: KeyError: 'units'` | 跑新代码并失败 |
+| `reload` / `remove` 一个没有的行 | `no row wether` | — |
+| `create` / `remove`，宿主没有可编辑的配置 | `this host keeps no editable configuration, so rows cannot be added or removed` | — |
+| `create` 已生效，但没存下 | `weather: added, but rutis.json could not be written: <操作系统的原因>`（删时是 `removed`） | 在运行，宿主重启后就没有 |
+
+**改动存在哪。** `rutis-host run` 把加、删的行写回 `rutis.json`（只改 `rows`，见 [用 `loader` 管理插件](rutis-host.md#用-loader-管理插件)）；`rutis-host dev` 和不带 `Persist` 的嵌入宿主没有可编辑的配置，`create`、`remove` 得到上表的错误，`reload`、`status` 照常。
+
+**名字 `loader` 被占。** 一个服务名只有一个提供者，所以另一行也提供名叫 `loader` 的服务时，那一行以同名错误失败：`service loader is already provided by …: row <行> cannot provide it too`。给那一行的服务换名。
 
 ## 同一运行时里的插件共用一个进程
 
@@ -262,7 +838,7 @@ Python 里看方法的每一段：`def` 方法整个，`async def` 方法两次 
 
 插件没处理的错误（JavaScript 里没处理的 promise 拒绝、定时器里抛出的异常，Python 任务里没处理的异常）不结束进程（0.18 起，#688）：
 
-- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（3.12 起读任务的上下文，3.10、3.11 在任务创建时记下）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
+- **追得到是哪一行时，这一行失败**，写明原因和位置，例如 `weather: failed: unhandled rejection: Error: no region`，下面是插件自己的堆栈（`at … (file:///…/weather.mjs:12:9)`）；错误自己的 `code`、`data` 照常带着。正在加载的行加载失败（`failed in apply: unhandled rejection: …`）。同一运行时里的其他行继续运行。行的 `apply`、服务方法、监听器、交出去的函数带着这一行的上下文运行，它们启动的任务、promise 也带着。一行直接调用同一运行时里另一行的服务、错误的堆栈里最内层的插件文件是另一行的时，分不清是哪一行没处理它（堆栈只说明它在哪里抛出），按来源不明报告，不记到任何一行。Python 总是这样追（读任务的上下文）；插件还拿着的任务，异常不算没处理，不报告。Node 只在 `rutis-host dev` 下追：它给每个 promise 记下所属的行（`async_hooks`），这对每个 promise 都有开销。
 - **追不到时，写明来源不明**：`runtime node: an unhandled error from an unknown row: <堆栈>`（只列插件自己的帧，一帧都不是插件的时候列出完整堆栈），哪一行都不失败。Node 在 `rutis-host run` 下、Bun 总是这样；Python 里不在任何一行里运行的任务和回调也是这样。Python 线程里没处理的异常照 Python 自己的规则打印，线程结束，进程继续。要知道是哪一行，用 `rutis-host dev` 再跑一次。
 - **插件自己结束进程**（`process.exit`、`os._exit`）：进程照常结束，同一运行时里的行都停下等待运行时（见[生命周期](#生命周期)），运行时先写一行 `runtime node: row weather called process.exit(1)`。是哪一行，`dev` 下的 Node 与 Python 按当前在跑的行，其余按栈上插件的文件认（只有一行对得上时才写）；Bun 的尾调用（`() => process.exit(1)`）不留插件的栈帧，那时不写行名。
 - Go、Swift、Kotlin 运行时不变：panic、未捕获的异常照各语言自己的规则处理。
@@ -359,7 +935,84 @@ logging.basicConfig(level=logging.INFO)
 - 声明的参数类型收不了对象时（Go、Swift、Kotlin 的数据类型），这次调用以 `bad-argument` 失败，错误写明对象要怎样收。
 - 生命周期和函数引用相同：收的一方不再持有代理，或它的进程退出后，发出方放掉对象。对象不跟行走：交出它的行卸载后，对象照常可以调用。
 - 发出方的运行时退出或断开后，对它的对象的调用以 `peer-gone` 失败（`a call on an object from py failed: runtime py exited`），只有这些调用失败。
-- 各语言的细节见各自的指南：[TypeScript](typescript-plugin.md#带方法的对象)、[Bun](bun-plugin.md#带方法的对象)、[Python](python-plugin.md#带方法的对象)、[Go](go-plugin.md#带方法的对象)、[Swift](swift-plugin.md#带方法的对象)、[Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust](rust-plugin.md#对其他语言提供服务)。
+
+#### 各语言怎样交出和收对象
+
+**TypeScript、Bun**：类的实例、有函数属性的普通对象按引用交出。别的进程交来的对象，这里拿到的是代理：
+
+```ts
+const cache = await ctx.use('store').cache()
+await cache.set('a', 1)          // 方法都是异步调用，调用的是对方的原对象
+const value = await cache.get('a')
+```
+
+- 代理上读到的每个名字都是方法（`then`、`toJSON`、`toString`、`valueOf` 和 symbol 除外：所以 `await` 一个代理得到它自己，对象自己的这几个方法也不能经代理调用）。`console.log` 显示 `[remote object]`。
+- 数组、对象里的 `undefined` 到了对方是 `null`；只有作为整个参数或整个返回值时保留。
+
+**Python**：`dict`、`list`、`tuple`、dataclass 复制；其他类的实例按引用交出：
+
+```python
+cache = await ctx.use("store").cache()
+await cache.set("a", 1)          # 方法都是 async，调用的是对方的原对象
+value = await cache.get("a")
+```
+
+- 代理上任何公开名字都是方法（和 `ctx.use` 一样）。`repr` 是 `<remote object>`。同一个对象交出几次，对方拿到同一个代理（`is`）。
+- 列表、字典里的 `undefined`（JavaScript 发来的）到这里是 `None`，不论在哪一层。
+
+**Go**：结构体、切片、map 是数据，复制过去；要按引用交出一个对象，写 `rutis.Ref(v)`。别的进程交来的对象，参数类型写成函数字段的结构体（和 `ctx.Use` 的目标一样，字段名按同样的规则对应方法名），或者写 `any`、`*advanced.Service`：
+
+```go
+type Cache struct {
+	Get func(ctx context.Context, key string) (any, error)
+	Set func(ctx context.Context, key string, value any) error
+}
+
+func (w *Warmer) Warm(ctx context.Context, cache Cache) (any, error) {
+	if err := cache.Set(ctx, "a", 1); err != nil {
+		return nil, err
+	}
+	return cache.Get(ctx, "a")
+}
+```
+
+- 函数字段的调用会阻塞，第一个参数是 `context.Context`。结构体里有不是函数的字段，或者参数是别的类型时，这次调用以 `bad-argument` 失败：`warmer.warm: argument 1 should be a Cache, got an object (an object is received only as a struct of function fields or any)`。
+- `any` 收到的是 `*advanced.Service`，和 `ctx.Use` 得到的同一个类型：`Call(ctx, method, result, args...)`；对象没有方法表，`Methods()` 返回 `nil`，没有的方法由对象所在的一端回答 `no-method`。
+- 只有 `*advanced.Service` 保持身份：同一个对象收到几次是同一个 `*advanced.Service`，把它交回原来的进程，那边拿到的是原对象。函数字段的结构体是数据，交出去时每个字段变成一个新的函数引用；要交出对象本身，参数写 `any`。
+- 对象的方法可能被并发调用。
+
+**Swift**：`Codable` 结构体和类复制；`@RutisService` 类型的实例按引用交出。别的进程交来的对象，参数类型写成 `@RutisClient` 协议，或者写 `Any`：
+
+```swift
+/// 怎样使用别的进程交来的对象：写在文件的顶层。
+@RutisClient
+protocol Cache {
+    func get(_ key: String) async throws -> Int?
+    func set(_ key: String, _ value: Int) async throws
+}
+
+@RutisService
+final class Warmer: @unchecked Sendable {
+    func warm(_ cache: any Cache) async throws -> Int? {
+        try await cache.set("a", 1)          // 方法都是 async，调用的是对方的原对象
+        return try await cache.get("a")
+    }
+
+    /// 不知道是什么时写 Any：对象是 Rutis.Advanced.Client，按名字调用。
+    func peek(_ value: Any) async throws -> Int? {
+        guard let cache = value as? Rutis.Advanced.Client else { return nil }
+        return try await cache.call("get", values: ["a"], as: Int?.self)
+    }
+}
+```
+
+- 参数类型写 `@RutisClient` 协议（`any Cache`）时拿到这个协议的代理，和 `ctx.use("cache", CacheProxy.self)` 是同一种代理；`@RutisClient` 方法的返回值也一样。参数写 `Any` 时拿到 `Rutis.Advanced.Client`：`try await client.call("get", [Rutis._Generated.encode("a")], as: Int?.self)` 或 `call("get", values: ["a"], as: Int?.self)`。数组、字典里的对象和事件参数里的对象，经 `Any` 拿到 `Rutis.Advanced.Client`；`[any Cache]` 在 0.18 不支持。
+- 只有写在文件顶层的 `@RutisClient` 协议能收对象：宏为它生成的 `rutisObjectProxy` 重载只在文件顶层对 Swift 可见。嵌在别的类型里的 `@RutisClient` 协议照常可以 `ctx.use`，但用它做参数类型时收不了对象（`bad-argument`）。可选类型（`(any Cache)?`）的参数和返回值在 0.18 里也收不了对象，写 `any Cache`。
+- 参数类型是数据（`Codable` 类型、`String` 等）时，这次调用以 `bad-argument` 失败：`warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`。
+- 把收到的代理或 `Rutis.Advanced.Client` 再交出去，发出的是原来那个对象。
+- 对象不能交给 0.18 之前的一端：直接连着这样的一端时，这次调用以 `bad-value` 失败（`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`），会话继续。
+
+Swift 应用、Kotlin 应用、Rust 见 [Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust 插件](rust-plugin.md#对其他语言提供服务)。
 
 #### 同一个进程与跨进程的差别
 
@@ -408,12 +1061,113 @@ export default definePlugin({
 })
 ```
 
-- 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）；Python 的 `define_plugin` 结果；Go 的 `rutis.Define` 结果（`*rutis.Definition`，客户端的函数字段直接写这个类型）；Swift、Kotlin 的 `Rutis.define` 结果（客户端的参数类型写 `Rutis.Definition`、`Plugin`，见 [Swift 插件](swift-plugin.md#把插件交给服务)、[Kotlin 应用](kotlin-app.md#2-写插件)）。
+- 能交出的：Node、Bun 的 `definePlugin` 结果；Node 里的 Cordis 插件（函数、类、带 `apply` 的对象）；Python 的 `define_plugin` 结果；Go 的 `rutis.Define` 结果（`*rutis.Definition`，客户端的函数字段直接写这个类型）；Swift、Kotlin 的 `Rutis.define` 结果（客户端的参数类型写 `Rutis.Definition`、`Plugin`，见下面的[各语言怎样交出插件定义](#各语言怎样交出插件定义)、[Kotlin 应用](kotlin-app.md#2-写插件)）。
 - 连进来的应用（Swift、Kotlin 的 `RutisApp`）交出的插件定义在这个应用里运行；应用的连接断开时，从它挂出的每一份随之结束。
 - 收的一方是 Rust：参数或返回值的类型写 `rutis::Definition`，用 `ctx.plugin(def.at(&ctx, config)?)` 挂上，见 [Rust 宿主](rust-host.md#收插件定义)。其他类型的参数照旧：要数据的参数收到插件定义时这次调用失败。
 - 每一份在定义它的运行时里运行，按挂上它的实例隔离，按它的 `inject` 门控。
 - 插件定义属于交出它的那一行的这一代：这一行卸载、重载或结束时，先结束从它挂出的每一份，等它们清理完，再卸载这一行。之后再挂会失败。运行时进程退出时，这些副本也结束。
 - 插件定义只交回定义它的运行时，不能再交给第三个运行时（那次调用失败）。
+
+#### 各语言怎样交出插件定义
+
+Python：`define_plugin(...)` 的结果照常作为参数交出，每一份在这个进程里运行：
+
+```python
+async def apply(ctx, config):
+    pool = await open_pool()
+
+    def session(ctx, config):
+        ctx.provide("gitStatus", GitStatus(pool, config["depth"]))
+
+    ctx.use("parts").register("session", define_plugin(session, inject=["history"]))
+```
+
+Go：`rutis.Define(...)` 的结果是 `*rutis.Definition`，函数字段的参数类型直接写它；只用来交出的定义可以不写 `Name`：
+
+```go
+var parts struct {
+	Register func(ctx context.Context, scope string, def *rutis.Definition) error
+}
+if err := ctx.Use("parts", &parts); err != nil {
+	return err
+}
+return parts.Register(ctx, "session", rutis.Define(rutis.Plugin[SessionConfig]{
+	Inject: []string{"history"},
+	Apply:  func(ctx *rutis.Ctx, config SessionConfig) error { /* 直接用 pool */ return nil },
+}))
+```
+
+Swift：`@RutisClient` 的参数或返回值类型写 `Rutis.Definition`：
+
+```swift
+@RutisClient
+protocol Parts {
+    func register(_ scope: String, _ part: Rutis.Definition) async throws
+}
+
+let git = Rutis.define(Plugin(name: "git", inject: ["parts"]) { ctx in
+    let pool = try await openPool()
+    let status = Rutis.define(Plugin(name: "git_status", inject: ["history"], config: StatusConfig.self) { ctx, config in
+        ctx.provide("gitStatus", GitStatus(pool: pool, depth: config.depth))
+    })
+    try await ctx.use("parts", PartsProxy.self).register("session", status)
+})
+```
+
+参数或返回值要直接是 `Rutis.Definition`（或 `Rutis.Definition?`）。放在数组、字典或结构体里的插件定义（比如 `[Rutis.Definition]`）不支持，要交几个就调用几次。
+
+Rust：`Plugin` 是一个实例：配置写在字段里，交给 `ctx.plugin` 就用掉了。要把插件交给别处、由那边挂很多次（例如每个 Session 一份），用 `rutis::Definition`：`Definition::new(ctx, build)` 造一个定义，`build` 拿到挂载位置的 `ctx` 和这一份的配置，返回一个 `Plugin`；挂的一方写 `ctx.plugin(def.at(&ctx, config)?)`。
+
+```rust
+use std::sync::{Arc, Mutex};
+use rutis::{Ctx, Definition, Plugin, Result};
+
+/// 每个 Session 一份，`depth` 来自它自己的配置。
+struct Part {
+    depth: u32,
+}
+
+impl Plugin for Part {
+    type Deps = ();
+
+    async fn apply(&self, _: &Ctx, _: ()) -> Result {
+        println!("depth {}", self.depth);
+        Ok(())
+    }
+}
+
+/// 把 `Part` 的定义交给挂部件的一方（这里只是一个列表）。
+struct Git {
+    parts: Arc<Mutex<Vec<Definition>>>,
+}
+
+impl Plugin for Git {
+    type Deps = ();
+
+    async fn apply(&self, ctx: &Ctx, _: ()) -> Result {
+        let pool = Arc::new(String::from("pool")); // apply 里准备好的东西
+        let definition = Definition::new(ctx, move |_at: &Ctx, depth: u32| {
+            let _pool = pool.clone();
+            Ok(Part { depth })
+        });
+        self.parts.lock().unwrap().push(definition);
+        Ok(())
+    }
+}
+
+/// 挂的一方：每挂一次是一份，配置各自给。
+fn mount(at: &Ctx, definition: &Definition) -> Result {
+    at.plugin(definition.at(at, 3u32)?);
+    Ok(())
+}
+# fn main() {}
+```
+
+- Rust 造的定义属于造它的插件的这一代：这个插件卸载、重启或结束时，先结束从它挂出的每一份，等它们清理完，再运行它自己的清理；之后 `at` 失败，`ended()` 完成。
+- 只能挂在造它的插件所在的实例里，或者更里面。
+- 其他语言交来的插件定义也是 `Definition`，挂法相同；Rust 造的定义不能交给其他语言。
+
+测试里，替身收到的定义可以直接装上，见各语言的测试工具：[Python](#python-的测试工具)、[Go](#go-的测试工具)、[Swift](#swift-的测试工具)。
 
 ### 测试工具与真实运行时的差异
 
@@ -432,6 +1186,133 @@ export default definePlugin({
 
 十种值在两边按同样的规则传递，这不是差异。带方法的对象也不是：严格模式下，每种语言的测试工具都按跨进程的样子交出代理（只有方法，每次调用都是异步的），与真实运行时相同。关闭严格模式（`strict: false`）时值不经过上表，以上之外的差异都可能出现。
 
+## 测试工具
+
+各语言的插件指南讲了用测试工具装载插件、取服务、监听插件发出的事件、卸载。这里是其余的接口。测试工具与真实运行时的差异见[上面](#测试工具与真实运行时的差异)。
+
+### 严格模式
+
+TypeScript、Bun 和 Python 的测试工具在测试的进程里运行插件，默认是严格模式：值按跨进程的规则传递，数据被复制（Python 的 dataclass 变成 dict），函数和带方法的对象按引用传递（交出的是代理：只有方法，每次调用都是异步的），声明为 `sync` 的方法不能返回 Promise / 协程。只在同一进程里才成立的写法，在这里就会失败。`strict: false`（Python `strict=False`）关掉它，这时值不经过[值怎样传递](#值怎样传递)的规则。
+
+Go 的 `rutistest` 和 Swift 的 `RutisTest` 让插件在它真正的运行时里运行，值经过真正的会话传递，没有这个开关：只在同一个进程里才成立的写法（把结构体当对象传、共享一个不是 `@RutisService` 的 class 实例、靠共享内存）在测试里就失败，在宿主里也会失败。
+
+### TypeScript 与 Bun 的测试工具
+
+`@arcships/rutis/testing`，Bun 里同一个：
+
+| 名字 | 作用 |
+| --- | --- |
+| `load(plugin, { config, services, strict, scope, deadline, runtime })` | 不要宿主装载一个插件，它是自己那个 `host()` 的唯一一行。`scope` 是作用域路径（`t1/s1`，默认根）；`deadline` 是卸载时等正在运行的监听器多少毫秒（默认 `RUTIS_SHUTDOWN_TIMEOUT` 秒，没有时 10 000）；`runtime` 是监听器描述里的 `runtime`（默认 `'node'`，Bun 下 `'bun'`） |
+| `host({ services, strict, scopes, deadline, runtime })` | 共用一条事件总线的几个插件，像一个真实运行时里的行（总是本地分发）。`services` 给每个 `inject` 了它的行；`scopes` 给作用域路径起组名：`{ t1: 'tenant', 't1/s1': 'session' }`（默认取路径的最后一段） |
+| `h.load(plugin, { config, services, scope, row })` | 在 `host()` 上再装载一行；`services` 只给这一行；`row` 是行名（默认 `row1`、`row2`……） |
+| `h.at(scope)` | 从作用域路径 `scope` 以测试的身份发出：带五个方法和 `filter` |
+| `h.emit` 等五个方法、`h.filter`、`h.reported`、`h.unload()` | 在根上发出；没人接收的失败；倒序卸载每一行 |
+
+`load`、`h.load` 返回的 `t`：
+
+| 成员 | 作用 |
+| --- | --- |
+| `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的方法，都按 async |
+| `t.methods(name)` | rutis 看到的方法：`{ today: 'async' }` |
+| `t.provided()` | 插件现在提供的服务名 |
+| `t.on(name, listener, options)` | 像宿主一样在根作用域监听，见各语言指南 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从这个插件的行和作用域发出 |
+| `t.filter(keep)` | 带这五个方法的对象，只送达 `keep(descriptor)` 留下的监听器 |
+| `t.reported` | 没人接收的失败：`{ line, event, row, plugin, error, filter }`，`line` 是运行时写在 stderr 的那一行 |
+| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行，监听器重新登记，排在已有的之后 |
+| `await t.unload()` | 撤下监听器和服务，中止 `ctx.signal`，等正在运行的监听器，再按倒序运行清理 |
+| `t.row`、`t.host` | 行名；它所在的 `host()` |
+
+`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事。运行时也会拒绝的事，带着同样的 `code`（`not-declared`、`unavailable`、`no-method`）和 `data`。
+
+### Python 的测试工具
+
+`rutis.testing`：
+
+| `load(plugin, *, …)` 的参数 | 作用 |
+| --- | --- |
+| `config` | 插件的配置；有 `config` 声明时补默认值并校验 |
+| `services` | 插件 `inject` 的服务，按名字给 |
+| `strict` | 值按跨进程的规则传递（默认 `True`） |
+| `bus` | 与同一个 `Bus` 上的插件共用事件（默认自己一个） |
+| `scope` | 加载到哪个作用域路径（`t1/s1`，默认根） |
+| `row` | 在总线上的行名（默认插件声明的名字，否则模块名） |
+| `runtime` | 监听器描述里的 `runtime`（默认 `"python"`） |
+| `deadline` | 卸载时等正在运行的监听器多少秒（默认 `RUTIS_SHUTDOWN_TIMEOUT`，10） |
+
+| `Loaded`（`async with load(...) as t`）的成员 | 作用 |
+| --- | --- |
+| `t.service(name)` | 插件提供的服务，按 rutis 看到的样子：声明的方法，没有声明时是对象的公开方法，都按 async |
+| `t.methods(name)` | rutis 看到的方法：`{"today": "async"}` |
+| `t.provided()` | 插件现在提供的服务名 |
+| `t.on(name, listener, *, prepend=False, global_=False)` | 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到；严格模式下参数像从另一个进程收到的；返回撤销函数，不撤销时随插件卸载撤掉 |
+| `t.emit`、`t.parallel`、`t.serial`、`t.waterfall`、`t.bail` | 从插件所在的行和作用域发出事件 |
+| `t.filter(predicate)` | 带这五个方法的对象，只送达 `predicate(descriptor)` 留下的监听器 |
+| `t.reported` | 没人接收的失败（`emit` 里出错的监听器、过滤函数） |
+| `await t.update(config)` | 像宿主的 `rows.update` 那样换配置：卸载后用新配置再运行 |
+| `await t.unload()` | 像运行时那样卸载：撤下监听器和服务，取消并等待正在运行的监听器，再按倒序运行清理（退出 `async with` 时自动做） |
+
+`Bus(scopes=...)`：一条测试用的总线，同一个 `bus` 上的插件互相听得到；`scopes` 给作用域路径起组名。它的 `reported`、`listeners(name)`（过滤函数看到的描述）、`emitter(row=..., strict=...)`（以某一行的身份发出）。`Reported`：没人接收的一次失败，字段 `kind`（`"listener"` 或 `"filter"`）、`name`、`row`、`error`。`PluginTestError`：插件做了宿主会拒绝或跨进程会出错的事，是 `AssertionError` 的子类。
+
+替身收到的插件定义可以直接交给 `load` 装上。
+
+### Go 的测试工具
+
+`github.com/arcships/rutis/go/rutis/rutistest`。测试一侧就是总线的宿主：
+
+| 名字 | 作用 |
+| --- | --- |
+| `loaded.Emit`、`Parallel`、`Serial`、`Waterfall`、`Bail`、`Filter` | 从这一行的作用域发出 |
+| `loaded.On(name, fn, options...)` | 像宿主一样监听：插件发出这个名字的事件随后经测试一侧，就像经 rutis；选项是 `advanced.Prepend()`、`advanced.Global()`；返回撤销函数 |
+| `loaded.Load(config, options...)` | 在同一个运行时里再加载一行 |
+| `loaded.Update(config)` | 像 rutis 一样修改一行的配置，也就是重启这一行：先卸载，再用新配置装载，监听器重新登记，排在其他监听器之后（rutis 不给 Go 的行发 `rows.update`，配置变了就重启；清理运行时这一行已经不在，清理里发出的事件会失败） |
+| `loaded.Reported()` | 运行时报告的 `Emit` 监听器失败 |
+| `loaded.Provided()`、`loaded.Scope()`、`loaded.Unload()` | 插件现在提供的服务名；这一行的作用域链；卸载 |
+| `loaded.Service(name)` | `Call(ctx, method, &result, args...)`、`Methods()`，`Bind(&target)` 像 `ctx.Use` 一样填好函数字段的结构体 |
+| `Load`、`TryLoad`、`loaded.Load` 的选项 | `rutistest.InScope("t1/s1", groups...)` 加载到一个作用域；`InChain(chain...)` 加载到一条作用域链（最外层在前）；`Row(key)` 行名（默认 `test`，然后 `test-2`、`test-3`……）；`RuntimeName(name)` 描述里的运行时名（默认 `go`，只有 `Load` 的算数：所有行都在一个运行时里） |
+
+[上面 Go 的 `greeter`](#go) 的测试：
+
+```go
+func TestEvents(t *testing.T) {
+	loaded := rutistest.Load(t, Plugin, struct{}{}, nil)
+	said := make(chan any, 1)
+	loaded.On("greeting/said", func(_ context.Context, args ...any) (any, error) {
+		said <- args[0] // 测试一侧像宿主一样监听
+		return nil, nil
+	})
+	var text string
+	if err := loaded.Service("greeter").Call(context.Background(), "hello", &text, "Ada", "sv"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Hej, Ada!" || <-said != "Ada" {
+		t.Fatalf("got %q", text)
+	}
+	word, err := loaded.Serial(context.Background(), "greeting/pick", "en") // 测试自己发出
+	if err != nil || word != nil {
+		t.Fatalf("got %v, %v", word, err)
+	}
+}
+```
+
+插件交给测试替身的定义（替身方法的参数是 `*rutis.Definition`）可以直接交给 `rutistest.Load`：它像 rutis 挂一份那样，在定义它的那个运行时里再加载一行，用的是插件 `Apply` 里准备好的东西；这次传的 `services` 是这一份自己的，像它所在实例的服务；它在 `Provides` 里声明的服务也只属于这一份。所以只提供声明过的服务时，同一个定义的几份可以同时加载；没声明的服务名提前不知道，不隔离。描述和报告里，副本的行用来源行的 id。定义属于交出它（作为参数、作为它提供的服务的返回值，或在它发出的事件里）的那一行：这一行卸载或被 `Update`（重启）时，这些副本先卸载，之后再 `Load` 这个定义会失败。副本的配置挂上后不变：在副本上调用 `Update` 或 `Load` 会失败。没有 `Name` 的定义也可以直接 `rutistest.Load`。
+
+### Swift 的测试工具
+
+`RutisTest`：
+
+| 名字 | 作用 |
+| --- | --- |
+| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 从这一行的作用域发出 |
+| `loaded.on(name, prepend:, global:) { ... }` | 像宿主一样监听 |
+| `loaded.load(config:row:scope:)` | 再装载一行；作用域写 `RutisTest.scope("t1/s1")` |
+| `loaded.update(config:)` | 像 rutis 一样改一行的配置 |
+| `loaded.reported` | 运行时报告的 `emit` 监听器失败 |
+| `loaded.provided`、`loaded.row`、`loaded.scope`、`loaded.unload()`、`loaded.close()` | 插件现在提供的服务名；行名；作用域；卸载这一行；结束测试的宿主 |
+| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` 是描述里的运行时名 |
+
+替身收到的插件定义就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
+
 ## 同步调用与可重入
 
 声明为 `sync` 的方法同步返回结果，跨进程时调用方阻塞等待。期间：
@@ -448,7 +1329,7 @@ export default definePlugin({
 
 需要等待事件循环推进的结果（例如在同步方法里等一个 Promise）不能放在同步方法里，会得到 `SyncWaitCycle` 错误：改成 `async`。
 
-`async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。各个支持的 Python 版本都是这样（3.12 起是 asyncio 自带的 eager start，3.10、3.11 由 rutis 实现）。
+`async` 方法在回复之前就执行到它的第一个 `await`，和 JS 的 async 函数一样；从不挂起的 `async` 方法因此在同步调用链上也能被等待。
 
 ## 调用等多久
 
@@ -468,6 +1349,10 @@ rutis 不给调用设时限，也不替双方取消调用：一个调用该等�
 ## 取消
 
 async 方法的调用方放弃等待（例如超时）时，调用被取消：被调用的 Python 协程被取消；Go 方法的 `context.Context` 被取消；JavaScript 方法在调用方传了 `AbortSignal` 参数时收到 abort（Rust 绑定调用 Cordis 方法时会传）。没有这两种情况时，被调用的方法照常运行完，结果被丢弃。
+
+- **Swift**：调用方放弃时取消方法的 Task（`Task.checkCancellation()` 抛 `CancellationError`）；在已取消的 Task 里发出的调用抛 `CancellationError`；取消后仍要调用（比如报告自己已停下）时在 `Task { … }` 里调用，它带着调用链、不带取消。
+- **Rust**：丢弃调用的 future 即取消。
+- 事件的分发怎样取消见[事件：生命周期](#生命周期)。
 
 ## 自建连接：`sessions.open`
 

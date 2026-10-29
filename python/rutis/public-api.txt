@@ -62,4 +62,4 @@ class Reported(tuple)(kind: str, name: str, row: str | None, error: BaseExceptio
     name: str
     row: str | None
     error: BaseException
-def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, strict: bool = True, bus: Bus | None = None, scope: str | None = 'root', row: str | None = None, emits: Any = None, runtime: str | None = 'python', deadline: float | None = None) -> AsyncIterator[Loaded]
+def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, strict: bool = True, bus: Bus | None = None, scope: str | None = 'root', row: str | None = None, runtime: str | None = 'python', deadline: float | None = None) -> AsyncIterator[Loaded]

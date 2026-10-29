@@ -297,11 +297,6 @@ async fn contacts_run_there(root: &Ctx, loader: &Loader) {
 
 /// A Node connection plugin opens the session; `relay:contacts` runs on
 /// its far end.
-// The plain object `{ send, close }` crosses from Node as an object with
-// methods (a reference), which `sessions.open` refuses as not a record
-// (`sessions.open needs far = { send, close }`): rutis-bridge has to take
-// it before this runs.
-#[ignore = "sessions.open takes far only as a record, Node sends an object reference"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_relay_opens_a_session() {
     let dir = tempfile::tempdir().unwrap();

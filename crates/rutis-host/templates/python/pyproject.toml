@@ -3,7 +3,7 @@ name = "{{name}}"
 version = "0.1.0"
 description = "A rutis plugin"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # A lower bound only: the plugin runs with the rutis of the host's Python
 # environment (the runtime), so an upper bound would downgrade it or keep the
 # host from upgrading. rutis keeps the names plugins import while the plugin

@@ -195,7 +195,7 @@ for (const entry of expected.cases) {
       runtime.dispatch('', 'mount', { announce: true })
       await runtime.load('log', './log.ts', {}, null, null)
       const modes = entry.steps.flatMap(emitsOf).map((spec: any) => spec.mode)
-      const sync = modes.length > 0 && modes.every((mode: string) => mode === 'bail' || mode === 'waterfall-sync')
+      const sync = modes.length > 0 && modes.every((mode: string) => mode === 'bail')
       const configs = new Map<string, any>()
       const loadListener = (listener: any) => {
         const { at: _at, scope, ...rest } = listener
@@ -216,7 +216,7 @@ for (const entry of expected.cases) {
         }
         const service: any = runtime.lookup(`emitter-${key}`)
         const wire = { ...rest, name: spec.name ?? entry.name }
-        return wire.mode === 'bail' || wire.mode === 'waterfall-sync' ? service.dispatch_sync(wire) : service.dispatch(wire)
+        return wire.mode === 'bail' ? service.dispatch_sync(wire) : service.dispatch(wire)
       }
       let background: Promise<any> | undefined
       for (const step of entry.steps) {

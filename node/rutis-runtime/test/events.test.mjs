@@ -441,8 +441,6 @@ test('events.call runs a listener here by mode; withdrawn ones fail', async () =
   assert.equal(await bus.call({ listener: failing.id, dispatch: 'd4', name: 'n', mode: 'emit', args: [] }), undefined)
   assert.deepEqual(reported, ['rutis: listener of n in row r failed: Error: boom'])
   assert.throws(() => bus.call({ listener: asynchronous.id, dispatch: 'd5', name: 'n', mode: 'bail', args: [] }), { name: 'AsyncListener' })
-  const sync = bus.on({ name: 'n', callback: next => `s${next()}`, row: 'r' })
-  assert.equal(bus.call({ listener: sync.id, dispatch: 'd6', name: 'n', mode: 'waterfall-sync', args: [], next: () => 'S' }), 'sS')
   bus.withdraw('r')
   assert.throws(() => bus.call({ listener: a.id, dispatch: 'd7', name: 'n', mode: 'serial', args: [] }), { name: 'BindingError', message: `listener ${a.id} of n is withdrawn` })
   assert.throws(() => bus.call({ listener: '999', name: 'n', mode: 'serial', args: [] }), { message: 'listener 999 of n is withdrawn' })

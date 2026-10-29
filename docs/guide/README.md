@@ -35,7 +35,7 @@
 
 - Linux、macOS 或 Windows x64（MSVC）。
 - Node 22 或更高，或 Bun 1.4 或更高（TypeScript / JavaScript 插件）。
-- Python 3.10 或更高（Python 插件）。
+- Python 3.12 或更高（Python 插件）。
 - Go 1.24 或更高（只在写 Go 插件、构建二进制时需要；运行 Go 插件二进制不需要）。
 - macOS 14 或更高与 Swift 6.2 工具链（只在写 Swift 插件、构建二进制时需要；运行 Swift 插件二进制不需要工具链，但只在 macOS 上运行）。
 - JDK 17 与 Android 10（API 29）或更高（Kotlin 插件，编进 Android 应用；包是 Maven Central 上的 `io.github.arcships:rutis` 与编译期的 `io.github.arcships:rutis-ksp`）。
