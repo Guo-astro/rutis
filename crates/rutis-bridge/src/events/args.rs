@@ -111,6 +111,13 @@ impl Transcoder for SessionTranscoder {
     }
 
     fn value(&self, from: &Result_, into: &Codec) -> Result<Box<dyn Any + Send>, RutisError> {
+        // Only a listener of a runtime waiting for its waterfall
+        // synchronously answers a promise unsettled (§5.4).
+        if let Some(ArgValue(Value::Reference(value))) = from.downcast_ref::<ArgValue>() {
+            if value.is_future() {
+                return Err(super::errors::to_cordis(super::errors::promise_of_waiting()));
+            }
+        }
         transcode_with(
             || from.to_json().map_err(|e| e.to_string()),
             |json| into.from_json(json).map_err(|error| error.to_string()),

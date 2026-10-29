@@ -20,7 +20,18 @@ const env = { ...process.env }
 if (!env.RUTIS_NODE_RUNTIME) {
   try { env.RUTIS_NODE_RUNTIME = dirname(require.resolve('@arcships/rutis-runtime/package.json')) } catch {}
 }
-const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit', env })
+const args = process.argv.slice(2)
+// `rutis-host test <plugin> --channel fd:<n>`: a test tool (Go, Swift,
+// Kotlin) hands its runtime's channel over as an inherited descriptor;
+// passed on at the same number, as it would reach rutis-host itself.
+const stdio = ['inherit', 'inherit', 'inherit']
+const handed = /^fd:(\d+)$/.exec(args[args.indexOf('--channel') + 1] ?? '')
+if (args.includes('--channel') && handed) {
+  const fd = Number(handed[1])
+  while (stdio.length < fd) stdio.push('ignore')
+  stdio[fd] = fd
+}
+const child = spawn(binary, args, { stdio, env })
 // A terminal sends Ctrl-C (SIGINT) and its hang-up (SIGHUP) to the whole
 // process group, and Windows sends its console events to every process on
 // the console: rutis-host gets them itself. Forwarded too, one Ctrl-C would

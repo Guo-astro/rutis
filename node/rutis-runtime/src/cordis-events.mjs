@@ -25,6 +25,11 @@ export const KEEP = Symbol.for('rutis.events.keep')
 // and descriptors name the plugin by its row's id).
 export const LEAF_NAME = Symbol.for('rutis.events.leaf-name')
 
+// The fibers of leaf plugins (./leaf.mjs `toCordis`, for what `isLeaf`
+// recognises): their dispatches follow the protocol table, asynchronous;
+// a Cordis plugin's `emit` and `waterfall` are synchronous (§5.4).
+export const LEAF_FIBERS = new WeakSet()
+
 const ORIGINAL = Symbol.for('cordis.original')
 
 const internal = name => typeof name !== 'string' || name.startsWith('internal/')
@@ -131,7 +136,11 @@ export function install(ctx, Context, bus, where) {
         const filter = thisArg[Context.filter]
         keep = (descriptor, entry) => filter.call(thisArg, entry ? entry.owner : { rutis: descriptor })
       }
-      return bus.dispatch(mode, name, values, { row, keep, thisArg, terminal, gone })
+      // A Cordis plugin's `emit` calls its listeners before it returns, and
+      // its `waterfall` returns its value at once: for both this process
+      // waits for the host synchronously (§5.4). A leaf plugin's do not.
+      const sync = (mode === 'waterfall' || mode === 'emit') && !LEAF_FIBERS.has(this.ctx.fiber)
+      return bus.dispatch(mode, name, values, { row, keep, thisArg, terminal, gone, sync })
     }
   }
 }

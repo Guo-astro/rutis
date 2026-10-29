@@ -309,6 +309,8 @@ static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Bring the far end of `start` in, from `ctx`, the session's fiber.
 async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, RutisError> {
+    // From now on the far end hears what this end offers.
+    start.operations.attach(start.connection.clone());
     let far = shared.far.clone();
     let peer = Arc::new(Peer::new(
         far.clone(),

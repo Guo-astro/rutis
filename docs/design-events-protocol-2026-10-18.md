@@ -188,6 +188,11 @@ Cordis 的 `events.dispatch(type, args)`（五个方法底下的原语，返回�
 
 `next` 的规则：不带参数；第二次调用、在它的分发结束或被取消之后调用，这次调用以 `WaterfallNext` 失败（第十一节）。`waterfall` 中，接收方的运行时给监听器的 `next` 返回 Promise / 可等待对象 / Go 的阻塞调用。
 
+**`sync: true`（Cordis 插件的 `emit` 与 `waterfall`）**：Cordis 的 `emit` 在返回之前调用它的监听器，`waterfall` 当场返回值。Node 运行时里 Cordis 插件的 `emit` 与 `waterfall` 因此以同步调用发出 `events.dispatch`，请求带 `sync: true`（插件 SDK `definePlugin` 定义的插件不带，照上表）。同步只对发出方成立：发出方同步等宿主的回复，宿主照常分发，同步地等这些分发的结果；别处（其他进程、其他语言、宿主里的 Rust）的监听器照上表运行，异步的照常 await 完再回复。发出方在等待中照现有的同步等待规则（`sync-wait`、`reentrant-sync`）处理进来的调用：这次分发调回发出方进程的调用（过滤函数、终态、它自己的监听器）都是同步调用，带它最内层那次等待的调用链。带 `sync: true` 时：
+
+- `waterfall`：回复就是这条链的值（不是 future）。调到发出方进程的监听器时，`events.call` 带 `sync: true`，接收方给监听器的 `next` 同步返回链上其余部分的值；这个监听器的返回值原样作为它的值，异步监听器的 Promise 也是，同 Cordis。这样的 Promise 要等发出方的等待结束才落定，所以别的进程里的监听器经 `next` 拿到它时，这次调用以 `SyncWaitCycle` 失败（它在等发出方，发出方在等它）；宿主里的 Rust 监听器按自己的类型读它时也是，按动态值（`ArgValue`）读时拿到的是这个 Promise 的引用（用例 `waterfall/sync-wait-cycle`）。
+- `emit`：这次分发的每个调用都开始之后才回复。发往发出方进程的 `events.call` 因此先于回复到达，发出方在同步等待中按到达顺序执行它们：返回时本进程的监听器都已被调用，同 Cordis。异步监听器照旧不等。排在本会话前一个还没开始的 `emit` 之后时，回复是 future，不等它开始（前一个可能要发出方回答它的过滤函数，而发出方正在等这次回复）：发出方当场返回，调用随后按顺序到达。
+
 同步方式与监听器种类：`bail` 中，`async` 种类的条目不被调用，这次分发以 `AsyncListener` 失败。`any` 种类的条目被调用；如果它返回 Promise / thenable / 可等待对象，监听器所在的运行时丢弃它（Python 协程被关闭；Promise 的拒绝被捕获并忽略），这次调用以 `AsyncListener` 失败。Go 的监听器是 `sync`。Rust：`on` 的条目是 `async`，`on_sync` 的是 `sync`。每个同步调用都像同步服务调用一样参加等待环检测（`SyncWaitCycle`）。
 
 ### 5.5 emit 的顺序
@@ -511,7 +516,7 @@ impl EventBus {
 - **步骤**，按顺序：`{ "emit": spec, "expect": … }`（`"background": true`：这一步不等分发结束；下一个 `unload` / `kill` 步骤的 `expect` 说的是这次分发的结果与日志）、`{ "load": listener }`（新的一行；`provides`：它另外提供一个这个名字的空服务）、`{ "unload": label }`、`{ "kill": "Y" | "node" }`（结束那个进程 / 那条连接；在 `restart` 步骤之前不恢复）、`{ "restart": "Y" }`、`{ "concurrent": [steps], "hold": true }`（`hold`：宿主的测试钩子扣住这些分发直到全部到达；之后 `expect` 适用于每一个，`throws` 表示至少一个）。`unload` 与 `kill` 可带 `"when": "<label>"`：先等那个监听器开始。`unload` 可带 `"then": "<entry>"`：那一行卸载后（带 `answered` 时还要等宿主回复了收到的分发），执行器记下这一条，再去等后台的分发（`then.until` 等的就是它）。
 - **期望**：`returns`（值；`null` = 没有结果）、`throws`（`{}` 任意错误，或 `name`、`message`（子串）、`errors`（按顺序的子错误，每个为 `{}` / `name` / `message`））、`log`（确切顺序）、`logUnordered`、`logContains`（按此顺序出现，中间可有其他）、`reported`（`[{ "label", "name" }]`，§5.6）、`filterSees`（过滤函数被调用时的行，按顺序；运行器按每个参与者实际所在核对描述的 `runtime`、`node` 与 `scope`）、`viaHost`（是否有 `events.dispatch` 到达宿主）、`settles`（`true`：这一步在 5 秒内结束，无论成败）、`answered`（`true`：运行器等到宿主对它收到的每个 `events.dispatch` 都写出了回复，最多 5 秒；之后发给运行时的帧都在这些回复之后到达，按 §5.5 发出方已把这些经宿主的 emit 记为已得到回复，用于其后断言 `viaHost: false` 的步骤）、`logLacks`（日志里不得出现的条目）。日志在整个用例中累积；每个日志期望说的都是到此为止的全部日志。运行器最多等 5 秒让日志完整。
 - **`vary`**：位置要变化的参与者（label，发出方为 `e`），运行器取所有位置的组合（笛卡尔积），`at` / `from` 是第一种组合。`node` 不被分配到 `root` 以外的作用域。
-- **`only` / `except`**：`{ "<label>": [语言] }`（`rust`、`node`、`bun`、`python`、`go`）限定 / 排除组合，带 `why`。
+- **`only` / `except`**：`{ "<label>": [语言] }`（`rust`、`node`、`bun`、`python`、`go`）限定 / 排除组合，带 `why`。列表里也可以写 `@<label>`（与那个标签在同一位置）或 `!@<label>`（不在同一位置）；一个条目里的各个标签要同时满足。
 - **`tool`**：测试工具不运行该用例时为 `false`（它需要其他进程、`rutis/*` 或宿主）。测试工具把其余每个用例的全部位置都设为 `X` 运行。
 
 ### 13.3 起始用例

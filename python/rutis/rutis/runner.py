@@ -771,6 +771,7 @@ class Runtime:
             except Exception:  # noqa: BLE001 - disposal goes on
                 pass
         self.bus.clear()
+        self.blocking.close()
 
     # ── Events ───────────────────────────────────────────────────
 

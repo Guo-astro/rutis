@@ -7,7 +7,7 @@
 // `parallel`, `serial`, `waterfall`, `bail`), with `ctx.filter`.
 // The runtime does not import the SDK: it recognises its plugins by the
 // symbol the SDK marks them with.
-import { KEEP, LEAF_NAME } from './cordis-events.mjs'
+import { KEEP, LEAF_FIBERS, LEAF_NAME } from './cordis-events.mjs'
 import { refuseReserved } from './events.mjs'
 import { UNDECLARED, notDeclared, unavailable } from './errors.mjs'
 
@@ -72,6 +72,7 @@ export function toCordis(spec, rowInject = [], providerOf) {
     name: spec.name ?? 'leaf',
     inject: spec.inject,
     async apply(context, config) {
+      LEAF_FIBERS.add(context.fiber)
       const ctx = {
         use(name) {
           const value = context.get(name)

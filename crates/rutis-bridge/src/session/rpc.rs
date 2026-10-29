@@ -793,6 +793,18 @@ impl Drop for LentRuntime<'_> {
         }
     }
 }
+/// The invocation chain of this thread or task: what a call made here
+/// carries.
+pub(crate) fn chain() -> Vec<String> {
+    current_path()
+}
+/// Run `call` with `path` as the invocation chain (one [`chain`] gave), on
+/// whatever thread: a call it makes is one the session waiting along that
+/// chain recognises.
+pub(crate) fn on_chain<R>(path: Vec<String>, call: impl FnOnce() -> R) -> R {
+    let _path = PathGuard::enter(path);
+    call()
+}
 fn current_path() -> Vec<String> {
     SYNC_PATH
         .with(|p| p.borrow().clone())
