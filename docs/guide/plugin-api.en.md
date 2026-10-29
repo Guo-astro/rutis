@@ -1305,13 +1305,15 @@ A plugin definition the plugin hands to a test double (the double's method takes
 
 | Name | What it does |
 | --- | --- |
-| `loaded.emit`, `parallel`, `serial`, `waterfall`, `bail` | Emit from the row's scope |
-| `loaded.on(name, prepend:, global:) { ... }` | Listen as the host does |
-| `loaded.load(config:row:scope:)` | Load another row; the scope is `RutisTest.scope("t1/s1")` |
-| `loaded.update(config:)` | Change a row's config as rutis does |
-| `loaded.reported` | What the runtime reported of failed `emit` listeners |
-| `loaded.provided`, `loaded.row`, `loaded.scope`, `loaded.unload()`, `loaded.close()` | The names of the services the plugin provides now; the row's name; its scope; unload the row; end the test's host |
-| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` is the runtime's name in descriptors |
+| `loaded.emit`, `parallel`, `serial`, `waterfall`, `bail` | Emit as a plugin of the same runtime does |
+| `loaded.on(name, prepend:, global:) { ... }` | Listen as a plugin of the same runtime does |
+| `loaded.load(config:row:isolate:)` | Load another row of the plugin |
+| `loaded.update(config:)` | Change a row's config: the host checks it, and the plugin applies again |
+| `await loaded.reported` | What was reported since the test started: the runtime's lines of failed `emit` listeners, then the host's lines of the test's rows |
+| `loaded.provided`, `loaded.row`, `loaded.unload()`, `loaded.close()` | The names of the services the row provides now; the row's id; unload the row; unload every row of the test |
+| `RutisTest.load(_:config:services:row:isolate:)` | `row` is the row's id (by default the plugin's name); `isolate` the row's `isolate` (service name: `true` or a label), as in rutis.json |
+
+The plugin runs as a row of a real host: the test process runs the Swift runtime, and `rutis-host test` (on `PATH`, or the path in `RUTIS_HOST`) runs a host whose session is with it. The host checks the row's config and fills its defaults, starts the row once the services it injects are there, and dispatches every event. The test's side (its services, `on` and the five emits) is a plugin in the same runtime, so values between the test and the plugin do not cross processes; what crosses processes is checked by the runtimes' own tests. One host serves the whole test process; `close()` unloads the test's rows. Rows load at the root: the test tool places no row in a scope. On a device or the iOS simulator there is no `rutis-host`: test there with an app that installs its own plugins (`RutisApp`, [Swift app guide](swift-app.en.md)).
 
 A test double receives the plugin definition itself: `RutisTest.load(definition, config: ...)` loads it as a host mounts it; handed back by the double, the plugin gets the original one.
 

@@ -1,6 +1,5 @@
-// Config schemas (docs/design-config-schema-2026-10-27.en.md): the shared
-// case list, run word for word; a row's config filled and validated before
-// it is decoded, as the runtime, an app's runtime and RutisTest load it.
+// Config schemas (docs/design-config-schema-2026-10-27.en.md): a row's
+// config filled and validated by the host before the plugin decodes it.
 import Foundation
 @testable import Rutis
 import RutisTest
@@ -45,41 +44,6 @@ final class Seen<T>: @unchecked Sendable {
 }
 
 struct ConfigSchemaTests {
-    /// The repository's case list.
-    static func cases() throws -> [JSON] {
-        let here = URL(fileURLWithPath: #filePath)
-        let file = here.deletingLastPathComponent().appendingPathComponent("../../../../specs/config-schema/cases.json")
-        let text = try String(contentsOf: file, encoding: .utf8)
-        guard case let .object(doc) = try JSONReader.parse(text), case let .array(cases)? = ConfigSchema.lookup(doc, "cases") else {
-            throw RutisError(name: "Error", message: "no cases")
-        }
-        return cases
-    }
-
-    static func strings(_ value: JSON?) -> [String] {
-        guard case let .array(items)? = value else { return [] }
-        return items.compactMap { if case let .string(s) = $0 { return s } else { return nil } }
-    }
-
-    // guarantee: sdk/config-schema (the shared case list, Swift's column)
-    func everyCaseOfTheSharedListPasses() throws {
-        for item in try Self.cases() {
-            guard case let .object(c) = item else { continue }
-            let name = ConfigSchema.lookup(c, "name").flatMap { if case let .string(s) = $0 { return s } else { return nil } } ?? "?"
-            let schema = ConfigSchema.lookup(c, "schema") ?? .null
-            let config = ConfigSchema.lookup(c, "config")
-            let checked = ConfigSchema.check(schema, config)
-            XCTAssertEqual(checked.warnings.map { "config: \($0.message)" }, Self.strings(ConfigSchema.lookup(c, "warnings")), name)
-            guard case let .object(then)? = ConfigSchema.lookup(c, "then") else { continue }
-            if let errors = ConfigSchema.lookup(then, "errors") {
-                XCTAssertEqual(ConfigSchema.lines(checked.errors), Self.strings(errors), name)
-            } else {
-                XCTAssertEqual(checked.errors.map(\.message), [], name)
-                XCTAssertEqual(checked.config, ConfigSchema.lookup(then, "config") ?? .null, name)
-            }
-        }
-    }
-
     // guarantee: sdk/config-schema (filled and validated before decoding)
     func aRowsConfigIsFilledAndValidatedBeforeItIsDecoded() async throws {
         let seen = Seen<SchemaWeather>()
@@ -93,9 +57,8 @@ struct ConfigSchemaTests {
             await failed.close()
             XCTFail("a wrong config loads")
         } catch let error as RutisError {
-            XCTAssertEqual(error.name, "BindingError")
-            XCTAssertEqual(error.code, "bad-config")
-            XCTAssertEqual(error.message, "config: city is required\nconfig: units should be \"metric\" or \"imperial\", got \"kelvin\"")
+            // The host's line of the row.
+            XCTAssertEqual(error.message, "weather: config: city is required\nconfig: units should be \"metric\" or \"imperial\", got \"kelvin\"")
         }
         XCTAssertEqual(seen.all.count, 1)
     }
@@ -118,7 +81,7 @@ struct ConfigSchemaTests {
             await failed.close()
             XCTFail("a wrong config loads")
         } catch let error as RutisError {
-            XCTAssertEqual(error.message, "config: city is required\nconfig: units should be a string, got 1")
+            XCTAssertEqual(error.message, "weather: config: city is required\nconfig: units should be a string, got 1")
         }
     }
 
@@ -131,8 +94,7 @@ struct ConfigSchemaTests {
             await loaded.close()
             XCTFail("a wrong config loads")
         } catch let error as RutisError {
-            XCTAssertEqual(error.code, "bad-config")
-            XCTAssertEqual(error.message, "config: days is not a value the plugin accepts")
+            XCTAssertEqual(error.message, "loose: config: days is not a value the plugin accepts")
         }
     }
 
@@ -148,12 +110,28 @@ struct ConfigSchemaTests {
         XCTAssertEqual(seen.all, ["pixel 1"])
     }
 
-    func numbersAreWrittenAsJavaScriptWritesThem() {
-        for (value, text) in [(1.0, "1"), (1.5, "1.5"), (-0.0, "0"), (1e21, "1e+21"), (1.5e21, "1.5e+21"), (1e-7, "1e-7"),
-                              (0.000001, "0.000001"), (0.00001, "0.00001"), (123.456, "123.456"), (-2.5, "-2.5"), (0.1, "0.1"),
-                              (1.5e20, "150000000000000000000"), (1e23, "1e+23"), (5e-324, "5e-324")]
+    /// A configuration no host checked (an app's own plugin): a missing key
+    /// takes its literal default; a problem names its key in the host's
+    /// words (`rutis::config::check`).
+    func aConfigNoHostCheckedTakesDefaultsAndNamesItsKey() async throws {
+        let seen = Seen<LiteralWeather>()
+        let plugin = Rutis.define(Plugin(name: "weather", config: LiteralWeather.self) { _, config in seen.add(config) })
+        let runtime = Runtime([plugin], project: "")
+        try await runtime.load(key: "a", name: nil, entry: "weather", config: .data(.object([("city", .string("Oslo"))])),
+                               exports: [:], isolate: [:], scope: [])
+        XCTAssertEqual(seen.all.map(\.units), ["metric"])
+        XCTAssertEqual(seen.all.map(\.days), [3])
+        try await runtime.unload("a")
+        for (config, message) in [(JSON.object([]), "config: city is required"),
+                                  (.object([("city", .string("Oslo")), ("days", .string("x"))]), #"config: days should be an integer, got "x""#)]
         {
-            XCTAssertEqual(ConfigSchema.doubleText(value), text, "\(value)")
+            do {
+                try await runtime.load(key: "b", name: nil, entry: "weather", config: .data(config), exports: [:], isolate: [:], scope: [])
+                XCTFail("a wrong config loads")
+            } catch let error as RutisError {
+                XCTAssertEqual(error.code, "bad-config")
+                XCTAssertEqual(error.message, message)
+            }
         }
     }
 }

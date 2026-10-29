@@ -1305,13 +1305,15 @@ func TestEvents(t *testing.T) {
 
 | 名字 | 作用 |
 | --- | --- |
-| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 从这一行的作用域发出 |
-| `loaded.on(name, prepend:, global:) { ... }` | 像宿主一样监听 |
-| `loaded.load(config:row:scope:)` | 再装载一行；作用域写 `RutisTest.scope("t1/s1")` |
-| `loaded.update(config:)` | 像 rutis 一样改一行的配置 |
-| `loaded.reported` | 运行时报告的 `emit` 监听器失败 |
-| `loaded.provided`、`loaded.row`、`loaded.scope`、`loaded.unload()`、`loaded.close()` | 插件现在提供的服务名；行名；作用域；卸载这一行；结束测试的宿主 |
-| `RutisTest.load(_:config:services:row:scope:runtimeName:)` | `runtimeName` 是描述里的运行时名 |
+| `loaded.emit`、`parallel`、`serial`、`waterfall`、`bail` | 像同一运行时里的插件一样发出 |
+| `loaded.on(name, prepend:, global:) { ... }` | 像同一运行时里的插件一样监听 |
+| `loaded.load(config:row:isolate:)` | 再装载插件的一行 |
+| `loaded.update(config:)` | 改一行的配置：宿主检查它，插件重新 apply |
+| `await loaded.reported` | 测试开始以来报告的：运行时写的 `emit` 监听器失败的行，再加宿主为测试的行写的行 |
+| `loaded.provided`、`loaded.row`、`loaded.unload()`、`loaded.close()` | 这一行现在提供的服务名；行 id；卸载这一行；卸载测试的所有行 |
+| `RutisTest.load(_:config:services:row:isolate:)` | `row` 是行 id（默认是插件名）；`isolate` 是这一行的 `isolate`（服务名：`true` 或标签），与 rutis.json 相同 |
+
+插件作为真实宿主的一行运行：测试进程跑 Swift 运行时，`rutis-host test`（在 `PATH` 上，或 `RUTIS_HOST` 给的路径）跑一个与它建会话的宿主。宿主检查这一行的配置并填默认值，等它 inject 的服务都在了才启动它，并分发所有事件。测试一方（它的服务、`on` 与五种发出）是同一运行时里的一个插件，所以测试与插件之间的值不跨进程；跨进程的行为由各运行时自己的测试检查。整个测试进程共用一个宿主；`close()` 卸掉这个测试的行。行都装在根上：测试工具不把行放进作用域。设备和 iOS 模拟器上没有 `rutis-host`：在那里用自己装插件的应用（`RutisApp`，[Swift 应用指南](swift-app.md)）测试。
 
 替身收到的插件定义就是这个定义本身，可以直接 `RutisTest.load(definition, config: ...)`，和宿主挂它一样；替身把它交回插件时，插件拿到的也是原来那个。
 

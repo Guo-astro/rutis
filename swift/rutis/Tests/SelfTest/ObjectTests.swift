@@ -7,7 +7,6 @@
 // crates/rutis-loader/tests/objects_cross.rs.
 import Foundation
 @testable import Rutis
-import RutisTest
 
 /// An object with methods of the test's side.
 @RutisService
@@ -121,14 +120,75 @@ final class SlowObject: @unchecked Sendable {
     }
 }
 
+/// A plugin served by the real runtime across a session of its own, the
+/// test on the host's end: what crosses it crosses as between processes.
+final class CrossSession: @unchecked Sendable {
+    let host: Peer
+    let served: Task<Void, Error>
+    private let lock = NSLock()
+    private var handles: [String: String] = [:]
+
+    init(_ plugin: Rutis.Definition, services: [String: RutisExportable] = [:]) async throws {
+        let (runtimeSide, hostSide) = try Channels.pair()
+        served = Task.detached {
+            try await Rutis.serveSession(channel: runtimeSide, endpoint: Endpoint(local: "swift", expected: "main", declare: ["runtime"]),
+                                         project: NSTemporaryDirectory(), [plugin])
+        }
+        var options = PeerOptions(endpoint: Endpoint(local: "main", expected: "swift"))
+        options.host = true
+        let lock = self.lock
+        let handles = Box()
+        options.dispatch = { target, method, args in
+            if target.isEmpty, method == "service", let id = args.first?.string {
+                lock.withLock { handles.value[id] = args.count > 1 ? args[1].string : nil }
+                return .undefined
+            }
+            guard target.hasPrefix("host:"), let service = services[String(target.dropFirst(5))] else {
+                throw RutisError(name: "Error", message: "not served: \(target) \(method)")
+            }
+            let callee = Refusal.Callee(service: String(target.dropFirst(5)), method: method)
+            guard let body = service.rutisMethods()[method] else { throw Refusal.noMethod(callee, service.rutisMethods().keys) }
+            return try await body(Rutis._Generated.Arguments(args, callee: callee)).value
+        }
+        host = try Peer(channel: hostSide, options: options)
+        self.box = handles
+        try host.start()
+        await host.ready()
+        _ = try await host.call(target: "", method: "mount", args: [.data(.object([("runtime", .string("swift"))]))], sync: false)
+        for (name, service) in services {
+            let methods = JSON.object(service.rutisMethods().keys.sorted().map { ($0, .string("async")) })
+            _ = try await host.call(target: "", method: "hosts.provide", args: [.data(.string(name)), .data(methods)], sync: false)
+        }
+        _ = try await host.call(target: "", method: "rows.load", args: [
+            .data(.string("row")), .data(.string(plugin.name)), .null, .data(.array([])), .data(.array([])), .data(.object([])),
+            .data(.object([])),
+        ], sync: false)
+    }
+
+    private final class Box: @unchecked Sendable { var value: [String: String] = [:] }
+    private let box: Box
+
+    /// Calls `method` of the service `name` the plugin provides.
+    func call<R>(_ name: String, _ method: String, _ args: Any?..., as _: R.Type) async throws -> R {
+        guard let handle = lock.withLock({ box.value[name] }) else { throw RutisError(name: "Error", message: "no service \(name)") }
+        let values = try args.map { try ValueCodec.encodeAny($0 as Any) }
+        return try ValueCodec.decode(R.self, from: try await settle(try await host.call(target: handle, method: method, args: values, sync: false)))
+    }
+
+    func close() async {
+        host.close()
+        host.channel.close()
+        _ = try? await served.value
+    }
+}
+
 struct ObjectTests {
     // objects-case(swift): send-call-state
     // objects-case(swift): same-proxy-home
     // objects-case(swift): no-method
     // objects-case(swift): declared-type-refuses
     // objects-case(swift): data-stays-data
-    // objects-case(swift): strict-testing-tool
-    /// Through the testing tool, across its session as between processes:
+    /// Across a session, as between processes:
     /// the plugin's proxy calls the original, which changes; given twice it
     /// is the same proxy; sent back it is the original; a method the object
     /// lacks is its process's no-method; a data parameter refuses an
@@ -136,21 +196,20 @@ struct ObjectTests {
     func anObjectIsTakenAsAClientProtocolAndGoesHome() async throws {
         let warmer = Warmer()
         let plugin = Rutis.define(Plugin(name: "warmer") { ctx in ctx.provide("warmer", warmer) })
-        let loaded = try await RutisTest.load(plugin)
-        defer { Task { await loaded.close() } }
-        let service = try await loaded.service("warmer")
+        let session = try await CrossSession(plugin)
+        defer { Task { await session.close() } }
         let cache = Cache()
-        let warmed = try await service.call("warm", cache, as: Int?.self)
+        let warmed = try await session.call("warmer", "warm", cache, as: Int?.self)
         XCTAssertEqual(warmed, 1)
         XCTAssertEqual(cache.size(), 1, "the original object changed")
-        let same = try await service.call("same", cache, as: Bool.self)
+        let same = try await session.call("warmer", "same", cache, as: Bool.self)
         XCTAssertEqual(same, true, "one object, one proxy")
-        let back = try await service.call("back", as: Any?.self)
+        let back = try await session.call("warmer", "back", as: Any?.self)
         XCTAssertTrue((back as AnyObject?) === cache, "back home, the original")
-        let missing = try await service.call("missing", as: String.self)
+        let missing = try await session.call("warmer", "missing", as: String.self)
         XCTAssertEqual(missing, "no-method: Cache has no method gett (methods: get, set, size)")
         do {
-            _ = try await service.call("place", cache, as: Int.self)
+            _ = try await session.call("warmer", "place", cache, as: Int.self)
             XCTFail("a data parameter takes no object")
         } catch let error as RutisError {
             XCTAssertEqual(error.code, "bad-argument")
@@ -159,7 +218,7 @@ struct ObjectTests {
                 error.message)
         }
         let spot = Spot(x: 1, y: 2)
-        let y = try await service.call("keep", spot, as: Int.self)
+        let y = try await session.call("warmer", "keep", spot, as: Int.self)
         XCTAssertEqual(y, 2)
         XCTAssertEqual(warmer.seen, spot, "data arrives as an equal copy")
     }
@@ -173,9 +232,9 @@ struct ObjectTests {
             ctx.provide("reader", Reader(source: try ctx.use("source", SourceClientProxy.self)))
         })
         let source = Source()
-        let loaded = try await RutisTest.load(plugin, services: ["source": source])
-        defer { Task { await loaded.close() } }
-        let read = try await loaded.service("reader").call("read", as: String.self)
+        let session = try await CrossSession(plugin, services: ["source": source])
+        defer { Task { await session.close() } }
+        let read = try await session.call("reader", "read", as: String.self)
         XCTAssertEqual(read, "true 5")
         XCTAssertEqual(source.cache.get("k"), 5, "the original object changed")
     }

@@ -50,7 +50,7 @@ Rutis.serve(weather)
 - Values: the SDK's own encoder and decoder, driven by `Codable` (never `JSONEncoder`). `Date`, `Data`, `Decimal`, `UUID`, `Set` and non-`String`-keyed dictionaries cross as rutis's tagged values; `Rutis.Advanced.DateTime`, `Rutis.Advanced.CalendarDate`, `Rutis.Advanced.TimeOfDay` and `Rutis.Advanced.BigInt` are the types Swift lacks. Instances of `@RutisService` types and closures cross by reference.
 - Errors cross with their name (the type's), message, `code` and `data` (stored properties of those names); a received error is a `RutisError`, matched by `name`.
 - Events: `ctx.on`, `emit`, `parallel`, `serial`, `waterfall`, `bail`, `filter` (the [plugin API](../docs/guide/plugin-api.en.md#events)).
-- Tests: `RutisTest` (product `RutisTest`) runs a plugin across a real in-memory session, the test being its host:
+- Tests: `RutisTest` (product `RutisTest`, macOS) runs a plugin as a row of a real host, `rutis-host test` (`rutis-host` on `PATH`, or `RUTIS_HOST`); the test's services, listeners and emits are a plugin in the same runtime:
 
 ```swift
 let loaded = try await RutisTest.load(weather, config: ["city": "Oslo"], services: ["llm": FakeLLM()])
@@ -58,4 +58,4 @@ let answer = try await loaded.service("weather").call("today", "rain?", as: Stri
 await loaded.close()
 ```
 
-Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, Swift 6.2 toolchain or later (the macros use swift-syntax 602–603). The SDK's own tests: `swift run RutisSelfTest`.
+Platforms: macOS 14 and iOS 17. In an app, `RutisApp(plugins:connect:id:token:)` serves the plugins compiled into it while started (`start()`, `stop()`, an observable `state`): [Host plugins in an app](../docs/guide/swift-app.en.md). Swift 5 language mode, Swift 6.2 toolchain or later (the macros use swift-syntax 602–603). The SDK's own tests: `cargo build -p rutis-host`, then `RUTIS_HOST=$PWD/target/debug/rutis-host swift run RutisSelfTest`.

@@ -18,8 +18,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      # RutisTest runs the plugin in `rutis-host test`: rutis-host on PATH.
+      - run: npm install --global @arcships/rutis-host@^{{version}}
       - run: swift test
-      - run: npx --yes @arcships/rutis-host@^{{version}} check
+      - run: rutis-host check
       - name: build a universal binary (arm64 + x86_64)
         run: |
           swift build -c release --arch arm64 --arch x86_64 --product {{name}}

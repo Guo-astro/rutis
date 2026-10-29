@@ -309,6 +309,16 @@ The row names `go-<binary>:<plugin>` and `swift-<binary>:<plugin>` are removed; 
 
 The minimum is 3.12 (3.10 and 3.11 are no longer supported).
 
+### Swift
+
+- `RutisTest` runs the plugin as a row of a real host, `rutis-host test`, which it starts: put `rutis-host` on `PATH` (`npm install --global @arcships/rutis-host`) or set `RUTIS_HOST` to its path. One host serves the test process; `close()` unloads the test's rows.
+- The test tool no longer has scope: `RutisTest.scope(_:groups:)`, the `scope:` parameters and `Loaded.scope` are removed, and so is `runtimeName:`. `row:` is the row's id (by default the plugin's name); `isolate:` is the row's `isolate`, as in rutis.json.
+- `loaded.reported` is read with `await`. A config the host refuses fails `load` with the host's line of the row: `weather: config: city is required`.
+- The test's services, `on` and emits are a plugin in the plugin's runtime: values between the test and the plugin no longer cross processes.
+- On a device or in the iOS simulator `RutisTest` is an app installing its own plugins, connected to a host on the development machine (`RUTIS_TEST_CONNECT`, `RUTIS_TEST_TOKEN`; [Swift app guide](guide/swift-app.en.md)); `Loaded.load` and `update` are macOS only there.
+- The Swift SDK no longer validates configs: the host checks a row's config and fills its defaults before the runtime gets it. An app's own plugins are decoded only: with `@RutisConfig`, a missing key takes the literal initial value, and a missing required key or a value of another type fails with `config: <key> is required` or `config: <key> should be <type>, got <value>`.
+- Every event of a Swift plugin is dispatched by the host; the listeners and emits of an app's own plugins are the connection's.
+
 ### Kotlin
 
 - The testing tool is an artifact of its own, `io.github.arcships:rutis-testing` (jvm): `testImplementation("io.github.arcships:rutis-testing:<version>")`, with `kspTest("io.github.arcships:rutis-ksp:<version>")`. It runs the plugin's real runtime in the test process, as a row of `rutis-host test`, and needs `rutis-host` (on `PATH` or at `RUTIS_HOST`).
