@@ -247,7 +247,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-`greeter` 等 `translate` 就绪后才启动。`services` 那一行是现在的服务和提供它的行；`loader` 是宿主自己提供的。
+`greeter` 等 `translate` 就绪后才启动。`services` 那一行是现在的服务和提供它的行；`loader` 是宿主自己提供的。这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定。
 
 `dev` 运行时，另开一个终端，在项目目录里看现在有哪些服务、由哪一行提供，再调一次 `greeter.hello`：
 

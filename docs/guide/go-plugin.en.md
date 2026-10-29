@@ -354,7 +354,7 @@ greeter: built in 0.3s
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 ```
 
-`dev` builds `cmd/greeter` and runs it as the runtime `go-greeter`. Then each row prints `greeter: running`, `translate: running` as it comes up (in either order); whenever the services change, it prints the services there are now and the row providing each (`loader` is the host's own), and once all are up:
+`dev` builds `cmd/greeter` and runs it as the runtime `go-greeter`. Then each row prints `greeter: running`, `translate: running` as it comes up (in either order); `rutis-host dev: services:` gives the services there are now and the row providing each (`loader` is the host's own); it is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines:
 
 ```text
 rutis-host dev: services: greeter (greeter), loader (host), translate (translate)

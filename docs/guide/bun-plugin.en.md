@@ -247,7 +247,7 @@ rutis-host dev: services: greeter (greeter), loader (host), translate (translate
 greeter: running
 ```
 
-`greeter` starts once `translate` is available. The `services` line lists the services there are now and the row providing each; the host itself provides `loader`.
+`greeter` starts once `translate` is available. The `services` line lists the services there are now and the row providing each; the host itself provides `loader`. It is printed once every row is running, waiting or failed, and again whenever the services change, before or after the rows' state lines.
 
 While `dev` runs, in another terminal in the project's directory, see which services there are and which row provides each, then call `greeter.hello` once:
 

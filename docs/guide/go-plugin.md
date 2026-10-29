@@ -354,7 +354,7 @@ greeter: built in 0.3s
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 ```
 
-`dev` 构建 `cmd/greeter`，作为运行时 `go-greeter` 运行它。之后每一行起来时打印 `greeter: running`、`translate: running`（两行谁先谁后不一定）；服务有变化时打印现在的服务、各由哪一行提供（`loader` 是宿主自己的），都起来后是：
+`dev` 构建 `cmd/greeter`，作为运行时 `go-greeter` 运行它。之后每一行起来时打印 `greeter: running`、`translate: running`（两行谁先谁后不一定）；`rutis-host dev: services:` 是现在的服务、各由哪一行提供（`loader` 是宿主自己的），这一行在所有行都已运行、等待或失败后打印一次，之后服务变化时再打印，和各行状态行的先后不固定：
 
 ```text
 rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
