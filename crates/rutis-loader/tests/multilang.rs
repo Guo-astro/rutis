@@ -501,3 +501,55 @@ async fn a_dead_python_process_stops_only_its_rows() {
     assert_eq!(fixture.python.state().state, FiberState::Active);
     fixture.root.shutdown().await.unwrap();
 }
+
+/// A second row of a provider in the same runtime, its service isolated,
+/// keeps that service to its own scope: it runs next to the first, which
+/// alone provides the name to rutis (a declared service an isolated row
+/// provides used to be published anyway, and one of the two failed with
+/// `… is already provided by another plugin`). Node and Python alike.
+/// guarantee: loader/isolate-and-inject
+#[tokio::test(flavor = "multi_thread")]
+async fn an_isolated_second_provider_runs_beside_the_first() {
+    let fixture = fixture().await;
+    let isolated = |mut row: Value, isolate: Value| {
+        row["isolate"] = isolate;
+        row
+    };
+    let rows = vec![
+        py_row("pp", "py_provider"),
+        isolated(
+            py_row("pp2", "py_provider"),
+            json!({ "py_weather": "bergen" }),
+        ),
+        js_row(&fixture, "jp", "js_provider"),
+        isolated(
+            js_row(&fixture, "jp2", "js_provider"),
+            json!({ "js_weather": true }),
+        ),
+        py_row("pc", "py_consumer"),
+        js_row(&fixture, "jc", "js_consumer"),
+    ];
+    let report = fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    let probe = &fixture.probe;
+    probe.wait_for("py consumer: js sunny / js later").await;
+    probe.wait_for("js consumer: py sunny / py later").await;
+    for id in ["pp", "pp2", "jp", "jp2"] {
+        COLD.until(
+            || row_state(&fixture.loader, id) == Some(FiberState::Active),
+            &format!("{id} running"),
+        )
+        .await;
+    }
+    let status = fixture.loader.status();
+    for service in ["py_weather", "js_weather"] {
+        let providers: Vec<_> = status
+            .services
+            .iter()
+            .filter(|s| s.name == service)
+            .map(|s| s.provider.clone())
+            .collect();
+        assert_eq!(providers.len(), 1, "{service}: {status}");
+    }
+    fixture.root.shutdown().await.unwrap();
+}
