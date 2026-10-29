@@ -18,7 +18,6 @@ const METHODS = { say: 'async', shout: 'async', later: 'async', pieces: 'async',
 async function started(env) {
   const host = await fakeHost([process.execPath, runner, plugin], { env })
   await within('the handshake', host.ready)
-  await host.elsewhere({})
   await host.call('mount', { plugins: [], announce: true, scope: [] })
   const row = async (key, id) => {
     await host.call('rows.load', [key, plugin, { label: key }, [], [], { [`talk-${key}`]: METHODS }, { scope: [], id }])

@@ -18,11 +18,6 @@ use rutis_bridge::runtime::{swift_runtime_name, Launcher};
 
 use super::binary::BinaryLanguage;
 
-/// The plugin API of Swift binaries this host runs, read from their
-/// manifests.
-#[doc(hidden)]
-pub const SWIFT_PLUGIN_API: u64 = 3;
-
 /// Swift as a [`BinaryLanguage`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Swift;
@@ -33,7 +28,9 @@ impl BinaryLanguage for Swift {
     /// In every binary built with the Swift SDK: only files containing it are
     /// run to read their manifest.
     const MARKER: &'static [u8] = b"rutis-swift-runtime:1";
-    const PLUGIN_API: u64 = SWIFT_PLUGIN_API;
+    /// The plugin API of Swift binaries this host runs, read from their
+    /// manifests.
+    const PLUGIN_API: u64 = 3;
 
     fn runtime_name(path: &Path) -> String {
         swift_runtime_name(path)

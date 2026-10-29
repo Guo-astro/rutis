@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use rutis_loader::{Layer, Patch};
 use serde_json::{json, Value};
 

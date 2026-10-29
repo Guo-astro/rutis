@@ -6,7 +6,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use rutis_dsh::profile::{load, ProfileContext};
-use rutis_loader::internal::apply_patches;
+use rutis_loader::patch::apply_patches;
 use serde_json::{json, Value};
 
 struct Fixture {

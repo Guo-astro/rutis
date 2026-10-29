@@ -15,8 +15,8 @@ use common::runtimes::{greet_as_main, layer, row_state, spawner, swift_binary, C
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::session::{host_key, settle, HostDispatch};
-use rutis_loader::internal::read_binary_manifest;
 use rutis_loader::report::EntryStatus;
+use rutis_loader::runtime::binary::read_binary_manifest;
 use rutis_loader::runtime::binary::{
     Binaries, BinaryResolver, BinaryRuntimeState, BinaryRuntimes, BinaryRuntimesHandle,
 };

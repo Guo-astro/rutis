@@ -18,11 +18,6 @@ use rutis_bridge::runtime::{go_runtime_name, Launcher};
 
 use super::binary::BinaryLanguage;
 
-/// The plugin API of Go binaries this host runs, read from their manifests.
-/// The one definition: `rutis-host` uses it for the same check.
-#[doc(hidden)]
-pub const PLUGIN_API: u64 = 3;
-
 /// Go as a [`BinaryLanguage`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Go;
@@ -33,7 +28,10 @@ impl BinaryLanguage for Go {
     /// In every binary built with the Go SDK: only files containing it are
     /// run to read their manifest.
     const MARKER: &'static [u8] = b"rutis-go-runtime:1";
-    const PLUGIN_API: u64 = PLUGIN_API;
+    /// The plugin API of Go binaries this host runs, read from their
+    /// manifests. The one definition: `rutis-host` uses it for the same
+    /// check.
+    const PLUGIN_API: u64 = 3;
 
     fn runtime_name(path: &Path) -> String {
         go_runtime_name(path)

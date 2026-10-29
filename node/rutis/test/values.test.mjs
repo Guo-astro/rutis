@@ -1,11 +1,11 @@
-// The tagged values (#308): the SDK constructors, and the testing tool
-// crossing them as the runtimes send and receive them
+// The tagged values (#308): the SDK constructors, and the values crossing
+// between the test and a plugin on a real host
 // (docs/design-value-types-2026-10-15.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as rutis from '../src/advanced.mjs'
-import { definePlugin } from '../src/index.mjs'
 import { load } from '../src/testing.mjs'
+import echoPlugin from './fixtures/echo.mjs'
 
 test('the constructors check their text and mark their value', () => {
   const at = rutis.datetime('2026-10-15T14:30:05.25')
@@ -36,16 +36,14 @@ test('the constructors check their text and mark their value', () => {
   }
 })
 
-// A service that echoes what it is given, through the testing tool.
+// A service that echoes what it is given, in the real runtime.
+let loaded
 async function echo() {
-  const t = await load(definePlugin({
-    provides: { echo: { echo: 'sync', async: 'async' } },
-    apply(ctx) { ctx.provide('echo', { echo: value => value, async: async value => value }) },
-  }))
-  return t.service('echo')
+  loaded ??= load(echoPlugin)
+  return (await loaded).service('echo')
 }
 
-test('the testing tool crosses tagged values as the runtimes do', async () => {
+test('tagged values cross as the runtimes send and receive them', async () => {
   const { echo: back, async } = await echo()
   // A Date: copied, to the millisecond.
   const when = new Date('2026-10-15T03:22:15.123Z')
@@ -64,7 +62,7 @@ test('the testing tool crosses tagged values as the runtimes do', async () => {
   assert.deepEqual(back(Buffer.from('hi')), new Uint8Array([104, 105]))
   assert.deepEqual(back(new Uint8Array([1, 2, 3, 4]).buffer), new Uint8Array([1, 2, 3, 4]))
   assert.deepEqual(back(new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2)), new Uint8Array([2, 3]))
-  assert.throws(() => back(new Int16Array([1])), /Int16Array cannot cross/)
+  assert.throws(() => back(new Int16Array([1])), /cannot send a Int16Array: binary data crosses as a Uint8Array/)
   // A bigint.
   assert.equal(back(-(10n ** 30n)), -(10n ** 30n))
   assert.throws(() => back(10n ** 4300n), /at most 4300 digits/)
@@ -109,5 +107,5 @@ test('maps and sets keep their order; keys follow design §5', async () => {
   assert.throws(() => back(nest(65)), /nested deeper than 64 levels/)
   const cyclic = new Map()
   cyclic.set('self', cyclic)
-  assert.throws(() => back(cyclic), /cyclic data/)
+  assert.throws(() => back(cyclic), /nested deeper than 64 levels/)
 })

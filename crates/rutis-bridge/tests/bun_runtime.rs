@@ -440,9 +440,13 @@ async fn a_bun_too_old_for_the_package_is_refused() {
     std::fs::write(copy.join("package.json"), manifest.to_string()).unwrap();
     // A copy, not a link: the runtime reads the manifest next to its code.
     std::fs::create_dir_all(copy.join("src")).unwrap();
+    // Its files, not the test tool's folder (`src/testing`), which `main.ts`
+    // does not import.
     for file in std::fs::read_dir(package().join("src")).unwrap() {
         let file = file.unwrap().path();
-        std::fs::copy(&file, copy.join("src").join(file.file_name().unwrap())).unwrap();
+        if file.is_file() {
+            std::fs::copy(&file, copy.join("src").join(file.file_name().unwrap())).unwrap();
+        }
     }
     // The runtime has no dependencies, so the copy needs no `node_modules`.
     let Err(error) = mount(Launcher::bun(None, &copy, dir.path()), dir.path()).await else {

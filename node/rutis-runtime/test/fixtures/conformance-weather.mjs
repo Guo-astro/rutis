@@ -1,9 +1,8 @@
 // The runtime conformance plugin (rutis_bridge::runtime::testing::runtime), for
 // the Node runtime. What calls on it return is in
 // crates/rutis-bridge/src/runtime/testing/weather.expected.json; the real
-// runtime and the testing tool (@arcships/rutis/testing,
-// node/rutis/test/conformance.test.mjs) are both checked against it. It
-// imports the SDK by path, so it is loaded where it is, not copied.
+// runtime is checked against it. It imports the SDK by path, so it is
+// loaded where it is, not copied.
 import * as rutis from '../../../rutis/src/advanced.mjs'
 import { definePlugin } from '../../../rutis/src/index.mjs'
 

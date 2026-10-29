@@ -55,7 +55,7 @@
 //! the name under its instance's label, so rows of other instances, which
 //! share the process, do not see it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,7 +93,6 @@ use rutis::internal::CtxInternal;
 /// (`py:weather`, `bun:@acme/weather`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
-#[doc(hidden)]
 pub fn is_runtime_name(name: &str) -> bool {
     name.len() >= 2
         && name != "file"
@@ -597,9 +596,6 @@ impl JsRow {
                 Vec::new(),
             ),
         };
-        // What its config isolates stays in the row's scope: a service it
-        // provides there is not rutis's to publish.
-        let private: HashSet<String> = isolate.iter().map(|(name, _)| name.clone()).collect();
         // Shared names inside the row's instances are isolated under the
         // instance's label, unless its config isolates them already.
         for (name, label) in &self.scopes {
@@ -649,21 +645,18 @@ impl JsRow {
             leases.push(lease);
         }
         // The row's services are published from this fiber, so they go when
-        // it does: the declared ones, and those it announces.
+        // it does: the declared ones, and those it announces. A name the row
+        // isolates is published in its isolate (the loader runs the fiber
+        // there), where rows of the same isolate see it.
         let provided = self.provided.clone();
         let announced = self.announced.clone();
-        let projection = row_projection_of(
-            &format!("row {id}"),
-            &self.provides,
-            move |name| {
-                provided
-                    .iter()
-                    .find(|(provided, _)| provided == name)
-                    .map(|(_, key)| key.clone())
-                    .unwrap_or_else(|| announced(name))
-            },
-            move |name| private.contains(name),
-        );
+        let projection = row_projection_of(&format!("row {id}"), &self.provides, move |name| {
+            provided
+                .iter()
+                .find(|(provided, _)| provided == name)
+                .map(|(_, key)| key.clone())
+                .unwrap_or_else(|| announced(name))
+        });
         // A definition one of its services returns belongs to this row.
         projection.owned_by(caller.clone());
         projection.attach(ctx, process.clone())?;

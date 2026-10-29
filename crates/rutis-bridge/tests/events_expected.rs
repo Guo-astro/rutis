@@ -20,7 +20,6 @@ fn the_expectation_file_is_well_formed() {
     let starter = [
         "emit/reaches-all",
         "emit/order-per-listener",
-        "emit/order-across-fast-path",
         "emit/error-isolated",
         "parallel/all-ok",
         "parallel/errors-in-registration-order",
@@ -59,12 +58,11 @@ fn the_expectation_file_is_well_formed() {
         "rutis/service",
         "rutis/runtime",
         "reserved/rutis-emit",
-        "fast-path/local-only",
         "rust/typed-args",
         "rust/unit-event",
         "rust/next-outside-waterfall",
     ];
-    assert_eq!(starter.len(), 45);
+    assert_eq!(starter.len(), 43);
     for case in starter {
         assert!(
             expected.cases.iter().any(|c| c.case == case),
@@ -114,7 +112,7 @@ fn every_case_runs_somewhere() {
     let tools: Vec<&str> = expected.tool_cases.keys().map(String::as_str).collect();
     assert_eq!(
         tools,
-        ["bun", "go", "kotlin", "node-leaf", "swift"],
+        ["go", "kotlin", "swift"],
         "toolCases"
     );
     let counted: std::collections::BTreeMap<String, usize> = tools

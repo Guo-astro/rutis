@@ -7,8 +7,7 @@
 //! A world is where the participants of a case live: the real one is a rutis
 //! host with its runtimes and a second node
 //! (`crates/rutis-loader/tests/events_conformance.rs`); the SDK testing tools
-//! run the same file in one process (`node/rutis/test/events-conformance.test.mjs`,
-//! `go/rutis/rutistest/events_conformance_test.go`).
+//! run the same file (`go/rutis/rutistest/events_conformance_test.go`).
 //!
 //! # The plugin `conformance-events`
 //!
