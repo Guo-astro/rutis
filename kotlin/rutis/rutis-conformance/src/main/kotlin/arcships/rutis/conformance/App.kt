@@ -1,7 +1,9 @@
 // An application hosting the test plugins through RutisApp, on the desktop
 // (crates/rutis-host/tests/kotlin.rs): `java -cp rutis-conformance-all.jar
 // arcships.rutis.conformance.AppKt connect|listen <address> <id>`, the token
-// in RUTIS_TOKEN. It reads commands from stdin (`start`, `stop`) as an
+// in RUTIS_TOKEN. Once connected it installs `probe` and `marker` (its
+// config: the application's id), which rutis sees as `<id>:probe` and
+// `<id>:marker`. It reads commands from stdin (`start`, `stop`) as an
 // application's business layer would call them, and prints each state it
 // goes through on stdout: `state: <state>`.
 package arcships.rutis.conformance
@@ -20,6 +22,7 @@ fun main(args: Array<String>) {
     val (mode, address, id) = args
     val app = RutisApp(
         plugins = listOf(probe, marker),
+        configs = mapOf("marker" to id),
         connect = address.takeIf { mode == "connect" },
         listen = address.takeIf { mode == "listen" },
         id = id,

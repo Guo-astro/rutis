@@ -18,7 +18,6 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{mpsc, watch};
 
-use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
 use crate::session::plugin::Greet;
 use crate::{identity_key, peer_key, Accepting, Identity, Registered};
@@ -253,8 +252,8 @@ impl DynPlugin for LinkPlugin {
                 generation: 0,
             };
             // A listening link registers before its apply returns: once it
-            // is applied, its far end is routed to it, also on a listener an
-            // access point already registered on, where an unknown
+            // is applied, its far end is routed to it, also on a listener another
+            // entry already registered on, where an unknown
             // credential is refused, not retried (#411).
             let task = match self.config.connect.clone() {
                 Connect::Dial(dialer) => tokio::spawn(link.dialing(dialer)),
@@ -291,6 +290,9 @@ struct Link {
     generation: u64,
 }
 
+/// Undoes what was set up on a session.
+type Undo = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
 /// A ready session and what is held for it. Dropping it closes the
 /// session.
 pub(crate) struct Live {
@@ -299,7 +301,7 @@ pub(crate) struct Live {
     operations: Arc<Operations>,
     /// Undoes what was set up on the session (the provided peer). In a
     /// mutex only to make `Live` shareable while its holder awaits.
-    release: Mutex<Option<Release>>,
+    release: Mutex<Option<Undo>>,
     /// tokio's clock, the same as std's unless paused: a test on the
     /// paused clock can check the reset after `stable` (#231).
     since: tokio::time::Instant,
@@ -310,7 +312,7 @@ impl Live {
         session: Connection,
         closer: Arc<dyn Closer>,
         operations: Arc<Operations>,
-        release: Release,
+        release: Undo,
     ) -> Self {
         Self {
             session,
@@ -374,7 +376,7 @@ impl Link {
         self.state.send_replace(LinkState::Ready {
             generation: self.generation,
         });
-        let release: Release = Box::new(move || {
+        let release: Undo = Box::new(move || {
             Box::pin(async move {
                 let _ = provided.dispose().await;
             })
@@ -414,7 +416,7 @@ impl Link {
                         }
                         // Why it ended: for a local runtime, how its
                         // process ended; an identity the far end rejected
-                        // after the greeting (an access point refusing this
+                        // after the greeting (a listener refusing this
                         // end's id) is an authentication failure.
                         let ended = live.session.close_reason();
                         let reason = ended.as_ref().map_or_else(

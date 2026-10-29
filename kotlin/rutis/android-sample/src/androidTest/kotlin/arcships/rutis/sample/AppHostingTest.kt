@@ -26,8 +26,9 @@ import kotlin.test.assertEquals
  * that crates/rutis-host/tests/android.rs runs on the machine (reached
  * through `adb reverse`; the instrumentation arguments `address` and
  * `token`). Two connections of the application, `pixel` and `tablet`, each
- * an instance of rutis's group with its own `device` row and a Python row
- * using it; `stop` closes one instance alone, `start` brings it back.
+ * installing its own plugins; the tablet provides its services under other
+ * names (`device-tablet`, …), as two devices on one rutis must; `stop`
+ * unloads one connection's plugins alone, `start` brings them back.
  *
  * The host test checks rutis's side between the steps and says so with a
  * broadcast (`STEP`, extra `step`), which this test waits for; without the
@@ -74,7 +75,7 @@ class AppHostingTest {
         assumeTrue("run by crates/rutis-host/tests/android.rs", address != null)
         val token = arguments.getString("token") ?: ""
         val pixel = Samples.app(context, address!!, "pixel", token).also(apps::add)
-        val tablet = Samples.app(context, address, "tablet", token).also(apps::add)
+        val tablet = Samples.app(context, address, "tablet", token, suffix = "tablet").also(apps::add)
 
         pixel.start()
         tablet.start()

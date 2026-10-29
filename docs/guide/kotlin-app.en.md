@@ -2,9 +2,9 @@
 
 [中文](kotlin-app.md)
 
-An Android application provides its own capabilities and those of its device (contacts, notifications, what the device is…) as rutis plugins: the plugins are written in Kotlin and compiled into the application; once it connects, rutis's configuration decides which plugins load, with what configuration, and when they unload. Design: [Android app hosting](../design-android-runtime-2026-10-12.en.md) and [app integration](../design-app-integration-2026-10-14.en.md).
+An Android application provides its own capabilities and those of its device (contacts, notifications, what the device is…) as rutis plugins: the plugins are written in Kotlin and compiled into the application; once connected to rutis, the application installs them itself, in order, each with the configuration the application gives, and the services they provide appear on rutis as `<id>:<plugin>`. Design: [Android app hosting](../design-android-runtime-2026-10-12.en.md) and [app integration](../design-app-integration-2026-10-14.en.md).
 
-`kotlin/rutis/android-sample` is a complete sample application (three plugins, `contacts`, `notify` and `device`, and a screen to start and stop): the code below comes from it.
+`kotlin/rutis/android-sample` is a complete sample application (three plugins, `contacts`, `notify` and `device`, `notify`'s configuration given in `RutisApp`, and a screen to start and stop): the code below comes from it.
 
 ## 1. Dependencies
 
@@ -45,7 +45,7 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 ```
 
 - A plugin that needs a `Context` is a function taking it, as above, given the `applicationContext`.
-- `provides` is not needed: the services a plugin provides reach rutis by themselves, and rutis-side rows in the same instance use them as they are.
+- `provides` is not needed: the services a plugin provides reach rutis by themselves, and other rows on rutis use them by name.
 - A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) cannot be made on the main thread: it throws `IllegalStateException`. Call the `suspend` method from a coroutine, or call from another thread. What rutis calls in the application runs on background threads already.
 - A plugin is a value too: the result of `Rutis.define(...)` (a `Plugin`) can be handed to a service as an ordinary argument, and the receiver mounts it elsewhere, one copy per mount. In a `@RutisClient` interface or a `@RutisService` class, the parameter or result type is `Plugin`:
 
@@ -64,9 +64,9 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   }
   ```
 
-  Each copy runs in the application's process; when the application dials in, it mounts only in that connection's instance (or deeper). It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
+  Each copy runs in the application's process. It belongs to this generation of the row that handed it over: when that row unloads, or the application stops or disconnects, its copies end first. Handed to a test double of `RutisTest`, the double receives the `Plugin` itself: `RutisTest.load(it, config)` loads it, and handed back by the double, the plugin gets the original one. The parameter or result must be a `Plugin` (or `Plugin?`) itself: plugin definitions inside a collection or a data class, such as `List<Plugin>`, are not supported; make one call per definition. The rules: [the plugin API](plugin-api.en.md#plugin-definitions).
 
-- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the config is validated against it before it is decoded, and a row whose config does not match fails with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
+- The config: its JSON Schema is derived from the `@Serializable` type (or given as `schema`); the application gives the config in `RutisApp` (§3); before it is decoded, the Schema's defaults are filled in and it is validated, and a plugin whose config does not match fails to load with `config: …` ([plugin API: configuration](plugin-api.en.md#configuration)). A field with a default argument, or nullable, is not required; kotlinx fills the default argument when it decodes (the schema does not show it). A decoder error after the schema passed is `<path> is not a value the plugin accepts`.
 
 ### Objects with methods
 
@@ -103,8 +103,14 @@ class Warmer {
 ## 3. Connecting to rutis
 
 ```kotlin
+@Serializable
+data class NotifyConfig(val channel: String = "rutis")
+
+fun notify(context: Context) = Rutis.define<NotifyConfig>(name = "notify") { ctx, config -> /* … */ }
+
 val rutis = RutisApp(
     plugins = listOf(contacts(context), notify(context), device(context)),
+    configs = mapOf("notify" to NotifyConfig(channel = "rutis sample")),
     connect = "wss://rutis.example.com:7443/rutis",
     id = "kim-pixel",
     token = token,
@@ -114,37 +120,39 @@ rutis.start()
 
 | Parameter | Meaning |
 | --- | --- |
+| `plugins` | The plugins installed once connected, in this order |
+| `configs` | Optional: the plugins' configurations by plugin name, each a value of its configuration type; a plugin without one gets its configuration Schema's defaults (kotlinx's default arguments). A value not of that plugin's configuration type, or a name not among `plugins`, makes the `RutisApp` constructor throw `IllegalArgumentException`: `rutis: plugin notify: … is not its configuration: …`, `rutis: configs names nope, which is not one of the plugins: contacts, device, notify`. Configurations are given in `RutisApp` only: `Rutis.serve`'s plugins get theirs from rutis's rows |
 | `connect` | The address of rutis's access point (recommended: the application is behind NAT, its address changes). A non-loopback address needs `wss://` |
 | `listen` | Waits for rutis to dial in instead, such as `wss://0.0.0.0:7443/rutis` (a device with a fixed address); `wss://` needs `certificate` (the PEM certificate chain and private key). One controller at a time; a newer connection takes over |
-| `id` | This connection's self-reported id (lower-case letters, digits, `-`), its instance's name in rutis; one per device |
-| `token` | The shared token of rutis's side (`RUTIS_TOKEN_<runtime name>`) |
+| `id` | This connection's self-reported id (lower-case letters, digits, `-`): its plugins are registered on rutis as `<id>:<plugin>` (`kim-pixel:contacts`); one per device |
+| `token` | The shared token of rutis's side (`RUTIS_TOKEN_<row id>`) |
 | `trust` | The PEM of CAs trusted besides the system's, for a self-signed access point |
 | `peer` | rutis's `id`, when it should be checked |
 | `shutdownTimeout` | How long plugins' cleanups may take when they unload; 10 seconds by default |
 | `log` | Where the state lines go; `System.err` by default (logcat's `System.err`) |
 
-- `start()` returns at once; once connected, rutis loads the plugins. A lost connection is dialed again (0.5 s doubling up to 30 s; every 30 s after refused credentials; it stops when the protocols are incompatible).
-- `stop()` runs every plugin's cleanups in reverse, then disconnects; `start()` may be called again.
+- `start()` returns at once; once connected (rutis greeted), the application installs the plugins in the order of `plugins`, by the rule plugins follow on rutis: a plugin is installed once every service it `inject`s is there (provided by another plugin of the application, or by rutis), unloaded when one goes, and installed again when it is back. rutis's shareable services all come over to the application; every service the application's plugins provide is reported to rutis (with the plugin's name), and those rutis gave are not reported back. A plugin that fails to load affects only itself: `System.err` gets a line `rutis: plugin <name>: <error>`, and the ones after it are still installed; the line is on the device only, and on rutis's side the plugin just does not appear. A lost connection is dialed again (0.5 s doubling up to 30 s; every 30 s after refused credentials; it stops when the protocols are incompatible); every connection is a new one, and the plugins are installed again on reconnect.
+- `stop()` withdraws the services, runs every plugin's cleanups in reverse, then disconnects; `start()` may be called again.
 - `rutis.state` is a `StateFlow<RutisState>`: `Stopped(reason)`, `Connecting(retrying)` (`retrying` is the last failure), `Connected(address)`. Show it; the SDK decides nothing by it.
 
-On rutis's side ([rutis-host](rutis-host.en.md)): each connection is an instance of an `instanced` group, which lists the plugins to load on the device and the rows using them:
+On rutis's side ([rutis-host](rutis-host.en.md)): one `rutis-host/listen` row waits for applications; neither the devices nor their plugins are listed in rutis.json:
 
 ```json
 {
   "id": "main",
   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
-  "runtimes": { "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }] },
   "rows": [
-    { "id": "phone", "group": true, "instanced": true, "config": [
-      { "id": "contacts", "name": "phone:contacts" },
-      { "id": "device", "name": "phone:device" },
-      { "id": "digest", "name": "py:digest", "inject": ["contacts"] }
-    ] }
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
 
-`RUTIS_TOKEN_PHONE=<token> rutis-host run`. Two devices with plugins of the same name are each in their own instance and do not collide; when one device's application stops (`stop`, the network gone, its process killed), only its instance closes.
+`RUTIS_TOKEN_PHONE=<token> rutis-host run`. Every connection let in is a session, and the plugins the application runs are registered as `<the application's id>:<plugin>` (`kim-pixel:contacts`); the services they provide are globally visible, and other rows `inject` them by name; a newer connection with the same id replaces the older one. The output of `run` starts with the row id: `phone: connected kim-pixel`, `phone: disconnected kim-pixel (connection lost)`. When one device's application stops (`stop`, the network gone, its process killed), only its plugins unload.
+
+When two devices provide same-named services, the kernel rule applies: the later device's plugin is refused, and its `System.err` has the reason rutis gives (`rutis: cannot announce contacts: …`). A plugin in the application that cannot be installed (refused, or failing in its own `apply`) is written only in the device's log in 0.19; the host prints nothing. The 0.18 way, "one `py:digest` in an `instanced` group, one per device", is not supported in 0.19; telling devices apart is the business of the plugins on the devices:
+
+- Put it on the device: write digest as a plugin in the application that `inject`s that application's `contacts` (it is installed once `contacts` is).
+- Let the plugin on the host tell the devices apart: the plugins on the devices provide their services under names with the device's name (the sample's plugins all take their service names from their configurations: `Samples.configs(suffix = "tablet")` gives `contacts-tablet`), and a plugin on the host listens to the framework event `rutis/service` (`{ name, scope, available, row }`, [the plugin API: framework events](plugin-api.en.md#framework-events-rutis)): when `contacts-<device>` appears (`available: true`), it calls the service `loader` in the event handler, `loader.create({id: "digest-<device>", name: "py:digest-one", config: {device}, inject: ["contacts-<device>"]})`, and `loader.remove("digest-<device>")` when it is withdrawn (`available: false`); not in `apply`. The full code: [Swift apps §4](swift-app.en.md#once-per-device).
 
 During development a certificate is not needed: `adb reverse tcp:7443 tcp:7443`, and the application connects to `ws://127.0.0.1:7443/rutis`. Android forbids cleartext traffic by default: allow it for loopback only in the network security config (the sample's `res/xml/network_security_config.xml`).
 
@@ -154,9 +162,9 @@ The permission prompt belongs to the application: the application asks the user 
 
 | Case | What the plugin does | What rutis's side sees |
 | --- | --- | --- |
-| Needed to load (`contacts`) | Checks in `apply`; without it, throws, naming the permission | The row fails to load, the permission named in the error |
+| Needed to load (`contacts`) | Checks in `apply`; without it, throws, naming the permission | The application fails to install this plugin (`rutis: plugin contacts: …`, the permission named in the error), and rutis has no `<id>:contacts`; the other plugins run |
 | Needed by a call (`notify` posting) | Checks in the method; without it, throws with a `code` and `data` | The caller gets the error: `code` `permission-denied`, `data.permission` the permission |
-| The user revokes a runtime permission in settings | — | The system kills the application's process → the connection drops → the instance closes; after the application restarts and reconnects, its rows load again as configured |
+| The user revokes a runtime permission in settings | — | The system kills the application's process → the connection drops → its plugins unload; after the application restarts and reconnects, they are installed again |
 
 The sample's error type (plain Kotlin properties, which cross with it):
 
@@ -168,7 +176,7 @@ class PermissionDenied(val permission: String) :
 }
 ```
 
-When the user grants the permission later, connect again (`stop()`, then `start()`): rutis loads the plugins that failed before. The sample does so in `onRequestPermissionsResult`.
+When the user grants the permission later, connect again (`stop()`, then `start()`): the application installs the plugins that failed before again. The sample does so in `onRequestPermissionsResult`.
 
 ## 5. When to start and stop (the business layer)
 
@@ -195,7 +203,7 @@ Battery optimization:
 
 - Doze and app standby defer the application's network access: the connection drops and is dialed again by the backoff. To stay connected, ask the user to exempt the application from battery optimization: open `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` and let them choose; asking directly with `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` needs the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission, which Google Play allows few categories of applications.
 - Some vendors' systems add background restrictions of their own (auto-start, background activity switches): guide the user to allow the application in the system settings.
-- Whatever happens, rutis only sees a service there or not: when the connection drops, the instance closes and its users stop; after reconnecting, they come back.
+- Whatever happens, rutis only sees a service there or not: when the connection drops, the application's plugins unload and their users stop; after reconnecting, they come back.
 
 ## 6. Threads and lifecycle details
 
@@ -206,7 +214,7 @@ Battery optimization:
 ## 7. Testing
 
 - Unit tests of a plugin use the testing tool `arcships.rutis.testing.RutisTest` (see kotlin/README), on the JVM or a device. On what it loads, `loaded.on(name) { args -> ... }` listens as the host does, at the root scope: the plugin's emissions and the test's own reach it, and it returns the function that stops it.
-- The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each an instance; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
+- The repository's device tests (an emulator, run locally: [CI](../ci.en.md) §12): `./gradlew :rutis:connectedDebugAndroidTest` (the SDK's main-thread rule) and `cargo test -p rutis-host --features android --test android` (the sample's release build, through R8, dialing a rutis-host, stopped and started; two connections each installing their plugins; the permission prompt being the application's, a denial failing `contacts` at load and reaching `notify`'s caller as `permission-denied`, everything back once granted). `tools/android-emulator.sh start` boots an emulator as CI does.
 
 ## 8. Acceptance on real devices
 
@@ -214,11 +222,11 @@ The flows above are checked automatically on an emulator. Walk through these by 
 
 1. A computer runs rutis-host configured as in §3, listening on `wss://` with a real certificate (or a self-signed one and the application's `trust`); two phones with the sample application, on the same Wi-Fi or on mobile data.
 2. Give each phone its own id (such as `pixel`, `galaxy`) and the token, press Start: each shows this application's ("rutis sample") prompts for contacts and notifications.
-3. Allow on one, deny on the other. On the first, the `contacts` row runs in its instance and the rows using it (such as `py:digest`) get this phone's contacts. On the other, rutis-host reports the row failed with `android.permission.READ_CONTACTS` in the error, and a row calling `notify.post` gets `permission-denied`.
+3. Allow on one, deny on the other. The first installs `contacts` (`<id>:contacts` appears on rutis), and the rows using it (such as `py:digest`) get this phone's contacts. On the other, the application's logcat has `rutis: plugin contacts: …` with `android.permission.READ_CONTACTS` in the error, rutis has no `contacts` of it, and a row calling `notify.post` gets `permission-denied`.
 4. Grant the permission in the second phone's settings, then press Stop and Start in the application (or restart it): its `contacts` row comes back.
-5. Press Stop on one phone: only its instance closes, the other is untouched; Start brings it back.
-6. Turn one phone's network off for a minute and on again: its instance closes, and it reconnects and loads its rows again by itself.
-7. Revoke a granted permission in settings: the system kills the application's process and its instance closes; opened and started again, it loads as §4 says.
+5. Press Stop on one phone: only its plugins unload, the other is untouched; Start brings it back.
+6. Turn one phone's network off for a minute and on again: its plugins unload, and it reconnects and installs them again by itself.
+7. Revoke a granted permission in settings: the system kills the application's process and its plugins unload; opened and started again, it installs them as §4 says.
 8. Repeat steps 2 and 3 with the release build (R8): it behaves as the debug build does.
 
 ## 9. Known limitations

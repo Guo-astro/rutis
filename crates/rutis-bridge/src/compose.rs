@@ -13,7 +13,6 @@ use rutis::host::{BoxFuture, DynPlugin, Effect, FiberView};
 use rutis::{Ctx, Error};
 
 use crate::events::LinkEventsPlugin;
-use crate::runtime::RuntimeAccessPlugin;
 use crate::{
     ExportPlugin, HostPlugin, ImportPlugin, LinkConfig, LinkPlugin, LinkState, PluginCatalog,
     ServiceKeys,
@@ -38,9 +37,6 @@ pub struct Features {
     /// How export and import map service names to keys; by default
     /// `host_key(name)`.
     pub services: Option<ServiceKeys>,
-    /// The peer is the runtime instance of this name
-    /// (`RuntimeSession#<name>`).
-    pub runtime: Option<String>,
 }
 
 impl Features {
@@ -66,7 +62,6 @@ struct Children {
     import: Option<FiberView>,
     events: Option<FiberView>,
     host: Option<FiberView>,
-    runtime: Option<FiberView>,
 }
 
 /// The composition plugin.
@@ -151,10 +146,6 @@ fn spawn(ctx: &Ctx, link: &LinkConfig, features: &Features, part: Part) -> Optio
             };
             ctx.plugin(host)
         }),
-        Part::Runtime => features
-            .runtime
-            .as_deref()
-            .map(|name| ctx.plugin(RuntimeAccessPlugin::new(peer, name))),
     }
 }
 
@@ -164,16 +155,9 @@ enum Part {
     Import,
     Events,
     Host,
-    Runtime,
 }
 
-const PARTS: [Part; 5] = [
-    Part::Export,
-    Part::Import,
-    Part::Events,
-    Part::Host,
-    Part::Runtime,
-];
+const PARTS: [Part; 4] = [Part::Export, Part::Import, Part::Events, Part::Host];
 
 impl Children {
     fn slot(&mut self, part: Part) -> &mut Option<FiberView> {
@@ -182,7 +166,6 @@ impl Children {
             Part::Import => &mut self.import,
             Part::Events => &mut self.events,
             Part::Host => &mut self.host,
-            Part::Runtime => &mut self.runtime,
         }
     }
 }
@@ -197,7 +180,6 @@ fn changed(old: &Features, new: &Features, part: Part) -> bool {
             (None, None) => false,
             _ => true,
         },
-        Part::Runtime => old.runtime != new.runtime,
     }
 }
 

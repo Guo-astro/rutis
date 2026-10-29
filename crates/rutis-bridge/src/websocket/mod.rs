@@ -114,8 +114,7 @@ pub fn listen(config: &ListenerConfig, limits: &Limits, admit: Admit) -> Result<
 
 /// Let through the upgrades `registrations` routes on `listener`: to the
 /// registration of the far end the credentials verify, handed over if it
-/// is still the same one. Transitional (#695 S2): goes with links and
-/// access points.
+/// is still the same one. Transitional (#695 S2): goes with links.
 #[doc(hidden)]
 pub fn admit_registered(registrations: Registrations, listener: &str) -> Admit {
     let listener = listener.to_owned();

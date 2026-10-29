@@ -1,8 +1,6 @@
 //! Plugins of other languages as loader rows, each language in its own
 //! runtime process: one on this machine (`rutis_bridge::runtime::LocalRuntime`,
-//! the process started by the local transport and its session over a link),
-//! or one elsewhere ([`RuntimePlugin::remote`], its session over a link to
-//! it). Either way the rows are the same.
+//! the process started by the local transport and its session over a link).
 //!
 //! The runtime is a rutis plugin the application mounts first, then the
 //! loader, then a [`RuntimeRowsPlugin`] per runtime; every row depends on the
@@ -35,10 +33,6 @@
 //!   `BinaryRuntimes<Swift>`): a
 //!   row named `swift:<plugin>` runs the plugin in the Swift binary that has
 //!   it, as Go does.
-
-//! - **Runtimes that dial in** ([`RuntimeInstances`]): each connection an
-//!   access point admits is an instance of an `instanced` group, whose rows
-//!   `<runtime>:<plugin>` run on that connection.
 //!
 //! Services cross between the rows and the rest of rutis by name, as
 //! `dyn HostDispatch` at `host_key(name)`:
@@ -86,7 +80,6 @@ use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
 /// Runtimes started from a binary that carries its own manifest.
 #[cfg(feature = "binary")]
 pub mod binary;
-mod connections;
 mod discover;
 /// Go runtimes: binaries built with the Go SDK.
 #[cfg(feature = "go")]
@@ -96,8 +89,6 @@ mod sessions;
 /// Swift runtimes: binaries built with the Swift SDK.
 #[cfg(feature = "swift")]
 pub mod swift;
-pub(crate) use connections::{claimed, claimed_names};
-pub use connections::{AcceptInstances, RuntimeConnection, RuntimeInstances};
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
 pub use sessions::{SessionResolver, SessionRows};
 
@@ -125,14 +116,6 @@ impl Naming {
     /// runtime's.
     fn entry(&self, runtime: &RuntimeHandle, name: &str) -> Option<PathBuf> {
         match self {
-            // A remote runtime finds its plugins where it runs: the name
-            // goes as it is, and it answers `rows.schema` for it. Files and
-            // absolute paths are this machine's, so they are refused.
-            #[cfg(feature = "node")]
-            Naming::Npm if runtime.is_remote() => {
-                let local = name.starts_with("file:") || Path::new(name).is_absolute();
-                (!local && !runtime_prefixed(name)).then(|| PathBuf::from(name))
-            }
             #[cfg(feature = "node")]
             Naming::Npm => resolve_entry(runtime.anchor(), name),
             Naming::Modules { prefix } => {
@@ -167,7 +150,7 @@ impl Naming {
 }
 
 /// Whether `name` may name a runtime, and so prefix its rows
-/// (`py:weather`, `bun:@acme/weather`, `<remote>:<module>`): two or more of
+/// (`py:weather`, `bun:@acme/weather`): two or more of
 /// `a-z`, `0-9` and `-`, and not `file`, so that neither a `file:` URL nor a
 /// one-letter Windows drive reads as a runtime's row.
 #[doc(hidden)]
@@ -177,14 +160,6 @@ pub fn is_runtime_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// Whether `name` names a runtime before a colon: another runtime's row,
-/// never an npm name, which has no colon.
-#[cfg(feature = "node")]
-fn runtime_prefixed(name: &str) -> bool {
-    name.split_once(':')
-        .is_some_and(|(prefix, _)| is_runtime_name(prefix))
 }
 
 pub struct RuntimeResolver {
@@ -198,10 +173,6 @@ pub struct RuntimeResolver {
     /// the set only once it is resolved with the runtime, so a refresh that
     /// is cut short is redone by the next one.
     offline: Mutex<HashSet<String>>,
-    /// A remote runtime's names, each with the session that described it:
-    /// nothing says when a plugin over there changed, so a name described
-    /// by an earlier session is resolved again with the current one (#701).
-    described: Mutex<HashMap<String, String>>,
 }
 
 impl RuntimeResolver {
@@ -219,7 +190,6 @@ impl RuntimeResolver {
             catalog: ServiceCatalog::default(),
             resolved: Mutex::new(HashMap::new()),
             offline: Mutex::new(HashSet::new()),
-            described: Mutex::new(HashMap::new()),
         }
     }
 
@@ -283,16 +253,6 @@ impl RuntimeResolver {
     /// dropped, so the next resolution asks the runtime again.
     pub(crate) fn take_stale(&self) -> HashSet<String> {
         let mut stale = self.offline.lock().unwrap();
-        // A remote runtime that runs again (a new session) may run other
-        // code: what an earlier session described is resolved again (#701).
-        if let RuntimeState::Ready(process) = self.runtime.state() {
-            let session = process.connection().tag();
-            for (name, by) in self.described.lock().unwrap().iter() {
-                if by != session {
-                    stale.insert(name.clone());
-                }
-            }
-        }
         self.resolved.lock().unwrap().retain(|name, found| {
             let current = Path::new(found.meta["entry"].as_str().unwrap_or_default());
             let recorded = found.meta.get("version").filter(|v| !v.is_null()).cloned();
@@ -321,8 +281,7 @@ impl Resolver for RuntimeResolver {
             // A runtime that loads by module name is asked every time: a
             // reload must see the module's current declarations, and there
             // is no package version to tell that it changed.
-            // Nothing here says when a remote runtime's plugin changed.
-            let caches = self.naming.caches() && !self.runtime.is_remote();
+            let caches = self.naming.caches();
             if caches {
                 if let Some(found) = self.resolved.lock().unwrap().get(name) {
                     return Ok(found.clone());
@@ -374,45 +333,23 @@ impl Resolver for RuntimeResolver {
                     ))),
                 }));
             };
-            let described = match self.runtime.is_remote() {
-                // As for a runtime that comes in many times: a plugin the
-                // runtime does not contain fails the row, unavailable, and
-                // is read again when the runtime runs again.
-                true => match discover::describe(&process, &entry).await {
-                    discover::Described::Found(found) => Ok(found),
-                    discover::Described::Missing => {
-                        self.offline.lock().unwrap().remove(name);
-                        self.described
-                            .lock()
-                            .unwrap()
-                            .insert(name.to_owned(), process.connection().tag().to_owned());
-                        let plugin = entry.to_string_lossy();
-                        let why = discover::missing(self.runtime.name(), &plugin);
-                        return Ok(Arc::new(unavailable_resolved(name, &entry, why)));
-                    }
-                    discover::Described::Failed(message) => Err(LoaderError::Resolve {
-                        name: name.to_owned(),
-                        message,
-                    }),
-                },
-                false => process
-                    .describe_row(&entry)
-                    .await
-                    .map_err(|error| match error {
-                        // The runtime looked and found no such plugin.
-                        rutis_bridge::session::Error::Remote { name: kind, .. }
-                            if kind == "NotFound" =>
-                        {
-                            LoaderError::NotFound {
-                                name: name.to_owned(),
-                            }
-                        }
-                        error => LoaderError::Resolve {
+            let described = process
+                .describe_row(&entry)
+                .await
+                .map_err(|error| match error {
+                    // The runtime looked and found no such plugin.
+                    rutis_bridge::session::Error::Remote { name: kind, .. }
+                        if kind == "NotFound" =>
+                    {
+                        LoaderError::NotFound {
                             name: name.to_owned(),
-                            message: error.to_string(),
-                        },
-                    }),
-            };
+                        }
+                    }
+                    error => LoaderError::Resolve {
+                        name: name.to_owned(),
+                        message: error.to_string(),
+                    },
+                });
             if described.is_err() && !marked_before {
                 // Resolved with the runtime, if to an error: not again,
                 // unless it was waiting to be (a restart may help).
@@ -430,12 +367,6 @@ impl Resolver for RuntimeResolver {
                 .cloned()
                 .collect();
             self.offline.lock().unwrap().remove(name);
-            if self.runtime.is_remote() {
-                self.described
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_owned(), process.connection().tag().to_owned());
-            }
             let resolved = Arc::new(leaf_resolved(
                 name,
                 self.runtime.name(),
@@ -448,9 +379,9 @@ impl Resolver for RuntimeResolver {
                     "entry": entry,
                     // The package's version where this side can read it,
                     // else what the runtime reported.
-                    "version": (!self.runtime.is_remote())
-                        .then(|| self.naming.version(&entry))
-                        .flatten()
+                    "version": self
+                        .naming
+                        .version(&entry)
                         .or_else(|| described.version.clone().map(Value::String)),
                     "inject": described.inject,
                     "provides": described.provides,
@@ -642,8 +573,7 @@ pub(crate) enum RowRuntime {
     /// The runtime named so, through its [`RuntimeRows`]: rows wait for
     /// it and stop when it goes.
     Named(String),
-    /// One runtime connection's process ([`RuntimeInstances`]): the row
-    /// runs in that connection's instance, which ends with it.
+    /// One process, for a copy of a plugin definition it handed over.
     Connection(Arc<Process>),
     /// The session of the connection row so named, through its
     /// [`SessionRows`]: rows wait for it and stop when it goes.
@@ -1360,29 +1290,6 @@ mod stale_tests {
         refusals.arm(instance);
         refusals.forget(instance);
         assert_eq!(taken(&refusals), None);
-    }
-
-    /// A remote Node runtime takes npm names, not another runtime's rows.
-    #[cfg(feature = "node")]
-    #[test]
-    fn runtime_prefixes_are_not_npm_names() {
-        for name in [
-            "py:weather",
-            "bun:@acme/weather",
-            "bun:./plugin.ts",
-            "gpu-1:model",
-        ] {
-            assert!(runtime_prefixed(name), "{name}");
-        }
-        for name in [
-            "@acme/weather",
-            "weather/sub",
-            "file:///p.mjs",
-            "C:\\p.mjs",
-            "./a:b.ts",
-        ] {
-            assert!(!runtime_prefixed(name), "{name}");
-        }
     }
 
     fn cached(entry: &Path, version: Option<Value>) -> Arc<Resolved> {

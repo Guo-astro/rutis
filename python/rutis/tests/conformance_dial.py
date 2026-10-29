@@ -1,4 +1,4 @@
-"""The dial conformance plugin (crates/rutis-bridge/tests/dial_conformance.rs),
+"""The dial conformance plugin (crates/rutis-host/tests/dial_conformance.rs),
 for the Python runtime: it says on stderr when its row loads and unloads,
 with its config, so the suite sees each session's rows come and go."""
 import sys

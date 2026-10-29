@@ -4,11 +4,7 @@
     "node": {},
     "py": { "python": ".venv/bin/python" },
     "bun": { "project": "edge" },
-    "go": { "binaries": ["bin/netkit", "bin/dns"], "start": "eager" },
-    "remote": [
-      { "name": "gpu", "language": "python" },
-      { "name": "office-node", "language": "node" }
-    ]
+    "go": { "binaries": ["bin/netkit", "bin/dns"], "start": "eager" }
   },
   "listen": [
     { "name": "public", "address": "[::]:7443", "cert": "../tls/server.pem", "key": "../tls/server.key" }
@@ -29,9 +25,9 @@
     { "id": "per-session", "group": true, "instanced": true, "config": [
       { "id": "session-state", "name": "session-state-plugin" }
     ] },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"], "runtime": "office-node" } },
+    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
     { "id": "branch", "name": "rutis-bridge/peer", "config": { "peer": "branch", "listen": "public", "identity": "edge" } },
-    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis", "runtime": "gpu" } },
+    { "id": "gpu", "name": "rutis-bridge/peer", "config": { "peer": "gpu", "dial": "wss://gpu.example.com/rutis" } },
     { "id": "embedder", "name": "gpu:embedder" },
     { "id": "clock", "name": "peer:office/clock" }
   ]

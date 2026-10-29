@@ -2,9 +2,9 @@
 
 [English](kotlin-app.en.md)
 
-Android 应用把自己和所在设备的能力（通讯录、通知、设备信息……）作为 rutis 插件提供：插件用 Kotlin 写、编进应用，应用连上 rutis 后，装哪些插件、用什么配置、何时卸载都由 rutis 的配置决定。设计见 [Android 应用托管](../design-android-runtime-2026-10-12.md) 与 [应用接入](../design-app-integration-2026-10-14.md)。
+Android 应用把自己和所在设备的能力（通讯录、通知、设备信息……）作为 rutis 插件提供：插件用 Kotlin 写、编进应用，应用连上 rutis 后自己按顺序装上它们，各带应用给的配置；它们提供的服务在 rutis 上以 `<id>:<插件>` 出现。设计见 [Android 应用托管](../design-android-runtime-2026-10-12.md) 与 [应用接入](../design-app-integration-2026-10-14.md)。
 
-`kotlin/rutis/android-sample` 是一个完整的示例应用（`contacts`、`notify`、`device` 三个插件，一个开始 / 停止的界面），下文的代码都取自它。
+`kotlin/rutis/android-sample` 是一个完整的示例应用（`contacts`、`notify`、`device` 三个插件，`notify` 的配置在 `RutisApp` 里给出，一个开始 / 停止的界面），下文的代码都取自它。
 
 ## 1. 依赖
 
@@ -45,7 +45,7 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
 ```
 
 - 插件要 `Context` 时，像上面这样把插件写成一个接 `Context` 的函数，传 `applicationContext`。
-- `provides` 不用写：提供的服务自动让 rutis 知道，rutis 一侧同一实例里的行照样能用。
+- `provides` 不用写：提供的服务自动让 rutis 知道，rutis 上别的行按名字使用。
 - 等待 rutis 的调用（`@RutisClient` 接口里的非 `suspend` 方法）不能在主线程上调用，会抛 `IllegalStateException`：在协程里用 `suspend` 方法，或换个线程。rutis 调进应用的方法本来就在后台线程上运行。
 - 插件本身也是一个值：`Rutis.define(...)` 的结果（`Plugin`）可以照常作为参数交给一个服务，收的一方在别处挂它，每挂一次是一份。`@RutisClient` 接口、`@RutisService` 类的参数或返回值类型写 `Plugin`：
 
@@ -64,9 +64,9 @@ fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { c
   }
   ```
 
-  每一份在应用的进程里运行；应用连进来时，它只能挂在这个连接所在的实例里（或更里面）。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`；替身交回时插件拿到的也是原来那个。参数或返回值要直接是 `Plugin`（或 `Plugin?`），`List<Plugin>` 这类放在集合或数据类里的插件定义不支持，要交几个就调用几次。规则见 [插件 API](plugin-api.md#插件定义)。
+  每一份在应用的进程里运行。它属于交出它的那一行的这一代：这一行卸载、应用 `stop()` 或断开时，副本先结束。交给 `RutisTest` 的测试替身时，替身收到的就是这个 `Plugin` 本身，可以直接 `RutisTest.load(it, config)`；替身交回时插件拿到的也是原来那个。参数或返回值要直接是 `Plugin`（或 `Plugin?`），`List<Plugin>` 这类放在集合或数据类里的插件定义不支持，要交几个就调用几次。规则见 [插件 API](plugin-api.md#插件定义)。
 
-- 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；解码之前先按它校验，配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。有默认参数或可空的字段不必填；默认参数由 kotlinx 解码时补上（Schema 里看不到）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
+- 配置：JSON Schema 由 `@Serializable` 类型生成（或用 `schema` 给出）；配置由应用在 `RutisApp` 里给出（§3），解码之前先按 Schema 补默认值、校验，配置不合格的插件以 `config: …` 装载失败（[插件 API：配置](plugin-api.md#配置)）。有默认参数或可空的字段不必填；默认参数由 kotlinx 解码时补上（Schema 里看不到）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
 
 ### 带方法的对象
 
@@ -103,8 +103,14 @@ class Warmer {
 ## 3. 接入 rutis
 
 ```kotlin
+@Serializable
+data class NotifyConfig(val channel: String = "rutis")
+
+fun notify(context: Context) = Rutis.define<NotifyConfig>(name = "notify") { ctx, config -> /* … */ }
+
 val rutis = RutisApp(
     plugins = listOf(contacts(context), notify(context), device(context)),
+    configs = mapOf("notify" to NotifyConfig(channel = "rutis sample")),
     connect = "wss://rutis.example.com:7443/rutis",
     id = "kim-pixel",
     token = token,
@@ -114,37 +120,39 @@ rutis.start()
 
 | 参数 | 含义 |
 | --- | --- |
+| `plugins` | 连上后按顺序装上的插件 |
+| `configs` | 可选：插件的配置，按插件名给出，值是它的配置类型；没给的插件用配置 Schema 的默认值（kotlinx 的默认参数）。值不是那个插件的配置类型、或名字不是 `plugins` 里的插件时，构造 `RutisApp` 就抛 `IllegalArgumentException`：`rutis: plugin notify: … is not its configuration: …`、`rutis: configs names nope, which is not one of the plugins: contacts, device, notify`。配置只在 `RutisApp` 里给：`Rutis.serve` 的插件由 rutis 的行给配置 |
 | `connect` | rutis 接入点的地址（推荐：应用在 NAT 后、地址会变）。非回环只能 `wss://` |
 | `listen` | 改为等 rutis 拨入，如 `wss://0.0.0.0:7443/rutis`（地址固定的设备）；`wss://` 要给 `certificate`（PEM 证书链与私钥）。一次一个控制方，新连接接管旧的 |
-| `id` | 这条连接自报的 id（小写字母、数字、`-`），即它在 rutis 里的实例名；每台设备一个 |
-| `token` | rutis 一侧的共享 token（`RUTIS_TOKEN_<运行时名>`） |
+| `id` | 这条连接自报的 id（小写字母、数字、`-`）：它的插件在 rutis 上注册为 `<id>:<插件>`（`kim-pixel:contacts`）；每台设备一个 |
+| `token` | rutis 一侧的共享 token（`RUTIS_TOKEN_<行 id>`） |
 | `trust` | 系统之外额外信任的 CA（PEM），用于自签证书的接入点 |
 | `peer` | rutis 的 `id`，要核对时给 |
 | `shutdownTimeout` | 插件卸载时清理的期限，默认 10 秒 |
 | `log` | 状态行的去处，默认 `System.err`（logcat 的 `System.err`） |
 
-- `start()` 立即返回，连上后由 rutis 装载插件；断线自动重连（0.5 秒起翻倍到 30 秒；token 或 id 被拒每 30 秒；协议不兼容则停下）。
-- `stop()` 逆序清理全部插件，然后断开；之后可以再 `start()`。
+- `start()` 立即返回；连上（rutis 问候）后应用按 `plugins` 的顺序装上插件，与 rutis 上的插件规则相同：一个插件 `inject` 的服务都在时才装上（同一个应用里别的插件提供的，或者 rutis 提供的），其中一个撤走时卸载，回来后再装。rutis 上可共享的服务都会到应用这边；应用的插件提供的服务都报给 rutis（带插件名），rutis 给的不报回去。一个插件装载失败只影响它自己：`System.err` 收到 `rutis: plugin <名>: <错误>` 一行，后面的照装；这一行只在设备上，rutis 一侧看到的是这个插件没有出现。断线自动重连（0.5 秒起翻倍到 30 秒；token 或 id 被拒每 30 秒；协议不兼容则停下）；每次连接都是新的，重连后重新装上插件。
+- `stop()` 撤回服务、逆序清理全部插件，然后断开；之后可以再 `start()`。
 - `rutis.state` 是 `StateFlow<RutisState>`：`Stopped(reason)`、`Connecting(retrying)`（`retrying` 是上一次失败的原因）、`Connected(address)`。拿来显示即可，SDK 不据此做任何决定。
 
-rutis 一侧（[rutis-host](rutis-host.md#连进来的运行时)）：每条连接是 `instanced` 分组的一个实例，分组里写这台设备要装的插件，以及使用它们的其他行：
+rutis 一侧（[rutis-host](rutis-host.md)）：一行 `rutis-host/listen` 等应用连进来，设备和它们的插件都不写在 rutis.json 里：
 
 ```json
 {
   "id": "main",
   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
-  "runtimes": { "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }] },
   "rows": [
-    { "id": "phone", "group": true, "instanced": true, "config": [
-      { "id": "contacts", "name": "phone:contacts" },
-      { "id": "device", "name": "phone:device" },
-      { "id": "digest", "name": "py:digest", "inject": ["contacts"] }
-    ] }
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
 
-`RUTIS_TOKEN_PHONE=<token> rutis-host run`。两台设备带同名插件时各在自己的实例里，互不冲突；某台设备的应用停下（`stop`、断网、进程被杀）时只关闭它的实例。
+`RUTIS_TOKEN_PHONE=<token> rutis-host run`。每条通过的连接是一个会话，应用装着的插件注册为 `<应用的 id>:<插件>`（`kim-pixel:contacts`），它们提供的服务全局可见，别的行按名字 `inject`；同一 id 的新连接顶替旧的。`run` 的输出以行 id 开头：`phone: connected kim-pixel`、`phone: disconnected kim-pixel (connection lost)`。某台设备的应用停下（`stop`、断网、进程被杀）时只卸载它的插件。
+
+两台设备提供同名服务时按内核规则：后来的那台的插件被拒绝，它的 `System.err` 写着 rutis 给的原因（`rutis: cannot announce contacts: …`）。应用里的插件装不上（被拒绝，或自己的 `apply` 失败）时，0.19 只在设备的日志里写出，宿主上不打印。0.18 的"`instanced` 分组里一个 `py:digest`，每台设备一份"在 0.19 不再支持，按设备区分是设备上插件自己的事：
+
+- 把它放到设备上：digest 写成应用里的一个插件，`inject` 同一个应用的 `contacts`（`contacts` 装上后它才装上）。
+- 由宿主上的插件自己按设备区分：设备上的插件以带设备名的名字提供服务（示例应用的插件都由配置给出服务名：`Samples.configs(suffix = "tablet")` 给出 `contacts-tablet`），宿主上的一个插件监听框架事件 `rutis/service`（`{ name, scope, available, row }`，[插件 API：框架事件](plugin-api.md#框架事件-rutis)）：`contacts-<设备>` 出现（`available: true`）时在事件处理里调用服务 `loader`：`loader.create({id: "digest-<设备>", name: "py:digest-one", config: {device}, inject: ["contacts-<设备>"]})`，撤走（`available: false`）时 `loader.remove("digest-<设备>")`；不在 `apply` 里调用。完整写法见 [Swift 应用 §4](swift-app.md#每台设备各算一份)。
 
 开发时可以不用证书：`adb reverse tcp:7443 tcp:7443`，应用连 `ws://127.0.0.1:7443/rutis`。Android 默认禁止明文流量，在网络安全配置里只对回环放行（示例应用的 `res/xml/network_security_config.xml`）。
 
@@ -154,9 +162,9 @@ rutis 一侧（[rutis-host](rutis-host.md#连进来的运行时)）：每条连�
 
 | 情况 | 插件怎么做 | rutis 一侧看到 |
 | --- | --- | --- |
-| 装载时就需要（`contacts`） | `apply` 里检查，没有就抛错，说明哪个权限 | 这一行装载失败，错误里有权限名 |
+| 装载时就需要（`contacts`） | `apply` 里检查，没有就抛错，说明哪个权限 | 应用装这个插件失败（`rutis: plugin contacts: …`，错误里有权限名），rutis 上没有 `<id>:contacts`；其余插件照常 |
 | 调用时才需要（`notify` 发通知） | 方法里检查，没有就抛错，带 `code` 与 `data` | 调用方收到错误：`code` 为 `permission-denied`，`data.permission` 为权限名 |
-| 用户在设置里撤销运行时权限 | — | 系统杀掉应用进程 → 连接断开 → 实例关闭；应用重启、重连后按配置重新装载 |
+| 用户在设置里撤销运行时权限 | — | 系统杀掉应用进程 → 连接断开 → 它的插件卸载；应用重启、重连后重新装上 |
 
 示例应用的错误类型（普通 Kotlin 属性，跨进程时带上）：
 
@@ -168,7 +176,7 @@ class PermissionDenied(val permission: String) :
 }
 ```
 
-用户后来授予了权限：重新连接（`stop()` 再 `start()`），rutis 就会重新装载之前失败的插件。示例应用在 `onRequestPermissionsResult` 里这样做。
+用户后来授予了权限：重新连接（`stop()` 再 `start()`），应用就会重新装上之前失败的插件。示例应用在 `onRequestPermissionsResult` 里这样做。
 
 ## 5. 何时 start / stop（业务层）
 
@@ -195,7 +203,7 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 - Doze 和应用待机会推迟应用的网络访问，连接会断，按退避重连。要常驻时，请用户把应用加入电池优化白名单：打开 `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` 让用户自己选；直接请求 `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 需要 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 权限，Google Play 只允许少数类别的应用这样做。
 - 一些厂商系统另有后台限制（自启动、后台运行开关），需要引导用户在系统设置里放行。
-- 不管哪种情况，rutis 只看到服务“在”或“不在”：断开时实例关闭，使用者停下，重连后恢复。
+- 不管哪种情况，rutis 只看到服务“在”或“不在”：断开时应用的插件卸载，使用者停下，重连后恢复。
 
 ## 6. 线程与生命周期细节
 
@@ -206,7 +214,7 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 ## 7. 测试
 
 - 插件的单元测试用测试工具 `arcships.rutis.testing.RutisTest`（见 kotlin/README），在 JVM 或设备上都能跑。装载出来的 `loaded.on(name) { args -> ... }` 像宿主一样在根作用域监听：插件发出的、测试自己发出的都送到，返回撤销函数。
-- 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各成实例；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
+- 仓库里的设备测试（模拟器，在本地跑，见 [CI](../ci.md) §12）：`./gradlew :rutis:connectedDebugAndroidTest`（SDK 的主线程规则），`cargo test -p rutis-host --features android --test android`（示例应用的 release 构建经 R8 拨出到 rutis-host、启停；两条连接各自装上插件；权限提示指向应用、拒绝后 `contacts` 装载失败、`notify` 的调用方收到 `permission-denied`，授权后恢复）。`tools/android-emulator.sh start` 像 CI 那样起一个模拟器。
 
 ## 8. 真机验收清单
 
@@ -214,11 +222,11 @@ SDK 只连接；前后台、保活、唤醒是应用自己的事。常见做法�
 
 1. 一台电脑运行 rutis-host，配置如 §3，用真实证书（或自签证书 + 应用的 `trust`）监听 `wss://`；两台手机装示例应用，连同一个 Wi-Fi 或移动网络。
 2. 两台手机各填自己的 id（如 `pixel`、`galaxy`）与 token，按“开始”：两台各弹出本应用（“rutis sample”）的通讯录、通知授权提示。
-3. 一台允许、一台拒绝：允许的那台，`contacts` 行在它的实例里运行，使用它的行（如 `py:digest`）拿到本机通讯录；拒绝的那台，rutis-host 报这一行失败、错误里写着 `android.permission.READ_CONTACTS`，调用 `notify.post` 的行收到 `permission-denied`。
+3. 一台允许、一台拒绝：允许的那台装上 `contacts`（rutis 上出现 `<id>:contacts`），使用它的行（如 `py:digest`）拿到本机通讯录；拒绝的那台，应用的 logcat 里是 `rutis: plugin contacts: …`、错误里写着 `android.permission.READ_CONTACTS`，rutis 上没有它的 `contacts`，调用 `notify.post` 的行收到 `permission-denied`。
 4. 在拒绝的那台的系统设置里授予权限，回到应用按“停止”再“开始”（或重启应用）：它的 `contacts` 行恢复。
-5. 一台按“停止”：只有它的实例关闭，另一台不受影响；再“开始”恢复。
-6. 关掉一台的网络 1 分钟再打开：实例关闭，联网后自动重连、行重新装载。
-7. 在设置里撤销已授予的权限：应用进程被系统杀掉，实例关闭；重新打开应用并开始后按 §4 的规则重新装载。
+5. 一台按“停止”：只有它的插件卸载，另一台不受影响；再“开始”恢复。
+6. 关掉一台的网络 1 分钟再打开：它的插件卸载，联网后自动重连、重新装上插件。
+7. 在设置里撤销已授予的权限：应用进程被系统杀掉，它的插件卸载；重新打开应用并开始后按 §4 的规则重新装上。
 8. 用 release 构建（R8）重复第 2、3 步，确认行为与 debug 构建相同。
 
 ## 9. 已知限制

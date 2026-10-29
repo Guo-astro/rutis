@@ -135,48 +135,19 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
 }
 
 // guarantee: events/framework (rutis/runtime)
+#[cfg(all(feature = "node", unix))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_announces_running_and_down() {
     use std::sync::{Arc, Mutex};
 
-    use rutis_bridge::channel::PeerId;
     use rutis_bridge::events::{RuntimeEvent, RuntimeEventState};
-    use rutis_bridge::runtime::{runtime_session_key, RuntimePlugin, RuntimeSession};
-    use rutis_bridge::session::{Connection, Dispatch, Endpoint, Error, Reply, Value};
     use rutis_test_support::{eventually, within};
-    use serde_json::json;
 
-    /// Mounts, and takes what the host says of elsewhere.
-    struct Fake;
-    impl Dispatch for Fake {
-        fn invoke(&self, _: &Connection, target: &str, method: &str, _: Value) -> Reply {
-            match (target, method) {
-                ("", "mount") => {
-                    Ok(json!({ "services": {}, "features": ["rows.v2", "hosts"] }).into())
-                }
-                ("", "events.elsewhere") => Ok(Value::Undefined),
-                _ => Err(Error::Value(format!("no {method}"))),
-            }
-        }
-    }
-    struct Session(Connection);
-    impl RuntimeSession for Session {
-        fn connection(&self) -> Connection {
-            self.0.clone()
-        }
-        fn route(
-            &self,
-            _: Arc<dyn Dispatch>,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
-            Ok(Box::new(()))
-        }
-    }
     within("rutis/runtime", async {
-        let (a, b) = rutis_bridge::memory::pair();
-        let endpoint = |name| Endpoint::rust(PeerId::new(name).unwrap());
-        let far = Connection::open(b, Arc::new(Fake), endpoint("fake")).unwrap();
-        let session = Connection::open(a, Arc::new(Fake), endpoint("main")).unwrap();
-        session.ready().await.unwrap();
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = repo.join("node/rutis-runtime");
+        let runtime = LocalRuntime::node(&package, package.join("package.json"));
+        let handle = runtime.handle();
         let root = Ctx::root().unwrap();
         let heard = Arc::new(Mutex::new(Vec::new()));
         let into = heard.clone();
@@ -185,12 +156,7 @@ async fn a_runtime_announces_running_and_down() {
             std::future::ready(Ok(None))
         })
         .unwrap();
-        root.provide_at(
-            runtime_session_key("fake"),
-            Arc::new(Session(session.clone())),
-        )
-        .unwrap();
-        let view = root.plugin(RuntimePlugin::remote("fake"));
+        let view = root.plugin(runtime);
         (&view).await.unwrap();
         eventually(
             || (!heard.lock().unwrap().is_empty()).then_some(()),
@@ -200,12 +166,17 @@ async fn a_runtime_announces_running_and_down() {
         assert_eq!(
             heard.lock().unwrap()[0],
             RuntimeEvent {
-                runtime: "fake".into(),
+                runtime: "node".into(),
                 state: RuntimeEventState::Running,
                 reason: None,
             }
         );
-        far.close(Error::Transport("the runtime went".into()));
+        let pid = handle.pid().expect("the runtime's process");
+        std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status()
+            .unwrap();
         eventually(|| (heard.lock().unwrap().len() == 2).then_some(()), "down").await;
         let down = heard.lock().unwrap()[1].clone();
         assert_eq!(down.state, RuntimeEventState::Down);

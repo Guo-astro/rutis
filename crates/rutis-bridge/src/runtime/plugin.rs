@@ -74,15 +74,13 @@ impl std::fmt::Debug for RuntimeState {
 pub struct RuntimeHandle {
     name: String,
     anchor: PathBuf,
-    remote: bool,
     state: watch::Receiver<RuntimeState>,
     starts: Arc<std::sync::atomic::AtomicU64>,
     processes: Option<crate::pipe::Processes>,
 }
 
 impl RuntimeHandle {
-    /// The process id of a local runtime's process, while it runs; `None`
-    /// for a runtime elsewhere, or one not running.
+    /// The process id of the runtime's process, while it runs.
     pub fn pid(&self) -> Option<u32> {
         match self.state() {
             RuntimeState::Ready(_) | RuntimeState::Starting => self
@@ -149,12 +147,6 @@ impl RuntimeHandle {
         self.state.clone()
     }
 
-    /// Whether the runtime runs elsewhere ([`RuntimePlugin::remote`]): its
-    /// plugins are found where it runs, not under [`RuntimeHandle::anchor`].
-    pub fn is_remote(&self) -> bool {
-        self.remote
-    }
-
     /// Whether the running runtime reported `feature` (`rows.v2`, `hosts`,
     /// `leaf`, …); `false` while none runs.
     pub fn supports(&self, feature: &str) -> bool {
@@ -179,9 +171,9 @@ impl RuntimeHandle {
     }
 }
 
-/// The runtime plugin: the rows of one language runtime, on the session
-/// `RuntimeSession#<name>` that something else provides. Mount it before
-/// the plugins that load into it; [`LocalRuntime`](crate::runtime::LocalRuntime)
+/// The runtime plugin: the rows of one language runtime, on the session of
+/// the link to it (`Peer#<name>`) that something else provides. Mount it
+/// before the plugins that load into it; [`LocalRuntime`](crate::runtime::LocalRuntime)
 /// mounts it for a runtime on this machine.
 ///
 /// One runtime is one process of one language: the Node runtime runs a
@@ -194,10 +186,8 @@ impl RuntimeHandle {
 pub struct RuntimePlugin {
     runtime: String,
     label: String,
-    /// `RuntimeSession#<name>`.
+    /// `Peer#<name>`: the link to the runtime.
     session: [TypeKey; 1],
-    /// The runtime runs elsewhere and resolves its plugins there.
-    remote: bool,
     anchor: PathBuf,
     hosts: Arc<HashMap<String, Value>>,
     state: Arc<watch::Sender<RuntimeState>>,
@@ -270,11 +260,10 @@ impl RuntimePlugin {
         });
     }
 
-    fn with(runtime: String, anchor: PathBuf, remote: bool) -> Self {
+    fn with(runtime: String, anchor: PathBuf) -> Self {
         Self {
             label: format!("runtime {runtime}"),
-            session: [crate::runtime::runtime_session_key(&runtime).erase()],
-            remote,
+            session: [session_key(&runtime)],
             runtime,
             anchor,
             hosts: Arc::default(),
@@ -292,20 +281,11 @@ impl RuntimePlugin {
         self
     }
 
-    /// A runtime that runs elsewhere: its session is `RuntimeSession#<name>`,
-    /// provided by a link to it ([`RuntimeAccessPlugin`](crate::runtime::RuntimeAccessPlugin)).
-    /// It waits for that session and stops when it goes; a new session is a
-    /// new generation of the runtime, whose rows are loaded again. Row names
-    /// are resolved where the runtime runs.
-    pub fn remote(name: impl Into<String>) -> Self {
-        Self::with(name.into(), PathBuf::new(), true)
-    }
-
-    /// A runtime on this machine whose session something else provides
-    /// (`RuntimeSession#<name>`), as [`LocalRuntime`](crate::runtime::LocalRuntime)
+    /// A runtime on this machine whose link something else provides
+    /// (`Peer#<name>`), as [`LocalRuntime`](crate::runtime::LocalRuntime)
     /// composes it. Its plugins resolve from `anchor`.
     pub fn session(name: impl Into<String>, anchor: impl Into<PathBuf>) -> Self {
-        Self::with(name.into(), anchor.into(), false)
+        Self::with(name.into(), anchor.into())
     }
 
     /// Declare the methods `{ method: "sync" | "async" }` of the rutis
@@ -323,7 +303,7 @@ impl RuntimePlugin {
     pub fn named(mut self, name: impl Into<String>) -> Self {
         self.runtime = name.into();
         self.label = format!("runtime {}", self.runtime);
-        self.session = [crate::runtime::runtime_session_key(&self.runtime).erase()];
+        self.session = [session_key(&self.runtime)];
         self
     }
 
@@ -349,7 +329,6 @@ impl RuntimePlugin {
         RuntimeHandle {
             name: self.runtime.clone(),
             anchor: self.anchor.clone(),
-            remote: self.remote,
             state: self.state.subscribe(),
             starts: self.starts.clone(),
             processes: self.processes.clone(),
@@ -380,7 +359,8 @@ impl DynPlugin for RuntimePlugin {
             // cancels this generation.
             let start = async {
                 let session = ctx
-                    .get_key::<dyn crate::runtime::RuntimeSession>(self.session[0].clone())
+                    .get_key::<crate::Peer>(self.session[0].clone())
+                    .map(crate::runtime::peer_session)
                     .ok_or_else(|| {
                         crate::runtime::Error::refused(format!(
                             "the session of the {} runtime is gone",
@@ -497,6 +477,11 @@ impl DynPlugin for RuntimePlugin {
     }
 }
 
+/// The key of the link to the runtime `name`.
+fn session_key(name: &str) -> TypeKey {
+    crate::peer_key(&crate::runtime::runtime_peer(name)).erase()
+}
+
 /// Waits for the process to end on its own, then withdraws the service.
 async fn watch_exit(
     process: Arc<Process>,
@@ -509,8 +494,7 @@ async fn watch_exit(
 }
 
 /// How the process of a session that ended went: a process started here
-/// says how it ended; a session through a link ends with its channel's
-/// reason (for a local runtime, the same).
+/// says how it ended; else its channel's reason.
 fn ended_status(process: &Process) -> String {
     match (process.exit_status(), process.connection().close_reason()) {
         (Some(status), _) => format!("runtime process {status}"),

@@ -24,7 +24,7 @@ import kotlin.test.assertTrue
 /**
  * The remote channels' rules (design-remote-runtime-dial §六) that need no
  * connection; what needs one is checked from outside, on the conformance
- * jar (crates/rutis-bridge/tests/dial_conformance.rs, kotlin_remote.rs).
+ * jar (crates/rutis-host/tests/dial_conformance.rs, kotlin_remote.rs).
  */
 class RemoteTest {
     @Test

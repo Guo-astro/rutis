@@ -81,27 +81,28 @@ Services the test gives are instances of `@RutisService` classes. `loaded.on`, `
 
 ## Hosting plugins in an application
 
-An application brings its plugins to rutis with `RutisApp` (design §5): rutis decides which of them load, with what configuration, and when they unload.
+An application brings its plugins to rutis with `RutisApp` (design §5): once connected it installs them itself, in order, each with the configuration it gives (`configs`, by plugin name; without one, the Schema's defaults) once the services it injects are there, and rutis registers them as `<id>:<plugin>`.
 
 ```kotlin
 val rutis = RutisApp(
     plugins = listOf(contacts(context), notify(context), device(context)),
+    configs = mapOf("notify" to NotifyConfig(channel = "rutis sample")),
     connect = "wss://rutis.example.com:7443/rutis",   // or listen = "wss://0.0.0.0:7443/rutis", certificate = pem
-    id = "kim-pixel",                                 // this connection's id, its instance's name in rutis
+    id = "kim-pixel",                                 // this connection's id: rutis registers kim-pixel:contacts, …
     token = secrets.rutisToken,
 )
-rutis.start()   // returns at once; reconnects by itself until stop()
-rutis.stop()    // every plugin's cleanups in reverse, then disconnects; start() again later
+rutis.start()   // returns at once; installs the plugins once connected; reconnects by itself until stop()
+rutis.stop()    // withdraws the services, every plugin's cleanups in reverse, then disconnects; start() again later
 rutis.state     // StateFlow<RutisState>: Stopped(reason) / Connecting(retrying) / Connected(address)
 ```
 
-When to start and stop (with the screen, in a foreground service) is the application's business; the SDK decides nothing by `state`. `trust` takes the PEM of a CA trusted besides the system's, for a self-signed access point. A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) is refused on the main thread: call it as a `suspend` function or from another thread. On rutis's side, `runtimes.remote[]` with `language: "kotlin"`, `listen` and `instances` makes each connection an instance ([nodes](../docs/guide/nodes.en.md)). `rutis/android-sample` is an application doing this, and the device tests run with it. The whole guide (permissions, foreground services, battery optimization, a real-device checklist): [Hosting plugins in an Android application](../docs/guide/kotlin-app.en.md).
+When to start and stop (with the screen, in a foreground service) is the application's business; the SDK decides nothing by `state`. `trust` takes the PEM of a CA trusted besides the system's, for a self-signed access point. A call that waits for rutis (a non-`suspend` method of a `@RutisClient` interface) is refused on the main thread: call it as a `suspend` function or from another thread. On rutis's side, one `rutis-host/listen` row lets the applications in ([rutis-host](../docs/guide/rutis-host.en.md)). `rutis/android-sample` is an application doing this, and the device tests run with it. The whole guide (permissions, foreground services, battery optimization, a real-device checklist): [Hosting plugins in an Android application](../docs/guide/kotlin-app.en.md).
 
 ## The desktop test entry
 
 On the jvm target, `Rutis.serve(args, plugins…)` runs plugins as a rutis runtime: `<channel> --id <id> <project>`, greeting as `<id>`; the channel a Unix socket path (`unix:<path>` or bare) or `tcp:127.0.0.1:<port>` (presenting `RUTIS_CHANNEL_TOKEN`). The Rust conformance tests start it with `java -jar` through rutis-bridge's generic `Launcher` (no local Kotlin runtime is configured in rutis-host).
 
-The remote channels are those of the other languages ([nodes](../docs/guide/nodes.en.md)): `dial:wss://… --id <id> --peer <rutis's id>` dials a rutis access point and stays connected, `listen:wss://… --id <id>` waits for rutis to dial in; `RUTIS_TOKEN`, `RUTIS_CA` (a CA trusted besides the system's when dialing), `RUTIS_CERT` / `RUTIS_KEY` (the certificate and key of a `wss://` listener, PEM: PKCS#8, PKCS#1 or SEC1); the reconnection rules and state lines of [dialing out](../docs/design-remote-runtime-dial-2026-10-14.en.md) §6; SIGTERM / Ctrl-C unloads every row and exits 0. On the rutis side, `runtimes.remote[].language` is `kotlin` (or `kt`). Dialing uses OkHttp, listening the SDK's own WebSocket server; both are in the shared sources, the same code an Android application runs.
+The remote channels are those of the other languages ([nodes](../docs/guide/nodes.en.md)): `dial:wss://… --id <id> --peer <rutis's id>` dials a rutis `rutis-host/listen` row and stays connected, `listen:wss://… --id <id>` waits for rutis to dial in; `RUTIS_TOKEN`, `RUTIS_CA` (a CA trusted besides the system's when dialing), `RUTIS_CERT` / `RUTIS_KEY` (the certificate and key of a `wss://` listener, PEM: PKCS#8, PKCS#1 or SEC1); the reconnection rules and state lines of [dialing out](../docs/design-remote-runtime-dial-2026-10-14.en.md) §6; SIGTERM / Ctrl-C unloads every row and exits 0. On the rutis side, a `rutis-host/dial` row reaches a runtime that listens, a `rutis-host/listen` row takes one that dials in. Dialing uses OkHttp, listening the SDK's own WebSocket server; both are in the shared sources, the same code an Android application runs.
 
 ## Building and testing the SDK
 

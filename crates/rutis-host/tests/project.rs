@@ -252,8 +252,7 @@ fn the_dev_file_is_merged_into_the_project() {
                   "id": "ignored",
                   "runtimes": {
                     "node": { "project": "elsewhere" },
-                    "py": { "project": "fakes" },
-                    "remote": [{ "name": "gpu", "language": "python" }]
+                    "py": { "project": "fakes" }
                   },
                   "listen": [{ "name": "dev", "address": "127.0.0.1:0" }],
                   "rows": [
@@ -287,7 +286,6 @@ fn the_dev_file_is_merged_into_the_project() {
     // The project's own runtime is the project's.
     assert_eq!(config.runtimes.node.unwrap().project, project);
     assert_eq!(config.runtimes.py.unwrap().project, project.join("fakes"));
-    assert_eq!(config.runtimes.remote[0].name, "gpu");
     assert_eq!(config.listen[0].name, "dev");
 
     write(

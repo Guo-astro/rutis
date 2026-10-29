@@ -187,7 +187,7 @@ fn pair_watched() -> (Channel, Channel, Arc<Direction>, Arc<Direction>) {
 /// Dial `listener` of `registrations` in this process, presenting the
 /// bearer token the link's identity gives: routed as a network connection
 /// is, to the registration whose identity verifies it. Transitional
-/// (#695 S2): goes with links and access points.
+/// (#695 S2): goes with links.
 #[doc(hidden)]
 pub fn dialer(registrations: Registrations, listener: &str) -> crate::Dialer {
     let listener = listener.to_owned();

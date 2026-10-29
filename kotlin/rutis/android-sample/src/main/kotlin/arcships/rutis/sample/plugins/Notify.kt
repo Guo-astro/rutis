@@ -8,6 +8,7 @@ import android.content.Context
 import android.os.Build
 import arcships.rutis.Rutis
 import arcships.rutis.RutisService
+import kotlinx.serialization.Serializable
 import java.util.concurrent.atomic.AtomicInteger
 
 /** The `notify` service: notifications on this device, from rutis. */
@@ -40,14 +41,23 @@ class Notify(private val context: Context) {
     }
 }
 
+/** The `notify` plugin's configuration: the application gives it in `RutisApp`. */
+@Serializable
+data class NotifyConfig(
+    /** The notification channel's name, as the system settings show it. */
+    val channel: String = "rutis",
+    /** The name it provides its service as. */
+    val service: String = "notify",
+)
+
 /**
  * The plugin `notify`. It loads without the permission to post
  * notifications (Android 13 and later ask for it): a post without it fails,
  * and the caller gets `permission-denied` (design §六, the call-time case).
  */
-fun notify(context: Context) = Rutis.define<Rutis.NoConfig>(name = "notify") { ctx, _ ->
+fun notify(context: Context) = Rutis.define<NotifyConfig>(name = "notify") { ctx, config ->
     val app = context.applicationContext
     app.getSystemService(NotificationManager::class.java)
-        .createNotificationChannel(NotificationChannel(Notify.CHANNEL, "rutis", NotificationManager.IMPORTANCE_DEFAULT))
-    ctx.provide("notify", Notify(app))
+        .createNotificationChannel(NotificationChannel(Notify.CHANNEL, config.channel, NotificationManager.IMPORTANCE_DEFAULT))
+    ctx.provide(config.service, Notify(app))
 }

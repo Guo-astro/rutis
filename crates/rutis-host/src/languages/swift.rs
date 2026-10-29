@@ -63,18 +63,6 @@ impl Language for Swift {
         }
     }
 
-    /// `swift:<plugin>` and `swift-<binary>:<plugin>` are the Swift
-    /// runtimes' rows.
-    fn claims(&self, name: &str) -> Option<String> {
-        binary::claims("swift", "Swift", name)
-    }
-
-    /// A Swift runtime on another machine, or in an app, that dials in or
-    /// listens (`runtimes.remote[].language`).
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["swift"]
-    }
-
     fn start(&self, config: &HostConfig, mount: &mut Mount<'_>) -> Result<(), Error> {
         match &config.runtimes.swift {
             Some(swift) => {

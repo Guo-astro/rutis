@@ -1062,7 +1062,7 @@ export default definePlugin({
 ```
 
 - What can be handed over: the result of `definePlugin` in Node and Bun; Cordis plugins in Node (functions, classes, objects with `apply`); the result of Python's `define_plugin`; the result of Go's `rutis.Define` (`*rutis.Definition`, the type a client's function field takes); the result of `Rutis.define` in Swift and Kotlin (a client's parameter type is `Rutis.Definition`, `Plugin`; see [handing over plugin definitions in each language](#handing-over-plugin-definitions-in-each-language) below, [Kotlin application](kotlin-app.en.md#2-writing-a-plugin)).
-- A plugin definition an application that dials in hands over (`RutisApp` in Swift and Kotlin) mounts only in that connection's instance, or deeper.
+- A plugin definition an application that dials in hands over (`RutisApp` in Swift and Kotlin) runs in that application; when the application's connection ends, every copy mounted from it ends with it.
 - The receiver is Rust: a parameter or return type `rutis::Definition`, mounted with `ctx.plugin(def.at(&ctx, config)?)`; see [Rust host](rust-host.en.md#receive-plugin-definitions). Other parameter types are unchanged: a data parameter that receives a plugin definition fails the call.
 - Each copy runs in the runtime that defined it, isolated by the instance that mounts it, and gated on its `inject`.
 - A plugin definition belongs to the current generation of the row that handed it over: when that row unloads, reloads or ends, every copy mounted from it ends first, and is cleaned up, before the row unloads. Mounting it afterwards fails. When the runtime's process exits, its copies end too.

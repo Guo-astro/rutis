@@ -140,24 +140,6 @@ fn normalized(config: &HostConfig, dir: &Path) -> Value {
         restart(go.restart, &mut fields);
         runtimes.insert(key.into(), fields.into());
     }
-    let remote: Vec<Value> = config
-        .runtimes
-        .remote
-        .iter()
-        .map(|remote| {
-            let mut fields = Map::new();
-            fields.insert("name".into(), json!(remote.name));
-            fields.insert("language".into(), json!(remote.language));
-            if let Some(listen) = &remote.listen {
-                fields.insert("listen".into(), json!(listen));
-            }
-            if let Some(instances) = &remote.instances {
-                fields.insert("instances".into(), json!(instances));
-            }
-            Value::Object(fields)
-        })
-        .collect();
-    runtimes.insert("remote".into(), remote.into());
     out.insert("runtimes".into(), runtimes.into());
     let listen: Vec<Value> = config
         .listen
@@ -239,10 +221,6 @@ fn every_release_s_rutis_json_reads_as_it_did() {
             "{version}: a field the release read is ignored now: {:?}",
             config.warnings
         );
-        config
-            .check_runtime_names()
-            .and_then(|()| config.check_dialing_runtimes())
-            .unwrap_or_else(|error| panic!("{version}: {error}"));
         let actual = normalized(&config, dir);
         let expected_file = dir.join("rutis.expected.json");
         if write.as_deref() == Some(version.as_str()) {
