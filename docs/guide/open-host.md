@@ -229,7 +229,7 @@ async def apply(ctx, config):
 plugin = define_plugin(apply, inject=["notes", "commands"])
 ```
 
-装上两个运行时（Node 22 或更高，Python 3.10 或更高），运行：
+装上两个运行时（Node 22 或更高，Python 3.12 或更高），运行：
 
 <!-- example: jot run -->
 ```bash

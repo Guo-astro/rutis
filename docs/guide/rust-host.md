@@ -776,7 +776,7 @@ rutis-host types . -o types/deskmate.d.ts --python types/deskmate.py
 
 `build.rs` 里同样是 `Exports::new().typescript(…).python(…)`。
 
-**Python 类型**（Python 3.10 起）：服务是 `typing.Protocol`，结构体是 `TypedDict`（可省略的字段放进 `total=False` 的父类；字段名不是标识符时用函数式写法），只有名字的枚举是 `Literal`，带数据的枚举是 `TypedDict` 的联合，`Option<T>` 是 `T | None`，`Vec<T>`、`HashMap<String, T>`、元组是 `list`、`dict[str, T]`、`tuple`，整数、浮点是 `int`、`float`，`serde_json::Value` 是 `Any`，回调是 `Callable[[A], R | Awaitable[R]]`，`rutis::Definition` 是 `rutis.Plugin`，错误类型 `<Name>Thrown` 是 `rutis.RemoteError` 的别名、`<Name>ThrownCode` 是它的错误码 `Literal`。泛型结构体在 Python 里不带类型参数（3.10 的 `TypedDict` 不能是泛型），参数是 `Any`。插件作者写 `notes: Notes = ctx.use("notes")`，由编辑器或 pyright 检查调用，不写也照样运行（见 [Python 插件：宿主给的类型](python-plugin.md#宿主给的类型)）。它能通过 pyright 的严格模式（`examples/marked-services` 会检查），同样要提交。`.declared` 的类型没有 Python 版本时写 `Any` 并警告：
+**Python 类型**（Python 3.12 起）：服务是 `typing.Protocol`，结构体是 `TypedDict`（可省略的字段放进 `total=False` 的父类；字段名不是标识符时用函数式写法），只有名字的枚举是 `Literal`，带数据的枚举是 `TypedDict` 的联合，`Option<T>` 是 `T | None`，`Vec<T>`、`HashMap<String, T>`、元组是 `list`、`dict[str, T]`、`tuple`，整数、浮点是 `int`、`float`，`serde_json::Value` 是 `Any`，回调是 `Callable[[A], R | Awaitable[R]]`，`rutis::Definition` 是 `rutis.Plugin`，错误类型 `<Name>Thrown` 是 `rutis.RemoteError` 的别名、`<Name>ThrownCode` 是它的错误码 `Literal`。泛型结构体在 Python 里不带类型参数（3.10 的 `TypedDict` 不能是泛型），参数是 `Any`。插件作者写 `notes: Notes = ctx.use("notes")`，由编辑器或 pyright 检查调用，不写也照样运行（见 [Python 插件：宿主给的类型](python-plugin.md#宿主给的类型)）。它能通过 pyright 的严格模式（`examples/marked-services` 会检查），同样要提交。`.declared` 的类型没有 Python 版本时写 `Any` 并警告：
 
 ```text
 $ rutis-host types . --python types/deskmate.py

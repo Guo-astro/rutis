@@ -156,7 +156,7 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 - One connection row per far end: `rutis-host/dial` (`address`; rutis dials it, backing off between attempts) or `rutis-host/listen` (`listener`; far ends dial in, step 4b / 4c). The row id names the connection: the runtime's `--id`, the token `RUTIS_TOKEN_<ROW ID>`, the prefix of the output lines. No language is written: plugin names are resolved on the far end. The connection is over WebSocket.
 - Rows run on the far end are named `<connection row>:<plugin>`; the plugin is resolved on the remote machine, its config in the row.
 - `runtimes.remote` (0.18) is removed in 0.19: it is an unknown field. Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are unchanged.
-- A connection of your own (another transport, your own authentication): write a connection plugin that hands over a Channel: Rust `ctx.plugin(rutis_bridge::Session::new(channel))`; other languages call `sessions.open(far)` (see `references/plugin-api.md`).
+- A connection of your own (another transport, your own authentication): write a connection plugin that hands over a Channel: Rust `ctx.plugin(rutis_bridge::Session::new(channel))`; other languages call `sessions.open(far)` (see [Your own connection](references/nodes.md#your-own-connection)).
 
 ## 6. Verify
 

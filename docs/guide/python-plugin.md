@@ -239,7 +239,7 @@ uv run rutis-host dev
 rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
 greeter: starting
 translate: running
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 greeter: running
 ```
 
@@ -255,6 +255,7 @@ rows:
 services:
   greeter: greeter
   loader: host
+  sessions: host
   translate: translate
 runtimes:
   py: running (pid 55011)
@@ -272,7 +273,7 @@ $ uv run rutis-host call greeter.count
 
 ```text
 greeter: reloaded (src/greeter/__init__.py changed)
-rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), sessions (host), translate (translate)
 ```
 
 再 `call greeter.hello '"Ada"'` 得到 `"Bonjour, Ada!!"`。只有文件变了的那一行重新加载；`rutis.dev.json` 改了也在运行中生效。只重新导入插件模块本身，它导入的其他模块改了要重启 `dev`。见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
