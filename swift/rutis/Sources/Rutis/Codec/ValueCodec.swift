@@ -181,6 +181,9 @@ package enum ValueCodec {
         // An object of another process, handed on: that object again (#687).
         case let client as Rutis.Advanced.Client where client.object != nil: return .remoteObject(client.object!)
         case let proxy as any RutisProxy where proxy.rutisClient.object != nil: return .remoteObject(proxy.rutisClient.object!)
+        // An object of this process a proxy calls, handed on: the object.
+        case let client as Rutis.Advanced.Client where client.own != nil: return .object(client.own!)
+        case let proxy as any RutisProxy where proxy.rutisClient.own != nil: return .object(proxy.rutisClient.own!)
         // A plugin definition crosses as one (a `plugin` reference), to be
         // mounted by what receives it (plugin values, R1).
         case let definition as Rutis.Definition: return .plugin(definition)

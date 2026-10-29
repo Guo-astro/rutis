@@ -1029,12 +1029,47 @@ extension Rutis.Advanced {
         let invoke: (String, [Value], Bool) async throws -> Value
         /// The far end's object this client calls, if it is one (#687).
         let object: FarObject?
+        /// The object of this process this client calls, if it is one: one
+        /// a plugin of the same runtime handed over, received as a
+        /// `@RutisClient` protocol its type does not implement.
+        let own: ServiceObject?
 
         init(name: String, methods: [String: String], invoke: @escaping (String, [Value], Bool) async throws -> Value) {
             self.name = name
             self.methods = methods
             self.invoke = invoke
             object = nil
+            own = nil
+        }
+
+        /// An object of this process as a client: its methods called by
+        /// name, as another process would call them.
+        init(own: ServiceObject) {
+            name = ""
+            methods = [:]
+            object = nil
+            self.own = own
+            invoke = { method, args, _ in try await own.call(method: method, args: args) }
+        }
+
+        private static let ownLock = Lock()
+        nonisolated(unsafe) private static var owns: [ObjectIdentifier: WeakClient] = [:]
+
+        /// The client of `own`, one per object while it is held (as
+        /// `of(_:)` for an object of another process).
+        static func of(own: ServiceObject) -> Client {
+            ownLock.withLock {
+                if let client = owns[own.identity]?.client { return client }
+                owns = owns.filter { $0.value.client != nil }
+                let client = Client(own: own)
+                owns[own.identity] = WeakClient(client)
+                return client
+            }
+        }
+
+        private final class WeakClient {
+            weak var client: Client?
+            init(_ client: Client) { self.client = client }
         }
 
         /// An object of another process as a client: its methods are
@@ -1043,6 +1078,7 @@ extension Rutis.Advanced {
             name = ""
             methods = [:]
             self.object = object
+            own = nil
             invoke = { method, args, sync in try await object.call(method, args, sync: sync) }
         }
 
@@ -1073,11 +1109,15 @@ extension Rutis.Advanced {
             // An object has no method table: one it lacks is its process's
             // to say (no-method).
             let kind = methods[method]
-            if kind == nil, object == nil {
+            if kind == nil, object == nil, own == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             let value = try await invoke(method, args.map(\.value), kind == "sync")
             if let proxy, case let .remoteObject(far) = value { return proxy(Client.of(far)) }
+            if let proxy, case let .object(local) = value, let own = local as? ServiceObject {
+                if let typed = own.service as? R { return typed }
+                return proxy(Client.of(own: own))
+            }
             return try ValueCodec.decode(R.self, from: value)
         }
 
@@ -1085,7 +1125,7 @@ extension Rutis.Advanced {
         /// result as it came (RutisTest).
         package func callValue(_ method: String, _ args: [Value]) async throws -> Value {
             let kind = methods[method]
-            if kind == nil, object == nil {
+            if kind == nil, object == nil, own == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             return try await invoke(method, args, kind == "sync")
