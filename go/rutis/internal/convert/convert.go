@@ -61,9 +61,13 @@ type ref struct{ value any }
 // exported methods.
 func Ref(v any) any { return ref{v} }
 
-// Function is a function of the far end, received where a value of any
-// type was expected.
-type Function struct{ remote *peer.RemoteFunction }
+// Function is a function received where a value of any type was
+// expected: of the far end, or, from a call within this process, of this
+// process (`local`), called as the far end would call it.
+type Function struct {
+	remote *peer.RemoteFunction
+	local  peer.Func
+}
 
 // Call calls the function and decodes its result into `result` (a
 // pointer, or nil).
@@ -72,7 +76,15 @@ func (f *Function) Call(ctx context.Context, result any, args ...any) error {
 	if err != nil {
 		return err
 	}
-	value, err := f.remote.Call(ctx, converted, true)
+	var value any
+	if f.local != nil {
+		value, err = peer.Protect(func() (any, error) { return f.local(ctx, converted) })
+		if err == nil {
+			value, err = peer.Settle(ctx, value)
+		}
+	} else {
+		value, err = f.remote.Call(ctx, converted, true)
+	}
 	if err != nil {
 		return err
 	}

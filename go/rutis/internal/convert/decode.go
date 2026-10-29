@@ -73,18 +73,25 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 	case *peer.RemoteFunction:
 		switch {
 		case t == functionType:
-			return reflect.ValueOf(&Function{x}), nil
+			return reflect.ValueOf(&Function{remote: x}), nil
 		case t.Kind() == reflect.Func:
 			return MakeFunc(t, func(ctx context.Context, args []any) (any, error) {
 				return x.Call(ctx, args, true)
 			}), nil
 		case t == anyType:
-			return reflect.ValueOf(any(&Function{x})), nil
+			return reflect.ValueOf(any(&Function{remote: x})), nil
 		}
 		return reflect.Value{}, fmt.Errorf("a function cannot be decoded as %s", t)
 	case peer.Func:
-		if t.Kind() == reflect.Func {
+		// A function of this process, from a call within it: as one of
+		// the far end decodes.
+		switch {
+		case t == functionType:
+			return reflect.ValueOf(&Function{local: x}), nil
+		case t.Kind() == reflect.Func:
 			return MakeFunc(t, x), nil
+		case t == anyType:
+			return reflect.ValueOf(any(&Function{local: x})), nil
 		}
 		return reflect.Value{}, fmt.Errorf("a function cannot be decoded as %s", t)
 	case *peer.RemoteFuture:
@@ -416,7 +423,9 @@ func Plain(v any) (any, error) {
 		}
 		return out, nil
 	case *peer.RemoteFunction:
-		return &Function{x}, nil
+		return &Function{remote: x}, nil
+	case peer.Func:
+		return &Function{local: x}, nil
 	case *peer.RemoteFuture:
 		return &Future{x}, nil
 	case *peer.RemoteObject:
