@@ -443,7 +443,11 @@ final class Runtime: @unchecked Sendable {
             // Also while closing: rutis hears it before the plugin cleans up.
             if servicesOffer != nil, let session {
                 let args = [servicesWithdraw(name: id, version: announcements)]
-                post { _ = try? session.send(target: "", method: "services.withdraw", args: args, sync: false) }
+                post {
+                    // Awaited, as an announcement is: rutis takes it then.
+                    guard let call = try? session.send(target: "", method: "services.withdraw", args: args, sync: false) else { return }
+                    Task.detached { _ = try? await settle(try await call.value()) }
+                }
             }
             reconcile()
         }
@@ -583,7 +587,9 @@ final class Runtime: @unchecked Sendable {
             guard let call = try? session.send(target: "", method: "services.announce", args: args, sync: false) else { return }
             Task.detached {
                 do {
-                    _ = try await call.value()
+                    // rutis answers with a result to await: the announcement
+                    // is taken (or refused) once it is awaited.
+                    _ = try await settle(try await call.value())
                 } catch {
                     log("rutis: cannot announce \(id): \(Events.failure(error))")
                 }
@@ -1140,3 +1146,4 @@ public protocol RutisProxy {
 /// `@RutisClient` adds an overload for its protocol, which makes its proxy;
 /// the macros call this, and the overload wins (#687 §四).
 public func rutisObjectProxy<T>(_: T.Type) -> ((Rutis.Advanced.Client) -> T)? { nil }
+

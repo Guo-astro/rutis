@@ -238,7 +238,7 @@ class RuntimeState(plugins: List<Plugin>) {
             shared.remove(id)
             announcements++
             // Also while closing: rutis hears it before the plugin cleans up.
-            if (servicesOffer != null) session?.notify("", "services.withdraw", listOf(servicesWithdraw(id, announcements)))
+            if (servicesOffer != null) told("services.withdraw", servicesWithdraw(id, announcements)) {}
             reconcile()
         }
         val slot = slots[id] ?: return
@@ -349,8 +349,29 @@ class RuntimeState(plugins: List<Plugin>) {
         val session = session ?: return
         if (closing) return
         val frame = servicesAnnounce(service.plugin, id, service.value, service.table, service.shape, service.version)
-        session.announce("", "services.announce", listOf(frame)) { error ->
-            Report.line("rutis: cannot announce $id: ${Report.failure(error)}")
+        told("services.announce", frame) { error -> Report.line("rutis: cannot announce $id: ${Report.failure(error)}") }
+    }
+
+    /**
+     * Sends `method` with `frame` now, in order, and awaits rutis's answer:
+     * it answers with a result to await, and takes the frame (or refuses
+     * it, which `refused` hears) once it is awaited.
+     */
+    private fun told(method: String, frame: Map<String, Any?>, refused: (Throwable) -> Unit) {
+        val session = session ?: return
+        val answer = try {
+            session.send("", method, listOf(frame), false)
+        } catch (_: Exception) {
+            return
+        }
+        installing.launch {
+            try {
+                answer()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!closing) refused(e)
+            }
         }
     }
 
