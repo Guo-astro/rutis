@@ -2,9 +2,9 @@
 
 Date: 2026-10-28. Code: main `212ac7ce` (after rutis 0.18, before 0.19); the language SDKs still dispatch events in their own process ("local dispatch").
 
-[Platform cleanup](design-platform-cleanup-2026-10-28.en.md) §7.5 removes local dispatch from every language: events always go to the host. This document records the numbers before that; after it, the same command runs again and its numbers go into this document, judged by the conditions of §7.5:
+[Platform cleanup](design-platform-cleanup-2026-10-28.en.md) §7.5 removes local dispatch from every language: events always go to the host. This document records the numbers before that and through the host, judged by the conditions of §7.5:
 
-- the median of `emit` through the host is at most 100 microseconds (one cross-process round trip measures 30–70 microseconds, [native plugin mount experiment](experiments-native-plugin-mount.en.md));
+- the median of `emit` through the host is accepted at the measured values: Node 71 microseconds, Python 139 microseconds (see "After"). The path through the host can be optimized later;
 - one run of the dsh baseline (`node/baseline/`) takes at most 1.1 times the number below.
 
 ## What is measured
@@ -61,4 +61,17 @@ The first run's `dsh_baseline` median was 1194 milliseconds (its first round 404
 
 ## After (through the host)
 
-To be filled in by the PR that removes local dispatch, with the same command (a `release` host).
+Code: main `b502303d`, with local dispatch switched off temporarily so that every emission goes through the host (a `release` build of `rutis-host`); the same command, two runs, close to each other. Unit: microseconds.
+
+| Runtime | Mode | Median before | Median through the host | p99 through the host |
+| --- | --- | ---: | ---: | ---: |
+| Node | `emit` | 3.4 | 71 | 125 |
+| Node | `serial` | 2.8 | 131 | 245 |
+| Node | `bail` | 2.8 | 85 | 178 |
+| Python | `emit` | 2.1 | 139 | 240 |
+| Python | `serial` | 1.8 | 307 | 600 |
+| Python | `bail` | 2.5 | 105 | 195 |
+
+Judgement: Node's `emit` is within the original 100 microseconds; Python's `emit` is over the original limit. Having seen these numbers, the user decided to remove local dispatch anyway, and the limit becomes the measured values above. The path through the host can be optimized later; optimizing it does not bring local dispatch back.
+
+Removing local dispatch only removes the local check; the path through the host is unchanged, so these are the numbers after the removal. The dsh baseline is filled in by the PR that removes local dispatch, with the same command.
