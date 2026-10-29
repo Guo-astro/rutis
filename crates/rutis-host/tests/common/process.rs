@@ -22,9 +22,7 @@ use super::repo;
 /// times [`HANG_GUARD`], as before.
 pub const GUARD: Duration = Duration::from_secs(6 * HANG_GUARD.as_secs());
 
-pub fn file_url(path: &Path) -> String {
-    url::Url::from_file_path(path).unwrap().to_string()
-}
+pub use super::file_url;
 
 /// A Python plugin: it prints its process when it starts and when its
 /// cleanup starts, and records each cleanup run in `<out>/<row>.cleanup`.
