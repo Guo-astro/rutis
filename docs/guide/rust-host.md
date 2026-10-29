@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## 装 Rust 插件
 
-Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 就是那里的例子。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
+Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 是几个示意的插件。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
 
 ```rust
 use rutis::host::*;
@@ -619,7 +619,7 @@ loop {
 
 ## 事件
 
-宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#事件)；宿主在根 `Ctx` 上用同样的方法。
+宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)；宿主在根 `Ctx` 上用同样的方法。
 
 事件类型以 `Event::NAME` 作为跨语言的名字，参数按 serde 编解码，所以它和它的 `Value` 都派生 `Serialize` / `Deserialize`。两个及以上字段的元组结构体对应同样多个参数，所以下面的 `Created` 就是别的语言里的 `emit("session/created", id, size)`：
 
@@ -676,7 +676,7 @@ off.dispose().await?;
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `ctx.on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
 | 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
 
-测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#3-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
+测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
 
 ## 导出服务：参考
 
@@ -694,7 +694,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 ### 源码从哪来
 
-生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
+生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。rutis 本身的源码不读：它的名字按已知路径认（`rutis::Error`、`Result`、`Ctx`、`Definition`，`rutis::host::BoxFuture`、`ErrorKind`），经 `use rutis::*;`、`use rutis::host::*;` 引入的也认。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
 
 ### 能传什么
 
@@ -735,7 +735,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
 | 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
 
-`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。
+`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。`ErrorThrown` 留给 rutis 自己的错误；别的叫 `Error` 的类型、以及与已有的同名而不同的错误类型，按它所在的模块命名：`io::Error` 是 `IoErrorThrown`，`anyhow::Error` 是 `AnyhowErrorThrown`，`notes::Error` 是 `NotesErrorThrown`。抛出时的 `name` 仍是类型自己的名字（`Error`）。
 
 ### 声明
 

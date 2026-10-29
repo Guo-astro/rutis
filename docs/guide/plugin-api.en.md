@@ -451,7 +451,7 @@ The rules (waterfall, failures, scope, filter, cancellation, reserved names) are
 
 #### Rust
 
-How to write an event type, `ctx.on` and `ctx.emit`: [write a Rust plugin: events](rust-plugin.en.md#events). A listener reads the dispatch's mode from `call.mode()`; `on_sync` registers a synchronous listener; `listen::<E>()` gives a name, a prefix and options:
+How to write an event type, `ctx.on` and `ctx.emit`: [write a Rust plugin: events](rust-plugin.en.md#5-emit-and-listen-to-events). A listener reads the dispatch's mode from `call.mode()`; `on_sync` registers a synchronous listener; `listen::<E>()` gives a name, a prefix and options:
 
 ```rust
 use rutis::events::Mode;

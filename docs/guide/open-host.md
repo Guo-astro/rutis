@@ -34,7 +34,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::*;
 use rutis::Ctx;
 use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session;
@@ -50,10 +50,9 @@ pub struct Notes {
 #[rutis::service]                                     // 插件按名字 "notes" 使用它
 impl Notes {
     /// Add a note.
-    pub fn add(&self, text: String) -> Result<(), String> {
-        let open = std::fs::OpenOptions::new().create(true).append(true).open(&self.file);
-        let mut file = open.map_err(|error| error.to_string())?;
-        writeln!(file, "{text}").map_err(|error| error.to_string())
+    pub fn add(&self, text: String) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.file)?;
+        writeln!(file, "{text}")
     }
 
     /// Every note, oldest first.
@@ -397,8 +396,6 @@ export interface Commands {
 
 插件作者写 `ctx.use<Services['commands']>('commands')`（Python：`commands: Commands = ctx.use("commands")`），编辑器和 `tsc`、pyright 在运行前检查调用；不用它们也照样运行。两个文件交给插件作者（第 5 节放进模板里），Rust 一侧改了就重新生成。
 
-生成器只读源码：`BoxFuture` 要写 `use rutis::host::BoxFuture;`，经 `use rutis::host::*;` 引入时生成器认不出，跳过这个方法并给出警告 `Commands::register is not exported: the function it takes must return a future of a Result (BoxFuture<'static, Result<..>>), for its failure to reach the caller`。
-
 ## 3. 管住插件
 
 第三方插件不归你管：它可能崩溃、卡死。rutis 给你的是把插件放进各自的进程，和本机运行时的问候时限；调用限时、能用哪些服务由你自己决定（见本节末尾）。
@@ -654,7 +651,7 @@ export interface RustError<Name extends string = string, Code extends string = s
 export interface Notes {
   /**
    * Add a note.
-   * @throws {StringThrown}
+   * @throws {IoErrorThrown}
    */
   add(text: string): Promise<void>
   /** Every note, oldest first. */
@@ -673,8 +670,8 @@ export interface Commands {
 /** What a method returning `Err(Error)` throws. */
 export type ErrorThrown = RustError<"Error", string, undefined>
 
-/** What a method returning `Err(String)` throws. */
-export type StringThrown = RustError<"Error", "Error", undefined>
+/** What a method returning `Err(io::Error)` throws. */
+export type IoErrorThrown = RustError<"Error", "Error", undefined>
 
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
@@ -777,7 +774,7 @@ $ npx rutis-host call commands.run '"count"'
 
 - 测试里的假服务直接写在 `load` 的 `services` 里；`dev` 里的假服务是 `rutis.dev.json` 里的一行。
 - 用 Python 写命令的作者用 `--python` 写出的 `jot_types.py`；假的 jot 可以照样用 TypeScript 写：`rutis.dev.json` 里不同语言的行可以放在一起。
-- 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#3-测试)、[Python](python-plugin.md#3-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
+- 测试工具、`dev`、`rutis-host call` 的用法见各语言的插件指南（[TypeScript](typescript-plugin.md#6-测试)、[Python](python-plugin.md#6-测试)）与 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。
 
 ### 开发循环
 

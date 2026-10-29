@@ -451,7 +451,7 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 #### Rust
 
-事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
+事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
 
 ```rust
 use rutis::events::Mode;

@@ -217,6 +217,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `LocalRuntime::call_limit`, `kill_on_timeout`, `allowed_services`, error code `timeout` | Callers limit their own calls (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on); when a plugin is still stuck after a timeout, the host ends its process with `processes().kill()` and calls `FiberView::restart()` on the fiber `root.plugin(runtime)` returned; which services a plugin may use is the host's own decision |
 | `Loader::set_overlay`, `overlays()`, `LoaderChanged::Overlay` | Removed; to override a row, write it in a layer of your own (the layer list given to `reconcile`) |
 | The error name on the wire `CordisError`, the generated type `CordisErrorThrown` | `Error`, `ErrorThrown` |
+| The generated type `ErrorThrown` where it meant an error type other than rutis's named `Error` (`io::Error`, `anyhow::Error` and so on) | `<module name>ErrorThrown` (`IoErrorThrown`, `AnyhowErrorThrown`): `ErrorThrown` is rutis's own error's only; the `name` it is thrown with is unchanged, still `Error` (#771 X4) |
 | `ServiceCatalog::share_by_name()`, `share_registered_only()` | delete the line (sharing by name is the default) |
 | `Loader::waiting_for(&entry)` | `Loader::waits(&entry)` (the note on an unmarked Rust service is `WaitReason::Explained`) |
 | `Loader::locate(plugin)` | `Loader::row(instance)` |

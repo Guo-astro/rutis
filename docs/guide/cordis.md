@@ -5,7 +5,7 @@ rutis 和 Cordis（Node 插件框架）有两种互通方式：
 - **Cordis 应用作为节点**：已有的 Cordis 应用接到 rutis 节点上，互相使用服务、共享事件，并让 rutis 在它里面运行插件。用 `@arcships/rutis-runtime/bridge`。
 - **在 Rust 应用里挂载 Cordis 插件**：已发布的 Cordis 插件在真实的 Cordis 中运行，源码不改，Rust 侧拿到构建时从它的类型声明生成的 Rust 类型。用 `rutis-bridge` 的 `cordis` feature。
 
-此外，Cordis 插件本身也可以作为 rutis-loader 的行运行，`rutis.json` 里写包名就行，包不用改，见 [写一个 TypeScript 插件](typescript-plugin.md#已有的-cordis-插件)：
+此外，Cordis 插件本身也可以作为 rutis-loader 的行运行，`rutis.json` 的行里写包名就行（已发布的包也一样），包不用改，例如 `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`：
 
 - 同一个 Node 运行时里的 Cordis 行按 Cordis 的原生规则互相使用服务，拿到的是对象本身。
 - 一行提供的服务自动投到 rutis，别的运行时的行、别的节点和 Rust 插件按名字使用；方法取服务对象上的函数（自身和原型链上的，不含 `constructor`），都按 `async` 调用。包的 `package.json` 里写了 `rutis.provides` 时按它（例如把某些方法标成 `sync`）。
