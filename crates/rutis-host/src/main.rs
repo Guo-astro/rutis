@@ -1088,12 +1088,12 @@ mod tests {
     #[test]
     fn check_says_what_runs_each_runtime() {
         let about = json!({
-            "implementation": { "name": "@arcships/rutis-bun", "version": "0.18.0" },
+            "implementation": { "name": "@arcships/rutis-bun", "version": "0.19.0" },
             "engine": { "name": "bun", "version": "1.4.3" },
         });
         assert_eq!(
             runtime_line("bun", &about).as_deref(),
-            Some("runtime bun: @arcships/rutis-bun 0.18.0, bun 1.4.3")
+            Some("runtime bun: @arcships/rutis-bun 0.19.0, bun 1.4.3")
         );
         let partial = json!({ "implementation": { "name": "rutis" } });
         assert_eq!(
