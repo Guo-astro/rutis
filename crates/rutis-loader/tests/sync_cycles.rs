@@ -10,14 +10,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
-use common::runtimes::{repo, rows_stage, COLD};
+use common::runtimes::{greet_as_main, repo, rows_stage, TestRuntime, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_bridge::session::{Reply, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use rutis_test_support::recv_within;
 use serde_json::{json, Value};
@@ -310,10 +309,11 @@ fn go_binary() -> &'static Path {
     })
 }
 
-/// `go`: also a Go runtime, for `go:` rows; `swift`: a Swift one, for
-/// `swift:` rows.
+/// `runtimes`: the local runtimes, rows `<name>:<file>`; the one marked
+/// `true` also runs the Node names (file paths). `go`: also a Go runtime,
+/// for `go:` rows; `swift`: a Swift one, for `swift:` rows.
 async fn fixture(
-    runtimes: Vec<(LocalRuntime, bool)>,
+    runtimes: Vec<(TestRuntime, bool)>,
     go: bool,
     swift: bool,
     services: &[&str],
@@ -321,6 +321,7 @@ async fn fixture(
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("gate"), Arc::new(gate)).unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in std::iter::once(&"gate").chain(services) {
@@ -358,19 +359,21 @@ async fn fixture(
     if let Some(swift) = &swift {
         chain = chain.with_shared(swift.clone());
     }
-    let mut resolvers = Vec::new();
-    for (runtime, npm) in runtimes {
-        let resolver = Arc::new(
-            match npm {
-                true => RuntimeResolver::node(runtime.handle()),
-                false => RuntimeResolver::modules(runtime.handle()),
-            }
-            .with_catalog(&catalog),
-        );
+    let npm = runtimes
+        .iter()
+        .find(|(_, npm)| *npm)
+        .map(|(runtime, _)| runtime.handle().name().to_owned());
+    let sessions = Arc::new(match &npm {
+        Some(npm) => SessionResolver::npm(&catalog, npm),
+        None => SessionResolver::new(&catalog),
+    });
+    let mut names = Vec::new();
+    for (runtime, _) in runtimes {
+        names.push(runtime.handle().name().to_owned());
+        sessions.runtime(runtime.handle());
         root.plugin(runtime);
-        chain = chain.with_shared(resolver.clone());
-        resolvers.push(resolver);
     }
+    chain = chain.with_shared(sessions.clone());
     let plugin = LoaderPlugin::new(
         chain,
         LoaderOptions {
@@ -379,9 +382,10 @@ async fn fixture(
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    for resolver in resolvers {
-        rows_stage(&root, resolver).await;
+    for name in &names {
+        rows_stage(&root, &sessions, name).await;
     }
     #[cfg(feature = "go")]
     if let Some(go) = go {
@@ -389,6 +393,7 @@ async fn fixture(
             rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::go::Go>::new(
                 go,
                 dir.path(),
+                common::runtimes::spawner(),
             )
             .idle(None),
         )
@@ -397,7 +402,7 @@ async fn fixture(
     }
     #[cfg(all(feature = "swift", target_os = "macos"))]
     if let Some(swift) = swift {
-        root.plugin(rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(swift, dir.path()).idle(None))
+        root.plugin(rutis_loader::runtime::binary::BinaryRuntimes::<rutis_loader::runtime::swift::Swift>::new(swift, dir.path(), common::runtimes::spawner()).idle(None))
             .await
             .unwrap();
     }
@@ -408,34 +413,28 @@ async fn fixture(
     }
 }
 
-fn node(name: &str) -> LocalRuntime {
-    LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    )
-    .named(name)
+fn node(name: &str) -> TestRuntime {
+    TestRuntime::node(&repo().join("node/rutis-runtime/package.json")).named(name)
 }
 
 /// A Bun runtime whose rows are the `.ts` files of `dir`; the Bun A is
 /// written there too.
 #[allow(unused_variables)]
-fn bun(name: &str, dir: &Path) -> LocalRuntime {
+fn bun(name: &str, dir: &Path) -> TestRuntime {
     #[cfg(feature = "bun")]
     {
         let bun = dir.join("bun");
         std::fs::create_dir_all(&bun).unwrap();
         std::fs::write(bun.join("package.json"), "{}").unwrap();
         std::fs::write(bun.join("a.ts"), BUN_A).unwrap();
-        LocalRuntime::bun(repo().join("bun/rutis-bun"), &bun).named(name)
+        TestRuntime::bun(&bun).named(name)
     }
     #[cfg(not(feature = "bun"))]
     unreachable!("Bun rows need the bun feature")
 }
 
-fn python(name: &str, dir: &Path) -> LocalRuntime {
-    LocalRuntime::python(dir)
-        .python_path(repo().join("python/rutis"))
-        .named(name)
+fn python(name: &str, dir: &Path) -> TestRuntime {
+    TestRuntime::python(dir).named(name)
 }
 
 // ── The cases ───────────────────────────────────────────────────

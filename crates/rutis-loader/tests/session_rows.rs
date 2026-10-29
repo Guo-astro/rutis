@@ -11,14 +11,13 @@ use std::sync::{Arc, Mutex};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::Ctx;
-use rutis_bridge::runtime::RuntimePlugin;
 use rutis_bridge::session::{call_service, host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::{
     catalog_key, Channel, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_loader::edit::{Editable, Version};
 use rutis_loader::report::{EntryStatus, Unavailable};
-use rutis_loader::runtime::{RuntimeResolver, SessionResolver};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::status::describe_waits;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
@@ -164,8 +163,8 @@ struct Main {
 }
 
 /// rutis `main` with the connection row `gpu` and `rows`, the session
-/// resolver last in its chain after `first`.
-async fn main(rows: Value, first: Option<Arc<RuntimeResolver>>) -> Main {
+/// resolver last in its chain.
+async fn main(rows: Value) -> Main {
     let root = kernel("main");
     let catalog = ServiceCatalog::new();
     let (connect, channels) = mpsc::unbounded_channel();
@@ -180,12 +179,8 @@ async fn main(rows: Value, first: Option<Arc<RuntimeResolver>>) -> Main {
         None,
     );
     let sessions = Arc::new(SessionResolver::new(&catalog));
-    let mut chain = Chain::new().with(builtins);
-    if let Some(first) = first {
-        chain = chain.with_shared(first);
-    }
     let plugin = LoaderPlugin::new(
-        chain.with_shared(sessions.clone()),
+        Chain::new().with(builtins).with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
@@ -291,13 +286,10 @@ impl Main {
 /// plugin the far end does not contain fails its row alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_run_on_the_session_of_their_connection_row() {
-    let main = main(
-        json!([
-            { "id": "contacts", "name": "gpu:contacts" },
-            { "id": "missing", "name": "gpu:missing" }
-        ]),
-        None,
-    )
+    let main = main(json!([
+        { "id": "contacts", "name": "gpu:contacts" },
+        { "id": "missing", "name": "gpu:missing" }
+    ]))
     .await;
     assert_eq!(main.waiting("contacts").await, "waiting for gpu");
     assert_eq!(main.waiting("missing").await, "waiting for gpu");
@@ -351,7 +343,7 @@ async fn rows_run_on_the_session_of_their_connection_row() {
 /// again and runs on the next session.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_far_session_unloading_first_leaves_the_row_waiting() {
-    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }]), None).await;
+    let main = main(json!([{ "id": "contacts", "name": "gpu:contacts" }])).await;
     let office = office();
     let far = main.connect(&office);
     main.running("contacts").await;
@@ -365,29 +357,11 @@ async fn a_far_session_unloading_first_leaves_the_row_waiting() {
     main.root.shutdown().await.unwrap();
 }
 
-/// A runtime named like a connection row keeps its rows: its resolver
-/// comes first.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_named_like_a_connection_row_wins() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = RuntimePlugin::session("gpu", dir.path());
-    let rows = Arc::new(RuntimeResolver::modules(runtime.handle()));
-    let main = main(
-        json!([{ "id": "contacts", "name": "gpu:contacts" }]),
-        Some(rows),
-    )
-    .await;
-    let office = office();
-    let _far = main.connect(&office);
-    assert_eq!(main.waiting("contacts").await, "waiting for runtime gpu");
-    main.root.shutdown().await.unwrap();
-}
-
 /// A row whose connection row is not there (yet: it may come in the same
 /// batch or later) waits for it, as for a connection not connected.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_whose_connection_row_is_not_there_waits_for_it() {
-    let main = main(json!([{ "id": "contacts", "name": "cpu:contacts" }]), None).await;
+    let main = main(json!([{ "id": "contacts", "name": "cpu:contacts" }])).await;
     assert_eq!(main.waiting("contacts").await, "waiting for cpu");
     main.root.shutdown().await.unwrap();
 }

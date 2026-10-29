@@ -50,3 +50,5 @@ tempfile = "3"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # The paused clock, for the configuration watch's timing.
 tokio = { workspace = true, features = ["test-util"] }
+# The Rust host guides' examples (`lib.rs`, doctests) derive config schemas.
+schemars = "1"

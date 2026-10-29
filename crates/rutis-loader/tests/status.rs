@@ -5,17 +5,15 @@
 
 mod common;
 
-use std::path::Path;
 use std::sync::Arc;
 
-use common::runtimes::{layer, rows_stage, Probe, COLD};
+use common::runtimes::{greet_as_main, layer, rows_stage, Probe, TestRuntime, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::Value as RpcValue;
 use rutis_bridge::session::{host_key, HostDispatch};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::status::{Call, RuntimeState, Service};
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin};
 use serde_json::json;
@@ -54,17 +52,17 @@ async fn the_status_names_rows_services_runtimes_and_calls() {
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("probe"), Arc::new(probe)).unwrap();
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
-    let python = LocalRuntime::python(dir.path()).python_path(sdk);
-    let rows = Arc::new(RuntimeResolver::modules(python.handle()));
+    greet_as_main(&root);
+    let python = TestRuntime::python(dir.path());
+    let options = LoaderOptions::default();
+    let sessions = Arc::new(SessionResolver::new(&options.catalog));
+    sessions.runtime(python.handle());
     root.plugin(python).await.unwrap();
-    let plugin_loader = LoaderPlugin::new(
-        Chain::new().with_shared(rows.clone()),
-        LoaderOptions::default(),
-    );
+    let plugin_loader = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin_loader.handle();
+    sessions.attach(&loader);
     root.plugin(plugin_loader).await.unwrap();
-    rows_stage(&root, rows).await;
+    rows_stage(&root, &sessions, "py").await;
     loader
         .reconcile(
             layer(vec![

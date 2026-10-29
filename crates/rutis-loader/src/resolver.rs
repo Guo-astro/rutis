@@ -353,7 +353,7 @@ impl Chain {
     }
 
     /// Add a resolver that something else holds too, such as an
-    /// `RuntimeResolver` shared with its `RuntimeRowsPlugin`.
+    /// `SessionResolver` the loader is attached to.
     pub fn with_shared(mut self, resolver: Arc<dyn Resolver>) -> Self {
         self.resolvers.push(resolver);
         self

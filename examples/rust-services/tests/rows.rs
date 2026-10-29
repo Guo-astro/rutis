@@ -10,10 +10,11 @@ use rust_services_calendar::{Change, Entry, Kind};
 use rust_services_example::{Calendar, Notes};
 use rutis::host::*;
 use rutis::{Ctx, Plugin};
-use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
+use rutis_host::connect::SpawnPlugin;
 use rutis_loader::resolve::Build;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
@@ -141,6 +142,11 @@ async fn fixture(rows: Value) -> Fixture {
     let dir = self::rows();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    // The id the runtimes' sessions greet with.
+    root.provide(rutis_bridge::LocalId(
+        rutis_bridge::PeerId::new("main").unwrap(),
+    ))
+    .unwrap();
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     // The wrapped service, provided as usual: that serves it by name.
@@ -150,21 +156,21 @@ async fn fixture(rows: Value) -> Fixture {
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");
 
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
+    let node = SpawnPlugin::new(
+        "node",
+        Launcher::node(&repo().join("node/rutis-runtime")),
         repo().join("node/rutis-runtime/package.json"),
     );
-    let python = LocalRuntime::python(dir.path()).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    let python = SpawnPlugin::new("py", Launcher::python(dir.path()), dir.path())
+        .python_path(repo().join("python/rutis"));
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     root.plugin(node);
     root.plugin(python);
     let mut builtins = Builtins::new();
     builtins.register_with("notes", NotesRow::new);
-    let chain = Chain::new()
-        .with(builtins)
-        .with_shared(python_rows.clone())
-        .with_shared(node_rows.clone());
+    let chain = Chain::new().with(builtins).with_shared(sessions.clone());
     let plugin = LoaderPlugin::new(
         chain,
         LoaderOptions {
@@ -173,9 +179,8 @@ async fn fixture(rows: Value) -> Fixture {
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(node_rows));
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
 
     let rows = serde_json::to_string(&rows).unwrap().replace(
         "ROWS/",

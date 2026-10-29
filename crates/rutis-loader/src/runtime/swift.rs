@@ -2,7 +2,7 @@
 //! several side by side (docs/design-swift-sdk-2026-10-12.md §3).
 //!
 //! Swift is a [`BinaryLanguage`]: rows `swift:<plugin>`, the SDK's marker `rutis-swift-runtime:1`,
-//! runtimes started by [`LocalRuntime::swift`]. Everything else (manifests,
+//! runtimes started by [`Launcher::swift`]. Everything else (manifests,
 //! directory scans, the lifecycle, restarts, replaced and refused binaries)
 //! is [`super::binary`]'s, shared with Go: `BinaryResolver<Swift>`,
 //! `BinaryRuntimes<Swift>` and so on.
@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use rutis_bridge::runtime::{swift_runtime_name, LocalRuntime};
+use rutis_bridge::runtime::{swift_runtime_name, Launcher};
 
 use super::binary::BinaryLanguage;
 
@@ -39,7 +39,7 @@ impl BinaryLanguage for Swift {
         swift_runtime_name(path)
     }
 
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime {
-        LocalRuntime::swift(binary, project)
+    fn launch(binary: &Path, project: &Path) -> Launcher {
+        Launcher::swift(binary, project)
     }
 }

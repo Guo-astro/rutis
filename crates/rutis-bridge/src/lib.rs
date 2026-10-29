@@ -1,8 +1,8 @@
 //! Connect rutis to other processes, languages and machines.
 //!
-//! - [`runtime`]: plugins written in Node or Python, run by language
-//!   runtimes on this machine ([`runtime::LocalRuntime`]); rutis-loader
-//!   manages them as rows.
+//! - [`runtime`]: plugins written in other languages, run by language
+//!   runtimes (started with [`runtime::Launcher::start`] on this machine,
+//!   each the far end of a session); rutis-loader manages them as rows.
 //! - [`Session`]: the far end of a [`Channel`] (a runtime, an app, a node)
 //!   as plugins of this kernel.
 //!   A far rutis kernel is a session's far end too: the services of both

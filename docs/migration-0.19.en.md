@@ -127,7 +127,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 ### Rust embeddings
 
 - `rutis_host::control::serve` takes one more argument after the `Loader`: a `Report` (a function returning the status text, which `status` is answered with); `Host::status_report()` gives it.
-- The Rust API of rutis does not change. The connection and session parts of rutis-bridge and rutis-loader changed (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §8):
+- The Rust API of rutis does not change. The connection and session parts of rutis-bridge and rutis-loader changed, and a local language runtime is now the far end of a session, as a remote one is (#695, [Remote connections: one session plugin](design-remote-session-2026-10-28.en.md) §3, §6, §8, §13 S4):
 
   | 0.18 | 0.19 |
   | --- | --- |
@@ -135,6 +135,14 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
   | `Transport`, `Dial`, `transport_key`; `LocalPlugin`, `MemoryPlugin`, `WebSocketPlugin` and their `*Transport`; `websocket::Config` | `websocket::dial`, `websocket::listen`, `pipe::spawn` and `memory::pair` give a `Channel` directly |
   | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote`; `RuntimeSession`, `runtime_session_key`, `RuntimeAccessPlugin` | In a connection plugin, `ctx.plugin(Session::new(websocket::dial(...)?))` (or `Session::handshake(&ctx, channel).await`, then `ctx.plugin(greeted)`), rows `<name>:<plugin>` |
   | `AccessPointPlugin`, `AccessPointConfig`, `AccessEvent`, `Accept`, `Accepted`, `Release`; the loader's `RuntimeInstances`, `AcceptInstances`, `RuntimeConnection` | `rutis-host/listen`, or a connection plugin of your own |
+  | `rutis_bridge::runtime::LocalRuntime` (`node`, `python`, `go`, `swift`, `bun`, `launcher`, `named`, `env`, `interpreter`, `python_path`, `stdin` / `stdout` / `stderr`, `greeting`, `handle`, `processes`) | `rutis_host::connect::SpawnPlugin::new(name, launcher, anchor)`, the plugin `rutis-host/spawn` (dependency `rutis-host`): `launcher` is `rutis_bridge::runtime::Launcher::node(&package)`, `::python`, `::go`, `::swift`, `::bun` or `Launcher::new`, `name` is what `named` gave (`node`, `py`, … by default); `.interpreter`, `.python_path`, `.env`, `.stdio(stdin, stdout, stderr)`, `.greeting(limit)`, `.handle()`, `.processes()`; `output_prefix` is on `Launcher`. Mount it with `root.plugin(spawn)`; the root provides the id sessions greet with: `root.provide(rutis_bridge::LocalId(PeerId::new("main")?))` |
+  | `RuntimePlugin` (`session`, `named`, `host`, `starting`, `stopped`, `failed`, `handle`), the service `runtime::Runtime` (`Runtime::key`, `host_methods`) | Removed: a runtime is the far end of a session. Its state is kept by `rutis_bridge::runtime::RuntimeStates` (`new(name, anchor)`, `starting`, `ready`, `failed`, `stopped`, `announce(ctx)` for the `rutis/runtime` events) and read through its `RuntimeHandle` (`handle()`); `ended_status(&process)` says how its process ended |
+  | `RuntimePlugin::host(name, methods)`, `LocalRuntime::host` | The host service gives its methods with `HostDispatch::methods()` |
+  | `rutis_loader::runtime::RuntimeResolver::node(handle)` / `::modules(handle)`, `with_catalog`; `invalidate`, `invalidate_all`, rutis-host's `Host::invalidate`; `runtime::resolve_entry` | One `rutis_loader::runtime::SessionResolver` for every runtime, last in the chain (`Chain::new().with(builtins).with_shared(sessions.clone())`): `SessionResolver::npm(&catalog, "node")` (also npm names, subpaths, `file:` URLs and absolute paths, on the row `node`) or `SessionResolver::new(&catalog)` (rows `<row>:<plugin>`, `py:shout`); `.runtime(handle)` for each local runtime (`Loader::status` lists it, its waiting rows say `waiting for runtime py (starting)`); `.attach(&loader)` before mounting the loader. Rust no longer resolves npm names nor caches them by `package.json`: the Node runtime does, at every resolution; after a plugin code change, just `Loader::reload(row)` |
+  | `RuntimeRows` (`RuntimeRows::key`), `RowsSource` | `SessionRows`, `SessionRows::key(row)` |
+  | `RuntimeRowsPlugin::new(resolver)` | `SessionResolver::follow_row(name)` once the loader runs; after a runtime restarts, its rows are resolved again by themselves |
+  | `BinaryLanguage::launch` returning a `LocalRuntime`; `BinaryRuntimes::new(resolver, project)` | `launch` returns a `Launcher`; `BinaryRuntimes::new(resolver, project, spawn)`, `spawn` a `rutis_loader::runtime::binary::Spawn` (`Arc<dyn Fn(&str, Launcher, &Path) -> Spawned>`, `Spawned { plugin, handle, processes }`); rutis-host passes one making a `SpawnPlugin` |
+  | `LocalRuntime::go(binary, project)` with `RuntimeResolver::modules` (one fixed binary) | `SpawnPlugin::new(name, Launcher::go(&binary, &project), &project)`, rows `<name>:<plugin>` through `SessionResolver` |
   | `Admission`, `AdmissionPlugin`, `admission_key`, `SharedToken`, `Rejection` | The connection plugin's own authentication; the id comes from the handshake |
   | `ListenerConfig::new(name, address, local id)` | `ListenerConfig::new(name, address)` |
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
@@ -279,6 +287,7 @@ A host using `LoaderPlugin` (rutis-host included) now provides a service named `
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`; validation `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
 | `internal::provide_checked`, `refresh`, `DependencyStatus::CheckPending`, `CheckRejected`, `CheckPanicked` | No replacement |
+| `rutis_loader::backoff`, `runtime::binary::{RestartPolicy, RuntimeEnd}`, `BinaryRuntimesHandle::supervise` / `unsupervise` | Removed: the loader no longer restarts a crashed Go or Swift runtime. Call `BinaryRuntimesHandle::restart(name)` yourself; the new `runtime::binary::refused(why)` tells a binary whose handshake was refused, which a restart would not start either. With rutis-host, set `runtimes.<key>.restart` |
 
 ### Tools
 

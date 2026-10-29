@@ -415,13 +415,6 @@ pub fn describe_waits(waits: &[Wait], runtime: &RuntimeLookup<'_>) -> String {
     {
         return own_runtime_line(&own.service, runtime(&own.service));
     }
-    // A row on a connection whose far end is not there.
-    if let Some(own) = waits
-        .iter()
-        .find(|wait| matches!(wait.reason, WaitReason::OwnSession))
-    {
-        return format!("waiting for {}", own.service);
-    }
     if waits.is_empty() {
         return "waiting for its services".into();
     }
@@ -432,11 +425,13 @@ pub fn describe_waits(waits: &[Wait], runtime: &RuntimeLookup<'_>) -> String {
     format!("waiting for {}", each.join("; "))
 }
 
-/// A row waiting for its own runtime `name`, in the state `state` (`None`:
-/// one not known, a remote one): starting, down and how its process ended,
-/// stopped, or running while its rows are resolved again.
+/// A row waiting for its own runtime `name`, in the state `state`:
+/// starting, down and how its process ended, stopped, or running while its
+/// rows are resolved again. `None`: not a local runtime, but the far end of
+/// a connection row, which is not there (`waiting for gpu`).
 pub fn own_runtime_line(name: &str, state: Option<(RuntimeState, Option<String>)>) -> String {
     match state {
+        None => format!("waiting for {name}"),
         Some((RuntimeState::Starting, _)) => format!("waiting for runtime {name} (starting)"),
         Some((RuntimeState::Down, why)) => format!(
             "waiting for runtime {name} (down: {})",

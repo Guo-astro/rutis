@@ -11,8 +11,7 @@ use rutis::{Ctx, Error as RutisError};
 use rutis_bridge::runtime::{RuntimeHandle, RuntimeState};
 use rutis_bridge::websocket::{Limits, ListenerConfig, ServerTls, Trust};
 use rutis_bridge::{LocalId, PeerId, Session};
-use rutis_loader::runtime::binary::RuntimeEnd;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRows, RuntimeRowsPlugin};
+use rutis_loader::runtime::{SessionResolver, SessionRows};
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
 };
@@ -26,8 +25,8 @@ pub struct Host {
     root: Ctx,
     pub loader: Loader,
     pub runtimes: Vec<(String, RuntimeHandle)>,
-    /// The resolvers of the runtimes' rows, to invalidate after a change.
-    pub resolvers: Vec<Arc<RuntimeResolver>>,
+    /// What resolves the rows on sessions, the local runtimes' among them.
+    sessions: Arc<SessionResolver>,
     /// The compiled languages' binaries and runtimes (Go, Swift), those
     /// the configuration has.
     pub binaries: Vec<BinaryHost>,
@@ -52,8 +51,10 @@ pub struct Host {
     connections: crate::connect::Connections,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
-    supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+    supervisors: Supervisors,
 }
+
+type Supervisors = Arc<Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>>;
 
 /// The local runtimes whose `restart` is `exit` that ended
 /// ([`Host::supervise`]).
@@ -228,7 +229,6 @@ impl Host {
             catalog: &catalog,
             chain: Chain::new().with(builtins),
             runtimes: Vec::new(),
-            resolvers: Vec::new(),
             fibers: Vec::new(),
             processes: Vec::new(),
             later: Vec::new(),
@@ -258,14 +258,21 @@ impl Host {
             }
         }
 
-        // The rows `<connection row>:<plugin>`, last: a name another
-        // resolver takes stays theirs.
-        let sessions = Arc::new(rutis_loader::runtime::SessionResolver::new(mount.catalog));
+        // The rows `<row>:<plugin>` (a connection row's, a local runtime's),
+        // and with a Node runtime the names no runtime prefixes. Last: a
+        // name another resolver takes stays theirs.
+        let node = mount.runtimes.iter().any(|(name, _)| name == "node");
+        let sessions = Arc::new(match node {
+            true => SessionResolver::npm(mount.catalog, "node"),
+            false => SessionResolver::new(mount.catalog),
+        });
+        for (_, handle) in &mount.runtimes {
+            sessions.runtime(handle.clone());
+        }
         mount.chain = std::mem::take(&mut mount.chain).with_shared(sessions.clone());
         let Mount {
             chain,
             runtimes,
-            resolvers,
             fibers,
             processes,
             later,
@@ -295,8 +302,9 @@ impl Host {
         (&root.plugin(plugin))
             .await
             .map_err(|error| format!("the loader: {error}"))?;
-        for rows in &resolvers {
-            root.plugin(RuntimeRowsPlugin::new(rows.clone()));
+        // The local runtimes' rows are released once each runs.
+        for (name, _) in &runtimes {
+            sessions.follow_row(name);
         }
         let restarts = LANGUAGES
             .iter()
@@ -309,7 +317,7 @@ impl Host {
             })
             .collect();
         // What waits for the loader: the compiled languages' runtimes, many,
-        // coming and going: their plugins supervise them ([`Host::supervise`]).
+        // coming and going ([`Host::supervise`]).
         let mut binaries = Vec::new();
         for later in later {
             binaries.extend(later(root.clone()).await?);
@@ -318,7 +326,7 @@ impl Host {
             root,
             loader,
             runtimes,
-            resolvers,
+            sessions,
             binaries,
             fibers,
             processes,
@@ -327,41 +335,56 @@ impl Host {
             restarts,
             rows_file: embedding.rows_file,
             connections,
-            supervisors: Mutex::default(),
+            supervisors: Supervisors::default(),
         })
     }
 
     /// Watch each local runtime as its `restart` says, from now on
     /// ([`crate::restart::supervise`]): `on-failure` starts it again when
     /// its process ends on its own; one whose `restart` is `exit` comes out
-    /// of the [`Exits`] returned when it ends, for the host to stop. The
-    /// runtimes of compiled languages (Go, Swift), which start and stop as
-    /// rows use them, are supervised by their plugin
-    /// ([`rutis_loader::runtime::binary::BinaryRuntimesHandle::supervise`]), each on its
-    /// own, with the same numbers and lines.
+    /// of the [`Exits`] returned when it ends, for the host to stop. Each
+    /// runtime of a compiled language (Go, Swift), which start and stop as
+    /// rows use them, is watched on its own, those that start later too,
+    /// its backoff kept across its starts.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
         for binaries in &self.binaries {
-            if let Restart::No = binaries.restart {
-                // None will come: the ends noted while starting are not
-                // kept for it.
-                binaries.unsupervise();
+            let restart = binaries.restart;
+            if restart == Restart::No {
                 continue;
             }
-            let send = send.clone();
-            binaries.supervise(
-                binaries.restart.into(),
-                Box::new(move |end| match end {
-                    RuntimeEnd::Exit { runtime, why } => {
-                        let _ = send.send((runtime, why));
-                    }
-                    end => {
-                        if let Some(line) = end.line() {
-                            errln!("{line}");
+            let (send, supervisors) = (send.clone(), self.supervisors.clone());
+            let (host, tokio) = (binaries.clone(), tokio::runtime::Handle::current());
+            binaries.starts.watch(move |name, starts| {
+                let (host, runtime) = (host.clone(), name.to_owned());
+                let runtime = crate::restart::Compiled::new(starts, move || {
+                    let (host, runtime) = (host.clone(), runtime.clone());
+                    Box::pin(async move {
+                        // A failure is said by the restart itself.
+                        let _ = host.restart_runtime(&runtime).await;
+                    })
+                });
+                let (name, send) = (name.to_owned(), send.clone());
+                let task = tokio.spawn({
+                    let name = name.clone();
+                    async move {
+                        use crate::restart::{supervise, Backoff, Supervised};
+                        let mut backoff = Backoff::default();
+                        let exit = loop {
+                            match supervise(&name, &runtime, restart, &mut backoff).await {
+                                // Its next start is watched again.
+                                Supervised::GaveUp => {}
+                                Supervised::Exit(why) => break Some(why),
+                                Supervised::Closed => break None,
+                            }
+                        };
+                        if let Some(why) = exit {
+                            let _ = send.send((name, why));
                         }
                     }
-                }),
-            );
+                });
+                supervisors.lock().unwrap().push((name, task));
+            });
         }
         let mut supervisors = self.supervisors.lock().unwrap();
         for (name, restart) in &self.restarts {
@@ -372,14 +395,17 @@ impl Host {
             else {
                 continue;
             };
-            let (name, fiber, handle, restart) =
-                (name.clone(), fiber.clone(), handle.clone(), *restart);
-            let send = send.clone();
+            let runtime = crate::restart::Local {
+                handle: handle.clone(),
+                fiber: fiber.clone(),
+            };
+            let (name, restart, send) = (name.clone(), *restart, send.clone());
             let task = tokio::spawn({
                 let name = name.clone();
                 async move {
+                    let mut backoff = crate::restart::Backoff::default();
                     let supervised =
-                        crate::restart::supervise(&name, &handle, &fiber, restart).await;
+                        crate::restart::supervise(&name, &runtime, restart, &mut backoff).await;
                     if let crate::restart::Supervised::Exit(why) = supervised {
                         let _ = send.send((name, why));
                     }
@@ -395,10 +421,9 @@ impl Host {
     fn unsupervise(&self, name: Option<&str>) {
         if name.is_none() {
             for binaries in &self.binaries {
-                binaries.unsupervise();
+                binaries.starts.unwatch();
             }
         }
-
         self.supervisors.lock().unwrap().retain(|(runtime, task)| {
             let stop = name.is_none_or(|name| name == runtime);
             if stop {
@@ -420,6 +445,7 @@ impl Host {
         self.unsupervise(Some(name));
         let (_, fiber) = self.fibers.remove(index);
         self.runtimes.retain(|(runtime, _)| runtime != name);
+        self.sessions.forget_runtime(name);
         fiber
             .dispose()
             .await
@@ -455,8 +481,8 @@ impl Host {
     /// whose process ended and that nothing restarts (`restart` is `no`, or
     /// `on-failure` gave up), and wait until it runs and its rows may start
     /// ([`Host::runtimes_ready`]), or say why it did not start. Its rows
-    /// come back by themselves, resolved again first when
-    /// [`Host::invalidate`] was called: their code as it is now.
+    /// come back by themselves, resolved again first: their code as it is
+    /// now.
     pub async fn start_runtime_again(&self, name: &str) -> Result<(), Error> {
         let fiber = self
             .fibers
@@ -489,7 +515,7 @@ impl Host {
         if let RuntimeState::Down(reason) = state {
             return Err(format!("the {name} runtime did not start: {reason}"));
         }
-        // A running runtime releases its rows ([`RuntimeRows`]) once it
+        // A running runtime releases its rows ([`SessionRows`]) once it
         // has resolved again those resolved before it ran. Rows loaded
         // before then wait for it, and the host would say it runs while
         // they do (#314). A plugin injecting it applies once it is there.
@@ -497,7 +523,7 @@ impl Host {
         // Disposed however the wait ends, a signal dropping it included:
         // left mounted, it would count among what still runs.
         let mut waiter = Unmount(Some(self.root.plugin(Released {
-            injects: [RuntimeRows::key(name)],
+            injects: [SessionRows::key(name)],
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
@@ -878,14 +904,6 @@ impl Host {
     pub fn connections(&self) -> Vec<crate::connect::Row> {
         self.connections.rows()
     }
-
-    /// Forget what the runtimes' resolvers cached, so changed plugins are
-    /// described again.
-    pub fn invalidate(&self) {
-        for rows in &self.resolvers {
-            rows.invalidate_all();
-        }
-    }
 }
 
 /// Who a dialing row trusts (`RUTIS_CA`, besides the system's roots), and
@@ -1248,7 +1266,6 @@ mod tests {
         assert_eq!(greeting(&host).await, "Hello, Ada");
         // A different size, so the edit shows even within the same instant.
         std::fs::write(&entry, node_plugin("Welcome")).unwrap();
-        host.invalidate();
         host.loader.reload("greeter").await.unwrap();
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
@@ -1293,7 +1310,7 @@ mod tests {
     }
 
     /// Once `runtimes_ready` returns, the rows of each runtime may start:
-    /// what they wait for ([`rutis_loader::RuntimeRows`]) is there, so a row
+    /// what they wait for ([`SessionRows`]) is there, so a row
     /// loaded then runs once loading returns. It used to return once the
     /// runtime process was ready, and such a row could still wait: `run`
     /// said it was running, and printed its state, while it did (#314).
@@ -1329,7 +1346,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_key::<RuntimeRows>(RuntimeRows::key("py"));
+        let rows = host.root.get_key::<SessionRows>(SessionRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await

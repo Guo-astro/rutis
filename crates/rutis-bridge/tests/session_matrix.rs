@@ -48,7 +48,7 @@ enum Via {
     /// A socket path the runtime dials. Not on Windows: no Unix sockets.
     DialBack,
     /// A loopback address the runtime dials, presenting a token
-    /// (`Handover::Loopback` of `pipe::spawn`, as `LocalRuntime`
+    /// (`Handover::Loopback` of `pipe::spawn`, as `Launcher::start`
     /// starts runtimes): the only handover on Windows.
     Loopback,
     WebSocket,

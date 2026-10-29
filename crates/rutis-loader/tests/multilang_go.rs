@@ -10,14 +10,15 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::runtimes::{go_binary, layer, repo, row_state, rows_stage, Llm, Probe};
+use common::runtimes::{
+    go_binary, greet_as_main, layer, repo, row_state, rows_stage, spawner, Llm, Probe, TestRuntime,
+};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
 use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
 use rutis_loader::runtime::go::Go;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde_json::{json, Value};
@@ -149,19 +150,18 @@ async fn fixture() -> Fixture {
 
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
     for name in ["probe", "llm", "py_weather", "js_weather", "go_weather"] {
         catalog.register_shared(name);
     }
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let go = Arc::new(
         BinaryResolver::<Go>::new(Binaries::new().file(go_binary()))
             .with_catalog(&catalog)
@@ -172,18 +172,18 @@ async fn fixture() -> Fixture {
     let plugin = LoaderPlugin::new(
         Chain::new()
             .with_shared(go.clone())
-            .with_shared(python_rows.clone())
-            .with_shared(node_rows.clone()),
+            .with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, node_rows).await;
-    rows_stage(&root, python_rows).await;
-    let runtimes = BinaryRuntimes::<Go>::new(go, dir.path()).idle(None);
+    rows_stage(&root, &sessions, "node").await;
+    rows_stage(&root, &sessions, "py").await;
+    let runtimes = BinaryRuntimes::<Go>::new(go, dir.path(), spawner()).idle(None);
     let go = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     Fixture {

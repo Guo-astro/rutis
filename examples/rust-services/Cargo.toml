@@ -15,6 +15,7 @@ rutis-types = { path = "../../crates/rutis-types" }
 
 [dev-dependencies]
 rutis-bridge = { path = "../../crates/rutis-bridge" }
+rutis-host = { path = "../../crates/rutis-host" }
 rutis-loader = { path = "../../crates/rutis-loader", features = ["node", "python"] }
 rutis-test-support = { path = "../../crates/rutis-test-support" }
 rutis-types = { path = "../../crates/rutis-types" }

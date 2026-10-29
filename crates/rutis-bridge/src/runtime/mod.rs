@@ -3,10 +3,10 @@
 //! Go, feature `go`; Bun, feature `bun`; Swift, feature `swift`),
 //! whose plugins rutis-loader manages as rows.
 //!
-//! [`LocalRuntime`] starts one on this machine: the local transport starts
-//! the process, a link carries its session, and [`RuntimePlugin`] runs its
-//! rows on that link's peer. A runtime elsewhere is reached by a session
-//! ([`crate::Session`]).
+//! A runtime is the far end of a session ([`crate::Session`]): on this
+//! machine its process is started with [`Launcher::start`], elsewhere it is
+//! reached over a connection. [`RuntimeStates`] keeps its state for those
+//! that watch it ([`RuntimeHandle`]).
 
 // Inside the crate, runtime code names session items through this module.
 #[allow(unused_imports)]
@@ -14,31 +14,29 @@ pub(crate) use crate::session::*;
 
 mod calls;
 mod definitions;
-mod local;
-mod plugin;
 mod process;
 mod projection;
 mod rows;
 pub(crate) mod spawn;
+mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(unix)]
 pub(crate) mod unix;
 
 /// Where a runtime process's standard streams go ([`Launcher::stdin`],
-/// [`LocalRuntime::stdin`]).
+/// [`Launcher::stdout`]).
 pub use crate::pipe::Stdio;
 pub use calls::InFlight;
 pub(crate) use definitions::read as read_definition;
 pub use definitions::{mounter_key, returned, ForeignPlugin, PluginMounter};
-pub use local::LocalRuntime;
-pub use plugin::{Runtime, RuntimeHandle, RuntimePlugin, RuntimeState};
 pub(crate) use process::calling as calling_process;
 pub use process::{
     scoped_id, Host, HostLease, Launcher, Mount, PluginSchema, Process, RowSchema, ServiceEvents,
 };
 pub use projection::Projection;
 pub use rows::{row_projection, row_projection_of, row_projection_with, RowService};
+pub use state::{ended_status, RuntimeHandle, RuntimeState, RuntimeStates};
 
 use std::sync::Arc;
 
@@ -148,12 +146,6 @@ impl Carried for PeerSession {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Box::new(offered))
     }
-}
-
-/// The peer id of the local runtime `name`: the endpoint it greets as.
-pub(crate) fn runtime_peer(name: &str) -> crate::PeerId {
-    crate::PeerId::new(name.to_owned())
-        .unwrap_or_else(|_| crate::PeerId::new("runtime").expect("a valid id"))
 }
 
 #[cfg(all(test, any(feature = "go", feature = "swift")))]

@@ -12,13 +12,15 @@ use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
+};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle};
+use rutis_bridge::runtime::RuntimeHandle;
 use rutis_bridge::session::{host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -100,39 +102,31 @@ impl Language {
     }
 
     /// The runtime, on `dir`.
-    fn runtime(self, dir: &Path) -> (LocalRuntime, RuntimeResolver) {
+    fn runtime(self, dir: &Path) -> TestRuntime {
         let _ = dir;
         match self {
             #[cfg(feature = "node")]
-            Language::Node => {
-                let package = repo().join("node/rutis-runtime");
-                let runtime = LocalRuntime::node(&package, package.join("package.json"));
-                let resolver = RuntimeResolver::node(runtime.handle());
-                (runtime, resolver)
-            }
+            Language::Node => TestRuntime::node(&repo().join("node/rutis-runtime/package.json")),
             #[cfg(feature = "node")]
-            Language::NodeDev => {
-                let package = repo().join("node/rutis-runtime");
-                let launcher =
-                    rutis_bridge::runtime::Launcher::node(&package).env("RUTIS_DEV", "1");
-                let runtime =
-                    LocalRuntime::launcher("node", launcher, package.join("package.json"));
-                let resolver = RuntimeResolver::node(runtime.handle());
-                (runtime, resolver)
-            }
+            Language::NodeDev => TestRuntime::node(&repo().join("node/rutis-runtime/package.json"))
+                .launcher(|launcher| launcher.env("RUTIS_DEV", "1")),
             #[cfg(feature = "python")]
-            Language::Python => {
-                let runtime = LocalRuntime::python(dir).python_path(repo().join("python/rutis"));
-                let resolver = RuntimeResolver::modules(runtime.handle());
-                (runtime, resolver)
-            }
+            Language::Python => TestRuntime::python(dir),
             #[cfg(all(unix, feature = "bun"))]
             Language::Bun => {
                 std::fs::write(dir.join("package.json"), "{}").unwrap();
-                let runtime = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir);
-                let resolver = RuntimeResolver::modules(runtime.handle());
-                (runtime, resolver)
+                TestRuntime::bun(dir)
             }
+        }
+    }
+
+    /// The resolver of the runtime's rows.
+    fn sessions(self, catalog: &ServiceCatalog) -> SessionResolver {
+        match self {
+            #[cfg(feature = "node")]
+            Language::Node | Language::NodeDev => SessionResolver::npm(catalog, "node"),
+            #[allow(unreachable_patterns)]
+            _ => SessionResolver::new(catalog),
         }
     }
 }
@@ -166,21 +160,24 @@ async fn fixture(language: Language, dir: &Path) -> Fixture {
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     root.provide_at(host_key("notes"), Arc::new(Notes)).unwrap();
+    greet_as_main(&root);
     let catalog = ServiceCatalog::new();
-    let (runtime, resolver) = language.runtime(dir);
+    let runtime = language.runtime(dir);
     let handle = runtime.handle();
-    let resolver = Arc::new(resolver.with_catalog(&catalog));
+    let sessions = Arc::new(language.sessions(&catalog));
+    sessions.runtime(handle.clone());
     let runtime = root.plugin(runtime);
     let plugin = LoaderPlugin::new(
-        Chain::new().with_shared(resolver.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, resolver).await;
+    rows_stage(&root, &sessions, handle.name()).await;
     COLD.within("the runtime to start", (&runtime).into_future())
         .await
         .unwrap();

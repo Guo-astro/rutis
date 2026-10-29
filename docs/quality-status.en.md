@@ -289,7 +289,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 **What**: in one host, Rust, TS and Python plugins provide and use each other's services. Design philosophy §2: "multilanguage plugins are not an add-on; they are the reason it exists".
 
-**Through**: core gating, loader rows, two-phase readiness (`RuntimeRows`), runtime processes, session forwarding, service projection.
+**Through**: core gating, loader rows, two-phase readiness (`SessionRows`), runtime processes, session forwarding, service projection.
 
 **Conditions**: several runtimes cold-starting together; runtime processes may crash; synchronous and asynchronous calls interleave; three platforms (Windows over loopback TCP).
 

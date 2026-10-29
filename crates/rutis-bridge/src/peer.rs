@@ -1,5 +1,6 @@
 //! A ready session with one far end, inside rutis-bridge: what a
-//! [`Session`](crate::Session) and a local runtime's process run on.
+//! [`Session`](crate::Session) and what runs on it (a far end's process,
+//! a far kernel's rows and events) use.
 //!
 //! The session is its owner's; what runs on it is registered here by
 //! family. A call from the far end goes to the handler of its family:

@@ -339,6 +339,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         process: None,
     });
     let mut client = None;
+    let mut runs = None;
     if start.connection.supports("runtime") {
         // A language runtime: this end's process on it, its listeners on
         // this bus.
@@ -351,7 +352,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
             .await
             .map_err(failing)?;
         process.check_rows(far.as_str()).map_err(failing)?;
-        handle.ready(ctx, process)?;
+        runs = Some(process);
     } else if node {
         // A rutis kernel: each runs the other's rows; its listeners and
         // this bus's are entries of each other's bus, one hop, every name.
@@ -393,6 +394,12 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         drop(kept.lock().unwrap().take());
         Ok(())
     })?;
+    // Provided after the cleanup above is registered, so it is withdrawn
+    // first: the rows on this session unload while the far end is still
+    // there, then the channel closes.
+    if let Some(process) = runs {
+        handle.ready(ctx, process)?;
+    }
     Ok(Effect::Done)
 }
 

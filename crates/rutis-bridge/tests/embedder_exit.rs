@@ -1,4 +1,5 @@
-//! An application embedding rutis (`LocalRuntime`) leaves no runtime
+//! An application embedding rutis (a local runtime started under a session,
+//! as rutis-host's `rutis-host/spawn` does) leaves no runtime
 //! process behind, also when a plugin keeps that runtime busy (#682):
 //! killed by a signal it does not handle (Ctrl-C's SIGINT, SIGTERM), shut
 //! down with a deadline the busy runtime does not meet, or dropped without
@@ -15,13 +16,12 @@ use std::time::Duration;
 
 use rutis::host::CtxHost;
 use rutis::Ctx;
-use rutis_bridge::runtime::{LocalRuntime, Process};
+use rutis_bridge::runtime::Process;
 use rutis_test_support::{eventually_blocking, scaled, HANG_GUARD};
 use serde_json::json;
 
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+mod common;
+use common::runtime::{root, TestRuntime};
 
 /// Writes its process's id into `config.marker`, then keeps the runtime's
 /// main thread busy for ever.
@@ -80,28 +80,24 @@ impl Language {
     }
 
     /// The local runtime on `dir`, and the busy plugin's row entry there.
-    fn runtime(self, dir: &Path) -> (LocalRuntime, PathBuf) {
+    fn runtime(self, dir: &Path) -> (TestRuntime, PathBuf) {
         match self {
             Language::Node => {
-                let package = repo().join("node/rutis-runtime");
                 let entry = dir.join("busy.mjs");
                 std::fs::write(&entry, NODE_BUSY).unwrap();
-                let runtime = LocalRuntime::node(&package, package.join("package.json"));
-                (runtime, entry)
+                (TestRuntime::node(), entry)
             }
             #[cfg(feature = "python")]
             Language::Python => {
                 std::fs::write(dir.join("busy.py"), PYTHON_BUSY).unwrap();
-                let runtime = LocalRuntime::python(dir).python_path(repo().join("python/rutis"));
-                (runtime, PathBuf::from("busy"))
+                (TestRuntime::python(dir), PathBuf::from("busy"))
             }
             #[cfg(feature = "bun")]
             Language::Bun => {
                 std::fs::write(dir.join("package.json"), "{}").unwrap();
                 let entry = dir.join("busy.mjs");
                 std::fs::write(&entry, NODE_BUSY).unwrap();
-                let runtime = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir);
-                (runtime, entry)
+                (TestRuntime::bun(dir), entry)
             }
         }
     }
@@ -109,7 +105,7 @@ impl Language {
 
 /// Start `language`'s runtime on `dir` under `root` and keep it busy; its
 /// process's id.
-async fn busy_runtime(root: &Ctx, language: Language, dir: &Path) -> (i32, LocalRuntimeParts) {
+async fn busy_runtime(root: &Ctx, language: Language, dir: &Path) -> (i32, RuntimeParts) {
     let (runtime, entry) = language.runtime(dir);
     let handle = runtime.handle();
     let processes = runtime.processes();
@@ -129,11 +125,11 @@ async fn busy_runtime(root: &Ctx, language: Language, dir: &Path) -> (i32, Local
         "the plugin to keep its runtime busy",
     )
     .await;
-    (pid, LocalRuntimeParts { processes })
+    (pid, RuntimeParts { processes })
 }
 
 /// What a test keeps of a runtime it started.
-struct LocalRuntimeParts {
+struct RuntimeParts {
     processes: rutis_bridge::pipe::Processes,
 }
 
@@ -164,7 +160,7 @@ fn embedder_role() {
         .build()
         .unwrap();
     tasks.block_on(async {
-        let root = Ctx::root().unwrap();
+        let root = root();
         let (pid, parts) = busy_runtime(&root, Language::named(&language), Path::new(&dir)).await;
         // On a line of its own: the test harness's `test embedder_role ...`
         // has no newline.
@@ -284,7 +280,7 @@ fn bun_ends_when_its_embedder_gets_ctrl_c() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_busy_runtime_ends_with_a_shutdown() {
     let dir = tempfile::tempdir().unwrap();
-    let root = Ctx::root().unwrap();
+    let root = root();
     let (pid, parts) = busy_runtime(&root, Language::Node, dir.path()).await;
     if root
         .shutdown_with_timeout(Duration::from_secs(5))
@@ -307,7 +303,7 @@ fn a_busy_runtime_goes_with_a_dropped_application() {
         .build()
         .unwrap();
     let (pid, root) = tasks.block_on(async {
-        let root = Ctx::root().unwrap();
+        let root = root();
         let (pid, _parts) = busy_runtime(&root, Language::Node, dir.path()).await;
         (pid, root)
     });
