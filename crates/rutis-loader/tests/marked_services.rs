@@ -3,7 +3,7 @@
 //! `HostDispatch` (#510): Node, Python, Go and Bun rows call them; one
 //! provided in an instance is that instance's own; one that goes stops its
 //! users.
-#![cfg(all(feature = "node", feature = "python", feature = "go"))]
+#![cfg(feature = "go")]
 
 mod common;
 
@@ -328,6 +328,9 @@ impl Fixture {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_of_every_language_call_a_marked_rust_service() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let mut fixture = fixture().await;
     let rows = vec![
         fixture.js("jc", "js_calendar"),
@@ -360,6 +363,9 @@ async fn rows_of_every_language_call_a_marked_rust_service() {
 /// guarantee: bridge/marked-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_marked_service_provided_in_an_instance_is_that_instances() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture().await;
     let rows = vec![
         json!({ "id": "session", "group": true, "instanced": true, "config": [
@@ -388,6 +394,9 @@ async fn a_marked_service_provided_in_an_instance_is_that_instances() {
 /// guarantee: sdk/undeclared-use
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture().await;
     let rows = vec![
         fixture.js("jc", "js_calendar"),
@@ -424,6 +433,9 @@ async fn a_plugin_using_a_service_it_does_not_inject_is_told_to_declare_it() {
 /// told how to serve it.
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python", "go"]) {
+        return;
+    }
     let fixture = fixture().await;
     fixture.root.provide(Hidden).unwrap();
     let rows = vec![fixture.js("jh", "js_hidden")];
@@ -468,9 +480,12 @@ async fn waiting_for_an_unmarked_rust_service_says_how_to_serve_it() {
 }
 
 /// Bun rows call it the same way.
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bun_row_calls_a_marked_rust_service() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();
     let sdk = repo()

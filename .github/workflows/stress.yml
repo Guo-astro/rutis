@@ -344,11 +344,12 @@ jobs:
         with:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
-      - run: cargo test -p rutis-loader --features node,python,go,bun --test events_conformance --no-run
+      - run: cargo test -p rutis-loader --all-features --test events_conformance --no-run
       - name: Every placement
         # bash -eo pipefail: a failing run fails the step through tee.
         shell: bash
         env:
+          RUTIS_TEST_RUNTIMES: bun,go,node,python
           RUTIS_EVENTS_PLACEMENTS: ${{ inputs.events || 'all' }}
           RUTIS_EVENTS_CASE: ${{ matrix.cases }}
           RUTIS_EVENTS_REQUIRE: node,python,go,bun
@@ -359,7 +360,7 @@ jobs:
           case "$X" in node) test=events_with_x_a_cordis_plugin;; esac
           started=$(date +%s)
           status=0
-          cargo test -p rutis-loader --features node,python,go,bun --test events_conformance -- \
+          cargo test -p rutis-loader --all-features --test events_conformance -- \
             --exact "$test" --nocapture 2>&1 | tee "$RUNNER_TEMP/events.txt" || status=$?
           {
             echo "### events conformance, X=$X, $RUTIS_EVENTS_PLACEMENTS placements of $RUTIS_EVENTS_CASE"

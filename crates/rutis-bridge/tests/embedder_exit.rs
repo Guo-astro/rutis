@@ -7,7 +7,7 @@
 //!
 //! The killed embedder is this test binary run again as one
 //! (`embedder_role`), the runtime being its child as in any application.
-#![cfg(all(unix, feature = "node"))]
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,7 +32,6 @@ export function apply(ctx, config) {
 }
 "#;
 
-#[cfg(feature = "python")]
 const PYTHON_BUSY: &str = r#"
 import asyncio
 import os
@@ -52,9 +51,7 @@ def apply(ctx, config):
 #[derive(Clone, Copy, Debug)]
 enum Language {
     Node,
-    #[cfg(feature = "python")]
     Python,
-    #[cfg(feature = "bun")]
     Bun,
 }
 
@@ -62,18 +59,14 @@ impl Language {
     fn name(self) -> &'static str {
         match self {
             Language::Node => "node",
-            #[cfg(feature = "python")]
             Language::Python => "python",
-            #[cfg(feature = "bun")]
             Language::Bun => "bun",
         }
     }
 
     fn named(name: &str) -> Self {
         match name {
-            #[cfg(feature = "python")]
             "python" => Language::Python,
-            #[cfg(feature = "bun")]
             "bun" => Language::Bun,
             _ => Language::Node,
         }
@@ -87,12 +80,10 @@ impl Language {
                 std::fs::write(&entry, NODE_BUSY).unwrap();
                 (TestRuntime::node(), entry)
             }
-            #[cfg(feature = "python")]
             Language::Python => {
                 std::fs::write(dir.join("busy.py"), PYTHON_BUSY).unwrap();
                 (TestRuntime::python(dir), PathBuf::from("busy"))
             }
-            #[cfg(feature = "bun")]
             Language::Bun => {
                 std::fs::write(dir.join("package.json"), "{}").unwrap();
                 let entry = dir.join("busy.mjs");
@@ -250,26 +241,36 @@ impl Drop for Killed {
 /// guarantee: host/killed-host-leaves-no-runtimes
 #[test]
 fn node_ends_when_its_embedder_gets_ctrl_c() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     killed_embedder_leaves_no_runtime(Language::Node, libc::SIGINT);
 }
 
 /// guarantee: host/killed-host-leaves-no-runtimes
 #[test]
 fn node_ends_when_its_embedder_gets_sigterm() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     killed_embedder_leaves_no_runtime(Language::Node, libc::SIGTERM);
 }
 
 /// guarantee: host/killed-host-leaves-no-runtimes
-#[cfg(feature = "python")]
 #[test]
 fn python_ends_when_its_embedder_gets_ctrl_c() {
+    if !rutis_test_support::runtimes::enabled("python") {
+        return;
+    }
     killed_embedder_leaves_no_runtime(Language::Python, libc::SIGINT);
 }
 
 /// guarantee: host/killed-host-leaves-no-runtimes
-#[cfg(feature = "bun")]
 #[test]
 fn bun_ends_when_its_embedder_gets_ctrl_c() {
+    if !rutis_test_support::runtimes::enabled("bun") {
+        return;
+    }
     killed_embedder_leaves_no_runtime(Language::Bun, libc::SIGINT);
 }
 
@@ -279,6 +280,9 @@ fn bun_ends_when_its_embedder_gets_ctrl_c() {
 /// does.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_busy_runtime_ends_with_a_shutdown() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let root = root();
     let (pid, parts) = busy_runtime(&root, Language::Node, dir.path()).await;
@@ -297,6 +301,9 @@ async fn a_busy_runtime_ends_with_a_shutdown() {
 /// down: the runtime processes go with it.
 #[test]
 fn a_busy_runtime_goes_with_a_dropped_application() {
+    if !rutis_test_support::runtimes::enabled("node") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let tasks = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

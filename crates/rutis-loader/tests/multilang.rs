@@ -2,7 +2,7 @@
 //! JavaScript (`definePlugin`, in the Node runtime) and in Python (in the
 //! Python runtime) behave the same under rutis-loader, and use each other's
 //! services across the two processes.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -281,6 +281,9 @@ fn all_rows(fixture: &Fixture) -> Vec<Value> {
 /// guarantee: loader/services-by-name, loader/runtimes-do-not-wait-for-each-other
 #[tokio::test(flavor = "multi_thread")]
 async fn both_runtimes_start_cold_and_use_each_other() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
@@ -306,6 +309,9 @@ async fn both_runtimes_start_cold_and_use_each_other() {
 /// risk: C4, C6
 #[tokio::test(flavor = "multi_thread")]
 async fn python_awaits_node_that_awaits_python() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let report = fixture
         .loader
@@ -333,6 +339,9 @@ async fn python_awaits_node_that_awaits_python() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_goes_stops_only_its_users() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     for (provider, users, others) in [
         ("pp", ["jc", "pl"], ["pc", "jl"]),
         ("jp", ["pc", "jl"], ["jc", "pl"]),
@@ -402,6 +411,9 @@ async fn a_provider_that_goes_stops_only_its_users() {
 /// guarantee: loader/rows-gate-on-services
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_services_gate_the_plugin() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     let transitions = common::Transitions::on(&fixture.root);
@@ -482,6 +494,9 @@ async fn injected_services_gate_the_plugin() {
 /// guarantee: loader/runtime-down-stops-its-rows
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_python_process_stops_only_its_rows() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let loader = &fixture.loader;
     std::fs::write(
@@ -563,6 +578,9 @@ export default definePlugin({
 /// guarantee: loader/isolate-and-inject
 #[tokio::test(flavor = "multi_thread")]
 async fn an_isolated_second_provider_runs_beside_the_first() {
+    if !rutis_test_support::runtimes::all_enabled(&["node", "python"]) {
+        return;
+    }
     let fixture = fixture().await;
     let plugin = repo().join("node/rutis/src/index.mjs");
     let plugin = plugin.to_string_lossy();

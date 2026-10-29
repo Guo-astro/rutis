@@ -4,7 +4,7 @@
 //! its process ended. An error a row's code leaves unhandled fails that row
 //! alone where the runtime traces it, and is reported as from an unknown
 //! row where it does not; the runtime's process goes on (#688).
-#![cfg(any(feature = "node", feature = "python", feature = "bun"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -56,30 +56,24 @@ impl HostDispatch for Gate {
 /// The language a fixture runs its rows in.
 #[derive(Clone, Copy, Debug)]
 enum Language {
-    #[cfg(feature = "node")]
     Node,
     /// Node as `rutis-host dev` runs it (`RUTIS_DEV=1`): it traces rows.
-    #[cfg(feature = "node")]
     NodeDev,
-    #[cfg(feature = "python")]
     Python,
-    #[cfg(all(unix, feature = "bun"))]
+    #[cfg(unix)]
     Bun,
 }
 
 impl Language {
     /// The row name of the plugin `stem` written in `dir`.
     fn row_name(self, dir: &Path, stem: &str) -> String {
-        let _ = dir;
         match self {
-            #[cfg(feature = "node")]
             Language::Node | Language::NodeDev => dir
                 .join(format!("{stem}.mjs"))
                 .to_string_lossy()
                 .into_owned(),
-            #[cfg(feature = "python")]
             Language::Python => format!("py:{stem}"),
-            #[cfg(all(unix, feature = "bun"))]
+            #[cfg(unix)]
             Language::Bun => format!("bun:./{stem}.mjs"),
         }
     }
@@ -87,15 +81,12 @@ impl Language {
     /// Write the plugin `stem` into `dir`: `js` for the JavaScript
     /// runtimes (a `definePlugin` argument), `py` for Python.
     fn write(self, dir: &Path, stem: &str, js: &str, py: &str) {
-        let _ = (js, py);
         match self {
-            #[cfg(feature = "node")]
             Language::Node | Language::NodeDev => {
                 std::fs::write(dir.join(format!("{stem}.mjs")), sdk_plugin(js))
             }
-            #[cfg(feature = "python")]
             Language::Python => std::fs::write(dir.join(format!("{stem}.py")), py),
-            #[cfg(all(unix, feature = "bun"))]
+            #[cfg(unix)]
             Language::Bun => std::fs::write(dir.join(format!("{stem}.mjs")), sdk_plugin(js)),
         }
         .unwrap();
@@ -103,16 +94,12 @@ impl Language {
 
     /// The runtime, on `dir`.
     fn runtime(self, dir: &Path) -> TestRuntime {
-        let _ = dir;
         match self {
-            #[cfg(feature = "node")]
             Language::Node => TestRuntime::node(&repo().join("node/rutis-runtime/package.json")),
-            #[cfg(feature = "node")]
             Language::NodeDev => TestRuntime::node(&repo().join("node/rutis-runtime/package.json"))
                 .launcher(|launcher| launcher.env("RUTIS_DEV", "1")),
-            #[cfg(feature = "python")]
             Language::Python => TestRuntime::python(dir),
-            #[cfg(all(unix, feature = "bun"))]
+            #[cfg(unix)]
             Language::Bun => {
                 std::fs::write(dir.join("package.json"), "{}").unwrap();
                 TestRuntime::bun(dir)
@@ -123,16 +110,13 @@ impl Language {
     /// The resolver of the runtime's rows.
     fn sessions(self, catalog: &ServiceCatalog) -> SessionResolver {
         match self {
-            #[cfg(feature = "node")]
             Language::Node | Language::NodeDev => SessionResolver::npm(catalog, "node"),
-            #[allow(unreachable_patterns)]
             _ => SessionResolver::new(catalog),
         }
     }
 }
 
 /// A leaf plugin written with the SDK, imported from this checkout.
-#[cfg(any(feature = "node", all(unix, feature = "bun")))]
 fn sdk_plugin(body: &str) -> String {
     let sdk = repo()
         .join("node/rutis/src/index.mjs")
@@ -317,21 +301,28 @@ async fn a_clashing_provide_fails_only_its_row(language: Language) {
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_clashing_provide_fails_only_its_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_clashing_provide_fails_only_its_row(Language::Node).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_clashing_provide_fails_only_its_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_clashing_provide_fails_only_its_row(Language::Python).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_clashing_provide_fails_only_its_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_clashing_provide_fails_only_its_row(Language::Bun).await;
 }
 
@@ -411,21 +402,28 @@ async fn a_name_a_row_isolates_is_seen_in_its_isolate_only(language: Language) {
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Node).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Python).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_name_a_row_isolates_is_seen_in_its_isolate_only() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_name_a_row_isolates_is_seen_in_its_isolate_only(Language::Bun).await;
 }
 
@@ -604,11 +602,9 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
     // The call says the runtime went away during it (`peer-gone`); how the
     // process ended is in the runtime's reason and in the call's data.
     let runtime = match language {
-        #[cfg(feature = "node")]
         Language::Node | Language::NodeDev => "node",
-        #[cfg(feature = "python")]
         Language::Python => "py",
-        #[cfg(all(unix, feature = "bun"))]
+        #[cfg(unix)]
         Language::Bun => "bun",
     };
     assert_eq!(
@@ -633,9 +629,7 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
         .map(|data| data.to_string())
         .unwrap_or_default();
     let status = match language {
-        #[cfg(feature = "python")]
         Language::Python => exited(3),
-        #[allow(unreachable_patterns)]
         _ => exited(1),
     };
     assert!(reason.contains(&status), "{language:?}: {reason}");
@@ -660,21 +654,28 @@ async fn a_runtime_that_exits_blames_no_other_row(language: Language) {
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_a_runtime_that_exits_blames_no_other_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_runtime_that_exits_blames_no_other_row(Language::Node).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_a_runtime_that_exits_blames_no_other_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_runtime_that_exits_blames_no_other_row(Language::Python).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_a_runtime_that_exits_blames_no_other_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     a_runtime_that_exits_blames_no_other_row(Language::Bun).await;
 }
 
@@ -813,9 +814,7 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
     let prompt = failure(loader, "prompt").await;
     reconcile.await.unwrap().unwrap();
     let (exception, extension) = match language {
-        #[cfg(feature = "python")]
         Language::Python => ("ValueError", ".py"),
-        #[allow(unreachable_patterns)]
         _ => ("Error", ".mjs"),
     };
     // What failed, and where: the plugin's own file, among the frames
@@ -845,9 +844,7 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
         "{language:?}: {early}"
     );
     let rejection = match language {
-        #[cfg(feature = "python")]
         Language::Python => "unhandled exception",
-        #[allow(unreachable_patterns)]
         _ => "unhandled rejection",
     };
     assert!(faulty.contains(rejection), "{language:?}: {faulty}");
@@ -872,15 +869,19 @@ async fn an_unhandled_error_fails_only_its_row(language: Language) {
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dev_an_unhandled_error_fails_only_its_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_unhandled_error_fails_only_its_row(Language::NodeDev).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_an_unhandled_error_fails_only_its_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_unhandled_error_fails_only_its_row(Language::Python).await;
 }
 
@@ -1040,15 +1041,19 @@ async fn an_error_in_a_called_rows_code_is_charged_to_no_row(language: Language)
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dev_an_error_in_a_called_rows_code_is_charged_to_no_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_error_in_a_called_rows_code_is_charged_to_no_row(Language::NodeDev).await;
 }
 
-#[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_an_error_in_a_called_rows_code_is_charged_to_no_row() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_error_in_a_called_rows_code_is_charged_to_no_row(Language::Python).await;
 }
 
@@ -1120,14 +1125,19 @@ async fn an_unhandled_error_from_an_unknown_row_is_reported(language: Language) 
     fixture.root.shutdown().await.unwrap();
 }
 
-#[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_an_unhandled_error_from_an_unknown_row_is_reported() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_unhandled_error_from_an_unknown_row_is_reported(Language::Node).await;
 }
 
-#[cfg(all(unix, feature = "bun"))]
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_an_unhandled_error_from_an_unknown_row_is_reported() {
+    if !node_a_clashing_provide_fails_only_its_row=node {
+        return;
+    }
     an_unhandled_error_from_an_unknown_row_is_reported(Language::Bun).await;
 }

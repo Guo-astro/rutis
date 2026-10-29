@@ -1,7 +1,7 @@
 //! Shared service names inside instances, across languages: each instance's
 //! TS and Python rows use and provide that instance's services, though
 //! every instance's rows share one process per language.
-#![cfg(all(feature = "node", feature = "python"))]
+#![cfg(feature = "runtimes")]
 
 mod common;
 
@@ -287,6 +287,9 @@ impl Fixture {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn each_instance_sees_its_own_services_across_languages() {
+    if !each_instance_sees_its_own_services_across_languages=node,python {
+        return;
+    }
     let fixture = fixture().await;
     let a = fixture.create("A").await;
     let b = fixture.create("B").await;
@@ -339,6 +342,9 @@ async fn each_instance_sees_its_own_services_across_languages() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_instance_leaves_nothing_behind() {
+    if !each_instance_sees_its_own_services_across_languages=node,python {
+        return;
+    }
     let fixture = fixture().await;
     let a = fixture.create("A").await;
     fixture.create("B").await;
@@ -372,6 +378,9 @@ async fn a_removed_instance_leaves_nothing_behind() {
 /// guarantee: loader/instance-close-leaves-nothing
 #[tokio::test(flavor = "multi_thread")]
 async fn removed_instances_leave_no_tasks_behind() {
+    if !each_instance_sees_its_own_services_across_languages=node,python {
+        return;
+    }
     let fixture = fixture().await;
     let metrics = tokio::runtime::Handle::current().metrics();
     // What the first instance starts for good (a runtime's lazily started
@@ -402,6 +411,9 @@ async fn removed_instances_leave_no_tasks_behind() {
 /// guarantee: loader/instance-services
 #[tokio::test(flavor = "multi_thread")]
 async fn a_language_row_outside_its_instances_is_unresolved() {
+    if !each_instance_sees_its_own_services_across_languages=node,python {
+        return;
+    }
     let fixture = fixture().await;
     let mut rows = fixture.rows.clone();
     rows[0]["insert"].as_array_mut().unwrap().push(json!({

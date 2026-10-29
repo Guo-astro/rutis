@@ -100,7 +100,7 @@
 | `lint` | Linux | `code` | — | `cargo fmt --check`；指南、README 和示例里没有 `rutis::internal`（它只给 rutis 自己的 crate 用，#617）；顶部测试列表里的每个名字都有对应的测试文件（§4）；`cargo clippy --workspace --all-targets --all-features -- -D warnings`。与测试并行。没有基线：警告在引入它的 PR 里改掉，升级工具链带来的新 lint 在升级的 PR 里改掉 |
 | `public-api` | Linux | `code` | — | 内核的公开面（根、`rutis::events`、`rutis::host`；隐藏的 `rutis::internal` 不算）和 `crates/rutis/public-api.txt` 里的快照比对（`tools/public-api.sh`，用 `cargo-public-api` 的库（`tools/public-api`，不用要 OpenSSL 才编得出来的命令行工具）和固定日期的 nightly 读 rustdoc JSON，约 1 分钟）。加一个名字就要改快照，评审时看得见；有意的改动用 `tools/public-api.sh --write` 更新快照（#617） |
 | `msrv` | macOS（自托管，§10） | 只在 `all` 时（改了 `Cargo.lock`、`Cargo.toml` 等） | 整个任务 | 用声明的 MSRV（`Cargo.toml` 的 `rust-version`）和仓库的 `Cargo.lock` 编译库和二进制（`cargo +<版本> check --workspace`，不含示例项目 `rutis-agent`、`rutis-cli`） |
-| `checks` | macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查和 `--no-run`（整个工作区的编译由 `lint` 的 clippy 覆盖）。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
+| `checks` | macOS（自托管，§10） | 只在 `all` 时 | 整个任务 | bridge、loader 各个 feature 组合的编译检查，以及两个 crate 的测试在不开语言 feature 时能编译（`--no-run`；测试用哪些运行时由 `RUTIS_TEST_RUNTIMES` 决定，§4）。整个工作区的编译由 `lint` 的 clippy 覆盖。这些检查发现的是少见的 feature 组合编译错误，不跑测试 |
 | `network-macos` | macOS | `code`：只跑平台专项测试（§4；`events_conformance` 只跑写定的放置） | bridge、loader 全部测试；`node/rutis` 测试；`events_conformance` 的抽样放置 | 最新版本（§9）下的进程启动、本地通道、运行时进程、WebSocket、rutis-host 测试；端到端场景（失败时上传 artifact `e2e-macos`）；Node 运行时和 Python 包的测试；整个工作区的编译检查 |
 | `runtimes-windows` | Windows | `code`：只跑平台专项测试（§4） | bridge、loader 全部测试 | 同上，在 Windows 上（进程用 loopback 方式启动）；Go SDK 测试；E2E harness 和不限于 Unix 的 E2E 场景（`rutis-e2e`：Job Object、Ctrl-Break、残余检查）；整个工作区的编译检查 |
 | `runtimes-bun` | Linux | `bun`：Bun 1.4.0 | Linux 最新版；macOS 1.4.0 | Bun 运行时的全部测试，包括 loopback 方式启动的重跑 |
@@ -121,11 +121,15 @@
 PR 上 macOS、Windows 跑两个 crate 的单元测试（`--lib`）和平台专项的测试文件，跳过 `ci.yml` 顶部三组列表里的名字：
 
 - `PURE_TESTS_*`：只依赖 Rust 代码本身，不启动进程、不开 socket、除了读 fixture 不碰文件、不依赖操作系统的行为；
-- `MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*`：运行时和事件行为，和平台无关，Linux 的 `rust` 任务已经用全部 feature 跑过。平台专项的部分保留：进程启动、继承的 socket 与 loopback 交接、signal、网络栈，以及 Swift、Kotlin 自己的行。两个平台不完全相同：Windows 保留经 loopback 启动的运行时行，跳过它不运行的运行时的行。
+- `MACOS_SKIP_TESTS_*`、`WINDOWS_SKIP_TESTS_*`：运行时和事件行为，和平台无关，Linux 的 `rust` 任务已经用全部运行时跑过。平台专项的部分保留：进程启动、继承的 socket 与 loopback 交接、signal、网络栈，以及 Swift、Kotlin 自己的行。两个平台不完全相同：Windows 保留经 loopback 启动的运行时行，跳过它不运行的运行时的行。
 
 `rutis-host` 的测试在 PR 上全跑。完整运行三个平台都跑全部测试文件。新加的测试文件默认在三个平台上都跑，不需要记得登记；只有确认 Linux 已覆盖与操作系统无关的部分，才把它加进 skip 列表。列表里的名字找不到对应文件时，脚本报错，`lint` 任务失败，重命名或删除测试文件不会让列表悄悄失效。
 
 传给 `cargo test` 的 `--lib --test <名字> ...` 由 `tools/platform-tests.sh` 在任务运行时生成：`crates/<crate>/tests/` 下的每个测试文件，去掉传入的列表里的名字。每晚 `stress.yml` 的 `multiprocess` 任务也用它，但只排除 `PURE_TESTS_*`，所以 skip 列表里会启动进程的测试仍会在夜里重复（§2）。
+
+### 测试用哪些运行时
+
+bridge、loader 和示例里要启动语言运行时的测试，按环境变量 `RUTIS_TEST_RUNTIMES`（逗号分隔，`node`、`python`、`bun`、`go`、`swift`、`kotlin`）决定跑不跑，由 `rutis-test-support` 的 `runtimes` 判断：列出的语言找不到工具链时测试失败，写明缺什么；没列出的语言的测试打印一行 `skipped: <语言> not in RUTIS_TEST_RUNTIMES` 后返回。CI 的每个步骤按它装了的运行时设置这个变量，cargo 用 `--all-features`，不再用语言 feature 挑测试。这是测试约定，不是产品开关。本地跑时也要设，例如 `RUTIS_TEST_RUNTIMES=node,python cargo test -p rutis-loader --all-features`。
 
 ### 一致性矩阵
 
@@ -228,7 +232,7 @@ CI 慢下来，通常是一项一项加检查加出来的。新增检查（新�
 ### 加一种语言运行时
 
 1. `changes` 加一个这种语言的开关，包括它的运行时目录，以及 `crates/rutis-bridge`、`crates/rutis-loader`、`crates/rutis-host`。
-2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤里加上它的 feature；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
+2. 在 `rust`、`e2e`（最低支持版本）和 `network-macos`（最新版本）里安装这种语言（§9），在已有的 bridge、loader、host 测试步骤的 `RUTIS_TEST_RUNTIMES` 里加上它（`rutis-test-support` 的 `runtimes` 也加上这种语言和它的起进程命令）；它的测试文件默认在 macOS、Windows 上跑（§4），不需要登记。
 3. 如果要测多个版本，加一个 `runtimes-<语言>` 任务：按第 1 步的开关运行，加进 `ci-ok`，PR 上只在 Linux 跑最低支持版本；其他版本和 macOS 只在完整运行中跑（做法见 `runtimes-bun` 和 `changes` 的 `bun-matrix`）。
 4. 发布相关：`release-dry-run`、`scripts/train.mjs`、`release.yml` 都加上它的包。
 5. 更新 §3、§4。

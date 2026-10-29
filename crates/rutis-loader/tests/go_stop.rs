@@ -58,6 +58,9 @@ fn generation(loader: &Loader) -> Option<u64> {
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts() {
+    if !a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts=go {
+        return;
+    }
     // Before anything starts: every runtime process inherits it.
     std::env::set_var("RUTIS_SHUTDOWN_TIMEOUT", DEADLINE.to_string());
     let dir = tempfile::tempdir().unwrap();
