@@ -12,6 +12,8 @@
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host types [crate dir] [-o file] [--python file]
+//! rutis-host test <plugin> -- <runtime command…> <project>
+//! rutis-host test <plugin> --channel <channel>
 //! ```
 
 use std::collections::HashSet;
@@ -91,6 +93,19 @@ usage:
                                               dir (default .) and the crates it uses (to stdout,
                                               or to file); --python also writes their Python
                                               types
+  rutis-host test <plugin> -- <runtime command...> <project>
+                                              for a test tool: a host with no rows of its own,
+                                              which starts the runtime as a local runtime
+                                              (<runtime command...> <channel> --id test
+                                              <project>), loads <plugin> there to drive the
+                                              test, and serves rutis-host/test (load, update,
+                                              unload, reported) to run plugins in that runtime;
+                                              it exits when the runtime ends
+                  <plugin> --channel <channel>
+                                              the same with a runtime the test tool runs itself,
+                                              on the channel it handed over as a local runtime
+                                              gets one (fd:<n>, or tcp:<host>:<port> with the
+                                              token in RUTIS_CHANNEL_TOKEN)
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
@@ -103,8 +118,8 @@ Ctrl-C, or runtime processes that did not exit), 3 when a runtime whose
 restart is \"exit\" ended and the host stopped.";
 
 /// The commands `USAGE` describes, each with its own lines there.
-const COMMANDS: [&str; 10] = [
-    "run", "dev", "check", "status", "call", "new", "add", "remove", "upgrade", "types",
+const COMMANDS: [&str; 11] = [
+    "run", "dev", "check", "status", "call", "new", "add", "remove", "upgrade", "types", "test",
 ];
 
 /// The lines of `USAGE` about `command`: its own entry and the options
@@ -161,7 +176,7 @@ fn main() {
             install_command(command, &args[1..]).map(|()| Stopped::Done)
         }
         Some("call") => call_command(&args[1..]),
-        Some(command @ ("run" | "dev" | "check")) => serve(command, &args[1..]),
+        Some(command @ ("run" | "dev" | "check" | "test")) => serve(command, &args[1..]),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     };
     // The runtimes' last lines, still being passed on once they ended.
@@ -371,6 +386,7 @@ fn serve(command: &str, args: &[String]) -> Result<Stopped, String> {
         match command {
             "run" => run(args).await,
             "dev" => dev::dev(args).await,
+            "test" => test(args).await,
             _ => check(args).await.map(|()| Stopped::Done),
         }
     })
@@ -428,6 +444,88 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
                 tokio::select! {
                     () = reload::reload(&mut host, &path, &mut triggers) => {}
                     signal = signals.next() => break Ended::Signal(signal),
+                }
+            }
+        }
+        Started::Signal(signal) => Ended::Signal(signal),
+        Started::Failed(stopped) => return Ok(stopped.failed()),
+    };
+    Ok(stop::end(&host, ended, deadline, &mut signals).await)
+}
+
+/// `rutis-host test <plugin> -- <runtime command…> <project>`, or
+/// `rutis-host test <plugin> --channel <channel>`
+/// (`docs/design-platform-cleanup-2026-10-28.md` §7.5).
+async fn test(args: &[String]) -> Result<Stopped, String> {
+    use rutis_host::test::{Session, Test};
+    let (deadline, args) = stop::deadline(args)?;
+    let usage = "usage: rutis-host test <plugin> -- <runtime command...> <project>\n       rutis-host test <plugin> --channel <channel>";
+    let (plugin, testing) = match &args[..] {
+        [plugin, flag, channel] if flag == "--channel" => (plugin, Test::given(channel)),
+        _ => {
+            let (plugin, runtime) = match args.iter().position(|arg| arg == "--") {
+                Some(at) => (&args[..at], &args[at + 1..]),
+                None => return Err(usage.into()),
+            };
+            let ([plugin], [command @ .., project]) = (plugin, runtime) else {
+                return Err(usage.into());
+            };
+            if command.is_empty() {
+                return Err(usage.into());
+            }
+            (plugin, Test::new(command, project))
+        }
+    };
+    if plugin.starts_with('-') {
+        return Err(usage.into());
+    }
+    let config: config::HostConfig =
+        serde_json::from_value(serde_json::json!({})).map_err(|error| error.to_string())?;
+    stop::pass_on(deadline);
+    let mut signals = stop::Signals::listen()?;
+    let (registering, observing) = (testing.clone(), testing.clone());
+    let embedding = host::Embedding {
+        builtins: Some(Box::new(move |builtins| registering.register(builtins))),
+        observe: Some(std::sync::Arc::new(move |error| observing.observe(error))),
+        ..host::Embedding::default()
+    };
+    let host = host::Host::start_with(&config, embedding).await?;
+    let started = async {
+        rutis_host::test::start(&host.loader).await?;
+        // The plugin that drives the test, once the runtime greeted.
+        let mut session = testing.session();
+        let greeted = session
+            .wait_for(|state| *state != Session::Starting)
+            .await
+            .map(|state| *state == Session::Connected)
+            .unwrap_or(false);
+        if !greeted {
+            return Ok(());
+        }
+        testing
+            .load(&host.loader, plugin, serde_json::Value::Null)
+            .await
+            .map(drop)
+    };
+    let ended = match start(&host, started, deadline, &mut signals).await {
+        Started::Running => {
+            let mut session = testing.session();
+            tokio::select! {
+                signal = signals.next() => Ended::Signal(signal),
+                ended = session.wait_for(|state| matches!(state, Session::Ended(_))) => {
+                    let failed = match ended.as_deref() {
+                        Ok(Session::Ended(Some(why))) => Some(why.clone()),
+                        _ => None,
+                    };
+                    drop(ended);
+                    let stopped = stop::finish(&host, deadline, &mut signals).await;
+                    return Ok(match failed {
+                        Some(why) => {
+                            errln!("rutis-host: test: {why}");
+                            stopped.failed()
+                        }
+                        None => stopped,
+                    });
                 }
             }
         }

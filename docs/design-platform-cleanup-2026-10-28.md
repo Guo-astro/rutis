@@ -320,12 +320,12 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 
 **测试工具改为"真实运行时 + 真实 rutis 内核"。**
 
-- rutis-host 加 `rutis-host test`：起一个没有行的宿主，经标准输入输出与调用它的进程建一条 #811 的 session（与本机运行时同一种管道）。宿主里有一个普通的 Rust 插件 `rutis-host/test`，只用 loader 的公开 API，提供服务 `rutis-host/test`：`load(name, config)`、`update(id, config)`、`unload(id)`、`reported(id)`。它属于 rutis-host（参考宿主与工具），平台不变。
-- 各语言的测试工具在测试进程里起本语言的真实运行时，起 `rutis-host test` 并接上 session；被测插件经 `load` 成为一行，由宿主按 #811 的 `run` 跑在这个运行时里；测试方的假服务、`t.on`、`emit` 是同一运行时里的一个测试插件，用公开的 `ctx.provide`、`ctx.on`、`ctx.emit`。
+- rutis-host 加 `rutis-host test`：`rutis-host test <驱动测试的插件> -- <运行时命令…> <项目>` 起一个没有行的宿主，像本机运行时那样启动运行时（`pipe::spawn`：fd 3；Windows 上是本机回环地址加一次性 token），与它建一条 #811 的 session。宿主里有一个普通的 Rust 插件 `rutis-host/test`，只用 loader 的公开 API，提供服务 `rutis-host/test`：`load(name, config)`、`update(id, config)`、`unload(id)`、`reported(id)`。它属于 rutis-host（参考宿主与工具），平台不变。`rutis-host test <驱动测试的插件> --channel <通道>`（CL27b）接测试工具在自己进程里跑的运行时：测试工具按本机运行时的交接方式把通道交给它（Unix 继承 fd，`fd:<n>`；Windows 与 `RUTIS_LOCAL_HANDOVER=loopback` 下是本机回环地址加一次性 token，`tcp:<主机>:<端口>`），给要在测试进程里调用被测插件的 Go、Swift、Kotlin 用。
+- 各语言的测试工具以本语言真实运行时的命令运行 `rutis-host test`；被测插件经 `load` 成为一行，由宿主按 #811 的 `run` 跑在这个运行时里；测试方的假服务、`t.on`、`emit` 是同一运行时里的一个测试插件，用公开的 `ctx.provide`、`ctx.on`、`ctx.emit`。
 - 删掉各语言模拟宿主规则的部分：Node `testing.mjs` 的值跨进程语义（`:46–360`）、依赖检查与它用的 `config.mjs`/`events.mjs` 部分；Python `testing.py` 的 `_cross` 等（`:93–360`）；Go `rutistest.go` 的宿主分发（`:800–931,955–1213,1223–1290,1359–1403,350–391`，约 550 行）；Swift `RutisTest.swift` 的 `Harness`（`:61–508`）；Kotlin `RutisTest.kt` 的 `Harness`（`:101–547`）。
 - 公开写法不变：Node `load`、`host`、`Loaded` 的 `service`/`methods`/`provided`/`reported`/`on`/`update`/`unload`/五种发出方式/`filter`；Python `load`、`Bus`、`Loaded`、`Reported`；Go `Load`、`TryLoad`、`Loaded`；Swift、Kotlin `RutisTest.load`、`scope`、`Loaded`。Python `load(emits=…)` 参数随 `refuseRemoved` 删。
 - 找 rutis-host：`PATH` 上的 `rutis-host`，或 `RUTIS_HOST` 指定的路径。Node 测试工具 `@arcships/rutis/testing` 动态导入 `@arcships/rutis-runtime`（SDK 包不静态依赖运行时包，`leaf.mjs` 的约定不变）；模板把 `@arcships/rutis-runtime` 与 `@arcships/rutis-host` 加为开发依赖。Bun 用同一份测试工具，按 `typeof Bun` 起 Bun 运行时。
-- 设备上（Android instrumented 测试、iOS 模拟器）没有 rutis-host 进程：测试工具连开发机上运行的 `rutis-host test --listen <地址>`（#811 的 `rutis-host/listen`，与真实应用的接入方式相同）。`MainThreadTest`、`swift-app.md:74`、`kotlin-app.md:209` 按这样写。
+- 0.19 里测试工具只用本机运行时（#875 定）：设备上的测试（Android instrumented 测试、iOS 模拟器）不用 `rutis-host test`，那里由应用自己装插件。
 - H4（测试工具拒绝插件提供宿主已有的服务名，#810）由真实内核报，`testing.mjs`、`testing.py` 里的两处手写检查删；报错文字以内核为准。
 - 测试速度：现在单个测试在 1 毫秒量级（`node/rutis` 全部 169 个测试 1.4 秒，实测）；起一次宿主估计 150–500 毫秒。做法：每个测试文件起一个宿主，用例之间卸载行，不重启宿主。可接受：模板项目的测试（一个文件）总时间不超过 2 秒；`node/rutis` 与 `python/rutis` 全部测试不超过现在的 3 倍。超出时停下报告，不恢复模拟宿主。
 
@@ -561,7 +561,7 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 3. **Go 插件**：用 0.18 及以后的 SDK 重新构建（0.18 前构建的二进制的 `required` 例外删除）。
 4. **SDK 的旧位置**：#692 那一节的对照表保留"新位置"一列，删"看到什么提示"一列与"不改也能跑"一段；写明 Python 插件要与宿主一起升级，Kotlin 的 `rutis-ksp` 与 SDK 同版本。
 5. **Python**：最低 3.12。
-6. **测试工具**：写法不变；运行时需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`），Node 项目把 `@arcships/rutis-runtime`、`@arcships/rutis-host` 加为开发依赖；Kotlin 测试工具的依赖坐标改为 `rutis-testing`；设备上的测试连开发机上的 `rutis-host test --listen`。
+6. **测试工具**：写法不变；运行时需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`），Node 项目把 `@arcships/rutis-runtime`、`@arcships/rutis-host` 加为开发依赖；Kotlin 测试工具的依赖坐标改为 `rutis-testing`；设备上的测试由应用自己装插件，不用 `rutis-host test`。
 7. **事件**：Kotlin 在 Android 主线程上的同步 `bail` 一律被拒；Go 会话结束后的 `emit` 报会话已结束。
 8. **`rutis-host go add`**：改用 `rutis-host add <模块路径>`（它会同时写一行）。
 9. **工具**：`rutis-dev` 删；生成类型的 `Exports` 搬到新 crate `rutis-types`，build.rs 改依赖它，写法不变；`rutis-migrate` 不再随 0.19 发布（0.17 的迁移仍可 `cargo install rutis-migrate --version 0.18.0`）。

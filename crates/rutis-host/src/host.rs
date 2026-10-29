@@ -72,6 +72,9 @@ impl Exits {
 /// Registers rows compiled into a program ([`Embedding::builtins`]).
 pub type RegisterBuiltins = Box<dyn FnOnce(&mut Builtins) + Send>;
 
+/// Given each error the kernel reports ([`Embedding::observe`]).
+pub type ObserveErrors = Arc<dyn Fn(&rutis::host::ErrorKind) + Send + Sync>;
+
 /// What a Rust program embedding this host adds to what the configuration
 /// names (the E2E fixture host, `tests/e2e/fixture-host`).
 #[derive(Default)]
@@ -84,6 +87,9 @@ pub struct Embedding {
     /// `loader`, written back into it (`run`'s `rutis.json`); without one,
     /// they cannot.
     pub rows_file: Option<Arc<crate::rows_file::RowsFile>>,
+    /// Also given every error the kernel reports, before the host prints
+    /// it (`rutis-host test` keeps what it reports of each row).
+    pub observe: Option<ObserveErrors>,
 }
 
 pub type Error = String;
@@ -146,7 +152,11 @@ impl Host {
         let fallback = rutis::host::default_sink();
         let connections = crate::connect::Connections::default();
         let far_ends = connections.clone();
+        let observe = embedding.observe.clone();
         let sink: rutis::host::ErrorSink = std::sync::Arc::new(move |error| {
+            if let Some(observe) = &observe {
+                observe(&error);
+            }
             // A remote plugin is no row: why it failed (its service taken
             // here, say) is said as it is.
             if let rutis::host::ErrorKind::StartFailed { plugin, error } = &*error {
