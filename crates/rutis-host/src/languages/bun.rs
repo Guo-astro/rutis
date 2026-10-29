@@ -58,10 +58,6 @@ impl Language for Bun {
         }
     }
 
-    fn remote_names(&self) -> &'static [&'static str] {
-        &["bun"]
-    }
-
     fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
         runtimes
             .bun

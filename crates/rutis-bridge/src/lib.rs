@@ -1,16 +1,14 @@
 //! Connect rutis to other processes, languages and machines.
 //!
 //! - [`runtime`]: plugins written in Node or Python, run by language
-//!   runtimes on this machine ([`runtime::LocalRuntime`]) or elsewhere
-//!   ([`runtime::RuntimePlugin::remote`]); rutis-loader manages them as
-//!   rows.
+//!   runtimes on this machine ([`runtime::LocalRuntime`]); rutis-loader
+//!   manages them as rows.
+//! - [`Session`]: the far end of a [`Channel`] (a runtime, an app, a node)
+//!   as plugins of this kernel.
 //! - Links between rutis nodes ([`LinkPlugin`]) and what runs on them:
 //!   services exported and imported, plugins hosted for a peer, events
 //!   shared ([`PeerPlugin`] composes them).
 //! - [`events`]: the logical event bus across runtimes and nodes.
-//! - Access points ([`AccessPointPlugin`]): one listener admitting many
-//!   runtimes that dial out to rutis, each by the id it greets with, as an
-//!   [`Admission`] decides.
 //! - What links run over: [`pipe`] (local processes and Unix sockets),
 //!   [`memory`] (in-process channels) and `websocket` (feature
 //!   `websocket`), each giving a [`Channel`] directly ([`pipe::spawn`],
@@ -46,7 +44,6 @@ pub mod websocket;
 #[doc(hidden)]
 pub mod fuzzing;
 
-mod access_point;
 mod compose;
 mod host;
 mod identity;
@@ -56,16 +53,12 @@ mod peer;
 mod registration;
 mod services;
 
-pub use access_point::{
-    Accept, Accepted, AccessEvent, AccessPointConfig, AccessPointPlugin, Release,
-};
 pub use channel::{Channel, Close, ConnectError, PeerId};
 pub use compose::{Features, PeerHandle, PeerPlugin};
 pub use events::LinkEventsPlugin;
 pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
 pub use identity::{
-    admission_key, fingerprint, identity_key, Admission, AdmissionPlugin, Credential, Identity,
-    IdentityPlugin, Presented, Rejection, SharedToken, StaticIdentity,
+    fingerprint, identity_key, Credential, Identity, IdentityPlugin, Presented, StaticIdentity,
 };
 pub use link::{protocol, Connect, Dialer, Failure, LinkConfig, LinkPlugin, LinkState, Retry};
 pub use peer::{family, peer_key, Handler, Offered, Offers, Peer};
@@ -73,6 +66,9 @@ pub use registration::{
     Accepting, Deliver, Refusal, Registered, Registration, RegistrationError, Registrations, Ticket,
 };
 pub use services::{ExportPlugin, ImportPlugin};
+pub use session::plugin::{
+    catalog_key, session_key, Greeted, LocalId, RowHandle, Session, SessionHandle,
+};
 
 /// The error another language threw, inside a rutis error: a row that
 /// failed, a call to a plugin's service that failed. Gives its name, code,

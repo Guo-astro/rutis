@@ -51,12 +51,12 @@ pub struct RustHostGuide;
 pub struct RustHostGuideEn;
 
 /// The open-host guide's examples compile against these crates (#671).
-#[cfg(all(doctest, feature = "node"))]
+#[cfg(all(doctest, feature = "node", feature = "python"))]
 #[doc = include_str!("../../../docs/guide/open-host.md")]
 pub struct OpenHostGuide;
 
 /// The English open-host guide's examples compile against these crates.
-#[cfg(all(doctest, feature = "node"))]
+#[cfg(all(doctest, feature = "node", feature = "python"))]
 #[doc = include_str!("../../../docs/guide/open-host.en.md")]
 pub struct OpenHostGuideEn;
 

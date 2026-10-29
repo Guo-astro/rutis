@@ -2,9 +2,9 @@
 
 [English](swift-app.en.md)
 
-iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康数据、定位、通讯录、应用本身的功能）作为普通的 rutis 插件提供给 rutis。插件编进应用、随应用发布；装载、配置、卸载都由 rutis 按配置决定；应用只负责开始和停止连接。需要 iOS / iPadOS 17 或 macOS 14 以上，Xcode 26 以上（带 Swift 6.2 工具链）。
+iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康数据、定位、通讯录、应用本身的功能）作为普通的 rutis 插件提供给 rutis。插件编进应用、随应用发布；应用连上 rutis 后自己按顺序装上它们，各带应用给的配置，它们提供的服务在 rutis 上以 `<id>:<插件>` 出现；应用只负责开始和停止连接。需要 iOS / iPadOS 17 或 macOS 14 以上，Xcode 26 以上（带 Swift 6.2 工具链）。
 
-插件与 Mac 上的 [Swift 插件](swift-plugin.md) 完全相同：同一个插件定义既可以 `serve` 成二进制，也可以交给应用托管。本文只写不同的部分：把 SDK 加进应用、开始与停止、rutis 一侧、权限、网络。
+插件与 Mac 上的 [Swift 插件](swift-plugin.md) 完全相同：同一个插件定义既可以 `serve` 成二进制，也可以交给应用托管。本文只写不同的部分：把 SDK 加进应用、配置、开始与停止、rutis 一侧、权限、网络。
 
 ## 1. 加入 SDK
 
@@ -20,7 +20,7 @@ iOS、iPadOS 或 macOS 应用可以把它自己和所在设备的能力（健康
 
 ## 2. 写插件
 
-与 [Swift 插件指南](swift-plugin.md#2-写插件) 相同：插件声明它用什么，在 `apply` 里提供服务（服务自动对外，不需要写 `provides`）、登记清理。用到设备能力的插件直接调用系统 API：
+与 [Swift 插件指南](swift-plugin.md#2-提供服务) 相同：插件声明它用什么，在 `apply` 里提供服务（服务自动对外，不需要写 `provides`）、登记清理。用到设备能力的插件直接调用系统 API：
 
 ```swift
 import HealthKit
@@ -59,25 +59,34 @@ public let health = Rutis.define(Plugin(name: "health") { ctx in
 })
 ```
 
-rutis 不建模设备：行需要知道自己在哪台设备上时，由插件像提供任何服务一样提供：
+rutis 不建模设备：行需要知道自己在哪台设备上时，由插件像提供任何服务一样提供。插件的配置类型照常写（[配置](swift-plugin.md)；要在应用里给出它，再加 `Encodable`）：
 
 ```swift
 @RutisService
 public final class Device: @unchecked Sendable {
-    public func name() async -> String { await UIDevice.current.name }
+    let installation: String
+    init(installation: String) { self.installation = installation }
+    public func id() -> String { installation }
     public func system() async -> String { await "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)" }
 }
 
-public let device = Rutis.define(Plugin(name: "device") { ctx in ctx.provide("device", Device()) })
+@RutisConfig
+public struct DeviceConfig: Codable {
+    public var installation: String
+}
+
+public let device = Rutis.define(Plugin(name: "device", config: DeviceConfig.self) { ctx, config in
+    ctx.provide("device", Device(installation: config.installation))
+})
 ```
 
 插件的测试照插件指南 §3 用 `RutisTest`，在 iOS 模拟器里同样能跑。
 
-插件交给服务的插件定义（[Swift 插件](swift-plugin.md#把插件交给服务)）在应用的进程里运行；应用连进来时，它只能挂在这个连接所在的实例里（或更里面），应用 `stop()` 或断开时，从它挂出的每一份结束。
+插件交给服务的插件定义（[插件 API：各语言怎样交出插件定义](plugin-api.md#各语言怎样交出插件定义)）在应用的进程里运行；应用 `stop()` 或断开时，从它挂出的每一份结束。
 
 ### 带方法的对象
 
-和 [Swift 插件](swift-plugin.md#带方法的对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`，不是可选类型）拿到它的代理，写 `Any` 拿到 `Rutis.Advanced.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
+和 [插件 API：各语言怎样交出和收对象](plugin-api.md#各语言怎样交出和收对象) 相同：`@RutisService` 类型的实例按引用交出；别的进程交来的对象，参数类型写文件顶层的 `@RutisClient` 协议（`any Cache`，不是可选类型）拿到它的代理，写 `Any` 拿到 `Rutis.Advanced.Client`（`try await client.call("get", values: ["a"], as: Int?.self)`）。
 
 ```swift
 @RutisClient
@@ -107,39 +116,44 @@ import Rutis
 
 let rutis = RutisApp(
     plugins: [health, device],
+    configs: ["device": DeviceConfig(installation: "kim-iphone")],
     connect: "wss://rutis.example.com:7443/rutis",
     id: "kim-iphone",                 // 这个应用的 id：小写字母、数字和 -
     token: secrets.rutisToken)
 
-try await rutis.start()   // 拨出；此后 rutis 按配置装载插件
-await rutis.stop()        // 全部插件逆序清理，然后断开
+try await rutis.start()   // 拨出；连上后按顺序装上 health、device
+await rutis.stop()        // 撤回服务，全部插件逆序清理，然后断开
 ```
 
 | 参数 | 含义 |
 | --- | --- |
-| `plugins` | rutis 可以装载的插件。它装载配置里写到的，带上各自的配置；其余不装 |
+| `plugins` | 连上后按顺序装上的插件 |
+| `configs` | 可选：插件的配置，按插件名给出，值是它的配置类型（`Encodable`）；没给的插件用它的配置 Schema 的默认值。名字不是 `plugins` 里的插件时 `start()` 抛出：`configs names nope, which is not one of the plugins: device, health`。配置只在 `RutisApp` 里给：插件二进制的插件由 rutis 的行给配置 |
 | `connect` | rutis 的接入点：`wss://…`；`ws://` 只限回环（模拟器连它所在的 Mac） |
-| `id` | 这条连接的 id，在 rutis 侧命名它的实例；每个安装用自己的 id（例如首次启动时生成并保存） |
+| `id` | 这条连接的 id：它的插件在 rutis 上注册为 `<id>:<插件>`（`kim-iphone:health`）；每个安装用自己的 id（例如首次启动时生成并保存） |
 | `token` | 接入点的共享 token。放在钥匙串里，不要写在应用代码里 |
 | `peer` | 可选：接受的 rutis 的 `id`；对端是别的 id 时拒绝 |
 | `trust` | 可选：在系统根证书之外额外信任的 CA 证书（`SecCertificate`），用于自己的 CA 签发的证书 |
 | `shutdownTimeout` | 连接结束后插件清理最多可用的秒数（10） |
 | `log` | 连接与插件的状态行写到哪里（默认 stderr；例如 `{ logger.info("\($0)") }`） |
 
-- `start()` 开始拨出后即返回；重试修不好的（不合法的 id 或地址）直接抛出。此后它自己保持连接：连不上或断开时重试（从 0.5 秒起翻倍，最长 30 秒）；token 被拒每 30 秒重试；每次连接都是新的，rutis 重新装载插件。已经开始时再调用 `start()` 什么也不做。
-- `stop()` 在 rutis 还能收到的时候卸载全部插件，然后关闭连接，不再重连；完成后返回，之后可以再 `start()`。
+- `start()` 开始拨出后即返回；重试修不好的（不合法的 id 或地址）直接抛出。此后它自己保持连接：连不上或断开时重试（从 0.5 秒起翻倍，最长 30 秒）；token 被拒每 30 秒重试。已经开始时再调用 `start()` 什么也不做。
+- 连上（rutis 问候）之后，应用按 `plugins` 的顺序装上插件，与 rutis 上的插件规则相同：一个插件 `inject` 的服务都在时才装上（同一个应用里别的插件提供的，或者 rutis 提供的），其中一个撤走时卸载，回来后再装。rutis 上可共享的服务都会到应用这边（rutis 撤下时这边也撤下）；应用的插件提供的服务都报给 rutis（带插件名），rutis 上别的行按名字使用它们。应用不把 rutis 给它的服务再报回去。
+- 一个插件装载失败（配置不合 Schema、`apply` 抛出）只影响它自己：`log` 收到 `rutis: plugin device: BindingError: config: installation is required` 这样的一行，后面的插件照装。这一行只在设备上：rutis 一侧看到的是这个插件没有出现（没有 `<id>:device`）。
+- 每次连接都是新的：断开时插件逆序清理，重连后重新装上。
+- `stop()` 在 rutis 还能收到的时候撤回服务、逆序卸载全部插件，然后关闭连接，不再重连；完成后返回，之后可以再 `start()`。
 - `start()` 与 `stop()` 按调用的先后生效，各在自己的 `Task` 里调用也一样：停止进行中调用的 `start()` 等它完成后再开始（用户在清理期间回到前台，应用照样连上）；开始进行中调用的 `stop()` 撤销它（不会在后台继续拨出）。
 - `state` 是 `.stopped(reason:)`、`.connecting` 或 `.connected`。`RutisApp` 遵循 `Observable`，显示 `rutis.state` 的 SwiftUI 视图会自己更新；别处用 `for await state in rutis.states { … }` 跟随。`.stopped(reason: "…")` 表示它自己停下了：rutis 不兼容（例如早于 0.13），重试修不好。
 - `log` 收到的行与所有 Swift 运行时相同：`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`、`rutis: refused: incompatible (…); stopping`，以及插件的失败。
 
-何时开始、何时停止由应用决定；SDK 不据应用的状态、也不据自己的状态做任何事。iOS 上应用进入后台后很快被挂起，在 rutis 看来被挂起的应用就是断开了：它的实例关闭，用它服务的行停下。常见做法是在前台时连着：
+何时开始、何时停止由应用决定；SDK 不据应用的状态、也不据自己的状态做任何事。iOS 上应用进入后台后很快被挂起，在 rutis 看来被挂起的应用就是断开了：它的插件在 rutis 上卸载，用它们服务的行停下。常见做法是在前台时连着：
 
 ```swift
 @main
 struct HealthApp: App {
     @Environment(\.scenePhase) private var phase
-    @State private var rutis = RutisApp(plugins: [health, device], connect: Settings.address,
-                                        id: Settings.id, token: Settings.token)
+    @State private var rutis = RutisApp(plugins: [health, device], configs: ["device": DeviceConfig(installation: Settings.id)],
+                                        connect: Settings.address, id: Settings.id, token: Settings.token)
 
     var body: some Scene {
         WindowGroup {
@@ -168,22 +182,14 @@ struct HealthApp: App {
 
 ## 4. rutis 一侧
 
-rutis 在一个接入点上等应用连进来，每个连进来的应用是一个分组的一个实例：分组里的行写明在每个应用上装哪些插件、用什么配置，以及 rutis 自己的哪些行使用它们。
+rutis 用一行 `rutis-host/listen` 等应用连进来；设备不必在 rutis.json 里列出，应用装着的插件也不写在这里：
 
 ```json
 {
   "id": "main",
   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
-  "runtimes": {
-    "py": { "project": "plugins" },
-    "remote": [{ "name": "phone", "language": "swift", "listen": "public", "instances": "phone" }]
-  },
   "rows": [
-    { "id": "phone", "group": true, "instanced": true, "config": [
-      { "id": "health", "name": "phone:health" },
-      { "id": "device", "name": "phone:device" },
-      { "id": "coach", "name": "py:coach", "inject": ["health", "device"] }
-    ] }
+    { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
@@ -192,33 +198,81 @@ rutis 在一个接入点上等应用连进来，每个连进来的应用是一�
 RUTIS_TOKEN_PHONE=<应用出示的 token> rutis-host run rutis.json
 ```
 
-- 每条应用连接以它的 id 创建一个实例，断开时关闭；同一 id 的新连接接管旧的。
-- 每个实例里，`phone:health` 装载该应用的 `health` 插件，`py:coach`（rutis 机器上的 Python 插件）使用该应用的 `health` 与 `device`。两部手机带同样的插件就是两个实例：每个 `coach` 只看到自己那部手机，分组外的行看不到任何手机的服务。
-- 应用没有某一行写到的插件时，只有这一行在它的实例里失败（`runtime <名>: this connection does not contain plugin …`）。
-- 应用停止或被挂起时它的实例关闭，那里的 `coach` 停下；再次开始时新的实例重新装载这些行。
+- 每条通过的连接是一个会话，应用装着的插件注册为 `<应用的 id>:<插件>`（`kim-iphone:health`、`kim-iphone:device`），它们提供的服务在 rutis 上全局可见，别的行按名字 `inject`。同一 id 的新连接顶替旧的。
+- `run` 的输出以行 id 开头：`phone: connected kim-iphone`、`phone: disconnected kim-iphone (connection lost)`、`phone: disconnected kim-iphone (replaced by a new connection)`。`rutis-host status` 的 `connections:` 一节列出每个应用注册的插件：`phone: kim-iphone (kim-iphone:health, kim-iphone:device)`。
+- 应用停止或被挂起时它的插件卸载，用它们服务的行停下；再次开始时应用重新装上插件，这些行恢复。
+- 同名服务按内核规则：两台设备都提供 `health` 时，后来的那台的 `health` 插件被拒绝并说明原因，先来的照常可用。
 
-字段与规则见 [连进来的运行时](nodes.md#连进来的运行时) 和 [rutis-host](rutis-host.md#连进来的运行时)。
+### 每台设备各算一份
+
+0.18 的写法（`instanced` 分组里一个 `py:coach`，每台设备一份）在 0.19 不再支持：rutis 不为每条连接建实例。按设备区分是设备上插件自己的事，两种改法：
+
+- **把它放到设备上。** coach 写成应用里的一个插件，它使用同一个应用的 `health`（`health` 装上后它才装上）：
+
+  ```swift
+  let coach = Rutis.define(Plugin(name: "coach", inject: ["health"]) { ctx in
+      let health = try ctx.use("health", HealthProxy.self)
+      ctx.provide("coach", Coach(health: health))
+  })
+  let rutis = RutisApp(plugins: [health, coach], connect: …, id: id, token: token)
+  ```
+
+  每台设备上各有一个 coach，各自看到的是自己的 `health`；它们的服务名也各不相同时（下一条），rutis 上的行可以分别使用。
+
+- **由宿主上的插件自己按设备区分。** 设备上的插件以带设备 id 的名字提供服务：
+
+  ```swift
+  public let health = Rutis.define(Plugin(name: "health", config: DeviceConfig.self) { ctx, config in
+      ctx.provide("health-\(config.installation)", Health())   // health-kim-iphone
+  })
+  ```
+
+  宿主上的插件 `coach` 监听框架事件 `rutis/service`（参数 `{ name, scope, available, row }`，见 [插件 API：框架事件](plugin-api.md#框架事件-rutis)）：一个 `health-<设备>` 出现（`available: true`）时，经服务 `loader` 为这台设备加一行 `coach-<设备>`，运行只管一台设备的插件 `py:coach-one`；它撤走（`available: false`）时删掉这一行。`loader` 的方法在事件处理里调用，不在 `apply` 里（在一行自己的 `apply` 里调用会等到这个 `apply` 结束，卡住）：
+
+  ```python
+  from rutis import define_plugin
+
+  def apply(ctx, config):
+      loader = ctx.use("loader")
+
+      async def seen(event):
+          name = event["name"]
+          if not name.startswith("health-"):
+              return
+          device = name.removeprefix("health-")          # kim-iphone
+          if event["available"]:
+              await loader.create({"id": f"coach-{device}", "name": "py:coach-one",
+                                   "config": {"device": device}, "inject": [name]})
+          else:
+              await loader.remove(f"coach-{device}")
+
+      ctx.on("rutis/service", seen)
+
+  coach = define_plugin(apply, inject=["loader"])
+  ```
+
+  `py:coach-one` 用 `ctx.use(f"health-{config['device']}")` 拿到它那台设备的服务。两台设备的服务名不同，不会相互拒绝；每台设备一行 `coach-<设备>`，`rutis-host status` 里看得到。
 
 ### 改为监听
 
 rutis 能访问到的设备（实验室里地址固定的 Mac 或 iPad）也可以等 rutis 连过来：
 
 ```swift
-let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/rutis",
+let rutis = RutisApp(plugins: [health, device], configs: ["device": DeviceConfig(installation: "lab-ipad")], listen: "wss://0.0.0.0:7443/rutis",
                      id: "lab-ipad", token: token, certificate: identity)   // 一个 SecIdentity
 ```
 
-`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。端口写 `0` 表示取一个空闲端口：`log` 的 `rutis: listening on …` 一行给出是哪个，之后的每次开始都再绑定这个端口，地址保持不变。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`，连接上的 rutis 问候之后才是 `.connected`（10 秒内没有问候就关闭这个连接）。连接须在 10 秒内发来升级请求，同时升级的连接至多 32 个。监听器之后失败时（网络断了）按退避重新绑定（`rutis: listening failed (…); listening again in 1s`），已连着的 rutis 不受影响。rutis 一侧用一个节点行连接它，与 [别的机器上的语言运行时](nodes.md#别的机器上的语言运行时) 相同，`language` 为 `"swift"`：
+`certificate` 是 TLS 身份（用 `SecPKCS12Import` 从 PKCS#12 文件得到，或取自钥匙串）；`ws://` 只限回环。端口写 `0` 表示取一个空闲端口：`log` 的 `rutis: listening on …` 一行给出是哪个，之后的每次开始都再绑定这个端口，地址保持不变。一次一个连接，新连接接管；没有 rutis 连着时 `state` 是 `.connecting`，连接上的 rutis 问候之后才是 `.connected`（10 秒内没有问候就关闭这个连接）。连接须在 10 秒内发来升级请求，同时升级的连接至多 32 个。监听器之后失败时（网络断了）按退避重新绑定（`rutis: listening failed (…); listening again in 1s`），已连着的 rutis 不受影响。rutis 一侧用一行 `rutis-host/dial` 连接它，应用连上后同样自己装上插件，它们注册为 `lab-ipad:health` 等：
 
 ```json
 {
-  "runtimes": { "remote": [{ "name": "ipad", "language": "swift" }] },
   "rows": [
-    { "id": "ipad", "name": "rutis-bridge/peer", "config": { "peer": "lab-ipad", "dial": "wss://10.0.0.20:7443/rutis", "runtime": "ipad" } },
-    { "id": "health", "name": "ipad:health" }
+    { "id": "ipad", "name": "rutis-host/dial", "config": { "address": "wss://10.0.0.20:7443/rutis" } }
   ]
 }
 ```
+
+token 写在 `RUTIS_TOKEN_IPAD`（行 id 大写）；自己的 CA 签发的证书用 `RUTIS_CA` 指向 CA 证书。
 
 一般场景用拨出：设备地址会变、在 NAT 后面，而且只有 rutis 需要证书。
 
@@ -235,7 +289,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
 
 - **本地网络权限（iOS 14 起）。** 应用第一次连接本地网络上的地址时（`wss://192.168.1.10:7443` 上的 rutis、`.local` 名字），iOS 会询问用户是否允许该应用查找并连接本地网络上的设备。在 `Info.plist` 里写 `NSLocalNetworkUsageDescription`，说明为什么需要；不写的话提示里没有有用的说明。用户允许之前连接会失败，应用持续重试（`rutis: cannot connect (…); retrying in …`，`state` 为 `.connecting`）；允许之后下一次重试就会连上。用户拒绝后只能在"设置"（隐私与安全性 → 本地网络）里改：在应用里告诉用户。在本地地址上监听同样会询问。互联网上的 rutis（公网名字或地址）、模拟器里的回环地址不需要这个权限。SDK 不使用 Bonjour，不需要 `NSBonjourServices`。
 - **TLS。** 非回环地址必须是 `wss://`。公共 CA 签发的证书无需其他设置；自己的 CA 用 `trust` 传入。连接受 App Transport Security 约束：TLS 1.2 以上、前向保密（rutis 的监听器提供的就是这样）。
-- **id。** rutis 不核实 id：它只用来区分连接、给实例命名（凭据是 token）。两个安装用同一个 id 会轮流把对方顶掉。
+- **id。** rutis 不核实 id：它只用来区分连接、给远程插件命名（`<id>:<插件>`；凭据是 token）。两个安装用同一个 id 会轮流把对方顶掉。
 
 ## 7. Mac 应用
 
@@ -243,7 +297,7 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
 
 ## 8. 示例应用
 
-[`swift/examples/HealthApp`](../../swift/examples/HealthApp) 是一个 iOS 应用的 Xcode 项目，托管 §2 的 `health` 与 `device` 插件，业务层按 §3 在前台开始、进入后台停止。它依赖本仓库里的 SDK（本地包），连接到哪里由启动参数给出（`-RutisConnect`、`-RutisID`、`-RutisToken`，以及 `-RutisCA`：base64 的 DER 格式 CA 证书），在 Xcode 的 scheme 里设置。
+[`swift/examples/HealthApp`](../../swift/examples/HealthApp) 是一个 iOS 应用的 Xcode 项目，托管 §2 的 `health` 与 `device` 插件。服务名按 §4 "每台设备各算一份"的第二种改法带上这个安装的 id（连接的 `id`）：`health-<id>`、`device-<id>`（`-RutisID kim-iphone` 时是 `health-kim-iphone`、`device-kim-iphone`），经 `RutisApp` 的 `configs` 给出（`HealthConfig(service:)`、`DeviceConfig(installation:service:)`），两台设备连同一个 rutis 不会相互拒绝，业务层按 §3 在前台开始、进入后台停止。它依赖本仓库里的 SDK（本地包），连接到哪里由启动参数给出（`-RutisConnect`、`-RutisID`、`-RutisToken`，以及 `-RutisCA`：base64 的 DER 格式 CA 证书），在 Xcode 的 scheme 里设置。
 
 在模拟器上，连同一台 Mac 上的 `rutis-host`（模拟器能访问 Mac 的回环地址）：
 
@@ -251,18 +305,18 @@ let rutis = RutisApp(plugins: [health, device], listen: "wss://0.0.0.0:7443/ruti
 cargo test -p rutis-e2e --test ios_app -- --ignored
 ```
 
-它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的分组和一个使用应用服务的 Python 行，检查：每台模拟器是一个实例，其中的 Python 行看到的是自己那个应用的 `device`；应用进入后台时它的行停下、回到前台时重新开始，另一台的行不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 Xcode 与 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`），只在本地运行，`bash tools/ios-selftest.sh`（SDK 自己的测试在模拟器里运行）也一样：CI 不运行需要模拟器、设备或授权提示的测试。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
+它用 `xcodebuild` 构建应用，在两台新建的模拟器上以各自的 id 运行，`rutis-host run` 带 §4 的 `rutis-host/listen` 行和一个使用应用服务的 Python 行，检查：每台模拟器的应用装上自己的插件（`<id>:health`、`<id>:device`），服务名各不相同（`health-<id>`、`device-<id>`）；应用进入后台时它的插件卸载、回到前台时重新装上，另一台不受影响；用户决定之前读步数失败，Python 调用方收到插件的 `HealthAccessDenied`（`code` 为 `not-determined`）；请求授权时"健康"的授权页显示在应用之上、写着应用的名字（从截图里读出）。需要 Xcode 与 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS`），只在本地运行，`bash tools/ios-selftest.sh`（SDK 自己的测试在模拟器里运行）也一样：CI 不运行需要模拟器、设备或授权提示的测试。模拟器上无法点击授权页，`simctl privacy` 也没有 HealthKit，这些由下面的人工清单检查。
 
 ### 人工验收清单（真机）
 
 只有人和真机能检查的部分。iPhone（iOS 17 以上）与运行 rutis 的 Mac 在同一网络：
 
-1. 在 Mac 上为它的局域网地址签一张证书（任何能生成 CA 和服务器证书、把 IP 写进 subject alternative names 的工具，例如 `mkcert 192.168.1.10`），按 §4 的配置运行 rutis，监听器 `0.0.0.0:7443` 用这张证书和私钥，设置 `RUTIS_TOKEN_PHONE`；一个 Python 行（例如 e2e 的 `coach`，在 `tests/e2e/tests/ios_app.rs` 里）显示每个实例看到什么。
+1. 在 Mac 上为它的局域网地址签一张证书（任何能生成 CA 和服务器证书、把 IP 写进 subject alternative names 的工具，例如 `mkcert 192.168.1.10`），按 §4 的配置运行 rutis，监听器 `0.0.0.0:7443` 用这张证书和私钥，设置 `RUTIS_TOKEN_PHONE`；一个 Python 行（例如 e2e 的 `coach`，在 `tests/e2e/tests/ios_app.rs` 里）显示它从应用看到什么。
 2. 打开 `swift/examples/HealthApp/HealthApp.xcodeproj`，在 Signing & Capabilities 里选你的 team（HealthKit 保持开启），在 scheme 的参数里设 `-RutisConnect wss://<Mac 的 IP>:7443/rutis`、`-RutisToken <token>`，`-RutisCA` 设为 CA 证书（先 `openssl x509 -in rootCA.pem -outform der -out rootCA.der`，再 `base64 -i rootCA.der`）。在 iPhone 上运行。
-3. **本地网络：** iOS 询问是否允许 Rutis Health 查找本地网络上的设备，说明是 `NSLocalNetworkUsageDescription` 的那句话。拒绝：应用显示 `connecting`，控制台是 `rutis: cannot connect (…); retrying in …`。到"设置 → 隐私与安全性 → 本地网络"里允许：下一次重试连上（`connected`），rutis 装载插件（Python 行运行）。
+3. **本地网络：** iOS 询问是否允许 Rutis Health 查找本地网络上的设备，说明是 `NSLocalNetworkUsageDescription` 的那句话。拒绝：应用显示 `connecting`，控制台是 `rutis: cannot connect (…); retrying in …`。到"设置 → 隐私与安全性 → 本地网络"里允许：下一次重试连上（`connected`），应用装上插件（Python 行运行）。
 4. **提示属于应用：** 调用 `health.authorize()`（e2e 的 `coach` 在 `<dir>/<id>.authorize` 出现后调用）："健康"的授权页写着 Rutis Health，显示它的用途说明。
 5. **拒绝传回调用方：** 全部关掉后点"允许"（或"不允许"）：`authorize()` 返回 `false`，`stepsToday()` 在 Python 调用方失败，`HealthAccessDenied: step counts are not shared with this app (denied)`，`code` 为 `denied`。
 6. **授权：** 在"设置 → 健康 → 数据访问与设备 → Rutis Health"里打开步数：`stepsToday()` 返回今天的步数。
-7. **后台与前台：** 回到主屏幕：控制台显示插件卸载、`stopped`，rutis 上这部手机的行停下；再打开应用：`connected`，行重新运行。
-8. **两台设备：** 在第二台设备（或模拟器）上以另一个 `-RutisID` 运行：两个实例，各自的行看到自己的设备（`device.id()`）。
+7. **后台与前台：** 回到主屏幕：控制台显示插件卸载、`stopped`，rutis 上这部手机的插件卸载、用它们的行停下；再打开应用：`connected`，插件重新装上，行重新运行。
+8. **两台设备：** 在第二台设备（或模拟器）上以另一个 `-RutisID` 运行：rutis 上有两组 `<id>:health`、`<id>:device`，服务是 `health-<id>`、`device-<id>`，两台都可用；监听 `rutis/service` 的行看到两台各自的服务出现（§4）。
 9. **断网：** 在前台时打开飞行模式：rutis 的行停下；关闭飞行模式：应用自己重连，行恢复。

@@ -3,7 +3,7 @@
 //! with defaults, validated against its plugin's schema, its extra keys
 //! worked out). Every place that checks a config (the check before a copy
 //! loads, `commit`'s dry run, `EntryFactory`'s `validate_config` / `build`,
-//! the factories of runtimes that dial in, and `check`) calls
+//! and `check`) calls
 //! [`Inner::config_step`]; none has a copy of its own.
 
 use std::collections::HashSet;
@@ -97,20 +97,6 @@ impl<'a> Subject<'a> {
         Subject {
             schema: resolved.schema.as_ref(),
             checkable: checkable(resolved),
-        }
-    }
-
-    /// A row of a runtime that dialed in, its plugin described on its
-    /// connection with `schema`.
-    #[cfg_attr(not(feature = "runtimes"), allow(dead_code))]
-    pub(crate) fn connection(schema: Option<&'a Value>, cordis: bool) -> Self {
-        Subject {
-            schema,
-            checkable: match (cordis, schema) {
-                (true, _) => Checkable::Cordis,
-                (false, Some(_)) => Checkable::Yes,
-                (false, None) => Checkable::NoSchema,
-            },
         }
     }
 }

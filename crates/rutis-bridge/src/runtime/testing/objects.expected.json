@@ -179,9 +179,9 @@
     {
       "id": "no-objects-declared",
       "what": "The far end did not declare objects: the call fails, the session goes on",
-      "node": "yes",
-      "bun": "yes",
-      "python": "yes",
+      "node": "no",
+      "bun": "no",
+      "python": "no",
       "go": "no",
       "swift": "no",
       "kotlin": "yes",

@@ -44,7 +44,11 @@ class Device(private val context: Context) {
     }
 }
 
+/** The `device` plugin's configuration: the name it provides its service as. */
+@Serializable
+data class DeviceConfig(val service: String = "device")
+
 /** The plugin `device`: what this device is, and its battery. Needs no permission. */
-fun device(context: Context) = Rutis.define<Rutis.NoConfig>(name = "device") { ctx, _ ->
-    ctx.provide("device", Device(context.applicationContext))
+fun device(context: Context) = Rutis.define<DeviceConfig>(name = "device") { ctx, config ->
+    ctx.provide(config.service, Device(context.applicationContext))
 }

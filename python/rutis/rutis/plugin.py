@@ -107,7 +107,7 @@ class Context:
 
 # The plugin API this SDK writes plugins against. A runtime refuses a plugin
 # that needs a newer one, naming both. 3: parallel, serial, waterfall, bail
-# and filter (rutis 0.13); runtimes still load plugins of API 2.
+# and filter (rutis 0.13).
 PLUGIN_API = 3
 
 

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FEATURES, handleOf, methodsOf, oldHost, Runtime, scopedId, undeclaredUse } from '../src/runner.ts'
+import { FEATURES, handleOf, methodsOf, Runtime, scopedId, undeclaredUse } from '../src/runner.ts'
 import type { Context } from '../../../node/rutis/src/index.d.ts'
 
 function project(files: Record<string, string>) {
@@ -184,10 +184,6 @@ test('rows share the bus; listeners dispose independently and leave with their r
   expect(a.on('rutis/row', () => {})).toBeInstanceOf(Function)
   expect(() => a.emit('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
   expect(() => a.serial('rutis/row')).toThrow('rutis/* events are emitted by rutis only: rutis/row')
-  // 0.12's static forwarding is gone (#464).
-  expect(() => runtime.dispatch('', 'mount', { emits: ['changed'] }))
-    .toThrow('the config field emits was removed in rutis 0.13: listeners register themselves; emit with ctx.emit / parallel / serial / waterfall / bail (https://github.com/arcships/rutis/blob/main/docs/migration-0.13.md)')
-  expect(() => runtime.dispatch('', 'mount', { events: ['changed'] })).toThrow('the config field events was removed in rutis 0.13')
 }))
 
 // guarantee: events/bun-runtime (the five modes; emit's failures reported, never thrown)
@@ -333,39 +329,6 @@ test('a failed apply and an update remove the row listeners', async () => {
     delete (globalThis as any).heard
     rmSync(dir, { recursive: true, force: true })
   }
-})
-
-// A host older than 0.12 mounts without `announce`: a plugin providing a
-// service it does not declare is told, once per name; a declared or keyed
-// one, or under a host that takes them, nothing.
-test('an undeclared service under an older host is told once per name', async () => {
-  const dir = project({ 'old.ts': `
-export const provides = { declared: { get: 'sync' } }
-export function apply(ctx) {
-  ctx.provide('declared', { get() {} })
-  ctx.provide('weather', { today() {} })
-  ctx.provide('weather#1', { today() {} })
-}
-` })
-  const told = async (mount: object) => {
-    const runtime = new Runtime(dir)
-    runtime.dispatch('', 'mount', mount)
-    const written: string[] = []
-    const write = process.stderr.write
-    process.stderr.write = ((text: string) => { written.push(String(text)); return true }) as typeof write
-    try {
-      for (const key of ['a', 'b']) {
-        await runtime.dispatch('', 'rows.load', [key, './old.ts', {}, [], [], { declared: { get: 'sync' } }])
-        await runtime.dispatch('', 'rows.unload', [key])
-      }
-    } finally {
-      process.stderr.write = write
-    }
-    return written
-  }
-  expect(await told({})).toEqual([`${oldHost('weather')}\n`])
-  expect(oldHost('weather')).toBe('rutis: service weather is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host')
-  expect(await told({ announce: true })).toEqual([])
 })
 
 // guarantee: sdk/error-texts

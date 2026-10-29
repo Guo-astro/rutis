@@ -45,11 +45,13 @@ class Ctx internal constructor(private val rt: RuntimeState, internal val row: R
             ?: throw IllegalArgumentException("${type.name} has no proxy: annotate it @RutisClient and apply the rutis-ksp processor")
         val id = row.id(name)
         val (local, host) = synchronized(rt.lock) { rt.services[id] to rt.hosts[id] }
+        val remote = synchronized(rt.lock) { rt.far[id] }?.takeIf { it.methods != null }
         val handle: ServiceHandle = when {
             local != null -> {
                 if (type.isInstance(local.value)) return type.cast(local.value)
                 LocalHandle(name, local.value, local.table, local.shape?.kinds ?: local.table.methods.associateWith { "async" })
             }
+            remote != null -> FarHandle(rt, name, remote.methods!!, remote.functions)
             host != null -> HostHandle(rt, name, "host:$id", host)
             else -> throw UnavailableException(name)
         }
@@ -153,4 +155,22 @@ internal class HostHandle(
 
     override fun callBlocking(method: String, args: List<Any?>): Any? =
         session().call(target, method, args, kinds[method] == "sync")
+}
+
+/** A service rutis announced (`services.announce`): its methods are function references. */
+internal class FarHandle(
+    private val rt: RuntimeState,
+    override val name: String,
+    override val kinds: Map<String, String>,
+    private val functions: Map<String, arcships.rutis.advanced.RemoteFunction>,
+) : ServiceHandle {
+    private fun session() = rt.session ?: throw HostGoneException(null)
+
+    private fun function(method: String) = functions[method] ?: throw noMethod(name, method, kinds.keys)
+
+    override suspend fun callSuspend(method: String, args: List<Any?>): Any? =
+        session().callFunctionSuspend(function(method), args, kinds[method] == "sync")
+
+    override fun callBlocking(method: String, args: List<Any?>): Any? =
+        session().callFunction(function(method), args, kinds[method] == "sync")
 }

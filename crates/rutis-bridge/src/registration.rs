@@ -24,9 +24,9 @@ use crate::{Identity, Presented};
 /// only hand the channel on (for example into a queue), never block.
 pub type Deliver = Box<dyn Fn(Channel) + Send + Sync>;
 
-/// Where a listening link or an access point is accepted: a listener's
+/// Where a listening link is accepted: a listener's
 /// registrations, the listener's name, and the endpoint it serves.
-/// Transitional (#695 S2): goes with links and access points.
+/// Transitional (#695 S2): goes with links.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct Accepting {

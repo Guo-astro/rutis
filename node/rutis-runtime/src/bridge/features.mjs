@@ -48,7 +48,9 @@ export const Export = {
               if (offered === sentTo) return
               sentTo = offered
               if (offered === undefined) return
-              link.callAsync('', 'services.announce', [{ name, service: record, shape, version: announced }])
+              // The export list names services, not their plugins: the service's
+              // name stands for its plugin (this path goes with the node rows).
+              link.callAsync('', 'services.announce', [{ name, service: record, shape, version: announced, plugin: name }])
                 .catch(error => process.stderr.write(`rutis-bridge: cannot announce ${name} to ${peer}: ${error.message}\n`))
             })
             one.effect(() => async () => {
@@ -338,11 +340,11 @@ export const Events = {
           const entries = selected(name, Boolean(prefix), exported).map(([selectedName, selectedPrefix]) => events.onRemote({
             name: selectedName, prefix: selectedPrefix, kind, global, plugin, row, runtime, node: peer, scope: [],
             invoke(mode, dispatched, args) {
-              const waterfall = mode === 'waterfall' || mode === 'waterfall-sync'
+              const waterfall = mode === 'waterfall'
               const values = waterfall ? args.slice(0, -1) : args
               const request = { listener: id, dispatch: `d${++calls}`, own: false, name: dispatched, mode, args: values }
               if (waterfall) request.next = args.at(-1)
-              if (mode === 'bail' || mode === 'waterfall-sync') return link.call('', 'events.call', [request])
+              if (mode === 'bail') return link.call('', 'events.call', [request])
               return link.callAsync('', 'events.call', [request])
             },
           }))

@@ -113,7 +113,7 @@ extension Rutis {
             let ca = environment["RUTIS_CA"] ?? ""
             mode = .dial(remote, trust: remote.hasPrefix("wss:") && !ca.isEmpty ? try caCertificates(ca) : [])
         }
-        let app = RutisApp(plugins: plugins, mode: mode, id: endpoint.local, peer: endpoint.expected, token: token,
+        let app = RutisApp(plugins: plugins, configs: nil, mode: mode, id: endpoint.local, peer: endpoint.expected, token: token,
                            project: project, settings: Events.Settings())
         let stop = StopSignal()
         let sources = onTermination(stop)

@@ -9,10 +9,7 @@ reported as from an unknown row. The process goes on either way. A plugin
 calling `os._exit` still ends it, and the line before says which row
 called it.
 
-The row of a task is read from its context: `Task.get_context()` from 3.12.
-On 3.10 and 3.11 the C tasks do not show their context, so the loop's task
-factory records the row of each task when it is created (from the context
-it copies).
+The row of a task is read from its context (`Task.get_context()`).
 """
 
 from __future__ import annotations
@@ -21,9 +18,7 @@ import asyncio
 import contextvars
 import inspect
 import os
-import sys
 import traceback
-import weakref
 from typing import Any, Callable
 
 from ._output import say
@@ -53,32 +48,6 @@ async def _in_row(key: str | None, coroutine: Any) -> Any:
     return await coroutine
 
 
-# 3.10, 3.11: the row of each task, recorded by the loop's task factory.
-_task_rows: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-
-
-def record_task_rows(loop: asyncio.AbstractEventLoop) -> None:
-    """On 3.10 and 3.11, record the row of every task `loop` creates (its
-    tasks do not show their context); the loop's own factory, if it has
-    one, still makes them."""
-    if sys.version_info >= (3, 12):
-        return
-    previous = loop.get_task_factory()
-
-    def factory(loop: asyncio.AbstractEventLoop, coro: Any, **options: Any) -> asyncio.Future:
-        made = previous(loop, coro, **options) if previous is not None else asyncio.Task(coro, loop=loop, **options)
-        copied = options.get("context")
-        row = copied.get(current_row) if isinstance(copied, contextvars.Context) else current_row.get()
-        if row is not None:
-            try:
-                _task_rows[made] = row
-            except TypeError:
-                pass  # a future that takes no weak reference
-        return made
-
-    loop.set_task_factory(factory)
-
-
 def row_of(context: dict) -> str | None:
     """The row the failure an event loop reports (`context`, as its
     exception handler gets it) comes from: the row in the context of the
@@ -91,12 +60,6 @@ def row_of(context: dict) -> str | None:
         ran = get_context() if callable(get_context) else getattr(owner, "_context", None)
         if isinstance(ran, contextvars.Context):
             return ran.get(current_row)
-        try:
-            row = _task_rows.get(owner)
-        except TypeError:
-            row = None
-        if row is not None:
-            return row
     return None
 
 

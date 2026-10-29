@@ -113,7 +113,7 @@ fn dev_config_with(
 /// The source file of the row named `name` under `runtimes`: the module its
 /// runtime imports again when the row reloads (a TypeScript or JavaScript
 /// file, a Python module's file). `None` for a row whose plugin is not a
-/// file of this machine: a package, a compiled plugin, a remote runtime's,
+/// file of this machine: a package, a compiled plugin, a connection row's,
 /// a peer.
 pub fn row_file(name: &str, runtimes: &crate::config::Runtimes) -> Option<PathBuf> {
     let file = |name: &str, base: &Path| -> Option<PathBuf> {
@@ -146,7 +146,7 @@ pub fn row_file(name: &str, runtimes: &crate::config::Runtimes) -> Option<PathBu
             return file(rest, &bun.project);
         }
         if rutis_loader::internal::is_runtime_name(prefix) {
-            // Another runtime's: Go, Swift, a remote one.
+            // Another runtime's: Go, Swift, a connection row's.
             return None;
         }
     }

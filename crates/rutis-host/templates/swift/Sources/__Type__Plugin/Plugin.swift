@@ -1,26 +1,18 @@
-// The {{name}} rutis plugin.
+// The {{name}} rutis plugin. The Swift plugin guide goes on from here:
+// https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md
 import Rutis
 
-/// The plugin's configuration: a plain Decodable type. `@RutisConfig`
-/// derives its JSON Schema, which rutis validates rows with; a `var` with a
-/// literal initial value is its default, filled in when the row leaves it
-/// out.
+/// The plugin's configuration (guide, step 4): `@RutisConfig` derives its
+/// JSON Schema; a `var` with a literal initial value is its default, filled
+/// in when the row leaves it out.
 @RutisConfig
 public struct Config: Decodable {
     /// how to greet
     public var greeting = "Hello"
 }
 
-/// A service other plugins provide, in any language: `@RutisClient` makes
-/// `ClockProxy`. To use one, add "clock" to `inject` and, in `apply`,
-/// `let clock = try ctx.use("clock", ClockProxy.self)`.
-@RutisClient
-public protocol Clock {
-    func now() async throws -> String
-}
-
-/// The service the plugin provides: `@RutisService` makes its methods the
-/// service's (`hello` to other languages).
+/// The service the plugin provides (guide, step 2): `@RutisService` makes
+/// its methods the service's.
 @RutisService
 public final class Greeter: @unchecked Sendable {
     let greeting: String
@@ -32,16 +24,12 @@ public final class Greeter: @unchecked Sendable {
 
 public let plugin = Rutis.define(Plugin(
     name: "{{id}}",
-    // Services this plugin uses: it runs while they are all there.
+    // The services it uses (guide, step 3): it starts once they are all there.
     inject: [],
-    // What it provides, so that `rutis-host check` (and `check --strict` in a
-    // host's CI) knows it before the plugin runs: Greeter's methods, async;
-    // .of(Greeter.self, sync: ["hello"]) would make hello sync.
+    // What it provides, so that `rutis-host check` knows before it runs.
     provides: ["greeter": .of(Greeter.self)],
     config: Config.self,
     apply: { ctx, config in
         ctx.provide("greeter", Greeter(greeting: config.greeting))
-        // Cleanups run when the plugin unloads, latest first.
-        ctx.effect {}
     }
 ))

@@ -2,6 +2,8 @@
 
 应用要给插件提供自己的 Rust 服务、或者把 rutis 放进已有的 Rust 程序时，直接用 crate 组装宿主。不需要这些时用 [rutis-host](rutis-host.md) 即可，配置的行格式相同。
 
+本文是 API 参考。从头做一个开放插件的宿主，按 [做一个开放插件的宿主](open-host.md) 一步步来。
+
 ## 依赖
 
 ```toml
@@ -25,7 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## 装 Rust 插件
 
-Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 就是那里的例子。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
+Rust 插件怎样写见 [写一个 Rust 插件](rust-plugin.md)，下面的 `Greeter`、`Printer`、`Weather` 是几个示意的插件。宿主用的方法（建根、关闭、按键读写、按配置装插件）在 `rutis::host` 里，`use rutis::host::*;` 之后就能在 `Ctx` 上调用：
 
 ```rust
 use rutis::host::*;
@@ -501,7 +503,7 @@ for failure in &report.failures {
 - 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 运行时结束不算到行头上：结束时还在加载的行和其他行一样等它，不会失败。运行时的 `Down` 原因写明进程怎样结束，正在进行的、对它的行的调用失败时也这样写明。
 - 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
-- 远程运行时（`RuntimePlugin::remote`）的会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
+- 远程运行时由连接插件接上：连接插件拿到一条 Channel，调 `ctx.plugin(rutis_bridge::Session::new(channel))`（或先 `Session::handshake(&ctx, channel).await` 看对面的 id，再 `ctx.plugin(greeted)`）；行 `<连接行>:<插件>` 由 loader 找到这个会话、让对面运行。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 就是这样写的。会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
 - 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
 - 设置 `RUTIS_TRACE` 时，运行时通道上的每条消息在 stderr 记一行（方向和长度，不含内容）。
@@ -584,13 +586,40 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ## 节点
 
-0.19 重做远程连接（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)），Rust 里直接搭节点的写法随之改变，这一节在新写法落地后补上；现在用 rutis-host 的节点行（见 [连接节点](nodes.md)）。
+0.19 的远程连接只有一种形状（[远程连接：只留一个会话插件](../design-remote-session-2026-10-28.md)）：连接插件拿到一条 `Channel`，交给 `rutis_bridge::Session`。对面是另一个 rutis、语言运行时或设备都一样；对面提供的服务在这里叫 `<对面 id>:<插件>`，这里的服务对面也看得到，事件在一条总线上。宿主要先在根 ctx 提供本端在握手里报的 id：
 
-用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时：`RuntimePlugin::remote(名字)` 加一个 `runtime` 设为同名的节点行，行名由 `RuntimeResolver::modules(handle)` 解析为 `<名字>:<模块>`。概念与安全见 [连接节点](nodes.md)。
+```rust,ignore
+use rutis::host::FiberState;
+use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+
+root.provide(LocalId(PeerId::new("main")?));
+
+// 一个连接插件的 apply：去连 office，会话卸载后再连。
+loop {
+    let channel = websocket::dial(
+        "wss://office.example.com/rutis",
+        &rutis_bridge::protocol(),
+        Some(&Credential::Bearer(token.clone())),
+        &websocket::Trust::default(),
+        &websocket::Limits::default(),
+    )
+    .await?;
+    let session = ctx.plugin(Session::new(channel));
+    let mut state = session.watch();
+    let _ = state.wait_for(|s| s.state == FiberState::Disposed).await;
+    tokio::time::sleep(backoff.next()).await;
+}
+```
+
+- 要让对面运行一个插件，在 rutis-loader 的配置里写行 `<连接行>:<插件>`，对面不在时这一行等待；Rust 里也可以用 `Session::handshake(&ctx, channel).await?` 拿到 `Greeted`，`greeted.handle().run(插件, 配置)`，再 `ctx.plugin(greeted)` 装上。
+- 本端 id 没有提供时，会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
+- 别的语言的插件经服务 `sessions` 的 `open` 交出连接，见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)。
+
+0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时用连接插件：`rutis-host/dial`、`rutis-host/listen` 的行，或自己的连接插件调 `Session::new(channel)`，行写 `<连接行>:<插件>`。概念与安全见 [连接节点](nodes.md)。
 
 ## 事件
 
-宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#事件)；宿主在根 `Ctx` 上用同样的方法。
+宿主里的 Rust 插件、每个运行时里的插件（任何语言）和相连节点上的监听器在一个逻辑总线上（[插件 API：事件](plugin-api.md#事件)）。运行时的监听器自动登记，宿主一侧什么都不用配置：`ctx.emit` 等发出的事件到达所有语言的监听器，它们发出的事件也到达这里的 Rust 监听器。插件里的写法见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)；宿主在根 `Ctx` 上用同样的方法。
 
 事件类型以 `Event::NAME` 作为跨语言的名字，参数按 serde 编解码，所以它和它的 `Value` 都派生 `Serialize` / `Deserialize`。两个及以上字段的元组结构体对应同样多个参数，所以下面的 `Created` 就是别的语言里的 `emit("session/created", id, size)`：
 
@@ -647,7 +676,7 @@ off.dispose().await?;
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `ctx.on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
 | 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
 
-测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#3-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
+测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
 
 ## 导出服务：参考
 
@@ -665,7 +694,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 ### 源码从哪来
 
-生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
+生成器从这个 crate 和它用到的、依赖 rutis 的 crate 里找出带标注的类型。`.declared` 的 `path` 按应用自己的写法写：自己的类型写 `crate::…`，依赖的类型写依赖的 crate 名（按 `Cargo.toml` 里的名字，含改名）。生成器运行 `cargo metadata`（只取正在构建的目标平台，先离线），得到每个 crate 的入口文件和 Cargo 解析出的 feature，再用 syn 读模块树：`mod` 文件（含 `#[path]`）、`use`、glob 和 `pub use` 再导出（从私有模块再导出的类型也能找到）、类型别名（含泛型别名）。rutis 本身的源码不读：它的名字按已知路径认（`rutis::Error`、`Result`、`Ctx`、`Definition`，`rutis::host::BoxFuture`、`ErrorKind`），经 `use rutis::*;`、`use rutis::host::*;` 引入的也认。方法是该类型带标注的固有 `impl` 块里公开的 `&self` 方法（`#[service(skip)]` 的除外）。`#[cfg]` 会求值：`feature = "…"` 按 Cargo 解析出的 feature，目标平台的 `cfg` 按 `CARGO_CFG_*`，`test` 和 `doc` 视为关闭。只用稳定版 Rust：不为此编译或展开任何东西。
 
 ### 能传什么
 
@@ -706,7 +735,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 | `rutis_bridge::session::Error` | 原样抛出（转发的调用保留远端的错误） | | |
 | 其他（`anyhow::Error`、`io::Error`） | 类型名 | 类型名 | — |
 
-`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。
+`message` 总是 `e` 的 `Display`。JavaScript 读 `error.code`、`error.data`；Python 读 `error.code`、`error.data`；Go 读 `remote.Code`、`remote.Data`（大整数为 `*big.Int`）；Rust 用 `Error::code()`、`Error::data()`。它们放在错误图里传，不认识它们的运行时仍拿到名字和消息。声明里每个错误类型有一个 `<Name>Thrown` 类型 `RustError<'Name', 'Code1' | 'Code2', Data>`，写在方法的 JSDoc 里（`@throws {CalendarErrorThrown}`）。`ErrorThrown` 留给 rutis 自己的错误；别的叫 `Error` 的类型、以及与已有的同名而不同的错误类型，按它所在的模块命名：`io::Error` 是 `IoErrorThrown`，`anyhow::Error` 是 `AnyhowErrorThrown`，`notes::Error` 是 `NotesErrorThrown`。抛出时的 `name` 仍是类型自己的名字（`Error`）。
 
 ### 声明
 

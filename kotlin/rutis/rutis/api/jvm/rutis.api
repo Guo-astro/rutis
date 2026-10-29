@@ -75,8 +75,8 @@ public final class arcships/rutis/Rutis$NoConfig {
 
 public final class arcships/rutis/RutisApp {
 	public static final field PROTOCOL Ljava/lang/String;
-	public synthetic fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLkotlin/jvm/functions/Function1;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/util/List;Ljava/util/Map;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/util/List;Ljava/util/Map;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLkotlin/jvm/functions/Function1;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getConnect ()Ljava/lang/String;
 	public final fun getId ()Ljava/lang/String;
 	public final fun getListen ()Ljava/lang/String;
@@ -513,18 +513,19 @@ public final class arcships/rutis/internal/RuntimeKt {
 
 public final class arcships/rutis/internal/RuntimeSession {
 	public static final field Companion Larcships/rutis/internal/RuntimeSession$Companion;
-	public synthetic fun <init> (Larcships/rutis/internal/peer/Peer;Larcships/rutis/internal/RuntimeState;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Larcships/rutis/internal/peer/Peer;Larcships/rutis/internal/RuntimeState;Ljava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun end ()Z
 	public final fun getPeer ()Larcships/rutis/internal/peer/Peer;
 	public final fun getRefusal ()Ljava/lang/String;
 	public final fun getRuntime ()Larcships/rutis/internal/RuntimeState;
+	public final fun install ()V
 	public final fun stop (Ljava/lang/String;)Z
 }
 
 public final class arcships/rutis/internal/RuntimeSession$Companion {
 	public final fun checkPlugins (Ljava/util/List;)V
-	public final fun start (Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;)Larcships/rutis/internal/RuntimeSession;
-	public static synthetic fun start$default (Larcships/rutis/internal/RuntimeSession$Companion;Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;ILjava/lang/Object;)Larcships/rutis/internal/RuntimeSession;
+	public final fun start (Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;)Larcships/rutis/internal/RuntimeSession;
+	public static synthetic fun start$default (Larcships/rutis/internal/RuntimeSession$Companion;Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;ILjava/lang/Object;)Larcships/rutis/internal/RuntimeSession;
 }
 
 public final class arcships/rutis/internal/RuntimeState {
@@ -534,6 +535,7 @@ public final class arcships/rutis/internal/RuntimeState {
 	public static synthetic fun dispose$default (Larcships/rutis/internal/RuntimeState;Ljava/lang/Long;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun getSession ()Larcships/rutis/internal/peer/Peer;
 	public final fun getShutdownMillis ()J
+	public final fun install (Ljava/util/List;)V
 	public final fun setSession (Larcships/rutis/internal/peer/Peer;)V
 	public final fun setShutdownMillis (J)V
 }
@@ -842,8 +844,8 @@ public final class arcships/rutis/internal/remote/DialException : java/io/IOExce
 }
 
 public final class arcships/rutis/internal/remote/Dialing {
-	public fun <init> (Ljava/lang/String;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Larcships/rutis/internal/remote/Retry;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;)V
-	public synthetic fun <init> (Ljava/lang/String;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Larcships/rutis/internal/remote/Retry;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Larcships/rutis/internal/remote/Retry;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;Ljava/util/List;)V
+	public synthetic fun <init> (Ljava/lang/String;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Larcships/rutis/internal/remote/Retry;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun run ()Larcships/rutis/internal/remote/Ended;
 	public final fun stop ()V
 }
@@ -925,8 +927,8 @@ public final class arcships/rutis/internal/remote/ListenKt {
 }
 
 public final class arcships/rutis/internal/remote/Listening {
-	public fun <init> (Larcships/rutis/internal/remote/WebSocketServer;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;)V
-	public synthetic fun <init> (Larcships/rutis/internal/remote/WebSocketServer;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Larcships/rutis/internal/remote/WebSocketServer;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;Ljava/util/List;)V
+	public synthetic fun <init> (Larcships/rutis/internal/remote/WebSocketServer;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Lkotlin/jvm/functions/Function1;Ljava/lang/Long;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun run ()Larcships/rutis/internal/remote/Ended;
 	public final fun stop ()V
 }

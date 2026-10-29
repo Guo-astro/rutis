@@ -19,17 +19,7 @@
       ],
       "start": "eager",
       "project": "<dir>"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "office-node",
-        "language": "node"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -118,7 +108,6 @@
         "export": [
           "weather"
         ],
-        "runtime": "office-node",
         "identity": "host"
       }
     },
@@ -137,7 +126,6 @@
       "config": {
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
         "identity": "host"
       }
     },

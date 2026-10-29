@@ -16,13 +16,12 @@ export class Client {
   #session: Session
 
   // `worker`: the I/O worker's script; tests give one that misbehaves.
-  // `inline` and `requires`: the session's (control methods run as their
-  // frame arrives; capabilities the far end must declare).
+  // `inline`: the session's (control methods run as their frame arrives).
   // `ended`: an Int32Array on a SharedArrayBuffer whose first element the
   // I/O worker sets to 1 once the channel ends, whatever this thread does.
   // `owner` and `within`: the session's (a function or object a row hands
   // over runs as that row's when called).
-  constructor(channel: string, { dispatch, settled, endpoint, token, inline, requires, ended, owner, within, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint: Endpoint, token?: string, inline?: string[], requires?: string[], ended?: Int32Array, owner?: () => unknown, within?: (owner: unknown, run: () => unknown) => unknown, worker?: URL }) {
+  constructor(channel: string, { dispatch, settled, endpoint, token, inline, ended, owner, within, worker = new URL('./io-worker.ts', import.meta.url) }: { dispatch: Dispatch, settled?: () => void, endpoint: Endpoint, token?: string, inline?: string[], ended?: Int32Array, owner?: () => unknown, within?: (owner: unknown, run: () => unknown) => unknown, worker?: URL }) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -33,7 +32,6 @@ export class Client {
       settled,
       endpoint,
       inline,
-      requires,
       owner,
       within,
       pump: (done: () => boolean) => {

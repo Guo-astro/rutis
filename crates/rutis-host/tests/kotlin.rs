@@ -1,9 +1,9 @@
-//! Kotlin runtimes in rutis-host (feature `kotlin`; needs `java`, JDK 17):
-//! a remote runtime of `language: "kotlin"` (or `"kt"`) is the Kotlin SDK
-//! of an application, here its jvm target (the conformance jar, the same
-//! dialing and listening code an Android application runs). Its rows are
-//! `<runtime>:<plugin>`, linked to by a peer row when it listens, or an
-//! instance per connection when it dials in.
+//! Kotlin in rutis-host (feature `kotlin`; needs `java`, JDK 17): the
+//! Kotlin SDK's jvm target (the conformance jar, the same dialing and
+//! listening code an Android application runs). A runtime that listens is
+//! reached by a `rutis-host/dial` row, its rows `<row>:<plugin>`; an
+//! application dialing in to a `rutis-host/listen` row installs its own
+//! plugins, which rutis sees as `<id>:<plugin>`.
 #![cfg(feature = "kotlin")]
 // Each test holds the environment until it ends, across its awaits: the
 // host reads the tokens it sets.
@@ -88,20 +88,18 @@ async fn call(
 }
 
 /// A Kotlin runtime listening on another machine (here, on loopback): a
-/// peer row links to it, `language: "kotlin"`, and its rows are
-/// `<runtime>:<plugin>`.
+/// dial row connects it, and its rows are `<row>:<plugin>`.
 /// guarantee: loader/remote-runtime-rows
 #[tokio::test(flavor = "multi_thread")]
-async fn a_remote_kotlin_runtime_runs_rows_named_after_it() {
+async fn a_dial_row_runs_kotlin_rows_named_after_it() {
     let _environment = common::environment();
     let (_child, mut lines) = remote("listen:ws://127.0.0.1:0/rutis", "edge", "edge-token");
     let address = said(&mut lines, "rutis: listening on ").await;
     std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
     let config: HostConfig = serde_json::from_value(json!({
         "id": "test",
-        "runtimes": { "remote": [{ "name": "edge", "language": "kotlin" }] },
         "rows": [
-            { "id": "edge", "name": "rutis-bridge/peer", "config": { "peer": "edge", "dial": address, "runtime": "edge" } },
+            { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
             { "id": "probe", "name": "edge:probe" }
         ]
     }))
@@ -118,51 +116,8 @@ async fn a_remote_kotlin_runtime_runs_rows_named_after_it() {
     host.shut_down(HANG_GUARD).await.ok();
 }
 
-/// Kotlin runtimes that dial in to the host's listener (`language: "kt"`):
-/// each connection is an instance of the group `runtimes.remote[].instances`
-/// names, its rows `<name>:<plugin>` on that connection, two connections
-/// with the same plugin each in their own instance; a connection going
-/// closes its instance alone.
-/// guarantee: loader/runtime-connection-instances
-#[tokio::test(flavor = "multi_thread")]
-async fn kotlin_runtimes_that_dial_in_are_instances() {
-    let _environment = common::environment();
-    std::env::set_var("RUTIS_TOKEN_PHONE", "shared");
-    let config: HostConfig = serde_json::from_value(json!({
-        "id": "test",
-        "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "remote": [{ "name": "phone", "language": "kt", "listen": "public", "instances": "phone" }]
-        },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-            { "id": "probe", "name": "phone:probe" }
-        ] }]
-    }))
-    .unwrap();
-    let host = Host::start(&config).await.unwrap();
-    host.load(config.rows()).await.unwrap();
-    let address = format!("dial:ws://{}/rutis", host.listening[0].1);
-    let (mut pixel, mut pixel_lines) = remote(&address, "pixel", "shared");
-    let (_tablet, mut tablet_lines) = remote(&address, "tablet", "shared");
-    said(&mut pixel_lines, "rutis: connected to ").await;
-    said(&mut tablet_lines, "rutis: connected to ").await;
-    let running = |id: &str| {
-        host.loader
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.id == id && entry.instance.is_some())
-            .count()
-    };
-    COLD.until(|| running("probe") == 2, "a row in each instance")
-        .await;
-    pixel.kill().await.unwrap();
-    COLD.until(|| running("probe") == 1, "the pixel's instance closed")
-        .await;
-    host.shut_down(HANG_GUARD).await.ok();
-}
-
-/// The host's row in each instance, using its connection's `work`: it
-/// loads only once a call through it answered.
+/// The host's row using the application's `work`: it loads only once a
+/// call through it answered.
 const WATCHER: &str = r#"
 inject = ["work"]
 
@@ -235,12 +190,12 @@ impl App {
     }
 }
 
-/// `RutisApp` (design §五) on the desktop JVM: `start` dials in and rutis
-/// loads the rows of its instance, a Python row there using the
-/// application's service; `stop` unloads them and the instance closes, its
-/// user stopping too; `start` again brings both back. The state follows:
-/// connecting, connected, stopped.
-/// guarantee: loader/runtime-connection-instances
+/// `RutisApp` on the desktop JVM, dialing in to a listen row: `start`
+/// connects, the application installs its plugins and rutis sees
+/// `pixel:probe` providing `work`, which a Python row uses; `stop` takes
+/// them away, its user waiting again; `start` again brings both back. The
+/// state follows: connecting, connected, stopped.
+/// guarantee: host/remote-runtimes
 #[tokio::test(flavor = "multi_thread")]
 async fn an_application_stops_and_starts_again() {
     let _environment = common::environment();
@@ -253,13 +208,12 @@ async fn an_application_stops_and_starts_again() {
         "id": "test",
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
         "runtimes": {
-            "py": { "project": dir.path(), "python": python },
-            "remote": [{ "name": "phone", "language": "kotlin", "listen": "public", "instances": "phone" }]
+            "py": { "project": dir.path(), "python": python }
         },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [
-            { "id": "probe", "name": "phone:probe" },
+        "rows": [
+            { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } },
             { "id": "watcher", "name": "py:watcher" }
-        ] }]
+        ]
     }))
     .unwrap();
     config.rebase(dir.path());
@@ -272,7 +226,7 @@ async fn an_application_stops_and_starts_again() {
         host.loader
             .entries()
             .into_iter()
-            .filter(|entry| entry.id == id && entry.instance.is_some())
+            .filter(|entry| entry.id == id)
             .filter(|entry| {
                 matches!(&entry.status, rutis_loader::report::EntryStatus::Running(snapshot)
                     if snapshot.state == rutis::host::FiberState::Active)
@@ -294,8 +248,8 @@ async fn an_application_stops_and_starts_again() {
     app.tell("stop").await;
     app.reaches("Stopped(reason=null)").await;
     COLD.until(
-        || active("watcher") == 0 && active("probe") == 0,
-        "the instance closed",
+        || active("watcher") == 0 && host.service("work").is_none(),
+        "the application's plugins gone",
     )
     .await;
 

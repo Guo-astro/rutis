@@ -6,6 +6,7 @@
 
 pub mod call;
 pub mod config;
+pub mod connect;
 pub mod control;
 pub mod host;
 pub mod install;

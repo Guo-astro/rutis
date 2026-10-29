@@ -19,33 +19,7 @@
       ],
       "start": "eager",
       "project": "<dir>"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "office-node",
-        "language": "node"
-      },
-      {
-        "name": "edge-bun",
-        "language": "bun"
-      },
-      {
-        "name": "phone",
-        "language": "python",
-        "listen": "public",
-        "instances": "phones"
-      },
-      {
-        "name": "kiosk",
-        "language": "bun",
-        "listen": "public",
-        "instances": "kiosks"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -134,7 +108,6 @@
         "export": [
           "weather"
         ],
-        "runtime": "office-node",
         "identity": "host"
       }
     },
@@ -153,7 +126,6 @@
       "config": {
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
         "identity": "host"
       }
     },
@@ -171,7 +143,6 @@
       "config": {
         "peer": "edge-bun",
         "dial": "wss://edge.example.com/rutis",
-        "runtime": "edge-bun",
         "identity": "host"
       }
     },

@@ -73,7 +73,7 @@
 | Q9.1.1 | 设计文档包含级别、风险、验收 | 部分 | 多数设计有验收节；PR 模板加了持久化格式与保证登记的检查项（#284、#276）；设计文档没有标级别与风险 |
 | Q9.3.2 | 不兼容变化检测与跨版本相遇 | 部分 | `cargo semver-checks` 只提示；协议版本不匹配时说明升级哪一端（#335）；上一个发布版本（运行时、Go SDK、`rutis-host`、节点）与当前代码相遇，断言正常工作或在加载、连接时说明升级哪一端（`tests/e2e/tests/cross_version.rs`，完整运行，#209 → #426） |
 | Q9.4 | 保证登记 | 部分 | [登记表](guarantees.md)已建立（#276、#310，之后各 PR 顺带登记），测试注释写 `guarantee: <编号>`；0.10 作为基线，Q9.4.4 从 0.11 起执行（方案 Q3）。`loader/` 族与 `host/` 其余条目未登记（#181） |
-| Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.10、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
+| Q10.2 | 支持矩阵最低与最新版本 | 满足 | Linux 任务用最低版本（Node 22、Python 3.12、websockets 15、Bun 1.4.0、Go oldstable），macOS、Windows 用最新版本；MSRV 1.88 由 `msrv` 任务验证（#204 → #256；ci.md §9）。运行时 × 通道 × 平台矩阵写在 ci.md §4，不运行的格子写原因（#176） |
 | Q11.3.2 | 不以覆盖率为门槛 | 满足 | — |
 | Q12.1 | 分级运行 | 部分 | PR 按改动选择；每晚（`nightly.yml`，main 有新提交时）运行全部任务、五平台安装（`install.yml`）、Windows dylib、MSRV、feature 组合、两机可复现，以及 `stress.yml`（内核多轮、多进程测试多轮 #245、两个浸泡、shuttle 模型一百万次迭代、三个模糊测试目标各 20 分钟 #425）；跨版本相遇（`ci.yml` 完整运行的 `e2e`，#209）、最新已发布 Cordis 插件的基线（只报告，#190）、S5 容器 + netem（只报告，#341 → #433）；每周依赖检查与 CI 度量。缺：每周的长时间宿主浸泡与基准测试（#192） |
 | Q12.3 | 按改动选择 | 满足 | `changes` 任务按改动打开开关；每晚 `nightly.yml` 在 main 有新提交时运行全部任务（`ci.yml` 的 `all`），也可以手动运行（#203 → #213、#369；ci.md §3）。发布前：release.md 第 2 步确认发布的提交上有通过的每晚运行；`release.yml` 自己调用完整 CI 见 CI 重新设计的第 3 步 |
@@ -110,7 +110,7 @@
 | 条件 | 取值 | 来源 |
 | --- | --- | --- |
 | 操作系统 | Linux、macOS、Windows x64（MSVC）；Bun 不含 Windows | guide/README |
-| 语言环境 | Node ≥ 22、Python ≥ 3.10、Rust ≥ 1.88、Bun ≥ 1.4、Go ≥ 1.24 | guide、0.10 发布说明 |
+| 语言环境 | Node ≥ 22、Python ≥ 3.12、Rust ≥ 1.88、Bun ≥ 1.4、Go ≥ 1.24 | guide、0.10 发布说明 |
 | 可选依赖 | `websockets` ≥ 15（Python 网络） | pyproject |
 | 进程结构 | 宿主一个进程；每种语言运行时至少一个进程；插件可能自己再启动子进程 | 多语言设计 |
 | 网络 | 本机：Unix socket / 继承 fd / loopback TCP；跨机：WebSocket + TLS，可能经过反向代理，可能断网、半开、延迟 | 网络栈设计 |
@@ -587,7 +587,7 @@ TLC 找到过两处握手期间吊销身份仍建立会话，已修复（#432）
 | PR 上新推送取消旧运行；main 上按 ref 分组，运行中的不取消 | Q12.4 | #224 |
 | `changes` 任务按改动打开开关，PR 只跑相关任务，main 全部运行；汇总检查 `ci-ok` 作为唯一必需检查；Linux 上 dylib 拆成 launcher、sdk-bundle、repro 三个任务；`sdk-repro*` 和打包移到 main；每周 CI 度量（`ci-stats.yml`、`tools/ci-stats.mjs`） | Q12.1、Q12.3、Q12.5、Q12.6.1、Q12.7、Q12.9 | #213 |
 | CI 设计与流程文档 `docs/ci.md` | Q12.8、Q12.10 | #237 |
-| `lint`（fmt、clippy `-D warnings`）；MSRV 1.88；Linux 用最低版本（Node 22、Python 3.10、websockets 15），macOS、Windows 用最新；每周依赖漏洞检查 `deps.yml` | Q5.3.7、Q10.2、ST | #256 |
+| `lint`（fmt、clippy `-D warnings`）；MSRV 1.88；Linux 用最低版本（Node 22、Python 3.12、websockets 15），macOS、Windows 用最新；每周依赖漏洞检查 `deps.yml` | Q5.3.7、Q10.2、ST | #256 |
 | 安装冒烟 `install.yml`；发布前五平台安装、发布后用注册表上的包验证 | Q6.15、Q13 | #254 |
 | `e2e` 任务（与 `rust` 并行）；去掉重复的发布构建 | Q12.7 | #265 → #275 |
 | macOS、Windows 上跑和平台有关的测试：先加入 `value_roundtrip`、`fault_links`，再改为默认全部测试文件、只排除与平台无关的（`PURE_TESTS_*`） | Q10.2、Q7.8 | #313、#328 |

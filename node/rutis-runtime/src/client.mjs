@@ -11,7 +11,7 @@ export class Process {
 
   // `ended`: an Int32Array on a SharedArrayBuffer whose first element the
   // I/O worker sets to 1 once the channel ends, whatever this thread does.
-  constructor({ channel, dispatch, settled, endpoint, inline, requires, holds, report, owner, within, ended } = {}) {
+  constructor({ channel, dispatch, settled, endpoint, inline, holds, report, owner, within, ended } = {}) {
     const { port1, port2 } = new MessageChannel()
     this.#port = port1
     this.#session = new Session({
@@ -21,7 +21,6 @@ export class Process {
       settled,
       endpoint,
       inline,
-      requires,
       holds,
       report,
       owner,
@@ -50,7 +49,7 @@ export class Process {
     this.#session.receive(message)
   }
   // `endpoint` ({ local, expected? }): this side's endpoint id and the far end's;
-  // `options`: the session's `inline`, `requires`, `holds`, `report`,
+  // `options`: the session's `inline`, `holds`, `report`,
   // `owner` and `within`.
   static async connect(channel, dispatch, settled, endpoint, options = {}) {
     const process = new Process({ channel, dispatch, settled, endpoint, ...options })

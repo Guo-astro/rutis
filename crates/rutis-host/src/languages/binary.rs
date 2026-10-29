@@ -202,7 +202,7 @@ pub(super) fn start<L: BinaryLanguage>(
 }
 
 /// The resolver of the binaries `settings` names. A runtime of them may not
-/// take another runtime's name: another language's, or a remote runtime's.
+/// take another runtime's name: another language's, or a connection row's.
 fn resolver<L: BinaryLanguage>(
     key: &str,
     config: &HostConfig,
@@ -225,29 +225,16 @@ fn resolver<L: BinaryLanguage>(
         .map(|language| language.key())
         .filter(|other| *other != key)
         .map(str::to_owned)
-        .chain(
-            config
-                .runtimes
-                .remote
-                .iter()
-                .map(|remote| remote.name.clone()),
-        );
+        .chain(config.rows.iter().filter_map(|row| {
+            let connection =
+                row["name"] == crate::connect::DIAL || row["name"] == crate::connect::LISTEN;
+            connection
+                .then(|| row["id"].as_str().map(str::to_owned))
+                .flatten()
+        }));
     Ok(BinaryResolver::<L>::new(binaries)
         .with_catalog(catalog)
         .reserve(reserved))
-}
-
-/// The error of a remote runtime named `name` that a compiled language's
-/// rows would take (`<key>` and `<key>-<binary>`), else `None`.
-pub(super) fn claims(key: &str, title: &str, name: &str) -> Option<String> {
-    let prefixed = name
-        .strip_prefix(key)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'));
-    prefixed.then(|| {
-        format!(
-            "remote runtime {name}: {key} and names starting with {key}- are the local {title} runtimes'"
-        )
-    })
 }
 
 /// A plugin project of a compiled language as `rutis-host dev` builds it:

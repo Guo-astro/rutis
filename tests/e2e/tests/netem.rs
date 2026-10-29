@@ -20,13 +20,13 @@
 //!
 //! Phases, and what each asserts:
 //!
-//! 1. Baseline: A's link connects (`gpu: link connected`), a call on B
+//! 1. Baseline: A's link connects (`gpu: connected`), a call on B
 //!    succeeds, B runs it once.
 //! 2. 200 ms delay and 5 % loss on B's side, for longer than a heartbeat
 //!    timeout (30 s): every call succeeds, takes at least the delay, and
 //!    runs once on B; the link does not go down.
 //! 3. A full outage (100 % loss both ways) while B runs a call: A says
-//!    `gpu: link down (<reason>)`, the call in progress fails on A (an
+//!    `gpu: disconnected (<reason>)`, the call in progress fails on A (an
 //!    error, not a success), the row on A waits for its runtime and B
 //!    says `rutis: session ended (heartbeat timeout); waiting for a
 //!    controller` and unloads the plugin (B's own heartbeat). A's redials
@@ -36,8 +36,8 @@
 //!    wait, 36 s, plus a handshake's 10 s), the row runs again, a new call
 //!    succeeds; the call cut off ran once on B, not again.
 //! 5. Wrong token: B is stopped (Ctrl-C) and started again with another
-//!    token; A's redial is refused and A says `gpu: link refused:
-//!    auth-rejected (…); retrying in 30s`; the row does not run again.
+//!    token; A's redial is refused and A says `gpu: disconnected
+//!    (auth-rejected: …); retrying in 30s`; the row does not run again.
 //! 6. End: Ctrl-C to both. A exits with status 0; nothing of either is
 //!    left running in its container and nothing listens in B's; no output
 //!    contains a token, nor B's a traceback; the scenario's residue checks
@@ -495,16 +495,13 @@ fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe, Probe) {
             "id": "main",
             "runtimes": {
                 "node": {},
-                "remote": [{ "name": "gpu", "language": "python" }],
             },
             "rows": [
                 {
                     "id": "gpu",
-                    "name": "rutis-bridge/peer",
+                    "name": "rutis-host/dial",
                     "config": {
-                        "peer": "gpu",
-                        "dial": format!("wss://{B_NAME}:{PORT}/rutis"),
-                        "runtime": "gpu",
+                        "address": format!("wss://{B_NAME}:{PORT}/rutis"),
                     },
                 },
                 {
@@ -528,7 +525,7 @@ fn main_host(s: &Scenario, net: &Net, token: &str) -> (Host, Probe, Probe) {
         &["run".into(), "rutis.json".into()],
         &[("RUTIS_TOKEN_GPU", token), ("RUTIS_CA", ca.as_str())],
     );
-    a.expect("gpu: link connected");
+    a.expect("gpu: connected");
     a.expect("infer: running");
     probe.started(&mut a);
     ringer.started(&mut a);
@@ -560,7 +557,7 @@ fn retry_waits(a: &Host, from: usize) -> Vec<f64> {
     a.lines()
         .iter()
         .skip(from)
-        .filter(|line| line.text.starts_with("gpu: link down ("))
+        .filter(|line| line.text.starts_with("gpu: disconnected ("))
         .filter_map(|line| line.text.rsplit_once("; retrying in "))
         .filter_map(|(_, wait)| wait.strip_suffix('s')?.parse().ok())
         .collect()
@@ -643,7 +640,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
         );
     }
     assert_eq!(
-        a.count("gpu: link down"),
+        a.count("gpu: disconnected"),
         0,
         "the link went down under 200 ms delay and 5 % loss"
     );
@@ -666,7 +663,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     net.netem(&net.a, Some("loss 100%"));
     net.netem(&net.b, Some("loss 100%"));
     let down = a.wait_for("A reporting the link down", |line| {
-        line.starts_with("gpu: link down (") && line.contains("; retrying in ")
+        line.starts_with("gpu: disconnected (") && line.contains("; retrying in ")
     });
     eprintln!("S5 netem: A: {down}");
     assert!(
@@ -705,7 +702,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     b.expect("infer: unloaded");
     // A dial during the outage fails too (it times out), and is retried.
     let failed = a.wait_for("A's failed redial during the outage", |line| {
-        line.starts_with("gpu: link down (") && line.contains("; retrying in ")
+        line.starts_with("gpu: disconnected (") && line.contains("; retrying in ")
     });
     eprintln!("S5 netem: A: {failed}");
 
@@ -713,7 +710,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     net.netem(&net.a, None);
     net.netem(&net.b, None);
     let restored = Instant::now();
-    a.expect("gpu: link connected");
+    a.expect("gpu: connected");
     a.expect("infer: running");
     let reconnect = restored.elapsed();
     eprintln!("S5 netem: reconnected {reconnect:?} after the network came back");
@@ -765,7 +762,7 @@ fn two_containers_over_tls_through_delay_loss_and_an_outage() {
     let other = s.secret();
     let b2 = node(&s, &net, &other);
     a.wait_for("A reporting the refusal of gpu's credentials", |line| {
-        line.starts_with("gpu: link refused: auth-rejected (")
+        line.starts_with("gpu: disconnected (auth-rejected: ")
             && line.ends_with("; retrying in 30s")
     });
     assert_eq!(

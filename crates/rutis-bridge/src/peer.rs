@@ -109,7 +109,10 @@ impl Operations {
     /// Forget the session, which holds this as its dispatch.
     pub(crate) fn detach(&self) {
         self.session.lock().unwrap().take();
-        self.handlers.lock().unwrap().clear();
+        // Dropped outside the lock: a handler may hold what unregisters
+        // families of its own (a process routed on this session).
+        let handlers = std::mem::take(&mut *self.handlers.lock().unwrap());
+        drop(handlers);
     }
 
     /// What this end offers now, as the announcement after `version`.

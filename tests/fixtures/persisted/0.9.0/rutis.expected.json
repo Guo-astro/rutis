@@ -23,17 +23,7 @@
       "start": "on-demand",
       "idle": 30,
       "project": "<dir>/work"
-    },
-    "remote": [
-      {
-        "name": "gpu",
-        "language": "python"
-      },
-      {
-        "name": "edge-go",
-        "language": "go"
-      }
-    ]
+    }
   },
   "listen": [
     {
@@ -157,7 +147,6 @@
       "config": {
         "peer": "gpu",
         "dial": "wss://gpu.example.com/rutis",
-        "runtime": "gpu",
         "identity": "host"
       }
     },

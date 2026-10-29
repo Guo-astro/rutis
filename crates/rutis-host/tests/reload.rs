@@ -538,10 +538,7 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     let phone: HostConfig = serde_json::from_value(json!({
         "id": "office",
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
-        "runtimes": {
-            "remote": [{ "name": "phone", "language": "python", "listen": "public", "instances": "phone" }]
-        },
-        "rows": [{ "id": "phone", "group": true, "instanced": true, "config": [] }]
+        "rows": [{ "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }]
     }))
     .unwrap();
     let mut host = Host::start(&phone).await.unwrap();
@@ -553,7 +550,7 @@ async fn a_reload_making_two_entries_accept_one_token_is_refused() {
     let error = host.reload(both).await.unwrap_err();
     assert_eq!(
         error,
-        "listener public: link row main accepts RUTIS_TOKEN_MAIN and remote runtime phone \
+        "listener public: link row main accepts RUTIS_TOKEN_MAIN and row phone \
          accepts RUTIS_TOKEN_PHONE, the same token, so a connection presenting it cannot be \
          told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE another value"
     );

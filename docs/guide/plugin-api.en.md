@@ -451,7 +451,7 @@ The rules (waterfall, failures, scope, filter, cancellation, reserved names) are
 
 #### Rust
 
-How to write an event type, `ctx.on` and `ctx.emit`: [write a Rust plugin: events](rust-plugin.en.md#events). A listener reads the dispatch's mode from `call.mode()`; `on_sync` registers a synchronous listener; `listen::<E>()` gives a name, a prefix and options:
+How to write an event type, `ctx.on` and `ctx.emit`: [write a Rust plugin: events](rust-plugin.en.md#5-emit-and-listen-to-events). A listener reads the dispatch's mode from `call.mode()`; `on_sync` registers a synchronous listener; `listen::<E>()` gives a name, a prefix and options:
 
 ```rust
 use rutis::events::Mode;
@@ -719,8 +719,6 @@ A host using `rutis-host` or `LoaderPlugin` provides the service `loader` (`crea
 
 A service name has one provider in rutis: when another plugin (any language, any node) already provides a service of that name, the plugin providing it later fails (to load, or, when it provides it after loading, at that point), and the error names both, for example `service weather is already provided by row forecast: row weather cannot provide it too`. Only that plugin fails: the others, those in its runtime included, keep using the provider they had. An undeclared service appears only once its plugin runs; plugins depending on it wait for it as usual, and `rutis-host check` reports such a dependency with a warning, `nothing declares <service>; it may be provided at runtime by …`, not as a failure (with `check --strict`, as one: see [Checking a configuration](rutis-host.en.md#checking-a-configuration)). The same for one provided from a thread or goroutine before `apply` returns: the host has handled it before the plugin has loaded, and a clash fails the load.
 
-When a 0.12 runtime is mounted by a host older than 0.12, the host does not take undeclared services, which stay visible in their process only; a plugin providing one is told so on stderr, once per name: `rutis: service <name> is not declared in provides, and this host (older than 0.12) does not take undeclared services; declare it or upgrade rutis-host`. Declare it in `provides`, or upgrade rutis-host.
-
 When the host stops, it unloads every plugin, each cleanup runs once, and then the runtime process exits. When the host goes away without unloading them (it was killed, or crashed), the runtime sees its connection to the host close, unloads every plugin itself, and exits; timers, sockets, threads or goroutines a plugin left behind do not keep it running.
 
 Cleanups have a deadline: when the host stops, the `--shutdown-timeout` of `rutis-host` (10 seconds by default, see [rutis-host](rutis-host.en.md#stopping-and-exit-status)); when the host went away, the runtime uses the same time (`rutis-host` passes it to its runtimes in the `RUTIS_SHUTDOWN_TIMEOUT` environment variable; 10 seconds without it). A cleanup not finished by then, and those after it, are not waited for: the runtime writes a line saying so on stderr and exits with status 1. So work that must happen should not rely on cleanup alone, and a cleanup should not wait without end. In Node and Bun, a cleanup that blocks synchronously (an endless loop) holds the thread, and the deadline cannot interrupt it.
@@ -840,7 +838,7 @@ In Python every stretch of a method is watched: a whole `def` method, and each s
 
 An error a plugin leaves unhandled (an unhandled promise rejection or an exception thrown in a timer in JavaScript, an exception nobody retrieves from a Python task) does not end the process (from 0.18, #688):
 
-- **Where the row is traced, that row fails**, saying what and where, for example `weather: failed: unhandled rejection: Error: no region`, with the plugin's own frames under it (`at … (file:///…/weather.mjs:12:9)`); the error's own `code` and `data` go with it. A row still loading fails to load (`failed in apply: unhandled rejection: …`). The other rows of the runtime run on. A row's `apply`, service methods, listeners and the functions it hands over run with the row in their context, and so do the tasks and promises they start. When a row calls a service of another row of the same runtime directly and the innermost plugin file on the error's stack is the other row's, which of the two left it unhandled cannot be told (the stack says where it was thrown, not who dropped it): it is reported as from an unknown row, and no row is charged. Python always traces so (read from the task's context from 3.12, recorded when the task is created on 3.10 and 3.11); an exception in a task the plugin still holds is not unhandled, and is not reported. Node traces only under `rutis-host dev`: it records the row each promise belongs to (`async_hooks`), which costs something on every promise.
+- **Where the row is traced, that row fails**, saying what and where, for example `weather: failed: unhandled rejection: Error: no region`, with the plugin's own frames under it (`at … (file:///…/weather.mjs:12:9)`); the error's own `code` and `data` go with it. A row still loading fails to load (`failed in apply: unhandled rejection: …`). The other rows of the runtime run on. A row's `apply`, service methods, listeners and the functions it hands over run with the row in their context, and so do the tasks and promises they start. When a row calls a service of another row of the same runtime directly and the innermost plugin file on the error's stack is the other row's, which of the two left it unhandled cannot be told (the stack says where it was thrown, not who dropped it): it is reported as from an unknown row, and no row is charged. Python always traces so (read from the task's context); an exception in a task the plugin still holds is not unhandled, and is not reported. Node traces only under `rutis-host dev`: it records the row each promise belongs to (`async_hooks`), which costs something on every promise.
 - **Where it is not, the source is unknown**: `runtime node: an unhandled error from an unknown row: <stack>` (only the plugin's own frames, or the whole stack when none is the plugin's), and no row fails. So it is for Node under `rutis-host run` and always for Bun, and in Python for a task or callback that runs in no row. An exception a Python thread leaves unhandled is printed by Python's own rules; the thread ends and the process goes on. Run under `rutis-host dev` to find the row.
 - **A plugin ending its process** (`process.exit`, `os._exit`): the process ends as before, the rows of the runtime stop and wait for it (see [Lifecycle](#lifecycle)), and the runtime first writes `runtime node: row weather called process.exit(1)`. The row is the one running for Node under `dev` and for Python, else the one whose plugin file is on the stack (named only when exactly one row matches); Bun drops the plugin's frame in a tail call (`() => process.exit(1)`), and then names no row.
 - The Go, Swift and Kotlin runtimes are unchanged: a panic or an uncaught exception follows the language's own rules.
@@ -1063,7 +1061,7 @@ export default definePlugin({
 ```
 
 - What can be handed over: the result of `definePlugin` in Node and Bun; Cordis plugins in Node (functions, classes, objects with `apply`); the result of Python's `define_plugin`; the result of Go's `rutis.Define` (`*rutis.Definition`, the type a client's function field takes); the result of `Rutis.define` in Swift and Kotlin (a client's parameter type is `Rutis.Definition`, `Plugin`; see [handing over plugin definitions in each language](#handing-over-plugin-definitions-in-each-language) below, [Kotlin application](kotlin-app.en.md#2-writing-a-plugin)).
-- A plugin definition an application that dials in hands over (`RutisApp` in Swift and Kotlin) mounts only in that connection's instance, or deeper.
+- A plugin definition an application that dials in hands over (`RutisApp` in Swift and Kotlin) runs in that application; when the application's connection ends, every copy mounted from it ends with it.
 - The receiver is Rust: a parameter or return type `rutis::Definition`, mounted with `ctx.plugin(def.at(&ctx, config)?)`; see [Rust host](rust-host.en.md#receive-plugin-definitions). Other parameter types are unchanged: a data parameter that receives a plugin definition fails the call.
 - Each copy runs in the runtime that defined it, isolated by the instance that mounts it, and gated on its `inject`.
 - A plugin definition belongs to the current generation of the row that handed it over: when that row unloads, reloads or ends, every copy mounted from it ends first, and is cleaned up, before the row unloads. Mounting it afterwards fails. When the runtime's process exits, its copies end too.
@@ -1330,7 +1328,7 @@ The check covers runtimes that declare the `sync-wait` capability (the Node, Pyt
 
 Do not wait inside a synchronous method for a result that requires the event loop to advance, such as a Promise. This produces `SyncWaitCycle`; make the method `async` instead.
 
-An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too. This holds on every supported Python (asyncio's own eager start from 3.12, rutis's on 3.10 and 3.11).
+An `async` method runs up to its first `await` before the reply, like a JS async function, so an `async` method that never suspends can be awaited inside a synchronous call chain too.
 
 ## How long a call waits
 
@@ -1354,6 +1352,42 @@ When the caller abandons an async call (for example, on timeout), the call is ca
 - **Swift**: a caller that gives up cancels the method's Task (`Task.checkCancellation()` throws `CancellationError`); a call the plugin makes from a cancelled Task throws `CancellationError`; to still call once cancelled (to report that it stopped, say), call from `Task { … }`, which keeps the call chain and not the cancellation.
 - **Rust**: dropping the call's future cancels it.
 - How a dispatch of an event is cancelled: [events: lifecycle](#lifecycle).
+
+## Your own connection: `sessions.open`
+
+To let rutis use the plugins at the other end of a connection of your own (a relay, Bluetooth, another transport), write a connection plugin: take a connection that carries binary messages and hand it to the service `sessions`. The far end can be a language runtime, an app that installs its own plugins, or another rutis.
+
+```ts
+type Close = { kind: 'done' } | { kind: 'replaced' } | { kind: 'rejected'; reason: string }
+interface Far  { send(message: Uint8Array): void; close(why: Close): void }
+interface Near { receive(message: Uint8Array): Promise<void>; end(why: Close): void }
+sessions.open(far: Far): Near
+```
+
+```ts
+export default definePlugin({
+  name: 'relay',
+  inject: ['sessions'],
+  async apply(ctx, config: { url: string }) {
+    const ws = new WebSocket(config.url)
+    ws.binaryType = 'arraybuffer'
+    await new Promise(ok => ws.addEventListener('open', ok, { once: true }))
+    const near = ctx.sessions.open({
+      send: m => ws.send(m),
+      close: why => ws.close(why.kind === 'rejected' ? 4003 : why.kind === 'replaced' ? 4002 : 1000),
+    })
+    ws.onmessage = e => near.receive(new Uint8Array(e.data))
+    ws.onclose = () => near.end({ kind: 'done' })
+    ctx.effect(() => () => ws.close())
+  },
+})
+```
+
+- Write `sessions` in `inject`; without it, `open` fails: `declare sessions in inject`.
+- The session hangs under the plugin that called `open`: when that plugin unloads, its sessions and the far end's plugins all unload.
+- `receive` completes once the message is in the session's receive queue; the queue holds 64 messages, and when it is full `receive` waits, which carries backpressure back to the connection.
+- The far end's plugins are named `<far id>:<plugin>` here; to have the far end run a plugin, write a row `<connection row>:<plugin>` in rutis.json (for example `relay:contacts`); while the far end is not there, that row waits.
+- A connection plugin compiled into a Rust host uses `rutis_bridge::Session` directly: `ctx.plugin(Session::new(channel))`; the host must provide `LocalId` in the root ctx (rutis-host does).
 
 ## Versions
 

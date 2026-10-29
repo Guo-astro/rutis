@@ -11,15 +11,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::channel::{Channel, Closer, ConnectError, PeerId};
-use crate::session::rpc::{Connection, Endpoint};
+use crate::session::rpc::Connection;
 use crate::session::{Error, Handshake};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, TypeKey};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
 use tokio::sync::{mpsc, watch};
 
-use crate::access_point::Release;
 use crate::peer::{Operations, Peer};
+use crate::session::plugin::Greet;
 use crate::{identity_key, peer_key, Accepting, Identity, Registered};
 
 /// The session protocol links speak, as a WebSocket subprotocol.
@@ -252,8 +252,8 @@ impl DynPlugin for LinkPlugin {
                 generation: 0,
             };
             // A listening link registers before its apply returns: once it
-            // is applied, its far end is routed to it, also on a listener an
-            // access point already registered on, where an unknown
+            // is applied, its far end is routed to it, also on a listener another
+            // entry already registered on, where an unknown
             // credential is refused, not retried (#411).
             let task = match self.config.connect.clone() {
                 Connect::Dial(dialer) => tokio::spawn(link.dialing(dialer)),
@@ -290,6 +290,9 @@ struct Link {
     generation: u64,
 }
 
+/// Undoes what was set up on a session.
+type Undo = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
 /// A ready session and what is held for it. Dropping it closes the
 /// session.
 pub(crate) struct Live {
@@ -298,7 +301,7 @@ pub(crate) struct Live {
     operations: Arc<Operations>,
     /// Undoes what was set up on the session (the provided peer). In a
     /// mutex only to make `Live` shareable while its holder awaits.
-    release: Mutex<Option<Release>>,
+    release: Mutex<Option<Undo>>,
     /// tokio's clock, the same as std's unless paused: a test on the
     /// paused clock can check the reset after `stable` (#231).
     since: tokio::time::Instant,
@@ -309,7 +312,7 @@ impl Live {
         session: Connection,
         closer: Arc<dyn Closer>,
         operations: Arc<Operations>,
-        release: Release,
+        release: Undo,
     ) -> Self {
         Self {
             session,
@@ -335,65 +338,6 @@ impl Drop for Live {
     fn drop(&mut self) {
         self.session.close(Error::Transport("link stopped".into()));
         self.operations.detach();
-    }
-}
-
-/// How this end opens a session: as `local`, expecting a far end (if it
-/// names one), declaring and requiring capabilities.
-pub(crate) struct Greet<'a> {
-    pub(crate) local: PeerId,
-    pub(crate) expected: Option<PeerId>,
-    pub(crate) declare: &'a [String],
-    pub(crate) require: &'a [String],
-    pub(crate) timeout: Duration,
-}
-
-impl Greet<'_> {
-    /// Open a session on `channel` and wait, at most `timeout`, for the far
-    /// end to greet as expected, declaring what is required. On failure the
-    /// session is closed.
-    pub(crate) async fn open(
-        &self,
-        channel: Channel,
-    ) -> Result<(Connection, Arc<Operations>), Error> {
-        let operations = Arc::new(Operations::default());
-        let mut endpoint = Endpoint::rust(self.local.clone());
-        endpoint.expected = self.expected.clone();
-        // A rutis endpoint is a full framework node.
-        endpoint.capabilities.push("node".into());
-        endpoint.capabilities.extend(self.declare.iter().cloned());
-        let session = Connection::open(channel, operations.clone(), endpoint)?;
-        let ready = tokio::time::timeout(self.timeout, session.ready()).await;
-        match ready {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                session.close(error.clone());
-                return Err(error);
-            }
-            Err(_) => {
-                let error = Error::Transport("the far end did not greet in time".into());
-                session.close(error.clone());
-                return Err(error);
-            }
-        }
-        // The contract is checked before use, not guessed from failing calls.
-        let missing = self
-            .require
-            .iter()
-            .find(|capability| !session.supports(capability));
-        if let Some(missing) = missing {
-            let far = session.greeting().map_or_else(
-                || "the far end".to_owned(),
-                |greeting| greeting.endpoint.to_string(),
-            );
-            let error = Error::Handshake(Handshake::Incompatible(format!(
-                "{far} does not declare {missing}"
-            )));
-            session.close(error.clone());
-            return Err(error);
-        }
-        operations.attach(session.clone());
-        Ok((session, operations))
     }
 }
 
@@ -432,7 +376,7 @@ impl Link {
         self.state.send_replace(LinkState::Ready {
             generation: self.generation,
         });
-        let release: Release = Box::new(move || {
+        let release: Undo = Box::new(move || {
             Box::pin(async move {
                 let _ = provided.dispose().await;
             })
@@ -472,7 +416,7 @@ impl Link {
                         }
                         // Why it ended: for a local runtime, how its
                         // process ended; an identity the far end rejected
-                        // after the greeting (an access point refusing this
+                        // after the greeting (a listener refusing this
                         // end's id) is an authentication failure.
                         let ended = live.session.close_reason();
                         let reason = ended.as_ref().map_or_else(
