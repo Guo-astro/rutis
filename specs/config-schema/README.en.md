@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. Every language's SDK (Go, Swift, Kotlin), rutis-loader and `rutis-host check` run every case of [`cases.json`](cases.json) and compare word for word. This is not a TLA+ model and is not run by CI's `specs` job; each implementation's own tests run it.
+The case list of the [config schema design](../../docs/design-config-schema-2026-10-27.en.md) §8: the rules for filling defaults, validating and writing errors. They have one implementation, the kernel's (`rutis::config::check`): every row of the loader, plugin values and `rutis-host check` call it, and the language SDKs only decode ([platform cleanup](../../docs/design-platform-cleanup-2026-10-28.en.md) §7.5). `crates/rutis/tests/config_cases.rs` runs every case of [`cases.json`](cases.json) and compares word for word. This is not a TLA+ model and is not run by CI's `specs` job.
 
 ## Format
 
@@ -13,13 +13,13 @@ The case list of the [config schema design](../../docs/design-config-schema-2026
 - No `config`: no config (the same as `null`).
 - `then.config`: it passes, and this is what `apply` gets (defaults filled; `1.0` passing `integer` written as the integer `1`). Compared by JSON equality; languages that tell integers from fractions (Rust, Go) also compare whether it is an integer.
 - `then.errors`: it fails; each line of the error, i.e. the text of the marked config error without the row name (design §5.1: sorted by path, at most 20 lines, the rest as `config: and N more problems`).
-- `warnings`: extra keys, in the same sentences (the warnings of testing tools and of the loader).
+- `warnings`: extra keys, in the same sentences (the loader's warnings).
 
-## How each implementation runs them
+## How they are run
 
 - Run every case, compare `then` and `warnings`.
 - Run every passing case a second time after changing every object and array of the first result in place (a key added, an item added): the second result still equals `then.config` (defaults are filled as copies, design §4, case 21).
-- Only rules every language shares are here. Typed languages' own cases (Go's zero values and pointers, Swift's literal initial values, Kotlin's default arguments, Rust's `serde(default)` and `deny_unknown_fields`, the decoder errors of Rust `Definition`) and old Go manifests' `required` being ignored (design §7) are in their own tests.
+- Only the rules of validation are here. Typed languages' own decoding cases (Go's zero values and pointers, Swift's literal initial values, Kotlin's default arguments, Rust's `serde(default)` and `deny_unknown_fields`, the decoder errors of Rust `Definition`) and old Go manifests' `required` being ignored (design §7) are in their own tests.
 
 ## Details settled while implementing
 

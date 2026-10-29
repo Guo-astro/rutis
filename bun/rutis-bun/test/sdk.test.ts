@@ -31,7 +31,6 @@ test('the SDK test tool runs events under Bun', async () => {
   await h.unload()
 })
 
-// objects-case(bun): strict-testing-tool
 // objects-case(bun): data-stays-data
 // objects-case(bun): plain-object-by-reference
 // The plugin is in another process (#687 §四): an object with methods
