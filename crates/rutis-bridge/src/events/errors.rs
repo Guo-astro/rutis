@@ -148,10 +148,6 @@ pub fn report_line(error: &ErrorKind) -> Option<String> {
             "filter of {name} from {emitter} failed: {}",
             crate::report::printable(&named(error))
         )),
-        ErrorKind::PluginFailed(source) => {
-            let line = source.to_string();
-            line.starts_with("filter of ").then_some(line)
-        }
         _ => None,
     }
 }

@@ -801,7 +801,7 @@ impl SessionEvents {
                     Box::pin(with_caller(source.clone(), async move {
                         let dispatched = ctx.events().dispatch(&ctx, dispatch).await;
                         if let Err(error) = dispatched {
-                            report_filter(&reporter, &name, row.as_deref(), &error);
+                            report_filter(&reporter, &name, row.as_deref(), error);
                         }
                         let _ = started.send(());
                     }));
@@ -921,18 +921,17 @@ impl Drop for SessionEvents {
 
 /// Report a failed `emit` dispatch (its filter, events protocol §5.6) to
 /// the host's error sink.
-fn report_filter(ctx: &Ctx, name: &str, row: Option<&str>, error: &RutisError) {
-    let error = to_session(error);
-    let (kind, message) = match &error {
-        Error::Remote { name, message, .. } => (name.clone(), message.clone()),
-        other => ("BindingError".to_owned(), other.to_string()),
-    };
-    let from = match row {
+fn report_filter(ctx: &Ctx, name: &str, row: Option<&str>, error: RutisError) {
+    let emitter = match row {
         Some(row) => format!("row {row}"),
         None => "the mount".to_owned(),
     };
-    let line = format!("filter of {name} from {from} failed: {kind}: {message}");
-    (ctx.error_sink())(Arc::new(ErrorKind::PluginFailed(line.into())));
+    let report = ErrorKind::FilterFailed {
+        name: name.to_owned(),
+        emitter,
+        error: Arc::new(error.into_kind()),
+    };
+    (ctx.error_sink())(Arc::new(report));
 }
 
 /// A request's fields.
@@ -1035,7 +1034,7 @@ fn reporting(filter: BatchFilter, ctx: Ctx, name: String, row: Option<String>) -
         let wanted = candidates.len();
         let settle = move |answer: Result<Vec<bool>, RutisError>| {
             answer.or_else(|error| {
-                report_filter(&ctx, &name, row.as_deref(), &error);
+                report_filter(&ctx, &name, row.as_deref(), error);
                 Ok(vec![false; wanted])
             })
         };
