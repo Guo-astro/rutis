@@ -57,5 +57,5 @@
 - Python 3.12 或更高（Python 插件）。
 - Go 1.24 或更高（只在写 Go 插件、构建二进制时需要；运行 Go 插件二进制不需要）。
 - macOS 14 或更高与 Swift 6.2 工具链（只在写 Swift 插件、构建二进制时需要；运行 Swift 插件二进制不需要工具链，但只在 macOS 上运行）。
-- JDK 17 与 Android 10（API 29）或更高（Kotlin 插件，编进 Android 应用；包是 Maven Central 上的 `io.github.arcships:rutis` 与编译期的 `io.github.arcships:rutis-ksp`）。
+- JDK 17 与 Android 10（API 29）或更高（Kotlin 插件，编进 Android 应用；不发布到 Maven，从本仓库的源码引用 `kotlin/rutis`，见 [Android 应用托管插件](kotlin-app.md#1-依赖)）。
 - Rust 1.88 或更高（只在写 Rust 插件、在 Rust 里嵌入时需要）。这个版本是按仓库的 `Cargo.lock` 验证的；用更旧的 Rust 自己解析依赖时，可以在 Cargo 配置里设 `resolver.incompatible-rust-versions = "fallback"`，让 Cargo 选能用的依赖版本。

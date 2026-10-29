@@ -8,7 +8,22 @@ Android 应用把自己和所在设备的能力（通讯录、通知、设备信
 
 ## 1. 依赖
 
-Android 10（API 29）或更高，JDK 17。应用的 `build.gradle.kts`：
+Android 10（API 29）或更高，JDK 17。Kotlin SDK 不发布到 Maven，从源码引用：把本仓库的 tag `v0.19.0` 取到应用项目旁边，再把应用的 `local.properties`（Android SDK 的位置）复制给它：
+
+```bash
+git clone --depth 1 --branch v0.19.0 https://github.com/arcships/rutis.git ../rutis
+cp local.properties ../rutis/kotlin/rutis/
+```
+
+`kotlin/rutis` 要自己找到 Android SDK（`ANDROID_HOME`、`ANDROID_SDK_ROOT` 或它的 `local.properties` 里的 `sdk.dir`）才构建 Android 的那份；找不到时应用拿到的是桌面 JVM 的那份，没有 R8 规则。
+
+应用的 `settings.gradle.kts` 用 Gradle 的 composite build 引入它（路径相对应用项目的根目录）：
+
+```kotlin
+includeBuild("../rutis/kotlin/rutis")
+```
+
+应用的 `build.gradle.kts`：
 
 ```kotlin
 plugins {
@@ -19,13 +34,16 @@ plugins {
 }
 
 dependencies {
-    implementation("io.github.arcships:rutis:0.18.0")
-    ksp("io.github.arcships:rutis-ksp:0.18.0")
+    // 不写版本：Gradle 用 includeBuild 引入的源码构建它们。
+    implementation("io.github.arcships:rutis")
+    ksp("io.github.arcships:rutis-ksp")
     // 测试工具，在 JVM 上跑插件的单元测试（§7）。
-    testImplementation("io.github.arcships:rutis-testing:0.18.0")
-    kspTest("io.github.arcships:rutis-ksp:0.18.0")
+    testImplementation("io.github.arcships:rutis-testing")
+    kspTest("io.github.arcships:rutis-ksp")
 }
 ```
+
+升级时在 `../rutis` 里取新的 tag（`git fetch --depth 1 origin tag v<版本> && git checkout v<版本>`）。
 
 KSP 处理器在编译期生成方法表与代理，运行时不做方法反射；AAR 带了 R8 规则，开 `isMinifyEnabled` 的 release 构建不用为 rutis 加任何规则。`AndroidManifest.xml` 要有 `android.permission.INTERNET`。
 

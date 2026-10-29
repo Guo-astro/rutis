@@ -35,7 +35,7 @@ val weather = Rutis.define<Config>(
 }
 ```
 
-The build applies the serialization plugin and the processor, which generates the method tables of `@RutisService` classes and the proxies of `@RutisClient` interfaces at compile time (no method is found by reflection at run time; the AAR ships the R8 rules that keep them):
+The SDK is not published to Maven; it is used from source: fetch this repository's tag (`git clone --depth 1 --branch v<version> https://github.com/arcships/rutis.git ../rutis`) and add `includeBuild("../rutis/kotlin/rutis")` to `settings.gradle.kts` (an Android application also lets it find the Android SDK, see [kotlin-app](../docs/guide/kotlin-app.en.md#1-dependencies)). The build applies the serialization plugin and the processor, which generates the method tables of `@RutisService` classes and the proxies of `@RutisClient` interfaces at compile time (no method is found by reflection at run time; the AAR ships the R8 rules that keep them):
 
 ```kotlin
 plugins {
@@ -43,10 +43,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 dependencies {
-    implementation("io.github.arcships:rutis:<version>")
-    ksp("io.github.arcships:rutis-ksp:<version>")
-    testImplementation("io.github.arcships:rutis-testing:<version>")   // the testing tool
-    kspTest("io.github.arcships:rutis-ksp:<version>")
+    // No version: built from the source includeBuild brings in.
+    implementation("io.github.arcships:rutis")
+    ksp("io.github.arcships:rutis-ksp")
+    testImplementation("io.github.arcships:rutis-testing")   // the testing tool
+    kspTest("io.github.arcships:rutis-ksp")
 }
 ```
 
