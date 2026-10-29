@@ -2673,9 +2673,13 @@ mod tests {
         >::new(
             crate::runtime::binary::Binaries::new().dir(dir.path())
         ));
+        // Nothing starts here: the ends are noted by hand.
+        let spawn: crate::runtime::binary::Spawn =
+            Arc::new(|_: &str, _, _: &Path| unreachable!("nothing starts"));
         let runtimes = crate::runtime::binary::BinaryRuntimes::<crate::runtime::go::Go>::new(
             resolver,
             dir.path(),
+            spawn,
         )
         .handle();
         for generation in 1..=100 {

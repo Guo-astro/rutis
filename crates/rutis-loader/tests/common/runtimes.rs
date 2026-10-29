@@ -250,21 +250,231 @@ pub fn kotlin_launcher(project: &Path) -> rutis_bridge::runtime::Launcher {
         .cwd(project)
 }
 
-/// Mount the rows stage of the runtime `rows` resolves for, and wait until
-/// it releases the rows (`RuntimeRows`). It does that from a task of its
-/// own, and `reconcile` does not wait for rows still waiting for it: without
-/// this wait a row whose plugin has already recorded a line from its
-/// `apply` may still be `Loading` in rutis. Only for a runtime that starts:
-/// the stage waits for it.
+/// Wait until the session of the local runtime `name` releases its rows
+/// (`SessionRows`), its second stage mounted now. It does that from a task
+/// of its own, and `reconcile` does not wait for rows still waiting for it:
+/// without this wait a row whose plugin has already recorded a line from
+/// its `apply` may still be `Loading` in rutis. Only for a runtime that
+/// starts: the stage waits for it. `sessions` must be attached to a loader
+/// that runs.
 #[cfg(feature = "runtimes")]
-pub async fn rows_stage(root: &rutis::Ctx, rows: Arc<rutis_loader::runtime::RuntimeResolver>) {
+pub async fn rows_stage(
+    root: &rutis::Ctx,
+    sessions: &rutis_loader::runtime::SessionResolver,
+    name: &str,
+) {
     use rutis::internal::CtxInternal;
-    use rutis_loader::runtime::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
-    let key = RuntimeRows::key(RowsSource::runtime_name(&*rows));
-    root.plugin(RuntimeRowsPlugin::new(rows));
+    use rutis_loader::runtime::SessionRows;
+    sessions.follow_row(name);
+    let key = SessionRows::key(name);
     COLD.until(
-        || root.get_key::<RuntimeRows>(key.clone()).is_some(),
+        || root.get_key::<SessionRows>(key.clone()).is_some(),
         "the runtime's rows released",
     )
     .await;
+}
+
+/// The id sessions greet with (rutis-host provides its `id`): once on
+/// `root`, before any runtime starts.
+#[cfg(feature = "runtimes")]
+pub fn greet_as_main(root: &rutis::Ctx) {
+    root.provide(rutis_bridge::LocalId(id("main"))).unwrap();
+}
+
+/// A local runtime as rutis-host's `rutis-host/spawn` starts one: its
+/// process (`Launcher::start`, `--id <name>`) the far end of a session, its
+/// fiber the row `name`, under which the session provides its handle. Rows
+/// `<name>:<plugin>` (`SessionResolver`) run on it. The root needs
+/// [`greet_as_main`].
+#[cfg(feature = "runtimes")]
+pub struct TestRuntime {
+    name: String,
+    label: String,
+    launcher: rutis_bridge::runtime::Launcher,
+    anchor: PathBuf,
+    states: rutis_bridge::runtime::RuntimeStates,
+    processes: rutis_bridge::pipe::Processes,
+}
+
+#[cfg(feature = "runtimes")]
+impl TestRuntime {
+    pub fn new(name: &str, launcher: rutis_bridge::runtime::Launcher, anchor: &Path) -> Self {
+        let processes = rutis_bridge::pipe::Processes::default();
+        Self {
+            name: name.to_owned(),
+            label: format!("runtime {name}"),
+            states: rutis_bridge::runtime::RuntimeStates::new(name, anchor)
+                .processes(processes.clone()),
+            launcher,
+            anchor: anchor.to_owned(),
+            processes,
+        }
+    }
+
+    /// The Python runtime `py` of `project`, the repository's rutis
+    /// package on its path.
+    #[cfg(feature = "python")]
+    pub fn python(project: &Path) -> Self {
+        Self::new(
+            "py",
+            rutis_bridge::runtime::Launcher::python(project),
+            project,
+        )
+        .python_path(repo().join("python/rutis"))
+    }
+
+    /// The Node runtime `node` of the repository's `node/rutis-runtime`,
+    /// its plugins resolved from `anchor` (a `package.json`).
+    #[cfg(feature = "node")]
+    pub fn node(anchor: &Path) -> Self {
+        Self::new(
+            "node",
+            rutis_bridge::runtime::Launcher::node(&repo().join("node/rutis-runtime")),
+            anchor,
+        )
+    }
+
+    /// The runtime under another name (a Node runtime per plugin, say).
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = name.to_owned();
+        self.label = format!("runtime {name}");
+        self.states = rutis_bridge::runtime::RuntimeStates::new(name, &self.anchor)
+            .processes(self.processes.clone());
+        self
+    }
+
+    /// Put `directory` ahead on the process's `PYTHONPATH`.
+    pub fn python_path(mut self, directory: impl Into<PathBuf>) -> Self {
+        let env = &mut self.launcher.env;
+        let current = env
+            .iter()
+            .find(|(name, _)| name == "PYTHONPATH")
+            .map(|(_, current)| current.clone());
+        let mut entries = vec![directory.into()];
+        entries.extend(current.iter().flat_map(std::env::split_paths));
+        let path = std::env::join_paths(&entries).unwrap();
+        env.retain(|(name, _)| name != "PYTHONPATH");
+        env.push(("PYTHONPATH".into(), path));
+        self
+    }
+
+    /// Change the launcher (`stdout`, `env`, …).
+    pub fn launcher(
+        mut self,
+        change: impl FnOnce(rutis_bridge::runtime::Launcher) -> rutis_bridge::runtime::Launcher,
+    ) -> Self {
+        self.launcher = change(self.launcher);
+        self
+    }
+
+    pub fn handle(&self) -> rutis_bridge::runtime::RuntimeHandle {
+        self.states.handle()
+    }
+
+    pub fn processes(&self) -> rutis_bridge::pipe::Processes {
+        self.processes.clone()
+    }
+}
+
+/// What starts the compiled languages' runtimes (`BinaryRuntimes::new`):
+/// a [`TestRuntime`] each.
+#[cfg(feature = "binary")]
+pub fn spawner() -> rutis_loader::runtime::binary::Spawn {
+    Arc::new(|name: &str, launcher, anchor: &Path| {
+        let runtime = TestRuntime::new(name, launcher, anchor);
+        rutis_loader::runtime::binary::Spawned {
+            handle: runtime.handle(),
+            processes: runtime.processes(),
+            plugin: Box::new(runtime),
+        }
+    })
+}
+
+#[cfg(feature = "runtimes")]
+impl rutis::host::DynPlugin for TestRuntime {
+    fn platform(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::host::BoxFuture<'a, Result<rutis::host::Effect, rutis::Error>> {
+        use rutis::host::{CtxHost, Effect, ErrorKind, FiberState};
+        use rutis::internal::CtxInternal;
+        use rutis_bridge::runtime::RuntimeState;
+        Box::pin(async move {
+            let failed = |why: String| {
+                self.states.failed(why.clone());
+                rutis::Error::from(ErrorKind::PluginFailed(why.into()))
+            };
+            ctx.mark_row(&self.name)?;
+            self.states.announce(ctx);
+            self.states.starting();
+            let peer = id(&self.name);
+            let channel = tokio::select! {
+                started = self.launcher.start(&peer, &self.anchor, &self.processes) => {
+                    started.map_err(|error| failed(error.to_string()))?
+                }
+                () = ctx.cancelled() => {
+                    self.states.stopped();
+                    return Ok(Effect::Done);
+                }
+            };
+            let session = ctx.plugin(rutis_bridge::Session::new(channel));
+            let mut watch = session.watch();
+            loop {
+                let snapshot = watch.borrow_and_update().clone();
+                match snapshot.state {
+                    FiberState::Active => break,
+                    FiberState::Failed | FiberState::Disposed => {
+                        return Err(failed(
+                            snapshot
+                                .error
+                                .map(|error| error.to_string())
+                                .unwrap_or_else(|| "the runtime ended as it started".into()),
+                        ));
+                    }
+                    _ => {}
+                }
+                tokio::select! {
+                    changed = watch.changed() => if changed.is_err() {
+                        return Err(failed("the runtime ended as it started".into()));
+                    },
+                    () = ctx.cancelled() => {
+                        self.states.stopped();
+                        return Ok(Effect::Done);
+                    }
+                }
+            }
+            let process = ctx
+                .get_at(&rutis_bridge::session_key(&self.name))
+                .and_then(|handle| handle.process())
+                .ok_or_else(|| failed(format!("{} runs no plugins", self.name)))?;
+            self.states.ready(process.clone());
+            let (states, owner) = (self.states.clone(), ctx.clone());
+            let watcher = tokio::spawn(async move {
+                let mut watch = session.watch();
+                let _ = watch
+                    .wait_for(|s| matches!(s.state, FiberState::Failed | FiberState::Disposed))
+                    .await;
+                if !owner.cancellation_token().is_cancelled() {
+                    states.failed(rutis_bridge::runtime::ended_status(&process));
+                }
+            });
+            let states = self.states.clone();
+            ctx.effect(move || async move {
+                watcher.abort();
+                if !matches!(states.handle().state(), RuntimeState::Down(_)) {
+                    states.stopped();
+                }
+                Ok(())
+            })?;
+            Ok(Effect::Done)
+        })
+    }
 }
