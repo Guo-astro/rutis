@@ -2,176 +2,376 @@
 
 [English](swift-plugin.en.md)
 
-从创建项目到发布，再到被宿主使用。需要 macOS 14 或更高，以及带 Swift 6.2 工具链的 Xcode 26 或更高（只有 Command Line Tools 也能构建和运行插件，但 `swift test` 要用 Xcode 的测试框架）；SDK 本身按 Swift 5 语言模式编写，`new` 生成的项目也是。
+从创建项目到发布。需要 macOS 14 或更高、带 Swift 6.2 工具链的 Xcode 26 或更高（`swift test` 要用 Xcode 的测试框架），以及 Node.js 22 或更高（运行 `npx` 和第 7 步的假服务）。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
 
-Swift 插件和 TypeScript、Python、Go 插件的写法与规则相同（见 [插件 API](plugin-api.md)）；和 Go 一样，**Swift 插件编译成二进制，一个二进制就是宿主里的一个运行时进程**。一个二进制可以带一个或几个插件；宿主可以同时运行很多个二进制，只在有行用到时才启动它。Swift 用来接入 macOS 给本机程序的能力：日历与提醒（EventKit）、通讯录、辅助功能与 Apple 事件自动化、屏幕录制、Core ML。
+## 1. 起项目
 
-## 1. 创建项目
-
+<!-- example: swift run -->
 ```bash
-rutis-host new weather --lang swift
-cd weather
+npx @arcships/rutis-host new greeter --lang swift
+cd greeter
 swift test
 ```
 
-得到的项目（一个 SwiftPM 包）：
+Swift 插件编译成二进制，一个二进制就是宿主里的一个运行时进程。得到的项目是一个 SwiftPM 包：
 
 | 文件 | 作用 |
 | --- | --- |
-| `Sources/WeatherPlugin/Plugin.swift` | 插件本身（库 `WeatherPlugin`，导出 `plugin`） |
-| `Sources/weather/main.swift` | 二进制：`Rutis.serve(plugin)` |
-| `Tests/WeatherPluginTests/PluginTests.swift` | 用 `RutisTest` 的单元测试，不需要宿主 |
-| `Info.plist` | 链进二进制：它的名字，以及插件请求权限时 macOS 显示的用途说明（见 [系统权限](#5-系统权限)） |
-| `Package.swift` | 依赖 `https://github.com/arcships/rutis`（产品 `Rutis` 与 `RutisTest`）；`linkerSettings` 链入 `Info.plist` |
-| `rutis.dev.json` | 本地运行时的配置和测试用的其他插件 |
-| `.github/workflows/release.yml` | 打 `v*` tag 时测试，并把通用二进制（arm64 + x86_64）发布到 GitHub Release |
+| `Sources/GreeterPlugin/Plugin.swift` | 插件本身（库 `GreeterPlugin`，导出 `plugin`） |
+| `Sources/greeter/main.swift` | 二进制：`Rutis.serve(plugin)` |
+| `Tests/GreeterPluginTests/PluginTests.swift` | 测试，不需要宿主 |
+| `rutis.dev.json` | 本地运行时的行（第 7 步） |
+| `Info.plist` | 链进二进制，macOS 请求权限时用（见 [系统权限](#系统权限)） |
+| `Package.swift` | 依赖 `https://github.com/arcships/rutis`（产品 `Rutis` 与 `RutisTest`） |
+| `.github/workflows/release.yml` | 打 `v*` tag 时测试并发布二进制（第 8 步） |
 
-第一次构建会编译 SDK 的宏（swift-syntax，只在编译期）；Xcode 会询问一次是否信任它们（CI 里用 `xcodebuild` 时加 `-skipMacroValidation`）。
+第一次构建会编译 SDK 的宏（swift-syntax，只在编译期），要一两分钟；Xcode 会询问一次是否信任它们。
 
-## 2. 写插件
+## 2. 提供服务
 
+生成的 `Sources/GreeterPlugin/Plugin.swift` 是一个插件，它提供服务 `greeter`：
+
+<!-- example: swift file=greeter/Sources/GreeterPlugin/Plugin.swift -->
 ```swift
+// The greeter rutis plugin. The Swift plugin guide goes on from here:
+// https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md
 import Rutis
 
-/// 配置：普通的 Decodable 类型；@RutisConfig 由它生成 JSON Schema。
+/// The plugin's configuration (guide, step 4): `@RutisConfig` derives its
+/// JSON Schema; a `var` with a literal initial value is its default, filled
+/// in when the row leaves it out.
 @RutisConfig
 public struct Config: Decodable {
-    /// 要查天气的城市
-    public var city: String
+    /// how to greet
+    public var greeting = "Hello"
 }
 
-/// 它用到的服务，可以是任何语言的：@RutisClient 生成 `LLMProxy`。
-@RutisClient
-public protocol LLM {
-    func ask(_ question: String) async throws -> String
-}
-
-/// 它提供的服务：@RutisService 让它的方法成为服务的方法。
+/// The service the plugin provides (guide, step 2): `@RutisService` makes
+/// its methods the service's.
 @RutisService
-public final class Weather: @unchecked Sendable {
-    let llm: any LLM
-    let city: String
+public final class Greeter: @unchecked Sendable {
+    let greeting: String
 
-    init(llm: any LLM, city: String) { self.llm = llm; self.city = city }
+    init(greeting: String) { self.greeting = greeting }
 
-    public func today() async throws -> String {
-        try await llm.ask("weather in \(city)") + " in \(city)"
-    }
-
-    public func unit() -> String { "celsius" }
+    public func hello(_ name: String) -> String { "\(greeting), \(name)!" }
 }
 
 public let plugin = Rutis.define(Plugin(
-    name: "weather",
-    inject: ["llm"],                                            // 全部就绪时才运行
-    provides: ["weather": .of(Weather.self, sync: ["unit"])],   // 声明提供什么（check 运行前就知道）；unit 标为同步，其余异步
+    name: "greeter",
+    // The services it uses (guide, step 3): it starts once they are all there.
+    inject: [],
+    // What it provides, so that `rutis-host check` knows before it runs.
+    provides: ["greeter": .of(Greeter.self)],
     config: Config.self,
     apply: { ctx, config in
-        ctx.provide("weather", Weather(llm: try ctx.use("llm", LLMProxy.self), city: config.city))
-        ctx.effect { /* 清理，可选 */ }
+        ctx.provide("greeter", Greeter(greeting: config.greeting))
     }
 ))
 ```
 
-要点：
+- `Rutis.define(Plugin(...))` 定义插件；`name` 是它在二进制里的名字。宿主装上插件、启动它时调用 `apply`。
+- `@RutisService` 让类的每个公开方法成为服务的方法（`hello`），`ctx.provide("greeter", …)` 提供这个服务：任何语言的插件都能按名字 `greeter` 调用它，插件卸载时服务随之撤销。
+- `provides` 写出插件提供哪些服务，宿主不运行插件就知道。
 
-| 主题 | 规则 |
-| --- | --- |
-| 方法 | `@RutisService` 让每个不是 `private` / `fileprivate` 的实例方法成为服务的方法，线上名是基本名（`today`），参数按位置。重载、泛型方法、不是 `async throws` 的函数参数在编译期报错。看不到父类和协议扩展里的方法：在类型里声明 |
-| 同步还是异步 | 默认 `async`，与 Swift 签名无关；`provides: [... .of(T.self, sync: ["unit"])]` 标出同步方法。`sync` 方法自己也可以是 `async`、调用别的服务：Task 等待时不占线程。同步方法会阻塞 Node 调用方的事件循环：做 I/O 的方法保持 `async` |
-| 使用服务 | 带 `@RutisClient` 的协议（方法须 `async throws`）；`ctx.use("llm", LLMProxy.self)` 返回 `any LLM`，提供者在同一进程且实现了这个协议时就是它本身。也可以按名字调用：`try await ctx.use("llm").call("ask", values: ["q"], as: String.self)` |
-| 调用链 | 随 Task 传递（`@TaskLocal`）：插件代码不传任何上下文。插件用 `ctx.spawn { ... }` 起的 Task 带着它，卸载时被取消；卸载至多等它们到关闭时限（和监听器共用），不响应取消的 Task 不会拖住卸载 |
-| 并发 | 每个进来的调用在自己的 Task 里运行：提供的对象要能并发使用 |
-| 取消 | 见 [插件 API：取消](plugin-api.md#取消) |
-| 值 | 数据（`Codable` 结构体、数组、字典、数字、字符串）按值复制，用 SDK 自己的编码器与解码器；`Date`、`Data`、`Decimal`、`UUID`、`Set`、键不是 `String` 的字典，以及 `Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`、`Rutis.Advanced.BigInt` 按各自的值传递（见下表）；超出 ±(2^53−1) 的整数（`Int64`、`UInt64` 等）自动按大整数传递；`@RutisService` 类型的实例和闭包按引用传递（见[带方法的对象](#带方法的对象)）；类型为 `Any` 的参数收到原生值，别的进程的对象是 `Rutis.Advanced.Client` |
-| 错误 | 抛出的错误带着类型名（`QuotaError`）、消息（`LocalizedError` 的 `errorDescription`，否则它的描述），以及存储属性 `code`、`data`（有的话）跨过去，调用方读到的错误带同样的 `code`、`data`。收到的错误是 `RutisError`（`name`、`message`、`code`、`data`、`errors`、`cause`），按 `name` 匹配 |
-| `fatalError`、`try!`、强制解包 | Swift 里不可捕获：运行时进程结束、它的行停止，宿主按 `restart` 处理（[运行时结束时](rutis-host.md#运行时结束时)） |
+## 3. 使用服务
 
-Swift 的值怎样跨过去（[值怎样传递](plugin-api.md#值怎样传递)）：
+`greeter` 改成先把问候语交给服务 `translate` 翻译。`translate` 由别的插件提供，用哪种语言写都可以：
 
-| 值 | Swift |
-| --- | --- |
-| 时间点 | `Date`，截断到微秒 |
-| 本地日期时间、日期、一天中的时间 | `Rutis.Advanced.DateTime`、`Rutis.Advanced.CalendarDate`、`Rutis.Advanced.TimeOfDay`（Swift 没有这些类型） |
-| 二进制数据 | `Data` |
-| 映射 | 键不是 `String` 的 `Dictionary`；发出时按键排序，同一个值总是同样发出 |
-| 集合 | `Set`，发出时排序 |
-| 大整数 | `Rutis.Advanced.BigInt`，或装得下它的整数类型 |
-| 十进制数 | `Decimal`：至多 38 位，不保留末尾的零（`1.10` 收到是 `1.1`）；要原样保留文本时把参数声明为 `String` |
-| UUID | `UUID` |
-
-### 把插件交给服务
-
-插件本身也是一个值，可以交给服务、在别处挂很多次：见 [插件 API：插件定义](plugin-api.md#插件定义)。
-
-### 带方法的对象
-
-数据（`Codable` 结构体和类）复制；`@RutisService` 类型的实例按引用交给别的语言，对方拿到代理：见 [插件 API：带方法的对象](plugin-api.md#带方法的对象)。
-
-### 事件
-
-一个宿主上所有语言、所有进程的监听器都在同一条事件总线上（[设计](../design-events-2026-10-18.md)）：事件在哪里发出、监听器在哪里，结果都一样。监听器的参数就是事件的参数，按声明的类型解码（缺的为 `nil`，多的忽略）。
-
+<!-- example: swift file=greeter/Sources/GreeterPlugin/Plugin.swift -->
 ```swift
-let off = ctx.on("session/created") { (id: String) in print("new session \(id)") }
+import Rutis
 
-try ctx.emit("session/created", id)   // 立即返回；只在发出被拒时抛出
-```
+@RutisConfig
+public struct Config: Decodable {
+    /// how to greet
+    public var greeting = "Hello"
+}
 
-其余发出方式（`parallel`、`serial`、`waterfall`、`bail`）、过滤、规则和一个完整的例子见 [插件 API：事件](plugin-api.md#swift)。
-
-配置先按 `@RutisConfig` 的 Schema 补默认值、校验，再解码：配置不合格的行以 `config: …` 失败（[插件 API：配置](plugin-api.md#配置)）。可选属性（`T?`）和带字面量初值的 `var`（`var units = "metric"`，还有数字、布尔值以及它们的数组和字典）不必填，字面量就是默认值；其他初值不算默认值，这个属性仍必填。自己写 `static let rutisSchema` 的类型按它校验；没有 `@RutisConfig` 的普通 `Decodable` 结构体只解码（`String` 这类基本类型、原始值为 `String` 的 `CaseIterable` 枚举仍按由类型得出的 Schema 校验）。Schema 通过后解码仍出错时写成 `<路径> is not a value the plugin accepts`。
-
-## 3. 测试
-
-`RutisTest` 不需要宿主，但插件在它真实的运行时里运行，值经真实的会话（内存里的一对 socket）传递；测试一方就是宿主：
-
-```swift
-import RutisTest
-import Testing
-@testable import WeatherPlugin
+@RutisClient
+public protocol Translate {
+    func text(_ text: String) async throws -> String
+}
 
 @RutisService
-final class FakeLLM: @unchecked Sendable {
-    func ask(_ question: String) -> String { "sunny" }
+public final class Greeter: @unchecked Sendable {
+    let translate: any Translate
+    let greeting: String
+
+    init(translate: any Translate, greeting: String) {
+        self.translate = translate
+        self.greeting = greeting
+    }
+
+    public func hello(_ name: String) async throws -> String {
+        "\(try await translate.text(greeting)), \(name)!"
+    }
 }
 
-@Test func today() async throws {
-    let loaded = try await RutisTest.load(plugin, config: ["city": "Oslo"], services: ["llm": FakeLLM()])
-    let today = try await loaded.service("weather").call("today", as: String.self)
+public let plugin = Rutis.define(Plugin(
+    name: "greeter",
+    inject: ["translate"],
+    provides: ["greeter": .of(Greeter.self)],
+    config: Config.self,
+    apply: { ctx, config in
+        let translate = try ctx.use("translate", TranslateProxy.self)
+        ctx.provide("greeter", Greeter(translate: translate, greeting: config.greeting))
+    }
+))
+```
+
+- `inject` 列出插件用到的服务。这些服务都就绪了插件才启动；其中一个撤销，插件就停下，它回来时插件再启动。
+- `@RutisClient` 从协议生成 `TranslateProxy`；`ctx.use("translate", TranslateProxy.self)` 返回 `any Translate`，调用它的方法就是调用这个服务。用到的服务的方法写成 `async throws`。
+
+现在模板自带的测试会失败（它没有给 `translate`），第 6 步换掉它。
+
+## 4. 配置
+
+`Config` 是插件的配置：`@RutisConfig` 由它生成 JSON Schema，`var greeting = "Hello"` 的字面量就是默认值。`apply` 之前，rutis 给配置补上默认值并校验，`apply` 收到的 `config.greeting` 一定有值；配置不合格的行以 `config: …` 失败，不调用 `apply`。
+
+配置从哪里来：测试里由 `RutisTest.load(plugin, config: ["greeting": "Hi"])` 传入（第 6 步）；运行时来自宿主里这个插件那一行的 `config`（第 7 步的 `rutis.dev.json`）。不写 `greeting` 时就是 `Hello`。
+
+## 5. 发出和监听事件
+
+`hello` 每次问候后发出事件 `greeter/greeted`；同一个插件监听它，数一共问候了几次，用新方法 `count` 读出：
+
+<!-- example: swift file=greeter/Sources/GreeterPlugin/Plugin.swift -->
+```swift
+import Rutis
+
+@RutisConfig
+public struct Config: Decodable {
+    /// how to greet
+    public var greeting = "Hello"
+}
+
+@RutisClient
+public protocol Translate {
+    func text(_ text: String) async throws -> String
+}
+
+actor Greeted {
+    var count = 0
+    func add() { count += 1 }
+}
+
+@RutisService
+public final class Greeter: @unchecked Sendable {
+    let ctx: Rutis.Ctx
+    let translate: any Translate
+    let greeting: String
+    let greeted: Greeted
+
+    init(ctx: Rutis.Ctx, translate: any Translate, greeting: String, greeted: Greeted) {
+        self.ctx = ctx
+        self.translate = translate
+        self.greeting = greeting
+        self.greeted = greeted
+    }
+
+    public func hello(_ name: String) async throws -> String {
+        let text = "\(try await translate.text(greeting)), \(name)!"
+        try ctx.emit("greeter/greeted", name)
+        return text
+    }
+
+    public func count() async -> Int { await greeted.count }
+}
+
+public let plugin = Rutis.define(Plugin(
+    name: "greeter",
+    inject: ["translate"],
+    provides: ["greeter": .of(Greeter.self)],
+    config: Config.self,
+    apply: { ctx, config in
+        let greeted = Greeted()
+        ctx.on("greeter/greeted") { (_: String) in await greeted.add() }
+        let translate = try ctx.use("translate", TranslateProxy.self)
+        ctx.provide("greeter", Greeter(ctx: ctx, translate: translate, greeting: config.greeting, greeted: greeted))
+    }
+))
+```
+
+- `ctx.emit(name, 参数…)` 发出事件，立即返回，不等监听器。
+- `ctx.on(name) { … }` 监听事件，闭包的参数就是事件的参数，按声明的类型解码；插件卸载时监听随之撤销。
+- 监听器在哪个进程、用哪种语言写都一样收到：别的插件也可以监听 `greeter/greeted`。
+
+其余发出方式（等全部监听器、取第一个结果、串成一条链）见 [插件 API：事件](plugin-api.md#事件)。
+
+## 6. 测试
+
+`RutisTest` 不需要宿主：插件在真实的运行时里运行，测试一方就是宿主，给插件假的服务、调用它提供的服务、像宿主一样监听事件。`Tests/GreeterPluginTests/PluginTests.swift` 换成：
+
+<!-- example: swift file=greeter/Tests/GreeterPluginTests/PluginTests.swift -->
+```swift
+import Rutis
+import RutisTest
+import Testing
+
+@testable import GreeterPlugin
+
+@RutisService
+final class FakeTranslate: @unchecked Sendable {
+    func text(_ text: String) -> String { ["Hello": "Bonjour", "Hi": "Salut"][text] ?? text }
+}
+
+@Test func greeterGreetsInTranslation() async throws {
+    let loaded = try await RutisTest.load(plugin, config: ["greeting": "Hi"], services: ["translate": FakeTranslate()])
+    let (greeted, received) = AsyncStream.makeStream(of: String.self)
+    let off = await loaded.on("greeter/greeted") { (name: String) in _ = received.yield(name) }
+    let greeter = try await loaded.service("greeter")
+    #expect(try await greeter.call("hello", "Ada", as: String.self) == "Salut, Ada!")
+    var names = greeted.makeAsyncIterator()
+    #expect(await names.next() == "Ada")
+    #expect(try await greeter.call("count", as: Int.self) == 1)
+    await off()
     await loaded.close()
-    #expect(today == "sunny in Oslo")
 }
 ```
 
+<!-- example: swift run -->
 ```bash
 swift test
 ```
 
-测试里的事件：`loaded.on(name) { ... }` 像宿主一样监听，`loaded.emit` 从这一行的作用域发出。只在同一进程里才成立的写法（共享一个不是 `@RutisService` 的 class 实例、依赖共享内存）在这里失败，在宿主里也会失败。其余接口见 [插件 API：Swift 的测试工具](plugin-api.md#swift-的测试工具)。
+- `RutisTest.load(plugin, config:, services:)` 装载插件：`config` 是这一行的配置，`services` 是假的服务（`@RutisService` 类型的实例），插件 `inject` 的服务都要给。
+- `loaded.service("greeter").call("hello", "Ada", as: String.self)` 像别的插件一样调用服务。
+- `loaded.on(name) { … }` 像宿主一样监听事件；事件是另一边发出的，所以测试等它到达（这里用 `AsyncStream`），不在调用返回时直接检查。
+- `loaded.close()` 卸载插件、结束测试的宿主。
 
-## 4. 在本地宿主里运行
+值在测试里经真实的会话传递，和在宿主里一样：只在同一进程里才成立的写法在这里就失败。测试工具的其余接口见 [插件 API：Swift 的测试工具](plugin-api.md#swift-的测试工具)。
 
-```bash
-rutis-host dev
+## 7. 本地运行并试一下
+
+`rutis-host dev` 在本地宿主里运行插件，它运行的是 `rutis.dev.json` 里的**行**：每一行是宿主里运行的一个插件。插件要用 `translate`，所以要有一行提供它。Swift 没有本语言的假服务，这里用 TypeScript 写一个，放在 `dev/`：
+
+<!-- example: swift file=greeter/dev/fake-translate.ts -->
+```ts
+import { definePlugin } from '@arcships/rutis'
+
+const words: Record<string, string> = { Hello: 'Bonjour', Hi: 'Salut' }
+
+export default definePlugin({
+  provides: { translate: { text: 'async' } },
+  apply(ctx) {
+    ctx.provide('translate', { text: async (text: string) => words[text] ?? text })
+  },
+})
 ```
 
-`dev` 用 `swift build` 构建包的可执行产品，把它的每个插件作为运行时 `swift-weather` 运行；源码、`Package.swift` 或 `Package.resolved` 变化时重新构建，只重启这个运行时，构建失败时旧的继续运行（打印编译器的错误）。每次构建先打印 `weather: building`，完成后打印 `weather: built in 12.3s`：第一次要编译依赖（包括 SDK 的宏），可能要几分钟。每次构建复制到 `.rutis/swift/<产品>-<序号>`，每次一个新文件。插件需要的其他服务写在 `rutis.dev.json` 里；它们可以是 Python 或 TypeScript 插件（带上它们的 `runtimes`）；它们的文件变化时只重新加载这些行，不重新构建，Swift 运行时也不为此重启；`rutis.dev.json` 改了也在运行中生效（见 [用 dev 开发插件](rutis-host.md#用-dev-开发插件)）。`rutis-host check` 列出每一行和每个 Swift 二进制，带平台、SDK、插件 API 和插件；用 rutis 0.13 以前的 SDK 构建的二进制不能运行，`check` 提示重新构建。
+<!-- example: swift run -->
+```bash
+npm install --prefix dev @arcships/rutis
+```
 
-### 调用一个方法
+`rutis.dev.json` 换成两行：
 
-`dev` 启动后和每次重新加载后，打印现在有哪些服务、各由哪一行提供：`rutis-host dev: services: llm (llm), loader (host), weather (weather)`。
+<!-- example: swift file=greeter/rutis.dev.json -->
+```json
+{
+  "format": 1,
+  "runtimes": { "node": { "project": "dev" } },
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "./dev/fake-translate.ts" }
+  ]
+}
+```
 
-`dev` 运行时，另开一个终端，在项目目录里调用插件提供的服务，看它返回什么、出错时报什么，不用另写一个调用它的插件：
+- 和插件同 id 的那一行（`greeter`）就是插件自己，不写 `name`，`config` 是它的配置。
+- 另一行 `translate` 运行 `dev/fake-translate.ts`，它提供 `translate`；`runtimes.node` 让宿主用 `dev/` 里装的包运行它。
+
+<!-- example: swift run until="greeter: running" -->
+```bash
+npx @arcships/rutis-host dev
+```
+
+`dev` 用 `swift build` 构建二进制，启动两行，然后打印现在有哪些服务、各由哪一行提供：
+
+```text
+greeter: building
+greeter: built in 3.2s
+rutis-host dev: running greeter; changes reload it (Ctrl-C ends)
+greeter: starting
+translate: running
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+greeter: running
+```
+
+`dev` 运行时，另开一个终端，在项目目录里看宿主现在的状态、调用一次服务：
 
 ```console
-$ rutis-host call weather.today
-"sunny in Oslo"
+$ npx @arcships/rutis-host status
+rows:
+  greeter: running
+  translate: running
+services:
+  greeter: greeter
+  loader: host
+  translate: translate
+runtimes:
+  node: running (pid 66737)
+  swift-greeter: running (pid 66740)
+calls:
+  none
+$ npx @arcships/rutis-host call greeter.hello '"Ada"'
+"Bonjour, Ada!"
+$ npx @arcships/rutis-host call greeter.count
+1
 ```
 
-每个参数是一个 JSON 值（字符串带引号：`'"Oslo"'`），结果打印成 JSON；错误写到标准错误并以 1 退出。见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)。
+每个参数是一个 JSON 值（字符串带引号）；出错时错误写到标准错误并以 1 退出（见 [rutis-host：调用一个服务](rutis-host.md#调用一个服务)）。
 
-## 5. 系统权限
+把 `Plugin.swift` 里 `hello` 的 `\(name)!` 改成 `\(name)!!` 并保存：`dev` 重新构建，只重启 Swift 运行时，`greeter` 换上新代码（重启期间 `greeter` 暂时不在服务列表里）：
+
+```text
+greeter: building
+greeter: built in 1.1s
+swift-greeter: rebuilt and restarted
+rutis-host dev: services: loader (host), translate (translate)
+rutis-host dev: services: greeter (greeter), loader (host), translate (translate)
+```
+
+```console
+$ npx @arcships/rutis-host call greeter.hello '"Ada"'
+"Bonjour, Ada!!"
+```
+
+构建失败时打印编译器的错误，旧的构建继续运行。改 `dev/fake-translate.ts` 只重新加载 `translate` 那一行（`translate: reloaded (dev/fake-translate.ts changed)`），不重新构建。各行的状态行的先后每次可能不同。
+
+Ctrl-C 结束 `dev`。`dev` 的其余规则见 [rutis-host：用 dev 开发插件](rutis-host.md#用-dev-开发插件)。在另一台机器上运行见 [rutis-host.md](rutis-host.md) 的远程一节。
+
+## 8. 发布
+
+Swift 插件发布的是二进制，不发到包仓库。推一个 tag，比如 `v0.1.0`：模板的工作流在 GitHub 的 macOS runner 上运行测试和 `rutis-host check`，构建 arm64 与 x86_64 的通用二进制，连同 `SHA256SUMS` 发布到这个仓库的 GitHub Release。配好它列出的 secrets（Developer ID 证书和公证凭据）时，二进制签名并公证；没有时是 ad-hoc 签名，下载它的宿主要先信任它。
+
+依赖范围：`Package.swift` 里 `.package(url: "https://github.com/arcships/rutis", from: "<版本>")` 接受这个版本到下一个主版本之前的 SDK。
+
+宿主怎样装你的插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
+
+## 调试
+
+`dev --debug` 不支持 Swift 项目。用 LLDB 连上正在运行的运行时：进程号在 `rutis-host status` 的 `runtimes` 里（`swift-greeter: running (pid 66740)`）。
+
+```bash
+lldb -p 66740
+```
+
+```
+(lldb) breakpoint set -n GreeterPlugin.Greeter.hello
+(lldb) continue
+```
+
+有调用到 `hello` 时停住；`bt` 看调用栈，`frame variable` 看变量，`detach` 断开而让运行时继续。
+
+- 停在断点时整个运行时停着：这个二进制里其他插件的调用也等它继续。
+- 每次重新构建都是一个新进程：重新连接，重新下断点。
+- macOS 上第一次调试时，系统会请求允许开发者工具。
+- `print` 的内容出现在 `dev` 的输出里。
+- 测试不用宿主：在 Xcode 里打开 `Package.swift`，直接调试测试。
+- 一行停在 `waiting` 或失败时，`rutis-host status` 写出它在等什么、失败的第一行。
+
+## 系统权限
 
 程序读日历、通讯录等之前，macOS 会询问用户，并为这个程序记住答复。对 Swift 插件，这个程序是**插件二进制本身**：运行时启动时让自己为自己的请求负责（不论是谁启动它：`rutis-host`、终端、进程管理器），所以提示里是这个二进制的名字，用户的授权只给它，不给宿主或终端。同一个二进制里的插件共享它的授权；需要不同授权的插件放进不同的二进制。
 
@@ -180,6 +380,8 @@ $ rutis-host call weather.today
 
 ```swift
 import EventKit
+import Foundation
+import Rutis
 
 struct CalendarAccessDenied: Error, LocalizedError {
     let code = "denied"
@@ -202,31 +404,8 @@ public final class Calendar: @unchecked Sendable {
 
 - 本地构建是 ad-hoc 签名的（`swift build` 自动签）：macOS 按签名认程序，所以每次重新构建对它都是一个新程序，可能再问一次。`tccutil reset Calendar <CFBundleIdentifier>` 清除一次答复。用 Developer ID 签名的二进制在版本之间保留授权。
 
-## 6. 发布
-
-推一个 tag，比如 `v0.1.0`：模板的工作流（在带 Xcode 的 GitHub macOS runner 上）运行测试和 `rutis-host check`，构建 arm64 与 x86_64 的通用二进制（`swift build -c release --arch arm64 --arch x86_64`），连同 `SHA256SUMS` 发布到 GitHub Release。配好它列出的 secrets（Developer ID 证书和公证凭据）时，用 hardened runtime 签名并公证；没有时二进制是 ad-hoc 签名，下载它的宿主要先信任它。
-
-想把你的插件放进自己二进制的人依赖你的包，和自己的插件一起 serve：`Rutis.serve(WeatherPlugin.plugin, other.plugin)`。
-
-## 7. 被宿主使用
-
-宿主怎样装这个插件见 [rutis-host：宿主怎样装插件](rutis-host.md#宿主怎样装插件)。
-
-## 8. 在另一台机器上运行
-
-插件二进制也可以在另一台 Mac 上作为远程运行时运行，`language` 写 `swift`。两种方式，参数、环境变量和规则与 Python、Go 运行时相同；见 [连接节点](nodes.md#别的机器上的语言运行时)：
-
-```bash
-# 监听，由 rutis 连过来（证书和私钥在 RUTIS_CERT、RUTIS_KEY）
-RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
-  ./weather listen:wss://0.0.0.0:7443/rutis --id gpu --peer main .
-
-# 拨出到 rutis 的接入点，断开后按固定规则重连
-RUTIS_TOKEN=secret RUTIS_CA=ca.pem \
-  ./weather dial:wss://main.example.com:7443/rutis --id worker-1 --peer main .
-```
-
-- 监听：非回环地址必须用 `wss://`；私钥可以是 EC（P-256、P-384、P-521）或 RSA，PKCS#8、SEC1 或 PKCS#1，PEM 格式。一次一个控制方，新连接接管；绑定后打印 `rutis: listening on <地址>`。
-- 拨出：在 stderr 报告状态（`rutis: connected to …`、`rutis: connection lost (…); retrying in 1s`、`rutis: refused: auth-rejected (…); retrying in 30s`）；SIGTERM 或 Ctrl-C 卸载全部行后退出；接入点不兼容时以状态 1 退出（`rutis: refused: incompatible (…); stopping`）。规则见 [连进来的运行时](nodes.md#连进来的运行时)。
-
 要从 iOS、iPadOS 或 macOS 应用里提供插件，见 [在应用里托管插件](swift-app.md)。
+
+## 进阶：插件 API
+
+插件作为值、带方法的对象、值怎样传递、错误、同步方法、取消等见 [插件 API](plugin-api.md)。

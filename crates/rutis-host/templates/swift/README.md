@@ -1,6 +1,6 @@
 # {{name}}
 
-A [rutis](https://github.com/arcships/rutis) plugin in Swift (macOS 14 or later).
+A [rutis](https://github.com/arcships/rutis) plugin in Swift (macOS 14 or later). The [Swift plugin guide](https://github.com/arcships/rutis/blob/main/docs/guide/swift-plugin.en.md) goes on from here.
 
 ```bash
 swift test           # unit tests, no host needed
