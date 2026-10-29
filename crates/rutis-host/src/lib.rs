@@ -17,6 +17,7 @@ pub mod project;
 pub mod restart;
 pub mod rows_file;
 pub mod status;
+pub mod test;
 
 /// Print a line on stdout in one write, under the locks the runtimes'
 /// output is passed on under: no runtime's line lands inside it (#332).

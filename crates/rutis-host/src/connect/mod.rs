@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 pub mod dial;
 pub mod listen;
-mod session;
+pub(crate) mod session;
 
 pub use listen::Router;
 
@@ -145,7 +145,7 @@ impl PluginFactory<Value> for Factory {
 }
 
 /// The id of the row `ctx` is a plugin of.
-fn row_id(ctx: &Ctx, plugin: &str) -> Result<String, Error> {
+pub(crate) fn row_id(ctx: &Ctx, plugin: &str) -> Result<String, Error> {
     ctx.row().ok_or_else(|| {
         Error::from(ErrorKind::PluginFailed(
             format!("{plugin} runs as a row: its id names it").into(),
