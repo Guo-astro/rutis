@@ -1,6 +1,6 @@
 //! Swift (macOS): `runtimes.swift`, compiled binaries built with the Swift
 //! SDK, one runtime each (`swift-<binary>`), started when a row uses it (or
-//! with the host); rows `swift:<plugin>` and `swift-<binary>:<plugin>`.
+//! with the host); rows `swift:<plugin>`.
 //! The same settings and machinery as Go's ([`super::binary`]); a project
 //! is a SwiftPM package (Package.swift) that `dev` builds with `swift
 //! build`.
@@ -102,8 +102,9 @@ impl Language for Swift {
     }
 
     /// Build it (unless `built`, the first build the caller made without
-    /// blocking), then one row per plugin of its binary, named with its
-    /// runtime (`swift-<product>:<plugin>`).
+    /// blocking), then one row per plugin of its binary
+    /// (`swift:<plugin>`): under `dev` the Swift runtimes see only the
+    /// development build.
     fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let swift =
             SwiftDev::of(dir).ok_or_else(|| format!("{}: no Package.swift", dir.display()))?;
@@ -111,7 +112,8 @@ impl Language for Swift {
             Some(binary) => binary.to_owned(),
             None => binary::building(&swift.product, || swift.build(1))?,
         };
-        let (rows, settings) = dev_rows(&binary, &swift.runtime, &swift.dir, &swift.product)?;
+        let (rows, settings) =
+            dev_rows("swift", &binary, &swift.runtime, &swift.dir, &swift.product)?;
         Ok((
             rows,
             Runtimes {

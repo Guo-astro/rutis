@@ -290,7 +290,7 @@ async fn rows_find_their_binary_and_call_across_binaries() {
 
 /// guarantee: loader/go-runtimes
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
+async fn a_plugin_in_two_binaries_fails_naming_both_files() {
     let fixture = fixture(None, &[("netkit", "netkit"), ("dup", "dup")]).await;
     fixture
         .loader
@@ -299,28 +299,13 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
         .unwrap();
     let message = unresolved(&fixture.loader, "p").expect("go:ping is ambiguous");
     assert!(message.contains("several Go binaries"), "{message}");
+    // The two files, for the plugin's author to rename one plugin.
+    let file = |name: &str| format!("{}{name}", std::path::MAIN_SEPARATOR);
     assert!(
-        message.contains("go-dup") && message.contains("go-netkit"),
+        message.contains(&file("dup")) && message.contains(&file("netkit")),
         "{message}"
     );
 
-    fixture
-        .loader
-        .reconcile(layer(vec![row("p", "go-dup:ping")]), None)
-        .await
-        .unwrap();
-    let loader = fixture.loader.clone();
-    COLD.until(
-        || row_state(&loader, "p") == Some(FiberState::Active),
-        "the qualified row",
-    )
-    .await;
-    assert_eq!(
-        call(&fixture.root, "ping", "echo", json!(["x"]))
-            .await
-            .unwrap(),
-        json!("dup pong x")
-    );
     fixture.root.shutdown().await.unwrap();
 }
 
@@ -1113,7 +1098,7 @@ async fn a_failed_manifest_read_is_read_again_for_a_missing_plugin_once_it_stood
     assert_eq!(runs(&count), 2);
 }
 
-/// The same for a listed binary named with its runtime (`go-lister:late`).
+/// The same for a listed binary.
 #[cfg(unix)]
 #[tokio::test(start_paused = true)]
 async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood() {
@@ -1125,20 +1110,15 @@ async fn a_failed_manifest_read_of_a_listed_binary_is_read_again_once_it_stood()
     let resolver = BinaryResolver::<Go>::new(Binaries::new().file(&binary));
 
     for _ in 0..2 {
-        match resolver.resolve("go-lister:late").await {
-            Err(LoaderError::Resolve { message, .. }) => {
-                assert!(message.contains("exited"), "{message}")
-            }
+        match resolver.resolve("go:late").await {
+            Err(LoaderError::NotFound { .. }) => {}
             other => panic!("{:?}", other.map(|resolved| resolved.meta.clone())),
         }
     }
     assert_eq!(runs(&count), 1, "a failed read is not read again at once");
 
     tokio::time::advance(Duration::from_secs(5)).await;
-    let resolved = resolver
-        .resolve("go-lister:late")
-        .await
-        .expect("read again");
+    let resolved = resolver.resolve("go:late").await.expect("read again");
     assert_eq!(resolved.meta["runtime"], json!("go-lister"));
     assert_eq!(runs(&count), 2);
 }
@@ -1202,7 +1182,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
     fixture
         .loader
         .reconcile(
-            layer(vec![row("first", "go:old"), row("second", "go-legacy:old")]),
+            layer(vec![row("first", "go:old"), row("second", "go:old")]),
             None,
         )
         .await
@@ -1231,7 +1211,7 @@ async fn a_binary_of_an_old_sdk_is_refused_and_its_rows_fail() {
         .reconcile(
             layer(vec![
                 row("first", "go:old"),
-                row("second", "go-legacy:old"),
+                row("second", "go:old"),
                 row("third", "go:old"),
             ]),
             None,

@@ -333,9 +333,7 @@ impl Project {
                 self.stale.push(project.binary(self.build - 1));
                 remove_builds(&mut self.stale);
                 host.loader.settled().await;
-                let own = |id: &str| {
-                    row_name(host, id).is_some_and(|name| owns(project.runtime(), &name))
-                };
+                let own = |id: &str| row_name(host, id).is_some_and(|name| owns(key, &name));
                 // Its rows restarted with it: a row using one says so.
                 let said = format!("{} restarted", project.runtime());
                 let causes: Vec<(String, String)> = host
@@ -417,7 +415,7 @@ impl Project {
     /// rebuild is for its sources, and a file of neither is nothing).
     fn plan(&self, host: &Host, changed: &[PathBuf]) -> Vec<(String, Vec<PathBuf>)> {
         let runtimes = &host.config().runtimes;
-        let own_runtime = self.compiled.as_ref().map(|(_, build)| build.runtime());
+        let own_language = self.compiled.as_ref().map(|(key, _)| *key);
         let changed: Vec<(PathBuf, PathBuf)> = changed
             .iter()
             .map(|path| (path.clone(), same(path)))
@@ -431,7 +429,7 @@ impl Project {
             let Some(name) = entry.options["name"].as_str() else {
                 continue;
             };
-            if own_runtime.is_some_and(|runtime| owns(runtime, name)) {
+            if own_language.is_some_and(|key| owns(key, name)) {
                 continue;
             }
             let Some(file) = project::row_file(name, runtimes).map(|file| same(&file)) else {
@@ -596,10 +594,11 @@ fn binary_settings<'a>(
     }
 }
 
-/// Whether the row named `name` is one of the runtime `runtime`'s
-/// (`<runtime>:<plugin>`).
-fn owns(runtime: &str, name: &str) -> bool {
-    name.strip_prefix(runtime)
+/// Whether the row named `name` is one of the compiled language `key`'s
+/// (`<key>:<plugin>`): under `dev` its runtimes run only the project's
+/// build.
+fn owns(key: &str, name: &str) -> bool {
+    name.strip_prefix(key)
         .is_some_and(|rest| rest.starts_with(':'))
 }
 
@@ -890,11 +889,11 @@ mod tests {
         assert_eq!(of("file:///p/dev/fake.ts"), Some("node"));
         assert_eq!(of("/p/dev/fake.ts"), Some("node"));
         assert_eq!(of("@acme/weather"), Some("node"));
-        assert_eq!(of("go-weather:weather"), None);
+        assert_eq!(of("go:weather"), None);
         assert_eq!(of("rutis-bridge/peer"), None);
         assert_eq!(runtime_of("dev/fake.ts", &["py".to_owned()]), None);
-        assert!(owns("go-weather", "go-weather:weather"));
-        assert!(!owns("go-weather", "go-weather-2:near"));
+        assert!(owns("go", "go:weather"));
+        assert!(!owns("go", "swift:weather"));
     }
 
     /// A row restarted by a change names the changed rows it uses, else

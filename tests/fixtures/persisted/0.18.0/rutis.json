@@ -15,7 +15,6 @@
     { "id": "weather", "name": "weather-plugin", "config": { "city": "Oslo", "units": ["metric"] }, "inject": ["llm", "cache"] },
     { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": true } },
     { "id": "edge-fn", "name": "bun:./fn/edge.ts" },
-    { "id": "dns", "name": "go-dns:resolver" },
     { "id": "probe", "name": "go:probe", "disabled": true },
     { "id": "local-tool", "name": "./tools/tool.ts" },
     { "id": "tools", "group": true, "config": [
@@ -40,7 +39,6 @@
     { "id": "kiosks", "group": true, "instanced": true, "config": [
       { "id": "screen", "name": "kiosk:screen" }
     ] },
-    { "id": "clipboard", "name": "swift-MacKit:clipboard" },
     { "id": "iphones", "group": true, "instanced": true, "config": [
       { "id": "contacts", "name": "iphone:contacts" }
     ] },

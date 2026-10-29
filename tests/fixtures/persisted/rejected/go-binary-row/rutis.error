@@ -1,0 +1,1 @@
+<dir>/rutis.json: rows[0] (id "dns"): the row name go-dns:resolver names a Go binary, which rutis 0.19 removed: write go:resolver; a plugin name is in one binary only (https://github.com/arcships/rutis/blob/main/docs/migration-0.19.md)

@@ -650,8 +650,7 @@ fn print_row(
             if let rutis_loader::LoaderError::NotFound { name } = error {
                 // A compiled language's row with no runtime declared:
                 // its binaries have to be named (#666).
-                // (`go:<plugin>`, or `go-<binary>:<plugin>`; not a
-                // connection row's rows.)
+                // (`go:<plugin>`; not a connection row's rows.)
                 let remote = config.rows.iter().any(|row| {
                     (row["name"] == rutis_host::connect::DIAL
                         || row["name"] == rutis_host::connect::LISTEN)
@@ -661,8 +660,7 @@ fn print_row(
                 });
                 let undeclared = languages::LANGUAGES.iter().find(|language| {
                     let key = language.key();
-                    let named = name.starts_with(&format!("{key}:"))
-                        || (name.starts_with(&format!("{key}-")) && name.contains(':'));
+                    let named = name.starts_with(&format!("{key}:"));
                     matches!(key, "go" | "swift")
                         && named
                         && !remote

@@ -682,6 +682,9 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
                 rutis_loader::internal::REMOVED_EVENTS
             ));
         }
+        if let Some(error) = row["name"].as_str().and_then(binary_qualified) {
+            return Err(format!("{place}: {error}"));
+        }
         let group = !matches!(
             fields.get("group"),
             None | Some(Value::Null | Value::Bool(false))
@@ -691,6 +694,24 @@ fn check_rows(rows: &[Value], at: &str, ignored: &mut Vec<String>) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// A row name that picks a Go or Swift binary (`go-<binary>:<plugin>`),
+/// which 0.19 removed: what to write instead.
+fn binary_qualified(name: &str) -> Option<String> {
+    let (runtime, plugin) = name.split_once(':')?;
+    let (key, title) = [("go", "Go"), ("swift", "Swift")]
+        .into_iter()
+        .find(|(key, _)| {
+            runtime
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.len() > 1 && rest.starts_with('-'))
+        })?;
+    Some(format!(
+        "the row name {name} names a {title} binary, which rutis 0.19 removed: \
+         write {key}:{plugin}; a plugin name is in one binary only \
+         (https://github.com/arcships/rutis/blob/main/docs/migration-0.19.md)"
+    ))
 }
 
 /// The names of the rows in `rows` and the groups in it that are not

@@ -67,10 +67,6 @@
       "name": "go:dns"
     },
     {
-      "id": "probe",
-      "name": "go-netkit:probe"
-    },
-    {
       "id": "local-tool",
       "name": "file://<dir>/tools/tool.ts"
     },

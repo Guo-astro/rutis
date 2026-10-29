@@ -225,7 +225,7 @@ async fn rows_find_their_binary_and_call_across_binaries() {
 
 /// guarantee: loader/swift-runtimes
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
+async fn a_plugin_in_two_binaries_fails_naming_both_files() {
     let fixture = fixture(
         Start::OnDemand(None),
         &[("RutisPing", "netkit"), ("RutisPing", "dup")],
@@ -238,29 +238,11 @@ async fn a_plugin_in_two_binaries_is_named_with_its_runtime() {
         .unwrap();
     let message = unresolved(&fixture.loader, "p").expect("swift:ping is ambiguous");
     assert!(message.contains("several Swift binaries"), "{message}");
+    // The two files, for the plugin's author to rename one plugin.
+    let file = |name: &str| format!("{}{name}", std::path::MAIN_SEPARATOR);
     assert!(
-        message.contains("swift-dup") && message.contains("swift-netkit"),
+        message.contains(&file("dup")) && message.contains(&file("netkit")),
         "{message}"
-    );
-    fixture
-        .loader
-        .reconcile(layer(vec![row("p", "swift-dup:ping")]), None)
-        .await
-        .unwrap();
-    let loader = fixture.loader.clone();
-    COLD.until(
-        || {
-            row_state(&loader, "p") == Some(FiberState::Active)
-                && service(&fixture.root, "ping").is_some()
-        },
-        "the qualified row",
-    )
-    .await;
-    assert_eq!(
-        call(&fixture.root, "ping", "echo", json!(["x"]))
-            .await
-            .unwrap(),
-        json!("dup pong x")
     );
     fixture.root.shutdown().await.unwrap();
 }

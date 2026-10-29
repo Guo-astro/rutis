@@ -15,7 +15,6 @@
     { "id": "llm", "name": "py:llm_gateway", "isolate": { "http": "shared" } },
     { "id": "edge-fn", "name": "bun:edge_fn" },
     { "id": "dns", "name": "go:dns" },
-    { "id": "probe", "name": "go-netkit:probe" },
     { "id": "local-tool", "name": "./tools/tool.ts" },
     { "id": "old-tool", "name": "../shared/old-tool.mjs", "disabled": true },
     { "id": "tools", "group": true, "config": [
