@@ -852,6 +852,7 @@ fn changed_files(
 mod tests {
     use super::*;
 
+    /// guarantee: host/dev-reload
     /// A file that changed, was added or was removed between two scans.
     #[test]
     fn dev_sees_which_files_changed() {

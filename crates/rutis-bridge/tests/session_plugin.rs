@@ -429,6 +429,7 @@ async fn a_service_never_returns_through_its_session() {
     );
 }
 
+/// guarantee: events/flat, events/node-links
 /// Listeners of each kernel hear what the other emits.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_reach_both_ways() {
@@ -592,6 +593,7 @@ impl DynPlugin for Connection {
     }
 }
 
+/// guarantee: loader/peer-rows
 /// A kernel runs a plugin of another from its catalog: it is the plugin
 /// `<id>:<plugin>` there, its services used there; dropping the handle
 /// stops it on both sides. Without a catalog the far end contains nothing.

@@ -1468,7 +1468,7 @@ fn assert_too_deep(result: Reply) {
     }
 }
 
-/// guarantee: bridge/value-limits
+/// guarantee: bridge/value-limits, bridge/large-and-deep-values
 ///
 /// A value nested deeper than the limit fails its own call on the side
 /// that sends it, as a value error naming the limit; nothing is sent, and
@@ -2276,6 +2276,7 @@ async fn a_refused_call_takes_its_id() {
     let _remote = remote.await.unwrap();
 }
 
+/// guarantee: bridge/plugin-values
 /// A plugin definition (`plugin` reference) goes back to the runtime that
 /// defined it as its own id, and is never relayed to another session: the
 /// call that would carry it there fails before anything is sent

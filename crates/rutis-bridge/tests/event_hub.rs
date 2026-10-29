@@ -983,6 +983,7 @@ async fn plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime() {
     assert_eq!(*answers.lock().unwrap(), [json!("pong")]);
 }
 
+/// guarantee: events/by-name
 /// `EventKey::<Args>::of()` names no event: it fails clearly instead of
 /// dispatching under a made-up name (events protocol §12.1).
 #[tokio::test(flavor = "multi_thread")]

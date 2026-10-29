@@ -280,7 +280,7 @@ impl Client {
     }
 }
 
-/// guarantee: bridge/frame-limits
+/// guarantee: bridge/value-limits
 #[tokio::test(flavor = "multi_thread")]
 async fn broken_frames_close_with_their_code() {
     if !rutis_test_support::runtimes::enabled("kotlin") {
@@ -403,6 +403,7 @@ async fn a_listener_serves_tls() {
     assert!(String::from_utf8_lossy(&hello).contains("\"op\":\"hello\""));
 }
 
+/// guarantee: bridge/dial-out-rules
 /// `dial:wss://`: a certificate this side does not trust is an
 /// authentication failure, retried; RUTIS_CA trusts its CA.
 #[tokio::test(flavor = "multi_thread")]

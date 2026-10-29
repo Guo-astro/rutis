@@ -1,3 +1,5 @@
+//! guarantee: sdk/error-positions
+//! guarantee: bridge/marked-services
 //! `#[rutis::service]` types are served by name once provided: their
 //! dispatch decodes arguments, encodes results, throws errors with a code
 //! and data, and goes with the native service (#510).

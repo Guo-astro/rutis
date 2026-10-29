@@ -292,7 +292,7 @@ impl Client {
     }
 }
 
-/// guarantee: bridge/frame-limits
+/// guarantee: bridge/value-limits
 #[tokio::test(flavor = "multi_thread")]
 async fn broken_frames_close_with_their_code() {
     if !rutis_test_support::runtimes::enabled("swift") {

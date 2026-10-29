@@ -69,6 +69,7 @@ async fn await_active(ctx: &Ctx, deadline: Duration) {
     }
 }
 
+/// guarantee: instance/subtrees.5
 #[tokio::test]
 async fn churn_on_long_lived_root_releases_instances() {
     let ctx = Ctx::root().expect("runtime in scope");

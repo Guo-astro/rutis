@@ -1,3 +1,4 @@
+// guarantee: bridge/plugin-values
 // Plugin definitions as values (docs/design-plugin-values-2026-10-25.md §5):
 // a definition the runtime handed over comes back to be described
 // (`plugins.read`) and loaded as a row's entry, each copy with its config.

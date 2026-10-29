@@ -1,3 +1,4 @@
+//! guarantee: bridge/marked-services
 //! The TypeScript declarations of the Rust services marked
 //! `#[rutis::service]`, generated from their Rust definitions, read from the
 //! source of the crates that define them.

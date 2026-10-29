@@ -1,3 +1,4 @@
+//! guarantee: sdk/error-positions
 //! Error graphs must survive a Rust relay without losing native JS structure.
 use std::io::Write;
 use std::path::Path;

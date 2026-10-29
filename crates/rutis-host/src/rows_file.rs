@@ -128,6 +128,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// guarantee: host/rows-written-back
     /// Rows as written come back the same, groups and all, and an edit
     /// changes only its row.
     #[test]

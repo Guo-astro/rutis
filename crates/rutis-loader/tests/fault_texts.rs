@@ -288,7 +288,7 @@ fn forbidden(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// guarantee: sdk/error-texts
+/// guarantee: sdk/error-texts, sdk/error-codes
 ///
 /// Each fault of the list, through Node, Python, Go and a Rust service:
 /// the messages name the service, the method and the argument, and hold

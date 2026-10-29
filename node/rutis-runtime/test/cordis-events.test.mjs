@@ -1,4 +1,4 @@
-// guarantee: events/cordis — Cordis plugins on the logical bus (#464):
+// guarantee: events/one-bus — Cordis plugins on the logical bus (#464):
 // `internal/listener` registers every listener that is not internal/* with
 // the host, Cordis's five methods dispatch through the host in their mode,
 // `Context.filter` sees the real Context for a listener of this process

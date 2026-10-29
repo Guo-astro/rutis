@@ -222,7 +222,7 @@ func (h *fakeHost) load(key, entry string) error {
 	return h.call("rows.load", key, entry, json.RawMessage("null"), []any{}, []any{}, map[string]any{}, map[string]any{"scope": []any{}, "id": key})
 }
 
-// guarantee: events/registration (a refused events.on fails the row's
+// guarantee: sdk/leaf-events (a refused events.on fails the row's
 // load, reported only outside a load: §4.4, §11)
 func TestARefusedRegistrationFailsTheLoad(t *testing.T) {
 	reports := captureReports(t)
@@ -271,7 +271,7 @@ func TestARefusedRegistrationFailsTheLoad(t *testing.T) {
 	}
 }
 
-// guarantee: events/registration (no session write holds rt.mu: a write
+// guarantee: sdk/leaf-events (no session write holds rt.mu: a write
 // blocked by backpressure does not stop the reader, which takes rt.mu for
 // the frames it handles inline)
 func TestABlockedWriteDoesNotStopTheReader(t *testing.T) {

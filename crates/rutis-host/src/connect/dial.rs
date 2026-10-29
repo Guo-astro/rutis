@@ -331,6 +331,7 @@ mod tests {
         wait.trim_end_matches('s').parse().unwrap()
     }
 
+    /// guarantee: host/link-state-output, host/connection-plugins
     #[tokio::test(start_paused = true)]
     async fn retryable_failures_back_off_doubling_and_present_the_rows_token() {
         let script = Arc::new(Script::default());

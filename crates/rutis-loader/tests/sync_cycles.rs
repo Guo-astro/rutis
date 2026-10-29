@@ -1,3 +1,4 @@
+//! guarantee: sdk/error-texts
 //! Synchronous calls between runtimes that would wait on each other for
 //! ever: the host refuses the call that closes the cycle with
 //! `SyncWaitCycle`, and everything else completes (#228; multi-language

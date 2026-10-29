@@ -260,6 +260,7 @@ pub fn shown(value: Value) -> Json {
     }
 }
 
+/// guarantee: host/call
 #[cfg(test)]
 mod tests {
     use super::*;

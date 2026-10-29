@@ -40,7 +40,7 @@ fn kill(pid: i32) {
 /// SIGKILL to the Python runtime: `runtime py: down (exited with signal:
 /// 9 …)`, its row waits, the Node row runs on in the same process, and the
 /// host still stops normally.
-/// guarantee: host/runtime-state-lines
+/// guarantee: host/runtime-state-lines, host/row-state-lines
 #[test]
 fn a_killed_runtime_is_reported_with_how_it_ended() {
     let dir = tempfile::tempdir().unwrap();

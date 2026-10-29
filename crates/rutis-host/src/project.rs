@@ -258,6 +258,7 @@ mod tests {
         assert!(config.runtimes.node.is_some());
     }
 
+    /// guarantee: host/dev-reload
     /// The dev file's rows in the project's own runtime run in the runtime
     /// `dev` sets up: no word of an undeclared runtime (#666). A row of
     /// another language's runtime the file does not declare still has

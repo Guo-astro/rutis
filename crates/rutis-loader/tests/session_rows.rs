@@ -279,6 +279,7 @@ impl Main {
     }
 }
 
+/// guarantee: loader/peer-rows, loader/remote-runtime-rows
 /// A row on the connection waits for its session, runs once it is there,
 /// stops and waits again when it goes, and runs again on the next one; a
 /// plugin the far end does not contain fails its row alone.

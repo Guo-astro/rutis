@@ -297,6 +297,7 @@ impl DynPlugin for Staged {
 
 // ── reentrant.spec.ts — Fiber adversarial lifecycle ──────────────
 
+/// guarantee: core/D25, core/D30
 // tests/reentrant.spec.ts:29
 // 执行错误走 await 通道,回滚清理错误走 ErrorSink,终态 FAILED。
 // 执行错误另以 StartFailed 进 sink 一次(同 TS 记 logger,见 plugin_error)。
@@ -688,6 +689,7 @@ async fn makes_a_loading_parent_join_child_cleanup_already_in_progress() {
 
 // ── reentrant.spec.ts — Effect adversarial disposal ──────────────
 
+/// guarantee: core/D6
 // tests/reentrant.spec.ts:372
 // 重入销毁 join 同一进行中的清理;restart 等清理落地;清理恰好一次。
 #[tokio::test]
@@ -1134,6 +1136,7 @@ async fn makes_reentrant_restart_await_async_execution_and_cleanup() {
     assert_eq!(cleanup_count.load(Ordering::SeqCst), 1);
 }
 
+/// guarantee: core/D23
 // tests/reentrant.spec.ts:581
 // 卸载期注册 effect 报 INACTIVE_EFFECT,fiber 恢复 ACTIVE。
 #[tokio::test]
@@ -1901,6 +1904,7 @@ async fn dispose_async_yield_with_error() {
 
 // ── plugin.spec.ts ───────────────────────────────────────────────
 
+/// guarantee: core/D19
 // tests/plugin.spec.ts:8
 // 函数插件被调用一次且收到 options(config 烘进实例,D19)。
 #[tokio::test]
@@ -2284,6 +2288,7 @@ async fn service_compare_snapshot() {
 
 // ── isolate.spec.ts ──────────────────────────────────────────────
 
+/// guarantee: core/D21
 // tests/isolate.spec.ts:7
 // isolate 切断父级可见性:各作用域独立 provide/inject;根 provider 摘除
 // 只驱逐默认作用域消费者(其清理执行),不影响隔离作用域。

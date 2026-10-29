@@ -347,7 +347,7 @@ export function apply(ctx) {
 /// An uncaught error in a plugin is reported, and the process goes on:
 /// its services still answer (#688). (Bun cannot tell which row it came
 /// from: it fails none.)
-/// guarantee: loader/unhandled-errors
+/// guarantee: loader/unhandled-errors, boundary/5.8
 #[tokio::test(flavor = "multi_thread")]
 async fn an_uncaught_error_leaves_the_runtime_running() {
     if !rutis_test_support::runtimes::enabled("bun") {

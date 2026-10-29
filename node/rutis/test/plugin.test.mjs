@@ -1,3 +1,6 @@
+// guarantee: sdk/config-schema
+// guarantee: sdk/undeclared-use
+// guarantee: sdk/testing-matches-runtime
 // definePlugin, and the test tool on a real host (platform cleanup §7.5):
 // the plugin runs in the real Node runtime, its config is the host's to
 // check, and what crosses between it and the test crosses between

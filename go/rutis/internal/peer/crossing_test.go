@@ -1,3 +1,5 @@
+// guarantee: sdk/error-codes
+// guarantee: bridge/bad-values
 package peer
 
 import (

@@ -459,6 +459,7 @@ mod tests {
         assert_eq!(distance("ab", "ba"), 1);
     }
 
+    /// guarantee: core/features.still-waiting
     /// Reports name a row's runtime and a service as rows do, and leave
     /// Rust types to be described.
     #[cfg(feature = "runtimes")]

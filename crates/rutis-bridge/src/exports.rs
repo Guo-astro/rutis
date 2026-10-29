@@ -175,6 +175,7 @@ mod tests {
         }
     }
 
+    /// guarantee: bridge/error-code-and-data
     #[test]
     fn errors_carry_their_code_message_and_data() {
         let error = failure(

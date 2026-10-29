@@ -199,7 +199,7 @@ impl App {
 /// service `device-pat-iphone`, comes and goes with `rutis/service`. The first's `stop`
 /// withdraws it (`rutis/service`, not available) and stops its user; its
 /// `start` brings both back.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn apps_on_one_listen_row_bring_their_plugins_the_later_name_refused() {
     use rutis_bridge::events::ServiceEvent;
@@ -338,7 +338,7 @@ async fn apps_on_one_listen_row_bring_their_plugins_the_later_name_refused() {
 
 /// What `run` prints when two apps on one listen row provide the same
 /// name: each connection, and why the later app's plugin is refused.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn run_says_why_the_later_apps_service_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -387,7 +387,7 @@ async fn run_says_why_the_later_apps_service_is_refused() {
 /// An app listening (on loopback here): a dial row reaches it, and the
 /// plugin it installs is `pad:device`; after `stop` the service is gone,
 /// after `start` the row connects again and it is back.
-/// guarantee: host/remote-runtimes
+/// guarantee: host/connection-plugins
 #[tokio::test(flavor = "multi_thread")]
 async fn an_app_that_listens_is_dialed_and_comes_back_after_stop_and_start() {
     let _environment = environment();

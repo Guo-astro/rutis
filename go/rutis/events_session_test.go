@@ -23,7 +23,7 @@ func (h eventHost) Check(ctx context.Context, callback func(context.Context) err
 	return callback(ctx)
 }
 
-// guarantee: events/session (host dispatch reaches the runtime's
+// guarantee: sdk/leaf-events (host dispatch reaches the runtime's
 // listeners; call chains; failures aggregated in registration order)
 func TestEventsCrossTheSessionAndKeepReentrantCallChains(t *testing.T) {
 	chains := make(chan []string, 1)
@@ -174,7 +174,7 @@ func loadEmitting(t *testing.T) (*rutistest.Loaded, *emitting) {
 	return rutistest.Load(t, plugin, nil, nil), state
 }
 
-// guarantee: events/via-host (a listener elsewhere sends the plugin's
+// guarantee: sdk/leaf-events (a listener elsewhere sends the plugin's
 // emissions through the host; the result is the fast path's)
 func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	loaded, state := loadEmitting(t)
@@ -222,7 +222,7 @@ func TestPluginEmissionsGoThroughTheHostWhenListenedElsewhere(t *testing.T) {
 	}
 }
 
-// guarantee: events/via-host (Parallel's failures arrive as an
+// guarantee: sdk/leaf-events (Parallel's failures arrive as an
 // *AggregateError in registration order)
 func TestAggregateErrorThroughTheHost(t *testing.T) {
 	failing := rutis.Define(rutis.Plugin[rutis.NoConfig]{
@@ -265,7 +265,7 @@ func (a *aggregating) Names(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// guarantee: events/emit-order (an emit through the host, then one on the
+// guarantee: sdk/leaf-events (an emit through the host, then one on the
 // fast path, reach the listener in emission order)
 func TestEmitOrderAcrossTheFastPath(t *testing.T) {
 	loaded, state := loadEmitting(t)
@@ -287,7 +287,7 @@ func TestEmitOrderAcrossTheFastPath(t *testing.T) {
 	}
 }
 
-// guarantee: events/unload (the testing tool unloads a row while its
+// guarantee: sdk/leaf-events (the testing tool unloads a row while its
 // listener runs: cancelled, waited for)
 func TestUnloadingARowCancelsItsRunningListener(t *testing.T) {
 	started := make(chan struct{}, 1)
@@ -316,7 +316,7 @@ func TestUnloadingARowCancelsItsRunningListener(t *testing.T) {
 	}
 }
 
-// guarantee: events/tool (descriptors name the row by its id; the
+// guarantee: sdk/leaf-events (descriptors name the row by its id; the
 // runtime waits for running listeners up to RUTIS_SHUTDOWN_TIMEOUT)
 func TestTheTestingToolsDescriptorsAndDeadline(t *testing.T) {
 	t.Setenv("RUTIS_SHUTDOWN_TIMEOUT", "0.05")
@@ -354,7 +354,7 @@ func TestTheTestingToolsDescriptorsAndDeadline(t *testing.T) {
 	}
 }
 
-// guarantee: events/emit-reported (the testing tool sees what the runtime
+// guarantee: sdk/leaf-events (the testing tool sees what the runtime
 // reports of a failed emit listener)
 func TestEmitFailuresAreReported(t *testing.T) {
 	plugin := rutis.Define(rutis.Plugin[rutis.NoConfig]{
