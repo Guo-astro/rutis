@@ -220,7 +220,9 @@ export class Bus {
   // filter (§6), `entry` given for a listener of this process.
   // `terminal`: waterfall's innermost function, or none. Throws
   // ReservedEvent for rutis/* (§8).
-  dispatch(mode, name, args, { row = null, keep, terminal, gone = false } = {}) {
+  // `sync`: a Cordis `waterfall`, which returns its value at once: the
+  // host dispatches it synchronously (§5.4).
+  dispatch(mode, name, args, { row = null, keep, terminal, gone = false, sync = false } = {}) {
     if (!MODES.includes(mode)) throw new TypeError(`unknown dispatch mode ${mode}`)
     if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
     refuseReserved(name)
@@ -228,7 +230,7 @@ export class Bus {
     if (terminal !== undefined && terminal !== null && typeof terminal !== 'function') {
       throw new TypeError(`a waterfall's terminal is a function, not ${typeof terminal}`)
     }
-    return this.#viaHost(mode, name, args, { row, keep, terminal })
+    return this.#viaHost(mode, name, args, { row, keep, terminal, sync })
   }
 
   // The filter on one listener: `descriptor`, and `entry` for one of this
@@ -268,7 +270,7 @@ export class Bus {
 
   // Through the host (§5.3): it dispatches on its whole table; listeners of
   // this process are called back with `events.call`.
-  #viaHost(mode, name, args, { row, keep, terminal }) {
+  #viaHost(mode, name, args, { row, keep, terminal, sync }) {
     // A record (the session's mark): its functions cross as references.
     const fields = { row, name, mode, args, [Symbol.for('rutis.session.record')]: true }
     if (keep) {
@@ -287,14 +289,16 @@ export class Bus {
       }
     }
     if (mode === 'waterfall' && terminal) fields.terminal = (...values) => terminal(...values)
+    const synchronous = mode === 'bail' || (mode === 'waterfall' && sync)
+    if (mode === 'waterfall' && sync) fields.sync = true
     const peer = this.peer
     if (!peer) {
-      if (mode === 'bail') throw hostGone()
+      if (synchronous) throw hostGone()
       if (mode !== 'emit') return Promise.reject(hostGone())
       this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(hostGone())}`)
       return undefined
     }
-    if (mode === 'bail') return peer.call('', 'events.dispatch', [fields])
+    if (synchronous) return peer.call('', 'events.dispatch', [fields])
     if (mode !== 'emit') return peer.callAsync('', 'events.dispatch', [fields])
     // emit: the API has returned already; a failure is reported here.
     const failed = error => { this.report(`rutis: emit of ${name} from ${this.#from(row)} failed: ${errorText(error)}`) }
@@ -315,7 +319,9 @@ export class Bus {
 
   // Run one listener of this process for the host. Returns its result (a
   // Promise for an asynchronous one), or throws its error.
-  call({ listener, dispatch, own, name, mode, args, next } = {}) {
+  // `sync`: a synchronous waterfall's call (a Cordis `waterfall`): the
+  // listener's `next` returns the rest of the chain's value at once.
+  call({ listener, dispatch, own, name, mode, args, next, sync = false } = {}) {
     const entry = this.#byId.get(String(listener))
     if (!entry?.live) throw named('BindingError', `listener ${listener} of ${name ?? entry?.name} is withdrawn`)
     const values = Array.isArray(args) ? args : []
@@ -344,7 +350,9 @@ export class Bus {
         const onward = () => {
           if (called) return Promise.reject(named('WaterfallNext', `next of ${entry.name} was already called`))
           called = true
-          return this.peer ? this.peer.callFunctionAsync(next, []) : Promise.reject(hostGone())
+          if (!this.peer) return Promise.reject(hostGone())
+          // Calling the function itself waits for it synchronously.
+          return sync ? next() : this.peer.callFunctionAsync(next, [])
         }
         return this.#invoke(entry, [...values, onward], null)
       }

@@ -152,7 +152,7 @@ pub enum ErrorKind {
         name: String,
         errors: Vec<Arc<ErrorKind>>,
     },
-    /// `bail` met an asynchronous listener.
+    /// `bail`, or a synchronous `waterfall`, met an asynchronous listener.
     #[error(
         "listener of {name} in {listener} is asynchronous and cannot run in a synchronous {mode}"
     )]
@@ -258,6 +258,8 @@ pub enum NextMisuse {
     NotWaterfall(crate::Mode),
     /// By a synchronous listener in an asynchronous waterfall.
     SyncInAsync,
+    /// A remote synchronous `next` called off the dispatching thread.
+    OtherThread,
 }
 
 impl NextMisuse {
@@ -271,6 +273,9 @@ impl NextMisuse {
             NextMisuse::SyncInAsync => "a synchronous listener cannot call next in an \
                  asynchronous waterfall; register it with on"
                 .to_owned(),
+            NextMisuse::OtherThread => {
+                format!("next of {name} was called off the thread of its waterfall")
+            }
         }
     }
 }

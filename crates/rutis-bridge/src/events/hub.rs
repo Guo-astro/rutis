@@ -14,7 +14,7 @@ use rutis::host::BoxFuture;
 use rutis::host::{CtxHost, ErrorKind, ListenerKind};
 use rutis::internal::events::{
     BatchFilter, Candidate, Dispatch, FilterAnswer, PayloadRef, RawTerminal, RemoteCall,
-    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext,
 };
 use rutis::internal::{CtxInternal, EventOptions};
 use rutis::{Ctx, Disposer, Error as RutisError};
@@ -534,17 +534,40 @@ impl SessionEvents {
         };
         let filter = reference(&mut fields, "filter")?;
         let terminal = reference(&mut fields, "terminal")?;
+        // A Cordis `waterfall`, which returns its value at once: dispatched
+        // synchronously, its reply the value itself (§5.4).
+        let sync = match fields.remove("sync") {
+            None | Some(Value::Undefined) => false,
+            Some(sync) => crate::session::decode::<bool>(sync.json()?)?,
+        };
+        let sync_waterfall = sync && mode == Mode::Waterfall;
         let Some(ctx) = self.ctx.clone() else {
             // No bus: `events.on` registered nothing, so no listener hears it.
             return Ok(Value::Undefined);
         };
         let mut dispatch = Dispatch::new(name.clone(), mode, from_wire(args));
         dispatch.origin = Some(self.origin);
-        dispatch.filter =
-            filter.map(|filter| selector(filter, name.clone(), mode.is_sync(), self.origin));
-        dispatch.terminal = terminal.map(terminal_of);
+        dispatch.filter = filter.map(|filter| {
+            selector(
+                filter,
+                name.clone(),
+                mode.is_sync() || sync_waterfall,
+                self.origin,
+            )
+        });
+        dispatch.terminal = match sync_waterfall {
+            true => terminal.map(sync_terminal_of),
+            false => terminal.map(terminal_of),
+        };
 
         match mode {
+            _ if sync_waterfall => {
+                let result = ctx
+                    .events()
+                    .dispatch_sync(&ctx, dispatch)
+                    .map_err(|error| to_session(&error))?;
+                result_to_wire(result)
+            }
             Mode::Bail => {
                 let result = ctx
                     .events()
@@ -829,6 +852,15 @@ fn terminal_of(terminal: crate::session::Reference) -> RawTerminal {
     }))
 }
 
+/// [`terminal_of`] for a synchronous waterfall: called synchronously.
+fn sync_terminal_of(terminal: crate::session::Reference) -> RawTerminal {
+    RawTerminal::Sync(Box::new(move |event: PayloadRef<'_>| {
+        let args = to_wire(event).map_err(to_cordis)?;
+        let reply = terminal.call(Value::List(args)).map_err(to_cordis)?;
+        Ok(result_from_wire(reply, Mode::Waterfall))
+    }))
+}
+
 /// An entry whose listener is across a session: a runtime's (its
 /// `events.on` id) or a linked node's (the id it announced). Each call is
 /// one `events.call` (events protocol §5.3).
@@ -853,6 +885,9 @@ struct Invocation<'a> {
     own: bool,
     event: PayloadRef<'a>,
     next: Option<Value>,
+    /// A synchronous waterfall's call: the listener's `next` is called
+    /// synchronously there (§5.4).
+    sync: bool,
 }
 
 impl WireEntry {
@@ -876,6 +911,9 @@ impl WireEntry {
         fields.insert("args".into(), Value::List(args));
         if let Some(next) = call.next {
             fields.insert("next".into(), next);
+        }
+        if call.sync {
+            fields.insert("sync".into(), Value::Data(json!(true)));
         }
         fields.insert("signal".into(), Value::Signal);
         Ok(Value::List(vec![Value::Record(fields)]))
@@ -919,6 +957,14 @@ pub(crate) fn next_function(next: RemoteNext) -> Value {
     })
 }
 
+/// `next` of a synchronous waterfall as the far end gets it.
+pub(crate) fn sync_next_function(next: RemoteSyncNext) -> Value {
+    Value::callback(move |_| {
+        let rest = next.call().map_err(|error| to_session(&error))?;
+        result_to_wire(rest)
+    })
+}
+
 impl RemoteListener for WireEntry {
     fn kind(&self) -> ListenerKind {
         self.kind
@@ -950,6 +996,7 @@ impl RemoteListener for WireEntry {
                 own,
                 event: call.event(),
                 next: call.next().map(next_function),
+                sync: false,
             })
         };
         let request = match &source {
@@ -1006,7 +1053,8 @@ impl RemoteListener for WireEntry {
                 dispatch: call.dispatch(),
                 own,
                 event: call.event(),
-                next: None,
+                next: call.next().map(sync_next_function),
+                sync: mode == Mode::Waterfall,
             })?;
             connection
                 .invoke("", "events.call", request)

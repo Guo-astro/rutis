@@ -57,7 +57,8 @@ use crate::key::TypeKey;
 pub mod events {
     pub use crate::events::remote::{
         BatchFilter, Candidate, Dispatch, EntryCall, FilterAnswer, RawTerminal, RemoteCall,
-        RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
+        RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
+        TableEntry,
     };
     pub use crate::events::wire::{Codec, JsonTranscoder, Payload, PayloadRef, Transcoder, Value};
 }
