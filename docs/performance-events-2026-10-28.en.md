@@ -74,4 +74,13 @@ Code: main `b502303d`, with local dispatch switched off temporarily so that ever
 
 Judgement: Node's `emit` is within the original 100 microseconds; Python's `emit` is over the original limit. Having seen these numbers, the user decided to remove local dispatch anyway, and the limit becomes the measured values above. The path through the host can be optimized later; optimizing it does not bring local dispatch back.
 
-Removing local dispatch only removes the local check; the path through the host is unchanged, so these are the numbers after the removal. The dsh baseline is filled in by the PR that removes local dispatch, with the same command.
+Removing local dispatch only removes the local check; the path through the host is unchanged, so these are the numbers after the removal. With Node's and Bun's local dispatch removed (CL30-node), the same command run again on Node gives `emit` 64 / 150, `serial` 121 / 469, `bail` 93 / 461 (median / p99, microseconds), in line with the table.
+
+dsh baseline after Node's local dispatch was removed, unit: milliseconds, median of five runs:
+
+| Item | Median | Five runs |
+| --- | ---: | --- |
+| One run of the `dsh_baseline` test | 1194 | 1342, 1147, 1249, 1194, 1182 |
+| Of which the native Cordis half (`node native.mjs`) | 115 | 115, 115, 114, 120, 128 |
+
+1194 milliseconds is within 1246 milliseconds (1.1 times the 1133 milliseconds before), so it is acceptable.

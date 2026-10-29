@@ -62,7 +62,7 @@ export default Object.freeze({
     }
     const methods = {
       ...emitting,
-      load: (file, config) => harness.load(file, config ?? null),
+      load: (file, config, options) => harness.load(file, config ?? null, options ?? null),
       update: (id, config) => harness.update(id, config),
       unload: id => harness.unload(id),
       reported: id => harness.reported(id),

@@ -311,7 +311,7 @@ Kotlin 另有两点：
 
 - 开发依赖加上 `@arcships/rutis-runtime`（Bun 下 `@arcships/rutis-bun`）与 `@arcships/rutis-host`（`rutis-host new` 生成的项目已经有），或用 `RUTIS_HOST` 指向一个 `rutis-host`。
 - 插件要是它那个模块的默认导出：在测试文件里直接 `definePlugin` 的插件挪到自己的文件里，否则 `load` 报 `load needs a plugin that its module exports as default`。
-- 删去的选项：`strict`、`scope`、`scopes`、`deadline`、`runtime`、`row`，以及 `h.at(scope)`。
+- 删去的选项：`strict`、`scope`、`scopes`、`deadline`、`runtime`，以及 `h.at(scope)`：测试工具不提供宿主做不到的事，作用域由宿主按行的 `isolate` 决定。`row` 改为 `id`；`h.load` 另收 `isolate`，与 `rutis.json` 里一行的相同。
 - `t.reported`、`h.reported` 改为方法：`await t.reported()`，每项是 `{ line }`，`line` 是宿主打印的那一行。
 - 测试与插件之间的值按跨进程的规则传递；`t.on` 收到的事件经宿主送达，比发出方的返回晚一点到。
 - 配置由宿主检查并补上默认值；装载失败是 `PluginTestError`，文字是这一行的状态，如 `weather: config: city is required`。

@@ -55,6 +55,10 @@ export interface RowOptions {
   config?: unknown
   /** The test's services for this row only. */
   services?: Record<string, unknown>
+  /** The row's id (default: its module's file name, with `-2`, `-3`, … when taken). */
+  id?: string
+  /** As a row's `isolate`: the services it keeps to a scope of its own (`{ forecast: true }`), or a label. */
+  isolate?: Record<string, true | string>
 }
 
 /** Plugins on the host, sharing its bus; its emitting methods emit as the test's plugin. */

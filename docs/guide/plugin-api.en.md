@@ -1216,7 +1216,7 @@ The TypeScript and Bun test tool (below), Go's `rutistest` and Swift's `RutisTes
 | --- | --- |
 | `load(plugin, { config, services })` | Loads one plugin, as the one row of a `host()` of its own; unloading it unloads that `host()` too |
 | `host({ services })` | Plugins on the host, sharing its bus. `services` are the test's, given to every row that injects them |
-| `h.load(plugin, { config, services })` | Loads another row on the `host()`; `services` are this row's only |
+| `h.load(plugin, { config, services, id, isolate })` | Loads another row on the `host()`; `services` are this row's only; `id` is the row's id (by default its module's file name); `isolate` is as in a row of `rutis.json` (`{ forecast: true }`, or a label) |
 | The five methods on `h`, `h.filter`, `await h.reported()`, `h.unload()` | Emit from the test's plugin; the failures the host reported of these rows; unload every row, latest first, then withdraw the test's services |
 
 The `t` that `load` and `h.load` return:

@@ -13,8 +13,9 @@
 //   await h.parallel('session/created', id)
 //
 // The plugin runs in the real runtime (`@arcships/rutis-runtime`, or
-// `@arcships/rutis-bun` under Bun) of a real host (`rutis-host test`, from
-// RUTIS_HOST or PATH), started once per test process (platform cleanup
+// `@arcships/rutis-bun` under Bun) of a real host (`rutis-host test`:
+// RUTIS_HOST, else the project's `@arcships/rutis-host`, else the one on
+// PATH), started once per test process (platform cleanup
 // §7.5): the host checks its config and fills its defaults, gates it on
 // the services it injects, and dispatches its events; what crosses between
 // it and the test crosses between processes. The test's services, its
@@ -80,13 +81,16 @@ function runtime() {
 let control
 let out = 0
 // `target`: the driver itself (''), or a service by its name.
+const NOT_STARTED = 'the host starts at the first load: load a plugin first'
 function call(method, ...args) {
+  if (!control) throw new PluginTestError(NOT_STARTED)
   return control.call('', method, args)
 }
 function ask(method, ...args) {
   return askOf('', method, args)
 }
 async function askOf(target, method, args) {
+  if (!control) throw new PluginTestError(NOT_STARTED)
   if (out++ === 0) control.ref()
   try {
     return await control.callAsync(target, method, args)
@@ -180,8 +184,11 @@ export function host({ services = {} } = {}) {
   const self = {
     /** The failures the host reported of the rows here (§5.6): `{ line }`. */
     async reported() { return (await Promise.all(rows.map(row => row.api.reported()))).flat() },
-    /** Load `plugin` as a row, with `config` and its own `services`. */
-    async load(plugin, { config, services: own = {} } = {}) {
+    /**
+     * Load `plugin` as a row, with `config` and its own `services`; `id`,
+     * the row's id; `isolate`, as a row's (`{ forecast: true }` or a label).
+     */
+    async load(plugin, { config, services: own = {}, id: rowId, isolate } = {}) {
       if (closed) throw new PluginTestError('the host is unloaded')
       plugin = isPlugin(plugin) ? plugin : plugin?.default
       if (!isPlugin(plugin)) throw new PluginTestError('load needs a plugin made with definePlugin')
@@ -194,7 +201,7 @@ export function host({ services = {} } = {}) {
       const withdrawOwn = await provide(own)
       let id
       try {
-        id = await ask('load', file, config ?? null)
+        id = await ask('load', file, config ?? null, { ...(rowId === undefined ? {} : { id: rowId }), ...(isolate === undefined ? {} : { isolate }) })
       } catch (error) {
         await withdrawOwn()
         throw new PluginTestError(error?.message ?? String(error))

@@ -1216,7 +1216,7 @@ TypeScript、Bun 的测试工具（见下）、Go 的 `rutistest` 和 Swift 的 
 | --- | --- |
 | `load(plugin, { config, services })` | 装载一个插件，它是自己那个 `host()` 的唯一一行；卸载它也卸掉这个 `host()` |
 | `host({ services })` | 宿主上的几个插件，共用它的总线。`services` 是测试的服务，给每个 `inject` 了它的行 |
-| `h.load(plugin, { config, services })` | 在 `host()` 上再装载一行；`services` 只给这一行 |
+| `h.load(plugin, { config, services, id, isolate })` | 在 `host()` 上再装载一行；`services` 只给这一行；`id` 是行 id（默认模块的文件名）；`isolate` 与 `rutis.json` 里一行的相同（`{ forecast: true }`，或一个标签） |
 | `h.emit` 等五个方法、`h.filter`、`await h.reported()`、`h.unload()` | 从测试的插件发出；宿主报告的这些行的失败；倒序卸载每一行，再撤下测试的服务 |
 
 `load`、`h.load` 返回的 `t`：

@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { definePlugin } from '../src/index.mjs'
 import { isPlugin, PLUGIN_API } from '../src/advanced.mjs'
-import { load, PluginTestError } from '../src/testing.mjs'
+import { host, load, PluginTestError } from '../src/testing.mjs'
 import weather from './fixtures/weather.mjs'
 import store from './fixtures/store.mjs'
 import unnamed from './fixtures/unnamed.mjs'
@@ -93,6 +93,17 @@ test('values cross between the test and the plugin as between processes', async 
   assert.equal(await warmer.data(value), 2)
   assert.equal(value.n, 1, 'data is copied')
   await t.unload()
+})
+
+test('a row takes its id and isolate as on a host', async () => {
+  const h = host({ services: { llm } })
+  const oslo = await h.load(weather, { config: { city: 'Oslo' }, id: 'oslo' })
+  assert.equal(oslo.row, 'oslo')
+  await assert.rejects(h.load(weather, { config: { city: 'Oslo' }, id: 'oslo' }), { name: 'PluginTestError', message: 'a row oslo is loaded already' })
+  // Its own `weather`, in a scope of its own: no clash with oslo's.
+  const bergen = await h.load(weather, { config: { city: 'Bergen' }, isolate: { weather: true } })
+  assert.equal(bergen.row, 'weather')
+  await h.unload()
 })
 
 test('PluginTestError is an Error', () => {

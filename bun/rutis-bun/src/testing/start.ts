@@ -1,12 +1,13 @@
 // @ts-nocheck: the same as the Node runtime's (node/rutis-runtime/src/testing/start.mjs).
 // A real host and a real runtime for a test (`@arcships/rutis/testing`,
 // platform cleanup §7.5): `rutis-host test`, with no rows of its own, starts
-// this runtime as a local runtime and loads the driver (./rutis-test.ts) first. The test talks to the driver
-// on a session of its own, through a relay thread here, so that either end
-// can wait for the other synchronously.
+// this runtime as a local runtime and loads the driver (./rutis-test.ts)
+// first. The test talks to the driver on a session of its own, through a
+// relay thread here, so that either end can wait for the other
+// synchronously.
 //
 //   const harness = await start()
-//   await harness.control.callAsync('driver', 'load', [file, config])
+//   await harness.control.callAsync('', 'load', [file, config])
 //
 // `rutis-host` is RUTIS_HOST, else the project's (`@arcships/rutis-host` in
 // its node_modules: `bun test` does not put node_modules/.bin on PATH),
