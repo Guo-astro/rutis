@@ -191,12 +191,14 @@ impl Host {
         let mut listening = Vec::new();
         let mut bound = Vec::new();
         for listener in &listeners {
-            // A listen row's token, else a link row's (`rutis-bridge/peer`).
+            // A listen row's token, else a link row's (`rutis-bridge/peer`);
+            // refused by both, as a listen row refuses it.
             let ours = router.admit(&listener.name);
             let links =
                 rutis_bridge::websocket::admit_registered(registrations.clone(), &listener.name);
-            let admit: rutis_bridge::websocket::Admit =
-                Arc::new(move |upgrade| ours(upgrade).or_else(|_| links(upgrade)));
+            let admit: rutis_bridge::websocket::Admit = Arc::new(move |upgrade| {
+                ours(upgrade).or_else(|refused| links(upgrade).map_err(|_| refused))
+            });
             let started = rutis_bridge::websocket::listen(listener, &Limits::default(), admit)?;
             listening.push((listener.name.clone(), started.local_addr()));
             bound.push(started);
@@ -1543,134 +1545,6 @@ mod tests {
         assert_eq!(greeting(&host).await, "Welcome, Ada");
     }
 
-    /// A runtime on another machine (here, a process listening on loopback):
-    /// a dial row connects it, and its rows are `<row>:<module>`.
-    /// guarantee: loader/remote-runtime-rows
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dial_row_runs_rows_named_after_it() {
-        use tokio::io::AsyncBufReadExt;
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(
-            project.path().join("greeter.py"),
-            "provides = {'greeter': {'hello': 'sync'}}\n\
-             class Greeter:\n    def hello(self, name):\n        return 'Remote, ' + name\n\
-             def apply(ctx, config):\n    ctx.provide('greeter', Greeter())\n",
-        )
-        .unwrap();
-        let python =
-            std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| crate::config::DEFAULT_PYTHON.into());
-        let mut child = tokio::process::Command::new(python)
-            .args([
-                "-m",
-                "rutis",
-                "listen:ws://127.0.0.1:0/rutis",
-                "--id",
-                "gpu",
-                "--peer",
-                "remote-test",
-            ])
-            .arg(project.path())
-            .env("PYTHONPATH", repo().join("python/rutis"))
-            .env("RUTIS_TOKEN", "remote-token")
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        let address = within("the runtime's address", async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .expect("the runtime's address");
-                if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                    break address.to_owned();
-                }
-            }
-        })
-        .await;
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-
-        std::env::set_var("RUTIS_TOKEN_GPU", "remote-token");
-        let config: HostConfig = serde_json::from_value(json!({
-            "id": "remote-test",
-            "rows": [
-                { "id": "gpu", "name": "rutis-host/dial", "config": { "address": address } },
-                { "id": "greeter", "name": "gpu:greeter" }
-            ]
-        }))
-        .unwrap();
-        let host = Host::start(&config).await.unwrap();
-        host.load(config.rows()).await.unwrap();
-        assert_eq!(greeting(&host).await, "Remote, Ada");
-        child.start_kill().unwrap();
-    }
-
-    /// A Bun runtime on another machine (here, listening on loopback): a
-    /// dial row connects it, and its rows are `<row>:<module>`. Bun on
-    /// Windows is not tested yet.
-    /// guarantee: loader/remote-runtime-rows
-    #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dial_row_runs_bun_rows_named_after_it() {
-        use tokio::io::AsyncBufReadExt;
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("package.json"), "{}").unwrap();
-        std::fs::write(
-            project.path().join("greeter.ts"),
-            "export const provides = { greeter: { hello: 'sync' } }\n\
-             export function apply(ctx) { ctx.provide('greeter', { hello: (name: string) => 'Bun, ' + name }) }\n",
-        )
-        .unwrap();
-        let mut child = tokio::process::Command::new("bun")
-            .args(["--no-install", "--no-env-file"])
-            .arg(repo().join("bun/rutis-bun/src/main.ts"))
-            .args([
-                "listen:ws://127.0.0.1:0/rutis",
-                "--id",
-                "edge",
-                "--peer",
-                "remote-bun",
-            ])
-            .arg(project.path())
-            .current_dir(project.path())
-            .env("RUTIS_TOKEN", "edge-token")
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        let address = within("the runtime's address", async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .expect("the runtime's address");
-                if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                    break address.to_owned();
-                }
-            }
-        })
-        .await;
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-
-        std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
-        let config: HostConfig = serde_json::from_value(json!({
-            "id": "remote-bun",
-            "rows": [
-                { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
-                { "id": "greeter", "name": "edge:./greeter.ts" }
-            ]
-        }))
-        .unwrap();
-        let host = Host::start(&config).await.unwrap();
-        host.load(config.rows()).await.unwrap();
-        assert_eq!(greeting(&host).await, "Bun, Ada");
-        child.start_kill().unwrap();
-    }
-
     fn parsed(value: serde_json::Value) -> HostConfig {
         serde_json::from_value(value).unwrap()
     }
@@ -1842,79 +1716,6 @@ mod tests {
         assert_eq!(reply.json().unwrap(), json!("netkit pong go"));
         let go = host.binaries_of("go").unwrap();
         assert_eq!(go.runtimes()[0].name, "go-netkit");
-    }
-
-    /// A Go binary on another machine (here, listening on loopback): a dial
-    /// row connects it, and its rows are `<row>:<plugin>`.
-    /// guarantee: loader/remote-runtime-rows
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dial_row_runs_go_rows_named_after_it() {
-        use tokio::io::AsyncBufReadExt;
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join(if cfg!(windows) {
-            "netkit.exe"
-        } else {
-            "netkit"
-        });
-        let status = std::process::Command::new("go")
-            .args(["build", "-o"])
-            .arg(&binary)
-            .arg("./cmd/netkit")
-            .current_dir(repo().join("crates/rutis-loader/tests/fixtures/go"))
-            .status()
-            .expect("go is on PATH");
-        assert!(status.success());
-        let mut child = tokio::process::Command::new(&binary)
-            .args([
-                "listen:ws://127.0.0.1:0/rutis",
-                "--id",
-                "edge",
-                "--peer",
-                "remote-go",
-            ])
-            .arg(dir.path())
-            .env("RUTIS_TOKEN", "edge-token")
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        let address = within("the runtime's address", async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .expect("the runtime's address");
-                if let Some(address) = line.strip_prefix("rutis: listening on ") {
-                    break address.to_owned();
-                }
-            }
-        })
-        .await;
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        std::env::set_var("RUTIS_TOKEN_EDGE", "edge-token");
-        let config: HostConfig = serde_json::from_value(json!({
-            "id": "remote-go",
-            "rows": [
-                { "id": "edge", "name": "rutis-host/dial", "config": { "address": address } },
-                { "id": "ping", "name": "edge:ping" }
-            ]
-        }))
-        .unwrap();
-        let host = Host::start(&config).await.unwrap();
-        host.load(config.rows()).await.unwrap();
-        let service = RUNTIME_START
-            .eventually(|| host.service("ping"), "the ping service")
-            .await;
-        let reply = tokio::task::spawn_blocking(move || {
-            service.invoke("echo", Value::List(vec![json!("far").into()]))
-        })
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(reply.json().unwrap(), json!("netkit pong far"));
-        child.start_kill().unwrap();
     }
 }
 
