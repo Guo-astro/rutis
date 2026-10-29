@@ -213,7 +213,7 @@ PR 模板中有对应的检查项。CI 的 `links` 任务运行 `node tools/chec
 
 | 编号 | 内容 | 级别 | 状态 | 验证 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| `events/presence` | 运行时在 `mount` 之前得知所有在它之外有监听器的名字和前缀，之后得知每次变化，按顺序，且在引起变化的登记返回之前；它自己的条目不算 | 契约行为 | 已验证 | `rutis-bridge/tests/event_hub.rs::a_runtime_hears_what_is_elsewhere` | 0.19 起没有运行时用它：各语言都不在本进程分发事件（[平台清理](design-platform-cleanup-2026-10-28.md) §7.5），宿主仍发 `events.elsewhere`，运行时不用它（Go 答一个空结果，其余语言答"没有这个方法"） |
+| `events/presence` | 运行时在 `mount` 之前得知所有在它之外有监听器的名字和前缀，之后得知每次变化，按顺序，且在引起变化的登记返回之前；它自己的条目不算 | 契约行为 | 已撤回（0.19） | — | 各语言都不在本进程分发事件（[平台清理](design-platform-cleanup-2026-10-28.md) §7.5），宿主不再发 `events.elsewhere`（#813） |
 | `events/hub-dispatch` | 宿主发出的事件以一个 `events.call` 到达运行时的监听器（有类型的事件按参数）；运行时经宿主的分发按登记顺序到达宿主的与它自己的（`own`）监听器，得到该方式的结果；读线程不执行插件代码：看到运行时 emit 的插件代码可以同步调用这个运行时 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::dispatches_cross_between_host_and_runtime`、`rutis-bridge/tests/event_hub.rs::plugin_code_seeing_a_runtime_s_emit_can_call_that_runtime` | |
 | `events/hub-flat` | 运行时的分发指明会话上已加载的一行；事件按名字送达所有监听器，与监听器的作用域无关；会话上未加载的行被拒绝 | 核心承诺 | 已验证 | `rutis-bridge/tests/event_hub.rs::rows_dispatch_and_hear_by_name` | |
 | `events/hub-scope` | 运行时的分发在它那一行的作用域发出（从不用它自报的）；监听器听到自己作用域及其下的；会话上未加载的行被拒绝 | 核心承诺 | 已撤回（0.15.1） | — | 作用域不再挑选监听器；见 `events/hub-flat`（#604、#605） |

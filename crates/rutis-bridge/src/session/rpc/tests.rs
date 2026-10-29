@@ -631,6 +631,41 @@ fn rebase_tags_the_source_restores_the_target_and_keeps_third_sessions() {
     assert!(rebase(&[], "s1", "s2").is_empty());
 }
 
+/// A call made into one session while another session's call is handled
+/// carries that call's chain rebased, also when it is sent without
+/// `forward` (an `invoke_async` from a host service serving the other
+/// session): untagged, the caller's `rust:1` would name this session's own
+/// first call, the very call being sent, and the far end would refuse it as
+/// an invalid invocation, ending the session (#813).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_for_another_session_s_call_carries_its_chain_rebased() {
+    let (caller, _caller_far) = pair();
+    let (target, mut far) = pair();
+    let mut reader = far.try_clone().unwrap();
+    assert!(matches!(read(&mut reader), Frame::Hello { .. }));
+    send(&mut far, hello(ENDPOINT_PROTOCOL));
+    // The caller session's chain: its own call `rust:1` (an id the target
+    // session also gives its first call) and its far end's `node:2`.
+    let chain = ids(&["rust:1", "node:2"]);
+    let guard = PathGuard::enter(chain.clone());
+    let call = with_caller(caller.clone(), {
+        let target = target.clone();
+        async move { target.invoke_async("t", "m", Value::Undefined).await }
+    });
+    drop(guard);
+    let call = tokio::spawn(call);
+    let frame = tokio::task::spawn_blocking(move || read(&mut reader))
+        .await
+        .unwrap();
+    let Frame::Invoke { id, path, .. } = frame else {
+        panic!("invoke expected")
+    };
+    assert_eq!(id, "rust:1");
+    assert_eq!(path, rebase(&chain, caller.tag(), target.tag()));
+    assert!(!path.contains(&id), "{path:?}");
+    call.abort();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn sessions_have_distinct_tags_and_forward_rebases_the_current_chain() {
     let (a, _ra) = pair();

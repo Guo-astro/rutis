@@ -305,6 +305,7 @@ Kotlin 另有两点：
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch`、`internal::DispatchAttempt` | 无替代；要观察就注册一个普通监听器 |
+| 宿主发给运行时会话的 `events.elsewhere`；`rutis_bridge::session::Dispatch::arrived` / `replied`；`rutis_bridge::events::testing::Tap::dispatches` / `answered`（#813） | 删除：运行时不在自己进程里分发，每次发出都交给宿主（`events.dispatch`），没有要告诉它们或要计数的东西；自己写的运行时删掉处理 `events.elsewhere` 的代码 |
 | `internal::EventPattern`（按前缀订阅） | 无替代 |
 | `internal::CtxInternal` 的 `try_filter`、`try_filter_named` | `EventBus::dispatch` / `dispatch_sync` 带 `Dispatch { filter: Some(BatchFilter), … }`（`rutis::internal`） |
 | feature `anyhow`、`Error::from_anyhow`、`From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |

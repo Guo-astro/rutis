@@ -457,18 +457,6 @@ impl Imports {
     }
 }
 impl Dispatch for Imports {
-    fn arrived(&self, _connection: &Connection, method: &str) {
-        if let Some(events) = self.bus.get() {
-            events.arrived(method);
-        }
-    }
-
-    fn replied(&self, _connection: &Connection, method: &str) {
-        if let Some(events) = self.bus.get() {
-            events.replied(method);
-        }
-    }
-
     fn invoke(&self, connection: &Connection, target: &str, method: &str, args: RpcValue) -> Reply {
         if let Some(name) = target.strip_prefix("host:") {
             let (host, row, unleased) = {
@@ -913,9 +901,7 @@ impl Process {
         Self::finish(session.connection(), imports, None, Some(routed), rest).await
     }
 
-    /// The session joins the logical bus before anything is mounted: the
-    /// runtime learns which names have listeners elsewhere first (events
-    /// protocol §4.5).
+    /// The session joins the logical bus before anything is mounted.
     fn join_bus(imports: &Imports, peer: &Connection, rest: &MountRest) -> Result<(), Error> {
         let scope = rest.ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
         let runtime = rest.runtime.clone().unwrap_or_else(|| "runtime".to_owned());

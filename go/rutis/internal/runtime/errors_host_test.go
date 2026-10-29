@@ -94,9 +94,6 @@ func TestParallelThroughAFutureReturnsAnAggregateError(t *testing.T) {
 	if err := h.load("p", "parallel"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.call("events.elsewhere", map[string]any{"add": []any{"t/par"}}); err != nil {
-		t.Fatal(err)
-	}
 	err := c.Parallel(context.Background(), "t/par")
 	host.mu.Lock()
 	awaited := host.awaited

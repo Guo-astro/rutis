@@ -305,6 +305,7 @@ A runtime's row (a Node, Bun, Python, Go, Swift or Kotlin plugin) is isolated by
 | `take_cleanup_errors()` | A cleanup's error is in the unload result (the error `dispose` returns) |
 | `FiberView::effects()`, `EffectMeta`, `EffectPhase` | No replacement; for diagnostics use `diagnostics()` |
 | `EventBus::observe_dispatch`, `internal::DispatchAttempt` | No replacement; to observe, register an ordinary listener |
+| The host's `events.elsewhere` to runtime sessions; `rutis_bridge::session::Dispatch::arrived` / `replied`; `rutis_bridge::events::testing::Tap::dispatches` / `answered` (#813) | Removed: runtimes dispatch nothing in their own process, every emission goes to the host (`events.dispatch`), so there is nothing to tell them or to count; a runtime of your own deletes its `events.elsewhere` handler |
 | `internal::EventPattern` (prefix subscriptions) | No replacement |
 | `try_filter`, `try_filter_named` of `internal::CtxInternal` | `EventBus::dispatch` / `dispatch_sync` with `Dispatch { filter: Some(BatchFilter), … }` (`rutis::internal`) |
 | feature `anyhow`, `Error::from_anyhow`, `From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |

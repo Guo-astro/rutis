@@ -79,14 +79,14 @@ test('invokeAnswered tells the reply as its frame is read, before the next frame
   const peer = new Session({
     dispatch: (_: string, method: string) => { seen.push(method); return null },
     send: (line: string) => sent.push(JSON.parse(line)), abort: () => {}, pump: () => {},
-    inline: ['events.elsewhere'], endpoint: { local: 'bun' },
+    inline: ['plugins.read'], endpoint: { local: 'bun' },
   })
   peer.receive({ op: 'hello', version: ENDPOINT_PROTOCOL, endpoint: 'main', capabilities: [] })
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], (result: any) => seen.push(['answered', result.ok]))
   peer.receive({ op: 'return', id: sent.at(-1).id, value: { type: 'undefined' } })
   expect(seen).toEqual([['answered', true]])
-  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: '', method: 'events.elsewhere', args: { type: 'data', value: [{}] } })
-  expect(seen).toEqual([['answered', true], 'events.elsewhere'])
+  peer.receive({ op: 'invoke', id: 'main:1', path: [], target: '', method: 'plugins.read', args: { type: 'data', value: [{}] } })
+  expect(seen).toEqual([['answered', true], 'plugins.read'])
   peer.invokeAnswered('', 'events.dispatch', [{ mode: 'emit' }], (result: any) => seen.push(['failed', result.ok, result.value.name]))
   peer.receive({ op: 'throw', id: sent.at(-1).id, error: { name: 'BindingError', message: 'refused' } })
   expect(seen.at(-1)).toEqual(['failed', false, 'BindingError'])
