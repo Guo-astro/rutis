@@ -116,7 +116,7 @@ RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \
   gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
   ```
 
-  `rutis-host status` 的 `connections:` 一节给出当前状态（`gpu: connected (gpu:embedder)`）。对面不含某行的插件时，只有这一行失败（`embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`），其他行不受影响。字段与规则见 [rutis-host](rutis-host.md#远程运行时与设备)。
+  `rutis-host status` 的 `connections:` 一节给出当前状态（`gpu: connected`）。对面不含某行的插件时，只有这一行失败（`embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`），其他行不受影响。字段与规则见 [rutis-host](rutis-host.md#远程运行时与设备)。
 - 0.18 的 `runtimes.remote` 在 0.19 删除，改法见 [迁移到 0.19](../migration-0.19.md)。
 
 Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行 `node node_modules/@arcships/rutis-runtime/src/runner.mjs listen:wss://… --id <名字> --peer <控制方> ./package.json`（插件从这个 package.json 解析）；Bun 运行时也一样：在那台机器的 Bun 项目里执行 `bun --no-install --no-env-file node_modules/@arcships/rutis-bun/src/main.ts listen:wss://… --id <名字> --peer <控制方> .`（插件从这个目录解析）。Go 或 Swift 插件二进制用 `<二进制> listen:wss://… --id <名字> --peer <控制方> .`。rutis 一侧都是同样的一行 `rutis-host/dial`。远程运行时一次服务一个控制方；控制方断开时，它为这个控制方运行的插件全部卸载。每种远程运行时（Python、Node、Bun、Go 或 Swift 二进制）开始监听后都在 stderr 上打印一行实际绑定的地址：`rutis: listening on <地址>`。端口写 0（`listen:ws://127.0.0.1:0/rutis`）时由系统挑一个空闲端口，脚本和测试从这一行读出来；不要先找一个空闲端口再传给它，运行时绑定之前别的进程可能已经占了这个端口。Python 运行时会话结束时还打印一行 `rutis: session ended (<原因>); waiting for a controller`（原因如 `heartbeat timeout`、`connection lost`、`closed (1000): …`），被新连接接替时打印 `rutis: session ended (replaced by a new connection)`。
@@ -137,7 +137,7 @@ Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行
 
 每条连接出示同一个 token（rutis 一侧是 `RUTIS_TOKEN_WORKER`），在握手里报一个 id，各自独立：它带来的插件注册为 `<id>:<插件>`，服务全局可见；同一 id 的新连接顶替旧的（旧连接的插件先全部卸载，旧连接再以 4002 关闭）。rutis 不为每条连接建实例。
 
-<!-- S4-LISTEN-ROWS --> 0.19 里 `rutis-host/listen` 的对面只带来它自己装着、提供着服务的插件（例如自己装插件的 [Swift](swift-app.md)、[Kotlin](kotlin-app.md) 应用）；`<连接行>:<插件>` 的行不在连进来的运行时上运行。要由 rutis 决定运行时跑什么插件，让运行时监听、rutis 用 `rutis-host/dial`（上一节）。字段与规则见 [rutis-host](rutis-host.md#远程运行时与设备)。
+ 0.19 里 `rutis-host/listen` 的对面只带来它自己装着、提供着服务的插件（例如自己装插件的 [Swift](swift-app.md)、[Kotlin](kotlin-app.md) 应用）；`<连接行>:<插件>` 的行不在连进来的运行时上运行。要由 rutis 决定运行时跑什么插件，让运行时监听、rutis 用 `rutis-host/dial`（上一节）。字段与规则见 [rutis-host](rutis-host.md#远程运行时与设备)。
 
 Python 运行时用 `dial:` 连进来：
 

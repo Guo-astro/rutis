@@ -38,7 +38,7 @@ When unsure, ask one question: **who decides whether the plugin is loaded and wi
 | Swift apps (plugins hosted in an iOS / iPadOS / macOS app, `RutisApp`) | ✅ ([#389](https://github.com/arcships/rutis/issues/389)) | ✅ ([#389](https://github.com/arcships/rutis/issues/389)) |
 | Kotlin apps (plugins hosted in an Android app) | ✅ (jvm target) | ✅ |
 
-One `rutis-host/listen` row takes any number of connections on one port (many devices): each is a session of its own, and what the far end provides registers as `<id>:<plugin>`. rutis 0.19 creates no instance per connection: logic computed once per device lives on the device, or a host plugin tells devices apart itself (step 4c). <!-- S4-LISTEN-ROWS --> Rows `<connection row>:<plugin>` run only through `rutis-host/dial`: for a runtime whose plugins this rutis chooses, the runtime listens and rutis dials it.
+One `rutis-host/listen` row takes any number of connections on one port (many devices): each is a session of its own, and what the far end provides registers as `<id>:<plugin>`. rutis 0.19 creates no instance per connection: logic computed once per device lives on the device, or a host plugin tells devices apart itself (step 4c). Rows `<connection row>:<plugin>` run only through `rutis-host/dial`: for a runtime whose plugins this rutis chooses, the runtime listens and rutis dials it.
 
 ## 3. Write the plugin: the paradigm, same as local
 
@@ -81,7 +81,7 @@ On the remote machine:
 
 ## 4b. Or let the runtime connect in (dialing out)
 
-When the remote machines are behind NAT or change address, the runtime connects to rutis instead. <!-- S4-LISTEN-ROWS --> In 0.19 a far end that connects in brings only the plugins it installed itself and provides (apps, step 4c); rows `<connection row>:<plugin>` do not run on it, so for a language runtime whose plugins rutis chooses, prefer step 4. On the remote machine, with the plugins installed:
+When the remote machines are behind NAT or change address, the runtime connects to rutis instead. In 0.19 a far end that connects in brings only the plugins it installed itself and provides (apps, step 4c); rows `<connection row>:<plugin>` do not run on it, so for a language runtime whose plugins rutis chooses, prefer step 4. On the remote machine, with the plugins installed:
 
 ```bash
 # Python
@@ -161,7 +161,7 @@ Details in `references/rutis-json.md` and `references/nodes.md`.
 ## 6. Verify
 
 - `rutis-host check`: remote runtimes are not contacted during checking; services that might come from them are reported as such, not as failures.
-- `rutis-host run`: expect `gpu: connected` (a listen row: `phone: connected <id>` per connection), then `<row id>: running`. `rutis-host status` lists them under `connections:` with their remote plugins (`gpu: connected (gpu:embedder)`).
+- `rutis-host run`: expect `gpu: connected` (a listen row: `phone: connected <id>` per connection), then `<row id>: running`. `rutis-host status` lists them under `connections:` (`gpu: connected`; a listen row, the ids connected now: `phone: kim, lee`).
 - `gpu: disconnected (auth-rejected: gpu.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s` means the token or certificate is wrong; `gpu: disconnected (incompatible: …); stopped` means the protocol does not match (the reason says which end to upgrade). On a listen row, a connection refused at the upgrade prints nothing on rutis: look at the dialing side. A row failing with `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder` names a plugin the remote side does not have.
 - Stop the remote process: those rows stop, and so do the rows using their services; when it comes back rutis reconnects and loads them again.
 

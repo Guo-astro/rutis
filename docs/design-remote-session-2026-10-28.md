@@ -2,7 +2,7 @@
 
 [English](design-remote-session-2026-10-28.en.md)
 
-状态：定稿，未实现。日期：2026-10-28；2026-10-29 修订：宿主停止时 WebSocket 以 1000 关闭（不再用 1001，§三）；§七 写出实际的文字（认证被拒带拨号方的地址，listen 上握手失败不打印，应用插件装不上只在设备日志里），并加上决定 3 的 `loader` 写法（§2.6）。基准：`main` `3d19634f`。排期：0.19。
+状态：定稿，未实现。日期：2026-10-28；2026-10-29 修订：宿主停止时 WebSocket 以 1000 关闭（不再用 1001，§三）；§七 写出实际的文字（认证被拒带拨号方的地址，listen 上握手失败不打印，应用插件装不上只在设备日志里），`status` 的 `connections:` 写实际形式（0.19 不列远程插件），并加上决定 3 的 `loader` 写法（§2.6）。rutis-host 在 0.19 只带 dial 与 listen，本机运行时照旧由 `runtimes.*` 起，`rutis-host/spawn` 在下一个 PR（S4b）。基准：`main` `3d19634f`。排期：0.19。
 Issue：[#695](https://github.com/arcships/rutis/issues/695)（实施 [#696](https://github.com/arcships/rutis/issues/696) loader、[#698](https://github.com/arcships/rutis/issues/698) rutis-host）。依据：#695 的 2026-10-28 两条评论。
 与旧设计的关系：取代 [远程运行时一致性](design-remote-runtime-consistency-2026-10-26.md) 的实施部分（§四"rutis-host 内部"一列、§五、§七、§八）；它的"缺插件一律 `Unavailable`"保留，`runtimes.remote` 的写法删掉（§六）。[决策记录](decision-remote-runtime-consistency-2026-10-26.md) 里"不新增交接接口、不重写 link 与接入点"一条由本稿推翻，理由见 §一。
 
@@ -379,13 +379,13 @@ office: connected
 - listen 上握手失败的连接（升级时 token 不对，401 / 403；协议不兼容）什么都不打印：它没有碰到已有的连接，原因由拨号方那一端写出。
 - 宿主停止或连接行被删时不打印 `disconnected`。
 
-**`rutis-host status`**：`connections:` 一节，每个连接行一行，连着的写它注册了哪些远程插件：
+**`rutis-host status`**：`connections:` 一节，每个连接行一行：dial 行写 `connected` / `disconnected`，listen 行写连着的 id（没有时 `none connected`）。0.19 的限制：不列出每条连接注册的远程插件（`SessionHandle` 给不出它们）。
 
 ```text
 connections:
-  gpu: connected (gpu:embedder)
-  phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
-  office: connected (office:clock, office:scanner)
+  gpu: connected
+  phone: phone-1, phone-2
+  office: connected
 ```
 
 **出错**

@@ -10,7 +10,7 @@
 
 ### 新写法：连接行
 
-远程运行时与设备都写成连接行：`rutis-host/dial`（rutis 去连）或 `rutis-host/listen`（对面连进来）。`runtimes.remote` 删除，不标弃用，不做转换；写了它的 rutis.json 按 0.18 的规则报不认识的字段，没有专门的提示：
+远程运行时与设备都写成连接行：`rutis-host/dial`（rutis 去连）或 `rutis-host/listen`（对面连进来）。`runtimes.remote` 删除，不标弃用，不做转换（rutis-host 自带两个连接插件：dial 与 listen）；写了它的 rutis.json 按 0.18 的规则报不认识的字段，没有专门的提示：
 
 ```
 rutis-host: rutis.json: unknown field `remote`, expected one of …
@@ -41,7 +41,7 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 | `runtimes.remote` 的 `language` | 不写：插件名在对面解析 |
 
 - 行 id 是连接的名字：运行时的 `--id` 写它，token 是 `RUTIS_TOKEN_<行 id>`（见[宿主一侧的 token](#宿主一侧的-token695)），输出以它开头。
-- 在对面运行的插件仍写成 `<连接行>:<插件>`（`gpu:embedder`），配置写在这一行里。<!-- S4-LISTEN-ROWS --> 这样的行用于 `rutis-host/dial`：0.18 里由运行时连进来、rutis 决定它跑什么插件的，改为运行时监听、rutis 去连。
+- 在对面运行的插件仍写成 `<连接行>:<插件>`（`gpu:embedder`），配置写在这一行里。 这样的行用于 `rutis-host/dial`：0.18 里由运行时连进来、rutis 决定它跑什么插件的，改为运行时监听、rutis 去连。
 - `rutis-host/listen` 上同一个 id 的新连接顶替旧的：旧连接的远程插件先全部卸载，旧连接再以关闭码 4002 关闭，然后才注册新连接的插件。宿主停止时连接以关闭码 1000 关闭。
 - 宿主不再为每条连接建实例：对面带来的插件注册为 `<对面的 id>:<插件>`，服务全局可见，同名的按内核规则，后注册的被拒绝。
 - 节点行（`rutis-bridge/peer`）的写法这一节不涉及。
@@ -70,12 +70,12 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
    phone: disconnected phone-1 (replaced by a new connection)
    ```
 
-   listen 上握手失败的连接（token 不对、协议不兼容）不打印，由拨号方写出原因。`rutis-host status` 的 `connections:` 一节每个连接行一行，后面列出它的远程插件：
+   listen 上握手失败的连接（token 不对、协议不兼容）不打印，由拨号方写出原因。`rutis-host status` 的 `connections:` 一节每个连接行一行：dial 行写 `connected` / `disconnected`，listen 行写连着的 id（没有时 `none connected`）：
 
    ```
    connections:
-     gpu: connected (gpu:embedder)
-     phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
+     gpu: connected
+     phone: kim, lee
    ```
 
    读 `run` 输出的脚本按 `runtime <名>: link` 或 `link connected` 匹配的，改为按 `<行 id>: connected` / `disconnected` 匹配。
@@ -100,7 +100,6 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
   | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote`；`RuntimeSession`、`runtime_session_key`、`RuntimeAccessPlugin` | 连接插件里 `ctx.plugin(Session::new(websocket::dial(...)?))`（或 `Session::handshake(&ctx, channel).await` 后 `ctx.plugin(greeted)`），行 `<名>:<插件>` |
   | `AccessPointPlugin`、`AccessPointConfig`、`AccessEvent`、`Accept`、`Accepted`、`Release`；loader 的 `RuntimeInstances`、`AcceptInstances`、`RuntimeConnection` | `rutis-host/listen`，或自己的连接插件 |
   | `Admission`、`AdmissionPlugin`、`admission_key`、`SharedToken`、`Rejection` | 连接插件自己的认证；id 来自握手 |
-  | `LocalRuntime` | 起进程移到 `rutis-host/spawn`；自己起时 `pipe::spawn` 给出 `Channel`，再 `Session::new(channel)` |
   | `ListenerConfig::new(名字, 地址, 本端 id)` | `ListenerConfig::new(名字, 地址)` |
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
   | `Channel` 的 `info`（`ChannelInfo`）、`Spawn::new(程序, peer)` | 删；对方 id 只来自会话握手；`Spawn::new(程序)` |

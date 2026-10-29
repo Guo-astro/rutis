@@ -619,15 +619,15 @@ runtimes:
 calls:
   caller → slow.wait  42s
 connections:
-  gpu: connected (gpu:embedder)
-  phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
+  gpu: connected
+  phone: kim, lee
 ```
 
 - `rows`: each row (a row inside instances once per instance, as `<row> in <group> #<number>`) and its state: `running`, `starting`, `stopped`, `disabled`, and `waiting` for a waiting row when rutis cannot say for what; a waiting row says what it waits for (in the words of `run`'s waiting lines); a failed row, the first line of its failure. When a runtime exits, its rows show at once that they wait for it.
 - `services`: each service by name and the row providing it; one the host (Rust) provides says `host`.
 - `runtimes`: each runtime's state (`running`, `starting`, `down`, `stopped`), how one that exited ended, and a local runtime's process id.
 - `calls`: the calls into a row's service that have not returned: who calls (`host` for one no row made), which service and method, for how long; `(row <row>)` when the row called is named otherwise than the service. Not seen: calls within one runtime, and calls of functions passed by reference (only "host → row" is seen, without a method name); a call an in-process Rust plugin makes is listed as from `host`.
-- `connections`: a line per connection row (`rutis-host/dial`, `rutis-host/listen`); the part is left out when there are none. A dial row says `connected` and the remote plugins its far end registered here while connected, `disconnected` while not; a listen row, each id connected now with its remote plugins, `none connected` when none is.
+- `connections`: a line per connection row (`rutis-host/dial`, `rutis-host/listen`); the part is left out when there are none. A dial row says `connected` or `disconnected`; a listen row, the ids connected now (`phone: kim, lee`), `none connected` when none is. 0.19 does not list the remote plugins each connection registered.
 - rutis sets no time limit on calls: how long to wait is the caller's decision (how each language limits a call: [plugin API](plugin-api.en.md)). This only shows which call has waited how long.
 
 `run` and `dev` open a local socket only the user can use (mode 0600, inside the user's own 0700 directory) that answers `status`, which changes nothing, and `rutis-host call` (see [Calling a service](#calling-a-service)). It lives under `rutis-host-<uid>/` in the system's runtime directory (`$XDG_RUNTIME_DIR`, else the temporary directory; `/tmp` when that path would be too long), named by a hash of the configuration's path, so nothing is written into the project; the host removes it when it ends (and the directory, when no other host's socket is in it); a host killed outright (`kill -9`) cannot, and the next host for the same configuration replaces it. `status` finds the directory by its own environment: run as another user, with `sudo`, or from a terminal with other variables, it looks elsewhere and says no host runs. When another host already answers for the same configuration, the later one runs as usual with a warning. Not on Windows in 0.18.
@@ -811,11 +811,10 @@ Services are shared by name across all plugins. Any plugin that declares `inject
 
 ### Remote runtimes and devices
 
-Language runtimes on other machines and apps on devices connecting in are written as **connection rows**. rutis-host ships three connection plugins; a connection row's id names the connection (the prefix of its output, the name of its token):
+Language runtimes on other machines and apps on devices connecting in are written as **connection rows**. rutis-host ships two connection plugins, `rutis-host/dial` and `rutis-host/listen`; a connection row's id names the connection (the prefix of its output, the name of its token). Local runtimes stay under [`runtimes`](#runtimes), unchanged:
 
 | Plugin | What it does | Config |
 | --- | --- | --- |
-| `rutis-host/spawn` | Starts a local runtime process with `--id <runtime name>`; when the process exits, its `restart` says what happens | Not written as a row: `runtimes.node` / `py` / `go` / `swift` / `bun` are its shorthand, fields in [`runtimes`](#runtimes) |
 | `rutis-host/dial` | Dials `address`; once connected, the far end's plugins appear here; after a disconnection it reconnects with backoff | `address`: `wss://…` (or `ws://…` to a loopback address) |
 | `rutis-host/listen` | Waits on one listener of [`listen`](#listen) for far ends to connect in, each connection on its own; a newer connection with an id replaces the older | `listener`: the name of a listener under `listen` |
 
@@ -833,7 +832,7 @@ Language runtimes on other machines and apps on devices connecting in are writte
 ```
 
 - A plugin run on the far end is the row `<connection row>:<plugin>` (`gpu:embedder`), its configuration in the row's `config`: while the far end is not connected, the row waits; once it is, rutis has the far end run it. The plugin name is resolved on the far end; no language is written. When the far end does not have that plugin, only this row fails, other rows are not affected, and adding such a row is not refused: `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`.
-- <!-- S4-LISTEN-ROWS --> `<connection row>:<plugin>` rows go with `rutis-host/dial`: when the host decides which plugins the far end runs, the far end's runtime listens and the host dials it. The far ends of `rutis-host/listen` bring only the plugins they installed themselves and provide.
+- `<connection row>:<plugin>` rows go with `rutis-host/dial`: when the host decides which plugins the far end runs, the far end's runtime listens and the host dials it. The far ends of `rutis-host/listen` bring only the plugins they installed themselves and provide.
 - The plugins a far end installed itself (an app on a device installing its own, or what the far end runs anyway) register as `<far end's id>:<plugin>` (`phone-1:health`), not listed in rutis.json. Their services are visible everywhere, as local ones are; one named like a service already here follows the kernel's rule: the later one is refused, and that remote plugin fails saying so, such as `office:weather: weather is provided here by row weather: not registered from office`.
 - The host creates no instance per connection. Logic computed once per device goes on the device, or the host's plugin tells the devices apart itself (an example: [Swift app](swift-app.en.md#once-per-device)).
 - The token is `RUTIS_TOKEN_<row id>` (uppercase, `-` written as `_`): dial presents it (without it, it dials with none); listen checks the far ends connecting in with it, all of them presenting this one token. A listen row without a token fails: `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`. The host side never reads a bare `RUTIS_TOKEN`.
@@ -841,7 +840,7 @@ Language runtimes on other machines and apps on devices connecting in are writte
 - A listen row whose listener does not exist fails: `no listener named private: add it to listen`. One listener can carry several listen rows (and listening peer rows), connections routed to them by token; two entries that would accept the same token stop the host before it starts (see [Credentials](#credentials)).
 - Replacing: once a newer connection with an id already connected on a listen row finishes its handshake, the old connection's remote plugins all unload first (in reverse order, every cleanup run), then the old connection is closed with close code 4002, and only then are the new connection's plugins registered. A connection whose handshake fails touches no connection there is.
 - When the host stops or the row stops, its connections close with close code 1000; the far end reconnects by its own rules.
-- The three plugins take no other config fields: `check` reports a misspelled field by the schema.
+- The two plugins take no other config fields: `check` reports a misspelled field by the schema.
 - How the connections change: [What `run` prints](#what-run-prints); their state now: `connections` in [Seeing the current state](#seeing-the-current-state); the far end's runtime commands: [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine).
 - 0.18's `runtimes.remote` is removed in 0.19: written, it is an unknown field; how to change it: [Migrating to 0.19](../migration-0.19.en.md).
 - A connection of your own (another transport, your own authentication): hand over a Channel: write a connection plugin that calls `Session::new(channel)`; other languages use the service `sessions`' `open`. See [Embed in a Rust application](rust-host.en.md) and the [plugin API](plugin-api.en.md).

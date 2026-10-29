@@ -216,7 +216,7 @@ public final class Calendar: @unchecked Sendable {
 
 插件二进制也可以在另一台 Mac 上作为远程运行时运行，rutis 一侧写一行 `rutis-host/dial`（二进制监听）或 `rutis-host/listen`（二进制拨出）。两种方式，参数、环境变量和规则与 Python、Go 运行时相同；见 [连接节点](nodes.md#别的机器上的语言运行时)：
 
-<!-- S4-LISTEN-ROWS -->
+
 ```bash
 # 监听，由 rutis 连过来（证书和私钥在 RUTIS_CERT、RUTIS_KEY）
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \

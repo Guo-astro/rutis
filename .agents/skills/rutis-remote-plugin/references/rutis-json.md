@@ -152,11 +152,10 @@ Services are shared by name across all plugins. Any plugin that declares `inject
 
 ### Remote runtimes and devices
 
-Language runtimes on other machines and apps on devices connecting in are written as **connection rows**. rutis-host ships three connection plugins; a connection row's id names the connection (the prefix of its output, the name of its token):
+Language runtimes on other machines and apps on devices connecting in are written as **connection rows**. rutis-host ships two connection plugins, `rutis-host/dial` and `rutis-host/listen`; a connection row's id names the connection (the prefix of its output, the name of its token). Local runtimes stay under [`runtimes`](#runtimes), unchanged:
 
 | Plugin | What it does | Config |
 | --- | --- | --- |
-| `rutis-host/spawn` | Starts a local runtime process with `--id <runtime name>`; when the process exits, its `restart` says what happens | Not written as a row: `runtimes.node` / `py` / `go` / `swift` / `bun` are its shorthand, fields in [`runtimes`](#runtimes) |
 | `rutis-host/dial` | Dials `address`; once connected, the far end's plugins appear here; after a disconnection it reconnects with backoff | `address`: `wss://…` (or `ws://…` to a loopback address) |
 | `rutis-host/listen` | Waits on one listener of [`listen`](#listen) for far ends to connect in, each connection on its own; a newer connection with an id replaces the older | `listener`: the name of a listener under `listen` |
 
@@ -174,7 +173,7 @@ Language runtimes on other machines and apps on devices connecting in are writte
 ```
 
 - A plugin run on the far end is the row `<connection row>:<plugin>` (`gpu:embedder`), its configuration in the row's `config`: while the far end is not connected, the row waits; once it is, rutis has the far end run it. The plugin name is resolved on the far end; no language is written. When the far end does not have that plugin, only this row fails, other rows are not affected, and adding such a row is not refused: `embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`.
-- <!-- S4-LISTEN-ROWS --> `<connection row>:<plugin>` rows go with `rutis-host/dial`: when the host decides which plugins the far end runs, the far end's runtime listens and the host dials it. The far ends of `rutis-host/listen` bring only the plugins they installed themselves and provide.
+- `<connection row>:<plugin>` rows go with `rutis-host/dial`: when the host decides which plugins the far end runs, the far end's runtime listens and the host dials it. The far ends of `rutis-host/listen` bring only the plugins they installed themselves and provide.
 - The plugins a far end installed itself (an app on a device installing its own, or what the far end runs anyway) register as `<far end's id>:<plugin>` (`phone-1:health`), not listed in rutis.json. Their services are visible everywhere, as local ones are; one named like a service already here follows the kernel's rule: the later one is refused, and that remote plugin fails saying so, such as `office:weather: weather is provided here by row weather: not registered from office`.
 - The host creates no instance per connection. Logic computed once per device goes on the device, or the host's plugin tells the devices apart itself (an example: [Swift app](https://github.com/arcships/rutis/blob/main/docs/guide/swift-app.en.md#once-per-device)).
 - The token is `RUTIS_TOKEN_<row id>` (uppercase, `-` written as `_`): dial presents it (without it, it dials with none); listen checks the far ends connecting in with it, all of them presenting this one token. A listen row without a token fails: `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`. The host side never reads a bare `RUTIS_TOKEN`.
@@ -182,7 +181,7 @@ Language runtimes on other machines and apps on devices connecting in are writte
 - A listen row whose listener does not exist fails: `no listener named private: add it to listen`. One listener can carry several listen rows (and listening peer rows), connections routed to them by token; two entries that would accept the same token stop the host before it starts (see [Credentials](#credentials)).
 - Replacing: once a newer connection with an id already connected on a listen row finishes its handshake, the old connection's remote plugins all unload first (in reverse order, every cleanup run), then the old connection is closed with close code 4002, and only then are the new connection's plugins registered. A connection whose handshake fails touches no connection there is.
 - When the host stops or the row stops, its connections close with close code 1000; the far end reconnects by its own rules.
-- The three plugins take no other config fields: `check` reports a misspelled field by the schema.
+- The two plugins take no other config fields: `check` reports a misspelled field by the schema.
 - How the connections change: [What `run` prints](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#what-run-prints); their state now: `connections` in [Seeing the current state](https://github.com/arcships/rutis/blob/main/docs/guide/rutis-host.en.md#seeing-the-current-state); the far end's runtime commands: [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md#a-language-runtime-on-another-machine).
 - 0.18's `runtimes.remote` is removed in 0.19: written, it is an unknown field; how to change it: [Migrating to 0.19](https://github.com/arcships/rutis/blob/main/docs/migration-0.19.en.md).
 - A connection of your own (another transport, your own authentication): hand over a Channel: write a connection plugin that calls `Session::new(channel)`; other languages use the service `sessions`' `open`. See [Embed in a Rust application](https://github.com/arcships/rutis/blob/main/docs/guide/rust-host.en.md) and the [plugin API](https://github.com/arcships/rutis/blob/main/docs/guide/plugin-api.en.md).

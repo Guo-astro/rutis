@@ -616,7 +616,7 @@ loop {
 - Without this end's id the session fails: `the host provides no id for its sessions`. rutis-host provides it (rutis.json's `id`, `main` by default).
 - Plugins in other languages hand over a connection through the `open` of the service `sessions`; see [Plugin API: your own connection](plugin-api.en.md#your-own-connection-sessionsopen).
 
-The 0.18 node form still works in 0.19 and is being replaced: For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. For a remote runtime, add `RuntimePlugin::remote(name)` and a node row whose `runtime` is the same name; `RuntimeResolver::modules(handle)` resolves row names as `<name>:<module>`. See [Connect nodes](nodes.en.md) for concepts and security.
+The 0.18 node form still works in 0.19 and is being replaced: For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registers the `rutis-bridge/peer` row (the same format as `rutis.json`), and `rutis_loader::peer::PeerResolver` resolves `peer:` rows. A remote runtime goes through a connection plugin: a `rutis-host/dial` or `rutis-host/listen` row, or your own connection plugin calling `Session::new(channel)`; its rows are `<connection row>:<plugin>`. See [Connect nodes](nodes.en.md) for concepts and security.
 
 ## Events
 

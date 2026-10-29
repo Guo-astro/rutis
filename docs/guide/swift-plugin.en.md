@@ -215,7 +215,7 @@ How a host installs this plugin: [rutis-host: How a host installs plugins](rutis
 ## 8. Run it on another machine
 
 A plugin binary can also run on another Mac as a remote runtime, the rutis side one `rutis-host/dial` row (the binary listens) or `rutis-host/listen` row (the binary dials out). Two ways, with the same arguments, environment variables and rules as the Python and Go runtimes; see [Connect nodes](nodes.en.md#a-language-runtime-on-another-machine):
-<!-- S4-LISTEN-ROWS -->
+
 ```bash
 # Listen, and rutis connects (certificate and key in RUTIS_CERT, RUTIS_KEY)
 RUTIS_TOKEN=secret RUTIS_CERT=server.pem RUTIS_KEY=server.key \

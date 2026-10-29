@@ -102,7 +102,7 @@ bunx --bun rutis-host dev --debug
 ## 6. 在别的机器上运行
 
 Bun 运行时也可以在另一台机器上运行，由那里的 rutis 管理它的插件，两个方向都可以（见 [连接节点](nodes.md)）：
-<!-- S4-LISTEN-ROWS -->
+
 
 ```bash
 # 监听，由 rutis 来连（rutis 一侧写一行 rutis-host/dial，行 id 为 edge，插件行写 edge:<模块>）

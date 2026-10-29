@@ -619,15 +619,15 @@ runtimes:
 calls:
   caller → slow.wait  42s
 connections:
-  gpu: connected (gpu:embedder)
-  phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
+  gpu: connected
+  phone: kim, lee
 ```
 
 - `rows`：每一行（实例里的行每个实例一份，写 `<行> in <分组> #<编号>`）的状态：`running`、`starting`、`stopped`、`disabled`，说不出在等什么的等待行写 `waiting`；等待的行写在等什么（和 `run` 的等待行同样的话）；失败的行写失败的第一行。运行时退出时，它的行马上显示为在等这个运行时。
 - `services`：每个服务的名字和提供它的行；宿主（Rust）提供的写 `host`。
 - `runtimes`：每个运行时的状态（`running`、`starting`、`down`、`stopped`），退出的写怎样退出，本机运行时写进程号。
 - `calls`：调用了一个行的服务、还没返回的调用：谁调用（不在行里发起的写 `host`）、哪个服务的哪个方法、已经多久；被调用的行名和服务名不同时写 `(row <行>)`。看不到的：同一个运行时里的调用、按引用传过来的函数的调用（只看得到「宿主 → 行」，没有方法名）；进程内的 Rust 插件发起的调用记为 `host`。
-- `connections`：每个连接行（`rutis-host/dial`、`rutis-host/listen`）一行，没有连接行时不出现这一节。dial 行连着时写 `connected` 和对面在本地注册的远程插件，没连上时写 `disconnected`；listen 行写现在连着的每个 id 和它的远程插件，没有连着的时写 `none connected`。
+- `connections`：每个连接行（`rutis-host/dial`、`rutis-host/listen`）一行，没有连接行时不出现这一节。dial 行写 `connected` 或 `disconnected`；listen 行写现在连着的 id（`phone: kim, lee`），没有连着的时写 `none connected`。0.19 不列出每条连接注册的远程插件。
 - rutis 不给调用设时限：等多久由调用方决定（各语言怎样限时见 [插件 API](plugin-api.md)）。这里只让人看到哪个调用等了多久。
 
 `run` 和 `dev` 启动时打开一个只有本用户能用的本地 socket（权限 0600，放在本用户自己的 0700 目录里），回答 `status`（什么都不改）和 `rutis-host call`（见 [调用一个服务](#调用一个服务)）。它放在系统的运行时目录（`$XDG_RUNTIME_DIR`，没有时用临时目录；路径太长时用 `/tmp`）的 `rutis-host-<uid>/` 下，文件名是配置路径的散列，不往项目里写文件；宿主结束时删掉（目录里没有别的宿主的 socket 时，目录也删掉）；被强行结束（`kill -9`）的宿主删不了，同一份配置的下一个宿主启动时替换它。`status` 按自己的环境变量找这个目录：换了用户、用 `sudo` 或环境变量不同的终端运行时找不到，会说没有宿主在运行。同一份配置已经有宿主在回答时，后起的宿主照常运行，只写一条告警。Windows 上 0.18 不提供。
@@ -810,11 +810,10 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 
 ### 远程运行时与设备
 
-别的机器上的语言运行时、连进来的设备应用都写成**连接行**。rutis-host 自带三个连接插件，连接行的 id 就是这条连接的名字（输出的前缀、token 的名字）：
+别的机器上的语言运行时、连进来的设备应用都写成**连接行**。rutis-host 自带两个连接插件 `rutis-host/dial` 与 `rutis-host/listen`，连接行的 id 就是这条连接的名字（输出的前缀、token 的名字）。本机运行时照旧写在 [`runtimes`](#runtimes) 里，不变：
 
 | 插件 | 做什么 | 配置 |
 | --- | --- | --- |
-| `rutis-host/spawn` | 以 `--id <运行时名>` 起本机运行时进程；进程退出时按 `restart` 处理 | 不写成行：`runtimes.node` / `py` / `go` / `swift` / `bun` 就是它的简写，字段见 [runtimes](#runtimes) |
 | `rutis-host/dial` | 去连 `address`，连上后对面的插件在本地出现；断开后退避重连 | `address`：`wss://…`（或回环地址的 `ws://…`） |
 | `rutis-host/listen` | 在 [`listen`](#listen) 的一个监听器上等对面连进来，每条连接各自独立；同一个 id 的新连接顶替旧的 | `listener`：`listen` 里一个监听器的名字 |
 
@@ -832,7 +831,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 ```
 
 - 在对面运行的插件写成行 `<连接行>:<插件>`（`gpu:embedder`），配置写在这一行的 `config` 里：对面没连上时这一行等待，连上后 rutis 让对面运行它。插件名在对面解析，不用写语言。对面不含这个插件时只有这一行失败，其他行不受影响，新增这样的行也不会被拒绝：`embedder: unresolved: entry "embedder" rejected: runtime gpu: this connection does not contain plugin embedder`。
-- <!-- S4-LISTEN-ROWS --> `<连接行>:<插件>` 的行用于 `rutis-host/dial`：要由宿主决定对面跑什么插件时，让对面的运行时监听、宿主去连。`rutis-host/listen` 的对面只带来它自己装着、提供着服务的插件。
+- `<连接行>:<插件>` 的行用于 `rutis-host/dial`：要由宿主决定对面跑什么插件时，让对面的运行时监听、宿主去连。`rutis-host/listen` 的对面只带来它自己装着、提供着服务的插件。
 - 对面自己装着的插件（设备上的应用自己装的、对面在运行着的）注册为 `<对面的 id>:<插件>`（`phone-1:health`），不用在 rutis.json 里列出。它们提供的服务和本机的一样全局可见；同名的按内核规则，后注册的被拒绝，那个远程插件失败并说明，例如 `office:weather: weather is provided here by row weather: not registered from office`。
 - 宿主不为每条连接建实例。要每台设备各算一份的逻辑放在设备上，或由宿主上的插件自己按设备区分（例子见 [Swift 应用](swift-app.md#每台设备各算一份)）。
 - token 是 `RUTIS_TOKEN_<行 id>`（大写，`-` 写作 `_`）：dial 出示它（没有设时不带 token 去连）；listen 用它核对连进来的对面，所有连进来的共用这一个。listen 没有 token 时这一行失败：`phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`。宿主一侧不读单独的 `RUTIS_TOKEN`。
@@ -840,7 +839,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 - listen 的监听器不存在时这一行失败：`no listener named private: add it to listen`。一个监听器上可以有多个 listen 行（和监听的节点行），连接按 token 分给它们；两个条目会接受同一个 token 时启动前报错（见 [凭据](#凭据)）。
 - 顶替：listen 上同一个 id 的新连接握手完成后，先把旧连接的远程插件全部卸载（逆序，清理全部执行），再以关闭码 4002 关闭旧连接，然后才注册新连接的插件。握手失败的连接不影响已有的连接。
 - 宿主停止或这一行停下时，它的连接以关闭码 1000 关闭；对面按自己的规则重连。
-- 三个插件的配置都不收别的字段：写错的字段由 `check` 按 Schema 报出。
+- 两个插件的配置都不收别的字段：写错的字段由 `check` 按 Schema 报出。
 - 连接的变化见 [run 打印什么](#run-打印什么)，当前状态见 [查看当前状态](#查看当前状态) 的 `connections`；对面运行时的启动命令见 [连接节点](nodes.md#别的机器上的语言运行时)。
 - 0.18 的 `runtimes.remote` 在 0.19 删除，写了是不认识的字段；改法见 [迁移到 0.19](../migration-0.19.md)。
 - 自己的连接方式（别的传输、自己的认证）：交出一条 Channel：写一个连接插件，调 `Session::new(channel)`；其他语言用服务 `sessions` 的 `open`。见 [在 Rust 应用里嵌入](rust-host.md) 与 [插件 API](plugin-api.md)。

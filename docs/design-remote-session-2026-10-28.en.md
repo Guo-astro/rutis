@@ -2,7 +2,7 @@
 
 [中文](design-remote-session-2026-10-28.md)
 
-Status: final, not implemented. Date: 2026-10-28; revised 2026-10-29: WebSockets close with 1000 when the host stops (no more 1001, §3); §7 writes the actual texts (an auth rejection keeps the dialer's address, a handshake failing on listen prints nothing, an app plugin that cannot be installed shows only in the device log), and decision 3 gets its `loader` form (§2.6). Base: `main` `3d19634f`. Scheduled: 0.19.
+Status: final, not implemented. Date: 2026-10-28; revised 2026-10-29: WebSockets close with 1000 when the host stops (no more 1001, §3); §7 writes the actual texts (an auth rejection keeps the dialer's address, a handshake failing on listen prints nothing, an app plugin that cannot be installed shows only in the device log), the `connections:` of `status` in its actual form (0.19 lists no remote plugins), and decision 3 gets its `loader` form (§2.6). rutis-host ships only dial and listen in 0.19; local runtimes still start through `runtimes.*`, and `rutis-host/spawn` comes in the next PR (S4b). Base: `main` `3d19634f`. Scheduled: 0.19.
 Issue: [#695](https://github.com/arcships/rutis/issues/695) (implemented by [#696](https://github.com/arcships/rutis/issues/696) loader, [#698](https://github.com/arcships/rutis/issues/698) rutis-host). Basis: the two 2026-10-28 comments on #695.
 Relation to earlier designs: replaces the implementation part of [Remote runtime consistency](design-remote-runtime-consistency-2026-10-26.en.md) (the "inside rutis-host" column of §4, §5, §7, §8); its "a missing plugin is always `Unavailable`" stays, and the `runtimes.remote` syntax goes (§6). The [decision record](decision-remote-runtime-consistency-2026-10-26.en.md)'s "no new handover interface, do not rewrite links and access points" is overturned by this design; see §1 for why.
 
@@ -380,13 +380,13 @@ office: connected
 - A connection whose handshake fails on listen (a wrong token at the upgrade, 401 / 403; protocols that do not match) prints nothing: it touched no connection there is, and the dialing end says why.
 - No `disconnected` is printed when the host stops or the connection row is removed.
 
-**`rutis-host status`**: a `connections:` section, one line per connection row, each connected one followed by the remote plugins it registered:
+**`rutis-host status`**: a `connections:` section, one line per connection row: a dial row `connected` / `disconnected`, a listen row the ids connected (`none connected` when none is). A 0.19 limitation: the remote plugins each connection registered are not listed (`SessionHandle` cannot give them).
 
 ```text
 connections:
-  gpu: connected (gpu:embedder)
-  phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
-  office: connected (office:clock, office:scanner)
+  gpu: connected
+  phone: phone-1, phone-2
+  office: connected
 ```
 
 **Errors**

@@ -10,7 +10,7 @@ Design: [Remote connections: one session plugin](design-remote-session-2026-10-2
 
 ### The new form: connection rows
 
-Remote runtimes and devices are written as connection rows: `rutis-host/dial` (rutis dials) or `rutis-host/listen` (the far end connects in). `runtimes.remote` is removed, not deprecated and not converted; a rutis.json that has it is refused by the 0.18 rules as an unknown field, with no hint of its own:
+Remote runtimes and devices are written as connection rows: `rutis-host/dial` (rutis dials) or `rutis-host/listen` (the far end connects in). `runtimes.remote` is removed, not deprecated and not converted (rutis-host ships two connection plugins: dial and listen); a rutis.json that has it is refused by the 0.18 rules as an unknown field, with no hint of its own:
 
 ```
 rutis-host: rutis.json: unknown field `remote`, expected one of …
@@ -41,7 +41,7 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
 | `language` of `runtimes.remote` | Not written: plugin names are resolved on the far end |
 
 - The row id names the connection: the runtime's `--id` is it, the token is `RUTIS_TOKEN_<row id>` (see [Tokens on the host side](#tokens-on-the-host-side-695)), and output lines start with it.
-- A plugin run on the far end is still the row `<connection row>:<plugin>` (`gpu:embedder`), its config in that row. <!-- S4-LISTEN-ROWS --> Such rows go with `rutis-host/dial`: a runtime that connected in under 0.18 with rutis choosing its plugins now listens, and rutis dials it.
+- A plugin run on the far end is still the row `<connection row>:<plugin>` (`gpu:embedder`), its config in that row. Such rows go with `rutis-host/dial`: a runtime that connected in under 0.18 with rutis choosing its plugins now listens, and rutis dials it.
 - On `rutis-host/listen`, a newer connection with an id replaces the older: the older's remote plugins all unload first, then the older is closed with close code 4002, and only then are the newer's plugins registered. When the host stops, connections close with close code 1000.
 - The host no longer creates an instance per connection: the plugins a far end brings register as `<far end's id>:<plugin>`, their services visible everywhere; same names follow the kernel's rule, the later one refused.
 - Node rows (`rutis-bridge/peer`) are not covered by this section.
@@ -70,12 +70,12 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
    phone: disconnected phone-1 (replaced by a new connection)
    ```
 
-   A connection whose handshake fails on a listen row (a wrong token, protocols that do not match) prints nothing; the dialing end says why. The `connections:` part of `rutis-host status` has a line per connection row, with its remote plugins:
+   A connection whose handshake fails on a listen row (a wrong token, protocols that do not match) prints nothing; the dialing end says why. The `connections:` part of `rutis-host status` has a line per connection row: a dial row `connected` / `disconnected`, a listen row the ids connected (`none connected` when none is):
 
    ```
    connections:
-     gpu: connected (gpu:embedder)
-     phone: phone-1 (phone-1:health), phone-2 (phone-2:health)
+     gpu: connected
+     phone: kim, lee
    ```
 
    Scripts reading `run` that matched `runtime <name>: link` or `link connected` match `<row id>: connected` / `disconnected` instead.
@@ -100,7 +100,6 @@ Local runtimes (`runtimes.node` / `py` / `go` / `swift` / `bun`) are written as 
   | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote`; `RuntimeSession`, `runtime_session_key`, `RuntimeAccessPlugin` | In a connection plugin, `ctx.plugin(Session::new(websocket::dial(...)?))` (or `Session::handshake(&ctx, channel).await`, then `ctx.plugin(greeted)`), rows `<name>:<plugin>` |
   | `AccessPointPlugin`, `AccessPointConfig`, `AccessEvent`, `Accept`, `Accepted`, `Release`; the loader's `RuntimeInstances`, `AcceptInstances`, `RuntimeConnection` | `rutis-host/listen`, or a connection plugin of your own |
   | `Admission`, `AdmissionPlugin`, `admission_key`, `SharedToken`, `Rejection` | The connection plugin's own authentication; the id comes from the handshake |
-  | `LocalRuntime` | Starting processes moves to `rutis-host/spawn`; starting one yourself, `pipe::spawn` gives a `Channel`, then `Session::new(channel)` |
   | `ListenerConfig::new(name, address, local id)` | `ListenerConfig::new(name, address)` |
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
   | `Channel`'s `info` (`ChannelInfo`), `Spawn::new(program, peer)` | removed; the far end's id comes only from the session handshake; `Spawn::new(program)` |
