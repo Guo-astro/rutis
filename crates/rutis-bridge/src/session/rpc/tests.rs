@@ -639,11 +639,26 @@ fn rebase_tags_the_source_restores_the_target_and_keeps_third_sessions() {
 /// an invalid invocation, ending the session (#813).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_for_another_session_s_call_carries_its_chain_rebased() {
+    // Every wait is bounded: a frame that never comes fails the test,
+    // saying where it stood, instead of hanging it.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
     let (caller, _caller_far) = pair();
     let (target, mut far) = pair();
     let mut reader = far.try_clone().unwrap();
-    assert!(matches!(read(&mut reader), Frame::Hello { .. }));
+    let greeting = tokio::time::timeout(
+        LIMIT,
+        tokio::task::spawn_blocking(move || (read(&mut reader), reader)),
+    )
+    .await
+    .expect("the target session's greeting")
+    .unwrap();
+    let (first, mut reader) = greeting;
+    assert!(matches!(first, Frame::Hello { .. }));
     send(&mut far, hello(ENDPOINT_PROTOCOL));
+    tokio::time::timeout(LIMIT, target.ready())
+        .await
+        .expect("the target session ready")
+        .unwrap();
     // The caller session's chain: its own call `rust:1` (an id the target
     // session also gives its first call) and its far end's `node:2`.
     let chain = ids(&["rust:1", "node:2"]);
@@ -654,16 +669,26 @@ async fn a_call_for_another_session_s_call_carries_its_chain_rebased() {
     });
     drop(guard);
     let call = tokio::spawn(call);
-    let frame = tokio::task::spawn_blocking(move || read(&mut reader))
-        .await
-        .unwrap();
+    let frame = tokio::time::timeout(
+        LIMIT,
+        tokio::task::spawn_blocking(move || read(&mut reader)),
+    )
+    .await;
+    call.abort();
+    let frame = match frame {
+        Ok(frame) => frame.unwrap(),
+        Err(_) => panic!(
+            "no frame from the target session in {LIMIT:?}: call finished {}, target closed {:?}",
+            call.is_finished(),
+            target.close_reason()
+        ),
+    };
     let Frame::Invoke { id, path, .. } = frame else {
         panic!("invoke expected")
     };
     assert_eq!(id, "rust:1");
     assert_eq!(path, rebase(&chain, caller.tag(), target.tag()));
     assert!(!path.contains(&id), "{path:?}");
-    call.abort();
 }
 
 #[tokio::test(flavor = "current_thread")]
