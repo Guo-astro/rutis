@@ -55,7 +55,7 @@
 //! the name under its instance's label, so rows of other instances, which
 //! share the process, do not see it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
