@@ -678,8 +678,8 @@ struct State {
     /// Files in directories found not to be Go binaries, as they were then:
     /// not read again while unchanged.
     rejected: HashMap<PathBuf, Stamp>,
-    /// The runtimes whose binary the session refused (events protocol
-    /// §2.2: it lacks `events-v2`), the binary as it was then and why: its
+    /// The runtimes whose binary the session refused (it speaks another
+    /// protocol version), the binary as it was then and why: its
     /// rows fail with why, and it is not started again while unchanged.
     refused: HashMap<String, (Option<Stamp>, String)>,
 }

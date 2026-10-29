@@ -903,11 +903,6 @@ const VALUE_CAPABILITIES: [&str; 10] = [
     "value-decimal",
     "value-uuid",
 ];
-/// The event protocol of rutis 0.13 (#464), declared by every endpoint
-/// (`docs/design-events-protocol-2026-10-18.md` §2). This side no longer
-/// checks the far end's declaration: an older far end is refused by its
-/// protocol version.
-pub const EVENTS_CAPABILITY: &str = "events-v2";
 /// Plugin definitions as values (`plugin` references,
 /// `docs/design-plugin-values-2026-10-25.md` §5): a side declaring it takes
 /// them. Rust declares it; the runtimes send one only to a
@@ -1158,10 +1153,10 @@ pub struct Endpoint {
     /// names another.
     pub expected: Option<PeerId>,
     pub implementation: Implementation,
-    /// What this side supports: `objects`, `signals`, `reentrant-sync`,
-    /// `forwarding`, `sync-wait` (and, for a runtime with one thread and one
-    /// stack, `sync-stack`), and `value-<tag>` for each tagged value it
-    /// takes. Capabilities grant no permission.
+    /// What this side supports: `reentrant-sync` (and, for a runtime with
+    /// one thread and one stack, `sync-stack`), `plugins`, and
+    /// `value-<tag>` for each tagged value it takes. Capabilities grant no
+    /// permission.
     pub capabilities: Vec<String>,
 }
 
@@ -1176,19 +1171,11 @@ impl Endpoint {
                 name: "rutis-bridge".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            capabilities: [
-                "objects",
-                "signals",
-                "reentrant-sync",
-                "forwarding",
-                "sync-wait",
-                EVENTS_CAPABILITY,
-                PLUGINS_CAPABILITY,
-            ]
-            .into_iter()
-            .chain(VALUE_CAPABILITIES)
-            .map(String::from)
-            .collect(),
+            capabilities: ["reentrant-sync", PLUGINS_CAPABILITY]
+                .into_iter()
+                .chain(VALUE_CAPABILITIES)
+                .map(String::from)
+                .collect(),
         }
     }
 

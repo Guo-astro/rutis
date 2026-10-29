@@ -1,5 +1,5 @@
 """Unified events between the runtime and its host (#464), against a
-scripted host on a socketpair: the `events-v2` handshake, registration,
+scripted host on a socketpair: the handshake, registration,
 name presence, dispatch through the host, and the host calling this
 process's listeners. docs/design-events-protocol-2026-10-18.md §2, §4, §5,
 §7."""

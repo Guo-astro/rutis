@@ -607,7 +607,7 @@ async fn one_node_and_two_python_runtimes() {
 /// Two Node runtimes waiting on each other through Go: `a` calls Go, which
 /// calls `b_work` in the other runtime, while `b` calls `a_work` back. Go
 /// runs every call on a goroutine of its own and puts none aside, but its
-/// synchronous calls say they wait (`sync-wait`, #385): the host sees the
+/// synchronous calls say they wait (`sync: true`, #385): the host sees the
 /// cycle and refuses the call that closes it, wherever that is, and the
 /// rest completes.
 /// risk: P10, C6
@@ -686,7 +686,7 @@ async fn two_node_runtimes_waiting_on_each_other_through_go() {
 /// the service: `a` calls Go, which calls the object in the other runtime,
 /// while `b` calls `a_work` back. Go
 /// runs every call on a goroutine of its own and puts none aside, but its
-/// synchronous calls say they wait (`sync-wait`, #385): the host sees the
+/// synchronous calls say they wait (`sync: true`, #385): the host sees the
 /// cycle and refuses the call that closes it, wherever that is, and the
 /// rest completes.
 /// risk: P10, C6
@@ -768,7 +768,7 @@ async fn two_node_runtimes_waiting_on_each_other_through_a_go_object() {
 
 /// Two Node runtimes waiting on each other through Swift: as through Go,
 /// a Swift runtime runs every call in a Task of its own and its synchronous
-/// calls say they wait (`sync-wait`): the host sees the cycle and refuses
+/// calls say they wait (`sync: true`): the host sees the cycle and refuses
 /// the call that closes it, and the rest completes.
 /// guarantee: bridge/sync-wait-cycle-refused
 #[cfg(all(feature = "swift", target_os = "macos"))]
