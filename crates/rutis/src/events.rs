@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::run::{AsyncNext, Inv, SyncNextArg};
+use crate::bus::run::{AsyncNext, Inv};
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::BoxFuture;
@@ -65,8 +65,7 @@ pub(crate) use kinds::{EventOptions, ListenerKind, RESERVED_PREFIX};
 #[allow(unused_imports)]
 pub(crate) use remote::{
     BatchFilter, Candidate, Dispatch, EntryCall, FilterAnswer, RawTerminal, RemoteCall,
-    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, RemoteSyncNext, TableChange,
-    TableEntry,
+    RemoteEntry, RemoteListener, RemoteNext, RemoteSyncCall, TableChange, TableEntry,
 };
 #[allow(unused_imports)]
 pub(crate) use wire::{Codec, JsonTranscoder, Payload, PayloadRef, Transcoder, Value};
@@ -135,8 +134,7 @@ impl Mode {
         }
     }
 
-    /// `bail`: every call is synchronous. A `waterfall` is synchronous when
-    /// it is dispatched so ([`EventBus::dispatch_sync`](crate::host::EventBus::dispatch_sync)).
+    /// `bail`: every call is synchronous.
     pub fn is_sync(self) -> bool {
         self == Mode::Bail
     }
@@ -228,8 +226,7 @@ pub(crate) trait ErasedAsync: Send + Sync + 'static {
 }
 
 pub(crate) trait ErasedSync: Send + Sync + 'static {
-    fn call(&self, ctx: &Ctx, inv: &Inv<'_>, next: SyncNextArg<'_>)
-        -> Result<Option<Value>, Error>;
+    fn call(&self, ctx: &Ctx, inv: &Inv<'_>) -> Result<Option<Value>, Error>;
 }
 
 /// Catches a panic while polling a future inline. `apply` runs inline in the

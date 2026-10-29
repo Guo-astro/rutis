@@ -235,8 +235,8 @@ pub fn rutis::events::SyncCall<'_, E>::mode(&self) -> rutis::events::Mode
 pub fn rutis::events::SyncCall<'_, E>::name(&self) -> &str
 pub fn rutis::events::SyncCall<'_, E>::next(self) -> core::result::Result<core::option::Option<<E as rutis::events::Event>::Value>, rutis::Error>
 impl<'a, E> core::marker::Freeze for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Freeze
-impl<'a, E> !core::marker::Send for rutis::events::SyncCall<'a, E>
-impl<'a, E> !core::marker::Sync for rutis::events::SyncCall<'a, E>
+impl<'a, E> core::marker::Send for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Send
+impl<'a, E> core::marker::Sync for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Sync
 impl<'a, E> core::marker::Unpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::Unpin
 impl<'a, E> core::marker::UnsafeUnpin for rutis::events::SyncCall<'a, E> where core::marker::PhantomData<fn() -> E>: core::marker::UnsafeUnpin
 impl<'a, E> !core::panic::unwind_safe::RefUnwindSafe for rutis::events::SyncCall<'a, E>
@@ -647,7 +647,6 @@ impl core::panic::unwind_safe::UnwindSafe for rutis::host::ListenerKind
 pub rutis::host::NextMisuse::AlreadyCalled
 pub rutis::host::NextMisuse::Ended
 pub rutis::host::NextMisuse::NotWaterfall(rutis::events::Mode)
-pub rutis::host::NextMisuse::OtherThread
 pub rutis::host::NextMisuse::SyncInAsync
 impl core::clone::Clone for rutis::host::NextMisuse
 pub fn rutis::host::NextMisuse::clone(&self) -> Self

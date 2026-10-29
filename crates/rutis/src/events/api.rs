@@ -7,10 +7,8 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use super::wire::{Payload, Value};
-use super::{
-    into_typed, typed_arc, ErasedAsync, ErasedSync, Event, EventOptions, ListenerInfo, Mode,
-};
-use crate::bus::run::{AsyncNext, ErasedTerminal, FilterSpec, Inv, Keep, NoTerminal, SyncNextArg};
+use super::{typed_arc, ErasedAsync, ErasedSync, Event, EventOptions, ListenerInfo, Mode};
+use crate::bus::run::{AsyncNext, ErasedTerminal, FilterSpec, Inv, Keep, NoTerminal};
 use crate::bus::table::Body;
 use crate::bus::Opts;
 use crate::ctx::Ctx;
@@ -120,7 +118,6 @@ impl<E: Event> Call<E> {
 pub struct SyncCall<'a, E: Event> {
     inv: &'a Inv<'a>,
     ctx: &'a Ctx,
-    next: SyncNextArg<'a>,
     _event: PhantomData<fn() -> E>,
 }
 
@@ -140,15 +137,13 @@ impl<E: Event> SyncCall<'_, E> {
         self.ctx
     }
 
-    /// The rest of the chain: a `waterfall` dispatched synchronously (a
-    /// Cordis `waterfall` through the host) only. In an async `waterfall`,
-    /// and in every other mode, `Err(WaterfallNext)`.
+    /// A synchronous listener has no rest of the chain to run: in a
+    /// `waterfall` and in every other mode, `Err(WaterfallNext)`.
     pub fn next(self) -> Result<Option<E::Value>, Error> {
         let inv = self.inv;
-        let misuse = match self.next {
-            SyncNextArg::Next(next) => return into_typed(inv, next.invoke()?),
-            SyncNextArg::InAsyncWaterfall => NextMisuse::SyncInAsync,
-            SyncNextArg::None => NextMisuse::NotWaterfall(inv.mode),
+        let misuse = match inv.mode {
+            Mode::Waterfall => NextMisuse::SyncInAsync,
+            mode => NextMisuse::NotWaterfall(mode),
         };
         Err(ErrorKind::WaterfallNext {
             name: inv.name.to_string(),
@@ -193,17 +188,11 @@ where
     E: Event,
     F: Fn(Arc<E>, SyncCall<'_, E>) -> Result<Option<E::Value>, Error> + Send + Sync + 'static,
 {
-    fn call(
-        &self,
-        ctx: &Ctx,
-        inv: &Inv<'_>,
-        next: SyncNextArg<'_>,
-    ) -> Result<Option<Value>, Error> {
+    fn call(&self, ctx: &Ctx, inv: &Inv<'_>) -> Result<Option<Value>, Error> {
         let event = typed_arc::<E>(inv)?;
         let call = SyncCall {
             inv,
             ctx,
-            next,
             _event: PhantomData,
         };
         Ok((self.0)(event, call)?.map(Value::new))

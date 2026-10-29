@@ -124,7 +124,7 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "AErr", "message": "a"}, "log": ["a"]}}
       ] },
 
-    { "case": "waterfall/chain", "rule": "5.4 waterfall", "name": "t/wf", "vary": ["a", "b", "c", "e"],
+    { "case": "waterfall/chain", "rule": "5.4 waterfall", "name": "t/wf", "vary": ["a", "b", "c", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}, {"e": ["node"], "a": ["!@e"], "c": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}, {"e": ["node"], "b": ["!@e"], "c": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"next": "a"}},
         {"label": "b", "at": "Y", "does": {"next": "b"}},
@@ -134,7 +134,16 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "abc", "log": ["a", "b", "c"]}}
       ] },
 
-    { "case": "waterfall/veto", "rule": "5.4 waterfall", "name": "t/wf-veto", "vary": ["a", "b", "c", "e"],
+    { "case": "waterfall/sync-wait-cycle", "rule": "5.4 sync: true", "name": "t/wf-cycle", "tool": false, "vary": ["a"], "only": [{"e": ["node"], "why": "only a Cordis emitter waits for its waterfall synchronously"}], "except": [{"a": ["@e"], "why": "a listener in the emitter's process gets the Promise as a value, as in Cordis"}, {"a": ["rust"], "why": "the Rust participant takes results as dynamic values (ArgValue), which get the Promise as a reference; a Rust listener reading it as its own type gets SyncWaitCycle"}],
+      "listeners": [
+        {"label": "a", "at": "Y", "does": {"next": "a"}},
+        {"label": "b", "at": "X", "does": {"veto": "b"}}
+      ],
+      "steps": [
+        {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "SyncWaitCycle"}, "log": ["a", "b"]}}
+      ]
+    },
+    { "case": "waterfall/veto", "rule": "5.4 waterfall", "name": "t/wf-veto", "vary": ["a", "b", "c", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"next": "a"}},
         {"label": "b", "at": "Y", "does": {"veto": "v"}},
@@ -144,7 +153,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "av", "log": ["a", "b"]}}
       ] },
 
-    { "case": "waterfall/terminal", "rule": "5.4 waterfall", "name": "t/wf-terminal", "vary": ["a", "b", "e"],
+    { "case": "waterfall/terminal", "rule": "5.4 waterfall", "name": "t/wf-terminal", "vary": ["a", "b", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"next": "a"}},
         {"label": "b", "at": "host", "does": {"next": "b"}}
@@ -168,7 +177,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"returns": "a", "log": ["a"]}}
       ] },
 
-    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice", "vary": ["a", "b", "e"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}],
+    { "case": "waterfall/next-twice", "rule": "5.4 next", "name": "t/wf-twice", "vary": ["a", "b", "e"], "except": [{"a": ["rust"], "why": "Rust's Call::next takes the call: a second next does not compile"}, {"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"nextTwice": true}},
         {"label": "b", "at": "X", "does": {"veto": "b"}}
@@ -177,7 +186,7 @@
         {"emit": {"from": "X", "mode": "waterfall", "args": []}, "expect": {"throws": {"name": "WaterfallNext"}, "log": ["a", "b"]}}
       ] },
 
-    { "case": "waterfall/error", "rule": "5.4 waterfall", "name": "t/wf-error", "vary": ["a", "b", "e"],
+    { "case": "waterfall/error", "rule": "5.4 waterfall", "name": "t/wf-error", "vary": ["a", "b", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"next": "a"}},
         {"label": "b", "at": "Y", "does": {"throws": {"name": "BErr", "message": "b"}}}
@@ -566,7 +575,7 @@
         {"emit": {"from": "X", "scope": "t1/s1", "mode": "parallel", "args": []}, "expect": {"logUnordered": ["u", "v", "u", "v"]}}
       ] },
 
-    { "case": "scope/bail-and-waterfall", "rule": "3", "name": "t/scope-modes", "vary": ["r", "v", "e"],
+    { "case": "scope/bail-and-waterfall", "rule": "3", "name": "t/scope-modes", "vary": ["r", "v", "e"], "except": [{"e": ["node"], "r": ["!@e"], "v": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "r", "at": "Y", "scope": "root", "does": {"next": "r"}},
         {"label": "v", "at": "X", "scope": "t2", "does": {"next": "v"}}
@@ -812,7 +821,7 @@
         {"emit": {"from": "X", "scope": "t1", "mode": "serial", "args": [], "filter": {"keep": ["b"]}}, "expect": {"returns": "B", "log": ["filter:a", "filter:b", "filter:c", "filter:d", "b"], "filterSees": ["a", "b", "c", "d"]}}
       ] },
 
-    { "case": "waterfall/terminal-gets-args", "rule": "5.4 waterfall", "name": "t/wf-terminal-args", "vary": ["a", "b", "e"],
+    { "case": "waterfall/terminal-gets-args", "rule": "5.4 waterfall", "name": "t/wf-terminal-args", "vary": ["a", "b", "e"], "except": [{"e": ["node"], "a": ["!@e"], "b": ["@e"], "why": "a Cordis emitter waits for its waterfall synchronously (§5.4): an async listener in its process returns a Promise that settles only after that wait, which a listener elsewhere outside it cannot await (SyncWaitCycle, case waterfall/sync-wait-cycle)"}],
       "listeners": [
         {"label": "a", "at": "Y", "does": {"next": "a"}},
         {"label": "b", "at": "host", "does": {"next": "b"}}

@@ -655,7 +655,8 @@ impl Combo {
 }
 
 /// Whether a limit (`only` / `except` entry) holds in `combo`: every label
-/// it names is of one of its languages.
+/// it names matches one of its terms, a language, `@<label>` (placed where
+/// that label is) or `!@<label>` (placed elsewhere).
 fn limit_holds(limit: &Json, combo: &Combo) -> bool {
     let Json::Object(fields) = limit else {
         return false;
@@ -663,13 +664,20 @@ fn limit_holds(limit: &Json, combo: &Combo) -> bool {
     fields
         .iter()
         .filter(|(key, _)| *key != "why")
-        .all(|(label, languages)| {
+        .all(|(label, terms)| {
             let Some(language) = combo.language_of(label) else {
                 return false;
             };
-            languages
-                .as_array()
-                .is_some_and(|all| all.iter().any(|l| l.as_str() == Some(language)))
+            let at = combo.at.get(label);
+            terms.as_array().is_some_and(|all| {
+                all.iter().filter_map(Json::as_str).any(|term| {
+                    match (term.strip_prefix("!@"), term.strip_prefix('@')) {
+                        (Some(other), _) => at.is_some() && at != combo.at.get(other),
+                        (None, Some(other)) => at.is_some() && at == combo.at.get(other),
+                        (None, None) => term == language,
+                    }
+                })
+            })
         })
 }
 
@@ -2023,6 +2031,15 @@ pub fn problems(expected: &Expected) -> Vec<String> {
                         return Err(format!("a limit names {label}, not in the case"));
                     }
                     for language in languages.as_array().into_iter().flatten() {
+                        // `@<label>` / `!@<label>`: where another label is.
+                        if let Some(other) = language.as_str().and_then(|term| {
+                            term.strip_prefix("!@").or_else(|| term.strip_prefix('@'))
+                        }) {
+                            if !places.contains_key(other) {
+                                return Err(format!("a limit names {other}, not in the case"));
+                            }
+                            continue;
+                        }
                         if !expected
                             .languages
                             .iter()

@@ -48,7 +48,7 @@ export function fakePeer(answer = () => undefined) {
         host.entries = host.entries.filter(entry => !fields.includes(entry.id))
         return undefined
       case 'events.dispatch': {
-        if (sync) return bail(fields)
+        if (sync) return fields.sync ? waitedFor(fields) : bail(fields)
         const running = dispatch(fields)
         const done = running.then(() => {}, () => {}).finally(() => { pending.delete(done) })
         pending.add(done)
@@ -58,8 +58,8 @@ export function fakePeer(answer = () => undefined) {
     }
   }
 
-  const one = (entry, fields, id, next) =>
-    callBack({ listener: entry.id, dispatch: id, own: true, name: fields.name, mode: fields.mode, args: fields.args ?? [], ...(next ? { next } : {}) })
+  const one = (entry, fields, id, next, sync) =>
+    callBack({ listener: entry.id, dispatch: id, own: true, name: fields.name, mode: fields.mode, args: fields.args ?? [], ...(next ? { next } : {}), ...(sync ? { sync } : {}) })
 
   const describe = entry => ({ name: entry.name, prefix: false, plugin: entry.plugin, row: entry.row, runtime: 'node', node: null, scope: host.scopes.get(entry.row) ?? [], global: false, listener: entry.id })
 
@@ -110,6 +110,33 @@ export function fakePeer(answer = () => undefined) {
       }
       default: throw new Error(`no mode ${fields.mode}`)
     }
+  }
+
+  // A Cordis plugin's `emit` or `waterfall` (`sync: true`, §5.4): the
+  // runtime waits for the reply synchronously, so every call back into it
+  // is synchronous; a waterfall's listener gets a synchronous `next`, and
+  // what it returns (a Promise too) is its value.
+  function waitedFor(fields) {
+    const id = `d${++dispatchId}`
+    let entries = host.entries.filter(entry => entry.name === fields.name)
+    if (fields.filter) entries = select(entries, fields.filter(entries.filter(entry => !entry.global).map(describe)))
+    if (fields.mode === 'emit') {
+      for (const entry of entries) {
+        try {
+          const result = one(entry, fields, id)
+          if (typeof result?.then === 'function') {
+            const running = Promise.resolve(result).catch(error => { host.failures.push(error) }).finally(() => { pending.delete(running) })
+            pending.add(running)
+          }
+        } catch (error) { host.failures.push(error) }
+      }
+      return undefined
+    }
+    const from = index => {
+      if (index >= entries.length) return fields.terminal ? fields.terminal(...(fields.args ?? [])) : undefined
+      return one(entries[index], fields, id, () => from(index + 1), true)
+    }
+    return from(0)
   }
 
   // bail is a synchronous call (§5.4): the selector is called in it too.

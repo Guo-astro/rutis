@@ -220,8 +220,9 @@ export class Bus {
   // filter (§6), `entry` given for a listener of this process.
   // `terminal`: waterfall's innermost function, or none. Throws
   // ReservedEvent for rutis/* (§8).
-  // `sync`: a Cordis `waterfall`, which returns its value at once: the
-  // host dispatches it synchronously (§5.4).
+  // `sync`: a Cordis plugin's `emit` or `waterfall`, which calls its
+  // listeners before it returns: this process waits for the host's reply
+  // synchronously (§5.4).
   dispatch(mode, name, args, { row = null, keep, terminal, gone = false, sync = false } = {}) {
     if (!MODES.includes(mode)) throw new TypeError(`unknown dispatch mode ${mode}`)
     if (typeof name !== 'string') throw new TypeError(`an event name is a string, not ${name === null ? 'null' : typeof name}`)
