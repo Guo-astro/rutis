@@ -15,7 +15,6 @@ use rutis_bridge::{
     Presented, Registrations, Session,
 };
 use rutis_loader::peer::{register_peer_node, Address, PeerResolver};
-use rutis_loader::runtime::binary::RuntimeEnd;
 use rutis_loader::runtime::{SessionResolver, SessionRows};
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog,
@@ -62,8 +61,10 @@ pub struct Host {
     connections: crate::connect::Connections,
     /// The tasks watching the local runtimes ([`Host::supervise`]), by
     /// name.
-    supervisors: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+    supervisors: Supervisors,
 }
+
+type Supervisors = Arc<Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>>;
 
 /// The local runtimes whose `restart` is `exit` that ended
 /// ([`Host::supervise`]).
@@ -349,7 +350,7 @@ impl Host {
             })
             .collect();
         // What waits for the loader: the compiled languages' runtimes, many,
-        // coming and going: their plugins supervise them ([`Host::supervise`]).
+        // coming and going ([`Host::supervise`]).
         let mut binaries = Vec::new();
         for later in later {
             binaries.extend(later(root.clone()).await?);
@@ -369,41 +370,56 @@ impl Host {
             restarts,
             rows_file: embedding.rows_file,
             connections,
-            supervisors: Mutex::default(),
+            supervisors: Supervisors::default(),
         })
     }
 
     /// Watch each local runtime as its `restart` says, from now on
     /// ([`crate::restart::supervise`]): `on-failure` starts it again when
     /// its process ends on its own; one whose `restart` is `exit` comes out
-    /// of the [`Exits`] returned when it ends, for the host to stop. The
-    /// runtimes of compiled languages (Go, Swift), which start and stop as
-    /// rows use them, are supervised by their plugin
-    /// ([`rutis_loader::runtime::binary::BinaryRuntimesHandle::supervise`]), each on its
-    /// own, with the same numbers and lines.
+    /// of the [`Exits`] returned when it ends, for the host to stop. Each
+    /// runtime of a compiled language (Go, Swift), which start and stop as
+    /// rows use them, is watched on its own, those that start later too,
+    /// its backoff kept across its starts.
     pub fn supervise(&self) -> Exits {
         let (send, exits) = tokio::sync::mpsc::unbounded_channel();
         for binaries in &self.binaries {
-            if let Restart::No = binaries.restart {
-                // None will come: the ends noted while starting are not
-                // kept for it.
-                binaries.unsupervise();
+            let restart = binaries.restart;
+            if restart == Restart::No {
                 continue;
             }
-            let send = send.clone();
-            binaries.supervise(
-                binaries.restart.into(),
-                Box::new(move |end| match end {
-                    RuntimeEnd::Exit { runtime, why } => {
-                        let _ = send.send((runtime, why));
-                    }
-                    end => {
-                        if let Some(line) = end.line() {
-                            errln!("{line}");
+            let (send, supervisors) = (send.clone(), self.supervisors.clone());
+            let (host, tokio) = (binaries.clone(), tokio::runtime::Handle::current());
+            binaries.starts.watch(move |name, starts| {
+                let (host, runtime) = (host.clone(), name.to_owned());
+                let runtime = crate::restart::Compiled::new(starts, move || {
+                    let (host, runtime) = (host.clone(), runtime.clone());
+                    Box::pin(async move {
+                        // A failure is said by the restart itself.
+                        let _ = host.restart_runtime(&runtime).await;
+                    })
+                });
+                let (name, send) = (name.to_owned(), send.clone());
+                let task = tokio.spawn({
+                    let name = name.clone();
+                    async move {
+                        use crate::restart::{supervise, Backoff, Supervised};
+                        let mut backoff = Backoff::default();
+                        let exit = loop {
+                            match supervise(&name, &runtime, restart, &mut backoff).await {
+                                // Its next start is watched again.
+                                Supervised::GaveUp => {}
+                                Supervised::Exit(why) => break Some(why),
+                                Supervised::Closed => break None,
+                            }
+                        };
+                        if let Some(why) = exit {
+                            let _ = send.send((name, why));
                         }
                     }
-                }),
-            );
+                });
+                supervisors.lock().unwrap().push((name, task));
+            });
         }
         let mut supervisors = self.supervisors.lock().unwrap();
         for (name, restart) in &self.restarts {
@@ -414,14 +430,17 @@ impl Host {
             else {
                 continue;
             };
-            let (name, fiber, handle, restart) =
-                (name.clone(), fiber.clone(), handle.clone(), *restart);
-            let send = send.clone();
+            let runtime = crate::restart::Local {
+                handle: handle.clone(),
+                fiber: fiber.clone(),
+            };
+            let (name, restart, send) = (name.clone(), *restart, send.clone());
             let task = tokio::spawn({
                 let name = name.clone();
                 async move {
+                    let mut backoff = crate::restart::Backoff::default();
                     let supervised =
-                        crate::restart::supervise(&name, &handle, &fiber, restart).await;
+                        crate::restart::supervise(&name, &runtime, restart, &mut backoff).await;
                     if let crate::restart::Supervised::Exit(why) = supervised {
                         let _ = send.send((name, why));
                     }
@@ -437,10 +456,9 @@ impl Host {
     fn unsupervise(&self, name: Option<&str>) {
         if name.is_none() {
             for binaries in &self.binaries {
-                binaries.unsupervise();
+                binaries.starts.unwatch();
             }
         }
-
         self.supervisors.lock().unwrap().retain(|(runtime, task)| {
             let stop = name.is_none_or(|name| name == runtime);
             if stop {
