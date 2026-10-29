@@ -6,10 +6,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rutis::Ctx;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::runtime::Process;
 
@@ -44,6 +44,10 @@ pub struct RuntimeStates {
     state: Arc<watch::Sender<RuntimeState>>,
     starts: Arc<AtomicU64>,
     announcing: Arc<AtomicBool>,
+    /// Every change, in order, for [`RuntimeStates::announce`]: the watch
+    /// keeps only the latest, so a down and the next start in quick
+    /// succession would reach it as one unchanged `Ready`.
+    changes: Arc<Mutex<Option<mpsc::UnboundedSender<RuntimeState>>>>,
     processes: Option<crate::pipe::Processes>,
 }
 
@@ -57,6 +61,7 @@ impl RuntimeStates {
             state: Arc::new(watch::channel(RuntimeState::Idle).0),
             starts: Arc::default(),
             announcing: Arc::default(),
+            changes: Arc::default(),
             processes: None,
         }
     }
@@ -70,22 +75,30 @@ impl RuntimeStates {
     /// Its process is starting: a new generation.
     pub fn starting(&self) {
         self.starts.fetch_add(1, Ordering::SeqCst);
-        self.state.send_replace(RuntimeState::Starting);
+        self.set(RuntimeState::Starting);
     }
 
     /// It runs plugins through `process`.
     pub fn ready(&self, process: Arc<Process>) {
-        self.state.send_replace(RuntimeState::Ready(process));
+        self.set(RuntimeState::Ready(process));
     }
 
     /// It could not start, or it ended on its own, and why.
     pub fn failed(&self, reason: impl Into<String>) {
-        self.state.send_replace(RuntimeState::Down(reason.into()));
+        self.set(RuntimeState::Down(reason.into()));
     }
 
     /// It was stopped, or its start abandoned.
     pub fn stopped(&self) {
-        self.state.send_replace(RuntimeState::Idle);
+        self.set(RuntimeState::Idle);
+    }
+
+    fn set(&self, state: RuntimeState) {
+        let changes = self.changes.lock().unwrap();
+        if let Some(changes) = changes.as_ref() {
+            let _ = changes.send(state.clone());
+        }
+        self.state.send_replace(state);
     }
 
     pub fn handle(&self) -> RuntimeHandle {
@@ -111,7 +124,13 @@ impl RuntimeStates {
         let Ok(tasks) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let mut states = self.state.subscribe();
+        // Every change from now on, after the state as it is now.
+        let (sender, mut changes) = mpsc::unbounded_channel();
+        let current = {
+            let mut installed = self.changes.lock().unwrap();
+            *installed = Some(sender);
+            self.state.borrow().clone()
+        };
         let ctx = rutis::host::CtxHost::root_ctx(ctx);
         let name = self.name.clone();
         tasks.spawn(async move {
@@ -120,8 +139,8 @@ impl RuntimeStates {
             // Each time it goes down, the error sink hears it once (on
             // stderr, by default: an embedding sees it, #678).
             let mut down = false;
+            let mut state = current;
             loop {
-                let state = states.borrow_and_update().clone();
                 if !matches!(state, RuntimeState::Down(_)) {
                     down = false;
                 }
@@ -150,8 +169,9 @@ impl RuntimeStates {
                     }
                     _ => {}
                 }
-                if states.changed().await.is_err() {
-                    return;
+                match changes.recv().await {
+                    Some(next) => state = next,
+                    None => return,
                 }
             }
         });
