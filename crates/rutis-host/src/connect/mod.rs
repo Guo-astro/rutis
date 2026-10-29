@@ -206,6 +206,19 @@ impl Connections {
         });
     }
 
+    /// Whether `plugin` is a remote plugin, `<id>:<plugin>` of a far end
+    /// connected now.
+    pub fn is_far_plugin(&self, plugin: &str) -> bool {
+        let Some((id, _)) = plugin.split_once(':') else {
+            return false;
+        };
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|row| row.connected.iter().any(|c| c.id == id))
+    }
+
     fn applied(&self, id: &str, dials: bool) {
         let mut rows = self.0.lock().unwrap();
         rows.retain(|row| row.id != id);

@@ -157,7 +157,17 @@ impl Host {
         // the kernel prints them. A row that failed to start and a runtime
         // that went down are on the host's status lines already.
         let fallback = rutis::host::default_sink();
+        let connections = crate::connect::Connections::default();
+        let far_ends = connections.clone();
         let sink: rutis::host::ErrorSink = std::sync::Arc::new(move |error| {
+            // A remote plugin is no row: why it failed (its service taken
+            // here, say) is said as it is.
+            if let rutis::host::ErrorKind::StartFailed { plugin, error } = &*error {
+                if far_ends.is_far_plugin(plugin) {
+                    crate::errln!("{error}");
+                    return;
+                }
+            }
             if matches!(
                 &*error,
                 rutis::host::ErrorKind::StartFailed { .. }
@@ -213,7 +223,6 @@ impl Host {
             Ok(())
         })
         .map_err(|error| format!("the WebSocket listeners: {error}"))?;
-        let connections = crate::connect::Connections::default();
         let reach = Reaching {
             local: local.clone(),
             registrations,
