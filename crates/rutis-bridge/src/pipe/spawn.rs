@@ -701,12 +701,80 @@ impl Loopback {
             }
         };
         drop(presenting);
-        let stream = stream.into_std()?;
-        stream.set_nonblocking(false)?;
-        let _ = stream.set_nodelay(true);
-        let reader = stream.try_clone()?;
-        let closer = Arc::new(ShutTcp(Mutex::new(Some(stream.try_clone()?))));
-        Ok(lines::channel(reader, stream, closer))
+        tcp(stream.into_std()?)
+    }
+}
+
+/// A loopback connection as a channel, one message per line.
+fn tcp(stream: std::net::TcpStream) -> std::io::Result<Channel> {
+    stream.set_nonblocking(false)?;
+    let _ = stream.set_nodelay(true);
+    let reader = stream.try_clone()?;
+    let closer = Arc::new(ShutTcp(Mutex::new(Some(stream.try_clone()?))));
+    Ok(lines::channel(reader, stream, closer))
+}
+
+/// The started process's end of a handover: the channel argument it was
+/// given, `fd:<n>` (an inherited socket, Unix) or `tcp:<host>:<port>` (a
+/// loopback address, the token in [`CHANNEL_TOKEN`] presented first and
+/// then removed from this process's environment).
+pub(crate) async fn given(channel: &str) -> Result<Channel, ConnectError> {
+    let incompatible = |reason: String| ConnectError::Incompatible { reason };
+    if let Some(fd) = channel.strip_prefix("fd:") {
+        let fd: i32 = fd
+            .parse()
+            .map_err(|_| incompatible(format!("{channel}: not a descriptor")))?;
+        return given_fd(channel, fd);
+    }
+    let Some(address) = channel.strip_prefix("tcp:") else {
+        return Err(incompatible(format!(
+            "{channel}: a channel is fd:<n> or tcp:<host>:<port>"
+        )));
+    };
+    let token = std::env::var(CHANNEL_TOKEN)
+        .map_err(|_| incompatible(format!("{channel}: {CHANNEL_TOKEN} is not set")))?;
+    std::env::remove_var(CHANNEL_TOKEN);
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .map_err(|error| retryable_at(channel, error))?;
+    use tokio::io::AsyncWriteExt;
+    stream
+        .write_all(format!("{token}\n").as_bytes())
+        .await
+        .map_err(|error| retryable_at(channel, error))?;
+    let stream = stream
+        .into_std()
+        .map_err(|error| retryable_at(channel, error))?;
+    tcp(stream).map_err(|error| retryable_at(channel, error))
+}
+
+#[cfg(unix)]
+fn given_fd(channel: &str, fd: i32) -> Result<Channel, ConnectError> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: the descriptor was handed to this process for its channel;
+    // nothing else in it uses that number. fstat checks it is open.
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if fd < 0 || unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return Err(ConnectError::Incompatible {
+            reason: format!("{channel}: no such descriptor"),
+        });
+    }
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    // Not handed on to processes this one starts.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    socket(stream)
+}
+
+#[cfg(not(unix))]
+fn given_fd(channel: &str, _fd: i32) -> Result<Channel, ConnectError> {
+    Err(ConnectError::Incompatible {
+        reason: format!("{channel}: this platform hands no descriptor over; use tcp:"),
+    })
+}
+
+fn retryable_at(channel: &str, error: std::io::Error) -> ConnectError {
+    ConnectError::Retryable {
+        reason: format!("{channel}: {error}"),
     }
 }
 

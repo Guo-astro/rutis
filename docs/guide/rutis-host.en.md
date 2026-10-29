@@ -676,6 +676,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 
 ```console
 rutis-host test <plugin> -- <runtime command…> <project>
+rutis-host test <plugin> --channel <channel>
 ```
 
 - It starts a host with no rows of its own (its id is `host`), and starts the runtime as every local runtime is started: `<runtime command…> <channel> --id test <project>`, the channel on fd 3, or, on Windows (and with `RUTIS_LOCAL_HANDOVER=loopback`), a loopback address with a one-time token. For Node, `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`; for Python, `python3 -m rutis <project directory>`. The runtime's output is passed on a whole line at a time, as a local runtime's.
@@ -694,6 +695,8 @@ rutis-host test <plugin> -- <runtime command…> <project>
 
 What a test tool does: run `rutis-host test <driving plugin> -- <runtime command…> <project>`, read what the driving plugin reports in the output, and wait for it to exit.
 
+A language whose tests call the plugin under test from the test process (Go, Swift, Kotlin) runs the runtime in its own process and uses `--channel`: the test tool hands `rutis-host test` the channel as a host hands one to a local runtime, `<channel>` being `fd:<n>` (an inherited socket, Unix) or `tcp:<host>:<port>` (the test tool listens on a loopback address; `rutis-host` connects and first sends the one-time token in `RUTIS_CHANNEL_TOKEN` and a newline; the only way on Windows), and the runtime greets with the id `test`. The rest is as above; the runtime's output is the test tool's own.
+
 In 0.19, test tools use a local runtime only. Tests on a device (an Android instrumented test, an iOS simulator) do not use `rutis-host test`: there, the application installs its own plugins.
 
 | Case | Output |
@@ -701,7 +704,8 @@ In 0.19, test tools use a local runtime only. Tests on a device (an Android inst
 | The runtime cannot start | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)` (exit status 1) |
 | The runtime ends before greeting | `rutis-host: test: <why>` (exit status 1) |
 | The driving plugin cannot start | `rutis-host: ` and its row's line, as `load` fails (`rutis-host: tester: unresolved: …`; exit status 1) |
-| No `--`, or no project after the runtime's command | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>` (exit status 1) |
+| No `--`, or no project after the runtime's command | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`, the next line `--channel`'s usage (exit status 1) |
+| `--channel`'s channel is not there or not written right | `rutis-host: test: fd:97: no such descriptor`, `rutis-host: test: tcp:127.0.0.1:1: Connection refused (os error 61)`, `rutis-host: test: pipe:x: a channel is fd:<n> or tcp:<host>:<port>` (exit status 1) |
 | `update` or `unload` of a row `load` did not add | `no row weather was loaded` |
 
 ## Output

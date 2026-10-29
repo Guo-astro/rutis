@@ -676,6 +676,7 @@ $ rutis-host call forecast.week '{"days": 3}'
 
 ```console
 rutis-host test <插件> -- <运行时命令…> <项目>
+rutis-host test <插件> --channel <通道>
 ```
 
 - 它起一个自己没有行的宿主（id 是 `host`），并像启动任何本机运行时那样启动运行时：`<运行时命令…> <通道> --id test <项目>`，通道在 fd 3 上；Windows 上（以及设了 `RUTIS_LOCAL_HANDOVER=loopback` 时）是一个本机回环地址加一次性 token。Node 是 `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`，Python 是 `python3 -m rutis <项目目录>`。运行时的输出与本机运行时一样整行转出。
@@ -694,6 +695,8 @@ rutis-host test <插件> -- <运行时命令…> <项目>
 
 测试工具要做的：运行 `rutis-host test <驱动测试的插件> -- <运行时命令…> <项目>`，从输出里读驱动测试的插件报告的结果，等它退出。
 
+要在测试进程里调用被测插件的语言（Go、Swift、Kotlin）在自己的进程里跑运行时，用 `--channel`：测试工具像宿主启动本机运行时那样把通道交给 `rutis-host test`，`<通道>` 是 `fd:<n>`（继承的 socket，Unix）或 `tcp:<主机>:<端口>`（测试工具在本机回环地址上监听，`rutis-host` 连上后先发 `RUTIS_CHANNEL_TOKEN` 里的一次性 token 和换行；Windows 上只有这一种），运行时以 id `test` 打招呼。其余与上面相同；运行时的输出由测试工具自己处理。
+
 0.19 里测试工具只用本机运行时。设备上的测试（Android instrumented 测试、iOS 模拟器）不用 `rutis-host test`：那里由应用自己装插件。
 
 | 情况 | 输出 |
@@ -701,7 +704,8 @@ rutis-host test <插件> -- <运行时命令…> <项目>
 | 运行时起不来 | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)`（退出码 1） |
 | 运行时在握手前结束 | `rutis-host: test: <原因>`（退出码 1） |
 | 驱动测试的插件起不来 | `rutis-host: ` 加上它那一行的状态行，与 `load` 失败相同（`rutis-host: tester: unresolved: …`；退出码 1） |
-| 没有 `--`，或运行时命令之后没有项目 | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`（退出码 1） |
+| 没有 `--`，或运行时命令之后没有项目 | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`，下一行是 `--channel` 的用法（退出码 1） |
+| `--channel` 的通道不在或写法不对 | `rutis-host: test: fd:97: no such descriptor`、`rutis-host: test: tcp:127.0.0.1:1: Connection refused (os error 61)`、`rutis-host: test: pipe:x: a channel is fd:<n> or tcp:<host>:<port>`（退出码 1） |
 | 对不是 `load` 加的行 `update` 或 `unload` | `no row weather was loaded` |
 
 ## 输出

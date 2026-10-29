@@ -13,6 +13,7 @@
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host types [crate dir] [-o file] [--python file]
 //! rutis-host test <plugin> -- <runtime command…> <project>
+//! rutis-host test <plugin> --channel <channel>
 //! ```
 
 use std::collections::HashSet;
@@ -100,6 +101,11 @@ usage:
                                               test, and serves rutis-host/test (load, update,
                                               unload, reported) to run plugins in that runtime;
                                               it exits when the runtime ends
+                  <plugin> --channel <channel>
+                                              the same with a runtime the test tool runs itself,
+                                              on the channel it handed over as a local runtime
+                                              gets one (fd:<n>, or tcp:<host>:<port> with the
+                                              token in RUTIS_CHANNEL_TOKEN)
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
@@ -447,27 +453,36 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `rutis-host test <plugin> -- <runtime command…> <project>`
+/// `rutis-host test <plugin> -- <runtime command…> <project>`, or
+/// `rutis-host test <plugin> --channel <channel>`
 /// (`docs/design-platform-cleanup-2026-10-28.md` §7.5).
 async fn test(args: &[String]) -> Result<Stopped, String> {
     use rutis_host::test::{Session, Test};
     let (deadline, args) = stop::deadline(args)?;
-    let usage = "usage: rutis-host test <plugin> -- <runtime command...> <project>";
-    let (plugin, runtime) = match args.iter().position(|arg| arg == "--") {
-        Some(at) => (&args[..at], &args[at + 1..]),
-        None => return Err(usage.into()),
+    let usage = "usage: rutis-host test <plugin> -- <runtime command...> <project>\n       rutis-host test <plugin> --channel <channel>";
+    let (plugin, testing) = match &args[..] {
+        [plugin, flag, channel] if flag == "--channel" => (plugin, Test::given(channel)),
+        _ => {
+            let (plugin, runtime) = match args.iter().position(|arg| arg == "--") {
+                Some(at) => (&args[..at], &args[at + 1..]),
+                None => return Err(usage.into()),
+            };
+            let ([plugin], [command @ .., project]) = (plugin, runtime) else {
+                return Err(usage.into());
+            };
+            if command.is_empty() {
+                return Err(usage.into());
+            }
+            (plugin, Test::new(command, project))
+        }
     };
-    let ([plugin], [command @ .., project]) = (plugin, runtime) else {
-        return Err(usage.into());
-    };
-    if plugin.starts_with('-') || command.is_empty() {
+    if plugin.starts_with('-') {
         return Err(usage.into());
     }
     let config: config::HostConfig =
         serde_json::from_value(serde_json::json!({})).map_err(|error| error.to_string())?;
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
-    let testing = Test::new(command, project);
     let (registering, observing) = (testing.clone(), testing.clone());
     let embedding = host::Embedding {
         builtins: Some(Box::new(move |builtins| registering.register(builtins))),
