@@ -64,7 +64,8 @@ export async function start({ dispatch, command = [process.execPath, ...execArgv
   relay.unref()
   await new Promise((resolve, reject) => { relay.once('message', resolve); relay.once('error', reject) })
 
-  const env = { ...process.env, RUTIS_TEST_CONTROL: address }
+  // The driver removes `dir` once the test process is gone (./rutis-test).
+  const env = { ...process.env, RUTIS_TEST_CONTROL: address, RUTIS_TEST_DIR: dir }
   delete env.NODE_TEST_CONTEXT
   const hostProcess = spawn(host, ['test', DRIVER, '--', ...command, project], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   // What the host and the runtime write goes to this process's own output,
@@ -77,12 +78,17 @@ export async function start({ dispatch, command = [process.execPath, ...execArgv
     said?.push(String(chunk))
     process.stderr.write(chunk)
   })
-  const kill = () => { hostProcess.kill() }
+  // Where this process says it exits (Node; `bun test` does not): stop
+  // the host and remove the directory now, not only once the driver sees
+  // this process gone.
+  const kill = () => {
+    hostProcess.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
   process.once('exit', kill)
   const stop = () => {
     process.removeListener('exit', kill)
     kill()
-    rmSync(dir, { recursive: true, force: true })
   }
 
   const failed = new Promise((_, reject) => {

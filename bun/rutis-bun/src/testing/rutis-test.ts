@@ -8,6 +8,7 @@
 // and listeners stay in the test's process: calling them here waits for the
 // test, as a call of another process's does.
 import { Client } from '../client.ts'
+import { rmSync } from 'node:fs'
 import { PLUGIN_API } from '../plugin.ts'
 
 const LEAF = Symbol.for('rutis.leaf-plugin')
@@ -97,6 +98,13 @@ export default Object.freeze({
         return methods[method](...(args ?? []))
       },
       endpoint: { local: 'rutis-test' },
+    })
+    // The test process went (done, failed or killed): the test is over.
+    // Its temporary directory goes, and this runtime ends, after which
+    // `rutis-host test` stops and exits (as a driver ends a test).
+    control.closed().then(() => {
+      if (process.env.RUTIS_TEST_DIR) rmSync(process.env.RUTIS_TEST_DIR, { recursive: true, force: true })
+      process.exit(0)
     })
     ctx.effect(() => { control.end() })
   },
