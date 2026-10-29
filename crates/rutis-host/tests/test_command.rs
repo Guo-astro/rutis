@@ -1,19 +1,16 @@
 //! `rutis-host test` (`docs/design-platform-cleanup-2026-10-28.md` §7.5),
-//! end to end, as a test tool runs it: the test starts a real runtime and
-//! `rutis-host test` on the two ends of one socket pair (the runtime's
-//! channel `fd:0`, the host's standard input and output). The plugin that
-//! drives the test, `tester`, is loaded first; through the service
-//! `rutis-host/test` it loads `weather` at the same runtime, hears it on
-//! the bus (`on`), asks it (`emit`), updates and unloads it, and prints
-//! what it saw. The host exits 0 once the session ends.
+//! end to end, as a test tool runs it: `rutis-host test tester -- <runtime
+//! command> <project>` starts a real runtime as a local runtime and loads
+//! the plugin that drives the test, `tester`; through the service
+//! `rutis-host/test` it loads `weather` in the same runtime, hears it on the
+//! bus (`on`), asks it (`emit`), updates and unloads it, prints what it saw,
+//! and ends its runtime. The host exits 0 once the session ends.
 //!
-//! Unix only: the runtimes take no channel on a pair of pipes on Windows.
-#![cfg(unix)]
-
+//! Each case runs twice: with the runtime's channel as fd 3, and handed
+//! over a loopback address with a one-time token
+//! (`RUTIS_LOCAL_HANDOVER=loopback`), as on Windows.
 mod common;
 
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -33,6 +30,11 @@ fn expected(loaded: &str, refused: &str) -> String {
     )
 }
 
+/// What the Node tester prints of `load`'s options: a row id given
+/// (`oslo`), and given again; `user` sees `forecast`, a copy of it that
+/// isolates `forecast` has a scope of its own, without it (it waits).
+const OPTIONS: &str = r#"OPTIONS {"named":"oslo","taken":"a row oslo is loaded already","users":["user","user-2"],"saw":["sunny"]}"#;
+
 fn sdk() -> String {
     repo()
         .join("node/rutis/src/index.mjs")
@@ -51,9 +53,27 @@ fn node_plugins(dir: &Path) {
          }})\n",
         sdk = sdk()
     );
+    let forecast = format!(
+        "import {{ definePlugin }} from '{sdk}'\n\
+         export default definePlugin({{\n\
+           provides: {{ forecast: {{ today: 'async' }} }},\n\
+           apply(ctx) {{ ctx.provide('forecast', {{ today: () => 'sunny' }}) }},\n\
+         }})\n",
+        sdk = sdk()
+    );
+    let user = format!(
+        "import {{ definePlugin }} from '{sdk}'\n\
+         export default definePlugin({{\n\
+           inject: ['forecast'],\n\
+           async apply(ctx) {{ ctx.emit('user/saw', await ctx.use('forecast').today()) }},\n\
+         }})\n",
+        sdk = sdk()
+    );
     let tester = format!(
         "import {{ definePlugin }} from '{sdk}'\n\
          const weather = {weather:?}\n\
+         const forecast = {forecast:?}\n\
+         const user = {user:?}\n\
          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))\n\
          export default definePlugin({{\n\
            inject: ['rutis-host/test'],\n\
@@ -62,6 +82,8 @@ fn node_plugins(dir: &Path) {
              const said = []\n\
              let heard = () => {{}}\n\
              ctx.on('weather/said', text => {{ said.push(text); heard() }})\n\
+             const saw = []\n\
+             ctx.on('user/saw', text => {{ saw.push(text) }})\n\
              const ask = () => {{ const answer = new Promise(resolve => {{ heard = resolve }}); ctx.emit('weather/ask'); return answer }}\n\
              setTimeout(async () => {{\n\
                try {{\n\
@@ -76,17 +98,29 @@ fn node_plugins(dir: &Path) {
                  const after = said.slice(before)\n\
                  const refused = await test.load(weather, {{}}).then(() => 'loaded', error => error.message)\n\
                  console.error('RESULT ' + JSON.stringify({{ loaded, said: said.slice(0, before), after, refused }}))\n\
+                 const failed = error => error.message\n\
+                 const named = await test.load(weather, {{ city: 'Oslo' }}, {{ id: 'oslo' }})\n\
+                 const taken = await test.load(weather, {{ city: 'Oslo' }}, {{ id: 'oslo' }}).catch(failed)\n\
+                 await test.load(forecast)\n\
+                 const users = [await test.load(user), await test.load(user, null, {{ isolate: {{ forecast: true }} }})]\n\
+                 await sleep(300)\n\
+                 console.error('OPTIONS ' + JSON.stringify({{ named, taken, users, saw }}))\n\
                }} catch (error) {{ console.error('RESULT failed: ' + error.stack) }}\n\
+               process.exit(0)\n\
              }}, 0)\n\
            }},\n\
          }})\n",
         sdk = sdk(),
         weather = dir.join("weather.mjs").to_string_lossy(),
+        forecast = dir.join("forecast.mjs").to_string_lossy(),
+        user = dir.join("user.mjs").to_string_lossy(),
     );
     write(
         dir,
         &[
             ("weather.mjs", &weather),
+            ("forecast.mjs", &forecast),
+            ("user.mjs", &user),
             ("tester.mjs", &tester),
             ("package.json", "{}"),
         ],
@@ -113,6 +147,7 @@ plugin = define_plugin(
 const PY_TESTER: &str = r#"
 import asyncio
 import json
+import os
 import sys
 
 from rutis import define_plugin
@@ -156,6 +191,8 @@ def apply(ctx, config):
             print("RESULT " + json.dumps(result, separators=(",", ":")), file=sys.stderr, flush=True)
         except Exception as error:
             print(f"RESULT failed: {error!r}", file=sys.stderr, flush=True)
+        # The test is done: its runtime ends, and the host with it.
+        os._exit(0)
 
     tasks = [asyncio.get_running_loop().create_task(run())]
     ctx.effect(lambda: [task.cancel() for task in tasks])
@@ -165,59 +202,54 @@ plugin = define_plugin(apply, inject=["rutis-host/test"])
 "#;
 
 fn python() -> String {
-    std::env::var("RUTIS_PYTHON").unwrap_or_else(|_| "python3".into())
+    std::env::var("RUTIS_PYTHON")
+        .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
-/// Run `runtime` (whose channel is `fd:0`) and `rutis-host test <tester>`
-/// on one socket pair; the line the runtime printed that starts with
-/// `RESULT`, and the host's exit status once the runtime went.
-async fn run(mut command: tokio::process::Command, tester: &str) -> (String, i32, String) {
-    let (theirs, ours) = UnixStream::pair().unwrap();
-    command
-        .stdin(Stdio::from(OwnedFd::from(theirs)))
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut runtime = command.spawn().unwrap();
-    // A command holds its end of the pair until it goes.
-    drop(command);
+/// How the runtime gets its channel.
+#[derive(Clone, Copy, Debug)]
+enum Handover {
+    Fd,
+    Loopback,
+}
+
+/// `rutis-host test <tester> -- <runtime…>`: the line its output has that
+/// starts with `RESULT`, its exit status, and the rest of its output.
+async fn run(tester: &str, runtime: &[&str], handover: Handover) -> (String, i32, Vec<String>) {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"));
     command
-        .args(["test", tester])
-        .stdin(Stdio::from(OwnedFd::from(ours.try_clone().unwrap())))
-        .stdout(Stdio::from(OwnedFd::from(ours)))
+        .args(["test", tester, "--"])
+        .args(runtime)
+        .env("PYTHONPATH", repo().join("python/rutis"))
+        .env_remove("RUTIS_LOCAL_HANDOVER")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Handover::Loopback = handover {
+        command.env("RUTIS_LOCAL_HANDOVER", "loopback");
+    }
     let mut host = command.spawn().unwrap();
-    drop(command);
-    let host_output = tokio::spawn({
-        let mut lines = tokio::io::BufReader::new(host.stderr.take().unwrap()).lines();
-        async move {
-            let mut said = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("host: {line}");
-                said.push_str(&line);
-                said.push('\n');
+    let mut lines = tokio::io::BufReader::new(host.stderr.take().unwrap()).lines();
+    let said = COLD
+        .within("the host's exit", async {
+            let mut said = Vec::new();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                eprintln!("{handover:?}: {line}");
+                said.push(line);
             }
             said
-        }
-    });
-    let mut lines = tokio::io::BufReader::new(runtime.stderr.take().unwrap()).lines();
-    let result = COLD
-        .within("the tester's result", async {
-            loop {
-                let line = lines.next_line().await.unwrap().expect("a RESULT line");
-                eprintln!("runtime: {line}");
-                if line.starts_with("RESULT") {
-                    break line;
-                }
-            }
         })
         .await;
-    // The test tool is done: its runtime goes, the session ends.
-    runtime.kill().await.unwrap();
     let status = COLD.within("the host's exit", host.wait()).await.unwrap();
-    let said = host_output.await.unwrap();
-    (result, status.code().unwrap_or(-1), said)
+    let (result, rest): (Vec<String>, Vec<String>) = said
+        .into_iter()
+        .partition(|line| line.starts_with("RESULT"));
+    (
+        result.first().cloned().unwrap_or_default(),
+        status.code().unwrap_or(-1),
+        rest,
+    )
 }
 
 /// guarantee: host/test-command
@@ -225,20 +257,28 @@ async fn run(mut command: tokio::process::Command, tester: &str) -> (String, i32
 async fn node_plugins_load_hear_emit_update_and_unload_through_rutis_host_test() {
     let dir = tempfile::tempdir().unwrap();
     node_plugins(dir.path());
-    let mut runtime = tokio::process::Command::new("node");
-    runtime
-        .arg(repo().join("node/rutis-runtime/src/runner.mjs"))
-        .args(["fd:0", "--id", "node"])
-        .arg(dir.path().join("package.json"))
-        .current_dir(repo().join("node/rutis-runtime"));
+    let runner = repo().join("node/rutis-runtime/src/runner.mjs");
+    let anchor = dir.path().join("package.json");
     let tester = dir.path().join("tester.mjs");
-    let (result, status, said) = run(runtime, &tester.to_string_lossy()).await;
-    assert_eq!(
-        result,
-        expected("weather", "weather: config: city is required")
-    );
-    assert_eq!(status, 0, "{said}");
-    assert_eq!(said, "", "the host says nothing of a test that went well");
+    for handover in [Handover::Fd, Handover::Loopback] {
+        let (result, status, rest) = run(
+            &tester.to_string_lossy(),
+            &["node", &runner.to_string_lossy(), &anchor.to_string_lossy()],
+            handover,
+        )
+        .await;
+        assert_eq!(
+            result,
+            expected("weather", "weather: config: city is required"),
+            "{handover:?}"
+        );
+        assert_eq!(status, 0, "{handover:?}: {rest:?}");
+        assert_eq!(
+            rest,
+            [OPTIONS, "runtime test: row tester called process.exit(0)"],
+            "{handover:?}"
+        );
+    }
 }
 
 /// guarantee: host/test-command
@@ -252,66 +292,64 @@ async fn python_plugins_load_hear_emit_update_and_unload_through_rutis_host_test
             ("tester_plugin.py", PY_TESTER),
         ],
     );
-    let mut runtime = tokio::process::Command::new(python());
-    runtime
-        .args(["-m", "rutis", "fd:0", "--id", "py"])
-        .arg(dir.path())
-        .env("PYTHONPATH", repo().join("python/rutis"))
-        .current_dir(dir.path());
-    let (result, status, said) = run(runtime, "tester_plugin").await;
-    assert_eq!(
-        result,
-        expected(
-            "weather_plugin",
-            "Error: weather_plugin: config: city is required"
+    let python = python();
+    for handover in [Handover::Fd, Handover::Loopback] {
+        let (result, status, rest) = run(
+            "tester_plugin",
+            &[&python, "-m", "rutis", &dir.path().to_string_lossy()],
+            handover,
         )
-    );
-    assert_eq!(status, 0, "{said}");
-    assert_eq!(said, "", "the host says nothing of a test that went well");
+        .await;
+        assert_eq!(
+            result,
+            expected(
+                "weather_plugin",
+                "Error: weather_plugin: config: city is required"
+            ),
+            "{handover:?}"
+        );
+        assert_eq!(status, 0, "{handover:?}: {rest:?}");
+        assert_eq!(
+            rest,
+            ["runtime test: row tester_plugin called os._exit(0)"],
+            "{handover:?}"
+        );
+    }
 }
 
-/// Without a far end that greets, the host says why and exits 1; its
-/// standard output carries the session alone (its greeting).
+/// A runtime that cannot start: the host says why and exits 1.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_far_end_that_goes_before_greeting_ends_the_host_with_1() {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
-        .arg("test")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
-    let output = COLD.within("the host's exit", output).await.unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let session = String::from_utf8_lossy(&output.stdout);
+async fn a_runtime_that_cannot_start_ends_the_host_with_1() {
+    let (result, status, rest) =
+        run("tester", &["/nonexistent/runtime", "project"], Handover::Fd).await;
+    assert_eq!(result, "");
+    assert_eq!(status, 1);
+    assert_eq!(rest.len(), 1, "{rest:?}");
     assert!(
-        session.starts_with(r#"{"op":"hello","version":4,"endpoint":"host","#)
-            && session.lines().count() == 1,
-        "{session}"
+        rest[0].starts_with("rutis-host: test: ") && rest[0].contains("/nonexistent/runtime"),
+        "{rest:?}"
     );
-    let said = String::from_utf8_lossy(&output.stderr);
-    assert!(said.starts_with("rutis-host: test: "), "{said}");
 }
 
-/// `--listen`: a listener on the address, for a `rutis-host/listen` row
-/// whose token is `RUTIS_TOKEN_TEST`; without it, the host says so and
-/// exits 1.
-#[tokio::test(flavor = "multi_thread")]
-async fn listening_needs_the_token_of_the_row_test() {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
-        .args(["test", "--listen", "127.0.0.1:0"])
-        .env_remove("RUTIS_TOKEN_TEST")
-        .stdin(Stdio::null())
-        .output();
-    let output = COLD.within("the host's exit", output).await.unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let said = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<&str> = said.lines().collect();
-    assert!(
-        lines[0].starts_with("rutis-host: listening on test 127.0.0.1:"),
-        "{said}"
-    );
-    assert_eq!(
-        lines[1..],
-        ["rutis-host: test: set RUTIS_TOKEN_TEST: the token the far ends present when they connect"]
-    );
+/// The command needs the plugin, `--`, the runtime's command and its
+/// project.
+#[test]
+fn the_runtime_command_follows_two_dashes() {
+    for args in [
+        &["test"][..],
+        &["test", "tester"],
+        &["test", "tester", "--", "project"],
+        &["test", "a", "b", "--", "node", "project"],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rutis-host"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>\n",
+            "{args:?}"
+        );
+    }
 }

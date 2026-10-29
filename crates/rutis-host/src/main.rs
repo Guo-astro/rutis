@@ -12,7 +12,7 @@
 //! rutis-host remove <plugin> [rutis.json]
 //! rutis-host upgrade [<plugin>[@<version>]] [rutis.json]
 //! rutis-host types [crate dir] [-o file] [--python file]
-//! rutis-host test [--listen <address>] [<plugin>]
+//! rutis-host test <plugin> -- <runtime command…> <project>
 //! ```
 
 use std::collections::HashSet;
@@ -92,17 +92,14 @@ usage:
                                               dir (default .) and the crates it uses (to stdout,
                                               or to file); --python also writes their Python
                                               types
-  rutis-host test [--listen <address>] [<plugin>]
-                                              a host for a test tool: no rows of its own, one
-                                              session with the process that started it on
-                                              standard input and output (one JSON message per
-                                              line), and the service rutis-host/test (load,
-                                              update, unload, reported) running plugins at its
-                                              far end; <plugin>, at the far end, is loaded first
-                                              and drives the test; it exits when the session
-                                              ends. --listen: the session is a connection to a
-                                              listener on <address> presenting RUTIS_TOKEN_TEST
-                                              (a device's test tool), until Ctrl-C
+  rutis-host test <plugin> -- <runtime command...> <project>
+                                              for a test tool: a host with no rows of its own,
+                                              which starts the runtime as a local runtime
+                                              (<runtime command...> <channel> --id test
+                                              <project>), loads <plugin> there to drive the
+                                              test, and serves rutis-host/test (load, update,
+                                              unload, reported) to run plugins in that runtime;
+                                              it exits when the runtime ends
   rutis-host --version
 
 Credentials for links come from RUTIS_TOKEN_<PEER>, RUTIS_CA, RUTIS_CERT and
@@ -450,42 +447,27 @@ async fn run(args: &[String]) -> Result<Stopped, String> {
     Ok(stop::end(&host, ended, deadline, &mut signals).await)
 }
 
-/// `rutis-host test [--listen <address>] [<plugin>]`
+/// `rutis-host test <plugin> -- <runtime command…> <project>`
 /// (`docs/design-platform-cleanup-2026-10-28.md` §7.5).
 async fn test(args: &[String]) -> Result<Stopped, String> {
     use rutis_host::test::{Session, Test};
     let (deadline, args) = stop::deadline(args)?;
-    let usage = "usage: rutis-host test [--listen <address>] [<plugin>]";
-    let (mut listen, mut plugin) = (None, None);
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--listen" => listen = Some(args.next().ok_or(usage)?.clone()),
-            other if plugin.is_none() && !other.starts_with('-') => plugin = Some(other.to_owned()),
-            _ => return Err(usage.into()),
-        }
+    let usage = "usage: rutis-host test <plugin> -- <runtime command...> <project>";
+    let (plugin, runtime) = match args.iter().position(|arg| arg == "--") {
+        Some(at) => (&args[..at], &args[at + 1..]),
+        None => return Err(usage.into()),
+    };
+    let ([plugin], [command @ .., project]) = (plugin, runtime) else {
+        return Err(usage.into());
+    };
+    if plugin.starts_with('-') || command.is_empty() {
+        return Err(usage.into());
     }
-    let listeners = match &listen {
-        Some(address) => {
-            serde_json::json!([{ "name": rutis_host::test::LISTENER, "address": address }])
-        }
-        None => serde_json::json!([]),
-    };
     let config: config::HostConfig =
-        serde_json::from_value(serde_json::json!({ "listen": listeners }))
-            .map_err(|error| format!("--listen {}: {error}", listen.unwrap_or_default()))?;
-    let listening = !config.listen.is_empty();
-    // Taken before anything else could write to standard output.
-    let channel = match listening {
-        false => Some(
-            rutis_host::test::stdio()
-                .map_err(|error| format!("standard input and output: {error}"))?,
-        ),
-        true => None,
-    };
+        serde_json::from_value(serde_json::json!({})).map_err(|error| error.to_string())?;
     stop::pass_on(deadline);
     let mut signals = stop::Signals::listen()?;
-    let testing = Test::new(channel);
+    let testing = Test::new(command, project);
     let (registering, observing) = (testing.clone(), testing.clone());
     let embedding = host::Embedding {
         builtins: Some(Box::new(move |builtins| registering.register(builtins))),
@@ -493,18 +475,17 @@ async fn test(args: &[String]) -> Result<Stopped, String> {
         ..host::Embedding::default()
     };
     let host = host::Host::start_with(&config, embedding).await?;
-    for line in status::listening(&host.listening) {
-        errln!("{line}");
-    }
     let started = async {
-        rutis_host::test::start(&host.loader, listening).await?;
-        // The plugin that drives the test, once the far end greeted.
-        let Some(plugin) = &plugin else {
+        rutis_host::test::start(&host.loader).await?;
+        // The plugin that drives the test, once the runtime greeted.
+        let mut session = testing.session();
+        let greeted = session
+            .wait_for(|state| *state != Session::Starting)
+            .await
+            .map(|state| *state == Session::Connected)
+            .unwrap_or(false);
+        if !greeted {
             return Ok(());
-        };
-        if !listening {
-            let mut session = testing.session();
-            let _ = session.wait_for(|state| *state != Session::Starting).await;
         }
         testing
             .load(&host.loader, plugin, serde_json::Value::Null)
@@ -516,7 +497,7 @@ async fn test(args: &[String]) -> Result<Stopped, String> {
             let mut session = testing.session();
             tokio::select! {
                 signal = signals.next() => Ended::Signal(signal),
-                ended = session.wait_for(|state| matches!(state, Session::Ended(_))), if !listening => {
+                ended = session.wait_for(|state| matches!(state, Session::Ended(_))) => {
                     let failed = match ended.as_deref() {
                         Ok(Session::Ended(Some(why))) => Some(why.clone()),
                         _ => None,

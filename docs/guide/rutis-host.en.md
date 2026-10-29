@@ -291,7 +291,7 @@ Installing by hand works as before, with the same row names: each language's plu
 | `rutis-host add <plugin> [rutis.json]` | Installs a plugin by its source (`npm:`, `pypi:`, a Go module path, a local path) with what its runtime lacks, records it under `installed`, adds its row and prints its introduction (see [How a host installs plugins](#how-a-host-installs-plugins)). |
 | `rutis-host remove <plugin> [rutis.json]` | Uninstalls the package of a plugin `add` installed, and removes its records and rows. |
 | `rutis-host upgrade [<plugin>[@<version>]] [rutis.json]` | Upgrades plugins `add` installed to the newest version (or the one given); a running host uses it once it restarts. |
-| `rutis-host test [--listen <address>] [<plugin>]` | For the SDKs' test tools: a host with no rows of its own, one session with the process that started it on its standard input and output (or, with `--listen`, a device's connection), and the service `rutis-host/test` that runs plugins at the far end; it exits when the session ends (see [Running plugins under test](#running-plugins-under-test-rutis-host-test)). |
+| `rutis-host test <plugin> -- <runtime command…> <project>` | For the SDKs' test tools: a host with no rows of its own that starts a runtime as a local runtime, loads `<plugin>` there to drive the test, and serves `rutis-host/test` to run plugins in that runtime; it exits when the runtime ends (see [Running plugins under test](#running-plugins-under-test-rutis-host-test)). |
 | `rutis-host types [directory] [-o file] [--python file]` | Writes the TypeScript declarations of the Rust services marked `#[rutis::service]` in the crate in `directory` (by default the current one) and in the crates it uses, to stdout or to `file`; `--python` writes their Python types too; see [Embed in a Rust application: Declarations](rust-host.en.md#declarations). |
 
 Add `--help` or `-h` to any command to print its usage (only that command's lines) and exit 0 without doing anything else; `rutis-host --help` prints them all.
@@ -675,46 +675,33 @@ $ rutis-host call forecast.week '{"days": 3}'
 `rutis-host test` is for the test tools of the SDKs: it runs the plugin under test in a real runtime against a real rutis kernel, so that a test sees what a host does. A plugin author does not run it by hand; the test tool does. A test tool finds it on `PATH`, or at the path `RUTIS_HOST` names.
 
 ```console
-rutis-host test [--listen <address>] [<plugin>]
+rutis-host test <plugin> -- <runtime command…> <project>
 ```
 
-- It starts a host with no rows of its own and one session with the process that started it, on its standard input and output: one JSON message per line, the framing of a local runtime's channel. Its standard output carries the session alone; what it says goes to stderr.
-- At the far end is a runtime of the test tool's language (the test tool starts it). The host's id is `host`.
+- It starts a host with no rows of its own (its id is `host`), and starts the runtime as every local runtime is started: `<runtime command…> <channel> --id test <project>`, the channel on fd 3, or, on Windows (and with `RUTIS_LOCAL_HANDOVER=loopback`), a loopback address with a one-time token. For Node, `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`; for Python, `python3 -m rutis <project directory>`. The runtime's output is passed on a whole line at a time, as a local runtime's.
 - The host has the plugin `rutis-host/test`, which provides the service `rutis-host/test`:
 
 | Method | Does |
 | --- | --- |
-| `load(name, config?)` | Runs the plugin `name`, as the far end knows it (a file or package for Node and Bun, a module for Python), with `config`, as a row of its own, by the session's `run`; returns the row's id: the file's name without its extension (`/tests/weather.mjs` is `weather`), else `name`, with `-2`, `-3`… while one is taken. When the row cannot start, it fails with the row's line (`weather: config: city is required`) and no row stays. |
+| `load(name, config?, options?)` | Runs the plugin `name`, as the runtime knows it (a file or package for Node and Bun, a module for Python), with `config`, as a row of its own (`test:<name>`, by the session's `run`); returns the row's id. `options` gives fields of the row: `id` (one already there: `a row oslo is loaded already`), and `isolate`, as a row's in `rutis.json` (`{ "forecast": true }`, or a label). Without `id`: the file's name without its extension (`/tests/weather.mjs` is `weather`), else `name`, with `-2`, `-3`… while one is taken. When the row cannot start, it fails with the row's line (`weather: config: city is required`) and no row stays. |
 | `update(id, config)` | Gives the row `config`, as a changed row's config: the plugin restarts with it. Fails when the plugin refuses it (the row keeps its config) or fails with it. |
-| `unload(id)` | Removes the row; returns once its plugin unloaded at the far end. |
+| `unload(id)` | Removes the row; returns once its plugin unloaded in the runtime. |
 | `reported(id)` | What the host reported of the row: each of its listeners that failed in an `emit`, each filter of its `emit` that failed, as the host prints them (`weather: listener of weather/ask failed: Error: boom`). |
 
-- `<plugin>`, at the far end, is loaded first (as `load(<plugin>)`), once the far end greeted: the plugin that drives the test. It injects `rutis-host/test`, provides the fakes the plugin under test uses (`ctx.provide`), listens (`ctx.on`) and emits (`ctx.emit`) as any plugin. It calls `load` outside its `apply` (in a task it starts, or a listener): the loader is starting it while its `apply` runs.
-- Plugins loaded this way share the far end's runtime and one event bus with the driving plugin; services are visible to all of them, as in any host.
-- It exits once the session ends (the far end closed it, or went): 0 when every cleanup ran. A far end that never greets: `rutis-host: test: <why>`, exit status 1. Ctrl-C and SIGTERM stop it as they stop `run`.
+- `<plugin>` is loaded first (as `load(<plugin>)`), once the runtime greeted: the plugin that drives the test. It injects `rutis-host/test`, provides the fakes the plugin under test uses (`ctx.provide`), listens (`ctx.on`) and emits (`ctx.emit`) as any plugin. It calls `load` outside its `apply` (in a task it starts, or a listener): the loader is starting it while its `apply` runs.
+- Plugins loaded this way share the runtime and one event bus with the driving plugin; services are visible to all of them, as in any host.
+- It exits once the runtime ends: 0 when every cleanup ran. The driving plugin ends the test by ending its runtime (Node `process.exit(0)`, Python `os._exit(0)`); the runtime says so (`runtime test: row tester called process.exit(0)`). Ctrl-C and SIGTERM stop it as they stop `run`.
 
-What a test tool does:
+What a test tool does: run `rutis-host test <driving plugin> -- <runtime command…> <project>`, read what the driving plugin reports in the output, and wait for it to exit.
 
-1. Start its language's runtime on one end of a connected socket pair as its channel: `node <runner.mjs> fd:<n> --id <id> <anchor>`, `python3 -m rutis fd:<n> --id <id> <project>` (`<id>` is the runtime's own, `node`, `py`; the far end's plugins are `<id>:<plugin>`).
-2. Start `rutis-host test <driving plugin>` with the other end as its standard input and standard output.
-3. Close its own copies of both ends: the session ends when the runtime or the host closes its end.
-4. When the test is done, end the runtime (or close its channel): the host unloads every row, the session ends, the host exits 0.
-
-On Windows, the runtimes take no channel on a pair of pipes: a test tool there passes the messages between the two processes itself.
-
-`--listen <address>`: for a test tool on a device (an Android instrumented test, an iOS simulator), where no `rutis-host` process can run. The host listens on `<address>` (TLS with `RUTIS_CERT` and `RUTIS_KEY`, as a listener of `listen`), and the connection row is a `rutis-host/listen` row whose token is `RUTIS_TOKEN_TEST`; the test tool dials it as a real application does, and the plugins it installs and announces register as `<id>:<plugin>`. A listen row's sessions run no rows of their own, so the rows `load` adds there wait (`waiting for test`). It runs until Ctrl-C.
-
-```console
-$ RUTIS_TOKEN_TEST=… rutis-host test --listen 0.0.0.0:7443
-rutis-host: listening on test 0.0.0.0:7443
-test: connected phone-1
-```
+In 0.19, test tools use a local runtime only. Tests on a device (an Android instrumented test, an iOS simulator) do not use `rutis-host test`: there, the application installs its own plugins.
 
 | Case | Output |
 | --- | --- |
-| The far end goes before greeting | `rutis-host: test: peer disconnected` (exit status 1) |
-| `--listen` without `RUTIS_TOKEN_TEST` | `rutis-host: test: set RUTIS_TOKEN_TEST: the token the far ends present when they connect` (exit status 1) |
+| The runtime cannot start | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)` (exit status 1) |
+| The runtime ends before greeting | `rutis-host: test: <why>` (exit status 1) |
 | The driving plugin cannot start | `rutis-host: ` and its row's line, as `load` fails (`rutis-host: tester: unresolved: …`; exit status 1) |
+| No `--`, or no project after the runtime's command | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>` (exit status 1) |
 | `update` or `unload` of a row `load` did not add | `no row weather was loaded` |
 
 ## Output

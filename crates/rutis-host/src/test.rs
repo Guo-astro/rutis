@@ -1,27 +1,27 @@
 //! `rutis-host test` (`docs/design-platform-cleanup-2026-10-28.md` §7.5): a
-//! host with no rows of its own, one session with the process that started
-//! it, and the plugin `rutis-host/test`.
+//! host with no rows of its own, one session with a runtime of the test
+//! tool's language, and the plugin `rutis-host/test`.
 //!
-//! - The session: on the command's standard input and output, framed as a
-//!   local runtime's channel is (one JSON message per line; [`stdio`]), or,
-//!   with `--listen`, the connection of a `rutis-host/listen` row on a
-//!   listener of that address. Its connection row is [`ROW`]: the rows
-//!   `test:<plugin>` run `<plugin>` at its far end (`run`).
+//! - The session: the runtime process, started as every local runtime is
+//!   (`pipe::spawn`: `<command…> <channel> --id test <project>`, its channel
+//!   fd 3, or a loopback address with a one-time token on Windows and with
+//!   `RUTIS_LOCAL_HANDOVER=loopback`). Its connection row is [`ROW`]: the
+//!   rows `test:<plugin>` run `<plugin>` there (`run`).
 //! - The plugin `rutis-host/test` uses the loader's public API alone and
 //!   provides the service `rutis-host/test` ([`Harness`]): `load(name,
 //!   config)`, `update(id, config)`, `unload(id)`, `reported(id)`.
 //!
-//! On standard input and output, the plugin is the connection row itself
-//! (`test`); it says when the session ended, and the host stops.
+//! The plugin is the connection row itself (`test`); it says when the
+//! session ended, and the host stops.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, DynPlugin, Effect, ErrorKind, FiberState, PluginFactory};
 use rutis::{Ctx, Error};
-use rutis_bridge::Channel;
+use rutis_bridge::pipe::{Processes, Spawn, Stdio};
 use rutis_loader::edit::{Editable, NewEntry, Version};
-use rutis_loader::report::{EntryInfo, EntryStatus};
+use rutis_loader::report::{EntryInfo, EntryStatus, Isolate};
 use rutis_loader::{Builtins, Layer, Loader, LoaderError, Patch};
 use serde_json::{json, Value};
 use tokio::sync::watch;
@@ -29,12 +29,9 @@ use tokio::sync::watch;
 use crate::connect::session;
 
 pub const NAME: &str = "rutis-host/test";
-/// The connection row: the plugins loaded run at its far end.
+/// The connection row, and the id the runtime greets with: the plugins
+/// loaded run at its far end.
 pub const ROW: &str = "test";
-/// The listener `--listen` adds.
-pub const LISTENER: &str = "test";
-/// The row of `rutis-host/test` when the connection row is a listen row.
-pub const HARNESS_ROW: &str = "harness";
 
 /// Where the session is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +47,7 @@ pub enum Session {
 /// What `rutis-host test` and its plugin share.
 #[derive(Clone)]
 pub struct Test {
-    channel: Arc<Mutex<Option<Channel>>>,
+    spawn: Arc<Mutex<Option<Spawn>>>,
     session: watch::Sender<Session>,
     state: Arc<State>,
 }
@@ -64,10 +61,17 @@ struct State {
 }
 
 impl Test {
-    /// On `channel`, or (`None`) on a listen row's connection.
-    pub fn new(channel: Option<Channel>) -> Self {
+    /// With the runtime `command` (its program, then its arguments) for
+    /// the plugins in `project`: started as `<command…> <channel> --id test
+    /// <project>`, its output passed on a line at a time.
+    pub fn new(command: &[String], project: &str) -> Self {
+        let mut spawn = Spawn::new(&command[0]);
+        spawn.args = command[1..].iter().map(Into::into).collect();
+        spawn.trailing = vec!["--id".into(), ROW.into(), project.into()];
+        spawn.stdout = Stdio::Lines;
+        spawn.stderr = Stdio::Lines;
         Self {
-            channel: Arc::new(Mutex::new(channel)),
+            spawn: Arc::new(Mutex::new(Some(spawn))),
             session: watch::Sender::new(Session::Starting),
             state: Arc::default(),
         }
@@ -107,8 +111,19 @@ impl Test {
 
     /// Load `name` at the far end ([`Harness::load`]).
     pub async fn load(&self, loader: &Loader, name: &str, config: Value) -> Result<String, String> {
-        load(loader, &self.state, name, config).await
+        load(loader, &self.state, name, config, Options::default()).await
     }
+}
+
+/// What `load` takes besides the plugin and its config: fields of the row.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Options {
+    /// The row's id, instead of one from the plugin's name.
+    pub id: Option<String>,
+    /// The row's `isolate`, as in `rutis.json`: service name → `true` (a
+    /// scope of its own) or a label (shared by the rows naming it).
+    pub isolate: Option<serde_json::Map<String, Value>>,
 }
 
 impl PluginFactory<Value> for Test {
@@ -150,25 +165,29 @@ impl DynPlugin for TestPlugin {
                 loader: (*loader).clone(),
                 state: self.0.state.clone(),
             })?;
-            let Some(channel) = self.0.channel.lock().unwrap().take() else {
+            // Started once: the session's end ends the host.
+            let Some(spawn) = self.0.spawn.lock().unwrap().take() else {
                 return Ok(Effect::Done);
             };
             let row = crate::connect::row_id(ctx, NAME)?;
             if row != ROW {
                 return Err(Error::from(ErrorKind::PluginFailed(
-                    format!("{NAME} on standard input and output is the row {ROW}").into(),
+                    format!("{NAME} is the row {ROW}").into(),
                 )));
             }
             let (own, said) = (ctx.clone(), self.0.session.clone());
             let task = tokio::spawn(async move {
-                let ended = match session::handshake(&own, channel).await {
-                    Err(failed) => Some(failed.reason),
-                    Ok(greeted) => {
-                        let installed = session::install(&own, greeted);
-                        said.send_replace(Session::Connected);
-                        installed.unloaded().await;
-                        None
-                    }
+                let ended = match rutis_bridge::pipe::spawn(&spawn, &Processes::default()).await {
+                    Err(error) => Some(error.to_string()),
+                    Ok(channel) => match session::handshake(&own, channel).await {
+                        Err(failed) => Some(failed.reason),
+                        Ok(greeted) => {
+                            let installed = session::install(&own, greeted);
+                            said.send_replace(Session::Connected);
+                            installed.unloaded().await;
+                            None
+                        }
+                    },
                 };
                 said.send_replace(Session::Ended(ended));
             });
@@ -193,14 +212,21 @@ pub struct Harness {
 #[rutis::service(name = "rutis-host/test")]
 impl Harness {
     /// Run `name` (as the far end knows it: a file, a package, a module)
-    /// at the far end, with `config`, as a row of its own; its id. Fails,
-    /// adding no row, when the row cannot start.
-    pub async fn load(&self, name: String, config: Option<Value>) -> Result<String, String> {
+    /// at the far end, with `config`, as a row of its own, with the row
+    /// fields `options` gives (`id`, `isolate`); its id. Fails, adding no
+    /// row, when the row cannot start.
+    pub async fn load(
+        &self,
+        name: String,
+        config: Option<Value>,
+        options: Option<Options>,
+    ) -> Result<String, String> {
         load(
             &self.loader,
             &self.state,
             &name,
             config.unwrap_or(Value::Null),
+            options.unwrap_or_default(),
         )
         .await
     }
@@ -248,17 +274,10 @@ impl Harness {
     }
 }
 
-/// The rows `rutis-host test` starts with: the connection row (and, on a
-/// listen row, `rutis-host/test` next to it). The layer is editable, for
-/// `load`.
-pub async fn start(loader: &Loader, listening: bool) -> Result<(), String> {
-    let rows = match listening {
-        false => vec![json!({ "id": ROW, "name": NAME })],
-        true => vec![
-            json!({ "id": ROW, "name": crate::connect::LISTEN, "config": { "listener": LISTENER } }),
-            json!({ "id": HARNESS_ROW, "name": NAME }),
-        ],
-    };
+/// The row `rutis-host test` starts with: the connection row. The layer
+/// is editable, for `load`.
+pub async fn start(loader: &Loader) -> Result<(), String> {
+    let rows = vec![json!({ "id": ROW, "name": NAME })];
     let patches: Vec<Patch> = serde_json::from_value(json!([{ "insert": rows }]))
         .map_err(|error| format!("rows: {error}"))?;
     let report = loader
@@ -268,7 +287,6 @@ pub async fn start(loader: &Loader, listening: bool) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
-    // A row of these failing (a listen row without its token) fails it.
     match report.failures.is_empty() {
         true => Ok(()),
         false => Err(report
@@ -280,15 +298,41 @@ pub async fn start(loader: &Loader, listening: bool) -> Result<(), String> {
     }
 }
 
-async fn load(loader: &Loader, state: &State, name: &str, config: Value) -> Result<String, String> {
+async fn load(
+    loader: &Loader,
+    state: &State,
+    name: &str,
+    config: Value,
+    options: Options,
+) -> Result<String, String> {
     if name.is_empty() {
         return Err("load needs the name of a plugin".into());
     }
-    let id = free_id(loader, name);
+    let id = match options.id {
+        Some(id) if loader.get(&id).is_some() => {
+            return Err(format!("a row {id} is loaded already"))
+        }
+        Some(id) => id,
+        None => free_id(loader, name),
+    };
+    let mut isolate = std::collections::BTreeMap::new();
+    for (service, how) in options.isolate.unwrap_or_default() {
+        let how = match how {
+            Value::Bool(true) => Isolate::Private,
+            Value::String(label) => Isolate::Shared(label),
+            other => {
+                return Err(format!(
+                    "isolate.{service} must be true or a label, not {other}"
+                ))
+            }
+        };
+        isolate.insert(service, how);
+    }
     let entry = NewEntry {
         id: Some(id.clone()),
         name: format!("{ROW}:{name}"),
         config,
+        isolate,
         ..NewEntry::default()
     };
     loader
@@ -377,60 +421,6 @@ fn refused(info: &EntryInfo) -> Option<String> {
         _ => false,
     };
     cannot.then(|| format!("{}: {}", info.id, crate::status::describe(&info.status)))
-}
-
-/// The session's channel on this process's standard input and output, one
-/// message per line. From now on what writes to standard output writes to
-/// standard error, and standard input reads nothing: only the session uses
-/// the two.
-#[cfg(unix)]
-pub fn stdio() -> std::io::Result<Channel> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    let dup = |fd| match unsafe { libc::dup(fd) } {
-        -1 => Err(std::io::Error::last_os_error()),
-        // SAFETY: a new descriptor, owned by nothing else.
-        new => Ok(unsafe { OwnedFd::from_raw_fd(new) }),
-    };
-    let (read, write, shut) = (dup(0)?, dup(1)?, dup(0)?);
-    let null = std::fs::File::open("/dev/null")?;
-    // SAFETY: replacing this process's own standard descriptors.
-    if unsafe { libc::dup2(2, 1) } == -1 || unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(rutis_bridge::pipe::framed(
-        std::fs::File::from(read),
-        std::fs::File::from(write),
-        Arc::new(Shut(shut)),
-    ))
-}
-
-/// Wakes a read blocked on a socket (when the far end gave one socket for
-/// both), and ends it both ways. A pipe needs nothing: the channel lets go
-/// of its writing end, and the far end, seeing the end, closes its own.
-#[cfg(unix)]
-struct Shut(std::os::fd::OwnedFd);
-
-#[cfg(unix)]
-impl rutis_bridge::channel::Closer for Shut {
-    fn close(&self, _: rutis_bridge::Close) {
-        use std::os::fd::AsRawFd;
-        // SAFETY: a descriptor this owns; ENOTSOCK on a pipe is harmless.
-        unsafe { libc::shutdown(self.0.as_raw_fd(), libc::SHUT_RDWR) };
-    }
-}
-
-/// The session's channel on standard input and output.
-#[cfg(not(unix))]
-pub fn stdio() -> std::io::Result<Channel> {
-    struct Nothing;
-    impl rutis_bridge::channel::Closer for Nothing {
-        fn close(&self, _: rutis_bridge::Close) {}
-    }
-    Ok(rutis_bridge::pipe::framed(
-        std::io::stdin(),
-        std::io::stdout(),
-        Arc::new(Nothing),
-    ))
 }
 
 #[cfg(test)]
