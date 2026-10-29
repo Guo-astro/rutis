@@ -3,8 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rutis::host::diagnostics::DependencyStatus;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, TypeKey};
-use rutis::internal::CtxInternal;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, Key, TypeKey};
 use rutis::{Ctx, Error};
 use tokio::sync::oneshot;
 
@@ -55,7 +54,7 @@ impl DynPlugin for BlockingConsumer {
 }
 
 struct Provider {
-    key: TypeKey,
+    key: Key<u64>,
     gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
@@ -66,7 +65,7 @@ impl DynPlugin for Provider {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            ctx.provide_key(self.key.clone(), Arc::new(7u64))?;
+            ctx.provide_at(self.key.clone(), Arc::new(7u64))?;
             let gate = self.gate.lock().unwrap().take();
             if let Some((entered, release)) = gate {
                 let _ = entered.send(());
@@ -114,7 +113,7 @@ async fn keyed_isolates_report_missing_then_exact_binding_and_recovery() {
     let a = root.isolate(key.clone(), "A");
     let b = root.isolate(key.clone(), "B");
     let provider_a = a.plugin(Provider {
-        key: key.clone(),
+        key: Key::named("primary"),
         gate: Mutex::new(None),
     });
     settled(&provider_a).await;
@@ -141,7 +140,7 @@ async fn keyed_isolates_report_missing_then_exact_binding_and_recovery() {
         .is_none());
 
     let provider_b = b.plugin(Provider {
-        key: key.clone(),
+        key: Key::named("primary"),
         gate: Mutex::new(None),
     });
     settled(&provider_b).await;
@@ -185,7 +184,7 @@ async fn diagnostics_explain_inactive_and_removing_provider() {
     let (provided, provided_rx) = oneshot::channel();
     let (resume, resume_rx) = oneshot::channel();
     let provider = root.plugin(Provider {
-        key: key.clone(),
+        key: Key::of(),
         gate: Mutex::new(Some((provided, resume_rx))),
     });
     tokio::time::timeout(Duration::from_secs(10), provided_rx)

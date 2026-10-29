@@ -277,7 +277,48 @@ impl Ctx {
     /// diagnostics record it as an undeclared access. `T` may be a trait
     /// object. Services a plugin needs go in its `Deps`.
     pub fn get<T: ?Sized + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
-        self.get_key::<T>(TypeKey::of::<T>())
+        self.read_optional::<T>(TypeKey::of::<T>())
+    }
+
+    /// An optional read under `key`: no gate, no reload relation; while
+    /// loading, recorded as an access.
+    fn read_optional<T: ?Sized + Send + Sync + 'static>(&self, key: TypeKey) -> Option<Arc<T>> {
+        let scope = self.scope_for(&key);
+        let out_of_scope = !self.in_instance_key(&key);
+        let (result, found) = if out_of_scope {
+            (None, None)
+        } else {
+            let binding = self.0.shared.registry.lookup(&key, scope.as_ref());
+            self.read_binding_as::<T>(binding.as_ref())
+        };
+        if let Some(fiber) = self.0.fiber.upgrade() {
+            if fiber.state() == FiberState::Loading {
+                self.record_access(
+                    &fiber,
+                    &key,
+                    scope.as_ref(),
+                    AccessOutcome {
+                        found,
+                        declared: fiber.declared_injects.contains(&key),
+                        out_of_scope,
+                        strict: false,
+                        failure: None,
+                    },
+                );
+            }
+        }
+        result
+    }
+
+    /// Register `value` under `key` until the plugin stops or the
+    /// returned [`Disposer`] withdraws it.
+    fn provide_binding<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        key: TypeKey,
+        value: Arc<T>,
+    ) -> Result<Disposer, Error> {
+        self.provide_inner(key, value, false)
+            .map(|(disposer, _)| disposer)
     }
 
     fn require_inner<T: ?Sized + Send + Sync + 'static>(
@@ -555,7 +596,7 @@ impl Ctx {
     /// returned [`Disposer`] withdraws it). A `#[rutis::service]` type is
     /// offered to other languages by its name too.
     pub fn provide<T: Send + Sync + 'static>(&self, value: T) -> Result<Disposer, Error> {
-        self.provide_key::<T>(TypeKey::of::<T>(), Arc::new(value))
+        self.provide_binding::<T>(TypeKey::of::<T>(), Arc::new(value))
     }
 
     /// Provides `value` under the type `T`, typically a trait object:
@@ -564,7 +605,7 @@ impl Ctx {
         &self,
         value: Arc<T>,
     ) -> Result<Disposer, Error> {
-        self.provide_key::<T>(TypeKey::of::<T>(), value)
+        self.provide_binding::<T>(TypeKey::of::<T>(), value)
     }
 
     /// Runs `f` now and registers the future it returns as a cleanup, run
@@ -1360,16 +1401,16 @@ impl crate::host::CtxHost for Ctx {
         key: Key<T>,
         value: Arc<T>,
     ) -> Result<Disposer, Error> {
-        self.provide_key::<T>(key.erase(), value)
+        self.provide_binding::<T>(key.erase(), value)
     }
 
     fn get_at<T: ?Sized + Send + Sync + 'static>(&self, key: &Key<T>) -> Option<Arc<T>> {
-        self.get_key::<T>(key.erase())
+        self.read_optional::<T>(key.erase())
     }
 
     #[track_caller]
     fn require<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Arc<T>, ServiceReadError> {
-        self.require_key::<T>(TypeKey::of::<T>())
+        self.require_inner(TypeKey::of::<T>(), std::panic::Location::caller(), None)
     }
 
     #[track_caller]
@@ -1377,7 +1418,7 @@ impl crate::host::CtxHost for Ctx {
         &self,
         key: &Key<T>,
     ) -> Result<Arc<T>, ServiceReadError> {
-        self.require_key::<T>(key.erase())
+        self.require_inner(key.erase(), std::panic::Location::caller(), None)
     }
 
     fn subscriptions(&self) -> Vec<crate::bus::EventSubscription> {
@@ -1426,46 +1467,6 @@ impl crate::internal::CtxInternal for Ctx {
         Ok(())
     }
 
-    fn get_key<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-    ) -> Option<Arc<T>> {
-        let key = key.into();
-        let scope = self.scope_for(&key);
-        let out_of_scope = !self.in_instance_key(&key);
-        let (result, found) = if out_of_scope {
-            (None, None)
-        } else {
-            let binding = self.0.shared.registry.lookup(&key, scope.as_ref());
-            self.read_binding_as::<T>(binding.as_ref())
-        };
-        if let Some(fiber) = self.0.fiber.upgrade() {
-            if fiber.state() == FiberState::Loading {
-                self.record_access(
-                    &fiber,
-                    &key,
-                    scope.as_ref(),
-                    AccessOutcome {
-                        found,
-                        declared: fiber.declared_injects.contains(&key),
-                        out_of_scope,
-                        strict: false,
-                        failure: None,
-                    },
-                );
-            }
-        }
-        result
-    }
-
-    #[track_caller]
-    fn require_key<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-    ) -> Result<Arc<T>, ServiceReadError> {
-        self.require_inner(key.into(), std::panic::Location::caller(), None)
-    }
-
     #[track_caller]
     fn require_provided_as<T: ?Sized + Send + Sync + 'static>(
         &self,
@@ -1473,15 +1474,6 @@ impl crate::internal::CtxInternal for Ctx {
         provision: &crate::service::Provision,
     ) -> Result<Arc<T>, ServiceReadError> {
         self.require_inner(key.into(), std::panic::Location::caller(), Some(provision))
-    }
-
-    fn provide_key<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        key: impl Into<TypeKey>,
-        value: Arc<T>,
-    ) -> Result<Disposer, Error> {
-        self.provide_inner(key.into(), value, false)
-            .map(|(disposer, _)| disposer)
     }
 
     fn provide_mut_at<T: ?Sized + Send + Sync + 'static>(

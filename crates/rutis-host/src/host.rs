@@ -523,7 +523,7 @@ impl Host {
         // Disposed however the wait ends, a signal dropping it included:
         // left mounted, it would count among what still runs.
         let mut waiter = Unmount(Some(self.root.plugin(Released {
-            injects: [SessionRows::key(name)],
+            injects: [SessionRows::key(name).erase()],
             released: std::sync::Mutex::new(Some(released)),
         })));
         let down = async {
@@ -1187,7 +1187,6 @@ impl DynPlugin for Released {
 mod tests {
     use super::*;
     use crate::config::{BunRuntime, NodeRuntime, PythonRuntime, Runtimes};
-    use rutis::internal::CtxInternal;
     use rutis_bridge::session::{settle, Value};
     use rutis_test_support::{within, Guard, HANG_GUARD};
     use serde_json::json;
@@ -1346,7 +1345,7 @@ mod tests {
             .await
             .unwrap();
         // What the runtime's rows wait for.
-        let rows = host.root.get_key::<SessionRows>(SessionRows::key("py"));
+        let rows = host.root.get_at(&SessionRows::key("py"));
         assert!(rows.is_some(), "the runtime is ready, its rows not yet");
         within("loading the row", host.load(config.rows()))
             .await

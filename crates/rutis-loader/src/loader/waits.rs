@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(key_name(&catalog, &llm).as_deref(), Some("llm"));
         let counter = rutis::host::TypeKey::of::<u32>();
         assert_eq!(key_name(&catalog, &counter).as_deref(), Some("counter"));
-        let gpu = crate::runtime::SessionRows::key("gpu");
+        let gpu = crate::runtime::SessionRows::key("gpu").erase();
         assert_eq!(key_name(&catalog, &gpu).as_deref(), Some("gpu"));
         let other = rutis::host::TypeKey::of::<String>();
         assert_eq!(key_name(&catalog, &other), None);

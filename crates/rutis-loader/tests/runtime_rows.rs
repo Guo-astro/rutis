@@ -510,7 +510,7 @@ async fn a_dead_process_stops_the_rows_until_restart() {
     )
     .await;
     assert_eq!(runtime.state().state, FiberState::Active);
-    let runtime_key = SessionRows::key("node");
+    let runtime_key = SessionRows::key("node").erase();
     let waiting = root
         .diagnostics()
         .plugins

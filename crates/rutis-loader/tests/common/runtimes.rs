@@ -263,12 +263,12 @@ pub async fn rows_stage(
     sessions: &rutis_loader::runtime::SessionResolver,
     name: &str,
 ) {
-    use rutis::internal::CtxInternal;
+    use rutis::host::CtxHost;
     use rutis_loader::runtime::SessionRows;
     sessions.follow_row(name);
     let key = SessionRows::key(name);
     COLD.until(
-        || root.get_key::<SessionRows>(key.clone()).is_some(),
+        || root.get_at(&key).is_some(),
         "the runtime's rows released",
     )
     .await;

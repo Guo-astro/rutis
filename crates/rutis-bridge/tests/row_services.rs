@@ -137,12 +137,9 @@ async fn services_a_row_does_not_declare_are_announced_with_their_methods() {
     assert!(process.supports("rows.announce"));
     let entry = write(dir.path(), "store.mjs", STORE);
     let ctx = Ctx::root().unwrap();
-    let projection = row_projection_of(
-        "row store",
-        &serde_json::Map::new(),
-        |name| host_key(name).erase(),
-        |name| name == "kept",
-    );
+    let projection = row_projection_of("row store", &serde_json::Map::new(), host_key, |name| {
+        name == "kept"
+    });
     projection.attach(&ctx, process.clone()).unwrap();
     process
         .load_row_exporting(
@@ -309,17 +306,13 @@ fn held_projection() -> (Arc<Projection>, mpsc::Receiver<()>, mpsc::Sender<()>) 
     let (release, wait) = mpsc::channel::<()>();
     let mut first = Some((tell, wait));
     let projection = Projection::new();
-    projection.service_keyed::<dyn HostDispatch>(
-        "greeter",
-        host_key("greeter").erase(),
-        move |process, handle| {
-            if let Some((tell, wait)) = first.take() {
-                tell.send(()).unwrap();
-                recv_within("the test releases the publication", &wait);
-            }
-            Arc::new(RowService::new(process, handle, json!({ "greet": "sync" })))
-        },
-    );
+    projection.service_keyed("greeter", host_key("greeter"), move |process, handle| {
+        if let Some((tell, wait)) = first.take() {
+            tell.send(()).unwrap();
+            recv_within("the test releases the publication", &wait);
+        }
+        Arc::new(RowService::new(process, handle, json!({ "greet": "sync" })))
+    });
     (projection, held, release)
 }
 
