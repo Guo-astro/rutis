@@ -27,7 +27,7 @@ Enable only the language features you use so the application compiles and starts
 
 ## Mount Rust plugins
 
-How to write a Rust plugin: [write a Rust plugin](rust-plugin.en.md); `Greeter`, `Printer` and `Weather` below are its examples. The methods of a host (making and closing the root, reading and writing by key, mounting from configuration) are in `rutis::host`; after `use rutis::host::*;` they are methods of `Ctx`:
+How to write a Rust plugin: [write a Rust plugin](rust-plugin.en.md); `Greeter`, `Printer` and `Weather` below are sample plugins. The methods of a host (making and closing the root, reading and writing by key, mounting from configuration) are in `rutis::host`; after `use rutis::host::*;` they are methods of `Ctx`:
 
 ```rust
 use rutis::host::*;
@@ -593,7 +593,7 @@ For rutis-loader configuration, `rutis_loader::peer::register_peer_node` registe
 
 ## Events
 
-The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what `ctx.emit` and the other modes send reaches listeners in every language, and what they emit reaches the Rust listeners here. How plugins write it: [write a Rust plugin: events](rust-plugin.en.md#events); a host uses the same methods on its root `Ctx`.
+The host's Rust plugins, the plugins in every runtime (any language) and the listeners on linked nodes are on one logical bus ([plugin API: events](plugin-api.en.md#events)). Runtime listeners register themselves and the host side configures nothing: what `ctx.emit` and the other modes send reaches listeners in every language, and what they emit reaches the Rust listeners here. How plugins write it: [write a Rust plugin: events](rust-plugin.en.md#5-emit-and-listen-to-events); a host uses the same methods on its root `Ctx`.
 
 An event type is named across languages by `Event::NAME` and its arguments are serde-encoded, so it and its `Value` derive `Serialize` / `Deserialize`. A tuple struct of two or more fields is that many arguments, so `Created` below is `emit("session/created", id, size)` in other languages:
 
@@ -650,7 +650,7 @@ off.dispose().await?;
 | Framework events | `rutis_loader::RowEvent` (`rutis/row`), `rutis_bridge::events::{ServiceEvent, RuntimeEvent}` (`rutis/service`, `rutis/runtime`): listen with `ctx.on`; emitting `rutis/*` fails with `ReservedEvent` |
 | Nodes | `Features { export, import }` of `PeerPlugin` select events too (names or `*` prefixes), see [nodes](#nodes) and [connecting nodes](nodes.en.md#events-between-nodes) |
 
-Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#3-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
+Tests need no separate tool: in a `#[tokio::test]`, take `Ctx::root()` (or `Ctx::root_with_sink` to collect `emit` failures), load the plugins, and emit and assert as above ([write a Rust plugin: test](rust-plugin.en.md#6-test)). Listeners in runtimes need a real runtime (`LocalRuntime`), as in production.
 
 ## Exported services: reference
 
