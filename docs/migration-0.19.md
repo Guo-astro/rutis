@@ -2,7 +2,22 @@
 
 [English](migration-0.19.en.md)
 
-0.19 面向宿主持有者。不兼容的有四处：远程运行时与设备的连接（下面第一节）、宿主与运行时要一起升级（会话协议 4）、宿主一侧的 token，与平台清理（最后一节：删掉的写法直接删，不标弃用，不做转换或提示）；其余是默认关闭的新选项，各节随 0.19 的改动补齐。
+0.19 面向宿主持有者。下面只写和 0.18 相比的变化。删掉的写法直接删，不标弃用，不做转换或提示。不兼容的改动按类列在这里，每类的改法见对应一节：
+
+- **协议 4**：0.18 及更早的宿主、运行时、节点与 SDK 在握手时被拒，要一起升级到 0.19（[一起升级](#一起升级695)）。
+- **远程配置的写法**：`runtimes.remote`、`rutis-bridge/peer` 行与 `peer:` 行删除，改为连接行 `rutis-host/dial`、`rutis-host/listen`（[远程运行时与设备](#远程运行时与设备695696698)）；宿主一侧的 token 按连接行的 id 取（[宿主一侧的 token](#宿主一侧的-token695)）。
+- **节点**：节点行去掉 `host: true`、`export`、`import`，给出 token 就允许对方在本节点运行插件；Cordis 应用作为节点（`@arcships/rutis-runtime/bridge`）删除（[节点](#节点)）。
+- **SDK 根上的旧名直接删**：移到 advanced 的名字在旧位置找不到（[SDK 的默认入口](#sdk-的默认入口692)）。
+- **服务名 `loader` 被占**：自己提供 `loader` 的行失败（[服务名 `loader`](#服务名-loader185)）。
+- **运行时的行与 `isolate`**：隔离里只看得到隔离里的提供者，与 Rust 行一致（[运行时的行与 `isolate`](#运行时的行与-isolate896)）。
+- **各语言的测试工具改走 `rutis-host test`**：插件跑在真实的宿主上，`scope` 等选项删除（[TypeScript 与 Bun](#typescript-与-bun-插件)、[Python](#python)、[Go](#go-插件)、[Swift](#swift)、[Kotlin](#kotlin)）。
+- **Python 最低 3.12**（[Python](#python)）。
+- **Go、Swift 的行名只留语言前缀**：`go-<二进制>:<插件>` 改为 `go:<插件>`（[Go 插件](#go-插件)）。
+- **Kotlin SDK 不发布到 Maven**：从源码引用（[Kotlin](#kotlin)）。
+- **Rust 接口删除与改名**：连接与会话部分（[Rust 嵌入](#rust-嵌入)）、平台清理（[平台清理](#平台清理694)），运行时 `emit` 的过滤器失败改报 `FilterFailed`（[错误类型](#错误类型879)）。
+- **工具**：`rutis-dev` 删除，`rutis-migrate` 不再发布，`rutis-host go add` 删除（[工具](#工具)）。
+
+其余是新增的功能，不改已有的写法。
 
 ## 远程运行时与设备（#695、#696、#698）
 
@@ -129,7 +144,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 ### Rust 嵌入
 
 - `rutis_host::control::serve` 在 `Loader` 之后多了一个参数 `Report`（一个返回状态文字的函数，`status` 用它回答）；用 `Host::status_report()` 得到它。
-- rutis 的 Rust API 不变。rutis-bridge 与 rutis-loader 的连接与会话部分改了，本机的语言运行时也和远程的一样，成了一个会话的对面（#695，[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三、§六、§八、§十三 S4）：
+- 这里只列 rutis-bridge 与 rutis-loader 的连接与会话部分（rutis 内核与其他接口的删除见[平台清理](#平台清理694)）。这部分改了，本机的语言运行时也和远程的一样，成了一个会话的对面（#695，[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三、§六、§八、§十三 S4）：
 
   | 0.18 | 0.19 |
   | --- | --- |
@@ -157,6 +172,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
   | `PeerPlugin`、`PeerHandle`、`Features`；`Peer`、`peer_key`、`Handler`、`Offered`、`Offers`、`family()` | 删：节点也是一个 `Session`，对面的插件是 `<id>:<插件>` |
   | `ExportPlugin`、`ImportPlugin`、`HostPlugin`、`LinkEventsPlugin`、`ServiceKeys` | 不需要：服务两边都全局可见，事件一条总线，对面经 `run` 运行插件 |
   | `Identity`、`IdentityPlugin`、`identity_key`、`StaticIdentity`、`Presented`；`Registration`、`Registered`、`RegistrationError`、`Registrations`、`Accepting`、`Ticket`、`Refusal`、`Deliver` | 连接插件自己的认证；id 来自握手。`fingerprint` 保留 |
+  | 运行中吊销：`Revocations`、`Revocable`、`Identity::revocations()`、`Admission::revocations()`（#834） | 删：断开现有的连接，停掉那一行 |
   | `rutis_bridge::Credential` | `rutis_bridge::websocket::Credential`（`websocket::dial` 出示的凭据） |
   | `Installed { described: Described { schema, version, integrity }, factory }`；`StaticCatalog::with(名, described, factory)` | `Installed { schema, version, factory }`；`StaticCatalog::with(名, Installed::new(factory))` |
   | rutis-loader 的 feature `peer` 与 `rutis_loader::peer`（`PeerResolver`、`PeerRows`、`PeerRowsPlugin`、`register_peer_node`、`node_schema`、`LoaderCatalog`） | 删；`<连接行>:<插件>` 的行由 `runtime::SessionResolver` 解析，`LoaderCatalog` 在 `rutis_loader::runtime` |
@@ -254,11 +270,19 @@ Kotlin 另有两点：
 - `rutis-ksp` 与 SDK 用同一个版本：0.19 之前的 `rutis-ksp` 生成的代码引用根上的旧位置，在 0.19 的 SDK 上不能编译。
 - 这些类换了包。单独发布、预先编译好的 Kotlin 插件库要用 0.19 的 SDK 重新编译后，才能和 0.19 的 SDK 放进同一个应用。
 
-不变的：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
+入口移动不影响：每种语言根上的 `definePlugin` / `define_plugin` / `Define` / `Rutis.define`，`ctx` 上的所有方法，测试工具，Rust。Swift 宏与 Kotlin KSP 生成的代码随 SDK 一起更新，不用改。插件 API 版本不变，用旧 SDK 构建的插件在 0.19 的运行时上照常运行。
 
 ## 服务名 `loader`（#185）
 
 用 `LoaderPlugin` 的宿主（包括 rutis-host）现在提供一个名叫 `loader` 的服务（[用 `loader` 管理插件](guide/plugin-api.md#用-loader-管理插件)）；自己也提供名叫 `loader` 的服务的行，现在以已有的同名错误（`service loader is already provided by …: row <行> cannot provide it too`）失败，给它的服务改名。
+
+## 运行时的行与 `isolate`（#896）
+
+运行时的行（Node、Bun、Python、Go、Swift、Kotlin 的插件）在 rutis 一侧也按它的 `isolate` 隔离，与 Rust 的行相同：
+
+- 它对 `isolate` 里的服务名只看得到隔离里的提供者（同一标签的行，或 `true` 时只有这一行自己），看不到隔离外的，宿主的服务也看不到。0.18 里这样的行在 rutis 一侧不受 `isolate` 影响，隔离里的行能用到隔离外（包括宿主）提供的同名服务；0.19 里它等隔离里的提供者。要用隔离外的服务，把这个名字从这一行的 `isolate` 里去掉。
+- 它在 `isolate` 的名字下提供的服务只在隔离里，不发布到全局。
+- 私有隔离（`true`）里没有提供者时，这一行在 `run` 的输出里显示在等这个服务（0.18 显示 `running`，实际在运行时里等）。
 
 ## 平台清理（#694）
 
@@ -266,7 +290,6 @@ Kotlin 另有两点：
 
 | 0.18 | 0.19 |
 | --- | --- |
-| `LocalRuntime::call_limit`、`kill_on_timeout`、`allowed_services`，错误码 `timeout` | 调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）；超时后插件仍卡住时，宿主用 `processes().kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `FiberView::restart()`；能用哪些服务由宿主自己决定 |
 | `Loader::set_overlay`、`overlays()`、`LoaderChanged::Overlay` | 删；要覆盖一行就在自己的层里写（`reconcile` 的层列表） |
 | 线上错误名 `CordisError`、生成类型 `CordisErrorThrown` | `Error`、`ErrorThrown` |
 | 生成类型 `ErrorThrown`，指 rutis 以外、名叫 `Error` 的错误类型时（`io::Error`、`anyhow::Error` 等） | `<模块名>ErrorThrown`（`IoErrorThrown`、`AnyhowErrorThrown`）：`ErrorThrown` 只留给 rutis 自己的错误；抛出时的 `name` 不变，仍是 `Error`（#771 X4） |
@@ -281,17 +304,24 @@ Kotlin 另有两点：
 | `rutis_loader::internal::*` | `rutis_loader::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning}`、`rutis_loader::runtime::is_runtime_name`、`rutis_loader::runtime::binary::read_binary_manifest`；插件 API 版本用 `Go::PLUGIN_API`、`Swift::PLUGIN_API`（`BinaryLanguage` 的常量） |
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
-| `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |
-| feature `anyhow`、`Error::from_anyhow` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
+| `EventBus::observe_dispatch`、`internal::DispatchAttempt` | 无替代；要观察就注册一个普通监听器 |
+| `internal::EventPattern`（按前缀订阅） | 无替代 |
+| `internal::CtxInternal` 的 `try_filter`、`try_filter_named` | `EventBus::dispatch` / `dispatch_sync` 带 `Dispatch { filter: Some(BatchFilter), … }`（`rutis::internal`） |
+| feature `anyhow`、`Error::from_anyhow`、`From<Error> for anyhow::Error` | `.map_err(\|e\| Error::msg(format!("{e:#}")))` |
 | `rutis_bridge::cordis::build::rutis_plugin`、`cordis::server` | 删（Cordis 宿主挂 Rust 插件的方向不再支持） |
-| `waterfall_sync` | 改用 `waterfall`（异步）或同步 `bail` |
-| `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代 |
+| `waterfall_sync`；事件协议的方式 `waterfall-sync`（自己实现运行时的） | 改用 `waterfall`（异步）或同步 `bail` |
+| `internal::intercept_require_as`、`intercept_set_as`、`ServiceIntercept`，`ServiceReadFailure` / `ServiceWriteFailure` 的 `Intercept*` 变体 | 无替代；`internal::CtxInternal::require_provided_as` 不再收 `actor` 参数 |
 | `rutis_bridge::build::Exports`，build-dependency `rutis-bridge = { features = ["exports"] }` | `rutis_types::Exports`，build-dependency `rutis-types`；写法不变 |
 | `internal::config::{closest, decode, …}` | `rutis::config::closest`；校验 `rutis::config::check` |
 | `rutis_loader::config::check(schema, config, options)` | `rutis::config::check(schema, config)` |
-| `internal::provide_checked`、`refresh`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
+| `internal::provide_checked`、`refresh`、`service::Check`、`Exposure` 的 `check`，`DependencyStatus::CheckPending`、`CheckRejected`、`CheckPanicked` | 无替代 |
+| `rutis_bridge::session::Connection::independent_future` | 无替代 |
 | `rutis_loader::backoff`、`runtime::binary::{RestartPolicy, RuntimeEnd}`、`BinaryRuntimesHandle::supervise` / `unsupervise` | 删：加载器不再重启崩溃的 Go/Swift 运行时。自己调用 `BinaryRuntimesHandle::restart(name)`；握手被拒的二进制用新的 `runtime::binary::refused(why)` 判断，重启也起不来。用 rutis-host 时写 `runtimes.<key>.restart` |
 | `internal::CtxInternal` 的 `get_key`、`require_key`、`provide_key`（键是 `TypeKey`） | 持有 `rutis::host::Key<T>`，用 `CtxHost` 的 `get_at`、`require_at`、`provide_at`。随之改为 `Key`：`ServiceCatalog::register_keyed`、`readable_keyed` 的 `key` 参数；`SessionRows::key(行)` 返回 `Key<SessionRows>`；`Projection::service_keyed`、`service_keyed_occupied` 的 `key` 参数；`row_projection_with`、`row_projection_of` 的 `key` 函数返回 `Key<dyn HostDispatch>`（直接传 `host_key`）。要 `TypeKey` 时（`DynPlugin::injects`）用 `key.erase()` |
+
+### 错误类型（#879）
+
+运行时经宿主发出的 `emit` 里，过滤器失败时宿主的错误接收方收到 `ErrorKind::FilterFailed { name, emitter, error }`（`emitter` 是 `row <行>` 或 `the mount`），与 Rust 插件里的同类失败相同；0.18 是 `ErrorKind::PluginFailed(<文字>)`。按 `PluginFailed` 认这种失败的 Rust 代码改为按 `FilterFailed`。打印的文字不变：`filter of t/fe from row chat failed: FErr: no`。
 
 ### 工具
 
@@ -351,6 +381,7 @@ Kotlin 另有两点：
 
 ### Kotlin
 
+- Kotlin SDK 不发布到 Maven（0.18 是 `implementation("io.github.arcships:rutis:0.18.0")`）：取本仓库的 tag `v0.19.0`，用 `includeBuild("../rutis/kotlin/rutis")` 引入，依赖不写版本（`implementation("io.github.arcships:rutis")`、`ksp("io.github.arcships:rutis-ksp")`），见 [kotlin-app](guide/kotlin-app.md#1-依赖)。
 - 测试工具是单独的构件 `io.github.arcships:rutis-testing`（jvm）：`testImplementation("io.github.arcships:rutis-testing")`，并 `kspTest("io.github.arcships:rutis-ksp")`（SDK 从源码引用，不写版本，见 [kotlin-app](guide/kotlin-app.md#1-依赖)）。它在测试进程里跑插件真实的运行时，作为 `rutis-host test` 的一行，需要 `rutis-host`（`PATH` 上或 `RUTIS_HOST`）。
 - 测试工具不再有 scope：`RutisTest.load(scope:)`、`Loaded.load(scope:)`、`RutisTest.scope(...)` 删除；`RutisTest.load(runtime:)` 与 `Loaded.provided` 删除。行 id 不给时由 rutis 按插件名取（不再是 `test`）；装载失败的文字是该行的状态行（`weather: config: city is required`）；`loaded.reported()` 是 rutis 报告的行（`weather: listener of x failed: …`）。
 - 测试给的服务、`loaded.on`、`emit` 等是同一个运行时里的插件，值不跨进程。
