@@ -11,13 +11,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use common::runtimes::{layer, repo, row_state, rows_stage, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Probe, TestRuntime, COLD,
+};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
+use rutis_bridge::runtime::Launcher;
 use rutis_bridge::session::host_key;
 use rutis_loader::report::EntryStatus;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderError, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -97,20 +99,23 @@ async fn fixture_with(install: impl FnOnce(&Path)) -> Fixture {
     for name in ["probe", "forecast"] {
         catalog.register_shared(name);
     }
-    let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
-    let rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let bun = TestRuntime::bun(dir.path());
+    let sessions = Arc::new(SessionResolver::new(&catalog));
+    sessions.runtime(bun.handle());
     let runtime = root.plugin(bun);
     (&runtime).await.unwrap();
     let plugin = LoaderPlugin::new(
-        Chain::new().with_shared(rows.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, rows).await;
+    rows_stage(&root, &sessions, "bun").await;
     Fixture {
         root,
         loader,
@@ -280,13 +285,18 @@ async fn a_runtime_that_cannot_start_does_not_block_resolution() {
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();
     std::fs::write(dir.path().join("bystander.ts"), sdk_plugin(BYSTANDER)).unwrap();
     let root = Ctx::root().unwrap();
-    let bun = LocalRuntime::bun(dir.path().join("no-runtime-here"), dir.path());
-    let resolver = Arc::new(RuntimeResolver::modules(bun.handle()));
+    greet_as_main(&root);
+    let launcher = Launcher::bun(None, &dir.path().join("no-runtime-here"), dir.path());
+    let bun = TestRuntime::new("bun", launcher, dir.path());
+    let options = LoaderOptions::default();
+    let sessions = Arc::new(SessionResolver::new(&options.catalog));
+    sessions.runtime(bun.handle());
     let runtime = root.plugin(bun);
     let _ = (&runtime).await;
     assert_eq!(runtime.state().state, FiberState::Failed);
-    let plugin = LoaderPlugin::new(Chain::new().with_shared(resolver), LoaderOptions::default());
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
     let report = COLD
         .within(
@@ -331,7 +341,7 @@ async fn a_broken_edit_keeps_the_previous_module_and_a_fix_reloads() {
     fixture.probe.wait_for("v1: start").await;
     // `start` is recorded inside `apply`, before the row runs in rutis, and
     // `reconcile` does not wait for that when the row waits for the
-    // runtime's rows stage (`RuntimeRows`). A reload that fails changes
+    // runtime's rows stage (`SessionRows`). A reload that fails changes
     // nothing, so a row still loading stays `Loading`: wait until it runs.
     COLD.until(
         || row_state(&fixture.loader, "e") == Some(FiberState::Active),

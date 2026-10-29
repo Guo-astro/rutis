@@ -7,6 +7,8 @@
 //! - `rutis-host/listen`: takes the connections presenting its token on one
 //!   of the host's listeners, one session per connection, a newer
 //!   connection of an id replacing the older ([`listen`]).
+//! - `rutis-host/spawn`: starts a local runtime's process, the rows
+//!   `runtimes.*` write ([`spawn`]).
 //!
 //! Each row is named by its id: its output lines start with it, and its
 //! token is `RUTIS_TOKEN_<row id>`.
@@ -23,8 +25,10 @@ use serde_json::{json, Value};
 pub mod dial;
 pub mod listen;
 pub(crate) mod session;
+pub mod spawn;
 
 pub use listen::Router;
+pub use spawn::SpawnPlugin;
 
 pub const DIAL: &str = "rutis-host/dial";
 pub const LISTEN: &str = "rutis-host/listen";

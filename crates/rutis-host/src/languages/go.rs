@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use rutis::host::BoxFuture;
-use rutis_bridge::runtime::{Launcher, LocalRuntime};
+use rutis_bridge::runtime::Launcher;
 use serde_json::{json, Value};
 
 use super::binary::{self, DevBuild};
@@ -330,8 +330,8 @@ impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
         rutis_bridge::runtime::go_runtime_name(path)
     }
 
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime {
-        let launcher = Launcher::new(DELVE)
+    fn launch(binary: &Path, project: &Path) -> Launcher {
+        Launcher::new(DELVE)
             .arg("exec")
             .arg("--headless")
             .arg(format!("--listen={DELVE_ADDRESS}"))
@@ -340,8 +340,7 @@ impl rutis_loader::runtime::binary::BinaryLanguage for Delve {
             .arg("--continue")
             .arg(binary)
             .arg("--")
-            .cwd(project);
-        LocalRuntime::launcher(Self::runtime_name(binary), launcher, project)
+            .cwd(project)
     }
 }
 

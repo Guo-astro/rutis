@@ -14,8 +14,9 @@ Plugin sources (`Resolver`):
 | source | row name | feature |
 | --- | --- | --- |
 | `Builtins` | any registered name | |
-| `runtime::RuntimeResolver::node` | npm package, subpath or file | `node` |
-| `runtime::RuntimeResolver::modules` | `<runtime>:<plugin>`: `py:<module>` for Python; for a Node runtime of its own (one process per plugin), `<runtime>:<npm name or file>` | `python` or `node` |
+| `runtime::SessionResolver::new` | `<runtime>:<plugin>`, the plugin run on the far end of that row's session (a local runtime started by rutis-host's `connect::SpawnPlugin`, or a remote one): `py:<module>` for Python; for a Node runtime of its own (one process per plugin), `<runtime>:<npm name or file>` | `node`, `python` or `bun` |
+| `runtime::SessionResolver::npm` | also npm package, subpath or file, on the Node runtime's row | `node` |
+| `runtime::binary::BinaryResolver` | `go:<plugin>`, `swift:<plugin>`: one runtime per compiled binary | `go`, `swift` |
 | `peer::PeerResolver`, `peer::register_peer_node` | `peer:<node>/<plugin>`, `rutis-bridge/peer` | `peer` |
 | `rutis_dylib::DylibResolver` | `dylib:<dir>` | rutis-dylib's `loader` |
 

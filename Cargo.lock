@@ -2118,6 +2118,7 @@ version = "0.1.0"
 dependencies = [
  "rutis",
  "rutis-bridge",
+ "rutis-host",
  "rutis-loader",
  "rutis-test-support",
  "rutis-types",
@@ -3054,6 +3055,7 @@ dependencies = [
  "rust-services-calendar",
  "rutis",
  "rutis-bridge",
+ "rutis-host",
  "rutis-loader",
  "rutis-test-support",
  "rutis-types",
@@ -3335,6 +3337,7 @@ version = "0.0.0"
 dependencies = [
  "rutis",
  "rutis-bridge",
+ "rutis-host",
  "rutis-loader",
  "schemars",
  "serde",
@@ -3348,6 +3351,7 @@ version = "0.0.0"
 dependencies = [
  "rutis",
  "rutis-bridge",
+ "rutis-host",
  "rutis-loader",
  "serde_json",
  "tokio",
@@ -3378,6 +3382,7 @@ dependencies = [
  "rutis-loader",
  "rutis-test-support",
  "rutis-types",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

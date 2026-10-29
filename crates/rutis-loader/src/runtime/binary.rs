@@ -12,8 +12,8 @@
 //! some directories: those containing its SDK's marker) and resolves
 //! `<prefix>:<plugin>` to the binary that has the plugin (a plugin name in
 //! two binaries is an error naming both files); [`BinaryRuntimes`] starts a
-//! binary's runtime when a row resolves to it, stops it once idle, and
-//! starts it again after its process ended as a [`RestartPolicy`] says.
+//! binary's runtime when a row resolves to it, and stops it once idle.
+//! Restarting one whose process ended is the application's.
 //!
 //! A runtime is named after its file ([`BinaryLanguage::runtime_name`],
 //! `go-<name>`): that is the name [`BinaryRuntimesHandle::restart`] and
@@ -36,13 +36,13 @@ use rutis::host::{
 use rutis::{Ctx, Error};
 use rutis_bridge::pipe::{isolate_manifest_command, ManifestChild, Processes};
 use rutis_bridge::runtime::{
-    LocalRuntime, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
+    Launcher, RowSchema, RuntimeHandle, RuntimeState, Stdio as RuntimeStdio,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{leaf_resolved, RowsSource, RuntimeRowsPlugin};
-use crate::backoff::{Backoff, LIMIT, WINDOW};
+use super::sessions::{RowsSource, SessionRowsPlugin};
+use super::{leaf_resolved_on, RowRuntime};
 use crate::loader::EntryStatus;
 use crate::resolver::Resolved;
 use crate::{Loader, LoaderError, Resolver, ServiceCatalog};
@@ -65,10 +65,24 @@ pub trait BinaryLanguage: Send + Sync + 'static {
     const PLUGIN_API: u64;
     /// The runtime the binary at `path` runs as: `<PREFIX>-<file>`.
     fn runtime_name(path: &Path) -> String;
-    /// The local runtime that runs `binary` in `project` (its channel is
-    /// the local transport's: an inherited fd, or loopback).
-    fn launch(binary: &Path, project: &Path) -> LocalRuntime;
+    /// How `binary` is started in `project` (its channel an inherited fd,
+    /// or loopback).
+    fn launch(binary: &Path, project: &Path) -> Launcher;
 }
+
+/// A runtime started as the far end of a session: the plugin that starts
+/// it (its fiber is the row named after the runtime, under which the
+/// session provides its handle), and its state.
+pub struct Spawned {
+    pub plugin: Box<dyn DynPlugin>,
+    pub handle: RuntimeHandle,
+    pub processes: Processes,
+}
+
+/// What starts a runtime: `(name, launcher, anchor)`, its process started
+/// with `launcher` (`Launcher::start`, as `--id <name>`, `anchor` last).
+/// The application's (rutis-host's `rutis-host/spawn`).
+pub type Spawn = Arc<dyn Fn(&str, Launcher, &Path) -> Spawned + Send + Sync>;
 
 /// How often [`BinaryRuntimes`] looks for runtimes to start or stop.
 const SWEEP: Duration = Duration::from_millis(100);
@@ -1094,9 +1108,9 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             "inject": described.inject,
             "provides": described.provides,
         });
-        let resolved = leaf_resolved(
+        let resolved = leaf_resolved_on(
             name,
-            &binary.runtime,
+            RowRuntime::Session(binary.runtime.clone()),
             PathBuf::from(plugin),
             gated,
             described,
@@ -1141,18 +1155,14 @@ impl<L: BinaryLanguage> Resolver for BinaryResolver<L> {
     }
 }
 
-/// The rows of one runtime, for its [`RuntimeRowsPlugin`].
+/// The rows of one runtime, for its [`SessionRowsPlugin`].
 struct BinaryRows<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
     runtime: String,
 }
 
 impl<L: BinaryLanguage> RowsSource for BinaryRows<L> {
-    fn runtime_name(&self) -> &str {
-        &self.runtime
-    }
-
-    fn take_stale(&self) -> HashSet<String> {
+    fn take_stale(&self, _session: &str) -> HashSet<String> {
         self.resolver.take_stale(&self.runtime)
     }
 }
@@ -1160,67 +1170,8 @@ impl<L: BinaryLanguage> RowsSource for BinaryRows<L> {
 /// Whether a runtime is down because its session was refused (events
 /// protocol §2.2: `incompatible session: …`), which starting the same
 /// binary again would only repeat.
-fn refused(why: &str) -> bool {
+pub fn refused(why: &str) -> bool {
     why.starts_with("incompatible session: ")
-}
-
-// ── Restarts ─────────────────────────────────────────────────────
-
-/// What [`BinaryRuntimes`] does when a runtime's process ends on its own (a
-/// crash, `kill -9`, a plugin making it exit), once supervising
-/// ([`BinaryRuntimesHandle::supervise`]). A runtime the session refused
-/// (an old SDK) did not end on its own: it stays down, whatever this says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RestartPolicy {
-    /// Nothing: its rows wait. A new binary, or
-    /// [`BinaryRuntimesHandle::restart`], starts it again.
-    #[default]
-    No,
-    /// Start it again after the [`Backoff`]'s wait, up to its limit
-    /// ([`RuntimeEnd::Restarting`], [`RuntimeEnd::GaveUp`]).
-    OnFailure,
-    /// Nothing here: [`RuntimeEnd::Exit`] says so, for the application to
-    /// stop.
-    Exit,
-}
-
-/// What supervising did about a runtime whose process ended, as
-/// [`BinaryRuntimesHandle::supervise`] reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RuntimeEnd {
-    /// `on-failure`: its wait is over, and it starts again now.
-    Restarting { runtime: String },
-    /// `on-failure`: it was restarted [`LIMIT`] times within [`WINDOW`]
-    /// and ended again; it stays down.
-    GaveUp { runtime: String },
-    /// `exit`: it ended, and why.
-    Exit { runtime: String, why: String },
-}
-
-impl RuntimeEnd {
-    /// The line a host prints for it, if any: `runtime <name>: restarting`,
-    /// `runtime <name>: gave up after 5 restarts within 5 minutes`
-    /// (rutis-host's, for every local runtime).
-    pub fn line(&self) -> Option<String> {
-        match self {
-            RuntimeEnd::Restarting { runtime } => Some(format!("runtime {runtime}: restarting")),
-            RuntimeEnd::GaveUp { runtime } => Some(format!(
-                "runtime {runtime}: gave up after {LIMIT} restarts within {} minutes",
-                WINDOW.as_secs() / 60
-            )),
-            RuntimeEnd::Exit { .. } => None,
-        }
-    }
-}
-
-type Report = Arc<dyn Fn(RuntimeEnd) + Send + Sync>;
-
-/// A [`RestartPolicy`] in force, and where its ends go.
-#[derive(Clone)]
-struct Supervision {
-    policy: RestartPolicy,
-    report: Report,
 }
 
 // ── BinaryRuntimes ───────────────────────────────────────────────
@@ -1259,10 +1210,7 @@ struct Slot {
     binary: PathBuf,
     last_used: Instant,
     stopped: Option<String>,
-    /// When it started (on the async runtime's clock), for the backoff.
-    started: tokio::time::Instant,
-    /// Which start it is: a restart decided for one start does not restart
-    /// a later one.
+    /// Which start it is ([`BinaryRuntimesHandle::states_started`]).
     generation: u64,
 }
 
@@ -1301,40 +1249,19 @@ impl Slot {
     }
 }
 
-/// A runtime whose process ended, as noted: for [`Inner::ended`].
-struct Ended {
-    runtime: String,
-    why: String,
-    ran: Duration,
-    generation: u64,
-}
-
 type StartFailure = (Option<PathBuf>, String);
 type Prepared<L> = Result<(Ctx, BinaryRuntime<L>, PathBuf, Launched), StartFailure>;
 
 struct Inner<L: BinaryLanguage> {
     resolver: Arc<BinaryResolver<L>>,
     project: PathBuf,
+    spawn: Spawn,
     /// Set by the builder methods before the plugin runs.
     settings: Mutex<Settings>,
     ctx: Mutex<Option<Ctx>>,
     slots: Mutex<Slots>,
     /// Wanted before the plugin ran.
     early: Mutex<HashSet<String>>,
-    /// The restart policy in force, while supervising.
-    supervision: Mutex<Option<Supervision>>,
-    /// The ends noted before supervising first started (a runtime that
-    /// crashed as it started, while the application was still starting),
-    /// for [`BinaryRuntimesHandle::supervise`] to handle: the latest of
-    /// each runtime, so at most one per runtime. `None` once it did, or
-    /// once [`BinaryRuntimesHandle::unsupervise`] said it will not come.
-    /// Locked under `supervision`.
-    unreported: Mutex<Option<HashMap<String, Ended>>>,
-    /// Each runtime's restarts so far, kept across its starts and stops.
-    backoffs: Mutex<HashMap<String, Backoff>>,
-    /// The restarts waiting out their backoff: aborted when supervising
-    /// stops.
-    pending: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1433,13 +1360,18 @@ impl<L: BinaryLanguage> Clone for BinaryRuntimesHandle<L> {
 }
 
 impl<L: BinaryLanguage> BinaryRuntimes<L> {
-    /// Runtimes for the binaries `resolver` knows, run in `project`; they
-    /// stop 60 s after their last row is gone.
-    pub fn new(resolver: Arc<BinaryResolver<L>>, project: impl Into<PathBuf>) -> Self {
+    /// Runtimes for the binaries `resolver` knows, run in `project`,
+    /// started by `spawn`; they stop 60 s after their last row is gone.
+    pub fn new(
+        resolver: Arc<BinaryResolver<L>>,
+        project: impl Into<PathBuf>,
+        spawn: Spawn,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 resolver,
                 project: project.into(),
+                spawn,
                 settings: Mutex::new(Settings {
                     idle: Some(Duration::from_secs(60)),
                     eager: false,
@@ -1449,10 +1381,6 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
                 ctx: Mutex::new(None),
                 slots: Mutex::default(),
                 early: Mutex::default(),
-                supervision: Mutex::new(None),
-                unreported: Mutex::new(Some(HashMap::new())),
-                backoffs: Mutex::default(),
-                pending: Mutex::default(),
             }),
             name: format!("{}-runtimes", L::PREFIX),
             injects: [TypeKey::of::<Loader>()],
@@ -1477,7 +1405,7 @@ impl<L: BinaryLanguage> BinaryRuntimes<L> {
 
     /// Where each runtime process's standard output and error go: this
     /// process's by default ([`RuntimeStdio::Inherit`]), as
-    /// [`LocalRuntime::stdout`] and [`LocalRuntime::stderr`].
+    /// [`Launcher::stdout`] and [`Launcher::stderr`].
     pub fn output(self, stdout: RuntimeStdio, stderr: RuntimeStdio) -> Self {
         self.inner.settings.lock().unwrap().output = (stdout, stderr);
         self
@@ -1532,55 +1460,6 @@ impl<L: BinaryLanguage> BinaryRuntimesHandle<L> {
             true => format!("the restart of {name} panicked"),
             false => format!("the restart of {name} was cancelled: the async runtime stopped"),
         })?
-    }
-
-    /// From now on, when a runtime's process ends on its own, do what
-    /// `policy` says, telling `report` (on whatever thread noticed): with
-    /// [`RestartPolicy::OnFailure`], start it again after the [`Backoff`]'s
-    /// wait (1 s, doubling up to 30 s; one that ran a minute starts over
-    /// from 1 s), and give up once it was restarted [`LIMIT`] times within
-    /// [`WINDOW`]; with [`RestartPolicy::Exit`], only report it. Replaces
-    /// an earlier call's policy and report. A runtime stopped (idle, a
-    /// restart, the plugin disposed) did not end on its own. The first
-    /// call also handles the runtimes that ended before it and are still
-    /// down (one that crashed as it started, while the application was
-    /// starting).
-    pub fn supervise(
-        &self,
-        policy: RestartPolicy,
-        report: impl Fn(RuntimeEnd) + Send + Sync + 'static,
-    ) {
-        let earlier = {
-            let mut supervision = self.inner.supervision.lock().unwrap();
-            *supervision = Some(Supervision {
-                policy,
-                report: Arc::new(report),
-            });
-            self.inner.unreported.lock().unwrap().take()
-        };
-        for ended in earlier.unwrap_or_default().into_values() {
-            // Unless something started or stopped it since.
-            let still = self
-                .inner
-                .slots
-                .lock()
-                .unwrap()
-                .running
-                .get(&ended.runtime)
-                .is_some_and(|slot| slot.generation == ended.generation && slot.stopped.is_some());
-            if still {
-                self.inner.ended(ended);
-            }
-        }
-    }
-
-    /// Stop supervising: a restart waiting out its backoff does not happen
-    /// (the application is stopping). One already starting goes on. Called
-    /// before any [`BinaryRuntimesHandle::supervise`], it says none is
-    /// coming (restart `no`): the ends noted so far are dropped, and no
-    /// more are kept for it.
-    pub fn unsupervise(&self) {
-        self.inner.unsupervise();
     }
 
     /// Every runtime: those that run, and the binaries not started.
@@ -1724,7 +1603,6 @@ impl<L: BinaryLanguage> Inner<L> {
             self.early.lock().unwrap().insert(runtime.to_owned());
             return;
         }
-        let mut ended = None;
         let transition = {
             let mut slots = self.slots.lock().unwrap();
             if slots.busy.contains(runtime) {
@@ -1739,23 +1617,17 @@ impl<L: BinaryLanguage> Inner<L> {
             let transition = match slots.running.get_mut(runtime) {
                 Some(slot) => {
                     slot.last_used = Instant::now();
-                    if let Some(why) = slot.ended() {
+                    if slot.ended().is_some() {
                         // Its process is gone: rows resolve from the file.
                         self.resolver.stopped(runtime);
-                        ended = Some(Ended {
-                            runtime: runtime.to_owned(),
-                            why,
-                            ran: slot.started.elapsed(),
-                            generation: slot.generation,
-                        });
                     }
                     match &slot.stopped {
                         // Running: it keeps its process until restarted
                         // (`replace`, `restart`).
                         None => None,
                         // Crashed: only a new binary is worth another try
-                        // here; its restart policy may start it again. A
-                        // binary that disappeared is not "changed".
+                        // here; the application may restart it. A binary
+                        // that disappeared is not "changed".
                         Some(_) => {
                             let now = stamp(&slot.binary);
                             (now.is_some() && now != slot.stamp && !quiet)
@@ -1779,11 +1651,7 @@ impl<L: BinaryLanguage> Inner<L> {
             transition
         };
         match transition {
-            None => {
-                if let Some(ended) = ended {
-                    self.ended(ended);
-                }
-            }
+            None => {}
             Some(Transition::Start) => {
                 let _busy = Busy::held(self, runtime);
                 if let Err((binary, why)) = self.start(runtime) {
@@ -1835,10 +1703,11 @@ impl<L: BinaryLanguage> Inner<L> {
             output: settings.output,
             prefix_output: settings.prefix_output,
             resolver: self.resolver.clone(),
+            spawn: self.spawn.clone(),
             first: Mutex::new(None),
         };
-        let local = runtime_plugin.local();
-        runtime_plugin.first = Mutex::new(Some(local));
+        let spawned = runtime_plugin.spawned();
+        runtime_plugin.first = Mutex::new(Some(spawned));
         Ok((ctx, runtime_plugin, binary, launched))
     }
 
@@ -1854,8 +1723,8 @@ impl<L: BinaryLanguage> Inner<L> {
         self.resolver.launched(runtime, launched);
         let (handle, processes) = {
             let first = runtime_plugin.first.lock().unwrap();
-            let local = first.as_ref().expect("the first runtime was just made");
-            (local.handle(), local.processes())
+            let spawned = first.as_ref().expect("the first runtime was just made");
+            (spawned.handle.clone(), spawned.processes.clone())
         };
         let view = ctx.plugin(runtime_plugin);
         let mut slots = self.slots.lock().unwrap();
@@ -1872,7 +1741,6 @@ impl<L: BinaryLanguage> Inner<L> {
                 binary,
                 last_used: Instant::now(),
                 stopped: None,
-                started: tokio::time::Instant::now(),
                 generation,
             },
         );
@@ -1901,113 +1769,6 @@ impl<L: BinaryLanguage> Inner<L> {
         let (ctx, plugin, binary, launched) = self.prepare(runtime)?;
         self.install(runtime, ctx, plugin, binary, launched);
         Ok(())
-    }
-
-    fn unsupervise(&self) {
-        let mut supervision = self.supervision.lock().unwrap();
-        *supervision = None;
-        *self.unreported.lock().unwrap() = None;
-        drop(supervision);
-        for pending in self.pending.lock().unwrap().drain(..) {
-            pending.abort();
-        }
-    }
-
-    /// The process of a runtime ended on its own: do what the restart
-    /// policy says, if supervising.
-    fn ended(self: &Arc<Self>, ended: Ended) {
-        // Starting the same binary again would only be refused again.
-        if refused(&ended.why) {
-            return;
-        }
-        let supervision = {
-            let supervision = self.supervision.lock().unwrap();
-            match &*supervision {
-                Some(supervision) => supervision.clone(),
-                None => {
-                    // Not yet supervising: for `supervise` to handle.
-                    // An earlier end of the same runtime is over: a later
-                    // start replaced it.
-                    if let Some(unreported) = &mut *self.unreported.lock().unwrap() {
-                        unreported.insert(ended.runtime.clone(), ended);
-                    }
-                    return;
-                }
-            }
-        };
-        let Ended {
-            runtime,
-            why,
-            ran,
-            generation,
-        } = ended;
-        match supervision.policy {
-            RestartPolicy::No => {}
-            RestartPolicy::Exit => (supervision.report)(RuntimeEnd::Exit { runtime, why }),
-            RestartPolicy::OnFailure => {
-                let wait = self
-                    .backoffs
-                    .lock()
-                    .unwrap()
-                    .entry(runtime.clone())
-                    .or_default()
-                    .next(tokio::time::Instant::now(), ran);
-                let Some(wait) = wait else {
-                    (supervision.report)(RuntimeEnd::GaveUp { runtime });
-                    return;
-                };
-                let Ok(tokio) = tokio::runtime::Handle::try_current() else {
-                    return;
-                };
-                let inner = self.clone();
-                let task = tokio.spawn(async move {
-                    tokio::time::sleep(wait).await;
-                    inner.restart_after_end(runtime, generation).await;
-                });
-                let mut pending = self.pending.lock().unwrap();
-                pending.retain(|task| !task.is_finished());
-                pending.push(task);
-            }
-        }
-    }
-
-    /// The backoff of `runtime`'s start `generation` is over: start it
-    /// again, unless supervising stopped, or something else started or
-    /// stopped it meanwhile (a new binary, a restart, an idle stop).
-    async fn restart_after_end(self: Arc<Self>, runtime: String, generation: u64) {
-        let Some(supervision) = self.supervision.lock().unwrap().clone() else {
-            return;
-        };
-        // The policy may have changed while this restart waited.
-        if supervision.policy != RestartPolicy::OnFailure {
-            return;
-        }
-        let Some(busy) = Busy::take(&self, &runtime) else {
-            return;
-        };
-        let still = self
-            .slots
-            .lock()
-            .unwrap()
-            .running
-            .get(&runtime)
-            .is_some_and(|slot| slot.generation == generation && slot.stopped.is_some());
-        if !still {
-            return;
-        }
-        (supervision.report)(RuntimeEnd::Restarting {
-            runtime: runtime.clone(),
-        });
-        // In a task of its own: aborted half way (supervising stopped),
-        // the restart would free the name while the old runtime is still
-        // stopping (#307).
-        let inner = self.clone();
-        let restart = tokio::spawn(async move {
-            if let Err(error) = inner.restart_now(&runtime, busy).await {
-                eprintln!("runtime {runtime}: cannot restart: {error}");
-            }
-        });
-        let _ = restart.await;
     }
 
     /// The runtimes the session refused (events protocol §2.2), as a local
@@ -2091,13 +1852,8 @@ impl<L: BinaryLanguage> Inner<L> {
             let now = Instant::now();
             let Slots { running, busy, .. } = &mut *slots;
             for (name, slot) in running.iter_mut() {
-                if let Some(why) = slot.ended() {
-                    crashed.push(Ended {
-                        runtime: name.clone(),
-                        why,
-                        ran: slot.started.elapsed(),
-                        generation: slot.generation,
-                    });
+                if slot.ended().is_some() {
+                    crashed.push(name.clone());
                 }
                 if used.contains(name) {
                     slot.last_used = now;
@@ -2112,10 +1868,9 @@ impl<L: BinaryLanguage> Inner<L> {
                 busy.insert(name.clone());
             }
         }
-        for ended in crashed {
+        for name in crashed {
             // Its process is gone: rows resolve from the file.
-            self.resolver.stopped(&ended.runtime);
-            self.ended(ended);
+            self.resolver.stopped(&name);
         }
         self.fail_refused(loader);
         for name in stopping {
@@ -2186,28 +1941,22 @@ impl<L: BinaryLanguage> DynPlugin for BinaryRuntimes<L> {
                 })
             };
             let inner = self.inner.clone();
-            ctx.effect(move || {
-                async move {
-                    sweeper.abort();
-                    // Stopping its runtimes is no end of theirs.
-                    for pending in inner.pending.lock().unwrap().drain(..) {
-                        pending.abort();
-                    }
-                    *inner.ctx.lock().unwrap() = None;
-                    *inner.resolver.runtimes.lock().unwrap() = Weak::new();
-                    let names: Vec<String> = inner
-                        .slots
-                        .lock()
-                        .unwrap()
-                        .running
-                        .drain()
-                        .map(|(name, _)| name)
-                        .collect();
-                    for name in names {
-                        inner.resolver.stopped(&name);
-                    }
-                    Ok(())
+            ctx.effect(move || async move {
+                sweeper.abort();
+                *inner.ctx.lock().unwrap() = None;
+                *inner.resolver.runtimes.lock().unwrap() = Weak::new();
+                let names: Vec<String> = inner
+                    .slots
+                    .lock()
+                    .unwrap()
+                    .running
+                    .drain()
+                    .map(|(name, _)| name)
+                    .collect();
+                for name in names {
+                    inner.resolver.stopped(&name);
                 }
+                Ok(())
             })?;
             Ok(Effect::Done)
         })
@@ -2228,20 +1977,21 @@ struct BinaryRuntime<L: BinaryLanguage> {
     /// Whether each line of that output starts with its name.
     prefix_output: bool,
     resolver: Arc<BinaryResolver<L>>,
+    spawn: Spawn,
     /// The runtime whose handle the slot watches, for the first start.
-    first: Mutex<Option<LocalRuntime>>,
+    first: Mutex<Option<Spawned>>,
 }
 
 impl<L: BinaryLanguage> BinaryRuntime<L> {
-    fn local(&self) -> LocalRuntime {
-        let local = L::launch(&self.binary, &self.project)
-            .named(self.runtime.clone())
+    fn spawned(&self) -> Spawned {
+        let launcher = L::launch(&self.binary, &self.project)
             .stdout(self.output.0)
             .stderr(self.output.1);
-        match self.prefix_output {
-            true => local.output_prefix(&self.runtime),
-            false => local,
-        }
+        let launcher = match self.prefix_output {
+            true => launcher.output_prefix(&self.runtime),
+            false => launcher,
+        };
+        (self.spawn)(&self.runtime, launcher, &self.project)
     }
 }
 
@@ -2267,17 +2017,20 @@ impl<L: BinaryLanguage> DynPlugin for BinaryRuntime<L> {
                     .into(),
                 )));
             }
-            let local = self
+            let spawned = self
                 .first
                 .lock()
                 .unwrap()
                 .take()
-                .unwrap_or_else(|| self.local());
-            ctx.plugin(local);
-            ctx.plugin(RuntimeRowsPlugin::new(Arc::new(BinaryRows::<L> {
-                resolver: self.resolver.clone(),
-                runtime: self.runtime.clone(),
-            })));
+                .unwrap_or_else(|| self.spawned());
+            ctx.plugin(spawned.plugin);
+            ctx.plugin(SessionRowsPlugin::new(
+                &self.runtime,
+                Arc::new(BinaryRows::<L> {
+                    resolver: self.resolver.clone(),
+                    runtime: self.runtime.clone(),
+                }),
+            ));
             Ok(Effect::Done)
         })
     }
@@ -2550,62 +2303,5 @@ mod tests {
             "{error}"
         );
         assert!(observed.is_some());
-    }
-
-    #[cfg(feature = "go")]
-    fn ended(runtime: &str, generation: u64) -> Ended {
-        Ended {
-            runtime: runtime.into(),
-            why: "crashed".into(),
-            ran: Duration::ZERO,
-            generation,
-        }
-    }
-
-    #[cfg(feature = "go")]
-    fn kept(
-        runtimes: &crate::runtime::binary::BinaryRuntimesHandle<crate::runtime::go::Go>,
-    ) -> Option<Vec<(String, u64)>> {
-        let unreported = runtimes.inner.unreported.lock().unwrap();
-        unreported.as_ref().map(|ends| {
-            let mut kept: Vec<_> = ends
-                .values()
-                .map(|end| (end.runtime.clone(), end.generation))
-                .collect();
-            kept.sort();
-            kept
-        })
-    }
-
-    /// Ends noted before supervising are kept for it, only the latest of
-    /// each runtime; once `unsupervise` says supervising will not come
-    /// (restart `no`, or an application that never supervises and says
-    /// so), none are kept.
-    #[cfg(feature = "go")]
-    #[test]
-    fn ends_kept_for_supervising_are_bounded_and_dropped_when_it_will_not_come() {
-        let dir = tempfile::tempdir().unwrap();
-        let resolver = Arc::new(crate::runtime::binary::BinaryResolver::<
-            crate::runtime::go::Go,
-        >::new(
-            crate::runtime::binary::Binaries::new().dir(dir.path())
-        ));
-        let runtimes = crate::runtime::binary::BinaryRuntimes::<crate::runtime::go::Go>::new(
-            resolver,
-            dir.path(),
-        )
-        .handle();
-        for generation in 1..=100 {
-            runtimes.inner.ended(ended("go-a", generation));
-            runtimes.inner.ended(ended("go-b", generation));
-        }
-        assert_eq!(
-            kept(&runtimes),
-            Some(vec![("go-a".into(), 100), ("go-b".into(), 100)])
-        );
-        runtimes.unsupervise();
-        assert_eq!(kept(&runtimes), None);
-        runtimes.inner.ended(ended("go-a", 101));
-        assert_eq!(kept(&runtimes), None);
     }
 }

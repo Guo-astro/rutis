@@ -1,6 +1,7 @@
 //! The Rust application of E2E scenario S7 (#191): a multi-tenant service
-//! that embeds rutis as `docs/guide/rust-host.md` says (crates, not
-//! rutis-host), with one instance subtree per open tenant.
+//! that embeds rutis as `docs/guide/rust-host.md` says (the crates, its
+//! runtimes rutis-host's `SpawnPlugin`; not the rutis-host program), with
+//! one instance subtree per open tenant.
 //!
 //! ```text
 //! rutis-e2e-fixture-tenants [project]
@@ -31,8 +32,9 @@
 //!
 //! The Node runtime is `RUTIS_NODE_RUNTIME`; `RUTIS_PYTHON_PATH`, when set,
 //! goes ahead on the Python runtime's path. With `RUTIS_TEST_INSPECT` set
-//! the runtimes answer `inspect`; `RUTIS_TEST_ROWS_LATE_MS` releases the
-//! runtimes' rows that much later (test support).
+//! the runtimes answer `inspect`; `RUTIS_TEST_ROWS_LATE_MS` starts the
+//! runtimes that much later, so their rows are released late (test
+//! support).
 //!
 //! Commands on stdin, one per line; each is answered with one JSON line
 //! `{"answer": "<command>", …}` on stdout, with `"error"` when it failed.
@@ -63,16 +65,18 @@ use std::time::Duration;
 
 use rutis::host::*;
 use rutis::{Ctx, Error, Plugin};
-use rutis_bridge::runtime::{LocalRuntime, RuntimeHandle, Stdio};
+use rutis_bridge::runtime::{Launcher, RuntimeHandle, Stdio};
 use rutis_bridge::session::{
     host_key_in, settle, Error as CallError, HostDispatch, Reply, Value as CallValue,
 };
+use rutis_bridge::{LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
 use rutis_loader::edit::{
     Edit, Editable, Instance, InstanceResult, NewEntry, Persist, PersistError, Version,
 };
 use rutis_loader::report::EntryStatus;
 use rutis_loader::resolve::{Build, Resolved, ScopedFactory};
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{
     Builtins, Chain, Layer, Loader, LoaderError, LoaderOptions, LoaderPlugin, Patch, Resolver,
     ServiceCatalog,
@@ -203,6 +207,10 @@ impl App {
         });
         let root = Ctx::root().map_err(|e| (None, e.to_string()))?;
         let failed = |root: &Ctx, error: String| (Some(root.clone()), error);
+        // The id this application greets its runtimes with.
+        let main = PeerId::new("main").map_err(|e| failed(&root, e.to_string()))?;
+        root.provide(LocalId(main))
+            .map_err(|e| failed(&root, e.to_string()))?;
 
         let mut catalog = ServiceCatalog::new();
         catalog.register_shared("words");
@@ -212,27 +220,36 @@ impl App {
         let node_package = std::env::var_os("RUTIS_NODE_RUNTIME")
             .map(PathBuf::from)
             .ok_or_else(|| failed(&root, "RUTIS_NODE_RUNTIME is not set".into()))?;
-        // Only this program writes to stdout: its answers are whole lines.
-        let node =
-            LocalRuntime::node(node_package, project.join("package.json")).stdout(Stdio::Null);
-        let mut python = LocalRuntime::python(project.join("plugins")).stdout(Stdio::Null);
+        // The runtimes, the rows `node` and `py`. Only this program writes
+        // to stdout: its answers are whole lines.
+        let node = SpawnPlugin::new(
+            "node",
+            Launcher::node(&node_package),
+            project.join("package.json"),
+        )
+        .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
+        let plugins = project.join("plugins");
+        let mut python = SpawnPlugin::new("py", Launcher::python(&plugins), &plugins).stdio(
+            Stdio::Null,
+            Stdio::Null,
+            Stdio::Inherit,
+        );
         if let Some(source) = std::env::var_os("RUTIS_PYTHON_PATH") {
             python = python.python_path(source);
         }
         let (node_handle, python_handle) = (node.handle(), python.handle());
-        let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-        let python_rows =
-            Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
-        root.plugin(node);
-        root.plugin(python);
+        // `py:<module>` runs on the session of the row `py`; the TS files'
+        // paths on the row `node`'s.
+        let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+        sessions.runtime(node.handle());
+        sessions.runtime(python.handle());
 
         let doors = Doors::default();
         let (builtins, scoped) = rows(doors.clone());
         let chain = Chain::new()
             .with(scoped)
             .with(builtins)
-            .with_shared(python_rows.clone())
-            .with_shared(node_rows.clone());
+            .with_shared(sessions.clone());
         let plugin = LoaderPlugin::new(
             chain,
             LoaderOptions {
@@ -242,26 +259,32 @@ impl App {
             },
         );
         let loader = plugin.handle();
+        sessions.attach(&loader);
         root.plugin(plugin)
             .await
             .map_err(|e| failed(&root, format!("the loader: {e}")))?;
-        // `RUTIS_TEST_ROWS_LATE_MS`: the runtimes' rows are released that
-        // much later, as on a loaded machine (test support, #568).
+        // `RUTIS_TEST_ROWS_LATE_MS`: the runtimes start that much later, and
+        // their rows are released as late, as on a loaded machine (test
+        // support, #568).
         let late = std::env::var("RUTIS_TEST_ROWS_LATE_MS")
             .ok()
             .and_then(|ms| ms.parse().ok())
             .map(Duration::from_millis);
-        match late {
-            None => {
-                root.plugin(RuntimeRowsPlugin::new(node_rows));
-                root.plugin(RuntimeRowsPlugin::new(python_rows));
+        let start = {
+            let root = root.clone();
+            move || {
+                root.plugin(node);
+                root.plugin(python);
+                sessions.follow_row("node");
+                sessions.follow_row("py");
             }
+        };
+        match late {
+            None => start(),
             Some(late) => {
-                let root = root.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(late).await;
-                    root.plugin(RuntimeRowsPlugin::new(node_rows));
-                    root.plugin(RuntimeRowsPlugin::new(python_rows));
+                    start();
                 });
             }
         }
@@ -621,7 +644,7 @@ async fn call(door: &Door, service: &str, method: &str, args: Value) -> Result<V
 /// Wait until every global row that runs has started (or failed).
 /// `reconcile` returns once no row is in transition, but a row of a
 /// runtime waits for the runtime's rows to be released
-/// ([`RuntimeRowsPlugin`], once the runtime is up) and is `Pending` until
+/// (`SessionRows`, once the runtime is up) and is `Pending` until
 /// then: `ready` reports the rows as they run (#568).
 async fn started(loader: &Loader) -> Result<(), String> {
     for entry in loader.entries() {

@@ -9,12 +9,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use common::runtimes::{layer, repo, row_state, rows_stage, Llm, Probe, COLD};
+use common::runtimes::{
+    greet_as_main, layer, repo, row_state, rows_stage, Llm, Probe, TestRuntime, COLD,
+};
 use rutis::host::{CtxHost, FiberState, FiberView};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -215,27 +216,24 @@ async fn fixture() -> Fixture {
     for name in ["probe", "llm", "py_weather", "js_weather", "js_relay"] {
         catalog.register_shared(name);
     }
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let node = root.plugin(node);
     let python = root.plugin(python);
     let options = LoaderOptions {
         catalog,
         ..LoaderOptions::default()
     };
-    let chain = Chain::new()
-        .with_shared(python_rows.clone())
-        .with_shared(node_rows.clone());
-    let plugin = LoaderPlugin::new(chain, options);
+    let plugin = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, node_rows).await;
-    rows_stage(&root, python_rows).await;
+    rows_stage(&root, &sessions, "node").await;
+    rows_stage(&root, &sessions, "py").await;
     Fixture {
         root,
         loader,
@@ -501,5 +499,57 @@ async fn a_dead_python_process_stops_only_its_rows() {
     assert_eq!(row_state(loader, "jp"), Some(FiberState::Active));
     assert_eq!(row_state(loader, "jl"), Some(FiberState::Active));
     assert_eq!(fixture.python.state().state, FiberState::Active);
+    fixture.root.shutdown().await.unwrap();
+}
+
+/// A second row of a provider in the same runtime, its service isolated,
+/// keeps that service to its own scope: it runs next to the first, which
+/// alone provides the name to rutis (a declared service an isolated row
+/// provides used to be published anyway, and one of the two failed with
+/// `… is already provided by another plugin`). Node and Python alike.
+/// guarantee: loader/isolate-and-inject
+#[tokio::test(flavor = "multi_thread")]
+async fn an_isolated_second_provider_runs_beside_the_first() {
+    let fixture = fixture().await;
+    let isolated = |mut row: Value, isolate: Value| {
+        row["isolate"] = isolate;
+        row
+    };
+    let rows = vec![
+        py_row("pp", "py_provider"),
+        isolated(
+            py_row("pp2", "py_provider"),
+            json!({ "py_weather": "bergen" }),
+        ),
+        js_row(&fixture, "jp", "js_provider"),
+        isolated(
+            js_row(&fixture, "jp2", "js_provider"),
+            json!({ "js_weather": true }),
+        ),
+        py_row("pc", "py_consumer"),
+        js_row(&fixture, "jc", "js_consumer"),
+    ];
+    let report = fixture.loader.reconcile(layer(rows), None).await.unwrap();
+    assert!(report.failures.is_empty(), "{report:?}");
+    let probe = &fixture.probe;
+    probe.wait_for("py consumer: js sunny / js later").await;
+    probe.wait_for("js consumer: py sunny / py later").await;
+    for id in ["pp", "pp2", "jp", "jp2"] {
+        COLD.until(
+            || row_state(&fixture.loader, id) == Some(FiberState::Active),
+            &format!("{id} running"),
+        )
+        .await;
+    }
+    let status = fixture.loader.status();
+    for service in ["py_weather", "js_weather"] {
+        let providers: Vec<_> = status
+            .services
+            .iter()
+            .filter(|s| s.name == service)
+            .map(|s| s.provider.clone())
+            .collect();
+        assert_eq!(providers.len(), 1, "{service}: {status}");
+    }
     fixture.root.shutdown().await.unwrap();
 }

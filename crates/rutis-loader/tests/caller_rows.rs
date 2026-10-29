@@ -211,9 +211,8 @@ export default definePlugin({{
 #[cfg(feature = "node")]
 #[tokio::test(flavor = "multi_thread")]
 async fn node_rows_are_callers() {
-    use common::runtimes::rows_stage;
-    use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::RuntimeResolver;
+    use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
+    use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -231,17 +230,20 @@ async fn node_rows_are_callers() {
         let mut runtime = None;
         let mut resolver = None;
         let (root, loader) = loader(&ledger, |root, catalog| {
-            let node = LocalRuntime::node(
-                common::runtimes::repo().join("node/rutis-runtime"),
-                common::runtimes::repo().join("node/rutis-runtime/package.json"),
+            greet_as_main(root);
+            let node = TestRuntime::node(
+                &common::runtimes::repo().join("node/rutis-runtime/package.json"),
             );
-            let rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(catalog));
+            let sessions = Arc::new(SessionResolver::npm(catalog, "node"));
+            sessions.runtime(node.handle());
             runtime = Some(root.plugin(node));
-            resolver = Some(rows.clone());
-            Chain::new().with_shared(rows)
+            resolver = Some(sessions.clone());
+            Chain::new().with_shared(sessions)
         })
         .await;
-        rows_stage(&root, resolver.unwrap()).await;
+        let sessions = resolver.unwrap();
+        sessions.attach(&loader);
+        rows_stage(&root, &sessions, "node").await;
         let runtime = runtime.unwrap();
         rows_are_callers(&root, &loader, &ledger, &entry.to_string_lossy(), || {
             runtime.state().state == FiberState::Active
@@ -254,9 +256,8 @@ async fn node_rows_are_callers() {
 #[cfg(feature = "python")]
 #[tokio::test(flavor = "multi_thread")]
 async fn python_rows_are_callers() {
-    use common::runtimes::rows_stage;
-    use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::RuntimeResolver;
+    use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
+    use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
@@ -269,15 +270,18 @@ async fn python_rows_are_callers() {
     let mut runtime = None;
     let mut resolver = None;
     let (root, loader) = loader(&ledger, |root, catalog| {
-        let python = LocalRuntime::python(dir.path())
-            .python_path(common::runtimes::repo().join("python/rutis"));
-        let rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(catalog));
+        greet_as_main(root);
+        let python = TestRuntime::python(dir.path());
+        let sessions = Arc::new(SessionResolver::new(catalog));
+        sessions.runtime(python.handle());
         runtime = Some(root.plugin(python));
-        resolver = Some(rows.clone());
-        Chain::new().with_shared(rows)
+        resolver = Some(sessions.clone());
+        Chain::new().with_shared(sessions)
     })
     .await;
-    rows_stage(&root, resolver.unwrap()).await;
+    let sessions = resolver.unwrap();
+    sessions.attach(&loader);
+    rows_stage(&root, &sessions, "py").await;
     let runtime = runtime.unwrap();
     rows_are_callers(&root, &loader, &ledger, "py:registrant", || {
         runtime.state().state == FiberState::Active
@@ -298,7 +302,8 @@ async fn go_rows_are_callers() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::default();
     let mut resolver = None;
-    let (root, loader) = loader(&ledger, |_, catalog| {
+    let (root, loader) = loader(&ledger, |root, catalog| {
+        common::runtimes::greet_as_main(root);
         let go = Arc::new(
             BinaryResolver::<Go>::new(Binaries::new().file(common::runtimes::go_binary()))
                 .with_catalog(catalog),
@@ -307,7 +312,9 @@ async fn go_rows_are_callers() {
         Chain::new().with_shared(go)
     })
     .await;
-    let runtimes = BinaryRuntimes::<Go>::new(resolver.unwrap(), dir.path()).idle(None);
+    let runtimes =
+        BinaryRuntimes::<Go>::new(resolver.unwrap(), dir.path(), common::runtimes::spawner())
+            .idle(None);
     let go = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     rows_are_callers(&root, &loader, &ledger, "go:go_registrant", || {
@@ -331,7 +338,8 @@ async fn swift_rows_are_callers() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::default();
     let mut resolver = None;
-    let (root, loader) = loader(&ledger, |_, catalog| {
+    let (root, loader) = loader(&ledger, |root, catalog| {
+        common::runtimes::greet_as_main(root);
         let swift = Arc::new(
             BinaryResolver::<Swift>::new(Binaries::new().file(common::runtimes::swift_binary(
                 "RutisMultilang",
@@ -343,7 +351,9 @@ async fn swift_rows_are_callers() {
         Chain::new().with_shared(swift)
     })
     .await;
-    let runtimes = BinaryRuntimes::<Swift>::new(resolver.unwrap(), dir.path()).idle(None);
+    let runtimes =
+        BinaryRuntimes::<Swift>::new(resolver.unwrap(), dir.path(), common::runtimes::spawner())
+            .idle(None);
     let swift = runtimes.handle();
     root.plugin(runtimes).await.unwrap();
     rows_are_callers(&root, &loader, &ledger, "swift:swift_registrant", || {
@@ -359,30 +369,32 @@ async fn swift_rows_are_callers() {
 #[cfg(all(unix, feature = "bun"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn bun_rows_are_callers() {
-    use common::runtimes::rows_stage;
-    use rutis_bridge::runtime::LocalRuntime;
-    use rutis_loader::runtime::RuntimeResolver;
+    use common::runtimes::{greet_as_main, rows_stage, TestRuntime};
+    use rutis_loader::runtime::SessionResolver;
     use rutis_loader::Chain;
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), "{}").unwrap();
     std::fs::write(dir.path().join("registrant.ts"), sdk_plugin()).unwrap();
     let ledger = Ledger::default();
-    // Started first, as in bun_rows.rs: rows resolve from the plugins it
-    // reports once mounted.
+    // Started first, as in bun_rows.rs.
     let root = Ctx::root().unwrap();
-    let bun = LocalRuntime::bun(common::runtimes::repo().join("bun/rutis-bun"), dir.path());
+    greet_as_main(&root);
+    let bun = TestRuntime::bun(dir.path());
     let handle = bun.handle();
     let runtime = root.plugin(bun);
     (&runtime).await.unwrap();
     let mut resolver = None;
     let (root, loader) = loader_on(root, &ledger, |_, catalog| {
-        let rows = Arc::new(RuntimeResolver::modules(handle).with_catalog(catalog));
-        resolver = Some(rows.clone());
-        Chain::new().with_shared(rows)
+        let sessions = Arc::new(SessionResolver::new(catalog));
+        sessions.runtime(handle);
+        resolver = Some(sessions.clone());
+        Chain::new().with_shared(sessions)
     })
     .await;
-    rows_stage(&root, resolver.unwrap()).await;
+    let sessions = resolver.unwrap();
+    sessions.attach(&loader);
+    rows_stage(&root, &sessions, "bun").await;
     rows_are_callers(&root, &loader, &ledger, "bun:./registrant.ts", || {
         runtime.state().state == FiberState::Active
     })

@@ -10,15 +10,16 @@ mod common;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use common::runtimes::{go_binary, layer, repo, row_state, rows_stage, Probe};
+use common::runtimes::{
+    go_binary, greet_as_main, layer, repo, row_state, rows_stage, spawner, Probe, TestRuntime,
+};
 use rutis::host::{BoxFuture, CtxHost, FiberState, Key};
 use rutis::{Ctx, Error};
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::host_key;
 use rutis_loader::report::{Wait, WaitReason};
 use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
 use rutis_loader::runtime::go::Go;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Builtins, Chain, Loader, LoaderOptions, LoaderPlugin, ServiceCatalog};
 use rutis_test_support::{Guard, HANG_GUARD};
 use serde::{Deserialize, Serialize};
@@ -246,13 +247,12 @@ async fn fixture() -> Fixture {
 
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");
-    let node = LocalRuntime::node(
-        repo().join("node/rutis-runtime"),
-        repo().join("node/rutis-runtime/package.json"),
-    );
-    let python = LocalRuntime::python(&py).python_path(repo().join("python/rutis"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let node = TestRuntime::node(&repo().join("node/rutis-runtime/package.json"));
+    let python = TestRuntime::python(&py);
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let go = Arc::new(
         BinaryResolver::<Go>::new(Binaries::new().file(go_binary()))
             .with_catalog(&catalog)
@@ -274,18 +274,18 @@ async fn fixture() -> Fixture {
         Chain::new()
             .with(builtins)
             .with_shared(go.clone())
-            .with_shared(python_rows.clone())
-            .with_shared(node_rows.clone()),
+            .with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, node_rows).await;
-    rows_stage(&root, python_rows).await;
-    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path()).idle(None))
+    rows_stage(&root, &sessions, "node").await;
+    rows_stage(&root, &sessions, "py").await;
+    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path(), spawner()).idle(None))
         .await
         .unwrap();
     Fixture {
@@ -489,19 +489,22 @@ async fn a_bun_row_calls_a_marked_rust_service() {
     root.provide(Calendar::default()).unwrap();
     let mut catalog = ServiceCatalog::new();
     catalog.register_shared("probe");
-    let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
-    let rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let bun = TestRuntime::bun(dir.path());
+    let sessions = Arc::new(SessionResolver::new(&catalog));
+    sessions.runtime(bun.handle());
     root.plugin(bun).await.unwrap();
     let plugin = LoaderPlugin::new(
-        Chain::new().with_shared(rows.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions {
             catalog,
             ..LoaderOptions::default()
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, rows).await;
+    rows_stage(&root, &sessions, "bun").await;
     loader
         .reconcile(
             layer(vec![

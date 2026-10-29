@@ -154,7 +154,7 @@ The runtime contract (`runtime::testing::runtime`, `tests/session_matrix.rs`):
 | --- | --- | --- | --- | --- |
 | Node, Python, Go | inherited socket (`fd:3`) | Runs | Runs | Skipped: Windows hands no descriptor over, only loopback |
 | Node, Python, Go | socket path dialed back | Runs | Runs | Skipped: as above |
-| Node, Python, Go | loopback TCP (the local transport's `Handover::Loopback`, as `LocalRuntime` starts runtimes, then `Process::attach`) | Runs | Runs | Runs |
+| Node, Python, Go | loopback TCP (the local transport's `Handover::Loopback`, as `Launcher::start` starts runtimes, then `Process::attach`) | Runs | Runs | Runs |
 | Node, Python, Go | WebSocket (the runtime listens, Rust dials) | Runs | Runs | Runs |
 | Bun | `fd:3`, socket path dialed back | Runs; `runtimes-bun` reruns with `RUTIS_LOCAL_HANDOVER=loopback` | Runs | Not compiled: as above |
 | Bun | loopback TCP | No column of its own: the rerun of the row above covers it | As Linux | Not compiled: as above |

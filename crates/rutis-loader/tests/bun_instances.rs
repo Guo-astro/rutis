@@ -7,15 +7,16 @@ mod common;
 
 use std::sync::Arc;
 
-use common::runtimes::{active, repo, rows_stage, title, NoConfig, Probe, Title, Tools};
+use common::runtimes::{
+    active, greet_as_main, rows_stage, title, NoConfig, Probe, TestRuntime, Title, Tools,
+};
 use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::session::{host_key, host_key_in, settle, HostDispatch, Value as RpcValue};
 use rutis_loader::edit::{Instance, InstanceResult};
 use rutis_loader::report::EntryInfo;
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, Loader, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::json;
 
@@ -159,10 +160,12 @@ async fn fixture() -> Fixture {
     for name in ["tools", "bun_timeline"] {
         catalog.register_shared_instance(name, "session");
     }
-    let bun = LocalRuntime::bun(repo().join("bun/rutis-bun"), dir.path());
-    let bun_rows = Arc::new(RuntimeResolver::modules(bun.handle()).with_catalog(&catalog));
+    greet_as_main(&root);
+    let bun = TestRuntime::bun(dir.path());
+    let sessions = Arc::new(SessionResolver::new(&catalog));
+    sessions.runtime(bun.handle());
     root.plugin(bun);
-    let chain = Chain::new().with(builtins()).with_shared(bun_rows.clone());
+    let chain = Chain::new().with(builtins()).with_shared(sessions.clone());
     let plugin = LoaderPlugin::new(
         chain,
         LoaderOptions {
@@ -171,8 +174,9 @@ async fn fixture() -> Fixture {
         },
     );
     let loader = plugin.handle();
+    sessions.attach(&loader);
     root.plugin(plugin).await.unwrap();
-    rows_stage(&root, bun_rows).await;
+    rows_stage(&root, &sessions, "bun").await;
 
     let rows = json!([{ "insert": [
         { "id": "session", "group": true, "instanced": true, "config": [
