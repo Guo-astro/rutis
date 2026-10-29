@@ -55,7 +55,6 @@ test('a plugin that needs a newer plugin API is refused', async () => {
   await assert.rejects(load(future, { services: { llm } }), /needs plugin API/)
 })
 
-// objects-case(node): strict-testing-tool
 // objects-case(node): data-stays-data
 // objects-case(node): plain-object-by-reference
 // The plugin is in another process: data is copied, an object with methods
