@@ -125,22 +125,29 @@ class WebSocketTest(background.TestCase):
             server.serve_forever = serve_forever
             return server
 
+        # The serving thread reports the exception as uncaught, by design:
+        # taken here, whatever test runner installed its own hook (pytest
+        # replaces threading.excepthook for each test, #789).
+        uncaught = []
+        hook, threading.excepthook = threading.excepthook, uncaught.append
         websocket.serve = failing_serve
         try:
             listener = websocket.listen("ws://127.0.0.1:0/rutis", PROTOCOL, "secret", announce=lambda _: None)
         finally:
             websocket.serve = real_serve
-        with self.assertRaisesRegex(RuntimeError, "the selector failed"):
-            listener.close()
-        with self.assertRaises(ConnectionRefusedError):
-            dial(listener.address)
-        # No thread is left behind; the serving one still reports the
-        # exception as uncaught, by design.
-        for thread in (listener._serving, listener._stopping):
-            if thread is not None:
-                thread.join(timeout=10)
-                self.assertFalse(thread.is_alive(), thread.name)
-        self.assertEqual(len(background.expected()), 1)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "the selector failed"):
+                listener.close()
+            with self.assertRaises(ConnectionRefusedError):
+                dial(listener.address)
+            # No thread is left behind.
+            for thread in (listener._serving, listener._stopping):
+                if thread is not None:
+                    thread.join(timeout=10)
+                    self.assertFalse(thread.is_alive(), thread.name)
+        finally:
+            threading.excepthook = hook
+        self.assertEqual([str(args.exc_value) for args in uncaught], ["the selector failed"])
 
     def test_accept_raises_once_a_failed_accept_stops_serving(self):
         # #196 (left from #218): serve_forever() returns when accept() fails

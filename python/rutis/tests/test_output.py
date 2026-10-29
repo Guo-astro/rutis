@@ -167,6 +167,29 @@ class Blocking(background.TestCase):
         said = self.run_blocking(watch, [0.4])
         self.assertNotIn("held the runtime", said)
 
+    def test_closing_ends_the_watching_thread(self):
+        # A session's runtime closes it when it goes (soak: a runtime that
+        # listens makes one per session, #811 S4a).
+        watch = BlockingWatch(lambda: "py", limit=5, quiet=False)
+        self.assertEqual(watch.held("weather", "talk.now", lambda: 1), 1)
+        thread = watch._thread
+        self.assertTrue(thread.is_alive())
+        watch.close()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        # Calls after it run, unwatched.
+        self.assertEqual(watch.held("weather", "talk.now", lambda: 2), 2)
+        self.assertIs(watch._thread, thread)
+
+    def test_a_disposed_runtime_leaves_no_watching_thread(self):
+        runtime = Runtime()
+        runtime.blocking = BlockingWatch(lambda: "py", limit=5, quiet=False)
+        runtime.blocking.held("weather", "talk.now", lambda: None)
+        thread = runtime.blocking._thread
+        asyncio.run(runtime.dispose())
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
     def test_the_limit_is_five_seconds(self):
         with mock.patch.dict(os.environ, {"RUTIS_TEST_BLOCKING_MS": ""}):
             self.assertEqual(BlockingWatch(lambda: "py").limit, 5.0)

@@ -11,3 +11,14 @@ plugins {
     // Publishing to Maven Central (the release train, release.yml `maven`).
     id("com.vanniktech.maven.publish") version "0.35.0" apply false
 }
+
+// A failing test prints its assertion's message and stack in the build's
+// output (CI shows nothing else of it).
+subprojects {
+    tasks.withType<Test>().configureEach {
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
+}
