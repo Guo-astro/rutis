@@ -1,0 +1,103 @@
+...Future exception was never retrieved
+future: <Future finished exception=ConnectionError('the host disconnected') created at /Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py:448>
+source_traceback: Object created at (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/__main__.py", line 18, in <module>
+    main(module=None)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/main.py", line 105, in __init__
+    self.runTests()
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/main.py", line 281, in runTests
+    self.result = testRunner.run(self.test)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/runner.py", line 240, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/case.py", line 690, in __call__
+    return self.run(*args, **kwds)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/background.py", line 60, in run
+    return super().run(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 131, in run
+    return super().run(result)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/case.py", line 634, in run
+    self._callTestMethod(testMethod)
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 90, in _callTestMethod
+    if self._callMaybeAsync(method) is not None:
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 112, in _callMaybeAsync
+    return self._asyncioRunner.run(
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 672, in run_until_complete
+    self.run_forever()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 639, in run_forever
+    self._run_once()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 1977, in _run_once
+    handle._run()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/events.py", line 88, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_objects.py", line 124, in test_undefined_is_none_inside_a_value
+    asyncio.ensure_future(peer.request("t", "m", [[1, UNDEFINED, 3], UNDEFINED]))
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/peer.py", line 1528, in request
+    future = self.loop.create_future()
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 448, in create_future
+    return futures.Future(loop=self)
+ConnectionError: the host disconnected
+.E
+======================================================================
+ERROR: test_strict_mode_passes_objects_as_between_processes (test_objects.TestingToolObjectTests.test_strict_mode_passes_objects_as_between_processes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 90, in _callTestMethod
+    if self._callMaybeAsync(method) is not None:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/async_case.py", line 112, in _callMaybeAsync
+    return self._asyncioRunner.run(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 685, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_objects.py", line 202, in test_strict_mode_passes_objects_as_between_processes
+    self.assertEqual(await warmer.warm(cache), 1)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/testing.py", line 338, in call
+    value = await value
+            ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_unhandled.py", line 48, in _in_row
+    return await coroutine
+           ^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_output.py", line 178, in _watched
+    return await steps
+           ^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_output.py", line 198, in __await__
+    waits = self.held(lambda: coroutine.send(sent))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_output.py", line 158, in <lambda>
+    return _watched(_Steps(value, lambda step: self.held(row, method, step)))
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_output.py", line 144, in held
+    return call()
+           ^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/_output.py", line 198, in <lambda>
+    waits = self.held(lambda: coroutine.send(sent))
+                              ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_objects.py", line 181, in warm
+    await cache.set("a", 1)
+TypeError: object NoneType can't be used in 'await' expression
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.269s
+
+FAILED (errors=1)

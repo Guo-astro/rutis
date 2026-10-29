@@ -1,0 +1,20 @@
+E
+======================================================================
+ERROR: test_values (unittest.loader._FailedTest.test_values)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_values
+Traceback (most recent call last):
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/loader.py", line 394, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/unittest/loader.py", line 337, in _get_module_from_name
+    __import__(name)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_values.py", line 22, in <module>
+    from rutis.testing import PluginTestError, _cross
+ImportError: cannot import name '_cross' from 'rutis.testing' (/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/rutis/testing.py)
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)

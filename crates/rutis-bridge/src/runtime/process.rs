@@ -990,7 +990,9 @@ impl Process {
         let (imports, rest) = Self::imports(started);
         let peer = Connection::open(channel, imports.clone(), endpoint)?;
         peer.ready().await?;
-        Self::finish(peer, imports, child, directory, None, rest, true).await
+        // The runtime calls `events.*` only once mounted, after this.
+        Self::join_bus(&imports, &peer, &rest)?;
+        Self::finish(peer, imports, child, directory, None, rest).await
     }
 
     /// What serves the runtime's calls into rutis, and the rest of the mount.
@@ -1057,6 +1059,11 @@ impl Process {
     ) -> Result<Arc<Self>, Error> {
         let (started, _) = Started::from(mount);
         let (imports, rest) = Self::imports(started);
+        // Its events are set up before the session is routed here: routing
+        // offers `events` to the far end, which may call `events.on` at once.
+        if bus {
+            Self::join_bus(&imports, &session.connection(), &rest)?;
+        }
         let routed = session.route(imports.clone())?;
         Self::finish(
             session.connection(),
@@ -1065,9 +1072,20 @@ impl Process {
             None,
             Some(routed),
             rest,
-            bus,
         )
         .await
+    }
+
+    /// The session joins the logical bus before anything is mounted: the
+    /// runtime learns which names have listeners elsewhere first (events
+    /// protocol §4.5).
+    fn join_bus(imports: &Imports, peer: &Connection, rest: &MountRest) -> Result<(), Error> {
+        let scope = rest.ctx.as_ref().map(rutis::Ctx::scope).unwrap_or_default();
+        let runtime = rest.runtime.clone().unwrap_or_else(|| "runtime".to_owned());
+        let events =
+            crate::events::SessionEvents::join(rest.ctx.as_ref(), peer.clone(), runtime, scope)?;
+        let _ = imports.bus.set(events);
+        Ok(())
     }
 
     async fn finish(
@@ -1077,7 +1095,6 @@ impl Process {
         directory: Option<tempfile::TempDir>,
         routed: Option<Box<dyn std::any::Any + Send + Sync>>,
         rest: MountRest,
-        bus: bool,
     ) -> Result<Arc<Self>, Error> {
         let MountRest {
             plugins,
@@ -1114,19 +1131,7 @@ impl Process {
                 rutis::internal::definitions::end(&definition).await;
             }
         });
-        // The session joins the logical bus before anything is mounted: the
-        // runtime learns which names have listeners elsewhere first
-        // (events protocol §4.5).
         let runtime = runtime.unwrap_or_else(|| "runtime".to_owned());
-        if bus {
-            let events = crate::events::SessionEvents::join(
-                ctx.as_ref(),
-                process.peer.clone(),
-                runtime.clone(),
-                scope.clone(),
-            )?;
-            let _ = process.imports.bus.set(events);
-        }
         let mounted = process
             .call_async(
                 "",

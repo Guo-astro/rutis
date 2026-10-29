@@ -1,0 +1,57 @@
+...................F./Users/eric8810/miniconda3/lib/python3.12/collections/__init__.py:458: ResourceWarning: unclosed <socket.socket [closed] fd=7, family=1, type=1, proto=0>
+  result = self._make(_map(kwds.pop, field_names, self))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+F..
+======================================================================
+FAIL: test_a_value_that_cannot_cross (test_plain_texts.TestingToolTexts.test_a_value_that_cannot_cross)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 267, in test_a_value_that_cannot_cross
+    self.run_with(check)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 237, in run_with
+    asyncio.run(go())
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 685, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 235, in go
+    check(t.service("weather"))
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 262, in check
+    with self.assertRaises(PluginTestError) as refused:
+AssertionError: PluginTestError not raised
+
+======================================================================
+FAIL: test_no_method (test_plain_texts.TestingToolTexts.test_no_method)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 246, in test_no_method
+    self.run_with(check)
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 237, in run_with
+    asyncio.run(go())
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eric8810/miniconda3/lib/python3.12/asyncio/base_events.py", line 685, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 235, in go
+    check(t.service("weather"))
+  File "/Users/eric8810/Code/rutis/.claude/worktrees/agent-aad5ddc8a34de2a37/python/rutis/tests/test_plain_texts.py", line 243, in check
+    self.assertEqual(str(missing.exception), "weather has no method tomorow (methods: today)")
+AssertionError: "'Service' object has no attribute 'tomorow'" != 'weather has no method tomorow (methods: today)'
+- 'Service' object has no attribute 'tomorow'
++ weather has no method tomorow (methods: today)
+
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.494s
+
+FAILED (failures=2)

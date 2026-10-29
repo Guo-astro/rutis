@@ -41,11 +41,9 @@ async fn a_session_runs_on_a_memory_channel() {
             (&hello["op"], &hello["version"], &hello["endpoint"]),
             (&json!("hello"), &json!(ENDPOINT_PROTOCOL), &json!("main"))
         );
-        // A far end declares events-v2 (events protocol §2.1).
         send(
             &mut remote,
-            json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node",
-                    "capabilities": ["events-v2"] }),
+            json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node" }),
         );
         // A call from here reaches the far end.
         let call = read(&mut remote);
@@ -91,8 +89,7 @@ async fn the_far_end_closing_ends_the_session() {
     read(&mut remote);
     send(
         &mut remote,
-        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node",
-                "capabilities": ["events-v2"] }),
+        json!({ "op": "hello", "version": ENDPOINT_PROTOCOL, "endpoint": "node" }),
     );
     session.ready().await.unwrap();
     remote.closer.close(rutis_bridge::Close::Done);

@@ -499,7 +499,7 @@ fn call(root: &Ctx, name: &str, method: &str) -> std::sync::mpsc::Receiver<Strin
 /// Two Node runtimes waiting on each other through Kotlin: `a` calls the
 /// Kotlin relay, which calls `b_work` in the other runtime, while `b` calls
 /// `a_work` back. Kotlin runs every call on a thread of its own, and its
-/// synchronous calls say they wait (`sync-wait`): the host sees the cycle
+/// synchronous calls say they wait (`sync: true`): the host sees the cycle
 /// and refuses the call that closes it, and the rest completes.
 /// guarantee: bridge/sync-wait-cycle-refused
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

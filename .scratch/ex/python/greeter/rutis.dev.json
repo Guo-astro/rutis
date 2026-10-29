@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "rows": [
+    { "id": "greeter", "config": { "greeting": "Hello" } },
+    { "id": "translate", "name": "py:fake_translate" }
+  ]
+}

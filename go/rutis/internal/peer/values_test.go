@@ -237,7 +237,7 @@ func rawHost(t *testing.T, capabilities string) (*Peer, Channel, func() map[stri
 }
 
 func TestARefusedCallReleasesTheReferencesItCarries(t *testing.T) {
-	runtime, far, next := rawHost(t, `["sync-wait"]`)
+	runtime, far, next := rawHost(t, `[]`)
 	reference := func(id int) string {
 		return `{"type":"reference","value":{"id":` + string(rune('0'+id)) + `,"kind":"function","home":false,"origin":[]}}`
 	}
