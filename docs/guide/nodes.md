@@ -172,6 +172,8 @@ Cordis 应用接 rutis：用 Node 运行时跑它的插件（`<包名>` 行）�
 
 ## 安全
 
+**给出 token 等于允许对方在本节点运行它能解析的任何插件。** 谁能连上由连接行的 token 决定，连上即信任，平台不另加权限。
+
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
 - Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。拨出（`dial:wss://`）由一个线程完成连接的全部读写，不受影响。
 - 每条连接行一个 token（`RUTIS_TOKEN_<行 id>`），只在需要的节点上设置。

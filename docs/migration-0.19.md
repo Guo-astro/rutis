@@ -78,7 +78,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 
 - token 按连接行的 id：`main` 的 `office` 行出示 `RUTIS_TOKEN_OFFICE`，`office` 的 `main` 行核对 `RUTIS_TOKEN_MAIN`（以前是节点行的 `peer`，名字通常相同）。
 - 同名服务：以前 `import` 一个本地已有的名字时拒绝这次导入；现在按内核规则后注册的被拒，那个远程插件失败：`office:weather: weather is provided here by row weather: not registered from office`。
-- 相连的节点互相看到对方全部可共享的服务，并能让本节点运行这里的加载器能解析的任何插件（以前要对方打开 `host: true`）：只连可信的节点；不给对面看的服务在提供它的行上用 `isolate`。
+- **给出 token 等于允许对方在本节点运行它能解析的任何插件**（以前要对方打开 `host: true`；谁能连上由连接行的 token 决定，连上即信任）。相连的节点互相看到对方全部可共享的服务：只连可信的节点；不给对面看的服务在提供它的行上用 `isolate`。
 - 一个节点经一条连接收到的服务，经别的连接继续到达第三个节点（以前事件与服务只走一跳）。
 - `run` 的输出：`office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` 改为 `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`；listen 一侧写 `main: connected main`、`main: disconnected main (…)`。
 

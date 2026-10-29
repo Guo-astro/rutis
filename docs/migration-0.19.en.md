@@ -78,7 +78,7 @@ office (rutis-bridge/peer): no plugin named "rutis-bridge/peer"
 
 - Tokens go by the connection row's id: `main`'s row `office` presents `RUTIS_TOKEN_OFFICE`, `office`'s row `main` checks `RUTIS_TOKEN_MAIN` (it was the node row's `peer`, usually the same name).
 - One name on both sides: an `import` of a name already provided here used to be refused; now the kernel's rule refuses the one registered later, and that remote plugin fails: `office:weather: weather is provided here by row weather: not registered from office`.
-- Connected nodes see each other's shareable services, and can have this node run any plugin its loader resolves (the far end used to need `host: true`): connect only to trusted nodes; use `isolate` on the row providing a service the far end should not see.
+- **Giving out a token allows the other side to run, on this node, any plugin this node can resolve** (the far end used to need `host: true`; who may connect is decided by the connection row's token, and a connected node is trusted). Connected nodes see each other's shareable services: connect only to trusted nodes; use `isolate` on the row providing a service the far end should not see.
 - A service a node gets over one connection reaches a third node over another (services and events used to go one hop).
 - `run`'s output: `office: link connected` / `link down (…)` / `link refused: …` / `link stopped: …` become `office: connected` / `office: disconnected (…); retrying in …` / `office: disconnected (incompatible: …); stopped`; the listening side writes `main: connected main`, `main: disconnected main (…)`.
 

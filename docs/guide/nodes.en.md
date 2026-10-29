@@ -172,6 +172,8 @@ Write your own way of connecting (a relay, Bluetooth, another transport) as a co
 
 ## Security
 
+**Giving out a token allows the other side to run, on this node, any plugin this node can resolve.** Who may connect is decided by the connection row's token; a connected node is trusted, and the platform adds no permissions of its own.
+
 - Use `wss://` for remote connections. A listener without TLS may bind only to a loopback address.
 - A Python runtime cannot listen on `wss://` with CPython 3.13.6: its TLS sockets deadlock when one thread is blocked reading while another writes ([python/cpython#137583](https://github.com/python/cpython/issues/137583)), so every handshake hangs, and rutis refuses to start `listen:wss://` on that version. Use 3.13.7 or later (3.13.5 and earlier, and 3.14, are not affected); `ws://` is not affected. Dialing out (`dial:wss://`) is not affected either: one thread does all of a connection's reads and writes.
 - Use one token per connection row (`RUTIS_TOKEN_<ROW ID>`) and set it only on the nodes that need it.
