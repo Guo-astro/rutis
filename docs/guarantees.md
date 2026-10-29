@@ -419,7 +419,7 @@ PR 模板中有对应的检查项。CI 的 `links` 任务运行 `node tools/chec
 | `core/D*`（不含 D20、D26、D27） | 26 | 3 | 0 | 1 | 30 |
 | `core/features.*`、`core/typed.*`、`events/*`（§7） | 26 | 0 | 0 | 0 | 26 |
 | `boundary/5.*`（不含已撤回的 5.2–5.5） | 3 | 1 | 0 | 0 | 4 |
-| `events/*`（§8a，不含已撤回的 `hub-scope`） | 12 | 0 | 0 | 0 | 12 |
+| `events/*`（§8a，不含已撤回的 `hub-scope`、`presence`） | 11 | 0 | 0 | 0 | 11 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*`（不含已撤回的 `exported-services`） | 29 | 0 | 0 | 1 | 30 |
 | `host/*`、`dsh/*`（§11） | 2 | 0 | 0 | 0 | 2 |
@@ -427,10 +427,10 @@ PR 模板中有对应的检查项。CI 的 `links` 任务运行 `node tools/chec
 | `host/*`（§13） | 5 | 0 | 0 | 0 | 5 |
 | `loader/*`、`swift/*`（§14） | 40 | 5 | 1 | 0 | 46 |
 | `host/*`（§15） | 23 | 4 | 0 | 0 | 27 |
-| 合计 | 177 | 13 | 1 | 2 | 193 |
+| 合计 | 176 | 13 | 1 | 2 | 192 |
 
-已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`）不计入。
+已撤回的条目（状态"已撤回（0.13）"：`boundary/5.2`–`boundary/5.5`；"已撤回（0.15.1）"：`events/scope`、`events/hub-scope`；"已撤回（0.17）"：`bridge/exported-services`；"已撤回（0.19）"：`events/presence`）不计入。
 
-核心承诺 40 条：已验证 35，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 1（`loader/remote-runtime-lease`：测试随连接插件删除，待补）。契约行为 151 条：已验证 142，部分验证 9（D5、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`swift/app-access-belongs-to-the-app`、`host/stop-deadline`、`host/exit-codes`、`host/dev-debug`、`host/row-state-lines`），未验证 0。
+核心承诺 40 条：已验证 35，部分验证 4（D22、D28、5.8、`loader/instance-edits-all-or-none`），未验证 1（`loader/remote-runtime-lease`：测试随连接插件删除，待补）。契约行为 150 条：已验证 141，部分验证 9（D5、`loader/persist-queue`、`loader/saved-layers-restore`、`loader/go-runtimes`、`swift/app-access-belongs-to-the-app`、`host/stop-deadline`、`host/exit-codes`、`host/dev-debug`、`host/row-state-lines`），未验证 0。
 
 **0.10 的基线**：未验证的核心承诺 0 条，未验证的契约行为 1 条（`host/go-add`，0.19 随命令删除）。从 0.11 起，新登记的"未验证"条目会让契约行为的数字超过基线（Q9.4.4），所以新登记的行应当带着测试一起登记。核心承诺的划分由维护者确认，可以调整。

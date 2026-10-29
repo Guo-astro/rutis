@@ -419,7 +419,7 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | `core/D*` (without D20, D26, D27) | 26 | 3 | 0 | 1 | 30 |
 | `core/features.*`, `core/typed.*`, `events/*` (§7) | 26 | 0 | 0 | 0 | 26 |
 | `boundary/5.*` (without the withdrawn 5.2–5.5) | 3 | 1 | 0 | 0 | 4 |
-| `events/*` (§8a, without the withdrawn `hub-scope`) | 12 | 0 | 0 | 0 | 12 |
+| `events/*` (§8a, without the withdrawn `hub-scope` and `presence`) | 11 | 0 | 0 | 0 | 11 |
 | `instance/*` | 2 | 0 | 0 | 0 | 2 |
 | `bridge/*` (without the withdrawn `exported-services`) | 29 | 0 | 0 | 1 | 30 |
 | `host/*`, `dsh/*` (§11) | 2 | 0 | 0 | 0 | 2 |
@@ -427,10 +427,10 @@ Sources: the sections of the user documentation [rutis-host](guide/rutis-host.en
 | `host/*` (§13) | 5 | 0 | 0 | 0 | 5 |
 | `loader/*`, `swift/*` (§14) | 40 | 5 | 1 | 0 | 46 |
 | `host/*` (§15) | 23 | 4 | 0 | 0 | 27 |
-| Total | 177 | 13 | 1 | 2 | 193 |
+| Total | 176 | 13 | 1 | 2 | 192 |
 
-Withdrawn rows (status "withdrawn (0.13)": `boundary/5.2`–`boundary/5.5`; "withdrawn (0.15.1)": `events/scope`, `events/hub-scope`; "withdrawn (0.17)": `bridge/exported-services`) are not counted.
+Withdrawn rows (status "withdrawn (0.13)": `boundary/5.2`–`boundary/5.5`; "withdrawn (0.15.1)": `events/scope`, `events/hub-scope`; "withdrawn (0.17)": `bridge/exported-services`; "withdrawn (0.19)": `events/presence`) are not counted.
 
-40 core promises: 35 verified, 4 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`), 1 not verified (`loader/remote-runtime-lease`: its tests were removed with the connection plugins, to be added again). 151 contract behaviours: 142 verified, 9 partly verified (D5, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `swift/app-access-belongs-to-the-app`, `host/stop-deadline`, `host/exit-codes`, `host/dev-debug`, `host/row-state-lines`), 0 not verified.
+40 core promises: 35 verified, 4 partly verified (D22, D28, 5.8, `loader/instance-edits-all-or-none`), 1 not verified (`loader/remote-runtime-lease`: its tests were removed with the connection plugins, to be added again). 150 contract behaviours: 141 verified, 9 partly verified (D5, `loader/persist-queue`, `loader/saved-layers-restore`, `loader/go-runtimes`, `swift/app-access-belongs-to-the-app`, `host/stop-deadline`, `host/exit-codes`, `host/dev-debug`, `host/row-state-lines`), 0 not verified.
 
 **0.10 baseline**: 0 unverified core promises, 1 unverified contract behaviour (`host/go-add`, removed with the command in 0.19). From 0.11 on, a newly registered row that is "not verified" pushes the contract number above the baseline (Q9.4.4), so new rows should be registered together with their tests. The maintainer confirms which rows are core promises and may change them.
