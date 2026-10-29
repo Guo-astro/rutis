@@ -41,9 +41,6 @@ runtimes = ["dep:rutis-bridge"]
 # share; enabled by their features.
 binary = ["runtimes"]
 
-# Rows hosted on other nodes (`peer:<id>/<plugin>`), over rutis-bridge links.
-peer = ["dep:rutis-bridge"]
-
 [target.'cfg(unix)'.dependencies]
 # Waiting for a manifest process without reaping it, so its group can still
 # be killed.

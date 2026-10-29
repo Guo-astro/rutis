@@ -23,12 +23,12 @@ use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError};
 use serde_json::{json, Value as Json};
 
-use crate::host::PluginCatalog;
+use crate::catalog::PluginCatalog;
 use crate::peer::Offered;
+use crate::peer::Peer;
 use crate::runtime::{Carried, Process, Routed, RowSchema};
 use crate::session::rpc::{Connection, Dispatch, Reply, Value};
 use crate::session::{host_key, Error, HostDispatch};
-use crate::Peer;
 
 /// The key a host provides the plugins a far rutis kernel may run here at
 /// (rutis-loader: its loader's catalog). Without one, a session answers
@@ -87,10 +87,10 @@ impl Server {
             let catalog = server.catalog().ok_or_else(|| not_found(&name))?;
             let found = catalog.find(&name).await.ok_or_else(|| not_found(&name))?;
             Ok(Value::Data(json!({
-                "config": found.described.schema,
+                "config": found.schema,
                 "inject": [],
                 "provides": {},
-                "version": found.described.version,
+                "version": found.version,
                 "announces": true,
             })))
         }))
@@ -323,7 +323,7 @@ impl Rows {
             }),
             client: Mutex::default(),
         });
-        let handler: Arc<dyn crate::Handler> = Arc::new(Serving(rows.clone()));
+        let handler: Arc<dyn crate::peer::Handler> = Arc::new(Serving(rows.clone()));
         let offered = ["mount", "hosts", "rows", ROW_FAMILY, "release"]
             .into_iter()
             .map(|family| peer.register(family, handler.clone()))
@@ -334,7 +334,7 @@ impl Rows {
 
 struct Serving(Arc<Rows>);
 
-impl crate::Handler for Serving {
+impl crate::peer::Handler for Serving {
     fn invoke(&self, peer: &Connection, target: &str, method: &str, args: Value) -> Reply {
         if let Some(name) = target
             .strip_prefix(ROW_FAMILY)
@@ -385,7 +385,7 @@ impl Carried for Client {
         &self,
         dispatch: Arc<dyn Dispatch>,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
-        let handler: Arc<dyn crate::Handler> = Arc::new(Routed(dispatch.clone()));
+        let handler: Arc<dyn crate::peer::Handler> = Arc::new(Routed(dispatch.clone()));
         let offered = ["host", "service"]
             .into_iter()
             .map(|family| self.peer.register(family, handler.clone()))

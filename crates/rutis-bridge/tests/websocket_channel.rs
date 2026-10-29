@@ -6,10 +6,11 @@
 use std::sync::{mpsc, Arc, Mutex};
 
 use rutis_bridge::channel::{Channel, ChannelError};
+use rutis_bridge::websocket::Credential;
 use rutis_bridge::websocket::{
     self, Admit, Admitted, Limits, Listener, ListenerConfig, Refused, Trust, Upgrade,
 };
-use rutis_bridge::{Close, ConnectError, Credential};
+use rutis_bridge::{Close, ConnectError};
 use rutis_test_support::recv_within;
 
 const PROTOCOL: &str = "rutis.4";

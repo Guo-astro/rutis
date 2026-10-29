@@ -399,14 +399,6 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["n", "a"]}}
       ] },
 
-    { "case": "node/not-shared", "rule": "9", "name": "n/private", "tool": false,
-      "listeners": [
-        {"label": "n", "at": "node", "does": {"returns": "N"}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": null, "log": []}}
-      ] },
-
     { "case": "rutis/row", "rule": "8", "name": "rutis/row", "tool": false,
       "listeners": [
         {"label": "w", "at": "X", "scope": "root", "log": ["row", "state"], "does": {"returns": null}},

@@ -1,10 +1,11 @@
-//! Local language runtimes: a process this machine starts, a link to it,
-//! and the runtime plugin running its rows on that link's peer, composed:
+//! Local language runtimes: a process this machine starts, the session
+//! with it, and the runtime plugin running its rows on that session,
+//! composed:
 //! [`crate::pipe::spawn`] starts it on an inherited socket
-//! with `--id <name>`, the endpoint it greets as, and the link does not
-//! reconnect, since a local runtime process is not restarted.
+//! with `--id <name>`, the endpoint it greets as; it is started once, since
+//! a local runtime process is not restarted.
 //!
-//! When the process ends, its link stops, its session and then the runtime
+//! When the process ends, its session and then the runtime
 //! plugin go, and the runtime's state says how it ended. Restarting the
 //! composition (`FiberView::restart`) starts a new process: that is the
 //! application's decision.
@@ -18,12 +19,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use crate::channel::{Close, Closer, PeerId};
+use crate::channel::{Channel, Close, Closer, ConnectError, PeerId};
+use crate::peer::{peer_key, Peer};
 use crate::runtime::{Launcher, RuntimeHandle, RuntimePlugin, RuntimeState, Stdio};
-use crate::{identity_key, Dialer, LinkConfig, LinkPlugin, LinkState, StaticIdentity};
+use crate::session::plugin::Greet;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind};
 use rutis::{Ctx, Error};
 use serde_json::Value;
+use tokio::sync::watch;
 
 use crate::pipe::{Handover, Processes, Spawn};
 
@@ -265,31 +268,29 @@ impl DynPlugin for LocalRuntime {
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
-            // Its own identity, under a key of its own, from a child: what
-            // the link waits for must come from a provider that is running,
-            // and this one is still starting.
-            let kind = format!("local:{}", self.runtime_name);
             let peer = crate::runtime::runtime_peer(&self.runtime_name);
             let carrier = Carrier {
-                label: format!("{kind} carrier"),
-                kind: kind.clone(),
+                label: format!("local:{} carrier", self.runtime_name),
                 open: Arc::default(),
             };
-            let dialer = carrier.dialer(self.spawn(&peer), self.processes.clone());
+            let start = carrier.start(self.spawn(&peer), self.processes.clone());
             ctx.plugin(carrier);
-            let mut config = LinkConfig::dial(peer.clone(), &kind, dialer).local_runtime();
-            if let Some(greeting) = self.greeting {
-                config.retry.handshake = greeting;
-            }
-            let link = LinkPlugin::new(config);
-            let mut link_state = link.state();
+            let session = ProcessSession {
+                label: format!("session with {peer}"),
+                peer,
+                start,
+                greeting: self.greeting.unwrap_or(LOCAL_RUNTIME_GREETING),
+                ended: Arc::new(watch::channel(None).0),
+            };
+            let mut ended = session.ended.subscribe();
             self.runtime.announce(ctx);
             self.runtime.starting();
-            ctx.plugin(link);
+            ctx.plugin(session);
             ctx.plugin(self.runtime.clone());
             // Started once the runtime runs, as a runtime plugin starting its
             // own process is: while it starts this is Loading, and a restart
-            // or dispose abandons the start (its process ends with the link).
+            // or dispose abandons the start (its process ends with the
+            // session).
             // What is looked at is marked seen, so going Ready right after
             // the look still wakes the wait: missed, the next change would
             // be the process ending, taken for a failed start.
@@ -300,12 +301,12 @@ impl DynPlugin for LocalRuntime {
                     RuntimeState::Down(reason) => break reason,
                     _ => {}
                 }
-                if let LinkState::Stopped { error, .. } = &*link_state.borrow() {
+                if let Some(error) = &*ended.borrow() {
                     break error.clone();
                 }
                 tokio::select! {
                     _ = states.changed() => {}
-                    _ = link_state.changed() => {}
+                    _ = ended.changed() => {}
                     _ = ctx.cancelled() => {
                         self.runtime.stopped();
                         return Ok(Effect::Done);
@@ -318,21 +319,136 @@ impl DynPlugin for LocalRuntime {
     }
 }
 
-/// The identity of this side, for the link to the runtime process, and
-/// what starts the process. Unloaded, it closes the channels it started,
+/// How long a local runtime process may take to greet, counted from its
+/// spawn: the interpreter starting (a JVM, Python with its imports, Node or
+/// Bun loading their modules) is part of it, and a healthy one on a busy or
+/// slow machine (several runtimes starting at once at boot, a small board)
+/// can take longer than the network's 10 s. A process that ends is noticed
+/// at once, by its channel closing; this only bounds one that lives and says
+/// nothing.
+const LOCAL_RUNTIME_GREETING: Duration = Duration::from_secs(30);
+
+/// Starts the runtime process on a channel.
+type Start = Arc<dyn Fn() -> BoxFuture<'static, Result<Channel, ConnectError>> + Send + Sync>;
+
+/// The session with the runtime process: started once, greeted as `main`
+/// by the runtime `peer`, provided as `Peer#<peer>` while it lasts.
+/// `ended` says why it stopped: the process could not start, did not greet,
+/// or ended.
+struct ProcessSession {
+    label: String,
+    peer: PeerId,
+    start: Start,
+    greeting: Duration,
+    ended: Arc<watch::Sender<Option<String>>>,
+}
+
+impl ProcessSession {
+    async fn run(ctx: Ctx, peer: PeerId, start: Start, greeting: Duration) -> String {
+        let channel = match start().await {
+            Ok(channel) => channel,
+            Err(error) => return error.to_string(),
+        };
+        let greet = Greet {
+            local: PeerId::new("main").expect("a valid id"),
+            expected: Some(peer.clone()),
+            declare: &[],
+            require: &[],
+            timeout: greeting,
+        };
+        let (session, operations) = match greet.open(channel).await {
+            Ok(opened) => opened,
+            Err(error) => return error.to_string(),
+        };
+        // Closes the session however this ends, aborted included.
+        let _open = Open(session.clone(), operations.clone());
+        let provided = ctx.provide_at(
+            peer_key(&peer),
+            Arc::new(Peer::new(peer, session.clone(), operations.clone())),
+        );
+        let ended = match provided {
+            Err(error) => format!("cannot provide the session: {error}"),
+            Ok(provided) => {
+                session.closed().await;
+                let ended = session.close_reason().map_or_else(
+                    || "the connection ended".to_owned(),
+                    |error| error.to_string(),
+                );
+                // What depends on the session stops before it closes.
+                let _ = provided.dispose().await;
+                ended
+            }
+        };
+        ended
+    }
+}
+
+/// A started session: dropped, it closes the session.
+struct Open(
+    crate::session::rpc::Connection,
+    Arc<crate::peer::Operations>,
+);
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.close(crate::session::Error::Transport(
+            "the connection ended".into(),
+        ));
+        self.1.detach();
+    }
+}
+
+impl DynPlugin for ProcessSession {
+    fn platform(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
+        Box::pin(async move {
+            let (ended, run) = (
+                self.ended.clone(),
+                Self::run(
+                    ctx.clone(),
+                    self.peer.clone(),
+                    self.start.clone(),
+                    self.greeting,
+                ),
+            );
+            let task = tokio::spawn(async move {
+                let why = run.await;
+                ended.send_replace(Some(why));
+            });
+            ctx.effect(move || async move {
+                // Waited for: a start in the middle of spawning a process
+                // (fork and exec, which do not yield) finishes that first,
+                // and the process must have been recorded, and its channel
+                // closed, when this has stopped.
+                task.abort();
+                let _ = task.await;
+                Ok(())
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// What starts the process. Unloaded, it closes the channels it started,
 /// ending their processes.
 struct Carrier {
     label: String,
-    kind: String,
     open: Arc<Mutex<Vec<Weak<dyn Closer>>>>,
 }
 
 impl Carrier {
     /// Start `spawn` on a channel, recording the process in `processes`
     /// and the channel here.
-    fn dialer(&self, spawn: Spawn, processes: Processes) -> Dialer {
+    fn start(&self, spawn: Spawn, processes: Processes) -> Start {
         let open = self.open.clone();
-        Arc::new(move |_| {
+        Arc::new(move || {
             let (spawn, processes, open) = (spawn.clone(), processes.clone(), open.clone());
             Box::pin(async move {
                 let channel = crate::pipe::spawn(&spawn, &processes).await?;
@@ -373,11 +489,6 @@ impl DynPlugin for Carrier {
                 }
                 Ok(())
             })?;
-            let main = PeerId::new("main").expect("a valid id");
-            ctx.provide_at(
-                identity_key(&self.kind),
-                Arc::new(StaticIdentity::new(main)),
-            )?;
             Ok(Effect::Done)
         })
     }

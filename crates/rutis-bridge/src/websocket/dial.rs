@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::channel::{Channel, ConnectError};
-use crate::Credential;
+use crate::websocket::Credential;
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
 use tokio::net::TcpStream;

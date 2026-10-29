@@ -294,11 +294,33 @@ async fn node_sync_wait_pumps_callbacks_and_reports_its_executor_cycle() {
     assert!(ended.contains("exited normally"), "{ended}");
 }
 
+/// Let through the upgrades presenting `token`, as speaking `protocol`.
+#[cfg(feature = "websocket")]
+fn admit_token(
+    token: &'static str,
+    protocol: &str,
+    deliver: impl Fn(rutis_bridge::Channel) + Send + Sync + 'static,
+) -> rutis_bridge::websocket::Admit {
+    let (protocol, deliver) = (protocol.to_owned(), std::sync::Arc::new(deliver));
+    std::sync::Arc::new(move |upgrade: rutis_bridge::websocket::Upgrade<'_>| {
+        if upgrade.bearer != Some(token) {
+            return Err(rutis_bridge::websocket::Refused::Forbidden(
+                "not accepted here".into(),
+            ));
+        }
+        let deliver = deliver.clone();
+        Ok(rutis_bridge::websocket::Admitted {
+            protocol: protocol.clone(),
+            deliver: Box::new(move |channel| deliver(channel)),
+        })
+    })
+}
+
 #[cfg(feature = "websocket")]
 mod websocket {
     use super::*;
+    use rutis_bridge::websocket::Credential;
     use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
-    use rutis_bridge::{Credential, Registration, Registrations, StaticIdentity};
     use tokio::io::AsyncBufReadExt;
 
     const PROTOCOL: &str = "rutis.4";
@@ -325,31 +347,16 @@ mod websocket {
     /// The same session, Node dialing a Rust listener over WebSocket.
     #[tokio::test(flavor = "current_thread")]
     async fn node_dialing_a_rust_listener() {
-        let registrations = Registrations::new();
+        let (sender, accepted) = std::sync::mpsc::channel();
+        let sender = Mutex::new(sender);
         let listener = websocket::listen(
             &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
             &Limits::default(),
-            websocket::admit_registered(registrations.clone(), "public"),
+            super::admit_token("node-token", PROTOCOL, move |channel| {
+                let _ = sender.lock().unwrap().send(channel);
+            }),
         )
         .unwrap();
-        let (sender, accepted) = std::sync::mpsc::channel();
-        let sender = Mutex::new(sender);
-        let _registered = registrations
-            .register(
-                &id("main"),
-                Registration {
-                    listener: "public".into(),
-                    peer: id("node"),
-                    identity: Arc::new(
-                        StaticIdentity::new(id("main")).accept_token("node-token", id("node")),
-                    ),
-                    protocol: PROTOCOL.into(),
-                    deliver: Box::new(move |channel| {
-                        let _ = sender.lock().unwrap().send(channel);
-                    }),
-                },
-            )
-            .unwrap();
         let address = format!("ws://{}/rutis", listener.local_addr());
         let child = tokio::process::Command::new("node")
             .arg(rpc_client())

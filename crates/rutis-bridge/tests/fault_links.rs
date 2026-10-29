@@ -1,147 +1,36 @@
-//! Sessions and links under injected faults (#178, plan 0.10 §4.1).
+//! Sessions under injected faults (#178, plan 0.10 §4.1).
 //!
 //! Every channel here is a memory channel wrapped by
-//! [`rutis_bridge::channel::testing::fault`]: a link dials through
-//! [`Faulty`], a transport that wraps each channel it dials and can refuse
-//! dials while "down"; a bare session pair wraps the caller's end. What
-//! a fault does to the calls on top is the subject: a call in flight when
-//! the connection drops, a slow connection and cancellation, calls made
-//! while a link reconnects, cancellation and release across two links,
-//! interleaved replies, and large and deep values.
+//! [`rutis_bridge::channel::testing::fault`] (or a loopback WebSocket).
+//! What a fault does to the calls on top is the subject: a call in flight
+//! when the connection drops, a slow connection and cancellation, calls
+//! made while a far end connects again, cancellation and release across
+//! two sessions, interleaved replies, and large and deep values.
+//! Reconnecting is a connection plugin's (`rutis-host/dial`): here a new
+//! connection is a new channel and a new session.
 //!
 //! The `guarantee:` names are rows of the `bridge/` family in
 //! docs/guarantees.md.
 #![cfg(feature = "testing")]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rutis::host::CtxHost;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::testing::{fault, Faults};
-use rutis_bridge::channel::{ConnectError, PeerId};
+use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, settle, Error, HostDispatch};
 use rutis_bridge::session::{Connection, Dispatch, Endpoint, Reply, Value};
-use rutis_bridge::{
-    peer_key, Accepting, Credential, Dialer, ExportPlugin, Identity, IdentityPlugin, ImportPlugin,
-    LinkConfig, LinkPlugin, LinkState, Peer, Registrations, Retry, StaticIdentity,
-};
+use rutis_bridge::{LocalId, Session};
 use rutis_test_support::{eventually, scaled, within, HANG_GUARD};
 use serde_json::{json, Value as Json};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-fn quick() -> Retry {
-    Retry {
-        initial: Duration::from_millis(20),
-        max: Duration::from_millis(200),
-        rejected: Duration::from_millis(100),
-        handshake: scaled(HANG_GUARD),
-        // No jitter: the same delays every run (#231).
-        jitter: 0.0,
-        ..Retry::default()
-    }
-}
-
-/// A memory dialer, with every channel it dials wrapped by `fault`.
-/// While `down`, dials are refused as retryable, as a far end that cannot
-/// be reached: a test holds a link in its reconnecting state that way.
-struct Faulty {
-    inner: Dialer,
-    dialed: Mutex<Vec<Faults>>,
-    down: AtomicBool,
-}
-
-impl Faulty {
-    /// The faults of the `n`th channel dialed.
-    fn dialed(&self, n: usize) -> Faults {
-        self.dialed.lock().unwrap()[n].clone()
-    }
-
-    fn dialer(self: &Arc<Self>) -> Dialer {
-        let faulty = self.clone();
-        Arc::new(move |credential| {
-            let faulty = faulty.clone();
-            Box::pin(async move {
-                if faulty.down.load(Ordering::SeqCst) {
-                    return Err(ConnectError::Retryable {
-                        reason: "faulty: down".into(),
-                    });
-                }
-                let (channel, faults) = fault((faulty.inner)(credential).await?);
-                faulty.dialed.lock().unwrap().push(faults);
-                Ok(channel)
-            })
-        })
-    }
-}
-
-/// `main` listens for `mac` on the memory transport; `mac` dials it through
-/// [`Faulty`] and reconnects when its session ends.
-struct Linked {
-    main: Ctx,
-    mac: Ctx,
-    mac_states: watch::Receiver<LinkState>,
-    faulty: Arc<Faulty>,
-}
-
-async fn linked() -> Linked {
-    let transport = Registrations::new();
-    let main = Ctx::root().unwrap();
-    main.plugin(IdentityPlugin::new(
-        "main",
-        StaticIdentity::new(id("main")).accept_token("mac-token", id("mac")),
-    ));
-    main.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("mac"),
-            "main",
-            Accepting {
-                registrations: transport.clone(),
-                listener: "main-in".into(),
-                local: id("main"),
-            },
-        )
-        .retry(quick()),
-    ));
-
-    let mac = Ctx::root().unwrap();
-    let faulty = Arc::new(Faulty {
-        inner: rutis_bridge::memory::dialer(transport, "main-in"),
-        dialed: Mutex::default(),
-        down: AtomicBool::new(false),
-    });
-    mac.plugin(IdentityPlugin::new(
-        "mac",
-        StaticIdentity::new(id("mac")).present(id("main"), Credential::Bearer("mac-token".into())),
-    ));
-    let link = LinkPlugin::new(LinkConfig::dial(id("main"), "mac", faulty.dialer()).retry(quick()));
-    let mac_states = link.state();
-    mac.plugin(link);
-    Linked {
-        main,
-        mac,
-        mac_states,
-        faulty,
-    }
-}
-
-fn peer(root: &Ctx, of: &str) -> Option<Arc<Peer>> {
-    root.get_at::<Peer>(&peer_key(&id(of)))
-}
-
-/// The peer `of` at `root` once its session is `generation`.
-async fn generation(root: &Ctx, of: &str, generation: u64) -> Arc<Peer> {
-    eventually(
-        || peer(root, of).filter(|peer| peer.generation() == generation),
-        &format!("generation {generation} of Peer#{of}"),
-    )
-    .await
 }
 
 /// A [`Dispatch`] from a closure.
@@ -184,6 +73,13 @@ async fn sessions(callee: Arc<dyn Dispatch>) -> (Connection, Connection, Faults)
         .await
         .unwrap();
     (caller, served, faults)
+}
+
+/// A session `caller` → `callee` serving `work` with `callee`, the
+/// caller's end wrapped by `fault`: one connection of a far end.
+async fn connection(callee: Arc<dyn Dispatch>) -> (Connection, Faults, Connection) {
+    let (caller, served, faults) = sessions(callee).await;
+    (caller, faults, served)
 }
 
 /// Sends on `0` when dropped: a callee's future ends this way when the
@@ -247,78 +143,67 @@ impl Lcg {
 /// fail explicitly, no false success, no automatic retry of side effects").
 /// guarantee: bridge/in-flight-call-fails-once
 ///
-/// mac calls main over a link; while main runs the call, mac's connection
-/// drops. The call fails at mac (not success, not a hang), main ran it
-/// exactly once, and the link reconnects without sending it again: the
-/// next call is the second and last main runs.
+/// The caller calls the callee; while the callee runs the call, the
+/// caller's connection drops. The call fails at the caller (not success,
+/// not a hang), the callee ran it exactly once, and nothing sends it
+/// again: on the far end's next connection, the next call is the second
+/// and last the callee runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
-    let linked = linked().await;
-    let at_main = generation(&linked.main, "mac", 1).await;
-    let at_mac = generation(&linked.mac, "main", 1).await;
-
+async fn a_call_in_flight_when_the_connection_drops_fails_and_ran_once() {
     let runs: Arc<Mutex<Vec<Json>>> = Arc::default();
     let (started, mut running) = mpsc::unbounded_channel();
     let (open, gate) = std::sync::mpsc::channel::<()>();
     let gate = Mutex::new(gate);
-    let _first = at_main
-        .register("work", {
-            let runs = runs.clone();
-            Arc::new(move |_: &Connection, _: &str, _: &str, args: Value| {
+    let first = {
+        let runs = runs.clone();
+        Arc::new(Serve(
+            move |_: &Connection, _: &str, _: &str, args: Value| {
                 runs.lock().unwrap().push(args.json()?);
                 let _ = started.send(());
                 // Runs until the test lets it finish: the call is in flight
-                // at main when mac's connection drops.
+                // at the callee when the connection drops.
                 let _ = gate.lock().unwrap().recv_timeout(scaled(HANG_GUARD));
                 Ok(Value::Data(json!("done")))
-            })
-        })
-        .unwrap();
-
+            },
+        ))
+    };
+    let (caller, faults, _served) = connection(first).await;
     let call = tokio::spawn({
-        let session = at_mac.connection().clone();
+        let caller = caller.clone();
         async move {
-            session
+            caller
                 .invoke_async("", "work.run", Value::Data(json!(["first"])))
                 .await
         }
     });
-    within("main to run the call", running.recv())
+    within("the callee to run the call", running.recv())
         .await
         .unwrap();
-    linked.faulty.dialed(0).drop_and_close();
+    faults.drop_and_close();
 
     let failed = within("the call in flight to end", call).await.unwrap();
     assert!(
         matches!(&failed, Err(Error::Transport(_))),
         "a call cut off in flight fails as a transport failure: {failed:?}"
     );
-    // main's run finishes after its caller is gone; its reply goes nowhere.
+    // The callee's run finishes after its caller is gone; its reply goes
+    // nowhere.
     open.send(()).unwrap();
 
-    // The link comes back; the call cut off is not sent again.
-    let at_main = generation(&linked.main, "mac", 2).await;
-    let at_mac = generation(&linked.mac, "main", 2).await;
-    let _second = at_main
-        .register("work", {
-            let runs = runs.clone();
-            Arc::new(move |_: &Connection, _: &str, _: &str, args: Value| {
+    // The far end connects again; the call cut off is not sent again.
+    let second = {
+        let runs = runs.clone();
+        Arc::new(Serve(
+            move |_: &Connection, _: &str, _: &str, args: Value| {
                 runs.lock().unwrap().push(args.json()?);
                 Ok(Value::Data(json!("done")))
-            })
-        })
-        .unwrap();
-    let offers = at_mac.offers();
-    eventually(
-        || offers.borrow().families.contains("work").then_some(()),
-        "work offered on the new session",
-    )
-    .await;
+            },
+        ))
+    };
+    let (caller, _faults, _served) = connection(second).await;
     let reply = within(
         "a call on the new session",
-        at_mac
-            .connection()
-            .invoke_async("", "work.run", Value::Data(json!(["second"]))),
+        caller.invoke_async("", "work.run", Value::Data(json!(["second"]))),
     )
     .await
     .unwrap();
@@ -326,7 +211,7 @@ async fn a_call_in_flight_when_the_link_drops_fails_and_ran_once() {
     assert_eq!(
         *runs.lock().unwrap(),
         [json!(["first"]), json!(["second"])],
-        "main ran the cut-off call once and only the new call after it"
+        "the callee ran the cut-off call once and only the new call after it"
     );
 }
 
@@ -388,115 +273,69 @@ async fn under_delay_a_cancellation_and_a_release_reach_the_callee() {
     faults.heal();
 }
 
-// ── 3. New calls while a link reconnects ─────────────────────────────
+// ── 3. New calls while the far end connects again ────────────────────
 
-/// risk E1, and the generation rule of links (a resource of an older
-/// session never applies to a newer one).
+/// risk E1: a resource of an older session never applies to a newer one.
 /// guarantee: bridge/no-call-on-a-dead-session
 ///
-/// mac's connection drops and redialing fails for a while. Calls made
-/// meanwhile, through the old peer or whatever peer mac has, fail
-/// explicitly; once the link is back, calls through the new peer reach
-/// main's new session, and the old peer never works again.
+/// The connection drops. Calls on the old session fail explicitly, now and
+/// after the far end connected again; calls on the new session reach the
+/// callee's new session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn calls_while_a_link_reconnects_fail_or_reach_the_new_session() {
-    let linked = linked().await;
-    let at_main = generation(&linked.main, "mac", 1).await;
-    let old = generation(&linked.mac, "main", 1).await;
-
-    // main answers with the tag of the session each call arrived on.
+async fn calls_after_a_connection_dropped_fail_or_reach_the_new_session() {
+    // The callee answers with the tag of the session each call arrived on.
     let arrived: Arc<Mutex<Vec<(String, Json)>>> = Arc::default();
     let echo = |arrived: Arc<Mutex<Vec<(String, Json)>>>| {
-        Arc::new(move |session: &Connection, _: &str, _: &str, args: Value| {
-            let tag = session.tag().to_owned();
-            arrived.lock().unwrap().push((tag.clone(), args.json()?));
-            Ok(Value::Data(json!(tag)))
-        })
+        Arc::new(Serve(
+            move |session: &Connection, _: &str, _: &str, args: Value| {
+                let tag = session.tag().to_owned();
+                arrived.lock().unwrap().push((tag.clone(), args.json()?));
+                Ok(Value::Data(json!(tag)))
+            },
+        ))
     };
-    let _first = at_main.register("echo", echo(arrived.clone())).unwrap();
-    let old_tag = at_main.connection().tag().to_owned();
-    let offers = old.offers();
-    eventually(
-        || offers.borrow().families.contains("echo").then_some(()),
-        "echo offered",
-    )
-    .await;
+    let (old, faults, served) = connection(echo(arrived.clone())).await;
+    let old_tag = served.tag().to_owned();
     let reply = old
-        .connection()
         .invoke_async("", "echo.call", Value::Data(json!(["before"])))
         .await
         .unwrap();
     assert_eq!(reply.json().unwrap(), json!(old_tag));
 
-    linked.faulty.down.store(true, Ordering::SeqCst);
-    linked.faulty.dialed(0).drop_and_close();
-    eventually(
-        || matches!(*linked.mac_states.borrow(), LinkState::Waiting { .. }).then_some(()),
-        "mac's link to fail to redial",
-    )
-    .await;
-
-    // Disconnected: the old peer and whatever peer mac has fail at once.
+    faults.drop_and_close();
     for n in 0..3 {
         let failed = within(
             "a call on the old session",
-            old.connection()
-                .invoke_async("", "echo.call", Value::Data(json!(["old", n]))),
+            old.invoke_async("", "echo.call", Value::Data(json!(["old", n]))),
         )
         .await;
         assert!(failed.is_err(), "the old session is gone: {failed:?}");
     }
-    assert!(
-        peer(&linked.mac, "main").is_none(),
-        "no peer is provided while the link is down"
-    );
 
-    // Calls keep coming while the link reconnects; each fails or reaches
-    // the new session.
-    linked.faulty.down.store(false, Ordering::SeqCst);
-    let at_main = generation(&linked.main, "mac", 2).await;
-    let new_tag = at_main.connection().tag().to_owned();
+    let (new, _faults, served) = connection(echo(arrived.clone())).await;
+    let new_tag = served.tag().to_owned();
     assert_ne!(new_tag, old_tag);
-    let _second = at_main.register("echo", echo(arrived.clone())).unwrap();
-    let mut n = 0;
-    let new = within("a call to reach the new session", async {
-        loop {
-            n += 1;
-            let current = peer(&linked.mac, "main");
-            let session = current
-                .as_ref()
-                .map_or_else(|| old.connection().clone(), |p| p.connection().clone());
-            match session
-                .invoke_async("", "echo.call", Value::Data(json!(["during", n])))
-                .await
-            {
-                Ok(reply) => {
-                    assert_eq!(reply.json().unwrap(), json!(new_tag));
-                    break current.unwrap();
-                }
-                // Not linked yet, or echo not registered yet on main's side.
-                Err(_) => tokio::task::yield_now().await,
-            }
-        }
-    })
-    .await;
-    assert_eq!(new.generation(), 2);
+    let reply = within(
+        "a call on the new session",
+        new.invoke_async("", "echo.call", Value::Data(json!(["after"]))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.json().unwrap(), json!(new_tag));
     assert!(old
-        .connection()
         .invoke_async("", "echo.call", Value::Data(json!(["old again"])))
         .await
         .is_err());
 
     let arrived = arrived.lock().unwrap().clone();
-    assert_eq!(arrived[0], (old_tag, json!(["before"])));
-    assert!(
-        arrived[1..].iter().all(|(tag, _)| *tag == new_tag),
-        "every call after the cut reached the new session: {arrived:?}"
+    assert_eq!(
+        arrived,
+        [(old_tag, json!(["before"])), (new_tag, json!(["after"]))],
+        "only the calls on a live session arrived"
     );
-    assert_eq!(arrived.len(), 2, "only the successful call arrived");
 }
 
-// ── 4. Cancellation and release across two links ─────────────────────
+// ── 4. Cancellation and release across two sessions ─────────────────────
 
 /// b's clock: `later` never finishes; it says when it starts and when it is
 /// dropped.
@@ -524,105 +363,65 @@ impl HostDispatch for Clock {
     }
 }
 
-async fn node(identity: StaticIdentity) -> Ctx {
+/// A kernel greeting as `name`.
+fn kernel(name: &str) -> Ctx {
     let root = Ctx::root().unwrap();
-    let name = identity.local().to_string();
-    root.plugin(IdentityPlugin::new(&name, identity));
+    root.provide(LocalId(id(name))).unwrap();
     root
+}
+
+/// Provides the clock at `host_key("clock")` (a plugin's service is shared
+/// with far ends).
+struct ProvidesClock(Mutex<Option<Clock>>);
+
+impl DynPlugin for ProvidesClock {
+    fn name(&self) -> &str {
+        "clock"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            let clock = self.0.lock().unwrap().take().expect("applied once");
+            ctx.provide_key::<dyn HostDispatch>(host_key("clock"), Arc::new(clock))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Mount a session between `a` and `b` on a memory pair.
+fn connect(a: &Ctx, b: &Ctx) {
+    let (near, far) = rutis_bridge::memory::pair();
+    a.plugin(Session::new(near));
+    b.plugin(Session::new(far));
 }
 
 /// risks P6, E9.
 /// guarantee: bridge/multihop-cancel-and-release
 ///
-/// b exports `clock` to a, a re-exports it to c (as in `multihop.rs`). c
-/// calls the async `later` and gives it up, dropping its result. Each hop
-/// passes both on: a stops awaiting for c (cancel) and drops its own
-/// future for c (release), which cancels and releases its call to b; b
-/// then stops awaiting for a and drops `later`'s future. A Rust callee is
-/// cancelled by its future being dropped, so `later` ending at b needs the
-/// release to have passed both hops.
+/// b provides `clock`; b and c each have a session with a, so the clock is
+/// seen at a and, through a, at c (as in `multihop.rs`). c calls the async
+/// `later` and gives it up, dropping its result. Each hop passes the
+/// cancellation and the release on: a drops its own future for c, which
+/// cancels and releases its call to b; b then drops `later`'s future. A
+/// Rust callee is cancelled by its future being dropped, so `later` ending
+/// at b needs the release to have passed both hops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancellation_and_release_pass_hop_by_hop() {
-    let transport = Registrations::new();
-    let a = node(
-        StaticIdentity::new(id("a"))
-            .accept_token("b-token", id("b"))
-            .accept_token("c-token", id("c")),
-    )
-    .await;
-    a.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("b"),
-            "a",
-            Accepting {
-                registrations: transport.clone(),
-                listener: "a-in".into(),
-                local: id("a"),
-            },
-        )
-        .retry(quick()),
-    ));
-    a.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("c"),
-            "a",
-            Accepting {
-                registrations: transport.clone(),
-                listener: "a-in".into(),
-                local: id("a"),
-            },
-        )
-        .retry(quick()),
-    ));
-    a.plugin(ImportPlugin::new(id("b"), ["clock"]));
-    a.plugin(ExportPlugin::new(id("c"), ["clock"]));
-
+    let (a, b, c) = (kernel("a"), kernel("b"), kernel("c"));
     let (started, mut running) = mpsc::unbounded_channel();
     let (dropped, mut gone) = oneshot::channel();
-    let b =
-        node(StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())))
-            .await;
-    let _provided = b
-        .provide_at(
-            host_key("clock"),
-            Arc::new(Clock {
-                started,
-                dropped: Mutex::new(Some(dropped)),
-            }),
-        )
-        .unwrap();
-    b.plugin(LinkPlugin::new(
-        LinkConfig::dial(
-            id("a"),
-            "b",
-            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
-        )
-        .retry(quick()),
-    ));
-    b.plugin(ExportPlugin::new(id("a"), ["clock"]));
-
-    let c =
-        node(StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())))
-            .await;
-    c.plugin(LinkPlugin::new(
-        LinkConfig::dial(
-            id("a"),
-            "c",
-            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
-        )
-        .retry(quick()),
-    ));
-    c.plugin(ImportPlugin::new(id("a"), ["clock"]));
+    b.plugin(ProvidesClock(Mutex::new(Some(Clock {
+        started,
+        dropped: Mutex::new(Some(dropped)),
+    }))));
+    connect(&a, &b);
+    connect(&a, &c);
 
     let clock = eventually(
         || c.get_at::<dyn HostDispatch>(&host_key("clock")),
         "the clock at c",
     )
     .await;
-    // a's session with c, and b's session with a.
-    let a_for_c = eventually(|| peer(&a, "c"), "Peer#c at a").await;
-    let b_for_a = eventually(|| peer(&b, "a"), "Peer#a at b").await;
-
     let promise = clock.invoke("later", Value::List(vec![])).unwrap();
     let mut awaited = Box::pin(settle(promise));
     tokio::select! {
@@ -630,15 +429,9 @@ async fn cancellation_and_release_pass_hop_by_hop() {
         ended = &mut awaited => panic!("later ends only when cancelled: {ended:?}"),
         started = within("later to start at b", running.recv()) => started.unwrap(),
     }
-    let mut at_a = Box::pin(a_for_c.connection().drain());
-    let mut at_b = Box::pin(b_for_a.connection().drain());
-    assert!(pending_now(&mut at_a), "a awaits later for c");
-    assert!(pending_now(&mut at_b), "b awaits later for a");
 
     // c gives the call up: its result is dropped with it.
     drop(awaited);
-    within("the cancellation at a", at_a).await;
-    within("the cancellation at b", at_b).await;
     within("the release at b", &mut gone).await.unwrap();
 }
 
@@ -860,47 +653,37 @@ async fn a_value_too_deep_fails_its_call_and_the_session_goes_on() {
 #[cfg(feature = "websocket")]
 #[tokio::test(flavor = "multi_thread")]
 async fn over_websocket_a_value_near_the_limit_passes_and_one_over_it_fails() {
-    use rutis_bridge::websocket::{self, Limits, ListenerConfig, Trust};
-    use rutis_bridge::Registration;
+    use rutis_bridge::websocket::{self, Admitted, Credential, Limits, ListenerConfig, Trust};
 
     const LIMIT: usize = 64 * 1024;
     let limits = Limits {
         max_message: LIMIT,
         ..Limits::default()
     };
-    let registrations = Registrations::new();
+    let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
+    let (deliver, mut accepted) = mpsc::unbounded_channel();
+    let admitted = protocol.clone();
     let server = websocket::listen(
         &ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
         &limits,
-        websocket::admit_registered(registrations.clone(), "public"),
-    )
-    .unwrap();
-    let (deliver, mut accepted) = mpsc::unbounded_channel();
-    let _registered = registrations
-        .register(
-            &id("callee"),
-            Registration {
-                listener: "public".into(),
-                peer: id("caller"),
-                identity: Arc::new(
-                    StaticIdentity::new(id("callee")).accept_token("caller-token", id("caller")),
-                ),
-                protocol: rutis_bridge::protocol(),
+        Arc::new(move |_: websocket::Upgrade<'_>| {
+            let deliver = deliver.clone();
+            Ok(Admitted {
+                protocol: admitted.clone(),
                 deliver: Box::new(move |channel| {
                     let _ = deliver.send(channel);
                 }),
-            },
-        )
-        .unwrap();
-    let identity = StaticIdentity::new(id("caller"))
-        .present(id("callee"), Credential::Bearer("caller-token".into()));
+            })
+        }),
+    )
+    .unwrap();
     let address = format!("ws://{}/rutis", server.local_addr());
     let dialed = within(
         "the dial",
         websocket::dial(
             &address,
-            &rutis_bridge::protocol(),
-            identity.credential(&id("callee")).as_ref(),
+            &protocol,
+            Some(&Credential::Bearer("caller-token".into())),
             &Trust::default(),
             &limits,
         ),

@@ -19,7 +19,7 @@ use rutis_bridge::session::{
     call_service, host_key, settle, HostDispatch, Reply, Value as RpcValue,
 };
 use rutis_bridge::{
-    catalog_key, Described, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
+    catalog_key, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_loader::report::EntryStatus;
 use rutis_loader::runtime::{RuntimeResolver, SessionResolver};
@@ -81,7 +81,7 @@ impl PluginFactory<Value> for ContactsFactory {
 fn office(channel: Channel) -> Ctx {
     let office = kernel("office");
     let catalog: Arc<dyn PluginCatalog> =
-        Arc::new(StaticCatalog::new().with("contacts", Described::default(), ContactsFactory));
+        Arc::new(StaticCatalog::new().with("contacts", Installed::new(ContactsFactory)));
     office.provide_at(catalog_key(), catalog).unwrap();
     office.plugin(Session::new(channel));
     office

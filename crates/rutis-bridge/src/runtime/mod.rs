@@ -103,16 +103,16 @@ fn binary_runtime_name(prefix: &str, path: &std::path::Path) -> String {
 const FAMILIES: [&str; 4] = ["host", "service", "events", "rows"];
 
 /// `peer` as a session a process runs over.
-pub(crate) fn peer_session(peer: Arc<crate::Peer>) -> Arc<dyn Carried> {
+pub(crate) fn peer_session(peer: Arc<crate::peer::Peer>) -> Arc<dyn Carried> {
     Arc::new(PeerSession(peer))
 }
 
-struct PeerSession(Arc<crate::Peer>);
+struct PeerSession(Arc<crate::peer::Peer>);
 
 /// A dispatch as a peer's handler.
 pub(crate) struct Routed(pub(crate) Arc<dyn Dispatch>);
 
-impl crate::Handler for Routed {
+impl crate::peer::Handler for Routed {
     fn invoke(
         &self,
         peer: &Connection,
@@ -141,7 +141,7 @@ impl Carried for PeerSession {
         &self,
         dispatch: Arc<dyn Dispatch>,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
-        let handler: Arc<dyn crate::Handler> = Arc::new(Routed(dispatch));
+        let handler: Arc<dyn crate::peer::Handler> = Arc::new(Routed(dispatch));
         let offered = FAMILIES
             .iter()
             .map(|family| self.0.register(family, handler.clone()))

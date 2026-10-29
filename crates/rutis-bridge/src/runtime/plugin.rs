@@ -359,7 +359,7 @@ impl DynPlugin for RuntimePlugin {
             // cancels this generation.
             let start = async {
                 let session = ctx
-                    .get_key::<crate::Peer>(self.session[0].clone())
+                    .get_key::<crate::peer::Peer>(self.session[0].clone())
                     .map(crate::runtime::peer_session)
                     .ok_or_else(|| {
                         crate::runtime::Error::refused(format!(
@@ -479,7 +479,7 @@ impl DynPlugin for RuntimePlugin {
 
 /// The key of the link to the runtime `name`.
 fn session_key(name: &str) -> TypeKey {
-    crate::peer_key(&crate::runtime::runtime_peer(name)).erase()
+    crate::peer::peer_key(&crate::runtime::runtime_peer(name)).erase()
 }
 
 /// Waits for the process to end on its own, then withdraws the service.

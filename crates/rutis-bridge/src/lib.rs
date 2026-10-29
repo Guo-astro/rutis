@@ -5,23 +5,21 @@
 //!   manages them as rows.
 //! - [`Session`]: the far end of a [`Channel`] (a runtime, an app, a node)
 //!   as plugins of this kernel.
-//! - Links between rutis nodes ([`LinkPlugin`]) and what runs on them:
-//!   services exported and imported, plugins hosted for a peer, events
-//!   shared ([`PeerPlugin`] composes them).
+//!   A far rutis kernel is a session's far end too: the services of both
+//!   are seen on both sides, events are one bus, and each runs the other's
+//!   plugins from its [`PluginCatalog`].
 //! - [`events`]: the logical event bus across runtimes and nodes.
-//! - What links run over: [`pipe`] (local processes and Unix sockets),
+//! - What sessions run over: [`pipe`] (local processes),
 //!   [`memory`] (in-process channels) and `websocket` (feature
 //!   `websocket`), each giving a [`Channel`] directly ([`pipe::spawn`],
-//!   [`memory::pair`], `websocket::dial`, `websocket::listen`). An
-//!   [`Identity`] holds credentials and the rules that map what a far end
-//!   presents to its endpoint id.
+//!   [`memory::pair`], `websocket::dial`, `websocket::listen`).
 //! - [`session`]: the protocol all of these speak, over any
 //!   [`channel::Channel`].
 //! - [`cordis`] (feature `cordis`): Cordis plugins mounted in a Rust
 //!   application with Rust bindings generated at build time.
 //!
 //! Design: `docs/design-protocol-channel-decoupling-2026-10-03.md`,
-//! `docs/design-remote-plugins-2026-10-03.md`.
+//! `docs/design-remote-session-2026-10-28.md`.
 
 pub mod channel;
 #[cfg(feature = "cordis")]
@@ -33,8 +31,6 @@ pub mod pipe;
 pub mod report;
 pub mod runtime;
 pub mod session;
-#[cfg(feature = "testing")]
-pub mod testing;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
@@ -44,28 +40,15 @@ pub mod websocket;
 #[doc(hidden)]
 pub mod fuzzing;
 
-mod compose;
-mod host;
+mod catalog;
 mod identity;
-mod link;
 mod marked;
 mod peer;
-mod registration;
 mod services;
 
+pub use catalog::{Installed, PluginCatalog, StaticCatalog};
 pub use channel::{Channel, Close, ConnectError, PeerId};
-pub use compose::{Features, PeerHandle, PeerPlugin};
-pub use events::LinkEventsPlugin;
-pub use host::{Described, HostPlugin, Installed, PluginCatalog, ServiceKeys, StaticCatalog};
-pub use identity::{
-    fingerprint, identity_key, Credential, Identity, IdentityPlugin, Presented, StaticIdentity,
-};
-pub use link::{protocol, Connect, Dialer, Failure, LinkConfig, LinkPlugin, LinkState, Retry};
-pub use peer::{family, peer_key, Handler, Offered, Offers, Peer};
-pub use registration::{
-    Accepting, Deliver, Refusal, Registered, Registration, RegistrationError, Registrations, Ticket,
-};
-pub use services::{ExportPlugin, ImportPlugin};
+pub use identity::fingerprint;
 pub use session::plugin::{
     catalog_key, session_key, Greeted, LocalId, RowHandle, Session, SessionHandle,
 };

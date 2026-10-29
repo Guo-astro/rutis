@@ -388,12 +388,12 @@ fn state_word(status: &EntryStatus) -> &'static str {
 /// `call to forecast.tomorrow failed: …`) when the error says, else
 /// `failed: …`.
 fn failure(error: &rutis::host::ErrorKind) -> String {
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     let said = match rutis_bridge::report::headline(error) {
         Some(_) => rutis_bridge::report::report(error),
         None => format!("failed: {}", rutis_bridge::report::report(error)),
     };
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     let said = format!("failed: {error}");
     said.lines().next().unwrap_or_default().to_owned()
 }

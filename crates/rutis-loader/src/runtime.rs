@@ -90,7 +90,7 @@ mod sessions;
 #[cfg(feature = "swift")]
 pub mod swift;
 pub use rows::{RowsSource, RuntimeRows, RuntimeRowsPlugin};
-pub use sessions::{SessionResolver, SessionRows};
+pub use sessions::{LoaderCatalog, SessionResolver, SessionRows};
 
 use rutis::internal::CtxInternal;
 #[cfg(doc)]

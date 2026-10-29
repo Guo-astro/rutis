@@ -6,7 +6,7 @@
 # so a renamed or removed test file cannot leave a stale name in a list.
 #
 # Usage: tools/platform-tests.sh <crate directory> [<test name>...]
-#   tools/platform-tests.sh crates/rutis-bridge link multihop
+#   tools/platform-tests.sh crates/rutis-bridge memory_session multihop
 #   → --lib --test boundary_rules --test bun_channel ...
 set -euo pipefail
 
