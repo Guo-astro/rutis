@@ -289,7 +289,7 @@ fn the_dev_loop(lang: &Lang) {
     let runtime = lang.runtime;
     let mut host = Host::start(&["dev", "."], dir.path());
     // Once running, the services and their rows (#670).
-    let services = "rutis-host dev: services: llm (llm), loader (host), weather (weather)";
+    let services = "rutis-host dev: services: llm (llm), loader (host), sessions (host), weather (weather)";
     expect(
         &mut host,
         &[

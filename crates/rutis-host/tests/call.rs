@@ -195,7 +195,7 @@ fn call_in_a_dev_project_says_what_it_did() {
     );
     fails(
         &["forcast.today", "\"Oslo\""],
-        "rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader)\n",
+        "rutis-host: no row provides forcast; did you mean forecast? (services: forecast, llm, loader, sessions)\n",
     );
     fails(
         &["forecast.tomorow", "\"Oslo\""],
