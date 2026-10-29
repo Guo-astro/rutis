@@ -455,7 +455,9 @@ async fn the_same_id_takes_over(language: Language) {
     first.expect("rutis: connected to ").await;
     let line = second.expect("rutis: connection lost (").await;
     assert!(line.contains("replaced by a new connection"), "{line}");
-    assert_eq!(rutis.connected(), ["pixel"]);
+    // Installed only once the replaced one closed with 4002 (listen's
+    // order): one `pixel` connected, after that close.
+    rutis.until_connected(&["pixel"]).await;
 }
 
 /// Stopped by its own side (SIGTERM): the connection closes, the process
