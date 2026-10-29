@@ -228,7 +228,7 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             shared.remove(id)
             announcements++
             // Also while closing: rutis hears it before the plugin cleans up.
-            if (servicesOffer != null) told("services.withdraw", servicesWithdraw(id, announcements)) {}
+            if (servicesOffer != null) withdrawing += told("services.withdraw", servicesWithdraw(id, announcements)) {}
             reconcile()
         }
         val slot = slots[id] ?: return
@@ -342,12 +342,18 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
      * it answers with a result to await, and takes the frame (or refuses
      * it, which `refused` hears) once it is awaited.
      */
-    private fun told(method: String, frame: Map<String, Any?>, refused: (Throwable) -> Unit) {
-        val session = session ?: return
+    /**
+     * Sends `method` with `frame` to rutis; `refused` is told when rutis
+     * refuses it. Returns a future completed once rutis answered (or the
+     * call could not be sent, or the session ended).
+     */
+    private fun told(method: String, frame: Map<String, Any?>, refused: (Throwable) -> Unit): CompletableFuture<Unit> {
+        val answered = CompletableFuture<Unit>()
+        val session = session ?: return answered.also { it.complete(Unit) }
         val answer = try {
             session.send("", method, listOf(frame), false)
         } catch (_: Exception) {
-            return
+            return answered.also { it.complete(Unit) }
         }
         installing.launch {
             try {
@@ -356,9 +362,15 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
                 throw e
             } catch (e: Throwable) {
                 if (!closing) refused(e)
+            } finally {
+                answered.complete(Unit)
             }
         }
+        return answered
     }
+
+    /** The withdrawals sent and not answered yet; `lock` is held to change it. */
+    private val withdrawing = ArrayList<CompletableFuture<Unit>>()
 
     /**
      * rutis's offers (`link.offers`): every service shared is announced to
@@ -623,6 +635,16 @@ class RuntimeState(plugins: List<Plugin>, private val open: Boolean = false) {
             }
             row.announced.clear()
             row
+        }
+        // rutis answers the withdrawals of its services before it cleans up
+        // (an application's own plugin), within the deadline.
+        val withdrawals = synchronized(lock) {
+            withdrawing.removeAll { it.isDone }
+            ArrayList(withdrawing)
+        }
+        if (withdrawals.isNotEmpty()) {
+            val wait = deadlineNanos?.let { ((it - System.nanoTime()) / 1_000_000).coerceAtLeast(0) } ?: shutdownMillis
+            withTimeoutOrNull(wait) { withdrawals.forEach { it.await() } }
         }
         // The row's coroutines are cancelled; its running listeners waited
         // for, at most the shutdown deadline (§7.1); then its cleanups run,
