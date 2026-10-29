@@ -40,8 +40,7 @@ internal var projectDir: String = ""
  * address>` to wait for rutis to dial in. `--rutis-manifest` prints what the
  * plugins declare. Exit status 0 when the session ended (or, remotely, the
  * runtime was stopped: SIGTERM, Ctrl-C) and the rows unloaded; 1 when the
- * host was refused (it does not declare events-v2, or the access point is
- * otherwise incompatible) or cleanups did not finish within
+ * host was refused (the access point is incompatible) or cleanups did not finish within
  * `RUTIS_SHUTDOWN_TIMEOUT`.
  */
 fun Rutis.serve(args: Array<String>, vararg plugins: Plugin): Nothing {

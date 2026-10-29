@@ -357,7 +357,7 @@ mod tests {
         }
         let (config, id) = dev_config(&project).unwrap();
         assert_eq!(id, "net-probe");
-        assert_eq!(config.rows[0]["name"], "go-net-probe:net-probe");
+        assert_eq!(config.rows[0]["name"], "go:net-probe");
         assert_eq!(
             config.rows[0]["config"]["greeting"], "Hello",
             "rutis.dev.json configures it"
@@ -440,7 +440,7 @@ mod tests {
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (config, id) = dev_config_built(dir.path(), &binary).unwrap();
         assert_eq!(id, "probe");
-        assert_eq!(config.rows[0]["name"], "go-net-probe:probe");
+        assert_eq!(config.rows[0]["name"], "go:probe");
         let go = config.runtimes.go.unwrap();
         assert_eq!(go.dev, Some((binary, "go-net-probe".to_owned())));
     }

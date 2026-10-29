@@ -20,6 +20,7 @@ pub mod project;
 pub mod restart;
 pub mod rows_file;
 pub mod status;
+pub mod test;
 
 /// The Rust host guide's examples compile against these crates (#667).
 #[cfg(doctest)]

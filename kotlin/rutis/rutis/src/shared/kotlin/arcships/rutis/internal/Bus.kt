@@ -31,11 +31,10 @@ enum class Mode(val wire: String) {
     Serial("serial"),
     Waterfall("waterfall"),
     Bail("bail"),
-    WaterfallSync("waterfall-sync"),
     ;
 
     /** Whether listeners get `next` in this mode. */
-    val waterfall: Boolean get() = this == Waterfall || this == WaterfallSync
+    val waterfall: Boolean get() = this == Waterfall
 
     companion object {
         fun of(wire: String): Mode? = entries.firstOrNull { it.wire == wire }

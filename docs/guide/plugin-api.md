@@ -451,7 +451,7 @@ public let greeter = Rutis.define(Plugin(name: "greeter") { ctx in
 
 #### Rust
 
-事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
+事件类型怎样写、`ctx.on` 与 `ctx.emit` 见 [写一个 Rust 插件：事件](rust-plugin.md#5-发出和监听事件)。监听器看 `call.mode()` 知道这次分发的方式；`on_sync` 登记同步监听器；`listen::<E>()` 给出名字、前缀与选项：
 
 ```rust
 use rutis::events::Mode;
@@ -1010,7 +1010,6 @@ final class Warmer: @unchecked Sendable {
 - 只有写在文件顶层的 `@RutisClient` 协议能收对象：宏为它生成的 `rutisObjectProxy` 重载只在文件顶层对 Swift 可见。嵌在别的类型里的 `@RutisClient` 协议照常可以 `ctx.use`，但用它做参数类型时收不了对象（`bad-argument`）。可选类型（`(any Cache)?`）的参数和返回值在 0.18 里也收不了对象，写 `any Cache`。
 - 参数类型是数据（`Codable` 类型、`String` 等）时，这次调用以 `bad-argument` 失败：`warmer.place: argument 1 should be a Spot, got an object (an object is received only as a @RutisClient protocol or Any)`。
 - 把收到的代理或 `Rutis.Advanced.Client` 再交出去，发出的是原来那个对象。
-- 对象不能交给 0.18 之前的一端：直接连着这样的一端时，这次调用以 `bad-value` 失败（`… cannot cross to main; pass plain data or a function instead, or upgrade main to rutis 0.18`），会话继续。
 
 Swift 应用、Kotlin 应用、Rust 见 [Swift 应用](swift-app.md#带方法的对象)、[Kotlin 应用](kotlin-app.md#带方法的对象)、[Rust 插件](rust-plugin.md#对其他语言提供服务)。
 

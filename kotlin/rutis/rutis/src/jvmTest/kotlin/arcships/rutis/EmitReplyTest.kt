@@ -37,7 +37,7 @@ class EmitReplyTest {
         runtime = Peer(a, Options(dispatch = { _, _, _ -> answeredSeen.put(answered); null }, endpoint = Endpoint("kotlin", "main")))
         runtime.start()
         far.recv() // its hello
-        send("""{"op":"hello","version":4,"endpoint":"main","capabilities":["events-v2"]}""")
+        send("""{"op":"hello","version":4,"endpoint":"main","capabilities":[]}""")
         runtime.readyFuture.get(5, TimeUnit.SECONDS)
     }
 

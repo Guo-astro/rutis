@@ -274,8 +274,8 @@ a running host keeps the old versions until it restarts
 - **TypeScript、JavaScript**：行名是包名（`@your-name/greeter`）或它的子路径。插件包带着它写时那个版本的 `@arcships/rutis`，宿主里几个版本可以并存；插件上标着它所用的插件 API 版本，宿主的运行时比它旧时明确报错。
 - **Bun**：包依赖 `@arcships/rutis-bun` 时 `add` 用 `bun add` 装进 `runtimes.bun.project`。行名 `bun:<npm 名或子路径>` 从这个项目的 `node_modules` 解析，`bun:./路径` 相对于这个项目；`bun:sqlite` 指项目里的模块 `sqlite`，不是 Bun 的内置模块。`runtimes.bun` 可以和 `runtimes.node`、`runtimes.py` 同时配置，服务按名字跨运行时共享。
 - **Python**：行名是插件包在 `rutis.plugins` 组里的入口点名（`py:welcome`），不是发行包名。Python 运行时就是这个环境里的 `rutis`，装成和 `rutis-host` 相同的版本（`rutis-host --version`）。
-- **Go**：二进制放进 `runtimes.go.dir`（`add` 用 `go install`，也可以下载插件发布里本平台的二进制；macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 在所有二进制里查找；两个二进制里有同名插件时写 `go-<二进制名>:<插件名>`。二进制在第一次有行用到时启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。
-- **Swift**（macOS）：从插件的 Release 下载二进制放进 `runtimes.swift.dir`；下载的二进制带隔离属性，`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除。行名 `swift:<插件>`（同名时 `swift-<二进制名>:<插件>`），其余设置与 `runtimes.go` 相同。运行它不需要 Swift 工具链。
+- **Go**：二进制放进 `runtimes.go.dir`（`add` 用 `go install`，也可以下载插件发布里本平台的二进制；macOS 上下载的二进制带隔离属性，`rutis-host check` 会提示）。行名 `go:<插件名>` 在所有二进制里查找；两个二进制里有同名插件时这一行失败，写出两个文件名，由插件作者改名。二进制在第一次有行用到时启动，空闲 60 秒后停下（`"start": "eager"` 全部启动并一直运行）；换了二进制要重启宿主才生效。
+- **Swift**（macOS）：从插件的 Release 下载二进制放进 `runtimes.swift.dir`；下载的二进制带隔离属性，`rutis-host check` 会提示，信任它之后用 `xattr -d com.apple.quarantine <文件>` 清除。行名 `swift:<插件>`（一个插件名只能在一个二进制里），其余设置与 `runtimes.go` 相同。运行它不需要 Swift 工具链。
 - **Rust**：Rust 插件编进 Rust 宿主，见 [在 Rust 应用里嵌入](rust-host.md)；Rust 宿主也能运行上面这些语言的插件（例如 Go 的 `BinaryResolver<Go>`、`BinaryRuntimes<Go>`），见 [运行时与加载器](rust-host.md#运行时与加载器)。
 
 ## 命令
@@ -291,6 +291,7 @@ a running host keeps the old versions until it restarts
 | `rutis-host add <插件> [rutis.json]` | 按插件的来源（`npm:`、`pypi:`、Go 模块路径、本地路径）装好它和它的运行时缺的东西，记进 `installed`，加上它的行，打印它的介绍（见 [宿主怎样装插件](#宿主怎样装插件)） |
 | `rutis-host remove <插件> [rutis.json]` | 卸掉 `add` 装的插件所在的包，删掉它的记录和行 |
 | `rutis-host upgrade [<插件>[@<版本>]] [rutis.json]` | 把 `add` 装的插件升到最新版（或给出的版本）；运行中的宿主重启后生效 |
+| `rutis-host test <插件> -- <运行时命令…> <项目>` | 给各 SDK 的测试工具用：起一个自己没有行的宿主，像本机运行时那样启动运行时，在那里加载 `<插件>` 驱动测试，服务 `rutis-host/test` 让插件在这个运行时里运行；运行时结束时退出（见 [在测试里运行插件](#在测试里运行插件rutis-host-test)） |
 | `rutis-host types [目录] [-o 文件] [--python 文件]` | 写出 `目录`（默认当前目录）里的 crate 及它用到的 crate 中标了 `#[rutis::service]` 的 Rust 服务的 TypeScript 声明，写到标准输出或 `文件`；`--python` 同时写出 Python 类型；见 [在 Rust 应用里嵌入：声明](rust-host.md#声明) |
 
 每个命令后加 `--help` 或 `-h` 打印它的用法（只有这个命令的那几行），以 0 退出，不做别的事；`rutis-host --help` 打印全部。
@@ -572,7 +573,7 @@ rutis-host: reload rejected: row weather's config does not match its plugin's sc
 | `<行 id>: restarted (<另一行> reloaded)` | 这一行用到另一行提供的服务，随它重启了。原因也可能是 `<行> updated`、`added`、`removed`（`rutis.dev.json` 改的）、`<Go 或 Swift 运行时> restarted`，或者 `<行> restarted`：它用到的、随这次变化重启的行（`llm` 重新加载、`greeter` 用到 `llm` 时，打印 `caller: restarted (greeter restarted)`）。写出的原因一定是这一行用到的行；不知道它用到哪些行时（依赖在运行时内部，Cordis 行之间），不写原因：`<行 id>: restarted`。这一行之前没在运行、或者现在没在运行时，写 `started` 或 `stopped`，不写 `restarted` |
 | `rutis-host: reloaded rutis.dev.json (<n> rows changed)` | 重新读了 `rutis.dev.json`；后面每个变了的行一行：`<行 id>: updated (its row in rutis.dev.json changed)`、`<行 id>: added`、`<行 id>: removed`。被拒绝时：`rutis-host: reload rejected: <原因>; nothing changed` |
 | `runtime <名字>: starting again (<文件> changed)` | 停着的运行时因为这次变化重新启动；起来后打印 `runtime <名字>: running`，没起来就再打印 `runtime <名字>: down (<原因>)`。由 `restart` 重启它时打印 `runtime <名字>: down; its restart starts it again, its rows with the code as it is then (…)`；它正在启动时打印 `runtime <名字>: starting; its rows start with the code as it is then (…)` |
-| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | 启动后（所有行都已启动或失败），以及每次重新加载、重新构建、重读 `rutis.dev.json` 结束后，打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`（例如 rutis 自己提供的 `loader`）；没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。每次都打印，不和上次比较；此外服务有变化（例如运行时在行启动之后才提供服务）时也照实再打印一次。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
+| `rutis-host dev: services: forecast (weather), llm (llm), loader (host)` | 所有行都已运行、等待或失败后打印一次现在的服务和提供它的行（与 `rutis-host status` 的 `services` 相同），按服务名排序；宿主提供的写 `host`（例如 rutis 自己提供的 `loader`）；没有行提供服务时写 `rutis-host dev: services: none`，宿主提供的不算。之后服务变化时再打印（例如运行时在行启动之后才提供服务），每次重新加载、重新构建、重读 `rutis.dev.json` 结束后也打印，不和上次比较。它和各行状态行的先后不固定。它以 `rutis-host dev: ` 开头，不是 `<行>: <状态>` 的形式，读状态行的脚本不受影响；`run` 不打印，用 `rutis-host status` |
 | `<项目>: building`、`<项目>: built in 1.2s`、`<运行时>: rebuilt and restarted` | Go 或 Swift 项目重新构建了，运行时换上新的构建重启。构建失败时打印 `<项目>: the build failed; the last build keeps running`，后面是编译器的错误；新的构建运行不起来时打印 `<运行时>: cannot restart: <原因>; the previous build is kept` |
 
 ## 运行时结束时
@@ -668,6 +669,40 @@ $ rutis-host call forecast.week '{"days": 3}'
 | 没有在运行的宿主 | `rutis-host: no rutis-host run or dev is running for /work/weather (start one, or name its configuration with --config)` |
 
 `run` 和 `dev` 都接受 `call`。谁能连与 `status` 相同：socket 只有本用户能用。Windows 上不提供（`rutis-host call is not available on Windows`）。
+
+## 在测试里运行插件：`rutis-host test`
+
+`rutis-host test` 给各 SDK 的测试工具用：被测插件跑在真实的运行时里、面对真实的 rutis 内核，测试看到的就是宿主做的事。插件作者不用自己运行它，由测试工具运行。测试工具在 `PATH` 上找它，或用 `RUTIS_HOST` 指定的路径。
+
+```console
+rutis-host test <插件> -- <运行时命令…> <项目>
+```
+
+- 它起一个自己没有行的宿主（id 是 `host`），并像启动任何本机运行时那样启动运行时：`<运行时命令…> <通道> --id test <项目>`，通道在 fd 3 上；Windows 上（以及设了 `RUTIS_LOCAL_HANDOVER=loopback` 时）是一个本机回环地址加一次性 token。Node 是 `node <@arcships/rutis-runtime>/src/runner.mjs <package.json>`，Python 是 `python3 -m rutis <项目目录>`。运行时的输出与本机运行时一样整行转出。
+- 宿主里有插件 `rutis-host/test`，提供服务 `rutis-host/test`：
+
+| 方法 | 做什么 |
+| --- | --- |
+| `load(name, config?, options?)` | 让运行时以 `config` 运行插件 `name`（运行时认得的名字：Node 与 Bun 是文件或包，Python 是模块），成为单独一行（`test:<name>`，按 session 的 `run`）；返回这一行的 id。`options` 给这一行的字段：`id`（已有这一行时：`a row oslo is loaded already`），`isolate`，与 `rutis.json` 里一行的相同（`{ "forecast": true }`，或一个标签）。没有 `id` 时：文件名去掉扩展名（`/tests/weather.mjs` 是 `weather`），否则就是 `name`，已被占用时加 `-2`、`-3`……。这一行起不来时以这一行的状态行失败（`weather: config: city is required`），不留下这一行 |
+| `update(id, config)` | 像改了一行的配置那样给这一行 `config`：插件以它重启。插件拒绝它（这一行保留原配置）或以它失败时失败 |
+| `unload(id)` | 删掉这一行；插件在运行时里卸载完才返回 |
+| `reported(id)` | 宿主报告过的这一行的事：它的监听器在 `emit` 里失败、它的 `emit` 的过滤器失败，文字与宿主打印的相同（`weather: listener of weather/ask failed: Error: boom`） |
+
+- `<插件>` 在运行时完成握手后最先加载（等同 `load(<插件>)`）：它是驱动测试的插件。它 inject `rutis-host/test`，提供被测插件要用的假服务（`ctx.provide`），像任何插件一样监听（`ctx.on`）和发出事件（`ctx.emit`）。它在 `apply` 之外调用 `load`（在它起的任务里，或在监听器里）：它的 `apply` 运行时，loader 正在启动它。
+- 这样加载的插件与驱动测试的插件在同一个运行时里，共用一条事件总线；服务对它们都可见，与任何宿主相同。
+- 运行时结束时它退出：所有清理都完成时退出码 0。驱动测试的插件以结束自己的运行时来结束测试（Node `process.exit(0)`，Python `os._exit(0)`），运行时会说出来（`runtime test: row tester called process.exit(0)`）。Ctrl-C 与 SIGTERM 的停止方式与 `run` 相同。
+
+测试工具要做的：运行 `rutis-host test <驱动测试的插件> -- <运行时命令…> <项目>`，从输出里读驱动测试的插件报告的结果，等它退出。
+
+0.19 里测试工具只用本机运行时。设备上的测试（Android instrumented 测试、iOS 模拟器）不用 `rutis-host test`：那里由应用自己装插件。
+
+| 情况 | 输出 |
+| --- | --- |
+| 运行时起不来 | `rutis-host: test: cannot start /usr/bin/nodee: No such file or directory (os error 2)`（退出码 1） |
+| 运行时在握手前结束 | `rutis-host: test: <原因>`（退出码 1） |
+| 驱动测试的插件起不来 | `rutis-host: ` 加上它那一行的状态行，与 `load` 失败相同（`rutis-host: tester: unresolved: …`；退出码 1） |
+| 没有 `--`，或运行时命令之后没有项目 | `rutis-host: usage: rutis-host test <plugin> -- <runtime command...> <project>`（退出码 1） |
+| 对不是 `load` 加的行 `update` 或 `unload` | `no row weather was loaded` |
 
 ## 输出
 
@@ -767,7 +802,7 @@ rutis.json: this file is format 2, this rutis-host reads up to 1: upgrade rutis-
 rutis-host: warning: rutis.json: rows use the py runtime (py:llmbox), which runtimes does not declare: it runs with its defaults; declare "runtimes": { "py": {} } to say so
 ```
 
-`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`、`go-<二进制>:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。`rutis-host dev` 里，项目自己的运行时由 `dev` 设置：`rutis.dev.json` 里在这个运行时运行的行（TypeScript 项目的 `./dev/fake-llm.ts`、Python 项目的 `py:fake_llm`）没有告警；由别的运行时运行的行（TypeScript 项目里的 `py:` 行）告警一次，重新读 `rutis.dev.json` 时不再重复。
+`py:` 行启用 `py`，`bun:` 行启用 `bun`，按路径或 `file:` 写的 JavaScript/TypeScript 文件（`.js`、`.mjs`、`.cjs`、`.ts`、`.mts`、`.cts`）启用 `node`；npm 包名不推断（它也可能是别的解析器的名字）。被禁用的行不算。Go 和 Swift 需要写明二进制，不会自动启用：这样的行（`go:<插件>`）在 `check` 里提示声明 `runtimes.go`（`runtimes.swift`）。`rutis-host dev` 里，项目自己的运行时由 `dev` 设置：`rutis.dev.json` 里在这个运行时运行的行（TypeScript 项目的 `./dev/fake-llm.ts`、Python 项目的 `py:fake_llm`）没有告警；由别的运行时运行的行（TypeScript 项目里的 `py:` 行）告警一次，重新读 `rutis.dev.json` 时不再重复。
 
 这样启用的运行时按默认设置起不来时（例如没有 `package.json`、没装 `@arcships/rutis-runtime`，或 Python 环境里没有 `rutis`），宿主不退出：stderr 写一条告警，说明原因和该怎么做（`rutis-host: warning: the node runtime, which rows use but runtimes does not declare, cannot run with its defaults: …; its rows do not run`），它的行和以前一样失败（`unresolved: no plugin named …`），其他行照常运行。在 `runtimes` 里写明的运行时起不来时，仍然启动失败。
 
@@ -800,7 +835,7 @@ rutis-host: rutis.json: installed.ruby:geo: name it by its row: a Node package, 
 | 字段 | 含义 |
 | --- | --- |
 | `id` | 行的名字，在本文件内唯一 |
-| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；两个二进制都有时写 `go-<二进制名>:<插件>`）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）、`<连接行>:<插件>`（在连接的对面运行的插件）、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
+| `name` | 插件：npm 包名（或包的子路径）、`py:<名字>`（Python 入口点或模块）、`bun:<模块>`（Bun 运行时里的模块）、`go:<插件>`（含这个插件的 Go 二进制；一个插件名只能在一个二进制里）、`swift:<插件>`（同上，Swift 二进制）、`./相对路径`（插件文件）、`rutis-host/dial` / `rutis-host/listen`（连接，见 [远程运行时与设备](#远程运行时与设备)）、`<连接行>:<插件>`（在连接的对面运行的插件）、`rutis-bridge/peer`（节点，见 [连接节点](nodes.md)）、`peer:<节点>/<插件>`（在别的节点上运行的插件） |
 | `config` | 插件的配置 |
 | `inject` | 额外要等的服务名 |
 | `isolate` | `{ "服务名": true }` 让这一行用自己的那份服务；`{ "服务名": "标签" }` 让同标签的行共用一份 |

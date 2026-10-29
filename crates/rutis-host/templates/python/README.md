@@ -1,6 +1,6 @@
 # {{name}}
 
-A [rutis](https://github.com/arcships/rutis) plugin.
+A [rutis](https://github.com/arcships/rutis) plugin. Guide: [Write a Python plugin](https://github.com/arcships/rutis/blob/main/docs/guide/python-plugin.en.md).
 
 ```bash
 uv sync

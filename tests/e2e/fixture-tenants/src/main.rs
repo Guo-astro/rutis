@@ -644,7 +644,7 @@ async fn call(door: &Door, service: &str, method: &str, args: Value) -> Result<V
 /// Wait until every global row that runs has started (or failed).
 /// `reconcile` returns once no row is in transition, but a row of a
 /// runtime waits for the runtime's rows to be released
-/// ([`RuntimeRowsPlugin`], once the runtime is up) and is `Pending` until
+/// (`SessionRows`, once the runtime is up) and is `Pending` until
 /// then: `ready` reports the rows as they run (#568).
 async fn started(loader: &Loader) -> Result<(), String> {
     for entry in loader.entries() {

@@ -349,7 +349,8 @@ extension Runtime {
             case let .failure(error):
                 answered(error)
             case let .success(.remoteFuture(future)):
-                // An older host answers with a future: its settlement.
+                // The host queued this emit behind one already running in
+                // the row, and answered with a future: its settlement.
                 Task.detached {
                     do {
                         _ = try await settle(.remoteFuture(future))
@@ -471,11 +472,11 @@ extension Runtime {
             }
         }
         var next: NextFunction?
-        if mode.isWaterfall {
+        if mode == .waterfall {
             guard case let .remoteFunction(far) = record["next"] ?? .undefined else {
                 return failed(RutisError(name: "Error", message: "events.call: a \(modeText) needs next"))
             }
-            next = { try await settle(try await far.call([], sync: mode == .waterfallSync)) }
+            next = { try await settle(try await far.call([], sync: false)) }
         }
         guard let call = listener.begin() else { return failed(withdrawn) }
         return { try await call(mode, values, next) }

@@ -1,6 +1,8 @@
 # rutis 指南
 
-按你要做的事选：
+按你要做的事选。
+
+## 给宿主写插件
 
 | 我要… | 读 |
 | --- | --- |
@@ -12,11 +14,28 @@
 | 用 Swift 写 macOS 插件 | [写一个 Swift 插件](swift-plugin.md) |
 | 把 iOS / iPadOS / macOS 应用的能力提供给 rutis | [在应用里托管插件（Swift）](swift-app.md) |
 | 在 Android 应用里用 Kotlin 提供插件 | [Android 应用托管插件](kotlin-app.md) |
+
+## 用 rutis-host 组装插件
+
+| 我要… | 读 |
+| --- | --- |
+| 不写 Rust，装别人写的插件、写 `rutis.json`、运行并试一下 | [rutis-host 与 rutis.json](rutis-host.md) |
+| 在另一台机器上运行插件 | [rutis-host：远程运行时](rutis-host.md#远程运行时) |
+
+## 做一个开放插件的宿主
+
+| 我要… | 读 |
+| --- | --- |
+| 在自己的 Rust 产品里接入 rutis，把插件能力开放给别的开发者 | [做一个开放插件的宿主](open-host.md) |
+
+## 参考
+
+| 我要… | 读 |
+| --- | --- |
 | 查插件能做什么、值怎样传递 | [插件 API](plugin-api.md) |
 | 在插件之间（任何语言、任何进程、任何节点）收发事件 | [插件 API：事件](plugin-api.md#事件) |
-| 不写 Rust，直接运行插件 | [rutis-host 与 rutis.json](rutis-host.md) |
-| 把多台机器连起来、在别的机器上运行插件 | [连接节点](nodes.md) |
-| 在自己的 Rust 应用里加载插件 | [在 Rust 应用里嵌入](rust-host.md) |
+| 在 Rust 应用里加载插件：API 参考 | [在 Rust 应用里嵌入](rust-host.md) |
+| 把多台机器连起来 | [连接节点](nodes.md) |
 | 让已有的 Cordis 应用和 rutis 互通，或在 Rust 里挂载 Cordis 插件 | [Cordis](cordis.md) |
 
 ## 包
@@ -27,9 +46,9 @@
 | 宿主（运行插件） | `rutis`、`rutis-loader`、`rutis-bridge`、`rutis-dylib` | `@arcships/rutis-runtime`（Node）、`@arcships/rutis-bun`（Bun） | `rutis` | （插件二进制自带运行时） | （插件二进制自带运行时） |
 | 不写 Rust 的宿主 | `rutis-host` | `@arcships/rutis-host` | `rutis-host` | | |
 
-这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车，当前为 0.17）。宿主或应用装的各个 rutis 包请使用同一个版本；插件对 SDK 怎样写依赖（Python 插件只写下限）见 [插件 API：版本](plugin-api.md#版本)。
+这些包（包括内核 `rutis` 和 dylib 工具链）一起发布、版本号相同（发布列车）。宿主或应用装的各个 rutis 包请使用同一个版本；插件对 SDK 怎样写依赖（Python 插件只写下限）见 [插件 API：版本](plugin-api.md#版本)。
 
-从 0.16 升级见[迁移到 0.17](../migration-0.17.md)（只影响 Rust 插件和 Rust 宿主：一种插件写法、宿主用的东西放进 `rutis::host`，有迁移工具 `rutis-migrate`）。从 0.13–0.15.1 升级见[迁移到 0.16](../migration-0.16.md)（事件是一条平总线；0.16 删掉 0.15.1 的兼容层）。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)（统一的事件，不与 0.12 混用）。从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
+从 0.18 升级见[迁移到 0.19](../migration-0.19.md)（远程运行时的连接、宿主与运行时一起升级、平台清理）。从 0.17 升级见[迁移到 0.18](../migration-0.18.md)，从 0.16 升级见[迁移到 0.17](../migration-0.17.md)（只影响 Rust 插件和 Rust 宿主），从 0.13–0.15.1 升级见[迁移到 0.16](../migration-0.16.md)（事件是一条平总线；0.16 删掉 0.15.1 的兼容层）。从 0.12 升级见 [迁移到 0.13](../migration-0.13.md)（统一的事件，不与 0.12 混用）。从 0.8 升级见 [0.8 → 0.9](../migration-0.8-to-0.9.md)，从 0.7 升级见 [0.7 → 0.8](../migration-0.7-to-0.8.md)。用过 `rutis-interop` 的项目见[迁移指南](../migration-interop-to-0.7.md)。
 
 ## 环境
 

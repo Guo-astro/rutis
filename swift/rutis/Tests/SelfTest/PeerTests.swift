@@ -34,8 +34,8 @@ struct PeerTests {
             host.close()
             runtime.close()
         }
-        XCTAssertTrue(runtime.supports("sync-wait"))
-        XCTAssertTrue(host.supports("events-v2"))
+        XCTAssertTrue(runtime.supports("reentrant-sync"))
+        XCTAssertTrue(host.supports("reentrant-sync"))
         let echoed = try await host.call(target: "t", method: "echo", args: [.instant(Instant("2026-10-15T03:22:15.123456789Z")!)], sync: true)
         guard case let .instant(instant) = echoed else { return XCTFail("\(echoed)") }
         XCTAssertEqual(instant.description, "2026-10-15T03:22:15.123456789Z")
@@ -114,7 +114,7 @@ struct PeerTests {
         let runtime = try Peer(channel: a, options: PeerOptions(endpoint: Endpoint(local: "swift", expected: "main")))
         try runtime.start()
         defer { far.close() }
-        try far.send(Array(#"{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":["events-v2"]}"#.utf8))
+        try far.send(Array(#"{"op":"hello","version":3,"endpoint":"main","implementation":{"name":"rutis","version":"0.18.0"},"capabilities":[]}"#.utf8))
         await runtime.closed()
         XCTAssertEqual("\(runtime.error.map { "\($0)" } ?? "")",
                        "incompatible session: the far end speaks protocol 3, this side 4: upgrade the far end (rutis 0.18.0)")

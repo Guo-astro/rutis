@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "id": "main",
+  "rows": [
+    { "id": "clipboard", "name": "swift-MacKit:clipboard" }
+  ]
+}

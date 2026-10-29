@@ -68,10 +68,6 @@
       "name": "bun:./fn/edge.ts"
     },
     {
-      "id": "dns",
-      "name": "go-dns:resolver"
-    },
-    {
       "id": "probe",
       "name": "go:probe",
       "disabled": true
@@ -187,10 +183,6 @@
           "name": "kiosk:screen"
         }
       ]
-    },
-    {
-      "id": "clipboard",
-      "name": "swift-MacKit:clipboard"
     },
     {
       "id": "iphones",

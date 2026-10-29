@@ -1,6 +1,6 @@
 //! Go: `runtimes.go`, a directory of compiled binaries, one runtime each
 //! (`go-<binary>`), started when a row uses it (or with the host); rows
-//! `go:<plugin>` and `go-<binary>:<plugin>`.
+//! `go:<plugin>`.
 //!
 //! Unlike the interpreted languages it has no single runtime: it overrides
 //! [`Language::start`] with what the compiled languages share
@@ -96,15 +96,15 @@ impl Language for Go {
     }
 
     /// Build it (unless `built`, the first build the caller made without
-    /// blocking), then one row per plugin of its binary, named with its
-    /// runtime (`go-<name>:<plugin>`).
+    /// blocking), then one row per plugin of its binary (`go:<plugin>`):
+    /// under `dev` the Go runtimes see only the development build.
     fn dev(&self, dir: &Path, built: Option<&Path>) -> Result<(Vec<Value>, Runtimes), String> {
         let go = GoDev::of(dir).ok_or_else(|| format!("{}: no go.mod", dir.display()))?;
         let binary = match built {
             Some(binary) => binary.to_owned(),
             None => binary::building(&go.name, || go.build(1))?,
         };
-        let (rows, settings) = dev_rows(&binary, &go.runtime, &go.dir, &go.package)?;
+        let (rows, settings) = dev_rows("go", &binary, &go.runtime, &go.dir, &go.package)?;
         Ok((
             rows,
             Runtimes {
@@ -149,10 +149,11 @@ pub(super) fn rebase(settings: &mut GoRuntime, at: &dyn Fn(&mut PathBuf)) {
 }
 
 /// The rows of a compiled language's development build `binary`, one per
-/// plugin of its manifest named with its runtime (`<runtime>:<plugin>`),
-/// and the settings that run it from `project`; `what` names it when it
-/// serves nothing.
+/// plugin of its manifest named with the language's prefix
+/// (`<prefix>:<plugin>`), and the settings that run it, as `runtime`, from
+/// `project`; `what` names it when it serves nothing.
 pub(super) fn dev_rows(
+    prefix: &str,
     binary: &Path,
     runtime: &str,
     project: &Path,
@@ -163,7 +164,7 @@ pub(super) fn dev_rows(
     let rows: Vec<Value> = manifest
         .plugins
         .keys()
-        .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{runtime}:{plugin}"), "config": {} }))
+        .map(|plugin| json!({ "id": id_of(plugin), "name": format!("{prefix}:{plugin}"), "config": {} }))
         .collect();
     if rows.is_empty() {
         return Err(format!("{what} serves no plugins"));

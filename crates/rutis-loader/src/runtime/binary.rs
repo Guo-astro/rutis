@@ -10,14 +10,14 @@
 //! config schemas and versions. [`BinaryResolver`] reads the manifests of
 //! the binaries it is given (files, and every binary of the language in
 //! some directories: those containing its SDK's marker) and resolves
-//! `<prefix>:<plugin>` to the binary that has the plugin, or
-//! `<runtime>:<plugin>` to a named one; [`BinaryRuntimes`] starts a
+//! `<prefix>:<plugin>` to the binary that has the plugin (a plugin name in
+//! two binaries is an error naming both files); [`BinaryRuntimes`] starts a
 //! binary's runtime when a row resolves to it, and stops it once idle.
 //! Restarting one whose process ended is the application's.
 //!
 //! A runtime is named after its file ([`BinaryLanguage::runtime_name`],
-//! `go-<name>`): that is the name rows, [`BinaryRuntimesHandle::restart`]
-//! and diagnostics use. While a runtime runs, rows resolve from the
+//! `go-<name>`): that is the name [`BinaryRuntimesHandle::restart`] and
+//! diagnostics use. While a runtime runs, rows resolve from the
 //! manifest it started with; a binary replaced on disk takes effect when
 //! the runtime restarts. A binary whose session was refused (an old SDK)
 //! stays refused until its file changes.
@@ -703,8 +703,7 @@ struct Launched {
     manifest: Arc<BinaryManifest>,
 }
 
-/// Resolves `<prefix>:<plugin>` and `<runtime>:<plugin>` rows to the
-/// language's binaries. Give the loader a shared reference
+/// Resolves `<prefix>:<plugin>` rows to the language's binaries. Give the loader a shared reference
 /// (`Chain::with_shared`) and the same one to [`BinaryRuntimes`].
 pub struct BinaryResolver<L: BinaryLanguage> {
     binaries: Mutex<Binaries>,
@@ -1009,102 +1008,57 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             name: name.to_owned(),
             message,
         };
-        let (named, plugin) = match name
+        let plugin = name
             .strip_prefix(L::PREFIX)
             .and_then(|rest| rest.strip_prefix(':'))
-        {
-            Some(plugin) => (None, plugin),
-            None => {
-                let (runtime, plugin) = name.split_once(':').ok_or_else(not_found)?;
-                let ours = runtime
-                    .strip_prefix(L::PREFIX)
-                    .is_some_and(|rest| rest.starts_with('-'));
-                if !ours {
-                    return Err(not_found());
-                }
-                (Some(runtime), plugin)
-            }
-        };
+            .ok_or_else(not_found)?;
         if plugin.is_empty() || plugin.contains('/') {
             return Err(not_found());
         }
         let mut binaries = self.scan(Force::None);
         let mut rescanned = false;
         loop {
-            if let Some(runtime) = named {
-                if let Some(binary) = binaries.iter().find(|binary| binary.runtime == runtime) {
-                    let (manifest, replaced) = match self.manifest_of(binary) {
-                        Ok(read) => read,
-                        // A listed binary whose read failed: the rescan
-                        // below may read it again; it says why otherwise.
-                        Err(_) if !rescanned => {
-                            rescanned = true;
-                            binaries = self.scan(Force::Failed);
-                            continue;
-                        }
-                        Err(error) => return Err(failed(error)),
-                    };
-                    if manifest.plugins.contains_key(plugin) {
-                        return self.build(name, binary, &manifest, plugin);
-                    }
-                    let mut message = format!(
-                        "{runtime} has no plugin {plugin}; it has: {}",
-                        manifest
-                            .plugins
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    if replaced {
-                        message.push_str(&format!(
-                            "; its binary was replaced, which takes effect after restarting the runtime {runtime:?}"
-                        ));
-                    }
-                    return Err(failed(message));
+            let mut having = Vec::new();
+            let mut replaced_having = Vec::new();
+            for binary in &binaries {
+                let Ok((manifest, replaced)) = self.manifest_of(binary) else {
+                    continue;
+                };
+                if manifest.plugins.contains_key(plugin) {
+                    having.push((binary, manifest));
+                } else if replaced
+                    && binary
+                        .manifest
+                        .as_ref()
+                        .is_ok_and(|disk| disk.plugins.contains_key(plugin))
+                {
+                    replaced_having.push(binary.runtime.clone());
                 }
-            } else {
-                let mut having = Vec::new();
-                let mut replaced_having = Vec::new();
-                for binary in &binaries {
-                    let Ok((manifest, replaced)) = self.manifest_of(binary) else {
-                        continue;
-                    };
-                    if manifest.plugins.contains_key(plugin) {
-                        having.push((binary, manifest));
-                    } else if replaced
-                        && binary
-                            .manifest
-                            .as_ref()
-                            .is_ok_and(|disk| disk.plugins.contains_key(plugin))
-                    {
-                        replaced_having.push(binary.runtime.clone());
-                    }
+            }
+            match having.len() {
+                1 => {
+                    let (binary, manifest) = &having[0];
+                    return self.build(name, binary, manifest, plugin);
                 }
-                match having.len() {
-                    1 => {
-                        let (binary, manifest) = &having[0];
-                        return self.build(name, binary, manifest, plugin);
-                    }
-                    0 if !replaced_having.is_empty() => {
-                        return Err(failed(format!(
-                            "the binary of {} was replaced; {plugin} takes effect after restarting the runtime {:?}",
-                            replaced_having[0], replaced_having[0]
-                        )));
-                    }
-                    0 => {}
-                    _ => {
-                        let runtimes: Vec<String> = having
-                            .iter()
-                            .map(|(binary, _)| binary.runtime.clone())
-                            .collect();
-                        return Err(failed(format!(
-                            "{plugin} is in several {} binaries ({}): name one, as {}:{plugin}",
-                            L::TITLE,
-                            runtimes.join(", "),
-                            runtimes[0]
-                        )));
-                    }
+                0 if !replaced_having.is_empty() => {
+                    return Err(failed(format!(
+                        "the binary of {} was replaced; {plugin} takes effect after restarting the runtime {:?}",
+                        replaced_having[0], replaced_having[0]
+                    )));
+                }
+                0 => {}
+                // One plugin name, one plugin: the plugin's author renames
+                // one of them.
+                _ => {
+                    let files: Vec<String> = having
+                        .iter()
+                        .map(|(binary, _)| binary.path.display().to_string())
+                        .collect();
+                    return Err(failed(format!(
+                        "{plugin} is in several {} binaries ({}): a plugin name must be in one binary only",
+                        L::TITLE,
+                        files.join(", ")
+                    )));
                 }
             }
             if rescanned {
@@ -1114,21 +1068,6 @@ impl<L: BinaryLanguage> BinaryResolver<L> {
             // or a read that failed a while ago may succeed now (#306).
             rescanned = true;
             binaries = self.scan(Force::Failed);
-        }
-        if let Some(runtime) = named {
-            // A listed binary whose manifest failed says why.
-            if let Some(binary) = self
-                .state
-                .lock()
-                .unwrap()
-                .scanned
-                .values()
-                .find(|binary| binary.runtime == runtime && binary.listed)
-            {
-                if let Err(error) = &binary.manifest {
-                    return Err(failed(format!("{}: {error}", binary.path.display())));
-                }
-            }
         }
         Err(not_found())
     }

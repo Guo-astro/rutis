@@ -158,7 +158,7 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         session.start()
         session.readyFuture.get(WAIT_MILLIS, TimeUnit.MILLISECONDS)
         call("", "events.elsewhere", listOf(linkedMapOf("add" to emptyList<String>())))
-        call("", "mount", listOf(linkedMapOf("announce" to true, "runtime" to runtime)))
+        call("", "mount", listOf(linkedMapOf("runtime" to runtime)))
         @Suppress("UNCHECKED_CAST")
         val schema = Native.toNative(call("", "rows.schema", listOf(plugin.name))) as Map<String, Any?>
         @Suppress("UNCHECKED_CAST")
@@ -333,7 +333,7 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
         val row = Native.toNative(record["row"]) as? String ?: ""
         val name = Native.toNative(record["name"]) as? String ?: ""
         val mode = (Native.toNative(record["mode"]) as? String)?.let(Mode::of)
-        if (mode == null || mode == Mode.WaterfallSync) throw IllegalArgumentException("events.dispatch: unknown mode ${record["mode"]}")
+        if (mode == null) throw IllegalArgumentException("events.dispatch: unknown mode ${record["mode"]}")
         val values: List<Any?> = when (val list = record["args"]) {
             is List<*> -> list
             is kotlinx.serialization.json.JsonArray -> list
@@ -378,7 +378,7 @@ internal class Harness(val plugin: Plugin, private val services: Map<String, Any
             d.parallel(args)
             null
         }
-        Mode.Waterfall, Mode.WaterfallSync -> d.waterfall(mode, args, terminal)
+        Mode.Waterfall -> d.waterfall(mode, args, terminal)
         else -> d.serial(mode, args)
     }
 
@@ -492,7 +492,7 @@ private class Invocation(val entry: BusEntry, val dispatch: String, val own: Boo
 
     private suspend fun call(mode: Mode, args: List<Any?>, next: Next?): Any? {
         val fn = entry.fn ?: return h.session.settleSuspend(
-            h.session.callSuspend("", "events.call", listOf(record(mode, args, next)), mode == Mode.Bail || mode == Mode.WaterfallSync),
+            h.session.callSuspend("", "events.call", listOf(record(mode, args, next)), mode == Mode.Bail),
         )
         return local(fn, mode, args, next)
     }
