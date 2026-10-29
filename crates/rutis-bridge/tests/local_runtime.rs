@@ -4,8 +4,10 @@
 //! `RUTIS_LOCAL_HANDOVER=loopback`).
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
 use rutis_bridge::runtime::{Launcher, RuntimeState};
+
+mod common;
+use common::runtime::{greet_as_main, root, TestRuntime};
 
 /// Also checks what the error sink heard (stderr in an embedding, by
 /// default): the runtime down, once, by its name, and no failed start of
@@ -15,7 +17,7 @@ async fn failed_with(launcher: Launcher) -> String {
     use std::sync::{Arc, Mutex};
 
     let dir = tempfile::tempdir().unwrap();
-    let runtime = LocalRuntime::launcher("broken", launcher, dir.path());
+    let runtime = TestRuntime::new("broken", launcher, dir.path());
     let handle = runtime.handle();
     let sunk: Arc<Mutex<Vec<Arc<ErrorKind>>>> = Arc::default();
     let into = sunk.clone();
@@ -23,6 +25,7 @@ async fn failed_with(launcher: Launcher) -> String {
         tokio::runtime::Handle::current(),
         Arc::new(move |error| into.lock().unwrap().push(error)),
     );
+    greet_as_main(&root);
     let view = root.plugin(runtime);
     let _ = (&view).await;
     assert_eq!(view.state().state, FiberState::Failed);
@@ -76,16 +79,15 @@ async fn local_runtime_events_follow_leaf_lifecycle() {
     use serde_json::json;
 
     within("runtime event declarations survive restart", async {
-        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let package = repo.join("node/rutis-runtime");
-        let entry = repo.join("crates/rutis-bridge/tests/fixtures/leaf-events.mjs");
-        let runtime = LocalRuntime::node(&package, package.join("package.json"));
+        let entry =
+            common::runtime::repo().join("crates/rutis-bridge/tests/fixtures/leaf-events.mjs");
+        let runtime = TestRuntime::node();
         let changed = "leaf/changed";
         let emit = |args: Vec<rutis_bridge::session::Value>| {
             std::sync::Arc::new(rutis_bridge::events::Args(args))
         };
         let handle = runtime.handle();
-        let root = Ctx::root().unwrap();
+        let root = root();
         let view = root.plugin(runtime);
         (&view).await.unwrap();
         for generation in 1..=2 {
@@ -144,11 +146,9 @@ async fn a_runtime_announces_running_and_down() {
     use rutis_test_support::{eventually, within};
 
     within("rutis/runtime", async {
-        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let package = repo.join("node/rutis-runtime");
-        let runtime = LocalRuntime::node(&package, package.join("package.json"));
+        let runtime = TestRuntime::node();
         let handle = runtime.handle();
-        let root = Ctx::root().unwrap();
+        let root = root();
         let heard = Arc::new(Mutex::new(Vec::new()));
         let into = heard.clone();
         root.on::<RuntimeEvent>(move |event, _| {

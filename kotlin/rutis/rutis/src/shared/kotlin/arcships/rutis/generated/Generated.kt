@@ -54,6 +54,24 @@ interface ObjectProxy {
 /** The object of another process the proxy calls, if it does. */
 internal val ObjectProxy.rutisObject: RemoteObject? get() = (rutisHandle as? ObjectHandle)?.target
 
+/** The object of this process the proxy calls, if it does. */
+internal val ObjectProxy.ownObject: ExportedObject? get() = (rutisHandle as? OwnObjectHandle)?.target
+
+/**
+ * The handle of an object of this process received as a `@RutisClient`
+ * interface its class does not implement (a plugin of the same runtime
+ * handed it): its method table, by name, as another process would call it.
+ */
+internal class OwnObjectHandle(val target: ExportedObject) : ServiceHandle {
+    override val name: String get() = ""
+    override val kinds: Map<String, String> get() = emptyMap()
+
+    override suspend fun callSuspend(method: String, args: List<Any?>): Any? = target.call(method, args)
+
+    override fun callBlocking(method: String, args: List<Any?>): Any? =
+        kotlinx.coroutines.runBlocking(CallChain.element()) { target.call(method, args) }
+}
+
 /** The handle of an object of another process: no method table, every method called by name (#687). */
 internal class ObjectHandle(val target: RemoteObject) : ServiceHandle {
     override val name: String get() = ""
@@ -191,8 +209,7 @@ object Generated {
 
     /**
      * Argument `i`, a plugin definition (a parameter of type [Plugin]): one
-     * of this process's, back home, or the definition itself handed to a
-     * test double; null for none when [nullable].
+     * of this process's, back home; null for none when [nullable].
      */
     fun pluginArg(args: List<Any?>, i: Int, method: String, nullable: Boolean): Plugin? {
         val value = if (i < args.size) args[i] else Undefined
@@ -215,7 +232,7 @@ object Generated {
 
     private fun plugin(value: Any?, nullable: Boolean, where: (String) -> String): Plugin? = when (value) {
         is Plugin -> value
-        is RemotePlugin -> value.local ?: throw ValueException(where("a plugin definition of another process can only be handed back to it"))
+        is RemotePlugin -> throw ValueException(where("a plugin definition of another process can only be handed back to it"))
         null, Undefined, kotlinx.serialization.json.JsonNull -> if (nullable) null else throw ValueException(where("expected a plugin definition, got null"))
         else -> throw ValueException(where("expected a plugin definition, got ${describe(value)}"))
     }
@@ -246,8 +263,19 @@ object Generated {
         is RemoteObject -> type.cast(
             value.proxies[type] ?: Tables.clientFactory(type)?.create(ObjectHandle(value))?.let { value.proxies.putIfAbsent(type, it) ?: it },
         )
-        is ExportedObject -> type.cast(value.original.takeIf { type.isInstance(it) })
+        is ExportedObject -> type.cast(value.original.takeIf { type.isInstance(it) } ?: ownProxy(value, type))
         else -> null
+    }
+
+    /** The proxies of this process's objects, one of each interface per object, kept while used. */
+    private val ownProxies = java.util.WeakHashMap<Any, MutableMap<Class<*>, java.lang.ref.WeakReference<Any>>>()
+
+    private fun <I : Any> ownProxy(value: ExportedObject, type: Class<I>): I? = synchronized(ownProxies) {
+        val proxies = ownProxies.getOrPut(value.original) { HashMap() }
+        proxies[type]?.get()?.let { return type.cast(it) }
+        val proxy = Tables.clientFactory(type)?.create(OwnObjectHandle(value)) ?: return null
+        proxies[type] = java.lang.ref.WeakReference(proxy)
+        proxy
     }
 
     /** A `@RutisClient` interface value as a session value: a proxy of another process's object is that object. */

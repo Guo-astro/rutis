@@ -1,36 +1,25 @@
-//! A service two links away: b exports `clock` to a, a imports it and
-//! exports it on to c. Calls from c reach b; a callback c passes is called
-//! back by b during c's synchronous call, and that callback calls the clock
-//! again: a re-entrant chain c → a → b → a → c → a → b. A withdrawal at b
-//! reaches c.
+//! A service two sessions away: b provides `clock`; b and c each have a
+//! session with a, so the clock is seen at a and, through a's session with
+//! c, at c (`docs/design-remote-session-2026-10-28.md` §2.6: no export or
+//! import, services seen on both sides). Calls from c reach b; a callback c
+//! passes is called back by b during c's synchronous call, and that
+//! callback calls the clock again: a re-entrant chain c → a → b → a → c →
+//! a → b. A withdrawal at b reaches c.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use rutis::host::CtxHost;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect};
+use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::channel::PeerId;
 use rutis_bridge::session::{host_key, Error, HostDispatch};
 use rutis_bridge::session::{settle, Reply, Value};
-use rutis_bridge::{
-    Accepting, Credential, ExportPlugin, Identity, IdentityPlugin, ImportPlugin, LinkConfig,
-    LinkPlugin, Registrations, Retry, StaticIdentity,
-};
+use rutis_bridge::{LocalId, Session};
 use rutis_test_support::eventually;
 use serde_json::{json, Value as Json};
 
 fn id(s: &str) -> PeerId {
     PeerId::new(s).unwrap()
-}
-
-fn quick() -> Retry {
-    Retry {
-        initial: Duration::from_millis(20),
-        max: Duration::from_millis(200),
-        // No jitter: the same delays every run (#231).
-        jitter: 0.0,
-        ..Retry::default()
-    }
 }
 
 /// b's clock: `now` counts, `each` calls back for every day, `later` is async.
@@ -60,81 +49,44 @@ impl HostDispatch for Clock {
     }
 }
 
-async fn node(identity: StaticIdentity) -> Ctx {
+/// A kernel greeting as `name`.
+fn kernel(name: &str) -> Ctx {
     let root = Ctx::root().unwrap();
-    let name = identity.local().to_string();
-    root.plugin(IdentityPlugin::new(&name, identity));
+    root.provide(LocalId(id(name))).unwrap();
     root
 }
 
+/// Provides the clock (a plugin's service is shared with far ends).
+struct ProvidesClock(Mutex<Option<Clock>>);
+
+impl DynPlugin for ProvidesClock {
+    fn name(&self) -> &str {
+        "clock"
+    }
+
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
+        Box::pin(async move {
+            let clock = self.0.lock().unwrap().take().expect("applied once");
+            ctx.provide_key::<dyn HostDispatch>(host_key("clock"), Arc::new(clock))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Mount a session between `a` and `b` on a memory pair.
+fn connect(a: &Ctx, b: &Ctx) {
+    let (near, far) = rutis_bridge::memory::pair();
+    a.plugin(Session::new(near));
+    b.plugin(Session::new(far));
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_service_reexported_across_two_links_keeps_calls_callbacks_and_withdrawals() {
-    let transport = Registrations::new();
-
-    // a: accepts b and c on one listener; imports from b, exports to c.
-    let a = node(
-        StaticIdentity::new(id("a"))
-            .accept_token("b-token", id("b"))
-            .accept_token("c-token", id("c")),
-    )
-    .await;
-    a.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("b"),
-            "a",
-            Accepting {
-                registrations: transport.clone(),
-                listener: "a-in".into(),
-                local: id("a"),
-            },
-        )
-        .retry(quick()),
-    ));
-    a.plugin(LinkPlugin::new(
-        LinkConfig::listen(
-            id("c"),
-            "a",
-            Accepting {
-                registrations: transport.clone(),
-                listener: "a-in".into(),
-                local: id("a"),
-            },
-        )
-        .retry(quick()),
-    ));
-    a.plugin(ImportPlugin::new(id("b"), ["clock"]));
-    a.plugin(ExportPlugin::new(id("c"), ["clock"]));
-
-    // b: owns the clock.
-    let b =
-        node(StaticIdentity::new(id("b")).present(id("a"), Credential::Bearer("b-token".into())))
-            .await;
-    let provided = b
-        .provide_at(host_key("clock"), Arc::new(Clock(Default::default())))
-        .unwrap();
-    b.plugin(LinkPlugin::new(
-        LinkConfig::dial(
-            id("a"),
-            "b",
-            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
-        )
-        .retry(quick()),
-    ));
-    b.plugin(ExportPlugin::new(id("a"), ["clock"]));
-
-    // c: uses it, two links away.
-    let c =
-        node(StaticIdentity::new(id("c")).present(id("a"), Credential::Bearer("c-token".into())))
-            .await;
-    c.plugin(LinkPlugin::new(
-        LinkConfig::dial(
-            id("a"),
-            "c",
-            rutis_bridge::memory::dialer(transport.clone(), "a-in"),
-        )
-        .retry(quick()),
-    ));
-    c.plugin(ImportPlugin::new(id("a"), ["clock"]));
+async fn a_service_two_sessions_away_keeps_calls_callbacks_and_withdrawals() {
+    let (a, b, c) = (kernel("a"), kernel("b"), kernel("c"));
+    // b owns the clock; c uses it, two sessions away.
+    let provided = b.plugin(ProvidesClock(Mutex::new(Some(Clock(Default::default())))));
+    connect(&a, &b);
+    connect(&a, &c);
 
     let clock = eventually(
         || c.get_at::<dyn HostDispatch>(&host_key("clock")),

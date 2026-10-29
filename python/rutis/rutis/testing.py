@@ -26,6 +26,7 @@ import asyncio
 import inspect
 import itertools
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -42,8 +43,9 @@ from .runner import Runtime, no_method
 # The test's own plugin, as the host knows it: the row that provides the
 # test's services and holds its listeners.
 TESTER = "tester"
-# This runtime's endpoint on the session with `rutis-host test`.
-ENDPOINT = {"local": "python", "declare": ["runtime"]}
+# This runtime's endpoint on the session with `rutis-host test`, which
+# calls the runtime it tests `test`.
+ENDPOINT = {"local": "test", "declare": ["runtime"]}
 # How long `rutis-host test` is given to start, and to exit once its
 # session ended, in seconds.
 STARTING = 30.0
@@ -112,17 +114,50 @@ class _Host:
         self.tester: Any = None
         self.harness: Any = None
 
+    async def _hand_over(self, path: str) -> socket.socket:
+        """Start `rutis-host test <tester> --channel <channel>` and return
+        this side of the channel: one end of a socket pair handed over as a
+        descriptor, or on Windows a loopback connection `rutis-host` makes,
+        presenting a one-time token first."""
+        command = [path, "test", TESTER, "--channel"]
+        if sys.platform != "win32":
+            ours, theirs = socket.socketpair()
+            try:
+                self.process = subprocess.Popen(command + [f"fd:{theirs.fileno()}"], pass_fds=[theirs.fileno()])
+            except OSError as error:
+                ours.close()
+                raise PluginTestError(f"cannot start {path}: {error}") from None
+            finally:
+                theirs.close()
+            return ours
+        token = secrets.token_hex(16)
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            port = listener.getsockname()[1]
+            try:
+                self.process = subprocess.Popen(
+                    command + [f"tcp:127.0.0.1:{port}"], env=dict(os.environ, RUTIS_CHANNEL_TOKEN=token)
+                )
+            except OSError as error:
+                raise PluginTestError(f"cannot start {path}: {error}") from None
+            listener.settimeout(STARTING)
+            connection, _ = await asyncio.to_thread(listener.accept)
+        connection.settimeout(STARTING)
+        presented = b""
+        while not presented.endswith(b"\n"):
+            chunk = await asyncio.to_thread(connection.recv, 1)
+            if not chunk:
+                break
+            presented += chunk
+        if presented != token.encode() + b"\n":
+            connection.close()
+            raise PluginTestError("rutis-host test connected without its token")
+        connection.settimeout(None)
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return connection
+
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
-        path = _host_path()
-        ours, theirs = socket.socketpair()
-        try:
-            self.process = subprocess.Popen([path, "test", TESTER], stdin=theirs, stdout=theirs)
-        except OSError as error:
-            ours.close()
-            raise PluginTestError(f"cannot start {path}: {error}") from None
-        finally:
-            theirs.close()
+        ours = await self._hand_over(_host_path())
         self.socket = ours
         self.started = loop.create_future()
         self.runtime = Runtime()
@@ -402,21 +437,24 @@ async def load(
     config: Any = None,
     services: dict | None = None,
     bus: Bus | None = None,
-    row: str | None = None,
+    id: str | None = None,
+    isolate: dict | None = None,
 ) -> AsyncIterator[Loaded]:
     """Load `plugin` (a module with `apply`, or what `define_plugin` returns)
     with `config` and the services in `services` as a row of a host;
     unload it on exit.
 
     `bus`: share the host with the other plugins loaded with it (default:
-    a host of its own). `row`: its row's id (default the plugin's declared
-    name, else its module's); the host adds `-2`, `-3`… to an id taken."""
+    a host of its own). `id`: its row's id; without one, the plugin's
+    declared name, else its module's, with `-2`, `-3`… added while taken.
+    `isolate`: the row's `isolate`, as in `rutis.json` (`{"notes": True}`,
+    or a label for a service)."""
     module_name = plugin.__name__ if isinstance(plugin, ModuleType) else None
     if isinstance(plugin, ModuleType):
         plugin = sdk.load(plugin)
     if not isinstance(plugin, sdk.Plugin):
         raise PluginTestError("load needs a plugin module or what define_plugin returns")
-    name = row or plugin.name or (module_name.rsplit(".", 1)[-1] if module_name else None) or "plugin"
+    name = id or plugin.name or (module_name.rsplit(".", 1)[-1] if module_name else None) or "plugin"
     if not name or any(c in name for c in "/\\."):
         raise PluginTestError(f"a row id has no '/', '\\' or '.': {name!r}")
     bus = bus if bus is not None else Bus()
@@ -434,7 +472,8 @@ async def load(
         sys.modules[entry] = holder = ModuleType(entry)
         holder.plugin = plugin
         try:
-            id = await host.harness.load(entry, config)
+            options = {key: value for key, value in (("id", id), ("isolate", isolate)) if value is not None}
+            id = await host.harness.load(entry, config, options)
         except Exception as error:  # noqa: BLE001 - the host's words
             sys.modules.pop(entry, None)
             raise PluginTestError(_said(error)) from None

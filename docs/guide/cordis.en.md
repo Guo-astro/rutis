@@ -2,19 +2,19 @@
 
 rutis and Cordis (the Node plugin framework) interoperate in two ways:
 
-- **Use a Cordis application as a node:** connect an existing Cordis application to a rutis node so they can use each other's services, share events, and let rutis run plugins inside it. Use `@arcships/rutis-runtime/bridge`.
+- **Run Cordis plugins as rutis rows:** a Cordis application joins rutis by running its plugins in the Node runtime (`<package name>` rows); see below.
 - **Mount Cordis plugins in a Rust application:** run published Cordis plugins in a real Cordis context without changing their source, and use Rust types generated at build time from their type declarations. Enable the `cordis` feature of `rutis-bridge`.
 
-A Cordis plugin can also run as a row in rutis-loader: name its package in a row of `rutis.json` (a published package too), with the package unchanged, as in `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`:
+A Cordis plugin runs as a row in rutis-loader: name its package in a row of `rutis.json` (a published package too), with the package unchanged, as in `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`:
 
 - Cordis rows in the same Node runtime use each other's services by Cordis's native rules, getting the objects themselves.
 - The services a row provides reach rutis by themselves: rows of other runtimes, other nodes and Rust plugins use them by name. The methods are the functions of the service object (its own and its prototype chain's, not `constructor`), all called as `async`. When the package's `package.json` declares `rutis.provides`, that declaration applies (to mark some methods `sync`, say).
-- When a service of the same name already has another provider (a row of another runtime, a Rust plugin, an import from a node), the row providing it later fails, also when it provides it after loading, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
+- When a service of the same name already has another provider (a row of another runtime, a Rust plugin, a connected node's plugin), the row providing it later fails, also when it provides it after loading, and the error names both, for example `service storage is already provided by row prompts: row storage cannot provide it too`.
 - `rutis-host check` runs no plugin, so it does not see undeclared services: a service a row depends on that only such rows may provide is a warning, `nothing declares <service>; it may be provided at runtime by …`, not a failure (with `check --strict`, one).
 
 ## Events
 
-A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json, mounted in a Rust application, or in a Cordis application acting as a node, its events reach listeners in any language and process by the same rules (one flat bus, by name), and events emitted elsewhere reach its listeners. A Cordis application acting as a node shares with its peer only the names its `Events` lists in `export` / `import` ([below](#use-a-cordis-application-as-a-node)). The rules are in [plugin API: events](plugin-api.en.md#events).
+A Cordis plugin uses Cordis's own event API as before, and it is rutis's event API: `ctx.on`, `ctx.emit`, `ctx.parallel`, `ctx.serial`, `ctx.waterfall`, `ctx.bail`. Cordis listeners register themselves on the host's logical bus, so whether a Cordis plugin runs as a row of rutis.json or mounted in a Rust application, its events reach listeners in any language, process and connected node by the same rules (one flat bus, by name), and events emitted elsewhere reach its listeners. The rules are in [plugin API: events](plugin-api.en.md#events).
 
 ```ts
 export function apply(ctx: Context) {
@@ -35,30 +35,6 @@ await ctx.parallel('chat/sent', out)       // waits for every listener, wherever
 - **`parallel`** failures are always an `AggregateError`, its errors in registration order (as in Cordis), with the message `<n> listeners of <name> failed`, including failures of listeners elsewhere. A failing `emit` listener is reported in one line where it runs and does not reach the emitter.
 - **`internal/*`** stays each runtime's own: `internal/dispatch` and `internal/service` are local to the process and never cross. Before an event arriving from elsewhere first calls a listener in this process, the runtime fires `internal/dispatch` once for that dispatch, with rutis's mode name (`emit`, `parallel`, `serial`, `waterfall`, `bail`), so `internal/dispatch` validators still see such events.
 - **Unload**: the row's `ctx.signal` is aborted and its running listeners are waited for before the cleanups run.
-
-## Use a Cordis application as a node
-
-```bash
-npm install @arcships/rutis-runtime
-```
-
-```js
-import { Link, Export, Import, Host, Events } from '@arcships/rutis-runtime/bridge'
-
-ctx.plugin(Link, { peer: 'main', id: 'mac', dial: 'wss://main.example.com/rutis', token: process.env.RUTIS_TOKEN })  // or listen: 'wss://…'
-ctx.plugin(Export, { peer: 'main', services: { calendar: { today: 'sync', later: 'async' } } })
-ctx.plugin(Import, { peer: 'main', services: ['clock'] })
-ctx.plugin(Host, { peer: 'main' })                     // let main run npm plugins installed here
-ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['session/*'] })
-```
-
-- `Link` maintains a connection to one peer and exposes it as `rutisPeer.<id>`. Other features depend on it and are recreated after every reconnect.
-- `Export` exposes Cordis services to the peer with the declared method shapes. `Import` registers peer services as Cordis services and rejects a name already used locally.
-- `Host` lets the peer load npm plugins installed here, running them with the row's `isolate` and `inject` settings. Enable it only for trusted peers.
-- `Events` shares events with the peer by the rules between nodes ([events between nodes](nodes.en.md#events-between-nodes)): for the names in `export`, events this application emits reach the peer's listeners; for the names in `import`, this application's listeners receive the events the peer emits. An item is a name, or a prefix ending in `*`. The five modes, filters and every value type work; events travel one hop. The `out` / `in` of before 0.13 are refused.
-- Credentials can also come from `RUTIS_TOKEN`, `RUTIS_CA`, `RUTIS_CERT`, and `RUTIS_KEY`.
-
-For the rutis node configuration, see [Connect nodes](nodes.en.md).
 
 ## Mount Cordis plugins in a Rust application
 

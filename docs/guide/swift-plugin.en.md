@@ -200,7 +200,7 @@ The other ways to emit (wait for all listeners, take the first result, chain the
 
 ## 6. Test
 
-`RutisTest` needs no host: the plugin runs in its real runtime and the test is the host, giving the plugin fake services, calling the services it provides and listening to events as a host does. Replace `Tests/GreeterPluginTests/PluginTests.swift` with:
+`RutisTest` runs the plugin as a row of a real host: `rutis-host test`, which it starts itself (`rutis-host` on `PATH`, or its path in `RUTIS_HOST`; `npm install --global @arcships/rutis-host`). The test gives the plugin fake services, calls the services it provides and listens to its events from a test plugin in the same runtime. Replace `Tests/GreeterPluginTests/PluginTests.swift` with:
 
 <!-- example: swift-en file=greeter/Tests/GreeterPluginTests/PluginTests.swift -->
 ```swift
@@ -236,10 +236,10 @@ swift test
 
 - `RutisTest.load(plugin, config:, services:)` loads the plugin: `config` is the row's configuration, `services` the fake services (instances of `@RutisService` types); give every service the plugin injects.
 - `loaded.service("greeter").call("hello", "Ada", as: String.self)` calls the service as another plugin would.
-- `loaded.on(name) { … }` listens to an event as the host does. The event comes from the other side, so the test waits for it to arrive (here with an `AsyncStream`) rather than checking when the call returns.
-- `loaded.close()` unloads the plugin and ends the test's host.
+- `loaded.on(name) { … }` listens to an event. The host dispatches it, so the test waits for it to arrive (here with an `AsyncStream`) rather than checking when the call returns.
+- `loaded.close()` unloads the plugin; the host goes on for the next test.
 
-Values cross a real session in the test, as in a host: code that holds only within one process fails here already. The rest of the test tool is in [Plugin API: the Swift test tool](plugin-api.en.md#the-swift-test-tool).
+The host checks the row's config, gates the row on the services it injects and dispatches its events, as when it runs. The rest of the test tool is in [Plugin API: the Swift test tool](plugin-api.en.md#the-swift-test-tool).
 
 ## 7. Run it locally and try it
 

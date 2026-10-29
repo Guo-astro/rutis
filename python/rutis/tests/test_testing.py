@@ -192,7 +192,7 @@ class Testing(background.TestCase):
                 ctx.on("tick", seen.append)
                 saved.extend([ctx, off])
 
-            async with load(define_plugin(apply), row="ticks") as t:
+            async with load(define_plugin(apply), id="ticks") as t:
                 await t.parallel("tick", 1)
                 saved[1]()
                 saved[1]()
@@ -214,7 +214,7 @@ class Testing(background.TestCase):
                 ctx.on("tick", fail)
 
             bus = Bus()
-            async with load(define_plugin(apply), row="ticker", bus=bus) as t:
+            async with load(define_plugin(apply), id="ticker", bus=bus) as t:
                 self.assertIsNone(t.emit("tick"))
                 for _ in range(100):
                     if await t.reported():
@@ -237,22 +237,57 @@ class Testing(background.TestCase):
                 return define_plugin(apply)
 
             bus = Bus()
-            async with load(listener("r"), bus=bus, row="r") as root, \
-                    load(listener("u"), bus=bus, row="u"), \
-                    load(listener("s", prepend=True), bus=bus, row="s"), \
-                    load(listener("v", global_=True), bus=bus, row="v"):
+            async with load(listener("r"), bus=bus, id="r") as root, \
+                    load(listener("u"), bus=bus, id="u"), \
+                    load(listener("s", prepend=True), bus=bus, id="s"), \
+                    load(listener("v", global_=True), bus=bus, id="v"):
                 await root.parallel("t/x")
                 self.assertEqual(log, ["s", "r", "u", "v"])
                 log.clear()
                 seen = []
                 await bus.emitter().filter(lambda d: seen.append(d) or d["row"] == "u").parallel("t/x")
                 self.assertEqual(log, ["u", "v"], "v is global and skips the filter")
-                self.assertEqual([(d["row"], d["runtime"]) for d in seen], [("s", "python"), ("r", "python"), ("u", "python")])
+                self.assertEqual([(d["row"], d["runtime"]) for d in seen], [("s", "test"), ("r", "test"), ("u", "test")])
                 log.clear()
                 await bus.emitter().filter(lambda d: False).parallel("t/x")
                 self.assertEqual(log, ["v"], "global skips the filter")
-                async with load(listener("x"), bus=bus, row="r") as again:
-                    self.assertEqual(again.row, "r-2", "the host gives a taken id a suffix")
+                with self.assertRaises(PluginTestError) as taken:
+                    async with load(listener("x"), bus=bus, id="r"):
+                        pass
+                self.assertIn("a row r is loaded already", str(taken.exception))
+
+        run(go())
+
+    def test_without_an_id_a_taken_name_gets_a_suffix(self):
+        async def go():
+            bus = Bus()
+            plugin = define_plugin(lambda ctx, config: None, name="chat")
+            async with load(plugin, bus=bus) as first, load(plugin, bus=bus) as second:
+                self.assertEqual((first.row, second.row), ("chat", "chat-2"))
+
+        run(go())
+
+    def test_isolate_gives_each_row_its_own_service(self):
+        # `isolate` as in rutis.json: rows isolating a name each provide
+        # their own.
+        class Notes:
+            def __init__(self, owner):
+                self.owner = owner
+
+            async def who(self):
+                return self.owner
+
+        def notes(owner):
+            return define_plugin(lambda ctx, config: ctx.provide("notes", Notes(owner)))
+
+        async def go():
+            bus = Bus()
+            async with load(notes("a"), bus=bus, id="a", isolate={"notes": True}) as a, \
+                    load(notes("b"), bus=bus, id="b", isolate={"notes": True}) as b:
+                self.assertEqual((await a.service("notes").who(), await b.service("notes").who()), ("a", "b"))
+            with self.assertRaises(PluginTestError):
+                async with load(notes("a"), bus=bus, id="a"), load(notes("b"), bus=bus, id="b"):
+                    pass
 
         run(go())
 
@@ -320,7 +355,7 @@ class Testing(background.TestCase):
 
             saved = []
             bus = Bus()
-            async with load(define_plugin(listener), bus=bus, row="l"), load(define_plugin(emitter), bus=bus, row="e"):
+            async with load(define_plugin(listener), bus=bus, id="l"), load(define_plugin(emitter), bus=bus, id="e"):
                 await saved[0]()
             aggregate = outcomes["parallel"]
             self.assertIsInstance(aggregate, AggregateError)
@@ -340,7 +375,7 @@ class Testing(background.TestCase):
             on = lambda ctx, config: ctx.on("t/d", lambda: None)
             bus = Bus()
             seen = []
-            async with load(define_plugin(on, name="chat-ui"), bus=bus) as chat, load(define_plugin(on), bus=bus, row="audit"):
+            async with load(define_plugin(on, name="chat-ui"), bus=bus) as chat, load(define_plugin(on), bus=bus, id="audit"):
                 await chat.filter(lambda d: seen.append(d) and False).parallel("t/d")
             self.assertEqual([(d["plugin"], d["row"]) for d in seen], [("chat-ui", "chat-ui"), ("audit", "audit")])
 

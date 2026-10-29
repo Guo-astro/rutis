@@ -331,7 +331,7 @@ impl Closer for Nothing {
 /// the listener's limits, and in its callback the listener's own reading of
 /// the path, the bearer token and the offered session protocols, then its
 /// choice of protocol. Credentials stand in as accepted: checking them is
-/// the registrations' job. Must not panic, whatever the bytes.
+/// the connection plugin's job. Must not panic, whatever the bytes.
 #[cfg(feature = "websocket")]
 pub fn websocket_upgrade(data: &[u8]) {
     use crate::websocket::listen::{agree_protocol, read_upgrade};
@@ -339,11 +339,11 @@ pub fn websocket_upgrade(data: &[u8]) {
     use tokio_tungstenite::tungstenite;
     use tungstenite::handshake::server::{Request, Response};
 
-    let ours = crate::link::protocol();
+    let ours = format!("rutis.{}", crate::session::ENDPOINT_PROTOCOL);
     #[allow(clippy::result_large_err)] // tungstenite fixes the signature
     let check = |request: &Request, mut response: Response| {
         let upgrade = read_upgrade(request, "/rutis")?;
-        // The registrations would look the token up; it is a part of the
+        // The connection plugin would compare the token; it is a part of the
         // header, as received.
         if let Some(token) = upgrade.bearer {
             let header = request.headers()["Authorization"].as_bytes();

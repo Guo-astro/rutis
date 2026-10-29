@@ -91,8 +91,8 @@
       },
       "go": {
         "tests": [
-          ["go/rutis/errors_location_test.go", "TestAServiceErrorCrossesWithItsMethodsPosition"],
-          ["go/rutis/errors_location_test.go", "TestAReceivedErrorThrownOnRecordsTheMethodInRethrown"]
+          ["go/rutis/internal/runtime/errors_location_test.go", "TestAServiceErrorCrossesWithItsMethodsPosition"],
+          ["go/rutis/internal/runtime/errors_location_test.go", "TestAReceivedErrorThrownOnRecordsTheMethodInRethrown"]
         ]
       },
       "rust": {
@@ -453,10 +453,8 @@
       },
       "go": {
         "tests": [
-          ["go/rutis/internal/runtime/config_internal_test.go", "TestEveryConfigCaseBeforeApply"],
-          ["go/rutis/internal/runtime/config_internal_test.go", "TestATypedConfigIsCheckedThenDecoded"],
+          ["go/rutis/internal/runtime/config_internal_test.go", "TestATypedConfigIsDecoded"],
           ["go/rutis/internal/runtime/config_internal_test.go", "TestAConfigTheTypeDoesNotTakeIsSaidPlainly"],
-          ["go/rutis/rutistest/config_test.go", "TestEveryConfigCase"],
           ["go/rutis/rutistest/config_test.go", "TestATypedConfigInTheTestTool"]
         ]
       },

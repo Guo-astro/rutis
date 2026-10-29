@@ -1022,10 +1022,6 @@ class Runtime:
     def _control(self, method: str, args: Any) -> Any:
         if method == "events.call":
             return self._call_listener(args[0] if args else None)
-        if method == "events.elsewhere":
-            # Which names have listeners outside this process: every
-            # emission goes through the host, so nothing here needs it.
-            return None
         if method == "mount":
             # The runtime's name, which filters see in this process's
             # listeners' descriptors.

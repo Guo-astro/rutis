@@ -23,12 +23,10 @@ pub struct Wait {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WaitReason {
-    /// It is the copy's own runtime, `service` its name: the runtime has
-    /// not released its rows (it is starting, or down).
+    /// It is the session of the copy's own runtime, `service` the id of
+    /// its row (`py`, a connection row): the runtime has not released its
+    /// rows (it is starting, down, or not connected).
     OwnRuntime,
-    /// It is the session of the copy's connection row, `service` the
-    /// row's id: the far end is not connected (`<row>:<plugin>` rows).
-    OwnSession,
     /// No row declares it. `like` is a service name close to it that a
     /// row declares or something provides (a misspelt name).
     NoProvider { like: Option<String> },
@@ -197,12 +195,6 @@ impl Loader {
                             return Wait {
                                 service,
                                 reason: WaitReason::OwnRuntime,
-                            };
-                        }
-                        if own_session(&key) {
-                            return Wait {
-                                service,
-                                reason: WaitReason::OwnSession,
                             };
                         }
                         let named = |key: &TypeKey| self.service_name(key);
@@ -403,40 +395,26 @@ pub(super) fn row_of(
     None
 }
 
-/// How messages name `key`, when the loader knows it: a row's runtime as
-/// `runtime <name>`, a service by its catalog name or the name it crosses
+/// How messages name `key`, when the loader knows it: a row's runtime by
+/// the id of its row, a service by its catalog name or the name it crosses
 /// between languages under; `None` for other keys (Rust types).
 pub(crate) fn key_name(catalog: &crate::ServiceCatalog, key: &TypeKey) -> Option<String> {
     if own_runtime(key) {
-        return key.name().map(|name| format!("runtime {name}"));
-    }
-    if own_session(key) {
         return key.name().map(str::to_owned);
     }
     if let Some(name) = catalog.name_of(key) {
         return Some(name);
     }
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     if key.type_id() == std::any::TypeId::of::<dyn rutis_bridge::session::HostDispatch>() {
         return key.name().map(str::to_owned);
     }
     None
 }
 
-/// Whether `key` is a row's own runtime ([`RuntimeRows`](crate::runtime::RuntimeRows)).
+/// Whether `key` is the session of a row's own runtime
+/// ([`SessionRows`](crate::runtime::SessionRows)), named by its row's id.
 pub(super) fn own_runtime(key: &TypeKey) -> bool {
-    #[cfg(feature = "runtimes")]
-    return key.type_id() == std::any::TypeId::of::<crate::runtime::RuntimeRows>();
-    #[cfg(not(feature = "runtimes"))]
-    {
-        let _ = key;
-        false
-    }
-}
-
-/// Whether `key` is the session of a row's connection row
-/// ([`SessionRows`](crate::runtime::SessionRows)), named by the row's id.
-pub(super) fn own_session(key: &TypeKey) -> bool {
     #[cfg(feature = "runtimes")]
     return key.type_id() == std::any::TypeId::of::<crate::runtime::SessionRows>();
     #[cfg(not(feature = "runtimes"))]
@@ -449,9 +427,9 @@ pub(super) fn own_session(key: &TypeKey) -> bool {
 /// Why `name` is missing, when rutis knows more (see
 /// `rutis_bridge::exports::unexported`).
 fn unexported(root: &rutis::Ctx, name: &str) -> Option<String> {
-    #[cfg(any(feature = "runtimes", feature = "peer"))]
+    #[cfg(feature = "runtimes")]
     return rutis_bridge::exports::unexported(root, name);
-    #[cfg(not(any(feature = "runtimes", feature = "peer")))]
+    #[cfg(not(feature = "runtimes"))]
     {
         let _ = (root, name);
         None
@@ -489,8 +467,6 @@ mod tests {
         use super::key_name;
         let mut catalog = crate::ServiceCatalog::new();
         catalog.register::<u32>("counter");
-        let runtime = crate::runtime::RuntimeRows::key("py");
-        assert_eq!(key_name(&catalog, &runtime).as_deref(), Some("runtime py"));
         let llm = rutis_bridge::session::host_key("llm").erase();
         assert_eq!(key_name(&catalog, &llm).as_deref(), Some("llm"));
         let counter = rutis::host::TypeKey::of::<u32>();

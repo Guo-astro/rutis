@@ -289,7 +289,10 @@ public struct ClientMacro: PeerMacro {
 /// properties, each `///` comment its description; optional properties are
 /// not required, and neither are `var`s with a literal initial value
 /// (`var units = "metric"`), whose literal is their `default` (config schema
-/// design §3.3): rutis fills it in before decoding.
+/// design §3.3). On a struct it also writes `init(from:)` (unless the type
+/// has its own, or its own `CodingKeys`): a missing key takes its literal
+/// default, and a problem names its key, as the host's check does, for the
+/// configurations no host checked (an app's own plugins).
 public struct ConfigMacro: ExtensionMacro {
     public static func expansion(of _: AttributeSyntax, attachedTo declaration: some DeclGroupSyntax,
                                  providingExtensionsOf type: some TypeSyntaxProtocol, conformingTo protocols: [TypeSyntax],
@@ -301,7 +304,15 @@ public struct ConfigMacro: ExtensionMacro {
         guard !protocols.isEmpty else { return [] }
         let access = access(of: declaration.modifiers)
         var properties: [String] = []
+        var decoded: [String] = []
+        var ownDecoding = false
         for member in declaration.memberBlock.members {
+            if let initializer = member.decl.as(InitializerDeclSyntax.self),
+               initializer.signature.parameterClause.parameters.first?.firstName.text == "from"
+            {
+                ownDecoding = true
+            }
+            if let decl = member.decl.as(EnumDeclSyntax.self), decl.name.text == "CodingKeys" { ownDecoding = true }
             guard let variable = member.decl.as(VariableDeclSyntax.self), !has(variable.modifiers, .static, .class) else { continue }
             let isLet = variable.bindingSpecifier.tokenKind == .keyword(.let)
             let description = docComment(variable.leadingTrivia)
@@ -331,13 +342,25 @@ public struct ConfigMacro: ExtensionMacro {
                 let literal = binding.initializer.map(\.value).flatMap { isLiteral($0) ? $0 : nil }
                 let defaulted = literal.map { ", default: Rutis._Generated.Schema.literal(\($0.trimmed) as \(trimmed(typeSyntax)))" } ?? ""
                 properties.append(".init(\"\(pattern.identifier.text)\", .of((\(trimmed(typeSyntax))).self), required: \(!optional), description: \(quoted)\(defaulted))")
+                let fallback = literal.map { "\($0.trimmed)" } ?? "nil"
+                decoded.append("self.\(pattern.identifier.text) = try Rutis._Generated.config(c, \"\(pattern.identifier.text)\", as: (\(trimmed(typeSyntax))).self, default: \(fallback))")
             }
+        }
+        var decoding = ""
+        if declaration.is(StructDeclSyntax.self), !ownDecoding {
+            decoding = """
+
+                \(access)init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: Rutis._Generated.ConfigKey.self)
+                    \(decoded.joined(separator: "\n        "))
+                }
+            """
         }
         return [try ExtensionDeclSyntax("""
         extension \(type.trimmed): RutisConfigurable {
             \(raw: access)static var rutisSchema: Rutis._Generated.Schema {
                 .object([\(raw: properties.joined(separator: ", "))])
-            }
+            }\(raw: decoding)
         }
         """)]
     }

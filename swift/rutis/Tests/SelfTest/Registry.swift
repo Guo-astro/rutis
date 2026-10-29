@@ -1,8 +1,9 @@
 // The self-test runner's tests, in order (convert_tests.py lists them;
 // a new test is added here).
 
-let registry: [(String, () async throws -> Void)] = [
-    ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
+let registry: [(String, () async throws -> Void)] = everywhere + onTheTestHost
+
+private let everywhere: [(String, () async throws -> Void)] = [
     ("ErrorTextTests.anObjectRefusesAMethodByItsTypeName", { try await ErrorTextTests().anObjectRefusesAMethodByItsTypeName() }),
     ("ErrorTextTests.useSaysWhyAServiceIsNotThere", { try await ErrorTextTests().useSaysWhyAServiceIsNotThere() }),
     ("ErrorTextTests.aCallFailsSayingTheHostDisconnected", { try await ErrorTextTests().aCallFailsSayingTheHostDisconnected() }),
@@ -51,8 +52,6 @@ let registry: [(String, () async throws -> Void)] = [
     ("PluginValueTests.aDefinitionGoesHomeAsItself", { try await PluginValueTests().aDefinitionGoesHomeAsItself() }),
     ("PluginValueTests.aDefinitionHandedToATestDoubleLoads", { try await PluginValueTests().aDefinitionHandedToATestDoubleLoads() }),
     ("PluginValueTests.aTestDoubleHandsADefinitionBack", { try await PluginValueTests().aTestDoubleHandsADefinitionBack() }),
-    ("AppTests.anUnloadedRowsHeldEmitLetsTheQueueGo", { try await AppTests().anUnloadedRowsHeldEmitLetsTheQueueGo() }),
-    ("AppTests.aLetGoFilterThatFailsIsNotReported", { try await AppTests().aLetGoFilterThatFailsIsNotReported() }),
     ("AppTests.aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline", { try await AppTests().aSpawnedTaskDoesNotHoldTheUnloadPastTheDeadline() }),
     ("AppTests.anUnloadedRowCannotProvide", { try await AppTests().anUnloadedRowCannotProvide() }),
     ("AppTests.silentConnectionsAreDropped", { try AppTests().silentConnectionsAreDropped() }),
@@ -62,7 +61,6 @@ let registry: [(String, () async throws -> Void)] = [
     ("AppTests.aDialingAppLeavesNoSocketOpenWhenStopped", { try await AppTests().aDialingAppLeavesNoSocketOpenWhenStopped() }),
     ("AppTests.aConnectedAppInstallsItsPluginsAndAnnouncesTheirServices", { try await AppTests().aConnectedAppInstallsItsPluginsAndAnnouncesTheirServices() }),
     ("WeatherConformanceTests.rutisTestMeetsTheRuntimeExpectations", { try await WeatherConformanceTests().rutisTestMeetsTheRuntimeExpectations() }),
-    ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
     ("ServiceMacroTests.aMethodTableFromTheTypesMethods", { ServiceMacroTests().aMethodTableFromTheTypesMethods() }),
     ("ServiceMacroTests.anActorsMethodsAreAwaited", { ServiceMacroTests().anActorsMethodsAreAwaited() }),
     ("ServiceMacroTests.overloadsAreAnError", { ServiceMacroTests().overloadsAreAnError() }),
@@ -76,10 +74,22 @@ let registry: [(String, () async throws -> Void)] = [
     ("ClientMacroTests.aProxyOfTheProtocol", { ClientMacroTests().aProxyOfTheProtocol() }),
     ("ClientMacroTests.aMethodMustBeAsyncThrows", { ClientMacroTests().aMethodMustBeAsyncThrows() }),
     ("ConfigMacroTests.aSchemaFromStoredProperties", { ConfigMacroTests().aSchemaFromStoredProperties() }),
-    ("ConfigSchemaTests.everyCaseOfTheSharedListPasses", { try ConfigSchemaTests().everyCaseOfTheSharedListPasses() }),
+    ("ConfigMacroTests.aTypesOwnDecodingIsKept", { ConfigMacroTests().aTypesOwnDecodingIsKept() }),
+    ("ConfigSchemaTests.aConfigNoHostCheckedTakesDefaultsAndNamesItsKey", { try await ConfigSchemaTests().aConfigNoHostCheckedTakesDefaultsAndNamesItsKey() }),
+]
+
+/// The tests of what only `rutis-host test` does (on macOS): rows the host
+/// checks the config of, more rows of a plugin, undeclared services. On a
+/// device the test tool is an app installing its own plugins.
+#if os(macOS)
+private let onTheTestHost: [(String, () async throws -> Void)] = [
+    ("ErrorTextTests.aRefusedCallNamesTheServiceMethodAndArgument", { try await ErrorTextTests().aRefusedCallNamesTheServiceMethodAndArgument() }),
+    ("EventsConformanceTests.rutisTestMeetsTheEventExpectations", { try await EventsConformanceTests().rutisTestMeetsTheEventExpectations() }),
     ("ConfigSchemaTests.aRowsConfigIsFilledAndValidatedBeforeItIsDecoded", { try await ConfigSchemaTests().aRowsConfigIsFilledAndValidatedBeforeItIsDecoded() }),
     ("ConfigSchemaTests.aLiteralInitialValueIsTheDefault", { try await ConfigSchemaTests().aLiteralInitialValueIsTheDefault() }),
     ("ConfigSchemaTests.aDecoderErrorAfterTheSchemaIsOneSentence", { try await ConfigSchemaTests().aDecoderErrorAfterTheSchemaIsOneSentence() }),
     ("ConfigSchemaTests.aConfigTypeWithoutASchemaIsOnlyDecoded", { try await ConfigSchemaTests().aConfigTypeWithoutASchemaIsOnlyDecoded() }),
-    ("ConfigSchemaTests.numbersAreWrittenAsJavaScriptWritesThem", { ConfigSchemaTests().numbersAreWrittenAsJavaScriptWritesThem() }),
 ]
+#else
+private let onTheTestHost: [(String, () async throws -> Void)] = []
+#endif

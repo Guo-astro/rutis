@@ -7,8 +7,9 @@
 (* Design: docs/design-remote-plugins-2026-10-03.md §3.2 (retry, link       *)
 (* stop), §4.4 (lease, takeover order); docs/design-remote-runtime-dial-    *)
 (* 2026-10-14.md §六 (retry).                                               *)
-(* Implementation modelled: crates/rutis-bridge/src/link.rs `dialing`,      *)
-(* `start` (controller); python/rutis/rutis/__main__.py `serve`,            *)
+(* Implementation modelled: crates/rutis-host/src/connect/dial.rs (the     *)
+(* `rutis-host/dial` row: attempt, handshake, install, unloaded, back off; *)
+(* the controller); python/rutis/rutis/__main__.py `serve`,               *)
 (* go/rutis/listen.go `listen`, node/rutis-runtime/src/serve.mjs `serve`    *)
 (* (the runtime). README.md next to this file lists the simplifications.   *)
 (*                                                                         *)
@@ -62,7 +63,7 @@ ReadsC(k) == cs[k] = "open" \/ Mutation = "lateHello"
 ReadsR(k) == rs[k] \in {"none", "queued", "serving"} \/ Mutation = "readOld"
 
 (***************************************************************************)
-(* Controller: link.rs `dialing`.                                          *)
+(* Controller: rutis-host/dial (connect/dial.rs).                          *)
 (***************************************************************************)
 \* Close c's side of k: the session's close reaches the runtime; nothing
 \* more is read on k.

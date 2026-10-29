@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arcships/rutis/go/rutis/internal/convert"
+	"github.com/arcships/rutis/go/rutis/advanced"
 	"github.com/arcships/rutis/go/rutis/internal/fixtures/plugins/weather"
 	"github.com/arcships/rutis/go/rutis/internal/peer"
+	runtime "github.com/arcships/rutis/go/rutis/internal/runtime"
 	"github.com/arcships/rutis/go/rutis/internal/values"
 )
 
@@ -27,7 +28,7 @@ const expectations = "../../../crates/rutis-bridge/src/runtime/testing/weather.e
 
 type clock struct{ n atomic.Int64 }
 
-func (c *clock) Now() int64 { return c.n.Add(1) - 1 }
+func (c *clock) Now() int { return int(c.n.Add(1) - 1) }
 
 type named struct{ name, message string }
 
@@ -111,6 +112,19 @@ func written(t *testing.T, value any) any {
 	case values.UUID:
 		return tagged("uuid", string(v))
 	}
+	// A value of a row of this process, as it made it.
+	switch value.(type) {
+	case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out any
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
 	t.Fatalf("not data: %#v", value)
 	return nil
 }
@@ -126,7 +140,10 @@ type entry struct {
 	} `json:"throws"`
 	Ignore  []string `json:"ignore"`
 	Allowed string   `json:"allowed"`
-	Why     string   `json:"why"`
+	// Holds only when the value crosses between processes: the test and
+	// the plugin are rows of one runtime here, so it is skipped.
+	Crossing bool   `json:"crossing"`
+	Why      string `json:"why"`
 }
 
 // check is that `value, err` is what `e` expects.
@@ -176,15 +193,7 @@ func check(t *testing.T, what string, e entry, value any, err error) {
 
 // call calls `method` and returns the value as it crossed the session.
 func (s *Service) call(ctx context.Context, method string, args ...any) (any, error) {
-	converted, err := convert.ToPeerArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	value, err := s.session.Call(ctx, s.handle, method, converted, s.kinds[method] == "sync")
-	if err != nil {
-		return nil, err
-	}
-	return peer.Settle(ctx, value)
+	return runtime.CallRaw(ctx, s.s, method, args...)
 }
 
 func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
@@ -222,7 +231,7 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		}
 	}
 	for i, e := range expected.Calls {
-		if e.Allowed != "" {
+		if e.Allowed != "" || e.Crossing {
 			continue
 		}
 		args := make([]any, len(e.Args))
@@ -249,6 +258,9 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 		}
 		if found == nil {
 			t.Fatalf("the expectations list no sample %s", name)
+		}
+		if found.Crossing {
+			continue
 		}
 		value, err := service.call(ctx, "sample", name)
 		check(t, "sample "+name, *found, value, err)
@@ -277,7 +289,19 @@ func TestRutistestMeetsTheRuntimeExpectations(t *testing.T) {
 	// A service the plugin does not declare: its methods inferred, all
 	// asynchronous.
 	undeclared := expected.Undeclared
-	if _, declared := describe(t, weather.Plugin, weather.Plugin.Name()).Provides[undeclared.Service]; declared {
+	manifest, err := advanced.Manifest(weather.Plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var described struct {
+		Plugins map[string]struct {
+			Provides map[string]any `json:"provides"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(manifest, &described); err != nil {
+		t.Fatal(err)
+	}
+	if _, declared := described.Plugins[weather.Plugin.Name()].Provides[undeclared.Service]; declared {
 		t.Fatalf("the plugin declares %s", undeclared.Service)
 	}
 	forecast := loaded.Service(undeclared.Service)

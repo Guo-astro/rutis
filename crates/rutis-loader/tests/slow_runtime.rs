@@ -6,16 +6,15 @@
 
 mod common;
 
-use std::path::Path;
 use std::sync::Arc;
 
-use common::runtimes::{layer, row_state, Probe, COLD};
+use common::runtimes::{greet_as_main, layer, row_state, Probe, TestRuntime, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
-use rutis_bridge::runtime::{Launcher, LocalRuntime, RuntimeState};
+use rutis_bridge::runtime::{Launcher, RuntimeState};
 use rutis_bridge::session::host_key;
 use rutis_loader::report::WaitReason;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin};
 use serde_json::json;
 
@@ -34,18 +33,20 @@ async fn a_runtime_still_starting_holds_up_only_its_own_rows() {
     let root = Ctx::root().unwrap();
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/rutis");
-    let python = LocalRuntime::python(dir.path()).python_path(sdk);
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()));
-    // Never greets: it stays starting (a local runtime has no handshake
-    // time limit).
-    let stuck = LocalRuntime::launcher(
+    greet_as_main(&root);
+    let python = TestRuntime::python(dir.path());
+    // Never connects: it stays starting (no time limit applies until the
+    // process connects).
+    let stuck = TestRuntime::new(
         "stuck",
         Launcher::new("sh").arg("-c").arg("sleep 600").arg("sh"),
         dir.path(),
     );
     let stuck_handle = stuck.handle();
-    let stuck_rows = Arc::new(RuntimeResolver::modules(stuck.handle()));
+    let options = LoaderOptions::default();
+    let sessions = Arc::new(SessionResolver::new(&options.catalog));
+    sessions.runtime(python.handle());
+    sessions.runtime(stuck.handle());
     root.plugin(python).await.unwrap();
     // Not awaited: it is starting.
     let _stuck = root.plugin(stuck);
@@ -54,16 +55,10 @@ async fn a_runtime_still_starting_holds_up_only_its_own_rows() {
         "the stuck runtime starting",
     )
     .await;
-    let plugin_loader = LoaderPlugin::new(
-        Chain::new()
-            .with_shared(stuck_rows.clone())
-            .with_shared(python_rows.clone()),
-        LoaderOptions::default(),
-    );
+    let plugin_loader = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), options);
     let loader = plugin_loader.handle();
+    sessions.attach(&loader);
     root.plugin(plugin_loader).await.unwrap();
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
-    root.plugin(RuntimeRowsPlugin::new(stuck_rows));
 
     // The stuck runtime's row first: resolving it does not wait.
     COLD.within(

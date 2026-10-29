@@ -8,9 +8,10 @@
 
 ```toml
 [dependencies]
-rutis = "0.17"
-rutis-loader = { version = "0.17", features = ["node", "python", "peer"] }
-rutis-bridge = { version = "0.17", features = ["python", "websocket"] }   # node 默认开
+rutis = "0.19"
+rutis-loader = { version = "0.19", features = ["node", "python"] }
+rutis-bridge = { version = "0.19", features = ["python", "websocket"] }   # node 默认开
+rutis-host = "0.19"                # connect::SpawnPlugin starts the local language runtimes
 schemars = "1"                     # Builtins::register 解码的配置类型派生 schemars::JsonSchema
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -19,7 +20,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 | crate / feature | 内容 |
 | --- | --- |
 | `rutis` | 内核：插件、依赖、服务 |
-| `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行；`peer`：节点行和 `peer:` 行 |
+| `rutis-loader` | 按数据（行）加载插件。`node` / `python` / `go`：这几种语言的行（以及 `<连接行>:<插件>` 行） |
+| `rutis-host` | 它的 `connect::SpawnPlugin` 启动本机的语言运行时、在它的通道上开一个会话，与 rutis-host 的 `runtimes` 相同 |
 | `rutis-bridge` | 连接其他进程、语言、机器。`node`（默认）、`python`、`go`：本机运行时；`websocket`：WebSocket 承载；`cordis`：挂载 Cordis 插件并生成 Rust 绑定（见 [Cordis](cordis.md)）；`testing`：一致性测试 |
 | `rutis-types` | 放在 `[build-dependencies]`：在 `build.rs` 里为[带标注的 Rust 服务](#在类型上标注-rutisservice)写 TypeScript 声明与 Python 类型 |
 
@@ -330,7 +332,7 @@ root.provide_at(host_key("clock"), Arc::new(Clock))?; // host_key 返回 Key<dyn
 
 ### 在 Rust 里按名字调用服务
 
-宿主或测试用 `rutis_bridge::session::call_service` 一行就能调用任何按名字提供的服务（标注类型、任何语言的行提供的服务、对端节点的、手写的 `HostDispatch`），和别的语言的行调用它一样：
+宿主或测试用 `rutis_bridge::session::call_service` 一行就能调用任何按名字提供的服务（标注类型、任何语言的行提供的服务、相连节点的、手写的 `HostDispatch`），和别的语言的行调用它一样：
 
 ```rust
 # use rutis::host::*;
@@ -393,7 +395,7 @@ impl HostDispatch for Tools {
 ```
 
 - 同一个运行时里的两行是两个调用方，`key()` 和 `instance()` 各不相同。
-- 来自 Rust 的调用、来自对端节点的调用（包括 `peer:` 行，它们的调用经节点之间的服务到达）、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）、行里没有声明就使用这个服务的代码的调用（Cordis 的 `ctx.get`，找到的是所有行共享的那份注册）都是 `None`。
+- 来自 Rust 的调用、来自相连节点的调用、运行时里不属于任何行的调用（`Mount::hosts` 提供的服务）、行里没有声明就使用这个服务的代码的调用（Cordis 的 `ctx.get`，找到的是所有行共享的那份注册）都是 `None`。
 - 只在 `invoke` 本身里读它：`invoke` 返回的 future 之后在别处运行，读不到。
 - 它来自 rutis-loader 的行租用服务的方式（`Process::lease_host_for`）：每一行把它租用的服务注册在自己的作用域里（另有与以前一样、所有行共享的那份注册），所以线上格式不变，Node、Bun、Python、Go 的运行时都可以用，0.11 的也可以。自己用 `Process` 加载行时，用 `lease_host_for` 并按 `HostLease::label()` 隔离这个名字；`lease_host` / `lease_host_in` 的调用是 `None`。
 
@@ -437,8 +439,10 @@ for def in parts.of("session") {
 # let mut builtins = Builtins::new();
 # builtins.register("weather", Weather::new);
 use std::sync::Arc;
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_bridge::{LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 
 // 写绝对路径：每个运行时的进程在它自己的目录里启动（见下面）。
@@ -446,27 +450,34 @@ let app = std::env::current_dir()?.join("app");
 
 // 服务名到键：所有名字都按名字跨语言共享，与 rutis-host 相同。
 let catalog = ServiceCatalog::new();
+// 这一端与每个运行时问候时用的 id：运行时的进程是一个会话的对面。
+root.provide(LocalId(PeerId::new("main")?))?;
 
-// 本机的 Node 运行时：@arcships/rutis-runtime 所在的目录，和插件解析所用的 package.json。
+// 本机的 Node 运行时（行 `node`）：运行的 @arcships/rutis-runtime 包，和插件解析所用的 package.json。
 // 事件不用配置：运行时里的监听器自动登记到宿主的事件总线上（见下面的“事件”）。
-let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"));
-let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
+let node = SpawnPlugin::new("node", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"));
 // 本机的 Python 运行时：插件模块所在的目录，装着 rutis 的解释器。
-let python = LocalRuntime::python(app.join("plugins")).interpreter(app.join(".venv/bin/python"));
-let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+let python = SpawnPlugin::new("py", Launcher::python(&app.join("plugins")), app.join("plugins"))
+    .interpreter(app.join(".venv/bin/python"));
+// 运行时上的行：`py:<模块>` 在 py 上；npm 名和文件在 node 上。
+let sessions = Arc::new(SessionResolver::npm(&catalog, "node"));
+sessions.runtime(node.handle());
+sessions.runtime(python.handle());
 let runtimes = [node.handle(), python.handle()];
 root.plugin(node);
 root.plugin(python);
 
 let loader = LoaderPlugin::new(
-    // 按顺序问：先是 `builtins` 里登记的 Rust 插件（上面的“装 Rust 插件”），再是各运行时。
-    Chain::new().with(builtins).with_shared(python_rows.clone()).with_shared(node_rows.clone()),
+    // 按顺序问：先是 `builtins` 里登记的 Rust 插件（上面的“装 Rust 插件”），各运行时的行放在最后。
+    Chain::new().with(builtins).with_shared(sessions.clone()),
     LoaderOptions { catalog, ..LoaderOptions::default() },
 );
 let handle = loader.handle();
+sessions.attach(&handle);
 root.plugin(loader).await?;
-root.plugin(RuntimeRowsPlugin::new(node_rows));
-root.plugin(RuntimeRowsPlugin::new(python_rows));
+// 运行时一运行起来就放行它的行。
+sessions.follow_row("node");
+sessions.follow_row("py");
 
 let rows: Vec<Patch> = serde_json::from_value(json!([{ "insert": [
     { "id": "forecast", "name": "weather", "config": { "city": "Oslo" } },   // builtins 里的 Rust 插件
@@ -500,37 +511,45 @@ for failure in &report.failures {
 - `reconcile` 在每一行都装载过一遍后返回，对每一行就像 `view.await`：服务都在的行已经运行了插件的 `apply`（别的语言的行在它的运行时里运行），或者失败了，列在报告的 `failures` 里；等着一个还没有行提供的服务的行继续等，`Loader::waits(&entry)` 说明它在等什么。还在启动的运行时（比如在等调试器）不等：它的行等它，其他行照常启动，报告里没有它的行装载的结果（还没装载）；要完整的报告，像上面那样先等 `RuntimeHandle::ready()`。`Chain` 按顺序问它的解析器，`builtins` 和运行时都认识的行名归 `builtins`。
 - 配置：凡是有 Schema 的行（`Builtins` 的行、写了 `schema:` 的 dylib 行、你自己的 resolver 用 `Resolved::with_schema` 给了 Schema 的行、别的语言运行时的行；Cordis 行除外），loader 在 `build` 之前补默认值并校验，把补过默认值的配置交给插件，不合格的行以 `config: …` 失败，列在 `failures` 里（[插件 API：配置](plugin-api.md#配置)）。多余的键默认写到标准错误（`<行>: config: …`），每行每个配置值一次；`Loader::on_config_warning(Arc::new(|row, issue| …))` 改为交给你。
 - 路径：每个运行时的进程在它自己的目录里启动（Python、Go：它的项目目录；Node：运行时的包目录），收到的路径照原样使用。相对路径会从那个目录算起，而不是应用的目录：照上面那样写绝对路径。
-- 运行时是一个插件，它的进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
+- 本机运行时是一个插件 `SpawnPlugin`（即 rutis-host 的 `rutis-host/spawn`）：它启动进程（`Launcher::start`，最后的参数是 `--id <名字>` 和 anchor），在自己下面挂 `rutis_bridge::Session::new(channel)`，它的 fiber 就是以运行时命名的那一行。进程随插件启动、随插件卸载而结束。进程意外结束时，运行时停下，它的行等待；`RuntimeHandle::state()` 是 `Down(原因)`，原因说明进程怎样结束。是否重启由应用决定：对运行时的 fiber 调用 `restart`。
 - 运行时结束不算到行头上：结束时还在加载的行和其他行一样等它，不会失败。运行时的 `Down` 原因写明进程怎样结束，正在进行的、对它的行的调用失败时也这样写明。
-- 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `LocalRuntime::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
+- 运行时进程不会比应用活得久。丢掉应用的 tokio 运行时会杀掉它们。应用被它没处理的信号（Ctrl-C、SIGTERM）或 `kill -9` 结束时，运行时在 `RUTIS_SHUTDOWN_TIMEOUT`（默认 10 秒）内卸载各行后退出；插件让运行时一直在忙时，再过一秒运行时自己结束。插件让运行时一直在忙时，`shutdown_with_timeout` 可能结束不了（它的行卸载不了）：剩下的用 `SpawnPlugin::processes().kill()` 结束，或者用 `rutis_bridge::pipe::kill_processes()` 结束所有运行时进程，和 rutis-host 一样。
 - 远程运行时由连接插件接上：连接插件拿到一条 Channel，调 `ctx.plugin(rutis_bridge::Session::new(channel))`（或先 `Session::handshake(&ctx, channel).await` 看对面的 id，再 `ctx.plugin(greeted)`）；行 `<连接行>:<插件>` 由 loader 找到这个会话、让对面运行。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 就是这样写的。会话断开又回来时，它的行在启动前由新会话重新解析：远端升级了插件，就用上新的配置 schema 和声明。
 - 行的完整格式（分组、`isolate`、`inject`、表达式、命令式修改与持久化）见 [rutis-loader 设计](../design-rutis-loader-2026-10-02.md)。
-- 改了插件代码：`RuntimeResolver::invalidate_all()` 后 `Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
+- 改了插件代码：`Loader::reload(行)`，新代码生效（Node 与 Python 都只重新导入插件的入口模块）。
 - 设置 `RUTIS_TRACE` 时，运行时通道上的每条消息在 stderr 记一行（方向和长度，不含内容）。
-- 运行时进程默认没有标准输入，标准输出和标准错误用应用自己的。读终端的插件（终端界面、Python 的 `input()`）需要终端本身：它会检查输入是不是终端，并自己设置终端模式。用 `stdin(Stdio::Inherit)` 把本进程的输入交给它的运行时。这一设置作用于整个运行时进程，进程里的每个插件都能读到输入，所以把这类插件放进单独的运行时（`named`），并且终端最多交给一个运行时：多个进程读同一个终端，会争抢每一次按键。`stdout(Stdio::Null)` 和 `stderr(Stdio::Null)` 让其他运行时不往终端上写。`Launcher` 上有同样的设置。
+- 运行时进程默认没有标准输入，标准输出和标准错误用应用自己的。读终端的插件（终端界面、Python 的 `input()`）需要终端本身：它会检查输入是不是终端，并自己设置终端模式。用 `stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit)` 把本进程的标准流交给它的运行时。这一设置作用于整个运行时进程，进程里的每个插件都能读到输入，所以把这类插件放进单独的运行时（另起一个名字的 `SpawnPlugin`），并且终端最多交给一个运行时：多个进程读同一个终端，会争抢每一次按键。其他运行时的标准输出和标准错误设成 `Stdio::Null`，就不往终端上写。`Launcher` 上有同样的设置（`stdin`、`stdout`、`stderr`）。
 
 ```rust,no_run
-# use rutis_bridge::runtime::LocalRuntime;
+# use rutis_bridge::runtime::Launcher;
+# use rutis_host::connect::SpawnPlugin;
 # let app = std::path::PathBuf::from("/srv/app");
 use rutis_bridge::runtime::Stdio;
 
 // 终端界面放在单独的运行时里，读键盘；插件所在的运行时不往终端写标准输出。
-let tui = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .named("tui")
-    .stdin(Stdio::Inherit);
-let node = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .stdout(Stdio::Null);
+let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
+let tui = SpawnPlugin::new("tui", Launcher::node(&runtime_package), app.join("package.json"))
+    .stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
+let node = SpawnPlugin::new("node", Launcher::node(&runtime_package), app.join("package.json"))
+    .stdio(Stdio::Null, Stdio::Null, Stdio::Inherit);
 ```
 
 ### 本机运行时的选项
 
 管住第三方插件时用，怎样用见 [做一个开放插件的宿主：管住插件](open-host.md#3-管住插件)：
 
-| `LocalRuntime` 的方法 | 作用 |
+| `SpawnPlugin` 的方法 | 作用 |
 | --- | --- |
+| `new(名字, launcher, anchor)` | 运行时 `名字`：它的 fiber 就是这一行，进程问候时也用这个 id。`launcher` 启动进程（`Launcher::node`、`::python`、`::bun`、`::go`、`::swift`，或 `Launcher::new`）；`anchor` 是插件从哪里解析 |
+| `.interpreter(程序)` | 用 `程序` 代替 launcher 的程序运行进程（Python 解释器、Node 可执行文件） |
+| `.python_path(目录)` | 把 `目录` 放到进程的 `PYTHONPATH` 前面 |
+| `.env(名字, 值)` | 设置进程的环境变量 |
+| `.stdio(stdin, stdout, stderr)` | 进程的标准流去哪里 |
+| `.handle()` | 运行时的状态 `RuntimeHandle`：`state()`、`ready()`、`pid()`；交给 `SessionResolver::runtime` |
+| `.processes()` | 它启动的进程：`kill()` 结束它们 |
 | `.greeting(时限)` | 进程启动后问候的时限，默认 30 秒；`Duration::MAX` 不限（调试器停在第一行时） |
 
-每个插件一个进程：每个插件一个 `named` 的运行时，行用 `RuntimeResolver::modules`，写 `<运行时名>:<npm 名或文件>`（Node、Python 都这样）。
+每个插件一个进程：每个插件一个用它自己名字的 `SpawnPlugin`，行写 `<运行时名>:<npm 名或文件>`，由 `SessionResolver` 解析（Node、Python 都这样）。
 
 ### Go 运行时
 
@@ -546,7 +565,10 @@ Go 插件是编译好的二进制，一个二进制一个运行时（features：
 # let root = rutis::Ctx::root()?;
 # let catalog = ServiceCatalog::new();
 # let app = std::env::current_dir()?.join("app");
-use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes};
+# root.provide(rutis_bridge::LocalId(rutis_bridge::PeerId::new("main")?))?;
+use std::path::Path;
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::binary::{Binaries, BinaryResolver, BinaryRuntimes, Spawn, Spawned};
 use rutis_loader::runtime::go::Go;
 
 let go = Arc::new(
@@ -554,8 +576,13 @@ let go = Arc::new(
         .with_catalog(&catalog)
         .reserve(["node", "py"]),              // 其他运行时的名字，Go 运行时不能用
 );
+// 启动二进制的运行时的东西：一个 SpawnPlugin，与 rutis-host 相同。
+let spawn: Spawn = Arc::new(|name: &str, launcher, anchor: &Path| {
+    let plugin = SpawnPlugin::new(name, launcher, anchor);
+    Spawned { handle: plugin.handle(), processes: plugin.processes(), plugin: Box::new(plugin) }
+});
 // 放进加载器的 Chain：Chain::new().with_shared(go.clone())…，加载器挂载之后：
-let go_runtimes = BinaryRuntimes::<Go>::new(go, &app).idle(Some(Duration::from_secs(60)));
+let go_runtimes = BinaryRuntimes::<Go>::new(go, &app, spawn).idle(Some(Duration::from_secs(60)));
 let control = go_runtimes.handle();            // restart("go-netkit")、runtimes()
 root.plugin(go_runtimes).await?;
 # let _ = control;
@@ -565,10 +592,10 @@ root.plugin(go_runtimes).await?;
 
 - 运行时名由文件名得出（`netkit` → `go-netkit`）。两个二进制有同名插件时这一行失败，写出两个文件名。
 - 进程运行期间按它启动时的清单解析；换了二进制，`control.restart("go-netkit")` 后生效。
-- 崩溃的运行时默认不自动重启。`control.supervise(RestartPolicy::OnFailure, |end| …)`（`rutis_loader::runtime::binary::{RestartPolicy, RuntimeEnd}`）之后，进程自己结束的运行时等一会儿后重新启动（1 秒起每次翻倍、最多 30 秒，运行满 60 秒后从 1 秒重来，5 分钟内重启 5 次后再结束就放弃），每个运行时各算各的；`RestartPolicy::Exit` 只把结束报告给回调（`RuntimeEnd::Exit`），由应用决定停下。`end.line()` 是 rutis-host 打印的那一行；`control.unsupervise()` 停止监督，正在等待的重启不再发生。第一次 `supervise` 之前就结束的运行时（应用还在启动时崩溃）由 `supervise` 照样处理，每个运行时只留最近一次；不打算监督的应用调用一次 `control.unsupervise()`，这些结束就不再留着。握手被拒（旧 SDK）的二进制不算自己结束，不重启。
-- Go 之外的编译型语言（之后的 Swift）用同一套实现：`rutis_loader::runtime::binary` 的 `BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式）；Go 就是 `L` = `Go`。
+- 加载器不重启崩溃的运行时：它显示为已停止（`control.runtimes()`），它的行等待。`control.restart("go-netkit")` 再启动它。rutis-host 的 `restart` 设置自动做这件事（见 [rutis-host：运行时结束时](rutis-host.md#运行时结束时)）。握手被拒（旧 SDK）的二进制重启也起不来，`rutis_loader::runtime::binary::refused(why)` 判断这种情况，它在文件改变前不再启动。
+- Go 之外的编译型语言（之后的 Swift）用同一套实现：`rutis_loader::runtime::binary` 的 `BinaryResolver<L>`、`BinaryRuntimes<L>`，`L` 实现 `BinaryLanguage`（行名前缀、SDK 标记串、启动方式：`launch` 返回一个 `Launcher`）；Go 就是 `L` = `Go`。
 
-- 只运行一个固定的二进制时，也可以像 Python 一样：`LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（行名 `<运行时名>:<插件>`）。
+- 只运行一个固定的二进制时，也可以像 Python 一样：`SpawnPlugin::new(名字, Launcher::go(&binary, &project), &project)` 加 `SessionResolver`（行名 `<运行时名>:<插件>`）。
 
 ## 调试
 
@@ -577,7 +604,7 @@ root.plugin(go_runtimes).await?;
 看宿主里发生了什么，有三样：
 
 - **默认输出**：加载失败、长时间等不到依赖、语言运行时退出，默认写到标准错误，每行以插件、行或运行时的名字开头，不带 `[rutis]` 前缀（可以关掉，见[默认输出](#默认输出)）。`shutdown_with_timeout` 到时写明还没结束的插件和清理。
-- **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印（格式见 [rutis-host 指南「查看当前状态」](rutis-host.md#查看当前状态)）。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。运行时来自 loader 的解析器：`RuntimeResolver`、Go 与 Swift 的 `BinaryResolver` 列出它们的运行时；自己写的 `Resolver` 实现 `runtimes()` 就会列出自己的。调用记录在运行时一侧，看不到同一个运行时里的调用。`rutis_bridge::runtime::RuntimeState` 实现 `Debug`。
+- **当前状态**：`Loader::status()` 返回一份快照：每一行的状态和原因、每个服务由谁提供、每个运行时（状态、原因、本机运行时的 pid）、正在进行的调用。它实现 `Display`，一项一行，直接打印（格式见 [rutis-host 指南「查看当前状态」](rutis-host.md#查看当前状态)）。用 `rutis-host` 运行时，`rutis-host status` 打印同样的内容。运行时来自 loader 的解析器：`SessionResolver` 列出用 `runtime(handle)` 交给它的本机运行时，Go 与 Swift 的 `BinaryResolver` 列出它们的运行时；自己写的 `Resolver` 实现 `runtimes()` 就会列出自己的。调用记录在运行时一侧，看不到同一个运行时里的调用。`rutis_bridge::runtime::RuntimeState` 实现 `Debug`。
 - **内核诊断**：`root.diagnostics()` 的 `Display` 一项一行，用插件和行的名字列出插件（状态、在等什么）和服务（由谁提供），默认不列 rutis 自己的插件和根；`{:#}` 也列出它们。字段（`PluginDiagnostics::platform`、`row` 等）给程序读。
 
 语言运行时（Node、Bun、Python、Go）是单独的进程，各用各的调试器：在插件项目里用 `rutis-host dev --debug` 运行（见 [TypeScript](typescript-plugin.md#调试)、[Bun](bun-plugin.md#调试)、[Python](python-plugin.md#调试)、[Go](go-plugin.md#调试) 指南），或者用状态里的 pid 把调试器接到运行着的进程上。
@@ -590,7 +617,7 @@ rutis 不带 `tracing` / `log` 集成，宿主自己的日志照常用。环境�
 
 ```rust,ignore
 use rutis::host::FiberState;
-use rutis_bridge::{websocket, Credential, LocalId, PeerId, Session};
+use rutis_bridge::{websocket, LocalId, PeerId, Session};
 
 root.provide(LocalId(PeerId::new("main")?));
 
@@ -598,8 +625,8 @@ root.provide(LocalId(PeerId::new("main")?));
 loop {
     let channel = websocket::dial(
         "wss://office.example.com/rutis",
-        &rutis_bridge::protocol(),
-        Some(&Credential::Bearer(token.clone())),
+        &format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL),
+        Some(&websocket::Credential::Bearer(token.clone())),
         &websocket::Trust::default(),
         &websocket::Limits::default(),
     )
@@ -615,7 +642,7 @@ loop {
 - 本端 id 没有提供时，会话失败：`the host provides no id for its sessions`。rutis-host 已经提供（rutis.json 的 `id`，默认 `main`）。
 - 别的语言的插件经服务 `sessions` 的 `open` 交出连接，见 [插件 API：自建连接](plugin-api.md#自建连接sessionsopen)。
 
-0.18 的节点写法在 0.19 仍可用、将被替换：用 rutis-loader 配置时，`rutis_loader::peer::register_peer_node` 注册 `rutis-bridge/peer` 行（与 rutis.json 相同），`rutis_loader::peer::PeerResolver` 解析 `peer:` 行。远程运行时用连接插件：`rutis-host/dial`、`rutis-host/listen` 的行，或自己的连接插件调 `Session::new(channel)`，行写 `<连接行>:<插件>`。概念与安全见 [连接节点](nodes.md)。
+用 rutis-loader 时，`<连接行>:<插件>` 的行由 `rutis_loader::runtime::SessionResolver` 解析：`SessionResolver::new(&catalog)` 放在解析链最后（`Chain::with_shared`），挂上加载器之前 `attach(&loader)`。加载器把自己能解析的插件提供给会话（`rutis_loader::runtime::LoaderCatalog`），所以对面的 rutis 可以让这里运行它们：只连可信的节点。rutis-host 的 `rutis-host/dial`、`rutis-host/listen` 行就是这样的连接插件。概念与安全见 [连接节点](nodes.md)。
 
 ## 事件
 
@@ -674,9 +701,9 @@ off.dispose().await?;
 | 失败 | `emit` 的监听器失败以 `ErrorKind::ListenerFailed` 进入错误汇集（`Ctx::root_with_sink`），`rutis_bridge::events::report_line` 给出 rutis-host 打印的那一行；`parallel` 是 `ErrorKind::ListenersFailed`（按登记顺序）；别处监听器的错误带着名字与信息到达 |
 | 卸载与取消 | 插件卸载时它的监听器撤下，正在运行的调用看到 `ctx.cancelled()`，卸载等它们结束（最多到关闭截止时间）。丢弃 `parallel` / `serial` / `waterfall` 的 future 即取消这次分发 |
 | 框架事件 | `rutis_loader::RowEvent`（`rutis/row`）、`rutis_bridge::events::{ServiceEvent, RuntimeEvent}`（`rutis/service`、`rutis/runtime`）：用 `ctx.on` 监听；发出 `rutis/*` 以 `ReservedEvent` 失败 |
-| 节点 | `PeerPlugin` 的 `Features { export, import }` 同时选择事件（名字或 `*` 前缀），见[节点](#节点)与[连接节点](nodes.md#节点之间的事件) |
+| 节点 | 相连节点的监听器是这条总线上的条目，每个名字都在，不用列名单，见[节点](#节点)与[连接节点](nodes.md#连上之后) |
 
-测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`LocalRuntime`），与生产相同。
+测试不需要单独的工具：在 `#[tokio::test]` 里用 `Ctx::root()`（或 `Ctx::root_with_sink` 收集 `emit` 的失败），加载插件，再按上面的方式发出、断言（[写一个 Rust 插件：测试](rust-plugin.md#6-测试)）。运行时里的监听器要用真实的运行时（`SpawnPlugin`），与生产相同。
 
 ## 导出服务：参考
 
@@ -719,7 +746,7 @@ Rust 服务由各语言的行（TypeScript、JavaScript、Python、Go）按名�
 
 **取消：** 调用方不再等待的调用（`AbortSignal`、丢弃 future）会在 Rust 一侧丢弃方法的 future，与所有调用相同。
 
-**调用方行的上下文：** `&rutis::Ctx`（或 `Ctx`）参数在 TypeScript 里不是参数：它是发起调用的那一行的上下文（`rutis_bridge::session::caller_row()`），方法在上面登记的东西（`ctx.effect`、监听）属于那一行，随该行卸载或重启而移除，例如订阅。不在任何行里调用时（从 Rust、从对端节点），这样的方法失败，错误写明它需要调用方行的上下文。
+**调用方行的上下文：** `&rutis::Ctx`（或 `Ctx`）参数在 TypeScript 里不是参数：它是发起调用的那一行的上下文（`rutis_bridge::session::caller_row()`），方法在上面登记的东西（`ctx.effect`、监听）属于那一行，随该行卸载或重启而移除，例如订阅。不在任何行里调用时（从 Rust、从相连节点），这样的方法失败，错误写明它需要调用方行的上下文。
 
 ### 错误
 

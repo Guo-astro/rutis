@@ -46,7 +46,7 @@ rutis-host: reload rejected: <reason>; nothing changed
 
 Refused, the old configuration runs on; the reason names the row and what is wrong with it, or what needs the host restarted. Row state changes are printed by the state lines as usual. SIGUSR1, or a file change, while a reload runs makes one more reload once it ends; a termination signal while a reload runs stops the host as usual.
 
-Credentials are read from the environment when a link dials, or when a far end dials in (see [Credentials](#credentials)), so a peer row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
+Credentials are read from the environment when a row dials, or when a far end dials in (see [Credentials](#credentials)), so a connection row a reload adds connects too. The environment does not change while the process runs: a new token still needs a restart.
 
 ## When a runtime ends
 
@@ -70,7 +70,7 @@ Also:
 - Once the host stops (a termination signal, the `exit` policy), no runtime is restarted; nor is one removed by [changing the configuration while it runs](#changing-the-configuration-while-it-runs).
 - `restart` is a runtime setting: changing it while the host runs needs a restart.
 - `dev` follows the same rules and defaults; write `"runtimes": { "py": { "restart": "on-failure" } }` in `rutis.dev.json` (for the project's own runtime, only `restart` is taken).
-- Go and Swift: `runtimes.go.restart` and `runtimes.swift.restart` apply to each of their runtimes on its own (`runtime go-<name>: restarting`); a runtime stopped for being idle did not end on its own. Remote runtimes and peer rows' links reconnect by themselves and are not affected.
+- Go and Swift: `runtimes.go.restart` and `runtimes.swift.restart` apply to each of their runtimes on its own (`runtime go-<name>: restarting`); a runtime stopped for being idle did not end on its own. `rutis-host/dial` rows reconnect by themselves and are not affected.
 
 ## `rutis.json`
 
@@ -91,7 +91,6 @@ Also:
     { "id": "llm", "name": "py:llm_gateway" },
     { "id": "dns", "name": "go:dns" },
     { "id": "local-tool", "name": "./tools/tool.ts" },
-    { "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["weather"] } },
     { "id": "gpu", "name": "rutis-host/dial", "config": { "address": "wss://gpu.example.com/rutis" } },
     { "id": "embedder", "name": "gpu:embedder" },
     { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
@@ -142,7 +141,7 @@ Each row runs a plugin:
 | Field | Meaning |
 | --- | --- |
 | `id` | Row name, unique within this file. |
-| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; a plugin name is in one binary only), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices)), `<connection row>:<plugin>` (a plugin run on a connection's far end), `rutis-bridge/peer` (a node; see [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md)), or `peer:<node>/<plugin>` (a plugin running on another node). |
+| `name` | Plugin identifier: an npm package (or package subpath), `py:<name>` (Python entry point or module), `bun:<module>` (a module in the Bun runtime), `go:<plugin>` (the Go binary that has it; a plugin name is in one binary only), `./relative-path` (plugin file), `rutis-host/dial` / `rutis-host/listen` (a connection; see [Remote runtimes and devices](#remote-runtimes-and-devices); nodes connect the same way, see [Connect nodes](https://github.com/arcships/rutis/blob/main/docs/guide/nodes.en.md)), or `<connection row>:<plugin>` (a plugin run on a connection's far end). |
 | `config` | Plugin configuration. |
 | `inject` | Additional service names to wait for. |
 | `isolate` | `{ "service": true }` gives this row its own instance of the service; `{ "service": "label" }` shares one instance among rows with that label. |
@@ -178,7 +177,7 @@ Language runtimes on other machines and apps on devices connecting in are writte
 - The host creates no instance per connection. Logic computed once per device goes on the device, or the host's plugin tells the devices apart itself (an example: [Swift app](https://github.com/arcships/rutis/blob/main/docs/guide/swift-app.en.md#once-per-device)).
 - The token is `RUTIS_TOKEN_<row id>` (uppercase, `-` written as `_`): dial presents it (without it, it dials with none); listen checks the far ends connecting in with it, all of them presenting this one token. A listen row without a token fails: `phone: set RUTIS_TOKEN_PHONE: the token the far ends present when they connect`. The host side never reads a bare `RUTIS_TOKEN`.
 - Dial also trusts the CAs in `RUTIS_CA` (for self-signed certificates).
-- A listen row whose listener does not exist fails: `no listener named private: add it to listen`. One listener can carry several listen rows (and listening peer rows), connections routed to them by token; two entries that would accept the same token stop the host before it starts (see [Credentials](#credentials)).
+- A listen row whose listener does not exist fails: `no listener named private: add it to listen`. One listener can carry several listen rows, connections routed to them by token; two entries that would accept the same token stop the host before it starts (see [Credentials](#credentials)).
 - Replacing: once a newer connection with an id already connected on a listen row finishes its handshake, the old connection's remote plugins all unload first (in reverse order, every cleanup run), then the old connection is closed with close code 4002, and only then are the new connection's plugins registered. A connection whose handshake fails touches no connection there is.
 - When the host stops or the row stops, its connections close with close code 1000; the far end reconnects by its own rules.
 - The two plugins take no other config fields: `check` reports a misspelled field by the schema.
@@ -188,11 +187,11 @@ Language runtimes on other machines and apps on devices connecting in are writte
 
 ## Credentials
 
-Do not put credentials in the file; they are read from the environment when a link dials or a far end dials in:
+Do not put credentials in the file; they are read from the environment when a row dials or a far end dials in:
 
 | Environment variable | Purpose |
 | --- | --- |
-| `RUTIS_TOKEN_<NAME>` | A token by name (uppercase, with `-` written as `_`): `rutis-host/dial` and `rutis-host/listen` rows by row id, presented by dial and checked by listen against the far ends connecting in (all of them presenting this one); a peer row by the node's name, presented when connecting to it and checked when it connects in. The host side reads only these per-name variables, never a bare `RUTIS_TOKEN`. |
+| `RUTIS_TOKEN_<NAME>` | A token by name (uppercase, with `-` written as `_`): `rutis-host/dial` and `rutis-host/listen` rows by row id, presented by dial and checked by listen against the far ends connecting in (all of them presenting this one). The host side reads only these per-name variables, never a bare `RUTIS_TOKEN`. |
 | `RUTIS_CA` | Additional trusted CA certificate in PEM format for `wss://` connections. |
 | `RUTIS_CERT` / `RUTIS_KEY` | Listener certificate and key when they are not specified under `listen`. |
 

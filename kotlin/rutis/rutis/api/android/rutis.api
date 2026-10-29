@@ -372,61 +372,6 @@ public final class arcships/rutis/generated/ValueEncoder : kotlinx/serialization
 public final class arcships/rutis/internal/BusKt {
 	public static final fun checkEmit (Ljava/lang/String;)V
 	public static final fun checkListen (Ljava/lang/String;)V
-	public static final fun hasResult (Ljava/lang/Object;)Z
-}
-
-public final class arcships/rutis/internal/ConfigSchema {
-	public static final field INSTANCE Larcships/rutis/internal/ConfigSchema;
-	public final fun check (Ljava/lang/Object;Ljava/lang/Object;Z)Larcships/rutis/internal/ConfigSchema$Checked;
-	public static synthetic fun check$default (Larcships/rutis/internal/ConfigSchema;Ljava/lang/Object;Ljava/lang/Object;ZILjava/lang/Object;)Larcships/rutis/internal/ConfigSchema$Checked;
-	public final fun closest (Ljava/lang/String;Ljava/util/List;)Ljava/lang/String;
-	public final fun distance (Ljava/lang/String;Ljava/lang/String;)I
-	public final fun doubleText (D)Ljava/lang/String;
-	public final fun fromValue (Ljava/lang/Object;)Ljava/lang/Object;
-	public final fun getByCodePoint ()Ljava/util/Comparator;
-	public final fun lines (Ljava/util/List;)Ljava/util/List;
-	public final fun numberText (Ljava/lang/String;)Ljava/lang/String;
-	public final fun pathText (Ljava/util/List;)Ljava/lang/String;
-	public final fun toJson (Ljava/lang/Object;)Lkotlinx/serialization/json/JsonElement;
-	public final fun valueText (Ljava/lang/Object;)Ljava/lang/String;
-}
-
-public final class arcships/rutis/internal/ConfigSchema$Checked {
-	public fun <init> (Ljava/lang/Object;Ljava/util/List;Ljava/util/List;)V
-	public final fun getConfig ()Ljava/lang/Object;
-	public final fun getErrors ()Ljava/util/List;
-	public final fun getWarnings ()Ljava/util/List;
-}
-
-public final class arcships/rutis/internal/ConfigSchema$Issue {
-	public fun <init> (Ljava/util/List;Ljava/lang/String;)V
-	public final fun component1 ()Ljava/util/List;
-	public final fun component2 ()Ljava/lang/String;
-	public final fun copy (Ljava/util/List;Ljava/lang/String;)Larcships/rutis/internal/ConfigSchema$Issue;
-	public static synthetic fun copy$default (Larcships/rutis/internal/ConfigSchema$Issue;Ljava/util/List;Ljava/lang/String;ILjava/lang/Object;)Larcships/rutis/internal/ConfigSchema$Issue;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getMessage ()Ljava/lang/String;
-	public final fun getPath ()Ljava/util/List;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class arcships/rutis/internal/ConfigSchema$NotData : java/lang/RuntimeException {
-	public fun <init> ()V
-}
-
-public final class arcships/rutis/internal/ConfigSchema$Num {
-	public fun <init> (Ljava/lang/String;)V
-	public final fun component1 ()Ljava/lang/String;
-	public final fun copy (Ljava/lang/String;)Larcships/rutis/internal/ConfigSchema$Num;
-	public static synthetic fun copy$default (Larcships/rutis/internal/ConfigSchema$Num;Ljava/lang/String;ILjava/lang/Object;)Larcships/rutis/internal/ConfigSchema$Num;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getDecimal ()Ljava/math/BigDecimal;
-	public final fun getDouble ()D
-	public final fun getText ()Ljava/lang/String;
-	public fun hashCode ()I
-	public final fun isIntegerLiteral ()Z
-	public fun toString ()Ljava/lang/String;
 }
 
 public final class arcships/rutis/internal/Counter {
@@ -434,24 +379,6 @@ public final class arcships/rutis/internal/Counter {
 	public final fun add ()I
 	public final fun await (J)Z
 	public final fun done ()V
-}
-
-public final class arcships/rutis/internal/Dispatch {
-	public fun <init> (Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun emit (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun getEntries ()Ljava/util/List;
-	public final fun getKeep ()Lkotlin/jvm/functions/Function2;
-	public final fun getName ()Ljava/lang/String;
-	public final fun parallel (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun serial (Larcships/rutis/internal/Mode;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun waterfall (Larcships/rutis/internal/Mode;Ljava/util/List;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
-public abstract interface class arcships/rutis/internal/Entry {
-	public abstract fun begin ()Lkotlin/jvm/functions/Function4;
-	public abstract fun emit (Ljava/util/List;)Z
-	public abstract fun info ()Larcships/rutis/advanced/Listener;
 }
 
 public final class arcships/rutis/internal/Mode : java/lang/Enum {
@@ -511,18 +438,20 @@ public final class arcships/rutis/internal/RuntimeSession {
 
 public final class arcships/rutis/internal/RuntimeSession$Companion {
 	public final fun checkPlugins (Ljava/util/List;)V
-	public final fun start (Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;)Larcships/rutis/internal/RuntimeSession;
-	public static synthetic fun start$default (Larcships/rutis/internal/RuntimeSession$Companion;Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;ILjava/lang/Object;)Larcships/rutis/internal/RuntimeSession;
+	public final fun start (Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;Z)Larcships/rutis/internal/RuntimeSession;
+	public static synthetic fun start$default (Larcships/rutis/internal/RuntimeSession$Companion;Larcships/rutis/internal/peer/Channel;Larcships/rutis/internal/peer/Endpoint;Ljava/util/List;Ljava/lang/Long;Ljava/util/List;ZILjava/lang/Object;)Larcships/rutis/internal/RuntimeSession;
 }
 
 public final class arcships/rutis/internal/RuntimeState {
-	public fun <init> (Ljava/util/List;)V
+	public fun <init> (Ljava/util/List;Z)V
+	public synthetic fun <init> (Ljava/util/List;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun dispatch (Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun dispose (Ljava/lang/Long;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun dispose$default (Larcships/rutis/internal/RuntimeState;Ljava/lang/Long;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun getSession ()Larcships/rutis/internal/peer/Peer;
 	public final fun getShutdownMillis ()J
 	public final fun install (Ljava/util/List;)V
+	public final fun register (Larcships/rutis/Plugin;)V
 	public final fun setSession (Larcships/rutis/internal/peer/Peer;)V
 	public final fun setShutdownMillis (J)V
 }
@@ -647,14 +576,13 @@ public final class arcships/rutis/internal/peer/MemoryChannel {
 }
 
 public final class arcships/rutis/internal/peer/Options {
-	public fun <init> (Lkotlin/jvm/functions/Function4;Larcships/rutis/internal/peer/Endpoint;Ljava/util/Map;Ljava/util/List;ZLjava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function1;)V
-	public synthetic fun <init> (Lkotlin/jvm/functions/Function4;Larcships/rutis/internal/peer/Endpoint;Ljava/util/Map;Ljava/util/List;ZLjava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlin/jvm/functions/Function4;Larcships/rutis/internal/peer/Endpoint;Ljava/util/Map;Ljava/util/List;ZLjava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;)V
+	public synthetic fun <init> (Lkotlin/jvm/functions/Function4;Larcships/rutis/internal/peer/Endpoint;Ljava/util/Map;Ljava/util/List;ZLjava/util/List;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getArrive ()Lkotlin/jvm/functions/Function2;
 	public final fun getCapabilities ()Ljava/util/List;
 	public final fun getDispatch ()Lkotlin/jvm/functions/Function4;
 	public final fun getEndpoint ()Larcships/rutis/internal/peer/Endpoint;
 	public final fun getImplementation ()Ljava/util/Map;
-	public final fun getLocalPlugin ()Lkotlin/jvm/functions/Function1;
 	public final fun getPlugins ()Z
 	public final fun getRefuse ()Lkotlin/jvm/functions/Function1;
 	public final fun getRequire ()Ljava/util/List;
@@ -676,7 +604,6 @@ public final class arcships/rutis/internal/peer/Peer {
 	public final fun callSuspend (Ljava/lang/String;Ljava/lang/String;Ljava/util/List;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun close (Ljava/lang/Throwable;)V
 	public final fun drain (J)V
-	public final fun exportedPlugin (J)Larcships/rutis/Plugin;
 	public final fun getClosedFuture ()Ljava/util/concurrent/CompletableFuture;
 	public final fun getError ()Ljava/lang/Throwable;
 	public final fun getReadyFuture ()Ljava/util/concurrent/CompletableFuture;
@@ -721,7 +648,6 @@ public final class arcships/rutis/internal/peer/RemoteFuture {
 }
 
 public final class arcships/rutis/internal/peer/RemotePlugin {
-	public final fun getLocal ()Larcships/rutis/Plugin;
 }
 
 public final class arcships/rutis/internal/peer/Signal {
@@ -963,41 +889,5 @@ public final class arcships/rutis/internal/remote/WebSocketServer {
 }
 
 public final class arcships/rutis/internal/remote/WebSocketServer$Companion {
-}
-
-public final class arcships/rutis/testing/Loaded : arcships/rutis/advanced/Emitter, java/lang/AutoCloseable {
-	public fun bail (Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;
-	public fun close ()V
-	public fun emit (Ljava/lang/String;[Ljava/lang/Object;)V
-	public final fun filter (Lkotlin/jvm/functions/Function2;)Larcships/rutis/advanced/Emitter;
-	public final fun getProvided ()Ljava/util/List;
-	public final fun getRow ()Ljava/lang/String;
-	public final fun getScope ()Ljava/util/List;
-	public final fun load (Ljava/lang/Object;Ljava/lang/String;Ljava/util/List;Ljava/util/Map;)Larcships/rutis/testing/Loaded;
-	public static synthetic fun load$default (Larcships/rutis/testing/Loaded;Ljava/lang/Object;Ljava/lang/String;Ljava/util/List;Ljava/util/Map;ILjava/lang/Object;)Larcships/rutis/testing/Loaded;
-	public final fun on (Ljava/lang/String;ZZLkotlin/jvm/functions/Function2;)Lkotlin/jvm/functions/Function0;
-	public static synthetic fun on$default (Larcships/rutis/testing/Loaded;Ljava/lang/String;ZZLkotlin/jvm/functions/Function2;ILjava/lang/Object;)Lkotlin/jvm/functions/Function0;
-	public fun parallel (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun reported ()Ljava/util/List;
-	public fun serial (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun service (Ljava/lang/String;)Larcships/rutis/testing/TestService;
-	public final fun unload ()V
-	public final fun update (Ljava/lang/Object;)V
-	public fun waterfall (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
-public final class arcships/rutis/testing/RutisTest {
-	public static final field INSTANCE Larcships/rutis/testing/RutisTest;
-	public final fun load (Larcships/rutis/Plugin;Ljava/lang/Object;Ljava/util/Map;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;)Larcships/rutis/testing/Loaded;
-	public static synthetic fun load$default (Larcships/rutis/testing/RutisTest;Larcships/rutis/Plugin;Ljava/lang/Object;Ljava/util/Map;Ljava/lang/String;Ljava/util/List;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Larcships/rutis/testing/Loaded;
-	public final fun scope (Ljava/lang/String;[Ljava/lang/String;)Ljava/util/List;
-}
-
-public final class arcships/rutis/testing/TestService {
-	public final fun bind (Ljava/lang/Class;)Ljava/lang/Object;
-	public final fun call (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun getMethods ()Ljava/util/Map;
-	public final fun getName ()Ljava/lang/String;
-	public final fun raw (Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 

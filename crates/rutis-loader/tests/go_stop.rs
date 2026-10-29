@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::runtimes::{layer, COLD};
+use common::runtimes::{greet_as_main, layer, spawner, COLD};
 use rutis::host::{CtxHost, FiberState};
 use rutis::Ctx;
 use rutis_bridge::pipe::{kill_processes, running_processes};
@@ -65,6 +65,7 @@ async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts()
     std::fs::create_dir_all(&plugins).unwrap();
     build_stuck(&plugins);
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     let catalog = ServiceCatalog::new();
     let resolver =
         Arc::new(BinaryResolver::<Go>::new(Binaries::new().dir(&plugins)).with_catalog(&catalog));
@@ -77,7 +78,7 @@ async fn a_runtime_that_does_not_stop_in_time_is_killed_before_the_next_starts()
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path());
+    let go = BinaryRuntimes::<Go>::new(resolver.clone(), dir.path(), spawner());
     let runtimes = go.handle();
     root.plugin(go).await.unwrap();
     loader

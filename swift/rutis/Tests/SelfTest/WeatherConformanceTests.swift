@@ -103,20 +103,25 @@ struct WeatherConformanceTests {
                 record("the expectations list no sample \(name)")
                 continue
             }
+            // It holds only across processes: the test plugin is in the
+            // plugin's runtime.
+            if entry["crossing"] == .bool(true) { continue }
             check("sample \(name)", entry, await call(service, "sample", [name]))
         }
         for event in expected["events"]!.arrayValue! {
             guard var then = event["then"] else { continue }
             let args = event["args"]!.arrayValue!.map(argument)
             // As a host plugin emits: parallel waits for the listeners.
-            try await loaded.harness.run(event["emit"]!.stringValue!, .parallel, args)
+            try await loaded.ctx.parallel(event["emit"]!.stringValue!, arguments: args)
             if case var .object(fields) = then {
                 fields.append(("why", event["why"] ?? .null))
                 then = .object(fields)
             }
             check("after \(event["emit"]!.stringValue!)", then, await call(service, then["call"]!.stringValue!, []))
         }
-        // A service the plugin does not declare: its methods, all async.
+        // A service the plugin does not declare: its methods, all async (on
+        // a device the test tool reaches only declared services).
+        #if os(macOS)
         let undeclared = expected["undeclared"]!
         let forecast = try await loaded.service(undeclared["service"]!.stringValue!)
         for (method, kind) in undeclared["methods"]!.objectValue! {
@@ -127,14 +132,7 @@ struct WeatherConformanceTests {
             let method = entry["call"]!.stringValue!
             check("undeclared.calls[\(i)] \(method)", entry, await call(forecast, method, entry["args"]!.arrayValue!.map(argument)))
         }
+        #endif
         await loaded.close()
-    }
-}
-
-extension Harness {
-    /// Emits as a host plugin at the root.
-    func run(_ name: String, _ mode: Mode, _ args: [Any?]) async throws {
-        let values = try args.map { try ValueCodec.encodeAny($0 as Any) }
-        _ = try await Harness.run(snapshot(name, own: false), mode, values, terminal: nil)
     }
 }

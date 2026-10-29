@@ -7,7 +7,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::runtimes::{go_binary, title, NoConfig, Probe, Title, Tools};
+use common::runtimes::{go_binary, greet_as_main, spawner, title, NoConfig, Probe, Title, Tools};
 use common::Scoped;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
@@ -134,6 +134,7 @@ async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let probe = Probe::default();
     let root = Ctx::root().unwrap();
+    greet_as_main(&root);
     root.provide_at(host_key("probe"), Arc::new(probe.clone()))
         .unwrap();
     let mut catalog = ServiceCatalog::new();
@@ -153,7 +154,7 @@ async fn fixture() -> Fixture {
     );
     let loader = plugin.handle();
     root.plugin(plugin).await.unwrap();
-    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path()).idle(None))
+    root.plugin(BinaryRuntimes::<Go>::new(go, dir.path(), spawner()).idle(None))
         .await
         .unwrap();
     let rows = json!([{ "insert": [

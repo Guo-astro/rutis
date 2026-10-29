@@ -142,8 +142,6 @@ final class Row: @unchecked Sendable {
     private var spawned: [Int: Task<Void, Never>] = [:]
     private var nextTask = 0
     private var cancelled = false
-    /// What waits on a task of the row's that the unload lets go (`held`).
-    private var letGo: [Int: Event] = [:]
 
     init(key: String, name: String, entry: String, definition: Rutis.Definition, config: Value,
          exports: [String: [String: String]], isolate: [String: String], scope: [Rutis.Advanced.Scope],
@@ -214,31 +212,6 @@ final class Row: @unchecked Sendable {
         return try result.get()
     }
 
-    /// Runs `body` in a Task of the row's, cancelled when the row unloads,
-    /// and returns once it ended or the row unloads, whichever comes
-    /// first: a body that does not heed cancellation (a filter that never
-    /// answers) holds neither the caller nor the unload. Nothing runs when
-    /// the row unloads already.
-    func held(_ body: @escaping () async -> Void) async {
-        let done = Event()
-        let id: Int? = lock.withLock {
-            if cancelled { return nil }
-            nextTask += 1
-            running[nextTask] = Task {
-                await body()
-                done.fire()
-            }
-            letGo[nextTask] = done
-            return nextTask
-        }
-        guard let id else { return }
-        await done.wait()
-        lock.withLock {
-            running[id] = nil
-            letGo[id] = nil
-        }
-    }
-
     /// Runs `body` until the row unloads (ctx.spawn).
     func spawn(_ body: @escaping () async throws -> Void) {
         lock.lock()
@@ -269,17 +242,15 @@ final class Row: @unchecked Sendable {
     func stop() async {
         let budget = settings.shutdownTimeout
         let started = DispatchTime.now().uptimeNanoseconds
-        let (tasks, waiting, released): ([Task<Void, Never>], Event?, [Event]) = lock.withLock {
+        let (tasks, waiting): ([Task<Void, Never>], Event?) = lock.withLock {
             cancelled = true
             let tasks = Array(running.values) + Array(spawned.values)
-            let released = Array(letGo.values)
-            guard listening > 0 else { return (tasks, nil, released) }
+            guard listening > 0 else { return (tasks, nil) }
             let event = Event()
             idle.append(event)
-            return (tasks, event, released)
+            return (tasks, event)
         }
         for task in tasks { task.cancel() }
-        for event in released { event.fire() }
         if let waiting {
             if await !waiting.wait(seconds: budget) {
                 Events.report("rutis: listeners of row \(name) still running after \(Events.seconds(budget))s; unloading anyway", to: settings.log)
@@ -329,6 +300,8 @@ struct FarService {
 /// The rows one controller loads into this process.
 final class Runtime: @unchecked Sendable {
     let definitions: [String: Rutis.Definition]
+    /// The plugins added while it runs, instead of `definitions` (RutisTest).
+    let shelf: Shelf?
     var session: Peer?
     let project: String
     let settings: Events.Settings
@@ -342,20 +315,9 @@ final class Runtime: @unchecked Sendable {
     var version = 0
     var loaded = 0
     var closing = false
-    // The listeners of each name, in position order, and by id.
-    var listeners: [String: [LocalListener]] = [:]
+    // The listeners of the rows here, by id.
     var byID: [String: LocalListener] = [:]
     var listenerSequence = 0
-    var first = 0
-    var last = 0
-    // The names and prefixes with listeners outside this process
-    // (events.elsewhere), and the emits through the host not answered yet.
-    var elsewhere = Set<String>()
-    var elsewherePrefixes = Set<String>()
-    var hostEmits: [String: Int] = [:]
-    /// Per name, the emits waiting behind a filtered one (§5.5): a filter
-    /// may wait, and a later emit of the name must not start before it.
-    var held: [String: (queue: SerialQueue, count: Int)] = [:]
     /// What the host calls this runtime (mount `runtime`), for descriptors.
     var runtimeName: String?
     /// An app's own plugins, in order, with their configurations, and
@@ -384,8 +346,9 @@ final class Runtime: @unchecked Sendable {
     private var outbox: [() -> Void] = []
     private let sendLock = Lock()
 
-    init(_ definitions: [Rutis.Definition], project: String, settings: Events.Settings = Events.Settings()) {
+    init(_ definitions: [Rutis.Definition], project: String, settings: Events.Settings = Events.Settings(), shelf: Shelf? = nil) {
         self.settings = settings
+        self.shelf = shelf
         var byName: [String: Rutis.Definition] = [:]
         for definition in definitions { byName[definition.name] = definition }
         self.definitions = byName
@@ -413,6 +376,12 @@ final class Runtime: @unchecked Sendable {
     var live: Bool { session != nil && !closing }
 
     func definition(_ entry: String) throws -> Rutis.Definition {
+        if let shelf {
+            guard let definition = shelf.get(entry) else {
+                throw RutisError(name: "NotFound", message: "plugin \(entry) is not in this test process")
+            }
+            return try supported(definition)
+        }
         guard let definition = definitions[entry] else {
             throw RutisError(name: "NotFound", message: "plugin \(entry) is not in this binary; it has: \(definitions.keys.sorted().joined(separator: ", "))")
         }
@@ -888,20 +857,25 @@ final class Runtime: @unchecked Sendable {
             lock.withLock {
                 runtimeName = mount["runtime"]?.string
             }
-            return .data(.object([
+            var answer: [(String, JSON)] = [
                 ("services", .object([])),
                 ("features", .array(runtimeFeatures.map(JSON.string))),
-                ("plugins", .object(definitions.keys.sorted().map { ($0, definitions[$0]!.described) })),
                 ("implementation", .object([("name", .string(Rutis.Advanced.implementation)), ("version", .string(Rutis.Advanced.sdkVersion))])),
                 ("engine", .object([("name", .string("swift")), ("version", .string(swiftVersion))])),
-            ]))
+            ]
+            // A shelf's plugins come later: the host asks for each
+            // (`rows.schema`).
+            if shelf == nil {
+                answer.insert(("plugins", .object(definitions.keys.sorted().map { ($0, definitions[$0]!.described) })), at: 2)
+            }
+            return .data(.object(answer))
         case "link.offers":
             offered((args.first ?? .undefined).plainJSON ?? .null)
             return .undefined
         case "services.announce", "services.withdraw":
             try heard(method, args.first ?? .undefined)
             return .undefined
-        case "events.elsewhere", "events.call":
+        case "events.call":
             // Served by arrive on the reading thread; here only when called
             // directly.
             guard let then = arrive(method, args) else { return .undefined }
@@ -1055,12 +1029,47 @@ extension Rutis.Advanced {
         let invoke: (String, [Value], Bool) async throws -> Value
         /// The far end's object this client calls, if it is one (#687).
         let object: FarObject?
+        /// The object of this process this client calls, if it is one: one
+        /// a plugin of the same runtime handed over, received as a
+        /// `@RutisClient` protocol its type does not implement.
+        let own: ServiceObject?
 
         init(name: String, methods: [String: String], invoke: @escaping (String, [Value], Bool) async throws -> Value) {
             self.name = name
             self.methods = methods
             self.invoke = invoke
             object = nil
+            own = nil
+        }
+
+        /// An object of this process as a client: its methods called by
+        /// name, as another process would call them.
+        init(own: ServiceObject) {
+            name = ""
+            methods = [:]
+            object = nil
+            self.own = own
+            invoke = { method, args, _ in try await own.call(method: method, args: args) }
+        }
+
+        private static let ownLock = Lock()
+        nonisolated(unsafe) private static var owns: [ObjectIdentifier: WeakClient] = [:]
+
+        /// The client of `own`, one per object while it is held (as
+        /// `of(_:)` for an object of another process).
+        static func of(own: ServiceObject) -> Client {
+            ownLock.withLock {
+                if let client = owns[own.identity]?.client { return client }
+                owns = owns.filter { $0.value.client != nil }
+                let client = Client(own: own)
+                owns[own.identity] = WeakClient(client)
+                return client
+            }
+        }
+
+        private final class WeakClient {
+            weak var client: Client?
+            init(_ client: Client) { self.client = client }
         }
 
         /// An object of another process as a client: its methods are
@@ -1069,6 +1078,7 @@ extension Rutis.Advanced {
             name = ""
             methods = [:]
             self.object = object
+            own = nil
             invoke = { method, args, sync in try await object.call(method, args, sync: sync) }
         }
 
@@ -1099,12 +1109,26 @@ extension Rutis.Advanced {
             // An object has no method table: one it lacks is its process's
             // to say (no-method).
             let kind = methods[method]
-            if kind == nil, object == nil {
+            if kind == nil, object == nil, own == nil {
                 throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
             }
             let value = try await invoke(method, args.map(\.value), kind == "sync")
             if let proxy, case let .remoteObject(far) = value { return proxy(Client.of(far)) }
+            if let proxy, case let .object(local) = value, let own = local as? ServiceObject {
+                if let typed = own.service as? R { return typed }
+                return proxy(Client.of(own: own))
+            }
             return try ValueCodec.decode(R.self, from: value)
+        }
+
+        /// Calls `method` with `args` as the session carries them: the
+        /// result as it came (RutisTest).
+        package func callValue(_ method: String, _ args: [Value]) async throws -> Value {
+            let kind = methods[method]
+            if kind == nil, object == nil, own == nil {
+                throw Refusal.noMethod(Refusal.Callee(service: name, method: method), methods.keys)
+            }
+            return try await invoke(method, args, kind == "sync")
         }
 
         /// Calls `method` with `args` of any type, its result as `R`.

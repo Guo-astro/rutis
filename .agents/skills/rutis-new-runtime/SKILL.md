@@ -69,24 +69,23 @@ All of it is in `references/runtime-contract.md`. The fastest way to get the beh
 Compiled from the files Bun (arcships/rutis#200) and Go (arcships/rutis#227) actually changed.
 
 **Language side**
-- [ ] `<language>/…`: session layer, SDK, runtime entry point, host-free test helper (like Go's `rutistest`, Python's `rutis.testing`)
+- [ ] `<language>/…`: session layer, SDK, runtime entry point, test helper that runs the real runtime under `rutis-host test` (like Go's `rutistest`, Python's `rutis.testing`)
 - [ ] A conformance entry point for the Rust tests to start
 
 **rutis-bridge**
-- [ ] `src/runtime/process.rs`: `Launcher::<language>` (command, working directory, how the channel is handed over)
-- [ ] `src/runtime/local.rs`: `LocalRuntime::<language>` and the runtime name
-- [ ] `src/runtime/mod.rs`; a feature in `Cargo.toml`
+- [ ] `src/runtime/process.rs`: `Launcher::<language>` (command, working directory, how the channel is handed over). `Launcher::start` passes `--id <runtime name>` and the anchor as the last arguments; the process is the far end of a session
+- [ ] A feature in `Cargo.toml`
 - [ ] Tests: `tests/runtime_conformance.rs`, `tests/session_matrix.rs`, `tests/<language>_runtime.rs`; for remote use `tests/websocket_conformance.rs` (and `dial_conformance.rs` for dialing out)
 
 **rutis-loader**
-- [ ] Load by name: `src/runtime.rs` (`RuntimeResolver`). Compiled program: `src/runtime/<language>.rs`, reusing Go's manifest machinery
+- [ ] Load by name: nothing to add; `runtime::SessionResolver` resolves `<runtime name>:<plugin>` on the runtime's session. Compiled program: `src/runtime/<language>.rs`, a `BinaryLanguage` whose `launch` returns the `Launcher`, reusing Go's manifest machinery
 - [ ] `src/lib.rs`; a feature in `Cargo.toml`
 - [ ] Tests: `tests/<language>_rows.rs`, `tests/multilang_<language>.rs`, `tests/instance_<language>.rs`, `tests/leases.rs`
 
 **rutis-host**
 Every local language is one entry in a registry (arcships/rutis#230): `config.rs`, `host.rs`, `new.rs`, `project.rs` and `main.rs` loop over it and need no edit. Read https://github.com/arcships/rutis/tree/main/crates/rutis-host/src/languages first: `node.rs` (load by name) or `go.rs` (compiled program).
 - [ ] `src/config.rs`: a `runtimes.<language>` field in `Runtimes` and its settings type (this is the `rutis.json` format; the persisted-fixture tests guard it)
-- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and builds the `LocalRuntime` (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
+- [ ] `src/languages/<language>.rs`: one type implementing the `Language` trait: its `runtimes` key; `rebase`/`merge` of its settings; how its rows are named (`rows`); `runtime`, which finds the package or interpreter, runs the preflight check of its version and returns the `connect::SpawnPlugin` (`rutis-host/spawn`: `SpawnPlugin::new(<runtime name>, Launcher::<language>(…), anchor)`; its rows resolve through `SessionResolver`) (a compiled-program language with one runtime per binary overrides `start` instead, as Go does); `new --lang` names, template and next steps; `dev`: how a project is recognized (`is_project`, `project_file`) and the rows that run it (the host never compiles; it only runs the project's own build)
 - [ ] `src/languages/mod.rs`: its `mod` line and its line in `LANGUAGES` (the order messages list languages in; the host starts them in reverse, so Node, whose resolver takes bare npm names, stays first)
 - [ ] `src/main.rs`: only the `USAGE` help text names the languages. A compiled-program language that rebuilds in `dev` or lists its binaries in `check` follows Go there (`host.go`, `project::GoDev`)
 - [ ] `templates/<language>/`: plugin, tests, `rutis.dev.json`, publish workflow

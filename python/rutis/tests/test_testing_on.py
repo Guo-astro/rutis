@@ -93,7 +93,7 @@ class On(background.TestCase):
         async def go():
             bus = Bus()
             asked = []
-            async with load(weather("forecast"), config={"city": "Bergen"}, bus=bus, row="second") as other:
+            async with load(weather("forecast"), config={"city": "Bergen"}, bus=bus, id="second") as other:
                 async with load(weather(), config={"city": "Oslo"}, bus=bus) as t:
                     t.on("weather/asked", asked.append)
                 await other.service("forecast").today()

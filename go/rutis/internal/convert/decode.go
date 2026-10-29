@@ -73,18 +73,25 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 	case *peer.RemoteFunction:
 		switch {
 		case t == functionType:
-			return reflect.ValueOf(&Function{x}), nil
+			return reflect.ValueOf(&Function{remote: x}), nil
 		case t.Kind() == reflect.Func:
 			return MakeFunc(t, func(ctx context.Context, args []any) (any, error) {
 				return x.Call(ctx, args, true)
 			}), nil
 		case t == anyType:
-			return reflect.ValueOf(any(&Function{x})), nil
+			return reflect.ValueOf(any(&Function{remote: x})), nil
 		}
 		return reflect.Value{}, fmt.Errorf("a function cannot be decoded as %s", t)
 	case peer.Func:
-		if t.Kind() == reflect.Func {
+		// A function of this process, from a call within it: as one of
+		// the far end decodes.
+		switch {
+		case t == functionType:
+			return reflect.ValueOf(&Function{local: x}), nil
+		case t.Kind() == reflect.Func:
 			return MakeFunc(t, x), nil
+		case t == anyType:
+			return reflect.ValueOf(any(&Function{local: x})), nil
 		}
 		return reflect.Value{}, fmt.Errorf("a function cannot be decoded as %s", t)
 	case *peer.RemoteFuture:
@@ -127,8 +134,19 @@ func FromPeer(v any, t reflect.Type) (reflect.Value, error) {
 	default:
 		// A tagged value into its own type, or a Go value given as it is
 		// (a call within this process).
-		if value := reflect.ValueOf(v); value.Type().AssignableTo(t) {
+		value := reflect.ValueOf(v)
+		if value.Type().AssignableTo(t) {
 			return valueOf(v, t), nil
+		}
+		// A number into another number type, when it is the same number
+		// there, as it would be from the wire.
+		if numeric(value.Kind()) && numeric(t.Kind()) {
+			negative := (value.CanInt() && value.Int() < 0) || (value.CanFloat() && value.Float() < 0)
+			converted := value.Convert(t)
+			if !(negative && converted.CanUint()) && converted.Convert(value.Type()).Equal(value) {
+				return converted, nil
+			}
+			return reflect.Value{}, fmt.Errorf("%v does not fit %s", v, t)
 		}
 	}
 	// Lists, records and tagged values: into what a pointer points to, or
@@ -405,7 +423,9 @@ func Plain(v any) (any, error) {
 		}
 		return out, nil
 	case *peer.RemoteFunction:
-		return &Function{x}, nil
+		return &Function{remote: x}, nil
+	case peer.Func:
+		return &Function{local: x}, nil
 	case *peer.RemoteFuture:
 		return &Future{x}, nil
 	case *peer.RemoteObject:
@@ -491,4 +511,15 @@ func objectFromPeer(x *peer.RemoteObject, t reflect.Type) (reflect.Value, error)
 		return out, nil
 	}
 	return out.Elem(), nil
+}
+
+// numeric reports whether `kind` is a Go number kind.
+func numeric(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }

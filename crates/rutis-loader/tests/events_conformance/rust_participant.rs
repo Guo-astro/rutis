@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rutis::events::{Call, Listen, SyncCall};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, PluginFactory};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, FiberView, PluginFactory};
 use rutis::internal::CtxInternal;
 use rutis::{Ctx, Error as RutisError, Event};
 use rutis_bridge::events::testing::Tap;
@@ -586,13 +586,15 @@ pub fn register(builtins: &mut Builtins, log: Arc<EventsLog>, tap: Tap) -> Hooks
 
 // ── The second node ─────────────────────────────────────────────
 
-/// A second rutis node linked to the host in memory; both
-/// export and import `t/*` and `rutis/*` (not `n/*`). Its participants are
-/// Rust plugins at its root.
+/// A second rutis kernel with a session to the host over a memory
+/// channel: every name of one is heard on the other (one flat bus). Its
+/// participants are Rust plugins at its root.
 pub struct Node {
     host: Ctx,
     node: std::sync::Mutex<Option<Ctx>>,
-    transport: rutis_bridge::Registrations,
+    /// Both ends' sessions, and the node's end of the channel: closing it
+    /// is the node's process dying.
+    sessions: std::sync::Mutex<Option<Sessions>>,
     /// Whether the node's process is alive: a killed one logs nothing more.
     alive: std::sync::Mutex<Arc<AtomicBool>>,
     log: Arc<EventsLog>,
@@ -602,12 +604,11 @@ pub struct Node {
     reported: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+/// The host's and the node's sessions, and the node's end of the channel.
+type Sessions = (FiberView, FiberView, Arc<dyn rutis_bridge::channel::Closer>);
+
 fn peer_id(s: &str) -> rutis_bridge::PeerId {
     rutis_bridge::PeerId::new(s).unwrap()
-}
-
-fn shared() -> Vec<String> {
-    vec!["t/*".into(), "rutis/*".into()]
 }
 
 impl Node {
@@ -615,7 +616,7 @@ impl Node {
         let node = Node {
             host: host.clone(),
             node: Default::default(),
-            transport: Node::host_side(host).await,
+            sessions: Default::default(),
             alive: Default::default(),
             log,
             rows: Default::default(),
@@ -625,29 +626,9 @@ impl Node {
         node
     }
 
-    /// The host's end, once: its listener's registrations, identity and
-    /// listening link.
-    async fn host_side(host: &Ctx) -> rutis_bridge::Registrations {
-        use rutis_bridge::{Accepting, Features, IdentityPlugin, LinkConfig, PeerPlugin, Registrations, StaticIdentity};
-        let transport = Registrations::new();
-        host.plugin(IdentityPlugin::new(
-            "host",
-            StaticIdentity::new(peer_id("host")).accept_token("node-token", peer_id("node")),
-        ));
-        let features = Features { export: shared(), import: shared(), ..Features::default() };
-        host.plugin(
-            PeerPlugin::new(LinkConfig::listen(
-                peer_id("node"),
-                "host",
-                Accepting { registrations: transport.clone(), listener: "host-in".into(), local: peer_id("host") },
-            ), features).unwrap(),
-        );
-        transport
-    }
-
-    /// The node itself, dialing the host: a new process each time.
+    /// The node itself, with its session to the host: a new process each
+    /// time.
     async fn link(&self) {
-        use rutis_bridge::{Credential, Features, IdentityPlugin, LinkConfig, PeerPlugin, StaticIdentity};
         // Its error sink prints as rutis-host does and records the event
         // failures' lines (`reported`).
         let reported = self.reported.clone();
@@ -661,18 +642,12 @@ impl Node {
             }
         });
         let node = Ctx::root_with_sink(tokio::runtime::Handle::current(), sink);
-        node.plugin(IdentityPlugin::new(
-            "node",
-            StaticIdentity::new(peer_id("node")).present(peer_id("host"), Credential::Bearer("node-token".into())),
-        ));
-        let features = Features { export: shared(), import: shared(), ..Features::default() };
-        node.plugin(
-            PeerPlugin::new(LinkConfig::dial(
-                peer_id("host"),
-                "node",
-                rutis_bridge::memory::dialer(self.transport.clone(), "host-in"),
-            ), features).unwrap(),
-        );
+        node.provide(rutis_bridge::LocalId(peer_id("node"))).unwrap();
+        let (at_host, at_node) = rutis_bridge::memory::pair();
+        let closer = at_node.closer.clone();
+        let host_side = self.host.plugin(rutis_bridge::Session::new(at_host));
+        let node_side = node.plugin(rutis_bridge::Session::new(at_node));
+        *self.sessions.lock().unwrap() = Some((host_side, node_side, closer));
         // A new process: alive until killed.
         let alive = Arc::new(AtomicBool::new(true));
         *self.alive.lock().unwrap() = alive;
@@ -722,15 +697,12 @@ impl Node {
             .lock()
             .unwrap()
             .store(false, Ordering::SeqCst);
-        // As a process that dies: its session goes first, under the calls
-        // in flight (the host sees them fail); then the node's plugins. A
-        // listener that does not stop fails the case rather than hanging
-        // the run.
-        let session = node
-            .get_at(&rutis_bridge::peer_key(&peer_id("host")))
-            .map(|peer| peer.connection().clone());
-        if let Some(session) = session {
-            session.close(Error::Transport("the node was killed".into()));
+        // As a process that dies: its connection goes first, under the
+        // calls in flight (the host sees them fail); then the node's
+        // plugins. A listener that does not stop fails the case rather than
+        // hanging the run.
+        if let Some((_, _, closer)) = self.sessions.lock().unwrap().take() {
+            closer.close(rutis_bridge::Close::Done);
         }
         tokio::time::timeout(Duration::from_secs(60), node.shutdown())
             .await
@@ -740,22 +712,21 @@ impl Node {
 
     pub async fn restart(&self) -> Result<(), String> {
         self.link().await;
-        // Linked again: both ends have the session.
-        let linked = |ctx: &Ctx, peer: &str| {
-            ctx.get_at(&rutis_bridge::peer_key(&peer_id(peer)))
-                .is_some()
-        };
+        // Connected again: both ends' sessions are mounted.
+        let mounted = |view: &FiberView| view.state().state == FiberState::Active;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
-            let node = self.ctx()?;
-            if linked(&node, "host") && linked(&self.host, "node") {
+            let (host_side, node_side) = {
+                let sessions = self.sessions.lock().unwrap();
+                let (host_side, node_side, _) = sessions.as_ref().ok_or("no session")?;
+                (mounted(host_side), mounted(node_side))
+            };
+            if host_side && node_side {
                 return Ok(());
             }
             if tokio::time::Instant::now() > deadline {
                 return Err(format!(
-                    "the node did not link again (node side {}, host side {})",
-                    linked(&node, "host"),
-                    linked(&self.host, "node")
+                    "the node did not connect again (node side {node_side}, host side {host_side})"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

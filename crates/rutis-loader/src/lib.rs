@@ -13,52 +13,17 @@
 //! resolver). [`internal`] is for rutis-host and tests, with no stability
 //! promise.
 
-pub mod backoff;
 mod catalog;
 pub mod edit;
 mod error;
 mod framework;
 mod loader;
 mod patch;
-#[cfg(feature = "peer")]
-pub mod peer;
 mod persist;
 mod resolver;
 #[cfg(feature = "runtimes")]
 pub mod runtime;
 mod volatile;
-
-/// The Rust host guide's examples compile against these crates (#667).
-#[cfg(all(
-    doctest,
-    feature = "node",
-    feature = "python",
-    feature = "go",
-    feature = "peer"
-))]
-#[doc = include_str!("../../../docs/guide/rust-host.md")]
-pub struct RustHostGuide;
-
-/// The English Rust host guide's examples compile against these crates.
-#[cfg(all(
-    doctest,
-    feature = "node",
-    feature = "python",
-    feature = "go",
-    feature = "peer"
-))]
-#[doc = include_str!("../../../docs/guide/rust-host.en.md")]
-pub struct RustHostGuideEn;
-
-/// The open-host guide's examples compile against these crates (#671).
-#[cfg(all(doctest, feature = "node", feature = "python"))]
-#[doc = include_str!("../../../docs/guide/open-host.md")]
-pub struct OpenHostGuide;
-
-/// The English open-host guide's examples compile against these crates.
-#[cfg(all(doctest, feature = "node", feature = "python"))]
-#[doc = include_str!("../../../docs/guide/open-host.en.md")]
-pub struct OpenHostGuideEn;
 
 pub use catalog::ServiceCatalog;
 pub use error::LoaderError;
@@ -90,16 +55,12 @@ pub mod resolve {
 pub mod internal {
     pub use crate::loader::followed_rows;
     pub use crate::patch::{apply_patches, Composed, ComposedRow, Owner, PatchWarning};
-    #[cfg(feature = "peer")]
-    pub use crate::peer::{node_schema, REMOVED_EVENTS};
     #[cfg(feature = "binary")]
     pub use crate::runtime::binary::read_binary_manifest;
     #[cfg(feature = "go")]
     pub use crate::runtime::go::PLUGIN_API;
     #[cfg(feature = "runtimes")]
     pub use crate::runtime::is_runtime_name;
-    #[cfg(feature = "node")]
-    pub use crate::runtime::resolve_entry;
     #[cfg(feature = "swift")]
     pub use crate::runtime::swift::SWIFT_PLUGIN_API;
 }

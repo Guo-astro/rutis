@@ -34,10 +34,10 @@ use rutis::{Ctx, Error as RutisError};
 
 use crate::channel::{Channel, Close, PeerId};
 use crate::peer::Operations;
+use crate::peer::{peer_key, Peer};
 use crate::runtime::{Mount, Process};
 use crate::session::rpc::Connection;
 use crate::session::Error;
-use crate::{peer_key, Peer};
 
 /// The plugin name of every session, and of the root plugin that serves
 /// `sessions`.
@@ -313,7 +313,6 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
     let peer = Arc::new(Peer::new(
         far.clone(),
         start.connection.clone(),
-        1,
         start.operations.clone(),
     ));
     // The session's peer is its own: what runs on it is mounted below, in a
@@ -340,6 +339,7 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         process: None,
     });
     let mut client = None;
+    let mut runs = None;
     if start.connection.supports("runtime") {
         // A language runtime: this end's process on it, its listeners on
         // this bus.
@@ -352,13 +352,13 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
             .await
             .map_err(failing)?;
         process.check_rows(far.as_str()).map_err(failing)?;
-        handle.ready(ctx, process)?;
+        runs = Some(process);
     } else if node {
         // A rutis kernel: each runs the other's rows; its listeners and
         // this bus's are entries of each other's bus, one hop, every name.
         let (rows, served) = rows::Rows::serve(&scoped, &peer).map_err(failing)?;
         offered.extend(served);
-        scoped.plugin(crate::LinkEventsPlugin::new(far.clone(), ["*"], ["*"]));
+        scoped.plugin(crate::events::NodeEvents::new(far.clone()));
         client = Some(tokio::spawn(client_once_served(
             ctx.clone(),
             scoped.clone(),
@@ -394,6 +394,12 @@ async fn mount(shared: Arc<Shared>, start: Start, ctx: &Ctx) -> Result<Effect, R
         drop(kept.lock().unwrap().take());
         Ok(())
     })?;
+    // Provided after the cleanup above is registered, so it is withdrawn
+    // first: the rows on this session unload while the far end is still
+    // there, then the channel closes.
+    if let Some(process) = runs {
+        handle.ready(ctx, process)?;
+    }
     Ok(Effect::Done)
 }
 

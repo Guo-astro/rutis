@@ -273,8 +273,8 @@ fn injecting(inject: &str, provides: &str) -> String {
 
 /// A row that waits for a service no row provides, and no row may provide
 /// at runtime either, cannot run: check says which and what to do, and
-/// fails. One provided only by a disabled row says so; one a link imports
-/// is provided. It passed before (#258). With another row that may provide
+/// fails. One provided only by a disabled row says so. It passed before
+/// (#258). With another row that may provide
 /// services it does not declare (every plugin of a 0.12 SDK), they are
 /// warnings, and check passes.
 /// risk: A6
@@ -286,7 +286,6 @@ async fn check_fails_on_a_service_nothing_provides() {
         let mut rows = vec![
             serde_json::json!({ "id": "chat", "name": "./chat.mjs" }),
             serde_json::json!({ "id": "indexer", "name": "./indexer.mjs", "disabled": true }),
-            serde_json::json!({ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "import": ["calendar"] } }),
         ];
         rows.extend_from_slice(more);
         configuration(serde_json::Value::Array(rows))
@@ -295,7 +294,7 @@ async fn check_fails_on_a_service_nothing_provides() {
         dir.path(),
         &[
             ("package.json", r#"{ "name": "app", "type": "module" }"#),
-            ("chat.mjs", &injecting("['llm', 'index', 'calendar']", "{}")),
+            ("chat.mjs", &injecting("['llm', 'index']", "{}")),
             (
                 "indexer.mjs",
                 &injecting("[]", "{ index: { find: 'sync' } }"),
@@ -320,12 +319,11 @@ async fn check_fails_on_a_service_nothing_provides() {
         stdout,
         [
             "chat (file://<dir>/chat.mjs): cannot run: nothing provides index, llm",
-            "  inject: [\"llm\",\"index\",\"calendar\"]",
+            "  inject: [\"llm\",\"index\"]",
             "  provides: {}",
             "  index: only disabled rows provide it (indexer): enable one, or add a row that provides it",
-            "  llm: add a row that provides it, or import it from a peer (import: [\"llm\"])",
+            "  llm: add a row that provides it",
             "indexer (file://<dir>/indexer.mjs): disabled",
-            "office (rutis-bridge/peer): ok",
         ]
     );
     assert_eq!(
@@ -357,11 +355,10 @@ async fn check_fails_on_a_service_nothing_provides() {
         stdout,
         [
             "chat (file://<dir>/chat.mjs): ok",
-            "  inject: [\"llm\",\"index\",\"calendar\"]",
+            "  inject: [\"llm\",\"index\"]",
             "  provides: {}",
             "  index: only disabled rows provide it (indexer): enable one, or add a row that provides it",
             "indexer (file://<dir>/indexer.mjs): disabled",
-            "office (rutis-bridge/peer): ok",
             "notes (file://<dir>/notes.mjs): ok",
             "  inject: []",
             "  provides: {}",
@@ -816,21 +813,21 @@ async fn check_warns_of_extra_config_keys() {
     assert_eq!(strict.status, 1);
 }
 
-/// A listening link row and a listen row on the same listener, the tokens
-/// of both from the environment.
+/// Two listen rows on the same listener, the tokens of both from the
+/// environment.
 fn sharing_a_listener(dir: &Path) {
     let config = serde_json::json!({
         "listen": [{ "name": "public", "address": "127.0.0.1:0" }],
         "rows": [
-            { "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } },
+            { "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } },
             { "id": "phone", "name": "rutis-host/listen", "config": { "listener": "public" } }
         ]
     });
     write(dir, &[("rutis.json", &config.to_string())]);
 }
 
-/// With the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, the link
-/// row and the listen row would accept the same token on one listener, and a
+/// With the same value in RUTIS_TOKEN_MAIN and RUTIS_TOKEN_PHONE, the two
+/// listen rows would accept the same token on one listener, and a
 /// connection presenting it is refused as ambiguous: check (and run, which
 /// starts the same way) fails at once, naming both and the variables to
 /// change (#702).
@@ -852,7 +849,7 @@ async fn check_refuses_two_entries_accepting_one_token_on_a_listener() {
     assert_eq!(checked.stdout, "");
     assert_eq!(
         checked.stderr,
-        "rutis-host: listener public: link row main accepts RUTIS_TOKEN_MAIN and row \
+        "rutis-host: listener public: row main accepts RUTIS_TOKEN_MAIN and row \
          phone accepts RUTIS_TOKEN_PHONE, the same token, so a connection \
          presenting it cannot be told apart: give RUTIS_TOKEN_MAIN or RUTIS_TOKEN_PHONE \
          another value\n"
@@ -873,99 +870,6 @@ async fn check_passes_entries_with_tokens_of_their_own_on_a_listener() {
         &[
             ("RUTIS_TOKEN_MAIN", Path::new("main-token")),
             ("RUTIS_TOKEN_PHONE", Path::new("phone-token")),
-        ],
-    )
-    .await;
-    assert_eq!(checked.stderr, "");
-    assert_eq!(checked.status, 0);
-}
-
-/// Two listening link rows on different listeners (`mac` on `public`, `pi`
-/// on `private`); `pi` disabled when `disabled`.
-fn link_rows_on_two_listeners(dir: &Path, disabled: bool) {
-    let config = serde_json::json!({
-        "listen": [
-            { "name": "public", "address": "127.0.0.1:0" },
-            { "name": "private", "address": "127.0.0.1:0" }
-        ],
-        "rows": [
-            { "id": "mac", "name": "rutis-bridge/peer", "config": { "peer": "mac", "listen": "public" } },
-            { "id": "pi", "name": "rutis-bridge/peer", "disabled": disabled, "config": { "peer": "pi", "listen": "private" } }
-        ]
-    });
-    write(dir, &[("rutis.json", &config.to_string())]);
-}
-
-/// Listening link rows share the host's one identity, which answers a
-/// token with one of them: on different listeners, with the same value in
-/// RUTIS_TOKEN_MAC and RUTIS_TOKEN_PI, one would never connect. check fails
-/// at once, naming both rows, both listeners and the variables to change
-/// (#726).
-/// risk: A6
-/// guarantee: host/credentials-from-env
-#[tokio::test(flavor = "multi_thread")]
-async fn check_refuses_link_rows_accepting_one_token_on_different_listeners() {
-    let dir = tempfile::tempdir().unwrap();
-    link_rows_on_two_listeners(dir.path(), false);
-    let checked = check(
-        dir.path(),
-        &["rutis.json"],
-        &[
-            ("RUTIS_TOKEN_MAC", Path::new("shared")),
-            ("RUTIS_TOKEN_PI", Path::new("shared")),
-        ],
-    )
-    .await;
-    assert_eq!(checked.stdout, "");
-    assert_eq!(
-        checked.stderr,
-        "rutis-host: listeners public and private: link row mac accepts RUTIS_TOKEN_MAC \
-         and link row pi accepts RUTIS_TOKEN_PI, the same token, so a connection \
-         presenting it cannot be told apart: give RUTIS_TOKEN_MAC or RUTIS_TOKEN_PI \
-         another value\n"
-    );
-    assert_eq!(checked.status, 1);
-}
-
-/// A disabled row counts: enabling it would clash (#726).
-/// risk: A6
-/// guarantee: host/credentials-from-env
-#[tokio::test(flavor = "multi_thread")]
-async fn check_refuses_a_disabled_link_row_accepting_the_same_token() {
-    let dir = tempfile::tempdir().unwrap();
-    link_rows_on_two_listeners(dir.path(), true);
-    let checked = check(
-        dir.path(),
-        &["rutis.json"],
-        &[
-            ("RUTIS_TOKEN_MAC", Path::new("shared")),
-            ("RUTIS_TOKEN_PI", Path::new("shared")),
-        ],
-    )
-    .await;
-    assert_eq!(
-        checked.stderr,
-        "rutis-host: listeners public and private: link row mac accepts RUTIS_TOKEN_MAC \
-         and link row pi (disabled) accepts RUTIS_TOKEN_PI, the same token, so a \
-         connection presenting it cannot be told apart: give RUTIS_TOKEN_MAC or \
-         RUTIS_TOKEN_PI another value\n"
-    );
-    assert_eq!(checked.status, 1);
-}
-
-/// Each link row with a token of its own: check passes (#726).
-/// risk: A6
-/// guarantee: host/credentials-from-env
-#[tokio::test(flavor = "multi_thread")]
-async fn check_passes_link_rows_with_tokens_of_their_own_on_different_listeners() {
-    let dir = tempfile::tempdir().unwrap();
-    link_rows_on_two_listeners(dir.path(), false);
-    let checked = check(
-        dir.path(),
-        &["rutis.json"],
-        &[
-            ("RUTIS_TOKEN_MAC", Path::new("mac-token")),
-            ("RUTIS_TOKEN_PI", Path::new("pi-token")),
         ],
     )
     .await;

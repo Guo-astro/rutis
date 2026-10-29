@@ -1,0 +1,33 @@
+public final class arcships/rutis/testing/Loaded : arcships/rutis/advanced/Emitter, java/lang/AutoCloseable {
+	public fun bail (Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;
+	public fun close ()V
+	public fun emit (Ljava/lang/String;[Ljava/lang/Object;)V
+	public final fun filter (Lkotlin/jvm/functions/Function2;)Larcships/rutis/advanced/Emitter;
+	public final fun getRow ()Ljava/lang/String;
+	public final fun load (Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;)Larcships/rutis/testing/Loaded;
+	public static synthetic fun load$default (Larcships/rutis/testing/Loaded;Ljava/lang/Object;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Larcships/rutis/testing/Loaded;
+	public final fun on (Ljava/lang/String;ZZLkotlin/jvm/functions/Function2;)Lkotlin/jvm/functions/Function0;
+	public static synthetic fun on$default (Larcships/rutis/testing/Loaded;Ljava/lang/String;ZZLkotlin/jvm/functions/Function2;ILjava/lang/Object;)Lkotlin/jvm/functions/Function0;
+	public fun parallel (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun reported ()Ljava/util/List;
+	public fun serial (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun service (Ljava/lang/String;)Larcships/rutis/testing/TestService;
+	public final fun unload ()V
+	public final fun update (Ljava/lang/Object;)V
+	public fun waterfall (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class arcships/rutis/testing/RutisTest {
+	public static final field INSTANCE Larcships/rutis/testing/RutisTest;
+	public final fun load (Larcships/rutis/Plugin;Ljava/lang/Object;Ljava/util/Map;Ljava/lang/String;Ljava/util/Map;)Larcships/rutis/testing/Loaded;
+	public static synthetic fun load$default (Larcships/rutis/testing/RutisTest;Larcships/rutis/Plugin;Ljava/lang/Object;Ljava/util/Map;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Larcships/rutis/testing/Loaded;
+}
+
+public final class arcships/rutis/testing/TestService {
+	public final fun bind (Ljava/lang/Class;)Ljava/lang/Object;
+	public final fun call (Ljava/lang/String;[Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getMethods ()Ljava/util/Map;
+	public final fun getName ()Ljava/lang/String;
+	public final fun raw (Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+

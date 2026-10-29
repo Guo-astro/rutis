@@ -11,7 +11,7 @@ TLC explores every interleaving of a remote runtime's lease, takeover by a newer
 
 | Part of the model | Design | Implementation |
 | --- | --- | --- |
-| Controller link: dial, back off and reconnect, wait by failure category, stop | [remote plugins](../../docs/design-remote-plugins-2026-10-03.en.md) §3.2; [dial-out](../../docs/design-remote-runtime-dial-2026-10-14.en.md) §6 | `crates/rutis-bridge/src/link.rs`: `dialing`, `start` |
+| Controller (a `rutis-host/dial` row): dial, back off and reconnect, wait by failure category, stop | [remote plugins](../../docs/design-remote-plugins-2026-10-03.en.md) §3.2; [dial-out](../../docs/design-remote-runtime-dial-2026-10-14.en.md) §6; [remote session](../../docs/design-remote-session-2026-10-28.en.md) §4.1 | `crates/rutis-host/src/connect/dial.rs`: dial, handshake, mount the session, wait for it to unload, back off |
 | The runtime's lease and takeover order (authenticate → close the old session → clean the old lease → answer the new hello) | remote plugins §4.4 | `python/rutis/rutis/__main__.py` `serve`; `go/rutis/internal/runtime/listen.go` `listen`; `node/rutis-runtime/src/serve.mjs` `serve` (Bun's `src/remote.ts` alike) |
 | listen: handshakes side by side, replacement by the same id (old session fully unloaded → old channel closed with 4002 → new session installed) | [remote session](../../docs/design-remote-session-2026-10-28.en.md) §4.2 | `crates/rutis-host/src/connect/listen.rs`: `Listening::run`, `Replaceable` |
 | The dialer's reconnection rules | dial-out §6 | `python/rutis/rutis/dialing.py` `keep_dialing` (Go, Node and Bun each have the same rules) |
@@ -22,8 +22,8 @@ Common to both: each direction of a connection is delivered in order, with any d
 
 ### `RemoteLease.tla`
 
-- **Participants**: controllers `c1`, `c2` (rutis dialing links) and one listening remote runtime. Connection `<<c, n>>` is `c`'s n-th dial.
-- **Controller** (`link.rs` `dialing`): once a dial succeeds the upgrade is done and the runtime's listener queues the connection; the link waits for the runtime's hello (`start`), then provides the peer and is `Ready`; the loader then loads rows through the peer (`load` frames). A session that ends (replaced, 4002, or ended by the runtime) is retryable: back off, reconnect. Stopping (dispose) aborts the task: the session closes, the retry is cancelled. Environment: failed dials, handshake timeout or lost connection (`Lose`), stop.
+- **Participants**: controllers `c1`, `c2` (rutis `rutis-host/dial` rows) and one listening remote runtime. Connection `<<c, n>>` is `c`'s n-th dial.
+- **Controller** (`connect/dial.rs`): once a dial succeeds the upgrade is done and the runtime's listener queues the connection; the row waits for the runtime's hello (the handshake), then mounts the session and is `Ready`; the loader then loads rows through the session (`load` frames). A session that ends (replaced, 4002, or ended by the runtime) is retryable: back off, reconnect. Stopping (dispose) aborts the task: the session closes, the retry is cancelled. Environment: failed dials, handshake timeout or lost connection (`Lose`), stop.
 - **Runtime** (Python `serve` and the others): one controller at a time. Taking the next connection while a session runs is three steps (§4.4): ① close the old session's channel (4002) and read none of its frames; ② clean the old lease (every row unloaded); ③ start the new session and answer its hello. When a session's far end closes, its lease is cleaned.
 - **Reconnects**: each controller dials at most 4 times (3 reconnects).
 
@@ -115,4 +115,4 @@ TLC_WORKERS=4 TLA2TOOLS=/tmp/tla2tools.jar specs/remote-lease/run.sh       # lim
 
 ## Maintenance
 
-When remote plugins §3.2, §4.4, dial-out §6 or remote session §4.2 change, or `link.rs` (`dialing`, `listening`, `start`), `listen.rs` (`Listening::run`), a language's listening takeover order or the dialers' reconnection rules change, update this model and `expected.txt` with them (standard Q11.2.3).
+When remote plugins §3.2, §4.4, dial-out §6 or remote session §4.2 change, or `connect/dial.rs`, `listen.rs` (`Listening::run`), a language's listening takeover order or the dialers' reconnection rules change, update this model and `expected.txt` with them (standard Q11.2.3).

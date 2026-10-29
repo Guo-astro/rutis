@@ -9,15 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rutis_bridge::channel::Channel;
-use rutis_bridge::channel::{ConnectError, PeerId};
+use rutis_bridge::channel::ConnectError;
+use rutis_bridge::websocket::Credential;
 use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig, ServerTls, Trust};
-use rutis_bridge::{Credential, Registered, Registration, Registrations, StaticIdentity};
 use rutis_test_support::within;
 use tokio::io::AsyncBufReadExt;
-
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
 
 fn node_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node/rutis-runtime")
@@ -135,31 +131,20 @@ async fn python_listen(url: &str, env: &[(&str, &str)]) -> (tokio::process::Chil
     (child, address)
 }
 
-/// A loopback listener `public` as `config` says, accepting `node` with
-/// token `good` speaking `protocol`.
-fn listen(config: ListenerConfig, protocol: &str) -> (Listener, Registered) {
-    let registrations = Registrations::new();
-    let listener = websocket::listen(
-        &config,
-        &Limits::default(),
-        websocket::admit_registered(registrations.clone(), "public"),
-    )
-    .unwrap();
-    let registered = registrations
-        .register(
-            &id("main"),
-            Registration {
-                listener: "public".into(),
-                peer: id("node"),
-                identity: Arc::new(
-                    StaticIdentity::new(id("main")).accept_token("good", id("node")),
-                ),
-                protocol: protocol.into(),
-                deliver: Box::new(|_| {}),
-            },
-        )
-        .unwrap();
-    (listener, registered)
+/// A loopback listener `public` as `config` says, accepting token `good`
+/// speaking `protocol`.
+fn listen(config: ListenerConfig, protocol: &str) -> Listener {
+    let protocol = protocol.to_owned();
+    let admit: websocket::Admit = Arc::new(move |upgrade: websocket::Upgrade<'_>| {
+        if upgrade.bearer != Some("good") {
+            return Err(websocket::Refused::Forbidden("not accepted here".into()));
+        }
+        Ok(websocket::Admitted {
+            protocol: protocol.clone(),
+            deliver: Box::new(|_| {}),
+        })
+    });
+    websocket::listen(&config, &Limits::default(), admit).unwrap()
 }
 
 /// Dial `url` offering `protocol`, with bearer `token`, trusting `trust`.
@@ -183,7 +168,7 @@ async fn dial(
 #[tokio::test(flavor = "multi_thread")]
 async fn node_dialing_rust_is_refused_by_category() {
     let (ca, certificate, key) = pki();
-    let (plain, _r) = listen(
+    let plain = listen(
         ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()),
         "rutis.4",
     );
@@ -203,7 +188,7 @@ async fn node_dialing_rust_is_refused_by_category() {
     );
 
     // wss: verified against the CA, refused without it.
-    let (secure, _s) = listen(
+    let secure = listen(
         ListenerConfig::new("public", "127.0.0.1:0".parse().unwrap()).tls(ServerTls {
             certificate_pem: certificate.into_bytes(),
             key_pem: key.into_bytes(),

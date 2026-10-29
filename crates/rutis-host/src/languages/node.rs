@@ -3,12 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use rutis_bridge::runtime::{Launcher, LocalRuntime, RuntimeHandle};
-use rutis_loader::runtime::RuntimeResolver;
+use rutis_bridge::runtime::Launcher;
 use serde_json::{json, Value};
 
 use super::{id_of, package_entry, Language};
 use crate::config::{file_url, NodeRuntime, Restart, Runtimes};
+use crate::connect::SpawnPlugin;
 use crate::host::Error;
 
 pub struct Node;
@@ -75,12 +75,7 @@ impl Language for Node {
         }
     }
 
-    /// npm names and `file:` URLs.
-    fn rows(&self, runtime: RuntimeHandle) -> RuntimeResolver {
-        RuntimeResolver::node(runtime)
-    }
-
-    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<LocalRuntime, Error>> {
+    fn runtime(&self, runtimes: &Runtimes) -> Option<Result<SpawnPlugin, Error>> {
         runtimes
             .node
             .as_ref()
@@ -152,7 +147,7 @@ pub(crate) fn runtime_package(configured: Option<&Path>, project: &Path) -> Opti
 /// The Node runtime of `node.project`, with the `@arcships/rutis-runtime`
 /// package installed there (or given, or next to this program); with
 /// `debug`, its inspector on [`INSPECT`].
-fn runtime(node: &NodeRuntime, debug: bool) -> Result<LocalRuntime, Error> {
+fn runtime(node: &NodeRuntime, debug: bool) -> Result<SpawnPlugin, Error> {
     let anchor = node.project.join("package.json");
     if !anchor.exists() {
         return Err(format!(
@@ -172,7 +167,7 @@ fn runtime(node: &NodeRuntime, debug: bool) -> Result<LocalRuntime, Error> {
             .args
             .insert(0, format!("--inspect={INSPECT}").into());
     }
-    Ok(LocalRuntime::launcher("node", launcher, anchor))
+    Ok(SpawnPlugin::new("node", launcher, anchor))
 }
 
 const TEMPLATE: &[(&str, &str)] = &[

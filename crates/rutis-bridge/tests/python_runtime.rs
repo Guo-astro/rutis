@@ -14,6 +14,8 @@ use rutis_bridge::session::{settle, Reply, Value as RpcValue};
 use rutis_test_support::until;
 use serde_json::{json, Value};
 
+mod common;
+
 const WEATHER: &str = r#"
 import asyncio
 
@@ -177,9 +179,9 @@ async fn a_runtime_without_the_row_contract_fails_to_start() {
              runpy.run_module('rutis', run_name='__main__')",
         )
         .env("PYTHONPATH", path);
-    let runtime = rutis_bridge::runtime::LocalRuntime::launcher("old", launcher, dir.path());
+    let runtime = common::runtime::TestRuntime::new("old", launcher, dir.path());
     let handle = runtime.handle();
-    let ctx = Ctx::root().unwrap();
+    let ctx = common::runtime::root();
     let view = ctx.plugin(runtime);
     let _ = (&view).await;
     assert_eq!(view.state().state, rutis::host::FiberState::Failed);

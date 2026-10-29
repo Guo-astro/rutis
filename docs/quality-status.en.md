@@ -282,14 +282,14 @@ Each scenario first says what it is, which parts it goes through and under what 
 | B6 | Missing runtime package, interpreter not found, port in use, bad certificate file give insufficient errors | Diagnosability | Medium | High | P1 | G (a snapshot per error) | PR | Yes (`errors.rs`, #217) |
 | B7 | Credentials appear in logs, errors, status output, traces | Security | High | Low | P1 | Common E assertion: token values absent from all captured output | PR | Yes (E2E residue checks, #221, #277; S5 #322) |
 | B8 | A listener without TLS binds to a non-loopback address | Security | High | Low | P1 | U | PR | To check |
-| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | Partly: the link state and listening address lines are tested (`links.rs`, #336) |
+| B9 | Status output format changes break operators' scripts | Compatibility | Low | Medium | P2 | G | PR | Partly: the connection rows' state lines and the listening address line are tested (`rutis-host/src/connect/dial.rs`, `remote_runtimes.rs`, #336) |
 | B10 | When the process manager restarts the host, the previous socket file or port is not released and the new process fails to start | Residue | Medium | Medium | P1 | E (restart right after kill -9) | PR | Partly: restarting with the same configuration right after a Ctrl-C stop, binding the listener's port again (S3, #317); restarting right after the host is `kill -9`ed is not verified (the residue checks only confirm the ports can be bound again) |
 
 #### Scenario C: composing languages
 
 **What**: in one host, Rust, TS and Python plugins provide and use each other's services. Design philosophy §2: "multilanguage plugins are not an add-on; they are the reason it exists".
 
-**Through**: core gating, loader rows, two-phase readiness (`RuntimeRows`), runtime processes, session forwarding, service projection.
+**Through**: core gating, loader rows, two-phase readiness (`SessionRows`), runtime processes, session forwarding, service projection.
 
 **Conditions**: several runtimes cold-starting together; runtime processes may crash; synchronous and asynchronous calls interleave; three platforms (Windows over loopback TCP).
 
@@ -342,7 +342,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | E1 | When the network drops, calls in flight report success, or are retried automatically so side effects run twice | Faults | High | Medium | P0 | FI (`fault::drop_and_close` after frame N, the far end counts side effects) | PR | Yes (`fault_links.rs` #285; between two processes in S5, #322) |
 | E2 | A half-open connection is not found within 30 s | Faults | Medium | Medium | P1 | FI (`half_open` with a paused clock) | PR | Yes |
-| E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: a unit test in `link.rs` covers the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset); the link's actual retry timing, the reset after 60 s stable and the 30 s after rejected credentials are untested |
+| E3 | Reconnection backoff differs from the docs (from 0.5 s, capped at 30 s, ±20%, reset after 60 s stable; 30 s after rejected credentials; stop on incompatibility) | Correctness | Medium | Medium | P1 | U (paused clock, exact intervals asserted) | PR | Partly: the tests of `rutis-host/src/connect/dial.rs` cover the backoff sequence (from 0.5 s, 30 s cap, ±20%, reset), the reset after 60 s stable and the 30 s after rejected credentials (paused clock) |
 | E4 | During takeover of a remote runtime, old and new leases coexist; late instructions of the old session act on the new lease | Correctness | High | Low | P1 | TLA (design); K (`leases.rs`) | Design, PR | Yes: TLA+ (`specs/remote-lease/`, #210) checks at most one lease during takeover, at most one instance per id at an access point, and that an old session's commands never act on a new lease; K (`leases.rs`) |
 | E5 | Connections still possible after credentials are revoked; a registration revoked mid-handshake still lets the old handshake hand over | Security | High | Low | P1 | K (`link.rs`); TLA | PR | Partly: TLA+ (#210) checks that an old handshake is not handed over after its registration is revoked; the identity layer's hook for revoking while running (#273) was removed in 0.19 (no production caller): existing connections are disconnected by stopping that row, changing a token takes a restart of rutis-host, and S5 has no such step |
 | E6 | TLS check holes: still connects with an expired certificate, wrong CA, hostname mismatch | Security | High | Medium | P0 | U (three negative cases, Rust and Python each) | PR | Yes (#297; S5 step 6, #322) |
@@ -358,7 +358,7 @@ Each scenario first says what it is, which parts it goes through and under what 
 
 #### Scenario F: existing Cordis plugins and Cordis applications
 
-**What**: three ways — Cordis plugins as rutis-loader rows; Cordis plugins mounted in a Rust application with Rust types generated at build time; existing Cordis applications joined as nodes with `@arcships/rutis-runtime/bridge`.
+**What**: two ways — Cordis plugins as rutis-loader rows; Cordis plugins mounted in a Rust application with Rust types generated at build time. Existing Cordis applications joined as nodes (`@arcships/rutis-runtime/bridge`) were removed in 0.19: a Cordis application runs its plugins in the Node runtime.
 
 **Through**: Node runtime, Cordis 4.0.4, the generator (`generate.mjs`), service projection, event forwarding, boundary rules.
 

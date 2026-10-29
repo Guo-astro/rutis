@@ -11,6 +11,8 @@ public macro RutisService() = #externalMacro(module: "RutisMacros", type: "Servi
 public macro RutisClient() = #externalMacro(module: "RutisMacros", type: "ClientMacro")
 
 /// On a configuration type: generates its JSON Schema from its stored
-/// properties (`///` comments become descriptions).
-@attached(extension, conformances: RutisConfigurable, names: named(rutisSchema))
+/// properties (`///` comments become descriptions) and, on a struct, its
+/// decoding: a missing key takes the literal initial value, and a problem
+/// names its key.
+@attached(extension, conformances: RutisConfigurable, names: named(rutisSchema), named(init(from:)))
 public macro RutisConfig() = #externalMacro(module: "RutisMacros", type: "ConfigMacro")

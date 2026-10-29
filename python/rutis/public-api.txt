@@ -57,4 +57,4 @@ class Loaded(object)(host: _Host, row: str, entry: str, plugin: sdk.Plugin) -> N
 class PluginTestError(AssertionError)(…)
 class Reported(tuple)(line: str)
     line: str
-def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, bus: Bus | None = None, row: str | None = None) -> AsyncIterator[Loaded]
+def load(plugin: sdk.Plugin | ModuleType, *, config: Any = None, services: dict | None = None, bus: Bus | None = None, id: str | None = None, isolate: dict | None = None) -> AsyncIterator[Loaded]

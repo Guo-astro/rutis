@@ -1,7 +1,7 @@
 {
   "name": "@arcships/rutis-runtime",
   "version": "0.18.0",
-  "description": "The Node runtime of rutis: runs JavaScript and TypeScript plugins (and Cordis plugins) for a rutis host, and links Cordis applications to rutis nodes",
+  "description": "The Node runtime of rutis: runs JavaScript and TypeScript plugins (and Cordis plugins) for a rutis host",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,7 +22,6 @@
   ],
   "type": "module",
   "exports": {
-    "./bridge": "./src/bridge/index.mjs",
     "./package.json": "./package.json"
   },
   "files": [

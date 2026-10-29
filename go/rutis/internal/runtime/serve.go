@@ -222,7 +222,10 @@ type session struct {
 }
 
 func startSession(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definition) (*session, error) {
-	rt := newRuntime(defs)
+	return startRuntime(channel, endpoint, newRuntime(defs))
+}
+
+func startRuntime(channel peer.Channel, endpoint *peer.Endpoint, rt *runtimeState) (*session, error) {
 	p, err := peer.New(channel, peer.Options{
 		Dispatch:       rt.dispatch,
 		Arrive:         rt.arrive,
@@ -265,7 +268,11 @@ func (s *session) end(reason error) error {
 // serveChannel serves one session, then unloads its rows; Serve exits the
 // process after, whatever its plugins left running.
 func serveChannel(channel peer.Channel, endpoint *peer.Endpoint, defs []*Definition) error {
-	s, err := startSession(channel, endpoint, defs)
+	return serveRuntime(channel, endpoint, newRuntime(defs))
+}
+
+func serveRuntime(channel peer.Channel, endpoint *peer.Endpoint, rt *runtimeState) error {
+	s, err := startRuntime(channel, endpoint, rt)
 	if err != nil {
 		// Refused during the handshake Start already finished.
 		if refused := refusal(err); refused != nil {

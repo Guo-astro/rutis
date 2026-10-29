@@ -143,7 +143,7 @@ fn main_host(s: &Scenario, dial: &str, token: &str) -> (Host, Probe) {
             "rows": [
                 {
                     "id": "gpu",
-                    "name": "rutis-bridge/peer",
+                    "name": "rutis-host/dial",
                     "config": { "address": dial },
                 },
                 {

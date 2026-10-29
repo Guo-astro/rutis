@@ -1763,14 +1763,15 @@ fn log_holds(
             let Some(mut want) = world.description(row) else {
                 continue;
             };
-            // Seen from the other side of the node link (§9): the entry is
-            // imported, named by the peer it came from, at the link's
-            // scope (the root).
+            // Seen from the other side of the session with the node (§9):
+            // the entry is imported, named by the id its kernel greeted
+            // with (the host's is `main`), at the session's scope (the
+            // root).
             let on_node = want["node"] == json!("node");
             if (viewer == Some(Location::Node)) != on_node {
                 want["node"] = match on_node {
                     true => json!("node"),
-                    false => json!("host"),
+                    false => json!("main"),
                 };
                 want["scope"] = json!([]);
             } else if on_node {
@@ -2114,13 +2115,17 @@ pub fn problems(expected: &Expected) -> Vec<String> {
 }
 
 /// The placement the testing tools run: every participant at X, in
-/// `language`. `None` when the case is not for the tools, or `only` /
-/// `except` rule that out.
+/// `language`. `None` when the case is not for the tools, places a row in
+/// a scope (the tools load rows at the root only: platform cleanup design
+/// §7.5), or `only` / `except` rule that out.
 pub fn tool_combo(case: &Case, language: &str) -> Option<Combo> {
     if !case.tool {
         return None;
     }
     let places = case.places().ok()?;
+    if places.values().any(|(_, scope)| scope != "root") {
+        return None;
+    }
     let combo = Combo {
         x: language.to_owned(),
         y: language.to_owned(),
