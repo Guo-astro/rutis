@@ -5,8 +5,10 @@
 //! - The session: the runtime process, started as every local runtime is
 //!   (`pipe::spawn`: `<command…> <channel> --id test <project>`, its channel
 //!   fd 3, or a loopback address with a one-time token on Windows and with
-//!   `RUTIS_LOCAL_HANDOVER=loopback`). Its connection row is [`ROW`]: the
-//!   rows `test:<plugin>` run `<plugin>` there (`run`).
+//!   `RUTIS_LOCAL_HANDOVER=loopback`); or, with `--channel`, a runtime
+//!   the test tool runs itself, on the channel it handed this process the
+//!   same way (`pipe::given`). Its connection row is [`ROW`]: the rows
+//!   `test:<plugin>` run `<plugin>` there (`run`).
 //! - The plugin `rutis-host/test` uses the loader's public API alone and
 //!   provides the service `rutis-host/test` ([`Harness`]): `load(name,
 //!   config)`, `update(id, config)`, `unload(id)`, `reported(id)`.
@@ -47,7 +49,7 @@ pub enum Session {
 /// What `rutis-host test` and its plugin share.
 #[derive(Clone)]
 pub struct Test {
-    spawn: Arc<Mutex<Option<Spawn>>>,
+    start: Arc<Mutex<Option<Start>>>,
     session: watch::Sender<Session>,
     state: Arc<State>,
 }
@@ -60,6 +62,14 @@ struct State {
     reported: Mutex<Vec<(String, String)>>,
 }
 
+/// Where the runtime's session comes from.
+enum Start {
+    /// A process this host starts.
+    Spawn(Spawn),
+    /// The channel this process was given (`fd:<n>`, `tcp:<host>:<port>`).
+    Given(String),
+}
+
 impl Test {
     /// With the runtime `command` (its program, then its arguments) for
     /// the plugins in `project`: started as `<command…> <channel> --id test
@@ -70,8 +80,20 @@ impl Test {
         spawn.trailing = vec!["--id".into(), ROW.into(), project.into()];
         spawn.stdout = Stdio::Lines;
         spawn.stderr = Stdio::Lines;
+        Self::starting(Start::Spawn(spawn))
+    }
+
+    /// With a runtime the test tool runs itself, at the far end of
+    /// `channel`, which it handed this process as a process it starts gets
+    /// one (`fd:<n>`, or `tcp:<host>:<port>` with the token in
+    /// `RUTIS_CHANNEL_TOKEN`). Its runtime greets with the id `test`.
+    pub fn given(channel: &str) -> Self {
+        Self::starting(Start::Given(channel.to_owned()))
+    }
+
+    fn starting(start: Start) -> Self {
         Self {
-            spawn: Arc::new(Mutex::new(Some(spawn))),
+            start: Arc::new(Mutex::new(Some(start))),
             session: watch::Sender::new(Session::Starting),
             state: Arc::default(),
         }
@@ -166,7 +188,7 @@ impl DynPlugin for TestPlugin {
                 state: self.0.state.clone(),
             })?;
             // Started once: the session's end ends the host.
-            let Some(spawn) = self.0.spawn.lock().unwrap().take() else {
+            let Some(start) = self.0.start.lock().unwrap().take() else {
                 return Ok(Effect::Done);
             };
             let row = crate::connect::row_id(ctx, NAME)?;
@@ -177,7 +199,13 @@ impl DynPlugin for TestPlugin {
             }
             let (own, said) = (ctx.clone(), self.0.session.clone());
             let task = tokio::spawn(async move {
-                let ended = match rutis_bridge::pipe::spawn(&spawn, &Processes::default()).await {
+                let channel = match start {
+                    Start::Spawn(spawn) => {
+                        rutis_bridge::pipe::spawn(&spawn, &Processes::default()).await
+                    }
+                    Start::Given(channel) => rutis_bridge::pipe::given(&channel).await,
+                };
+                let ended = match channel {
                     Err(error) => Some(error.to_string()),
                     Ok(channel) => match session::handshake(&own, channel).await {
                         Err(failed) => Some(failed.reason),
