@@ -103,3 +103,29 @@ test('a rutis-host ended by SIGUSR1 ends the launcher', { skip: process.platform
   assert.deepEqual([code, signal], [128 + constants.signals.SIGUSR1, null])
   assert.doesNotMatch(seen.err, /Debugger listening/, seen.err)
 })
+
+// A test tool (Go, Swift, Kotlin) runs `rutis-host test <plugin> --channel
+// fd:3` with its runtime's channel at descriptor 3: the launcher passes it
+// on at the same number, or rutis-host finds something else there.
+test('the launcher passes the descriptor of --channel fd:<n> on to rutis-host', { skip: process.platform === 'win32' && 'Unix descriptors' }, async () => {
+  const { cpSync, mkdirSync } = await import('node:fs')
+  const { spawn } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'rutis-host-'))
+  const launcher = join(dir, 'node_modules/@arcships/rutis-host/bin/rutis-host.mjs')
+  mkdirSync(join(dir, 'node_modules/@arcships/rutis-host/bin'), { recursive: true })
+  cpSync(new URL('../bin/rutis-host.mjs', import.meta.url), launcher)
+  const bin = join(dir, `node_modules/@arcships/rutis-host-${process.platform}-${process.arch}/bin`)
+  mkdirSync(bin, { recursive: true })
+  // The stand-in writes its arguments to descriptor 3.
+  writeFileSync(join(bin, 'rutis-host'), `#!${process.execPath}
+require('node:fs').writeSync(3, process.argv.slice(2).join(' '))
+`, { mode: 0o755 })
+  const host = spawn(process.execPath, [launcher, 'test', 'driver', '--channel', 'fd:3'], { stdio: ['ignore', 'ignore', 'pipe', 'pipe'] })
+  let handed = ''
+  host.stdio[3].on('data', chunk => { handed += chunk })
+  let err = ''
+  host.stderr.on('data', chunk => { err += chunk })
+  const [code] = await new Promise(resolve => host.on('close', (...end) => resolve(end)))
+  assert.equal(code, 0, err)
+  assert.equal(handed, 'test driver --channel fd:3')
+})

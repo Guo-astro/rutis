@@ -286,8 +286,7 @@ export default definePlugin({
 fn weather_test_ts(header: &str, equal: &str) -> String {
     format!(
         r#"{header}
-import {{ definePlugin }} from '@arcships/rutis'
-import {{ host, load }} from '@arcships/rutis/testing'
+import {{ load }} from '@arcships/rutis/testing'
 import plugin from '../src/index.ts'
 
 const llm = {{ async ask(question: string) {{ return question.includes('Oslo') ? 'sunny' : 'rain' }} }}
@@ -300,14 +299,13 @@ test('today asks the llm, for the configured city by default', async () => {{
 }})
 
 test('each call emits weather/asked', async () => {{
+  const t = await load(plugin, {{ config: {{ city: 'Bergen' }}, services: {{ llm }} }})
   const asked: string[] = []
-  const h = host({{ services: {{ llm }} }})
-  const listener = await h.load(definePlugin({{ apply(ctx) {{ ctx.on('weather/asked', (city: string) => {{ asked.push(city) }}) }} }}))
-  const t = await h.load(plugin, {{ config: {{ city: 'Bergen' }} }})
+  t.on('weather/asked', (city: string) => {{ asked.push(city) }})
   await t.service('weather').today()
-  {eq_asked}
+  // Events arrive through the host, a little after today returns.
   await t.unload()
-  await listener.unload()
+  {eq_asked}
 }})
 "#,
         eq_default = equal
