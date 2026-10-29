@@ -629,7 +629,6 @@ async fn check_passes_what_cordis_rows_may_provide_at_runtime() {
 /// risk: A6
 /// guarantee: host/check
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "SessionResolver resolves `<row>:<plugin>` only for rows already loaded: check and add of new rows fail (raised with S3)"]
 async fn check_passes_a_service_that_may_come_from_a_connection_row() {
     let dir = tempfile::tempdir().unwrap();
     let configuration = serde_json::json!({
@@ -662,7 +661,7 @@ async fn check_passes_a_service_that_may_come_from_a_connection_row() {
             "chat (file://<dir>/chat.mjs): ok",
             "  inject: [\"embeddings\"]",
             "  provides: {}",
-            "  embeddings: not known to be provided; it may come from embedder (gpu is not connected)",
+            "  embeddings: not known to be provided; it may come from gpu (its plugin does not say), embedder (gpu is not connected)",
             "gpu (rutis-host/dial): ok",
             "embedder (gpu:embedder): ok",
             "  config not checked: its schema is known only when it runs",
