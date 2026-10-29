@@ -739,6 +739,13 @@ impl Sources {
                         return Ok(Some(found));
                     }
                 }
+                // `use rutis::*;`, `use rutis::host::*;`: rutis is not
+                // read, but the names of it the generator knows are.
+                Some(Res::External(path)) => {
+                    if let Some(found) = rutis_glob(&path, name) {
+                        return Ok(Some(found));
+                    }
+                }
                 // An enum's variants, or a crate not read: nothing to type.
                 _ => {}
             }
@@ -778,6 +785,24 @@ impl Sources {
 
     pub(super) fn item(&self, module: usize, index: usize) -> &syn::Item {
         &self.modules[module].items[index]
+    }
+
+    /// The name `module` has in its parent; a crate's root module, its
+    /// crate's name.
+    pub(super) fn module_name(&self, module: usize) -> String {
+        let Some(parent) = self.modules[module].parent else {
+            return self.packages[self.modules[module].package].name.clone();
+        };
+        self.modules[parent]
+            .names
+            .iter()
+            .find(|(_, entries)| {
+                entries
+                    .iter()
+                    .any(|entry| matches!(entry, Name::Module(child) if *child == module))
+            })
+            .map(|(name, _)| name.clone())
+            .unwrap_or_default()
     }
 
     pub(super) fn package_of(&self, module: usize) -> usize {
@@ -873,6 +898,27 @@ fn flatten(
 }
 
 /// The standard prelude's types, and the primitive types.
+/// What `name` is when a glob opens the rutis module `path` (`rutis`,
+/// `rutis::host`): the public names of it the generator knows. rutis's
+/// source is not read, so its other names stay unknown, as they are when
+/// imported by name.
+fn rutis_glob(path: &[String], name: &str) -> Option<Res> {
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let known: &[&str] = match path.as_slice() {
+        ["rutis"] => &["Error", "Result", "Ctx", "Definition", "host"],
+        ["rutis", "host"] => &["BoxFuture", "ErrorKind"],
+        _ => return None,
+    };
+    known.contains(&name).then(|| {
+        Res::External(
+            path.iter()
+                .map(|segment| (*segment).to_owned())
+                .chain([name.to_owned()])
+                .collect(),
+        )
+    })
+}
+
 fn prelude(name: &str) -> Option<Res> {
     const PRIMITIVES: [&str; 17] = [
         "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32",

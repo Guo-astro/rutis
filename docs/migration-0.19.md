@@ -192,6 +192,7 @@ Kotlin 另有两点：
 | `LocalRuntime::call_limit`、`kill_on_timeout`、`allowed_services`，错误码 `timeout` | 调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）；超时后插件仍卡住时，宿主用 `processes().kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `FiberView::restart()`；能用哪些服务由宿主自己决定 |
 | `Loader::set_overlay`、`overlays()`、`LoaderChanged::Overlay` | 删；要覆盖一行就在自己的层里写（`reconcile` 的层列表） |
 | 线上错误名 `CordisError`、生成类型 `CordisErrorThrown` | `Error`、`ErrorThrown` |
+| 生成类型 `ErrorThrown`，指 rutis 以外、名叫 `Error` 的错误类型时（`io::Error`、`anyhow::Error` 等） | `<模块名>ErrorThrown`（`IoErrorThrown`、`AnyhowErrorThrown`）：`ErrorThrown` 只留给 rutis 自己的错误；抛出时的 `name` 不变，仍是 `Error`（#771 X4） |
 | `ServiceCatalog::share_by_name()`、`share_registered_only()` | 删掉这一行（默认按名字共享） |
 | `Loader::waiting_for(&entry)` | `Loader::waits(&entry)`（没标注的 Rust 服务的说明在 `WaitReason::Explained`） |
 | `Loader::locate(plugin)` | `Loader::row(instance)` |

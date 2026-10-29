@@ -1928,13 +1928,54 @@ impl Generator<'_> {
             }
             _ => (ident.clone(), format!("{ident:?}"), "undefined".to_owned()),
         };
-        let thrown_name = format!("{}Thrown", if string { "String" } else { &ident });
-        let declaration = format!(
-            "/** What a method returning `Err({ident})` throws. */\nexport type {thrown_name} = RustError<{name:?}, {codes}, {data}>\n"
-        );
+        // Its module, to tell error types of one name apart: `io::Error` is
+        // declared as `IoErrorThrown`, `notes::Error` as `NotesErrorThrown`.
+        // The name it is thrown with (`name`) stays the type's own.
+        let module = match &res {
+            Some(Res::External(found)) if found.len() >= 2 => Some(found[found.len() - 2].clone()),
+            Some(Res::Item { module, .. }) => Some(self.sources.module_name(*module)),
+            _ => None,
+        }
+        .filter(|module| !module.is_empty());
+        let declare = |shown: &str, thrown_name: &str| {
+            format!(
+                "/** What a method returning `Err({shown})` throws. */\nexport type {thrown_name} = RustError<{name:?}, {codes}, {data}>\n"
+            )
+        };
+        let qualified = |module: &str| {
+            (
+                format!("{module}::{ident}"),
+                format!("{}{ident}Thrown", pascal(module)),
+            )
+        };
+        let rutis = matches!(&res, Some(Res::External(found)) if rutis_error(found));
+        let (mut shown, mut thrown_name) = match &module {
+            // `ErrorThrown` is rutis's own error, thrown as `Error`: another
+            // type named `Error` is declared by its module.
+            Some(module) if !string && !rutis && ident == "Error" => qualified(module),
+            _ => (
+                ident.clone(),
+                format!("{}Thrown", if string { "String" } else { &ident }),
+            ),
+        };
+        let mut declaration = declare(&shown, &thrown_name);
+        if self
+            .thrown
+            .get(&thrown_name)
+            .is_some_and(|known| known != &declaration)
+        {
+            // Another type of this name: this one is declared by its module.
+            match module.as_deref().map(qualified) {
+                Some((other_shown, other)) if other != thrown_name => {
+                    (shown, thrown_name) = (other_shown, other);
+                    declaration = declare(&shown, &thrown_name);
+                }
+                _ => return Err(format!("two error types are named {ident}")),
+            }
+        }
         match self.thrown.get(&thrown_name) {
             Some(known) if known != &declaration => {
-                return Err(format!("two error types are named {ident}"));
+                return Err(format!("two error types are named {shown}"));
             }
             _ => {
                 self.thrown.insert(thrown_name.clone(), declaration);
@@ -1948,7 +1989,7 @@ impl Generator<'_> {
         self.py_thrown.insert(
             thrown_name.clone(),
             format!(
-                "#: What a method returning `Err({ident})` raises: a RustError named {name:?}, its\n\
+                "#: What a method returning `Err({shown})` raises: a RustError named {name:?}, its\n\
                  #: `code` one of {thrown_name}Code.\n\
                  {thrown_name} = RustError\n\
                  {thrown_name}Code: typing.TypeAlias = {}\n",
@@ -2820,11 +2861,12 @@ mod tests {
                 lib("dep", "dep_crate", dir.path().join("dep/lib.rs")),
                 lib("rutis", "rutis", dir.path().join("none.rs")),
                 lib("serde", "serde", dir.path().join("none.rs")),
+                lib("anyhow", "anyhow", dir.path().join("none.rs")),
                 lib("other", "other_crate", dir.path().join("other/lib.rs")),
             ],
             "resolve": { "root": "host", "nodes": [
                 { "id": "host", "deps": [{ "name": "dep_crate", "pkg": "dep" }, { "name": "rutis", "pkg": "rutis" }], "features": [] },
-                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }], "features": ["extra"] },
+                { "id": "dep", "deps": [{ "name": "rutis", "pkg": "rutis" }, { "name": "serde", "pkg": "serde" }, { "name": "anyhow", "pkg": "anyhow" }], "features": ["extra"] },
                 { "id": "other", "deps": [{ "name": "rutis", "pkg": "rutis" }], "features": [] },
             ] },
         });
@@ -3160,6 +3202,127 @@ impl Parts {
             "{ts}"
         );
         assert!(ts.contains(&format!("first(): Promise<{plugin}>")), "{ts}");
+    }
+
+    /// rutis's own error keeps `ErrorThrown`; another error type named
+    /// `Error` is declared by its module (`io::Error` is `IoErrorThrown`),
+    /// thrown with its own name, `Error`.
+    #[test]
+    fn error_types_named_error_are_told_apart_by_their_module() {
+        let source = r#"
+pub mod notes {
+    #[derive(Debug, thiserror::Error)]
+    #[error("no note")]
+    pub struct Error;
+}
+pub struct Jot;
+#[rutis::service]
+impl Jot {
+    pub fn add(&self, text: String) -> std::io::Result<()> { Ok(()) }
+    pub fn read(&self) -> Result<String, std::io::Error> { Ok(String::new()) }
+    pub fn register(&self) -> rutis::Result<()> { Ok(()) }
+    pub fn find(&self) -> Result<(), notes::Error> { Ok(()) }
+    pub fn format(&self) -> Result<(), std::fmt::Error> { Ok(()) }
+    pub fn sync(&self) -> anyhow::Result<()> { Ok(()) }
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+        let ts = &generated.typescript;
+        for (method, thrown) in [
+            ("add(text: string): Promise<void>", "IoErrorThrown"),
+            ("read(): Promise<string>", "IoErrorThrown"),
+            ("register(): Promise<void>", "ErrorThrown"),
+            ("find(): Promise<void>", "NotesErrorThrown"),
+            ("format(): Promise<void>", "FmtErrorThrown"),
+            ("sync(): Promise<void>", "AnyhowErrorThrown"),
+        ] {
+            assert!(
+                ts.contains(&format!("/** @throws {{{thrown}}} */\n  {method}")),
+                "{method} throws {thrown}: {ts}"
+            );
+        }
+        for declaration in [
+            "/** What a method returning `Err(Error)` throws. */\nexport type ErrorThrown = RustError<\"Error\", string, undefined>",
+            "/** What a method returning `Err(io::Error)` throws. */\nexport type IoErrorThrown = RustError<\"Error\", \"Error\", undefined>",
+            "/** What a method returning `Err(notes::Error)` throws. */\nexport type NotesErrorThrown = RustError<\"Error\", \"Error\", undefined>",
+            "/** What a method returning `Err(fmt::Error)` throws. */\nexport type FmtErrorThrown = RustError<\"Error\", \"Error\", undefined>",
+        ] {
+            assert!(ts.contains(declaration), "{declaration}: {ts}");
+        }
+        let py = &generated.python;
+        assert!(
+            py.contains("#: What a method returning `Err(io::Error)` raises: a RustError named \"Error\", its\n#: `code` one of IoErrorThrownCode.\nIoErrorThrown = RustError\n"),
+            "{py}"
+        );
+        assert!(py.contains("Raises IoErrorThrown."), "{py}");
+    }
+
+    /// Two of the crate's own error types of one name, in different
+    /// modules: the second is declared by its module.
+    #[test]
+    fn two_error_types_of_one_name_are_told_apart_by_their_module() {
+        let source = r#"
+pub mod a { #[derive(Debug)] pub enum Problem { Gone } }
+pub mod b { #[derive(Debug)] pub enum Problem { Late } }
+pub struct Jot;
+#[rutis::service]
+impl Jot {
+    pub fn first(&self) -> Result<(), a::Problem> { Ok(()) }
+    pub fn second(&self) -> Result<(), b::Problem> { Ok(()) }
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+        let ts = &generated.typescript;
+        assert!(
+            ts.contains("export type ProblemThrown = RustError<\"Problem\", \"Gone\", undefined>"),
+            "{ts}"
+        );
+        assert!(
+            ts.contains("/** What a method returning `Err(b::Problem)` throws. */\nexport type BProblemThrown = RustError<\"Problem\", \"Late\", undefined>"),
+            "{ts}"
+        );
+    }
+
+    /// `use rutis::host::*;` and `use rutis::*;` bring in the names of
+    /// rutis the generator knows, as importing them by name does.
+    #[test]
+    fn rutis_names_through_a_glob_are_known() {
+        let source = r#"
+use rutis::host::*;
+use rutis::*;
+pub type Run = std::sync::Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, Result<String>> + Send + Sync>;
+pub struct Jot;
+#[rutis::service]
+impl Jot {
+    pub fn register(&self, ctx: &Ctx, name: String, run: Run) -> Result<()> { Ok(()) }
+    pub fn each(&self, visit: impl Fn(u8) -> BoxFuture<'static, Result<(), Error>>) {}
+    pub fn part(&self) -> Definition { unimplemented!() }
+    pub fn kind(&self) -> std::result::Result<(), ErrorKind> { Ok(()) }
+    pub fn nested(&self, visit: impl Fn(u8) -> host::BoxFuture<'static, Result>) {}
+}
+"#;
+        let generated = generate(Exports::new(), &[("lib.rs", source)]).unwrap();
+        assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+        let ts = &generated.typescript;
+        for method in [
+            "register(name: string, run: (arg0: string[]) => string | Promise<string>): Promise<void>",
+            "each(visit: (arg0: number) => void | Promise<void>): Promise<void>",
+            "part(): Promise<import('@arcships/rutis').Plugin",
+            "kind(): Promise<void>",
+            "nested(visit: (arg0: number) => void | Promise<void>): Promise<void>",
+        ] {
+            assert!(ts.contains(method), "{method}: {ts}");
+        }
+        assert!(
+            ts.contains("/** @throws {ErrorThrown} */\n  kind()"),
+            "{ts}"
+        );
+        assert!(
+            !ts.contains("IoErrorThrown") && !ts.contains("HostErrorThrown"),
+            "{ts}"
+        );
     }
 
     fn store() -> Result<Generated> {
