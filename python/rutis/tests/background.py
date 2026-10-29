@@ -47,12 +47,6 @@ def _unreported() -> None:
         os._exit(1)
 
 
-def expected() -> list[str]:
-    """Take the thread exceptions recorded so far, for a test that causes
-    one on purpose; they then no longer fail it."""
-    return _take()
-
-
 class _FailOnThreadExceptions:
     def run(self, result=None):
         # Added before setUp, so it runs after every other cleanup.
