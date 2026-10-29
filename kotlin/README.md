@@ -2,9 +2,9 @@
 
 [中文](README.zh-CN.md)
 
-Write [rutis](https://github.com/arcships/rutis) plugins in Kotlin. The SDK (`kotlin/rutis`, Maven coordinates `io.github.arcships:rutis` and `io.github.arcships:rutis-ksp`, released with the rutis train) is a Kotlin Multiplatform library with two targets: **android**, for Android applications that host plugins (phase K-P2), and **jvm**, which runs the same code on the desktop: the conformance tests and the test entry `Rutis.serve`. Design: [docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md).
+Write [rutis](https://github.com/arcships/rutis) plugins in Kotlin. The SDK (`kotlin/rutis`, Maven coordinates `io.github.arcships:rutis`, `io.github.arcships:rutis-ksp` and the testing tool `io.github.arcships:rutis-testing`, released with the rutis train) is a Kotlin Multiplatform library with two targets: **android**, for Android applications that host plugins (phase K-P2), and **jvm**, which runs the same code on the desktop: the conformance tests and the test entry `Rutis.serve`. Design: [docs/design-android-runtime-2026-10-12.md](../docs/design-android-runtime-2026-10-12.md).
 
-Status: phase K-P2. Plugins, services, values, errors, unified events and the testing tool work on both targets and pass the same conformance suites as the other runtimes; an application connects to rutis with `RutisApp` (dialing out and listening over WebSocket), tested on an Android emulator (the R8 release build included). Published to Maven Central from 0.15.
+Status: phase K-P2. Plugins, services, values, errors and unified events work on both targets and pass the same conformance suites as the other runtimes; an application connects to rutis with `RutisApp` (dialing out and listening over WebSocket), tested on an Android emulator (the R8 release build included). Published to Maven Central from 0.15.
 
 ```kotlin
 import arcships.rutis.*
@@ -45,6 +45,8 @@ plugins {
 dependencies {
     implementation("io.github.arcships:rutis:<version>")
     ksp("io.github.arcships:rutis-ksp:<version>")
+    testImplementation("io.github.arcships:rutis-testing:<version>")   // the testing tool
+    kspTest("io.github.arcships:rutis-ksp:<version>")
 }
 ```
 
@@ -68,7 +70,7 @@ Threading: every incoming call runs on a thread of its own; a `suspend` method r
 
 ## Testing a plugin
 
-`arcships.rutis.testing` runs the plugin in its real runtime over a real (in-memory) session, the test being the host:
+`arcships.rutis.testing` (artifact `io.github.arcships:rutis-testing`, jvm) runs the plugin in its real runtime, in the test process, as a row of the real rutis kernel: `rutis-host test`, on `PATH` or at `RUTIS_HOST`, started once per test process; rows are unloaded between tests. rutis checks the config and fills its defaults, resolves what the plugin injects and dispatches its events, as a host running it does:
 
 ```kotlin
 RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).use { loaded ->
@@ -77,7 +79,7 @@ RutisTest.load(weather, Config("Oslo"), services = mapOf("llm" to FakeLlm())).us
 }
 ```
 
-Services the test gives are instances of `@RutisService` classes. `loaded.on`, `emit`, `parallel`, … listen and emit as the host; `loaded.load(config, row, scope)` loads more rows; `loaded.reported()` is what the runtime reported.
+Services the test gives are instances of `@RutisService` classes. The test's services, `loaded.on`, `emit`, `parallel`, … are a plugin of the same runtime, at the root scope; `loaded.load(config, row, isolate)` loads more rows (`row` is the row's id, rutis gives one from the plugin's name otherwise); `loaded.reported()` is what rutis reported of the test's rows (listeners and `emit` filters that failed). On a device there is no `rutis-host`: the test installs its own plugins with `RutisApp`, dialing a rutis on the development machine ([kotlin-app](../docs/guide/kotlin-app.en.md) §7).
 
 ## Hosting plugins in an application
 
@@ -112,6 +114,8 @@ JDK 17. No Gradle install is needed: the wrapper is in the repository.
 cd kotlin/rutis
 ./gradlew build          # the SDK, the processor, the unit tests, the testing tool against both expectation files
 ```
+
+The testing tool's tests run on `rutis-host test`: `RUTIS_HOST`, else the repository's `target/debug/rutis-host` (`cargo build -p rutis-host`).
 
 The android target is built only where an Android SDK is installed (`ANDROID_HOME`, or `sdk.dir` in `local.properties`). The Rust suites with Kotlin take the feature `kotlin` and build `rutis-conformance/build/libs/rutis-conformance-all.jar` (or use the one `RUTIS_KOTLIN_JAR` names):
 

@@ -59,8 +59,8 @@ class TagService(private val line: String) {
  * `Rutis.define` result crosses as a `plugin` reference, only to a far end
  * that takes plugin definitions; back home it is the definition itself; the
  * runtime describes it (`plugins.read`) and loads it as a row's entry, each
- * copy with its config; RutisTest hands a test double the definition itself,
- * so the test loads it as the host would mount it (R10). The cross-language
+ * copy with its config; a test double of the same runtime gets the
+ * definition itself, so the test loads it (R10). The cross-language
  * cases: crates/rutis-loader/tests/plugin_values.rs.
  */
 class PluginValuesTest {
@@ -141,7 +141,7 @@ class PluginValuesTest {
         }
     }
 
-    /** A definition handed to a test double is the definition itself: the test loads it, each copy with its config (R10). */
+    /** A definition handed to a test double of the same runtime is the definition itself: the test loads it, each copy with its config (R10). */
     @Test
     fun aDefinitionHandedToATestDoubleLoads() = runBlocking<Unit> {
         val prepared = "prepared in apply"
@@ -159,12 +159,9 @@ class PluginValuesTest {
             val (scope, definition) = parts.handed.single()
             assertEquals("session", scope)
             assertSame(made.get(), definition)
-            RutisTest.load(definition, Depth(1)).use { one ->
-                RutisTest.load(definition, Depth(2)).use { two ->
-                    assertEquals("1 $prepared", one.service("tag").call("text"))
-                    assertEquals("2 $prepared", two.service("tag").call("text"))
-                }
-            }
+            // One host for the test process: the copies provide `tag` one after the other.
+            RutisTest.load(definition, Depth(1)).use { one -> assertEquals("1 $prepared", one.service("tag").call("text")) }
+            RutisTest.load(definition, Depth(2)).use { two -> assertEquals("2 $prepared", two.service("tag").call("text")) }
         }
     }
 
