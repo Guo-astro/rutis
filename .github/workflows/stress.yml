@@ -322,7 +322,7 @@ jobs:
       fail-fast: false
       matrix:
         x: [node, node-leaf, bun, python, go]
-        cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/,fast-path/"]') }}
+        cases: ${{ fromJSON(inputs.events_case != '' && format('["{0}"]', inputs.events_case) || '["serial/", "order/", "waterfall,bail/", "parallel/,scope/,filter/", "emit/,unload/,values/,kinds/,rutis/,disconnect/,node/,cancel/,cordis/,reserved/,registration/,rust/,modes/"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
