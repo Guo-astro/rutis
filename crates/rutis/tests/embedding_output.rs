@@ -84,7 +84,7 @@ async fn a_failed_start_reaches_the_error_sink_by_the_plugins_name() {
     });
     assert!((&weather).await.is_err());
     let link = ctx.plugin(Probe {
-        name: "rutis-bridge/peer#office",
+        name: "rutis-bridge/session",
         platform: true,
         injects: Vec::new(),
         fails: true,
@@ -473,7 +473,7 @@ async fn diagnostics_print_by_name_without_rutis_own_plugins() {
     });
     let _ = (&broken).await;
     let link = ctx.plugin(Probe {
-        name: "rutis-bridge/peer#office",
+        name: "rutis-bridge/session",
         platform: true,
         injects: Vec::new(),
         fails: false,
@@ -497,6 +497,6 @@ async fn diagnostics_print_by_name_without_rutis_own_plugins() {
     assert!(!text.contains("root"), "{text}");
     assert!(!text.contains("PluginId"), "{text}");
     let all = format!("{:#}", ctx.diagnostics());
-    assert!(all.contains("  rutis-bridge/peer#office: running"), "{all}");
+    assert!(all.contains("  rutis-bridge/session: running"), "{all}");
     ctx.shutdown().await.unwrap();
 }

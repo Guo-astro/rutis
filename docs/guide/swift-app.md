@@ -80,7 +80,18 @@ public let device = Rutis.define(Plugin(name: "device", config: DeviceConfig.sel
 })
 ```
 
-插件的测试照插件指南 §3 用 `RutisTest`，在 iOS 模拟器里同样能跑。
+插件的测试照插件指南 §3 用 `RutisTest`。在 macOS 上它把插件作为 `rutis-host test` 的一行运行；设备与 iOS 模拟器上没有 `rutis-host` 进程，`RutisTest` 就是一个自己装插件的应用：每个测试起一个 `RutisApp`，装测试的服务、被测插件（带配置）和测试一方，连到开发机上的宿主，事件由那个宿主分发。宿主是开发机上带一行 `rutis-host/listen` 的 `rutis-host run`：
+
+```json
+{
+  "id": "host",
+  "listen": [{ "name": "test", "address": "127.0.0.1:7613" }],
+  "rows": [{ "id": "device", "name": "rutis-host/listen", "config": { "listener": "test" } }]
+}
+```
+
+`RUTIS_TOKEN_DEVICE=<token> rutis-host run rutis.json`，测试的环境里设 `RUTIS_TEST_CONNECT=ws://127.0.0.1:7613/rutis`（模拟器与 Mac 共用回环地址）与 `RUTIS_TEST_TOKEN=<token>`；用 `xcrun simctl spawn` 时写成 `SIMCTL_CHILD_RUTIS_TEST_CONNECT`、`SIMCTL_CHILD_RUTIS_TEST_TOKEN`（`tools/ios-selftest.sh` 就这样跑 SDK 自己的测试）。这里插件只装一次：配置要是 `Encodable` 的值，插件自己解码（宿主不检查），`Loaded.service` 只能调插件在 `provides` 里声明的服务，`Loaded.load`、`update` 只在 macOS 上有。
+
 
 插件交给服务的插件定义（[插件 API：各语言怎样交出插件定义](plugin-api.md#各语言怎样交出插件定义)）在应用的进程里运行；应用 `stop()` 或断开时，从它挂出的每一份结束。
 
@@ -128,7 +139,7 @@ await rutis.stop()        // 撤回服务，全部插件逆序清理，然后断
 | 参数 | 含义 |
 | --- | --- |
 | `plugins` | 连上后按顺序装上的插件 |
-| `configs` | 可选：插件的配置，按插件名给出，值是它的配置类型（`Encodable`）；没给的插件用它的配置 Schema 的默认值。名字不是 `plugins` 里的插件时 `start()` 抛出：`configs names nope, which is not one of the plugins: device, health`。配置只在 `RutisApp` 里给：插件二进制的插件由 rutis 的行给配置 |
+| `configs` | 可选：插件的配置，按插件名给出，值是它的配置类型（`Encodable`）；应用的配置只解码，没有宿主检查：漏掉的键取 `@RutisConfig` 类型里写的字面初始值（`var units = "metric"`），缺必填的键或类型不对时这个插件失败并点名那个键（`config: count is required`、`config: count should be an integer, got "x"`）；没给配置的插件取这些初始值。名字不是 `plugins` 里的插件时 `start()` 抛出：`configs names nope, which is not one of the plugins: device, health`。配置只在 `RutisApp` 里给：插件二进制的插件由 rutis 的行给配置 |
 | `connect` | rutis 的接入点：`wss://…`；`ws://` 只限回环（模拟器连它所在的 Mac） |
 | `id` | 这条连接的 id：它的插件在 rutis 上注册为 `<id>:<插件>`（`kim-iphone:health`）；每个安装用自己的 id（例如首次启动时生成并保存） |
 | `token` | 接入点的共享 token。放在钥匙串里，不要写在应用代码里 |
@@ -139,7 +150,7 @@ await rutis.stop()        // 撤回服务，全部插件逆序清理，然后断
 
 - `start()` 开始拨出后即返回；重试修不好的（不合法的 id 或地址）直接抛出。此后它自己保持连接：连不上或断开时重试（从 0.5 秒起翻倍，最长 30 秒）；token 被拒每 30 秒重试。已经开始时再调用 `start()` 什么也不做。
 - 连上（rutis 问候）之后，应用按 `plugins` 的顺序装上插件，与 rutis 上的插件规则相同：一个插件 `inject` 的服务都在时才装上（同一个应用里别的插件提供的，或者 rutis 提供的），其中一个撤走时卸载，回来后再装。rutis 上可共享的服务都会到应用这边（rutis 撤下时这边也撤下）；应用的插件提供的服务都报给 rutis（带插件名），rutis 上别的行按名字使用它们。应用不把 rutis 给它的服务再报回去。
-- 一个插件装载失败（配置不合 Schema、`apply` 抛出）只影响它自己：`log` 收到 `rutis: plugin device: BindingError: config: installation is required` 这样的一行，后面的插件照装。这一行只在设备上：rutis 一侧看到的是这个插件没有出现（没有 `<id>:device`）。
+- 一个插件装载失败（配置解码不了、`apply` 抛出）只影响它自己：`log` 收到 `rutis: plugin device: BindingError: config: installation is required` 这样的一行，后面的插件照装。这一行只在设备上：rutis 一侧看到的是这个插件没有出现（没有 `<id>:device`）。
 - 每次连接都是新的：断开时插件逆序清理，重连后重新装上。
 - `stop()` 在 rutis 还能收到的时候撤回服务、逆序卸载全部插件，然后关闭连接，不再重连；完成后返回，之后可以再 `start()`。
 - `start()` 与 `stop()` 按调用的先后生效，各在自己的 `Task` 里调用也一样：停止进行中调用的 `start()` 等它完成后再开始（用户在清理期间回到前台，应用照样连上）；开始进行中调用的 `stop()` 撤销它（不会在后台继续拨出）。

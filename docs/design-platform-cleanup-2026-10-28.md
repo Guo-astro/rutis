@@ -339,6 +339,8 @@ rutis-host 不再用 `rutis::internal` 与 `rutis_loader::internal`。核实到�
 | Swift | `ConfigSchema.swift`（670 行） | `ConfigSchema.path(of:)` 的解码路径 |
 | Kotlin | `internal/ConfigSchema.kt`（566 行） | `DecodePaths` |
 
+应用自己装的插件（S4a 的 own plugins）不经 loader，没有宿主替它校验：它们的配置只解码，缺的键取作者在类型里写的默认值（Swift 由 `@RutisConfig` 宏生成带默认值的解码，不靠合成的 `Decodable`），不做 Schema 校验；缺必填的键或类型不对时报解码错误，文字点名键，与内核 `rutis::config::check` 的措辞一致（`config: count is required`、`config: count should be a number, got "x"`）。宿主装的行仍由内核校验后再交给运行时。
+
 `specs/config-schema/cases.json` 只由内核（从 loader `tests/config_cases.rs` 搬来）与 `rutis-host check` 跑；各 SDK 的用例运行器删，`specs/config-schema/README.md:5` 改写。Cordis 行不按转换出来的 Schema 校验（§2.3）的例外保留在 loader。测试工具的多余键告警由真实 loader 给出。
 
 0.18 [配置 Schema](design-config-schema-2026-10-27.md) §2.1 的五条理由逐条对照：第 1 条"测试工具里没有 loader，只能放 SDK"——测试工具改走真实内核后不成立；第 2 条"远程运行时由运行它的一端检查"——loader 对每一行（含连进来的运行时的行）已经拿得到 Schema（`runtime.rs:546` 的 `schema: described.config`），不成立；第 3 条"类型化语言本来要解码"——仍成立，只留解码；第 4 条"一份规则靠用例表保持一致"——只剩一份实现后不再需要；第 5 条"0.18 以前的 SDK"——不做兼容，作废。§2.1 的结论改为"校验在内核一份，SDK 只解码"。

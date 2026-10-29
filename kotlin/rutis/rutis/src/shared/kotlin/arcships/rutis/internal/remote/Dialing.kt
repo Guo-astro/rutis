@@ -13,7 +13,7 @@ import kotlin.math.roundToLong
 
 // Dialing out to a rutis access point, and dialing again: the rules every
 // runtime follows (docs/design-remote-runtime-dial-2026-10-14.md §六), as
-// rutis-bridge's dialing link does (`link.rs`) and the Go runtime
+// rutis-host's `rutis-host/dial` row does (`connect/dial.rs`) and the Go runtime
 // (`go/rutis/dial.go`).
 //
 // A failure is retryable (backoff from 0.5 s, doubling up to 30 s, reset by
@@ -67,7 +67,7 @@ interface Connection : arcships.rutis.internal.peer.Channel {
     val farClose: Int
 }
 
-/** Reconnection: rutis-bridge's `Retry` defaults. */
+/** Reconnection: the defaults of `rutis-host/dial`. */
 class Retry(
     /** The first wait after a retryable failure; doubled each time. */
     val initialMillis: Long = 500,

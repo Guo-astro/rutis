@@ -1,88 +1,73 @@
 # 连接节点
 
-一个 rutis 宿主是一个**节点**。节点之间用 **link** 连接：一端拨号（`dial`），一端监听（`listen`），连上后在这条连接上共享服务、代为运行插件、共享事件。断开后自动重连。
+一个 rutis 宿主是一个**节点**。两个节点之间是一条连接：一端写一行 `rutis-host/dial` 去连，另一端写一行 `rutis-host/listen` 等它连进来。连上后，两边的服务互相可见，事件是一条总线，每一端都可以让对面运行插件。断开后拨号的一端自动重连。节点与[远程运行时](#别的机器上的语言运行时)是同一种写法，没有节点专用的配置。
 
-下面用 `rutis.json` 的行来写；在 Rust 里用 `rutis_bridge::PeerPlugin` 做同样的事（见 [在 Rust 应用里嵌入](rust-host.md)）。
+## 两个节点
 
-## 一条 link
+`main` 连到 `office`：
 
 ```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis" } }
+{
+  "id": "main",
+  "rows": [
+    { "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } }
+  ]
+}
 ```
 
-另一端（`office`）监听：
+`office` 等 `main` 连进来：
 
 ```json
 {
   "id": "office",
   "listen": [{ "name": "public", "address": "0.0.0.0:7443", "cert": "server.pem", "key": "server.key" }],
   "rows": [
-    { "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public" } }
+    { "id": "main", "name": "rutis-host/listen", "config": { "listener": "public" } }
   ]
 }
 ```
 
-两端用同一个 token：拨号方（`main`）出示 `RUTIS_TOKEN_OFFICE`，监听方（`office`）用 `RUTIS_TOKEN_MAIN` 核对来者是 `main`，两个变量设成同一个值。
+- 两端用同一个 token：`main` 的 `office` 行出示 `RUTIS_TOKEN_OFFICE`，`office` 的 `main` 行用 `RUTIS_TOKEN_MAIN` 核对，两个变量设成同一个值（行 id 大写，`-` 写作 `_`）。
+- 两端在握手里报各自 rutis.json 的 `id`：`office` 上的插件在 `main` 这边叫 `office:<插件>`，反过来是 `main:<插件>`。
+- `address` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
+- 断开后重连：从 0.5 秒开始退避，最长 30 秒，连接持续 60 秒后重新从 0.5 秒算；凭据被拒（403、证书不受信任）时每 30 秒重试一次；协议不兼容时停止。监听的一端还没有这一行时，连进来的拨号方被拒（403），30 秒后再试，所以先启动监听的一端。
+- `rutis-host run` 打印连接的变化，前缀是行 id，不带 token；这一行自己的 `running` 只说明它在运行，不说明连上了：
 
-- `dial` 是 `wss://…`（跨机器，必须 TLS），或 `ws://127.0.0.1…`（本机回环）。
-- 自签证书：把签发它的 CA 放进拨号方的 `RUTIS_CA`。
-- 断开后重连：从 0.5 秒开始退避，最长 30 秒；凭据被拒（403、证书不受信任）时每 30 秒重试一次；协议不兼容时停止并报告。
-- `rutis-host run` 在 link 的状态变化时打印一行，带可读的类别，不带 token；节点行自己的 `running` 只说明这一行在运行，不说明连上了：
-
+  ```text
+  office: connected
+  office: disconnected (office.example.com:7443: Connection refused); retrying in 2.1s
+  office: disconnected (auth-rejected: office.example.com:7443: upgrade refused with 403 Forbidden); retrying in 30s
+  main: connected main
+  main: disconnected main (connection lost)
   ```
-  office: link connected
-  office: link down (127.0.0.1:7443: Connection refused (os error 61)); retrying in 2.1s
-  office: link refused: auth-rejected (office.example.com: upgrade refused with 403 Forbidden); retrying in 30s
-  office: link stopped: incompatible (office does not declare runtime)
+
+  前三行在 `main` 上，后两行在 `office` 上（`rutis-host/listen` 的行在 `connected` / `disconnected` 后面写连进来的 id）。完整格式见 [rutis-host 打印什么](rutis-host.md#run-打印什么)。
+
+## 连上之后
+
+- **服务两边都可见**：`office` 上的行提供的服务在 `main` 上可以直接 `inject`、调用，反过来也一样，不用列名单。在本端，它由远程插件 `office:<提供它的行>` 提供。调用链保持：同步调用期间的回调、回调里再调回去，都能穿过多个节点。
+- **同名按内核规则**：两边都有的服务名，各自用自己的；后注册的那一个被拒，那个远程插件失败并说明原因：
+
+  ```text
+  office:weather: weather is provided here by row weather: not registered from office
   ```
 
-  `auth-rejected` 是凭据被拒（token 不对、证书名字不符或过期、CA 不受信任），`incompatible` 是不兼容（不再重试），`link down` 是暂时连不上。完整格式见 [rutis-host 打印什么](rutis-host.md#run-打印什么)。
-- 监听方的 link 还没就绪时连进来的拨号方会被要求重试，所以两端可以按任意顺序启动。
-
-## 在 link 上做什么
-
-节点行的 `config` 决定这条连接上做什么。`export`、`import` 改了不会断开连接，只重启对应的那部分。
-
-| 字段 | 作用 |
-| --- | --- |
-| `export: ["weather", "session/*"]` | 把本节点的服务 `weather` 给对端用；本节点发出的 `weather` 和所有 `session/…` 事件到达对端的监听器 |
-| `import: ["calendar", "tock"]` | 把对端的服务 `calendar` 作为本节点的服务（本节点已有同名服务时拒绝）；本节点 `calendar`、`tock` 的监听器听到对端发出的这两个事件 |
-| `host: true` | 允许对端在本节点上运行这里装着的插件（只对可信的对端打开） |
-| `rows: true` | 本文件里 `peer:<对端>/<插件>` 的行在对端运行 |
-| `runtime: "<名字>"` | 对端是一个语言运行时，见下文 |
-
-服务跨节点时调用链保持：同步调用期间的回调、回调里再调回去，都能穿过多个节点。
-
-### 节点之间的事件
-
-`export` / `import` 的一项是名字，或以 `*` 结尾的前缀（`session/*`；单独的 `*` 是所有名字）；前缀只选事件，服务仍按确切名字。同一个名字可以双向共享。对端的 `import` 和本节点的 `export` 对上时，对端的监听器就是本节点事件总线上的条目，规则和本机一样：五种方式（`emit`、`parallel`、`serial`、`waterfall`、`bail`）、过滤、所有值类型；连接断开时它们离开总线（进行中的调用失败一次）。事件只走一跳：一个节点导入的东西不再往外共享。对端的监听器是这条总线上的条目；它们的描述里带这个节点行所在的作用域（实例之外的连接就是根），供过滤使用。完整模型见 [统一事件](../design-events-2026-10-18.md)。
-
-例：`main` 上发出的 `session/…` 事件到达 `office` 上任何语言的监听器，`office` 上发出的 `audit/flagged` 到达 `main` 的监听器：
-
-```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "export": ["session/*"], "import": ["audit/flagged"] } }
-```
-
-```json
-{ "id": "main", "name": "rutis-bridge/peer", "config": { "peer": "main", "listen": "public", "import": ["session/*"], "export": ["audit/flagged"] } }
-```
-
-一个名字要在发出的一端 `export`、在监听的一端 `import`，两边都写了才共享。`main` 上的 `await ctx.serial("session/quota", user)` 会按登记顺序逐个问 `main` 和 `office` 上的监听器，返回第一个结果；`office` 断开时，它的监听器离开总线，之后的分发只问 `main` 上的。
-
-运行时（本机的、[别的机器上的](#别的机器上的语言运行时)、[连进来的](#连进来的运行时)）不是节点连接：它们的监听器直接在宿主的总线上，不需要 `export` / `import`。
-
-`events: { "out": […], "in": […] }` 在 rutis 0.13 删除，写了会报错：`out` 写进 `export`，`in` 写进 `import`。0.12 及更早的节点连进来时被拒绝（`link stopped: incompatible (…)`），见 [迁移到 0.13](../migration-0.13.md)。
+- 经一条连接来的服务不再发回这条连接；经过中间的节点，它可以到达第三个节点（`b` 的服务经 `a` 到 `c`）。
+- 不想让对面看到某个服务时，在提供它的行上用 `isolate`：只在一个作用域里的服务不跨连接。
+- **事件是一条总线**：对面的监听器是本端总线上的条目，规则和本机一样：五种方式（`emit`、`parallel`、`serial`、`waterfall`、`bail`）、过滤、所有值类型，不用列名单。连接断开时它们离开总线（进行中的调用失败一次）。对面的监听器的描述里带这条连接的作用域，供过滤使用。完整模型见 [统一事件](../design-events-2026-10-18.md)。
+- 连接断开时，对面的插件在本端全部卸载；依赖它们的服务的行按内核规则停下等待，重连后恢复。
 
 ## 在别的节点上运行插件
 
-对端开了 `host: true`，本端开了 `rows: true` 时，`peer:<对端>/<插件>` 的行在对端加载那个插件：
+行 `<连接行>:<插件>` 让对面运行一个插件，配置写在这一行：
 
 ```json
-{ "id": "office", "name": "rutis-bridge/peer", "config": { "peer": "office", "dial": "wss://office.example.com/rutis", "rows": true } },
-{ "id": "scanner", "name": "peer:office/scanner-plugin", "config": { "dpi": 300 } }
+{ "id": "office", "name": "rutis-host/dial", "config": { "address": "wss://office.example.com/rutis" } },
+{ "id": "scanner", "name": "office:scanner", "config": { "dpi": 300 } }
 ```
 
-插件在对端运行，用对端的服务；它的配置、启停仍由本端决定。对端离线时这一行等待，回来后重新加载。行的 `isolate` / `inject` 交给对端执行。
+- 对面用它自己的加载器找 `scanner`，和它自己的行一样解析（npm 包、`py:` 模块、Go / Swift 二进制里的插件等）；插件在对面运行，用对面的服务，它提供的服务在本端可见。配置和启停由本端决定。
+- 对面没连上时这一行等待，连上后加载；对面找不到这个插件时只有这一行失败：`scanner: unresolved: entry "scanner" rejected: runtime office: this connection does not contain plugin scanner`。
 
 ## 别的机器上的语言运行时
 
@@ -123,7 +108,7 @@ Node 运行时同样可以远程运行：在那台机器的 Node 项目里执行
 
 ### 连进来的运行时
 
-运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变时用这种方式。rutis 一侧写一行 `rutis-host/listen`，指向 `listen` 里的一个监听器；不写节点行：
+运行时也可以反过来连到 rutis：远程机器在 NAT 后、地址会变时用这种方式。rutis 一侧写一行 `rutis-host/listen`，指向 `listen` 里的一个监听器：
 
 ```json
 {
@@ -177,9 +162,9 @@ Node、Bun 的每个会话由一个子进程运行：断开时子进程卸载全
 
 Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android 应用托管](../design-android-runtime-2026-10-12.md) §五）。SDK 的 jvm target 的 `Rutis.serve` 接受同样的 `dial:`、`listen:` 通道、环境变量和规则（监听 `wss://` 用 `RUTIS_CERT`、`RUTIS_KEY`）。
 
-## 把 Cordis 应用接成节点
+## Cordis 应用
 
-已有的 Cordis 应用用 `@arcships/rutis-runtime/bridge` 成为一个节点，见 [Cordis](cordis.md)。
+Cordis 应用接 rutis：用 Node 运行时跑它的插件（`<包名>` 行），见 [Cordis](cordis.md)。
 
 ## 自建连接
 
@@ -187,9 +172,10 @@ Kotlin 插件一般编进 Android 应用，由应用拨出到 rutis（[Android �
 
 ## 安全
 
+**给出 token 等于允许对方在本节点运行它能解析的任何插件。** 谁能连上由连接行的 token 决定，连上即信任，平台不另加权限。
+
 - 跨机器只用 `wss://`。不带 TLS 的监听器只能绑定回环地址。
 - Python 运行时监听 `wss://` 不能用 CPython 3.13.6：它的 TLS socket 在一个线程阻塞读、另一个线程写时死锁（[python/cpython#137583](https://github.com/python/cpython/issues/137583)），每个握手都会卡住，所以 rutis 在这个版本上拒绝启动 `listen:wss://`。用 3.13.7 或更新的版本（3.13.5 及更早、3.14 不受影响）；`ws://` 不受影响。拨出（`dial:wss://`）由一个线程完成连接的全部读写，不受影响。
-- 每个对端一个 token（`RUTIS_TOKEN_<节点>`），只在需要的节点上设置。
-- `rutis-host` 的 token 来自环境变量，运行中不能换：换 token 要重启 `rutis-host`（重启会断开所有连接）。断开现有连接靠停掉那一行：连接这个对端或接受这些运行时的那一行停掉，它的连接随之关闭，进行中的调用以传输错误失败。
-- `host: true` 让对端能在本节点运行这里装着的任何插件，只对可信的对端打开；它只能加载已安装的插件，不能加载文件路径。
-- 节点只按名字共享 `export` 里列出的服务和事件；事件还要对端在 `import` 里列出。
+- 每条连接行一个 token（`RUTIS_TOKEN_<行 id>`），只在需要的节点上设置。
+- `rutis-host` 的 token 来自环境变量，运行中不能换：换 token 要重启 `rutis-host`（重启会断开所有连接）。断开现有连接靠停掉那一行：那一行停掉，它的连接随之关闭，进行中的调用以传输错误失败。
+- 连上的节点互相看到对方全部可共享的服务与事件，并能让本节点运行这里的加载器能解析的任何插件（`<连接行>:<插件>`）：只连可信的节点。不给对面看的服务在自己的行上用 `isolate`。

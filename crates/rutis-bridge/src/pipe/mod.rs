@@ -50,32 +50,6 @@ pub use spawn::{
     ManifestChild, Processes, Spawn, Stdio, CHANNEL_FD, CHANNEL_TOKEN, HANDOVER_VARIABLE,
 };
 
-/// Dial a Unix socket: `unix:<path>`, or a bare path. Transitional
-/// (#695 S2): for the node rows that link over a Unix socket, which go
-/// with links.
-#[doc(hidden)]
-#[cfg(unix)]
-pub async fn dial(address: &str) -> Result<Channel, ConnectError> {
-    let path = match address.split_once(':') {
-        Some(("unix", path)) => path,
-        Some((scheme, _)) if !scheme.contains('/') => {
-            return Err(ConnectError::Incompatible {
-                reason: format!("cannot dial {scheme}: addresses on a Unix socket"),
-            });
-        }
-        _ => address,
-    };
-    unix::dial(path).await
-}
-
-#[doc(hidden)]
-#[cfg(not(unix))]
-pub async fn dial(_address: &str) -> Result<Channel, ConnectError> {
-    Err(ConnectError::Incompatible {
-        reason: "Unix sockets are not available on this platform".into(),
-    })
-}
-
 /// Wait until the process on `channel` sends its first message (its
 /// greeting), for at most `limit` (`Duration::MAX`: for as long as it
 /// takes, a process stopped at its first line for a debugger), then give

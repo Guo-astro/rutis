@@ -8,48 +8,100 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use rutis_bridge::channel::{Channel, ConnectError, PeerId};
-use rutis_bridge::websocket::{self, Limits, Listener, ListenerConfig, ServerTls, Trust};
-use rutis_bridge::{
-    fingerprint, Credential, Registered, Registration, RegistrationError, Registrations,
-    StaticIdentity,
+use rutis_bridge::channel::{Channel, Close, ConnectError};
+use rutis_bridge::fingerprint;
+use rutis_bridge::websocket::{
+    self, Admitted, Credential, Limits, Listener, ListenerConfig, Refused, ServerTls, Trust,
+    Upgrade,
 };
 use rutis_test_support::{eventually_blocking, recv_within};
 
 const PROTOCOL: &str = "rutis.2";
 
-fn id(s: &str) -> PeerId {
-    PeerId::new(s).unwrap()
-}
-
 fn loopback() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
 }
 
-/// A listener `public` serving endpoint `main`, routing upgrades by its
-/// registrations.
+/// What lets an upgrade through: a bearer token, or a client
+/// certificate's fingerprint.
+#[derive(Clone, PartialEq)]
+enum Proof {
+    Token(String),
+    Certificate([u8; 32]),
+}
+
+/// Where the upgrades each proof lets through go, as a connection plugin
+/// keeps it: with nothing in it, dialers are told to retry (503); a proof
+/// not in it is refused (403).
+type Table = Arc<Mutex<Vec<(u64, Proof, mpsc::Sender<Channel>)>>>;
+
+/// An entry of the table; dropping it removes it.
+struct Registered {
+    table: Table,
+    id: u64,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        self.table.lock().unwrap().retain(|(id, ..)| *id != self.id);
+    }
+}
+
+/// A listener `public`, letting upgrades through by its table.
 struct Server {
-    registrations: Registrations,
+    table: Table,
+    next: AtomicUsize,
     listener: Listener,
 }
 
 impl Server {
     fn start(config: ListenerConfig, limits: &Limits) -> Self {
-        let registrations = Registrations::new();
-        let listener = websocket::listen(
-            &config,
-            limits,
-            websocket::admit_registered(registrations.clone(), "public"),
-        )
-        .unwrap();
+        let table = Table::default();
+        let admitting = table.clone();
+        let admit: websocket::Admit = Arc::new(move |upgrade: Upgrade<'_>| {
+            let table = admitting.lock().unwrap();
+            if table.is_empty() {
+                return Err(Refused::Unavailable("not listening yet".into()));
+            }
+            let found = table.iter().find(|(_, proof, _)| match proof {
+                Proof::Token(token) => upgrade.bearer == Some(token.as_str()),
+                Proof::Certificate(accepted) => {
+                    upgrade.certificate.map(fingerprint).as_ref() == Some(accepted)
+                }
+            });
+            let Some((_, _, sender)) = found else {
+                return Err(Refused::Forbidden("not accepted here".into()));
+            };
+            let sender = Mutex::new(sender.clone());
+            Ok(Admitted {
+                protocol: PROTOCOL.into(),
+                deliver: Box::new(move |channel| {
+                    if let Err(refused) = sender.lock().unwrap().send(channel) {
+                        refused.0.closer.close(Close::Done);
+                    }
+                }),
+            })
+        });
+        let listener = websocket::listen(&config, limits, admit).unwrap();
         Self {
-            registrations,
+            table,
+            next: AtomicUsize::new(0),
             listener,
         }
     }
 
-    fn register(&self, registration: Registration) -> Result<Registered, RegistrationError> {
-        self.registrations.register(&id("main"), registration)
+    /// Let through what `proof` proves; its channels arrive on the receiver.
+    fn register(&self, proof: Proof) -> (Registered, mpsc::Receiver<Channel>) {
+        let (sender, accepted) = mpsc::channel();
+        let id = self.next.fetch_add(1, Ordering::SeqCst) as u64;
+        self.table.lock().unwrap().push((id, proof, sender));
+        (
+            Registered {
+                table: self.table.clone(),
+                id,
+            },
+            accepted,
+        )
     }
 
     fn address(&self) -> String {
@@ -101,24 +153,10 @@ fn client(limits: Limits) -> Client {
     }
 }
 
-/// Accept `peer` with `token` on `public`; accepted channels arrive on the
-/// returned receiver.
-fn accept(server: &Server, peer: &str, token: &str) -> (Registered, mpsc::Receiver<Channel>) {
-    let (sender, accepted) = mpsc::channel();
-    let sender = Mutex::new(sender);
-    let identity = StaticIdentity::new(id("main")).accept_token(token, id(peer));
-    let registered = server
-        .register(Registration {
-            listener: "public".into(),
-            peer: id(peer),
-            identity: Arc::new(identity),
-            protocol: PROTOCOL.into(),
-            deliver: Box::new(move |channel| {
-                let _ = sender.lock().unwrap().send(channel);
-            }),
-        })
-        .unwrap();
-    (registered, accepted)
+/// Accept `token` on `public`; accepted channels arrive on the returned
+/// receiver.
+fn accept(server: &Server, _peer: &str, token: &str) -> (Registered, mpsc::Receiver<Channel>) {
+    server.register(Proof::Token(token.into()))
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -162,7 +200,7 @@ async fn authentication_routing_and_compatibility_failures_carry_their_category(
         no_credential,
         Err(ConnectError::AuthRejected { .. })
     ));
-    // A valid token of a far end nobody registered is refused the same way.
+    // A token no longer accepted is refused the same way.
     let (pi, _) = accept(&server, "pi", "pi-token");
     drop(pi);
     let revoked = client.dial(&address, "pi-token").await;
@@ -218,7 +256,7 @@ async fn authentication_routing_and_compatibility_failures_carry_their_category(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn one_registration_per_far_end_and_an_empty_listener_is_retried() {
+async fn an_empty_listener_is_retried() {
     let server = server(Limits::default());
     let client = client(Limits::default());
     // Nothing registered yet: worth retrying.
@@ -227,15 +265,6 @@ async fn one_registration_per_far_end_and_an_empty_listener_is_retried() {
         matches!(early, Err(ConnectError::Retryable { .. })),
         "{early:?}"
     );
-    let (_mac, _) = accept(&server, "mac", "a");
-    let duplicate = server.register(Registration {
-        listener: "public".into(),
-        peer: id("mac"),
-        identity: Arc::new(StaticIdentity::new(id("main"))),
-        protocol: PROTOCOL.into(),
-        deliver: Box::new(|_| {}),
-    });
-    assert!(matches!(duplicate, Err(RegistrationError::Duplicate(_))));
 }
 
 /// A CA, a server certificate for `localhost` and a client certificate.
@@ -317,22 +346,7 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
     );
 
     // A client certificate proves the far end without a token.
-    let (sender, accepted) = mpsc::channel();
-    let sender = Mutex::new(sender);
-    let _pi = server
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("pi"),
-            identity: Arc::new(
-                StaticIdentity::new(id("main"))
-                    .accept_certificate(fingerprint(&pki.client_der), id("pi")),
-            ),
-            protocol: PROTOCOL.into(),
-            deliver: Box::new(move |channel| {
-                let _ = sender.lock().unwrap().send(channel);
-            }),
-        })
-        .unwrap();
+    let (_pi, accepted) = server.register(Proof::Certificate(fingerprint(&pki.client_der)));
     let certificate = Credential::ClientCertificate {
         chain_pem: pki.client_chain.clone().into_bytes(),
         key_pem: pki.client_key.clone().into_bytes(),
@@ -341,7 +355,7 @@ async fn wss_verifies_the_server_and_accepts_client_certificates() {
         .dial_with(&address, PROTOCOL, Some(certificate))
         .await
         .unwrap();
-    // Delivered to the registration of pi: the certificate routed it.
+    // Let through by the certificate.
     recv_within("the accepted connection", &accepted);
 }
 
@@ -489,7 +503,7 @@ async fn wss_refuses_a_server_certificate_for_another_name() {
 
 /// An expired client certificate does not authenticate, even with the
 /// accepted fingerprint: the first connection the listener delivers is
-/// the one dialed afterwards with a token.
+/// a token's, and the certificate's entry gets nothing.
 /// risk: E6
 /// guarantee: bridge/tls-client-certificate-verified
 #[tokio::test(flavor = "multi_thread")]
@@ -499,35 +513,8 @@ async fn wss_refuses_an_expired_client_certificate() {
     let client = trusting(&ca);
     let expired = leaf(&ca, &["pi"], Some(EXPIRED));
 
-    // Both registrations deliver to one queue, in order.
-    let (sender, delivered) = mpsc::channel();
-    let sender = Arc::new(Mutex::new(sender));
-    let deliver = |sender: Arc<Mutex<mpsc::Sender<Channel>>>| -> rutis_bridge::Deliver {
-        Box::new(move |channel| {
-            let _ = sender.lock().unwrap().send(channel);
-        })
-    };
-    let pi =
-        StaticIdentity::new(id("main")).accept_certificate(fingerprint(&expired.der), id("pi"));
-    let _pi = server
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("pi"),
-            identity: Arc::new(pi),
-            protocol: PROTOCOL.into(),
-            deliver: deliver(sender.clone()),
-        })
-        .unwrap();
-    let mac = StaticIdentity::new(id("main")).accept_token(SECRET, id("mac"));
-    let _mac = server
-        .register(Registration {
-            listener: "public".into(),
-            peer: id("mac"),
-            identity: Arc::new(mac),
-            protocol: PROTOCOL.into(),
-            deliver: deliver(sender),
-        })
-        .unwrap();
+    let (_pi, from_pi) = server.register(Proof::Certificate(fingerprint(&expired.der)));
+    let (_mac, from_mac) = server.register(Proof::Token(SECRET.into()));
 
     let certificate = Credential::ClientCertificate {
         chain_pem: expired.chain_pem.clone().into_bytes(),
@@ -540,7 +527,11 @@ async fn wss_refuses_an_expired_client_certificate() {
     assert!(reason.contains("CertificateExpired"), "{reason}");
 
     let _dialed = client.dial(&address, SECRET).await.unwrap();
-    recv_within("the accepted connection", &delivered);
+    recv_within("the accepted connection", &from_mac);
+    assert!(
+        from_pi.try_recv().is_err(),
+        "the expired certificate got through"
+    );
 }
 
 /// Writes the certificates the Python WebSocket tests serve
@@ -569,12 +560,17 @@ fn regenerate_python_tls_fixtures() {
     }
 }
 
+/// Lets nothing through.
+fn nobody() -> websocket::Admit {
+    Arc::new(|_: Upgrade<'_>| Err(Refused::Forbidden("not accepted here".into())))
+}
+
 /// The rules a listener's configuration must keep, checked when it
 /// starts listening.
 /// guarantee: host/listen-tls
 #[test]
 fn listeners_off_loopback_need_tls() {
-    let admit = || websocket::admit_registered(Registrations::new(), "public");
+    let admit = || nobody();
     let open = ListenerConfig::new("public", "0.0.0.0:0".parse().unwrap());
     let error = websocket::listen(&open, &Limits::default(), admit())
         .err()
@@ -641,7 +637,7 @@ fn a_bad_ca_or_a_taken_port_fails_without_panicking() {
     let error = websocket::listen(
         &ListenerConfig::new("public", address),
         &Limits::default(),
-        websocket::admit_registered(Registrations::new(), "public"),
+        nobody(),
     )
     .err()
     .unwrap();

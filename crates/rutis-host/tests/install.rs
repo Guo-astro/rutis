@@ -202,7 +202,7 @@ async fn add_writes_the_file_back_in_its_own_order() {
          version: \"1.2.0\"\n  \
          inject: [\"notes\"]\n  \
          provides: {}\n  \
-         notes: add a row that provides it, or import it from a peer (import: [\"notes\"])\n\
+         notes: add a row that provides it\n\
          rutis.json: added row wordcount-2, runtimes.node\n"
     );
     assert_eq!(ran.status, 0);

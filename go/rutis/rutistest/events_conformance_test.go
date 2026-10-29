@@ -683,12 +683,7 @@ func (r *eventRun) step(i int, raw json.RawMessage) {
 
 // knownFailing are the cases a product bug fails here, and why: skipped,
 // and counted so that the tool still runs as many as the file says.
-var knownFailing = map[string]string{
-	// The emitter rows are rows of the test process's runtime, which the
-	// test calls within the process: a function inside an argument of
-	// such a call does not reach a parameter of type any.
-	"values/function-argument": "a function in an argument of a call within the process",
-}
+var knownFailing = map[string]string{}
 
 func TestRutistestMeetsTheEventExpectations(t *testing.T) {
 	data, err := os.ReadFile(filepath.FromSlash(eventExpectations))

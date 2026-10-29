@@ -7,7 +7,7 @@ Data-driven plugin management for [rutis](https://github.com/arcships/rutis): wh
 - Volatile config fields change without a restart; a plugin can unload itself.
 - An `instanced` group runs once per instance the application creates (`create_instance(&ctx, "session")`, `remove_instance`); edits reach every instance, and plugins registered with `Builtins::register_with` are built for each copy from where it runs (`Build::instance`).
 
-The root holds what assembling a loader takes (`LoaderPlugin`, `LoaderOptions`, `Loader`, `Layer`, `Patch`, `Builtins`, `Chain`, `Resolver`, `ServiceCatalog`, `LoaderError`, `RowEvent`); the rest is grouped in modules: `report` (what the loader's methods return), `edit` (imperative edits and persistence), `resolve` (writing a resolver), `runtime` (plugins of other languages) and `peer` (rows on linked nodes).
+The root holds what assembling a loader takes (`LoaderPlugin`, `LoaderOptions`, `Loader`, `Layer`, `Patch`, `Builtins`, `Chain`, `Resolver`, `ServiceCatalog`, `LoaderError`, `RowEvent`); the rest is grouped in modules: `report` (what the loader's methods return), `edit` (imperative edits and persistence), `resolve` (writing a resolver) and `runtime` (plugins of other languages, and rows on a connection's far end).
 
 Plugin sources (`Resolver`):
 
@@ -17,7 +17,6 @@ Plugin sources (`Resolver`):
 | `runtime::SessionResolver::new` | `<runtime>:<plugin>`, the plugin run on the far end of that row's session (a local runtime started by rutis-host's `connect::SpawnPlugin`, or a remote one): `py:<module>` for Python; for a Node runtime of its own (one process per plugin), `<runtime>:<npm name or file>` | `node`, `python` or `bun` |
 | `runtime::SessionResolver::npm` | also npm package, subpath or file, on the Node runtime's row | `node` |
 | `runtime::binary::BinaryResolver` | `go:<plugin>`, `swift:<plugin>`: one runtime per compiled binary | `go`, `swift` |
-| `peer::PeerResolver`, `peer::register_peer_node` | `peer:<node>/<plugin>`, `rutis-bridge/peer` | `peer` |
 | `rutis_dylib::DylibResolver` | `dylib:<dir>` | rutis-dylib's `loader` |
 
 ```rust

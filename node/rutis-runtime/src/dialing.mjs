@@ -1,6 +1,6 @@
 // Dialing out to a rutis access point, and dialing again: the rules every
 // runtime follows (docs/design-remote-runtime-dial-2026-10-14.md §六), as
-// rutis-bridge's dialing link does (`link.rs`).
+// rutis-host's `rutis-host/dial` row does (`connect/dial.rs`).
 //
 // A failure is retryable (backoff from 0.5 s, doubling up to 30 s, reset by
 // a session that lasted 60 s), an authentication failure (again every 30 s:
@@ -14,7 +14,7 @@ export const RETRYABLE = 'retryable', AUTH_REJECTED = 'auth-rejected', INCOMPATI
 // The close code of an access point rejecting the id this side greeted with.
 export const REJECTED = 4003
 
-// Reconnection, in ms: rutis-bridge's `Retry` defaults. `jitter`: ± this
+// Reconnection, in ms: the defaults of `rutis-host/dial`. `jitter`: ± this
 // fraction of each wait, at random; `stable`: a session lasting this long
 // resets the backoff; `rejected`: the wait after an authentication
 // failure; `handshake`: how long the access point may take to greet.

@@ -1,11 +1,8 @@
-use std::io::ErrorKind;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
-use crate::channel::{Channel, Close, Closer, ConnectError};
-
-use crate::pipe::lines;
+use crate::channel::{Close, Closer};
 
 /// Shuts a Unix socket down, then lets go of its handle of it: the
 /// channel's last handle closing is what always tells the far end
@@ -27,32 +24,12 @@ impl Closer for Shut {
     }
 }
 
-pub(crate) async fn dial(path: &str) -> Result<Channel, ConnectError> {
-    let stream = tokio::net::UnixStream::connect(path)
-        .await
-        .and_then(|stream| stream.into_std())
-        .and_then(|stream| {
-            stream.set_nonblocking(false)?;
-            Ok(stream)
-        })
-        .map_err(|error| classify(path, error))?;
-    let split = || -> std::io::Result<_> { Ok((stream.try_clone()?, stream.try_clone()?)) };
-    let (reader, closer) = split().map_err(|error| classify(path, error))?;
-    Ok(lines::channel(reader, stream, Arc::new(Shut::new(closer))))
-}
-
-/// The category comes from the error kind, never from its text.
-fn classify(path: &str, error: std::io::Error) -> ConnectError {
-    let reason = format!("{path}: {error}");
-    match error.kind() {
-        ErrorKind::PermissionDenied => ConnectError::AuthRejected { reason },
-        _ => ConnectError::Retryable { reason },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::Channel;
+    use crate::pipe::lines;
+    use std::sync::Arc;
 
     fn end(stream: UnixStream) -> Channel {
         let reader = stream.try_clone().unwrap();

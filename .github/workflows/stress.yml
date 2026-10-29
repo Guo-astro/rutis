@@ -211,7 +211,7 @@ jobs:
           # events_conformance runs in events-all instead: one round of
           # it takes longer than a test binary may here.
           # shellcheck disable=SC2046 # the list splits into test names
-          build rutis-loader "--features node,python,go,bun,peer" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
+          build rutis-loader "--features node,python,go,bun" "$(bash tools/platform-tests.sh crates/rutis-loader $(yq -r '.env.PURE_TESTS_LOADER' .github/workflows/ci.yml) | sed 's/ --test events_conformance / /')"
           cut -f1,3 "$list"
           # No binaries would make every round pass without running anything.
           [ -s "$list" ] || { echo "::error::no test binaries"; exit 1; }
@@ -344,7 +344,7 @@ jobs:
         with:
           go-version: oldstable
           cache-dependency-path: go/rutis/go.mod
-      - run: cargo test -p rutis-loader --features node,python,go,bun,peer --test events_conformance --no-run
+      - run: cargo test -p rutis-loader --features node,python,go,bun --test events_conformance --no-run
       - name: Every placement
         # bash -eo pipefail: a failing run fails the step through tee.
         shell: bash
@@ -359,7 +359,7 @@ jobs:
           case "$X" in node) test=events_with_x_a_cordis_plugin;; esac
           started=$(date +%s)
           status=0
-          cargo test -p rutis-loader --features node,python,go,bun,peer --test events_conformance -- \
+          cargo test -p rutis-loader --features node,python,go,bun --test events_conformance -- \
             --exact "$test" --nocapture 2>&1 | tee "$RUNNER_TEMP/events.txt" || status=$?
           {
             echo "### events conformance, X=$X, $RUTIS_EVENTS_PLACEMENTS placements of $RUTIS_EVENTS_CASE"

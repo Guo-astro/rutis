@@ -2,19 +2,19 @@
 
 rutis 和 Cordis（Node 插件框架）有两种互通方式：
 
-- **Cordis 应用作为节点**：已有的 Cordis 应用接到 rutis 节点上，互相使用服务、共享事件，并让 rutis 在它里面运行插件。用 `@arcships/rutis-runtime/bridge`。
+- **Cordis 插件作为 rutis 的行**：Cordis 应用接 rutis：用 Node 运行时跑它的插件（`<包名>` 行），见下文。
 - **在 Rust 应用里挂载 Cordis 插件**：已发布的 Cordis 插件在真实的 Cordis 中运行，源码不改，Rust 侧拿到构建时从它的类型声明生成的 Rust 类型。用 `rutis-bridge` 的 `cordis` feature。
 
-此外，Cordis 插件本身也可以作为 rutis-loader 的行运行，`rutis.json` 的行里写包名就行（已发布的包也一样），包不用改，例如 `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`：
+Cordis 插件作为 rutis-loader 的行运行时，`rutis.json` 的行里写包名就行（已发布的包也一样），包不用改，例如 `{ "id": "storage", "name": "@deepseek-ai/dsh-storage" }`：
 
 - 同一个 Node 运行时里的 Cordis 行按 Cordis 的原生规则互相使用服务，拿到的是对象本身。
 - 一行提供的服务自动投到 rutis，别的运行时的行、别的节点和 Rust 插件按名字使用；方法取服务对象上的函数（自身和原型链上的，不含 `constructor`），都按 `async` 调用。包的 `package.json` 里写了 `rutis.provides` 时按它（例如把某些方法标成 `sync`）。
-- 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、节点导入）时，后提供的那一行失败（装载后才提供的也一样），错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
+- 同名服务已经有别的提供者（另一个运行时的行、Rust 插件、相连节点的插件）时，后提供的那一行失败（装载后才提供的也一样），错误写明双方，例如 `service storage is already provided by row prompts: row storage cannot provide it too`。
 - `rutis-host check` 不运行插件，看不到没有声明的服务：一行依赖的服务只可能由这类行提供时，写一条告警 `nothing declares <服务>; it may be provided at runtime by …`，不算失败（`check --strict` 时算）。
 
 ## 事件
 
-Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行、挂载在 Rust 应用里，还是在作为节点的 Cordis 应用里，它的事件都按同一套规则到达任何语言、任何进程里的监听器（平总线、按名字），别处发出的事件也到达它的监听器。作为节点的 Cordis 应用只与对端共享 `Events` 的 `export` / `import` 列出的名字（见[下文](#cordis-应用作为节点)）。规则见 [插件 API：事件](plugin-api.md#事件)。
+Cordis 插件照常用 Cordis 自己的事件 API，它就是 rutis 的事件 API：`ctx.on`、`ctx.emit`、`ctx.parallel`、`ctx.serial`、`ctx.waterfall`、`ctx.bail`。Cordis 的监听器自动登记到宿主的逻辑总线上，所以不论 Cordis 插件作为 rutis.json 的行运行，还是挂载在 Rust 应用里，它的事件都按同一套规则到达任何语言、任何进程、任何相连节点里的监听器（平总线、按名字），别处发出的事件也到达它的监听器。规则见 [插件 API：事件](plugin-api.md#事件)。
 
 ```ts
 export function apply(ctx: Context) {
@@ -35,30 +35,6 @@ await ctx.parallel('chat/sent', out)       // 等每个监听器，不论在哪�
 - **`parallel`** 的失败总是 `AggregateError`，子错误按登记顺序（与 Cordis 相同），信息为 `<n> listeners of <name> failed`，别处监听器的失败也在其中。`emit` 的监听器出错只在它所在的一侧报告一行，不影响发出方。
 - **`internal/*`** 仍是每个运行时自己的：`internal/dispatch`、`internal/service` 只在本进程里，从不跨进程。从别处到达的事件第一次调用本进程的监听器之前，运行时对这次分发触发一次 `internal/dispatch`，方式是 rutis 的方式名（`emit`、`parallel`、`serial`、`waterfall`、`bail`），所以它的校验插件照常看得到它们。
 - **卸载**：这一行的 `ctx.signal` 被中止，正在运行的监听器被等待，然后才运行清理。
-
-## Cordis 应用作为节点
-
-```bash
-npm install @arcships/rutis-runtime
-```
-
-```js
-import { Link, Export, Import, Host, Events } from '@arcships/rutis-runtime/bridge'
-
-ctx.plugin(Link, { peer: 'main', id: 'mac', dial: 'wss://main.example.com/rutis', token: process.env.RUTIS_TOKEN })  // 或 listen: 'wss://…'
-ctx.plugin(Export, { peer: 'main', services: { calendar: { today: 'sync', later: 'async' } } })
-ctx.plugin(Import, { peer: 'main', services: ['clock'] })
-ctx.plugin(Host, { peer: 'main' })                     // 允许 main 在这里运行装着的 npm 插件
-ctx.plugin(Events, { peer: 'main', export: ['tock'], import: ['session/*'] })
-```
-
-- `Link` 维持与一个对端的连接，把它作为服务 `rutisPeer.<id>` 提供；其他功能依赖它，所以每次重连都会重新建立。
-- `Export` 把 Cordis 服务按声明的方法形状给对端；`Import` 把对端的服务注册为 Cordis 服务（本地已有同名服务时拒绝）。
-- `Host` 让对端在这里加载已安装的 npm 插件，并按行的 `isolate` / `inject` 运行；只对可信的对端打开。
-- `Events` 与对端共享事件，规则与节点之间相同（[节点之间的事件](nodes.md#节点之间的事件)）：`export` 里的名字，本应用发出的事件到达对端的监听器；`import` 里的名字，本应用的监听器收到对端发出的事件。一项是名字，或以 `*` 结尾的前缀。五种方式、过滤与全部值类型都可用；只走一跳。0.13 之前的 `out` / `in` 写了会报错。
-- 凭据也可以来自环境：`RUTIS_TOKEN`、`RUTIS_CA`、`RUTIS_CERT`、`RUTIS_KEY`。
-
-对端（rutis 节点）的配置见 [连接节点](nodes.md)。
 
 ## 在 Rust 应用里挂载 Cordis 插件
 

@@ -1,7 +1,7 @@
 {
   "about": [
     "Unified events conformance (#464): one list both the real runtimes and the SDK testing tools are checked against. Format: docs/design-events-protocol-2026-10-18.en.md §13; the cases of §13.3 come first, then the ones added to cover every rule.",
-    "Real runtimes: crates/rutis-loader/tests/events_conformance.rs (rows of one rutis host, its runtimes, and a second node). Testing tools, the cases without `tool: false`: node/rutis/test/events-conformance.test.mjs, python/rutis/tests/test_events_conformance.py, go/rutis/rutistest/events_conformance_test.go, bun/rutis-bun/test/events-conformance.test.ts, swift/rutis/Tests/RutisTests/EventsConformanceTests.swift (RutisTest), kotlin/rutis/rutis-conformance/src/test/kotlin/arcships/rutis/conformance/EventsConformanceTest.kt. The file is checked for shape by crates/rutis-bridge/tests/events_expected.rs.",
+    "Real runtimes: crates/rutis-loader/tests/events_conformance.rs (rows of one rutis host, its runtimes, and a second node). Testing tools, the cases without `tool: false` whose rows are all at the root (the tools load no row into a scope): node/rutis/test/events-conformance.test.mjs, python/rutis/tests/test_events_conformance.py, go/rutis/rutistest/events_conformance_test.go, bun/rutis-bun/test/events-conformance.test.ts, swift/rutis/Tests/RutisTests/EventsConformanceTests.swift (RutisTest), kotlin/rutis/rutis-conformance/src/test/kotlin/arcships/rutis/conformance/EventsConformanceTest.kt. The file is checked for shape by crates/rutis-bridge/tests/events_expected.rs.",
     "Languages (`only` / `except`): rust (the host's Rust plugin), node (a Cordis plugin in the Node runtime), node-leaf (a leaf plugin in the Node runtime), bun, python, go, swift, kotlin (the Kotlin SDK's jvm target). Fixtures: node/rutis-runtime/test/fixtures/conformance-events{,-e,-f}/ (Cordis) and conformance-events-leaf{,-e,-f}.mjs, bun/rutis-bun/test/fixtures/conformance-events{,-e,-f}.ts, python/rutis/tests/fixtures/conformance_events{,_e,_f}.py, go/rutis/internal/fixtures/plugins/conformance (served by go/rutis/internal/fixtures/runtime; one plugin provides every emitter undeclared, its sync method on the wire `dispatchSync`), swift/rutis/Sources/RutisFixturePlugins/ConformanceEvents.swift (served by RutisConformance; as Go), kotlin/rutis/rutis-conformance/src/main/kotlin/arcships/rutis/conformance/plugins/ConformanceEvents.kt (likewise: one plugin provides every emitter undeclared, `dispatchSync`), and the Rust plugin of crates/rutis-loader/tests/events_conformance.",
     "Scopes: each scope path is one instance of its group, created once; t2's group is `team`, not `tenant`, so that rows placed in t1 are not copied into t2 (a loader instance copies its group's rows). A listener's scope is a descriptor for filters; delivery is by name on one flat bus, as in Cordis, so every listener hears every event regardless of its scope.",
     "Additions to the format of §13.2: a listener's `fails` ({name, message}: its row's apply throws that error, after registering nothing); a listener's `inject` (service names: the row's own `inject` list, as a configuration gives it: `rutis/row-failed-gated` checks that such a row, behind a gate in a Cordis runtime, fails with its apply's error as `rutis/row-failed` does, #584); `typed: \"unit\"` (a Rust unit struct event); `observesDispatch` (a Cordis listener row that also logs `<label>:dispatch:<mode>` from its internal/dispatch for each dispatch of the case's name); the filter `{\"throws\": {name, message}}` (the predicate throws); the step `{\"update\": label}` (the row's config changes, so it registers again); and `expect` on a `load` step. Rust events cross by serde without a declaration, so there is no NoWire case.",
@@ -12,7 +12,7 @@
   "languages": ["rust", "node", "node-leaf", "bun", "python", "go", "swift", "kotlin"],
   "scopes": {"t1": "tenant", "t1/s1": "session", "t2": "team"},
   "locations": ["X", "Y", "host", "node"],
-  "toolCases": {"node-leaf": 54, "bun": 54, "python": 55, "go": 51, "swift": 51, "kotlin": 52},
+  "toolCases": {"node-leaf": 47, "bun": 47, "python": 48, "go": 44, "swift": 44, "kotlin": 45},
   "cases": [
     { "case": "emit/reaches-all", "rule": "5.4 emit", "name": "t/emit", "vary": ["a", "b", "c", "e"],
       "listeners": [
@@ -48,7 +48,7 @@
         {"emit": {"from": "X", "mode": "emit", "args": [4]}, "expect": {"logContains": ["d:1", "d:2", "d:3", "d:4"]}}
       ] },
 
-    { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
+    { "case": "emit/order-across-fast-path", "rule": "5.2, 5.5", "name": "t/switch", "tool": false, "except": [{"e": ["go", "swift", "kotlin"], "why": "Go, Swift and Kotlin have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
         {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
@@ -59,7 +59,7 @@
         {"emit": {"from": "X", "mode": "emit", "args": [2]}, "expect": {"log": ["a:1", "a:2"], "viaHost": false}}
       ] },
 
-    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
+    { "case": "emit/order-across-fast-path-sync-wait", "rule": "5.2, 5.5", "name": "t/switch-wait", "tool": false, "except": [{"e": ["go", "swift", "kotlin"], "why": "Go, Swift and Kotlin have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "log": "arg", "does": {"returns": null}},
         {"label": "b", "at": "Y", "log": false, "does": {"returns": null}}
@@ -399,14 +399,6 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"returns": "A", "log": ["n", "a"]}}
       ] },
 
-    { "case": "node/not-shared", "rule": "9", "name": "n/private", "tool": false,
-      "listeners": [
-        {"label": "n", "at": "node", "does": {"returns": "N"}}
-      ],
-      "steps": [
-        {"emit": {"from": "host", "mode": "serial", "args": []}, "expect": {"returns": null, "log": []}}
-      ] },
-
     { "case": "rutis/row", "rule": "8", "name": "rutis/row", "tool": false,
       "listeners": [
         {"label": "w", "at": "X", "scope": "root", "log": ["row", "state"], "does": {"returns": null}},
@@ -451,7 +443,7 @@
         {"emit": {"from": "X", "mode": "serial", "args": []}, "expect": {"throws": {"name": "ReservedEvent"}}}
       ] },
 
-    { "case": "fast-path/local-only", "rule": "5.2", "name": "t/local", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
+    { "case": "fast-path/local-only", "rule": "5.2", "name": "t/local", "tool": false, "except": [{"e": ["go", "swift", "kotlin"], "why": "Go, Swift and Kotlin have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"returns": "A"}}
       ],
@@ -832,7 +824,7 @@
         {"unload": "z", "expect": {"logContains": ["n:z,running", "n:z,stopped"]}}
       ] },
 
-    { "case": "fast-path/elsewhere-follows", "rule": "4.5, 5.2", "name": "t/elsewhere", "tool": false, "except": [{"e": ["kotlin", "go"], "why": "Kotlin and Go have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
+    { "case": "fast-path/elsewhere-follows", "rule": "4.5, 5.2", "name": "t/elsewhere", "tool": false, "except": [{"e": ["go", "swift", "kotlin"], "why": "Go, Swift and Kotlin have no fast path: the host dispatches every event (docs/design-platform-cleanup-2026-10-28.md §7.5)"}],
       "listeners": [
         {"label": "a", "at": "X", "does": {"returns": "A"}}
       ],

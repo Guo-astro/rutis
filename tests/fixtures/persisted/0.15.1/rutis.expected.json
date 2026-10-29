@@ -108,55 +108,8 @@
       ]
     },
     {
-      "id": "office",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "office",
-        "dial": "wss://office.example.com/rutis",
-        "export": [
-          "weather",
-          "order/*"
-        ],
-        "import": [
-          "stock/changed"
-        ],
-        "identity": "host"
-      }
-    },
-    {
-      "id": "branch",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "branch",
-        "listen": "public",
-        "identity": "edge"
-      }
-    },
-    {
-      "id": "gpu",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "gpu",
-        "dial": "wss://gpu.example.com/rutis",
-        "identity": "host"
-      }
-    },
-    {
       "id": "embedder",
       "name": "gpu:embedder"
-    },
-    {
-      "id": "clock",
-      "name": "peer:office/clock"
-    },
-    {
-      "id": "edge-bun",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "edge-bun",
-        "dial": "wss://edge.example.com/rutis",
-        "identity": "host"
-      }
     },
     {
       "id": "render",
@@ -205,15 +158,6 @@
           "name": "android:notify"
         }
       ]
-    },
-    {
-      "id": "tablet",
-      "name": "rutis-bridge/peer",
-      "config": {
-        "peer": "tablet",
-        "dial": "wss://tablet.local:7443/rutis",
-        "identity": "host"
-      }
     },
     {
       "id": "device",

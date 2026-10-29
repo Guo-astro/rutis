@@ -12,15 +12,16 @@
 //! (`Host::reload`, #274). Stages 1 and 2 also run with A as `rutis-host
 //! run` itself, told to read the file again with SIGUSR1 (on Windows, with
 //! `--watch-config`). Node B is `rutis-host run`, listening on loopback
-//! (WebSocket, a token), with its own `calendar` row that it exports; A
-//! dials it through the harness's TCP proxy, whose connections show when
-//! A's link closes.
+//! (WebSocket, a token, a `rutis-host/listen` row), with its own
+//! `calendar` row, which A sees once connected; A dials it with a
+//! `rutis-host/dial` row through the harness's TCP proxy, whose connections
+//! show when A's connection closes.
 //!
 //! | stage | A's `calendar` | the result |
 //! | --- | --- | --- |
 //! | 1 | the Python row `py:py_calendar` | `python` |
-//! | 2 | imported from B over a link (the Python row and runtime removed) | `node B` |
-//! | 3 | the Rust row `fixture/calendar` (the link removed) | `rust` |
+//! | 2 | B's, over a connection to B (the Python row and runtime removed) | `node B` |
+//! | 3 | the Rust row `fixture/calendar` (the dial row removed) | `rust` |
 //!
 //! A probe that declares no service (it keeps running while `planner`
 //! restarts) calls `planner.plan` without pause across each switch.
@@ -83,7 +84,7 @@ export default definePlugin({
 /// Where A's `calendar` comes from.
 enum Calendar<'a> {
     Python,
-    /// Imported over a link dialing this address.
+    /// From node B, over a `rutis-host/dial` row to this address.
     Node(&'a str),
     Rust,
 }
@@ -101,8 +102,8 @@ fn a_config(s: &Scenario, calendar: Calendar, watch: &Probe) {
             json!({ "node": {} }),
             json!({
                 "id": "b",
-                "name": "rutis-bridge/peer",
-                "config": { "peer": "b", "dial": dial, "import": ["calendar"] },
+                "name": "rutis-host/dial",
+                "config": { "address": dial },
             }),
         ),
         Calendar::Rust => (
@@ -118,8 +119,8 @@ fn a_config(s: &Scenario, calendar: Calendar, watch: &Probe) {
     s.replace("rutis.json", serde_json::to_string_pretty(&config).unwrap());
 }
 
-/// Node B: `rutis-host run b.json`, listening for A with `token` on a
-/// port it picks (#455), exporting its `calendar`. Returns once its rows
+/// Node B: `rutis-host run b.json`, taking A's connection with `token`
+/// on a port it picks (#455); its `calendar` is seen at A. Returns once its rows
 /// run (its listener is bound before they load), with the address it
 /// reported.
 fn node_b(s: &Scenario, token: &str) -> (Host, std::net::SocketAddr) {
@@ -134,8 +135,8 @@ fn node_b(s: &Scenario, token: &str) -> (Host, std::net::SocketAddr) {
                 { "id": "calendar", "name": "./calendar-b.ts" },
                 {
                     "id": "a",
-                    "name": "rutis-bridge/peer",
-                    "config": { "peer": "a", "listen": "local", "export": ["calendar"] },
+                    "name": "rutis-host/listen",
+                    "config": { "listener": "local" },
                 },
             ],
         }),
@@ -335,10 +336,10 @@ fn end_a(host: A, a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 }
 
 /// The three stages, one switch at a time: Python, B's `calendar` over a
-/// link, Rust.
+/// connection, Rust.
 ///
 /// risk: G2 (a call in the switch's window hangs), G3 (the old
-/// implementation's process or link is left after the switch), G4 (a user
+/// implementation's process or connection is left after the switch), G4 (a user
 /// keeps the old implementation), G5 (the host has to restart for the
 /// switch)
 ///
@@ -346,7 +347,7 @@ fn end_a(host: A, a: &mut Host, watch: &Probe, on: &str, pid: u32) {
 /// start again once it is back: `planner` follows each switch, its row
 /// untouched), core/D22 (`planner` waits, without failing, while no
 /// `calendar` runs), bridge/call-chains-across-processes (`planner`'s
-/// chain crosses the link to B's runtime, #325)
+/// chain crosses the connection to B's runtime, #325)
 /// guarantee: loader/services-by-name
 #[test]
 fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
@@ -358,8 +359,8 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     let (mut a, before) = stage_1(&s, A::Fixture, &watch, &token);
     let pid = a.pid();
 
-    // 2. One edit: the Python row and runtime out, a link to B importing
-    //    its `calendar` in. Results come from B; A's Python runtime has
+    // 2. One edit: the Python row and runtime out, a dial row to B in,
+    //    and with it B's `calendar`. Results come from B; A's Python runtime has
     //    exited (G3); the Node runtime is the same process.
     let (mut b, address) = node_b(&s, &token);
     let proxy = s.proxy(address);
@@ -369,7 +370,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     b.expect("calendar on B: today");
     python_gone(&s, &a, &before);
 
-    // 3. One edit: the link out, the Rust `calendar` in. Results come from
+    // 3. One edit: the dial row out, the Rust `calendar` in. Results come from
     //    Rust; A's connection to B is closed (G3), and B runs no more
     //    calls.
     a_config(&s, Calendar::Rust, &watch);
@@ -389,7 +390,7 @@ fn an_implementation_moves_from_python_to_a_node_to_rust_while_the_host_runs() {
     assert_eq!(
         b.count("calendar on B: today"),
         ran_on_b,
-        "B ran calls after A's link to it was removed"
+        "B ran calls after A's dial row to it was removed"
     );
     s.finish();
 }
@@ -422,7 +423,7 @@ fn an_implementation_moves_from_python_to_rust_while_the_host_runs() {
 
 /// Stages 1 and 2 with A as `rutis-host run`: one edit and SIGUSR1 (on
 /// Windows, the watched file) move `calendar` from the Python row to B's,
-/// over a link the reload adds, with the token the environment has for B.
+/// over a dial row the reload adds, with the token the environment has for B.
 ///
 /// risk: G2 (a call in the switch's window hangs), G3 (the Python runtime
 /// is left after the switch), G4 (a user keeps the old implementation), G5

@@ -13,7 +13,7 @@ use rutis::internal::CtxInternal;
 use rutis::Ctx;
 use rutis_bridge::session::{call_service, host_key, HostDispatch, Reply, Value as RpcValue};
 use rutis_bridge::{
-    catalog_key, Channel, Described, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
+    catalog_key, Channel, Installed, LocalId, PeerId, PluginCatalog, Session, StaticCatalog,
 };
 use rutis_loader::edit::{Editable, Version};
 use rutis_loader::report::{EntryStatus, Unavailable};
@@ -80,7 +80,7 @@ impl PluginFactory<Value> for ContactsFactory {
 fn office() -> Ctx {
     let office = kernel("office");
     let catalog: Arc<dyn PluginCatalog> =
-        Arc::new(StaticCatalog::new().with("contacts", Described::default(), ContactsFactory));
+        Arc::new(StaticCatalog::new().with("contacts", Installed::new(ContactsFactory)));
     office.provide_at(catalog_key(), catalog).unwrap();
     office
 }

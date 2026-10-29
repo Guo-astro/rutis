@@ -818,7 +818,7 @@ fn listen(s: &Scenario, venv: &Path) {
             "rows": [
                 {
                     "id": "gpu",
-                    "name": "rutis-bridge/peer",
+                    "name": "rutis-host/dial",
                     "config": { "address": url },
                 },
                 { "id": "greeter", "name": "gpu:greeter" },

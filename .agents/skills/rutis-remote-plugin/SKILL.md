@@ -20,8 +20,8 @@ Keep one sentence in mind: **rutis has no such thing as a "remote plugin" — on
 | What the other side is | Use | Row on the rutis side |
 | --- | --- | --- |
 | A language runtime on another machine; **this rutis** loads, configures, starts and stops its plugins | Remote runtime: a `rutis-host/dial` row (the runtime listens) | `<connection row>:<plugin>` |
-| Another full rutis host that manages its own plugins and only shares services and events | Node link (`export` / `import`) | No new row; imported services are available by name |
-| Another full rutis host on which this side wants to run rows it writes | Node link (`host: true` there, `rows: true` here) | `peer:<peer>/<plugin>` |
+| Another full rutis host that manages its own plugins and only shares services and events | Node: a `rutis-host/dial` row on one side, a `rutis-host/listen` row on the other | No new row; its services are seen here by name, and this side's there |
+| Another full rutis host on which this side wants to run rows it writes | Node, as above | `<connection row>:<plugin>` |
 | A phone or desktop app offering its own capabilities as plugins | App hosting (Swift and Kotlin apps): a `rutis-host/listen` row (the app dials in) or `rutis-host/dial` (the app listens) | None: the app installs its own plugins, which register as `<app id>:<plugin>` |
 
 When unsure, ask one question: **who decides whether the plugin is loaded and with what configuration?** This rutis → remote runtime. The other side → app hosting (the app configures its plugins in `RutisApp`) or node link.
@@ -49,7 +49,7 @@ Details in `references/plugin-api.md`. The essentials:
 - The plugin does **not** decide when it runs, does not reconnect, does not probe whether the other side is up: it is applied when all its services are ready, stops when any is withdrawn, and starts again when it returns. A remote disconnect is, to the plugin, an ordinary stop.
 - Values follow the cross-process rules: JSON-compatible data is copied; dates and times, binary data, maps, sets, big integers, decimals and UUIDs are copied and arrive as each language's own types (integers beyond ±(2^53−1) cross as big integers automatically); functions and objects go by reference; nesting at most 64 levels. Never assume the same process.
 - Do not hold locks while calling other services: your service may be called again in the middle of your own synchronous call. Prefer `async` methods for calls that cross runtimes and may cross each other.
-- Events are **one logical bus** across processes, languages and machines: `ctx.on` registers with the host by itself, and an event reaches every listener in the emitter's scope or above it, wherever that listener runs, with the same result as in one process. Nothing to declare for a remote runtime or app; between nodes, list the event names (or `prefix/*`) in the link's `export` on the emitting side and `import` on the listening side (one hop). `emit` never waits and a failing listener is only reported; use `parallel` to wait, `serial` / `waterfall` / `bail` for results. When the far end goes away its listeners leave the bus and calls in flight fail once (`BindingError`). Runtimes and nodes older than 0.19 cannot join a current host (refused by protocol version); upgrade every end together.
+- Events are **one logical bus** across processes, languages and machines: `ctx.on` registers with the host by itself, and an event reaches every listener in the emitter's scope or above it, wherever that listener runs, with the same result as in one process. Nothing to declare for a remote runtime, an app or a node: a far node's listeners are entries of this bus too. `emit` never waits and a failing listener is only reported; use `parallel` to wait, `serial` / `waterfall` / `bail` for results. When the far end goes away its listeners leave the bus and calls in flight fail once (`BindingError`). Runtimes and nodes older than 0.19 cannot join a current host (refused by protocol version); upgrade every end together.
 - Dependency declarations contain only service names, never languages, machines or addresses.
 
 ## 4. Deploy a remote runtime (listening, as of today)
@@ -103,7 +103,7 @@ RUTIS_TOKEN=… RUTIS_CA=ca.pem \
 
 - `--id` is the id this connection gives in its handshake (`[a-z0-9-]+`, unique per process: two processes with one id keep replacing each other); what it provides registers as `<id>:<plugin>`; `--peer` is the rutis `id`. `RUTIS_CA` is needed only for a self-signed certificate on the rutis side.
 - It reconnects by itself: backoff 0.5 s doubling to 30 s; a refused token (401 / 403, or 4003 from the handshake's check) every 30 s; an incompatible protocol stops it (exit status 1). Each disconnect unloads its rows; each reconnection is a new session. SIGTERM / Ctrl-C stops it for good. It reports on stderr: `rutis: connected to …`, `rutis: connection lost (…); retrying in …`, `rutis: refused: auth-rejected (…)`, `rutis: refused: incompatible (…); stopping`.
-- The rutis side: a `listen` entry and one `rutis-host/listen` row naming it; no link row. The token is `RUTIS_TOKEN_<ROW ID>` there (`RUTIS_TOKEN_WORKER` below):
+- The rutis side: a `listen` entry and one `rutis-host/listen` row naming it. The token is `RUTIS_TOKEN_<ROW ID>` there (`RUTIS_TOKEN_WORKER` below):
 
   ```json
   {

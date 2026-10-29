@@ -141,14 +141,15 @@ struct PluginValueTests {
         let (scope, definition) = try XCTUnwrap(parts.all.first)
         XCTAssertEqual(scope, "session")
         XCTAssertTrue(definition === made.value)
+        // One copy at a time: both provide `tag`.
         let one = try await RutisTest.load(definition, config: ["depth": 1])
-        let two = try await RutisTest.load(definition, config: ["depth": 2])
         let first = try await one.service("tag").call("text", as: String.self)
+        await one.close()
+        let two = try await RutisTest.load(definition, config: ["depth": 2])
         let second = try await two.service("tag").call("text", as: String.self)
+        await two.close()
         XCTAssertEqual(first, "1 \(prepared)")
         XCTAssertEqual(second, "2 \(prepared)")
-        await one.close()
-        await two.close()
     }
 
     /// A test double hands a definition back: the plugin gets the same

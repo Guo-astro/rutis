@@ -663,7 +663,8 @@ mod tests {
         let address = format!("ws://{}/rutis", listener.local_addr());
         let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
         let dial = |token: Option<&str>| {
-            let credential = token.map(|token| rutis_bridge::Credential::Bearer(token.into()));
+            let credential =
+                token.map(|token| rutis_bridge::websocket::Credential::Bearer(token.into()));
             let (address, protocol) = (address.clone(), protocol.clone());
             async move {
                 rutis_bridge::websocket::dial(

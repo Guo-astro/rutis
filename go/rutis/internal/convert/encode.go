@@ -113,6 +113,9 @@ func toPeer(v any, levels, hops int) (any, error) {
 		if x == nil {
 			return nil, nil
 		}
+		if x.local != nil {
+			return x.local, nil
+		}
 		return x.remote, nil
 	case context.Context:
 		return nil, errors.New("a context.Context cannot cross between processes")
