@@ -31,7 +31,7 @@ const GREETING: Duration = Duration::from_secs(30);
 
 /// One local runtime: what starts its process, and its state.
 pub struct SpawnPlugin {
-    name: String,
+    row: String,
     label: String,
     launcher: Launcher,
     anchor: PathBuf,
@@ -51,7 +51,7 @@ impl SpawnPlugin {
         let anchor = anchor.into();
         let processes = Processes::default();
         Self {
-            name: name.to_owned(),
+            row: name.to_owned(),
             label: format!("runtime {name}"),
             states: RuntimeStates::new(name, anchor.clone()).processes(processes.clone()),
             launcher,
@@ -139,11 +139,11 @@ impl DynPlugin for SpawnPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, Error>> {
         Box::pin(async move {
             // The session below provides its handle under this row's id.
-            ctx.mark_row(&self.name)?;
+            ctx.mark_row(&self.row)?;
             self.states.announce(ctx);
             self.states.starting();
             let id =
-                PeerId::new(self.name.clone()).map_err(|error| self.failed(error.to_string()))?;
+                PeerId::new(self.row.clone()).map_err(|error| self.failed(error.to_string()))?;
             let started = tokio::select! {
                 started = self.launcher.start(&id, &self.anchor, &self.processes) => started,
                 () = ctx.cancelled() => {
@@ -190,9 +190,9 @@ impl DynPlugin for SpawnPlugin {
                 }
             }
             let process = ctx
-                .get_at(&session_key(&self.name))
+                .get_at(&session_key(&self.row))
                 .and_then(|handle| handle.process())
-                .ok_or_else(|| self.failed(format!("the {} runtime runs no plugins", self.name)))?;
+                .ok_or_else(|| self.failed(format!("the {} runtime runs no plugins", self.row)))?;
             self.states.ready(process.clone());
             // The process ending on its own unloads the session: the runtime
             // is down, and says how it ended. Unloading this plugin is no

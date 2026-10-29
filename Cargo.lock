@@ -3382,6 +3382,7 @@ dependencies = [
  "rutis-loader",
  "rutis-test-support",
  "rutis-types",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

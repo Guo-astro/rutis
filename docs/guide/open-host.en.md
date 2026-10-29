@@ -21,6 +21,7 @@ edition = "2021"
 rutis = "0.19"
 rutis-loader = { version = "0.19", features = ["node", "python"] }
 rutis-bridge = { version = "0.19", features = ["python"] }
+rutis-host = "0.19"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -36,9 +37,10 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, CtxHost};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_bridge::{session, LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -119,27 +121,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::current_dir()?;               // absolute paths: each runtime's process starts in a directory of its own
 
     let root = Ctx::root()?;
+    root.provide(LocalId(PeerId::new("main")?))?;    // the id jot greets its runtimes with
     root.provide(Notes { file: dir.join("notes.txt") })?;
     let commands = Commands::default();
     root.provide(commands.clone())?;
 
     let catalog = ServiceCatalog::new();
-    let node = LocalRuntime::node(dir.join("node_modules/@arcships/rutis-runtime"), dir.join("package.json"));
-    let python = LocalRuntime::python(dir.join("commands")).interpreter(dir.join(".venv/bin/python"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    let node = SpawnPlugin::new("node", Launcher::node(&dir.join("node_modules/@arcships/rutis-runtime")), dir.join("package.json"));
+    let python = SpawnPlugin::new("py", Launcher::python(&dir.join("commands")), dir.join("commands"))
+        .interpreter(dir.join(".venv/bin/python"));
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node")); // py:<module> on py; files and npm names on node
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let runtimes = [node.handle(), python.handle()];
     root.plugin(node);
     root.plugin(python);
 
     let loader = LoaderPlugin::new(
-        Chain::new().with_shared(node_rows.clone()).with_shared(python_rows.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions { catalog, ..LoaderOptions::default() },
     );
     let handle = loader.handle();
+    sessions.attach(&handle);
     root.plugin(loader).await?;
-    root.plugin(RuntimeRowsPlugin::new(node_rows));
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
+    sessions.follow_row("node");
+    sessions.follow_row("py");
 
     for runtime in &runtimes {
         runtime.ready().await;
@@ -248,13 +254,14 @@ added: BUY MILK
 | --- | --- | --- |
 | `Ctx::root()` | The root of the plugin tree, on the current tokio runtime | The host's own services (`notes`, `commands`) are provided at the root, where every row sees them |
 | `root.provide(…)` | Provides a service; a type marked `#[rutis::service]` is also provided by name (section 2) | No list of services to keep |
-| `LocalRuntime::node` / `::python` | A language runtime on this machine, one process per runtime; `root.plugin(runtime)` starts it, unloading ends it | It is a plugin, so it ends with the root; its rows wait for it |
-| `RuntimeResolver` | Resolves row names to plugins in the runtime: `node` takes npm names and files, `modules` takes `<runtime name>:<module>` (here `py:shout`) | One resolver per runtime |
+| `LocalId` | The id jot greets its runtimes with | A session fails without it: `the host provides no id for its sessions` |
+| `SpawnPlugin::new(name, launcher, anchor)` | A language runtime on this machine, one process per runtime (rutis-host's `rutis-host/spawn`): `Launcher::node` / `::python` say how its process starts, `anchor` is where its plugins resolve from; `root.plugin(runtime)` starts the process and opens a session on its channel, unloading ends it | It is a plugin, so it ends with the root; its rows wait for it |
+| `SessionResolver` | Resolves row names to plugins on the far end of a session, a local runtime's or a remote one's: `<runtime name>:<plugin>` (here `py:shout`); made with `npm(&catalog, "node")`, also npm names and files, on the runtime `node`; `runtime(handle)` makes `Loader::status()` list the runtime | One resolver for every runtime, last in the `Chain` |
 | `ServiceCatalog` | Service names to keys, one shared by the loader and the resolvers | The services rows wait for by name meet the services the host provides by type |
 | `Chain` | Asks its resolvers in order; the first that knows a row name resolves it | Rows of several languages in one configuration |
-| `with_shared` | Puts a resolver something else holds too into the `Chain` | The same `RuntimeResolver` also goes to `RuntimeRowsPlugin` |
+| `with_shared` | Puts a resolver something else holds too into the `Chain` | jot keeps the same `SessionResolver` for `attach` and `follow_row` |
 | `LoaderPlugin` / `handle()` | Loads plugins from rows; `handle()` is the `Loader` you work with afterwards | Take the `handle` before handing the plugin to the root |
-| `RuntimeRowsPlugin` | Once a runtime (re)starts, resolves its rows again, so they run with what their plugins declare now | Mounted after the runtime and the loader |
+| `attach` / `follow_row` | `attach(&handle)` gives the resolver the loader whose rows it resolves; `follow_row("py")` releases that runtime's rows as soon as it runs. After a runtime restarts, its rows are resolved again by themselves, so they run with what their plugins declare now | `attach` before the loader is mounted, `follow_row` after |
 | `Layer`, `Patch` | Where rows come from: layers, later ones overriding earlier ones; a layer is `Patch`es (`insert` adds rows, or one changes fields by `id`) | The host's own rows and the rows the user adds each in a layer (section 4) |
 | `root.shutdown()` | Unloads every plugin and waits for each cleanup; the runtime processes end with them | No limit: `shutdown_with_timeout` for one ([default output](rust-host.en.md#default-output)) |
 
@@ -308,8 +315,8 @@ The row `starting` is the `apply` that has not returned; when it is calling a ro
 ### Paths and environment
 
 - Each runtime's process starts in a directory of its own (Python: its project directory, here `commands/`; Node: the runtime's package directory) and takes the paths it is given as they are: write absolute paths, since a relative one counts from that directory.
-- `LocalRuntime::python(dir)` imports plugin modules from that directory; choose the interpreter with `.interpreter(…)` (its environment needs `rutis` installed); `.python_path(dir)` puts modules that are not installed, or a source checkout of rutis, ahead on `PYTHONPATH`.
-- `LocalRuntime::env(name, value)` adds an environment variable to the runtime's process; to start the runtime's process yourself, build a `rutis_bridge::runtime::Launcher` (`env`, `cwd`, `arg`) and give it to `LocalRuntime::launcher(name, launcher, anchor)`.
+- `Launcher::python(dir)` imports plugin modules from that directory; choose the interpreter with `SpawnPlugin::interpreter(…)` (its environment needs `rutis` installed); `.python_path(dir)` puts modules that are not installed, or a source checkout of rutis, ahead on `PYTHONPATH`.
+- `SpawnPlugin::env(name, value)` adds an environment variable to the runtime's process; to start the process another way, build a `rutis_bridge::runtime::Launcher` yourself (`new`, `arg`, `env`, `cwd`) and give it to `SpawnPlugin::new(name, launcher, anchor)`. The process gets `--id <name>` and `anchor` as its last arguments.
 - When row names are not files, npm names or `<runtime name>:<module>` (jot letting the user write `wordcount`, say), implement `rutis_loader::Resolver`: resolve the names it knows and return `LoaderError::NotFound` for the others, so the `Chain` asks the next; the types it uses are in `rutis_loader::resolve`. Rust plugins compiled into the host go in `Builtins` ([Mount Rust plugins](rust-host.en.md#mount-rust-plugins)).
 
 ## 2. Define the plugin surface
@@ -405,7 +412,7 @@ Third-party plugins are not yours: one may crash or hang. What rutis gives you i
 
 ### A process per plugin
 
-Plugins in one runtime share its process: one that crashes or hangs stops the others with it. Give each third-party plugin a runtime of its own (`named`), with `RuntimeResolver::modules` for its rows, named `<runtime name>:<npm name or file>`:
+Plugins in one runtime share its process: one that crashes or hangs stops the others with it. Give each third-party plugin a runtime of its own, a `SpawnPlugin` under its own name; its rows are named `<runtime name>:<npm name or file>`, and `SessionResolver` resolves them:
 
 ```rust,no_run
 # use std::sync::Arc;
@@ -413,30 +420,33 @@ Plugins in one runtime share its process: one that crashes or hangs stops the ot
 # #[tokio::main]
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let root = rutis::Ctx::root()?;
+# root.provide(rutis_bridge::LocalId(rutis_bridge::PeerId::new("main")?))?;
 # let app = std::env::current_dir()?.join("app");
 # struct Command { id: String, dir: std::path::PathBuf }
 # let commands: Vec<Command> = Vec::new();
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin, ServiceCatalog};
 
 let catalog = ServiceCatalog::new();
 let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
-let mut chain = Chain::new();
-let mut resolvers = Vec::new();
+let sessions = Arc::new(SessionResolver::new(&catalog));  // rows <runtime name>:<plugin>, for every runtime
 let mut fibers = Vec::new();
 for command in &commands {                                // a process per third-party command
-    let runtime = LocalRuntime::node(&runtime_package, command.dir.join("package.json"))
-        .named(&command.id);                              // runtime name: two or more of a-z, 0-9, -
-    let rows = Arc::new(RuntimeResolver::modules(runtime.handle()).with_catalog(&catalog));
+    let runtime = SpawnPlugin::new(
+        &command.id,                                      // runtime name: two or more of a-z, 0-9, -
+        Launcher::node(&runtime_package),
+        command.dir.join("package.json"),
+    );
+    sessions.runtime(runtime.handle());
     fibers.push(root.plugin(runtime));
-    chain = chain.with_shared(rows.clone());
-    resolvers.push(rows);
 }
-let loader = LoaderPlugin::new(chain, LoaderOptions { catalog, ..LoaderOptions::default() });
+let loader = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), LoaderOptions { catalog, ..LoaderOptions::default() });
+sessions.attach(&loader.handle());
 root.plugin(loader).await?;
-for rows in resolvers {
-    root.plugin(RuntimeRowsPlugin::new(rows));
+for command in &commands {
+    sessions.follow_row(&command.id);
 }
 // a row: { "id": "wordcount", "name": "wordcount:jot-wordcount" }
 # Ok(())
@@ -444,19 +454,19 @@ for rows in resolvers {
 ```
 
 - Several plugins share a process when their rows have the same prefix.
-- `RuntimeResolver::node` is unchanged, still the default Node runtime's (rows without a prefix); it does not take a row name with a runtime prefix, so it takes no other runtime's rows.
-- `modules` asks the runtime at every resolution rather than caching by the package's `version`.
+- Made with `SessionResolver::npm(&catalog, "node")`, the resolver also puts the rows without a prefix on the default Node runtime `node`; a row with another runtime's prefix stays that runtime's.
+- The runtime is asked at every resolution; nothing is cached by the package's `version`.
 
 ### Greeting limit
 
-A local runtime's process that has not greeted within 30 s of starting is ended. When a debugger stops it at its first line (`--inspect-brk`), lift the limit with `greeting(Duration::MAX)`:
+A local runtime's process that has not greeted within 30 s of starting is ended: the runtime is down (`the runtime did not greet within 30s`), and its rows wait for it. When a debugger stops the process at its first line (`--inspect-brk`), lift the limit with `SpawnPlugin::greeting(Duration::MAX)`:
 
 ```rust,no_run
 # use std::time::Duration;
-# use rutis_bridge::runtime::LocalRuntime;
+# use rutis_bridge::runtime::Launcher;
+# use rutis_host::connect::SpawnPlugin;
 # let app = std::path::PathBuf::from("/srv/app");
-let runtime = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .named("wordcount")
+let runtime = SpawnPlugin::new("wordcount", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"))
     .env("NODE_OPTIONS", "--inspect-brk")
     .greeting(Duration::MAX);
 ```
@@ -474,7 +484,7 @@ On Windows a process has an id here only once it has connected to the host, so t
 
 ### What is not a limit
 
-- rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `LocalRuntime::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
+- rutis does not limit calls: the caller limits its own (Rust's `tokio::time::timeout`, Python's `asyncio.wait_for` and so on). For a plugin stuck in synchronous code that a cancellation cannot stop, end its process with `kill()` on `SpawnPlugin::processes()`, then call `restart()` on the fiber `root.plugin(runtime)` returned: a new process, its rows loaded again.
 - rutis does not decide which services a plugin may use: which services go to which plugin is your business, yours to hand out.
 - Services are shared by name; that is not a permission.
 - Plugins in one process can reach each other through the language itself (globals, the module cache); to keep plugins apart, put them in different runtimes.
@@ -490,7 +500,7 @@ A host embedding rutis installs a plugin's package with the package manager itse
 
 | Plugin | Where it goes (jot) | The row's `name` |
 | --- | --- | --- |
-| npm package | `npm install <package>`, into jot's `node_modules` (the directory of `LocalRuntime::node`'s `package.json`) | The package name |
+| npm package | `npm install <package>`, into jot's `node_modules` (the directory of the `package.json` the `node` runtime's `SpawnPlugin` has as `anchor`) | The package name |
 | PyPI package | `.venv/bin/pip install <package>`, into the environment of `.interpreter(…)` | `py:<entry point or module>` |
 | A single file | Nothing to install | Its absolute path (Node), `py:<module>` (in the Python project directory) |
 
@@ -781,19 +791,15 @@ $ npx rutis-host call commands.run '"count"'
 
 ### The development loop
 
-When the host itself should take a plugin's new code without restarting (jot growing a `--watch`), have the resolvers forget what they resolved, then reload the row:
+When the host itself should take a plugin's new code without restarting (jot growing a `--watch`), reload the row. The runtime is asked again at every resolution, so there is nothing to forget first:
 
 ```rust,no_run
-# use std::sync::Arc;
-# use rutis_loader::runtime::RuntimeResolver;
 # use rutis_loader::Loader;
-# async fn demo(handle: Loader, node_rows: Arc<RuntimeResolver>, python_rows: Arc<RuntimeResolver>) {
+# async fn demo(handle: Loader) {
 use rutis::host::FiberState;
 use rutis_loader::report::{cannot_reload, EntryStatus};
 
 let id = "count";                                     // the row whose file changed
-node_rows.invalidate_all();
-python_rows.invalidate_all();
 match handle.reload(id).await {
     Ok(_) => eprintln!("{id}: reloaded"),
     Err(error) => {

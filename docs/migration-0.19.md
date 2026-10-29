@@ -91,7 +91,7 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
 ### Rust 嵌入
 
 - `rutis_host::control::serve` 在 `Loader` 之后多了一个参数 `Report`（一个返回状态文字的函数，`status` 用它回答）；用 `Host::status_report()` 得到它。
-- rutis 的 Rust API 不变。rutis-bridge 与 rutis-loader 的连接与会话部分改了（#695，[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三、§八）：
+- rutis 的 Rust API 不变。rutis-bridge 与 rutis-loader 的连接与会话部分改了，本机的语言运行时也和远程的一样，成了一个会话的对面（#695，[远程连接：只留一个会话插件](design-remote-session-2026-10-28.md) §三、§六、§八、§十三 S4）：
 
   | 0.18 | 0.19 |
   | --- | --- |
@@ -99,6 +99,14 @@ rutis-host: rutis.json: unknown field `remote`, expected one of …
   | `Transport`、`Dial`、`transport_key`；`LocalPlugin`、`MemoryPlugin`、`WebSocketPlugin` 与它们的 `*Transport`；`websocket::Config` | `websocket::dial`、`websocket::listen`、`pipe::spawn`、`memory::pair` 直接给出 `Channel` |
   | `LinkPlugin` + `PeerPlugin { runtime }` + `RuntimePlugin::remote`；`RuntimeSession`、`runtime_session_key`、`RuntimeAccessPlugin` | 连接插件里 `ctx.plugin(Session::new(websocket::dial(...)?))`（或 `Session::handshake(&ctx, channel).await` 后 `ctx.plugin(greeted)`），行 `<名>:<插件>` |
   | `AccessPointPlugin`、`AccessPointConfig`、`AccessEvent`、`Accept`、`Accepted`、`Release`；loader 的 `RuntimeInstances`、`AcceptInstances`、`RuntimeConnection` | `rutis-host/listen`，或自己的连接插件 |
+  | `rutis_bridge::runtime::LocalRuntime`（`node`、`python`、`go`、`swift`、`bun`、`launcher`、`named`、`env`、`interpreter`、`python_path`、`stdin` / `stdout` / `stderr`、`greeting`、`handle`、`processes`） | `rutis_host::connect::SpawnPlugin::new(名字, launcher, anchor)`，即插件 `rutis-host/spawn`（依赖 `rutis-host`）：`launcher` 是 `rutis_bridge::runtime::Launcher::node(&包)`、`::python`、`::go`、`::swift`、`::bun` 或 `Launcher::new`，`名字` 是原来 `named` 给的（默认 `node`、`py` 等）；`.interpreter`、`.python_path`、`.env`、`.stdio(stdin, stdout, stderr)`、`.greeting(时限)`、`.handle()`、`.processes()`；`output_prefix` 在 `Launcher` 上。用 `root.plugin(spawn)` 挂上；根上提供会话问候用的 id：`root.provide(rutis_bridge::LocalId(PeerId::new("main")?))` |
+  | `RuntimePlugin`（`session`、`named`、`host`、`starting`、`stopped`、`failed`、`handle`），服务 `runtime::Runtime`（`Runtime::key`、`host_methods`） | 删：运行时是一个会话的对面。它的状态由 `rutis_bridge::runtime::RuntimeStates` 保存（`new(名字, anchor)`、`starting`、`ready`、`failed`、`stopped`，`announce(ctx)` 发 `rutis/runtime` 事件），通过它的 `RuntimeHandle`（`handle()`）读取；`ended_status(&process)` 说明进程怎样结束 |
+  | `RuntimePlugin::host(名字, methods)`、`LocalRuntime::host` | 宿主服务用 `HostDispatch::methods()` 给出它的方法 |
+  | `rutis_loader::runtime::RuntimeResolver::node(handle)` / `::modules(handle)`、`with_catalog`；`invalidate`、`invalidate_all`，rutis-host 的 `Host::invalidate`；`runtime::resolve_entry` | 所有运行时共用一个 `rutis_loader::runtime::SessionResolver`，放在 chain 最后（`Chain::new().with(builtins).with_shared(sessions.clone())`）：`SessionResolver::npm(&catalog, "node")`（npm 名、子路径、`file:` URL、绝对路径也认，放在行 `node` 上）或 `SessionResolver::new(&catalog)`（行 `<行>:<插件>`，如 `py:shout`）；每个本机运行时调一次 `.runtime(handle)`（`Loader::status` 列出它，等它的行写 `waiting for runtime py (starting)`）；挂载 loader 之前 `.attach(&loader)`。Rust 不再解析 npm 名，也不再按 `package.json` 缓存：由 Node 运行时在每次解析时做；改了插件代码直接 `Loader::reload(行)` |
+  | `RuntimeRows`（`RuntimeRows::key`）、`RowsSource` | `SessionRows`、`SessionRows::key(行)` |
+  | `RuntimeRowsPlugin::new(resolver)` | loader 运行后 `SessionResolver::follow_row(名字)`；运行时重启后，它的行自己重新解析 |
+  | `BinaryLanguage::launch` 返回 `LocalRuntime`；`BinaryRuntimes::new(resolver, project)` | `launch` 返回 `Launcher`；`BinaryRuntimes::new(resolver, project, spawn)`，`spawn` 是 `rutis_loader::runtime::binary::Spawn`（`Arc<dyn Fn(&str, Launcher, &Path) -> Spawned>`，`Spawned { plugin, handle, processes }`）；rutis-host 传入的是做出 `SpawnPlugin` 的那个 |
+  | `LocalRuntime::go(binary, project)` 加 `RuntimeResolver::modules`（一个固定的二进制） | `SpawnPlugin::new(名字, Launcher::go(&binary, &project), &project)`，行 `<名字>:<插件>` 经 `SessionResolver` 解析 |
   | `Admission`、`AdmissionPlugin`、`admission_key`、`SharedToken`、`Rejection` | 连接插件自己的认证；id 来自握手 |
   | `ListenerConfig::new(名字, 地址, 本端 id)` | `ListenerConfig::new(名字, 地址)` |
   | `Closer::replaced()` / `rejected(r)` / `close(&str)` | `close(Close::Replaced)` / `close(Close::Rejected(r))` / `close(Close::Done)` |
@@ -225,7 +233,6 @@ Kotlin 另有两点：
 | `ctx.plugin_from(\|cfg\| …)` | 实现 `rutis::host::PluginFactory`，`ctx.plugin_with(factory, config)` |
 | `rutis_loader::status::RowState`（`status::Row::state` 的类型） | `rutis_loader::report::EntryStatus`：等待是 `Running` 加 `Pending` 阶段，启动中是 `Loading` 阶段；`Display` 打出的文字不变 |
 | `rutis_loader::report::RowState`（`rutis/row` 事件的取值） | 改名 `rutis_loader::report::RowEventState`，取值不变 |
-| `RuntimeResolver::invalidate`、`invalidate_all`，rutis-host 的 `Host::invalidate` | 删；Node 行名不再由 Rust 按 `package.json` 解析和缓存，每次解析都问运行时，改了插件代码直接 `Loader::reload(行)` |
 | `take_cleanup_errors()` | 清理的错误在卸载结果里（`dispose` 返回的错误） |
 | `FiberView::effects()`、`EffectMeta`、`EffectPhase` | 无替代；诊断用 `diagnostics()` |
 | `EventBus::observe_dispatch` | 无替代；要观察就注册一个普通监听器 |

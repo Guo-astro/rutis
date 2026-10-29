@@ -21,6 +21,7 @@ edition = "2021"
 rutis = "0.19"
 rutis-loader = { version = "0.19", features = ["node", "python"] }
 rutis-bridge = { version = "0.19", features = ["python"] }
+rutis-host = "0.19"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -36,9 +37,10 @@ use std::sync::{Arc, Mutex};
 
 use rutis::host::{BoxFuture, CtxHost};
 use rutis::Ctx;
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_bridge::session;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_bridge::{session, LocalId, PeerId};
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, Layer, LoaderOptions, LoaderPlugin, Patch, ServiceCatalog};
 use serde_json::{json, Value};
 
@@ -119,27 +121,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::current_dir()?;               // 绝对路径：每个运行时的进程在它自己的目录里启动
 
     let root = Ctx::root()?;
+    root.provide(LocalId(PeerId::new("main")?))?;    // jot 与运行时的会话里，jot 问候用的 id
     root.provide(Notes { file: dir.join("notes.txt") })?;
     let commands = Commands::default();
     root.provide(commands.clone())?;
 
     let catalog = ServiceCatalog::new();
-    let node = LocalRuntime::node(dir.join("node_modules/@arcships/rutis-runtime"), dir.join("package.json"));
-    let python = LocalRuntime::python(dir.join("commands")).interpreter(dir.join(".venv/bin/python"));
-    let node_rows = Arc::new(RuntimeResolver::node(node.handle()).with_catalog(&catalog));
-    let python_rows = Arc::new(RuntimeResolver::modules(python.handle()).with_catalog(&catalog));
+    let node = SpawnPlugin::new("node", Launcher::node(&dir.join("node_modules/@arcships/rutis-runtime")), dir.join("package.json"));
+    let python = SpawnPlugin::new("py", Launcher::python(&dir.join("commands")), dir.join("commands"))
+        .interpreter(dir.join(".venv/bin/python"));
+    let sessions = Arc::new(SessionResolver::npm(&catalog, "node")); // py:<模块> 在 py 上；文件、npm 名在 node 上
+    sessions.runtime(node.handle());
+    sessions.runtime(python.handle());
     let runtimes = [node.handle(), python.handle()];
     root.plugin(node);
     root.plugin(python);
 
     let loader = LoaderPlugin::new(
-        Chain::new().with_shared(node_rows.clone()).with_shared(python_rows.clone()),
+        Chain::new().with_shared(sessions.clone()),
         LoaderOptions { catalog, ..LoaderOptions::default() },
     );
     let handle = loader.handle();
+    sessions.attach(&handle);
     root.plugin(loader).await?;
-    root.plugin(RuntimeRowsPlugin::new(node_rows));
-    root.plugin(RuntimeRowsPlugin::new(python_rows));
+    sessions.follow_row("node");
+    sessions.follow_row("py");
 
     for runtime in &runtimes {
         runtime.ready().await;
@@ -248,13 +254,14 @@ added: BUY MILK
 | --- | --- | --- |
 | `Ctx::root()` | 插件树的根，用当前的 tokio 运行时 | 宿主自己的服务（`notes`、`commands`）提供在根上，所有行都看得到 |
 | `root.provide(…)` | 提供服务；类型标了 `#[rutis::service]` 时同时按名字对外（第 2 节） | 不用另写登记表 |
-| `LocalRuntime::node` / `::python` | 本机的语言运行时，一个运行时一个进程；`root.plugin(runtime)` 启动它，卸载时结束它 | 它是插件，随根关闭；它的行等它 |
-| `RuntimeResolver` | 把行名解析成运行时里的插件：`node` 认 npm 名和文件，`modules` 认 `<运行时名>:<模块>`（这里是 `py:shout`） | 一个运行时一个解析器 |
+| `LocalId` | jot 与运行时问候时用的 id | 没有它会话失败：`the host provides no id for its sessions` |
+| `SpawnPlugin::new(名字, launcher, anchor)` | 本机的语言运行时，一个运行时一个进程（即 rutis-host 的 `rutis-host/spawn`）：`Launcher::node` / `::python` 说明进程怎样启动，`anchor` 是插件从哪里解析；`root.plugin(runtime)` 启动进程、在它的通道上开一个会话，卸载时结束它 | 它是插件，随根关闭；它的行等它 |
+| `SessionResolver` | 把行名解析成会话对面的插件，本机运行时与远程的都一样：`<运行时名>:<插件>`（这里是 `py:shout`）；用 `npm(&catalog, "node")` 创建时还认 npm 名和文件，放在运行时 `node` 上；`runtime(handle)` 让 `Loader::status()` 列出这个运行时 | 所有运行时共用一个解析器，放在 `Chain` 最后 |
 | `ServiceCatalog` | 服务名到键的表，loader 与各解析器共用一份 | 行按名字等的服务和宿主按类型提供的服务对得上 |
 | `Chain` | 按顺序问它的解析器，第一个认得行名的解析它 | 几种语言的行写在同一份配置里 |
-| `with_shared` | 把一个也被别处持有的解析器放进 `Chain` | 同一个 `RuntimeResolver` 还要交给 `RuntimeRowsPlugin` |
+| `with_shared` | 把一个也被别处持有的解析器放进 `Chain` | 同一个 `SessionResolver` jot 还要用来 `attach`、`follow_row` |
 | `LoaderPlugin` / `handle()` | 按行装插件；`handle()` 是之后操作它的 `Loader` | 先拿 `handle`，再把插件交给根 |
-| `RuntimeRowsPlugin` | 运行时（重新）启动后，重新解析它的行，让行用上插件现在的声明 | 挂在运行时与 loader 之后 |
+| `attach` / `follow_row` | `attach(&handle)` 告诉解析器它为哪个 loader 解析行；`follow_row("py")` 让这个运行时一运行起来就放行它的行。运行时重启后，它的行自己重新解析，用上插件现在的声明 | `attach` 在挂载 loader 之前，`follow_row` 在之后 |
 | `Layer`、`Patch` | 行的来源：几层，后面的层覆盖前面的；一层是若干 `Patch`（`insert` 加行，或按 `id` 改字段） | 宿主自带的行、用户加的行各放一层（第 4 节） |
 | `root.shutdown()` | 卸载全部插件，等每个清理结束，运行时进程随之结束 | 不限时：要限时用 `shutdown_with_timeout`（[默认输出](rust-host.md#默认输出)） |
 
@@ -308,8 +315,8 @@ calls:
 ### 路径与环境
 
 - 每个运行时的进程在它自己的目录里启动（Python：项目目录，这里是 `commands/`；Node：运行时的包目录），收到的路径照原样使用：写绝对路径，相对路径会从那个目录算起。
-- `LocalRuntime::python(目录)` 从这个目录导入插件模块，用 `.interpreter(…)` 选解释器（环境里要装着 `rutis`）；没装的模块或 rutis 的源码目录用 `.python_path(目录)` 放到 `PYTHONPATH` 前面。
-- `LocalRuntime::env(名字, 值)` 给运行时进程加环境变量；自己启动运行时进程时用 `rutis_bridge::runtime::Launcher`（`env`、`cwd`、`arg`），交给 `LocalRuntime::launcher(名字, launcher, anchor)`。
+- `Launcher::python(目录)` 从这个目录导入插件模块，用 `SpawnPlugin::interpreter(…)` 选解释器（环境里要装着 `rutis`）；没装的模块或 rutis 的源码目录用 `.python_path(目录)` 放到 `PYTHONPATH` 前面。
+- `SpawnPlugin::env(名字, 值)` 给运行时进程加环境变量；要用别的方式启动进程，自己写一个 `rutis_bridge::runtime::Launcher`（`new`、`arg`、`env`、`cwd`），交给 `SpawnPlugin::new(名字, launcher, anchor)`。进程最后的参数是 `--id <名字>` 和 `anchor`。
 - 行名不是文件、npm 名或 `<运行时名>:<模块>` 时（比如 jot 想让用户写 `wordcount`），实现 `rutis_loader::Resolver`：认得的名字返回解析结果，不认得的返回 `LoaderError::NotFound`，`Chain` 接着问下一个；用到的类型在 `rutis_loader::resolve` 里。编进宿主的 Rust 插件用 `Builtins`（[装 Rust 插件](rust-host.md#装-rust-插件)）。
 
 ## 2. 定义插件面
@@ -405,7 +412,7 @@ export interface Commands {
 
 ### 每个插件一个进程
 
-同一个运行时里的插件共用一个进程：一个插件崩溃或卡死，其他插件跟着停下。给每个第三方插件一个自己的运行时（`named`），它的行用 `RuntimeResolver::modules`，行名写 `<运行时名>:<npm 名或文件>`：
+同一个运行时里的插件共用一个进程：一个插件崩溃或卡死，其他插件跟着停下。给每个第三方插件一个自己的运行时：一个用它自己名字的 `SpawnPlugin`；它的行名写 `<运行时名>:<npm 名或文件>`，由 `SessionResolver` 解析：
 
 ```rust,no_run
 # use std::sync::Arc;
@@ -413,30 +420,33 @@ export interface Commands {
 # #[tokio::main]
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let root = rutis::Ctx::root()?;
+# root.provide(rutis_bridge::LocalId(rutis_bridge::PeerId::new("main")?))?;
 # let app = std::env::current_dir()?.join("app");
 # struct Command { id: String, dir: std::path::PathBuf }
 # let commands: Vec<Command> = Vec::new();
-use rutis_bridge::runtime::LocalRuntime;
-use rutis_loader::runtime::{RuntimeResolver, RuntimeRowsPlugin};
+use rutis_bridge::runtime::Launcher;
+use rutis_host::connect::SpawnPlugin;
+use rutis_loader::runtime::SessionResolver;
 use rutis_loader::{Chain, LoaderOptions, LoaderPlugin, ServiceCatalog};
 
 let catalog = ServiceCatalog::new();
 let runtime_package = app.join("node_modules/@arcships/rutis-runtime");
-let mut chain = Chain::new();
-let mut resolvers = Vec::new();
+let sessions = Arc::new(SessionResolver::new(&catalog));  // 行 <运行时名>:<插件>，所有运行时的
 let mut fibers = Vec::new();
 for command in &commands {                                // 每个第三方命令一个进程
-    let runtime = LocalRuntime::node(&runtime_package, command.dir.join("package.json"))
-        .named(&command.id);                              // 运行时名：两个以上的 a-z、0-9、-
-    let rows = Arc::new(RuntimeResolver::modules(runtime.handle()).with_catalog(&catalog));
+    let runtime = SpawnPlugin::new(
+        &command.id,                                      // 运行时名：两个以上的 a-z、0-9、-
+        Launcher::node(&runtime_package),
+        command.dir.join("package.json"),
+    );
+    sessions.runtime(runtime.handle());
     fibers.push(root.plugin(runtime));
-    chain = chain.with_shared(rows.clone());
-    resolvers.push(rows);
 }
-let loader = LoaderPlugin::new(chain, LoaderOptions { catalog, ..LoaderOptions::default() });
+let loader = LoaderPlugin::new(Chain::new().with_shared(sessions.clone()), LoaderOptions { catalog, ..LoaderOptions::default() });
+sessions.attach(&loader.handle());
 root.plugin(loader).await?;
-for rows in resolvers {
-    root.plugin(RuntimeRowsPlugin::new(rows));
+for command in &commands {
+    sessions.follow_row(&command.id);
 }
 // 行：{ "id": "wordcount", "name": "wordcount:jot-wordcount" }
 # Ok(())
@@ -444,19 +454,19 @@ for rows in resolvers {
 ```
 
 - 几个插件共用一个进程：它们的行写同一个前缀。
-- `RuntimeResolver::node` 不变，仍是默认 Node 运行时（不带前缀的行）的写法；它不接受带运行时前缀的行名，不会抢走别的运行时的行。
-- `modules` 每次解析都问运行时，不按包的 `version` 缓存。
+- 用 `SessionResolver::npm(&catalog, "node")` 创建时，不带前缀的行也放在默认的 Node 运行时 `node` 上；带别的运行时前缀的行仍归那个运行时。
+- 每次解析都问运行时，不按包的 `version` 缓存。
 
 ### 问候时限
 
-本机运行时的进程启动后 30 秒内没有问候就被结束。调试器停在第一行（`--inspect-brk`）时，用 `greeting(Duration::MAX)` 不限时：
+本机运行时的进程启动后 30 秒内没有问候就被结束：运行时停下（`the runtime did not greet within 30s`），它的行等它。调试器停在第一行（`--inspect-brk`）时，用 `SpawnPlugin::greeting(Duration::MAX)` 不限时：
 
 ```rust,no_run
 # use std::time::Duration;
-# use rutis_bridge::runtime::LocalRuntime;
+# use rutis_bridge::runtime::Launcher;
+# use rutis_host::connect::SpawnPlugin;
 # let app = std::path::PathBuf::from("/srv/app");
-let runtime = LocalRuntime::node(app.join("node_modules/@arcships/rutis-runtime"), app.join("package.json"))
-    .named("wordcount")
+let runtime = SpawnPlugin::new("wordcount", Launcher::node(&app.join("node_modules/@arcships/rutis-runtime")), app.join("package.json"))
     .env("NODE_OPTIONS", "--inspect-brk")
     .greeting(Duration::MAX);
 ```
@@ -474,7 +484,7 @@ Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount:
 
 ### 不是限制的东西
 
-- rutis 不给调用限时：调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）。插件卡在同步代码里、取消停不下时，用 `LocalRuntime::processes()` 的 `kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `restart()`：新的进程，它的行重新装载。
+- rutis 不给调用限时：调用方自己限时（Rust 的 `tokio::time::timeout`、Python 的 `asyncio.wait_for` 等）。插件卡在同步代码里、取消停不下时，用 `SpawnPlugin::processes()` 的 `kill()` 结束它的进程，再对 `root.plugin(runtime)` 返回的 fiber 调用 `restart()`：新的进程，它的行重新装载。
 - rutis 不管插件能用哪些服务：哪些服务给哪个插件是你的业务，由你自己分配。
 - 服务按名字共享，这不是权限。
 - 同一进程里的插件能用语言本身的办法互相拿到对方（全局变量、模块缓存）；要隔开，放进不同的运行时。
@@ -490,7 +500,7 @@ Windows 上进程连上宿主之后才有进程号，这一行只写 `wordcount:
 
 | 插件 | 装到哪里（jot） | 行的 `name` |
 | --- | --- | --- |
-| npm 包 | `npm install <包>`，装进 jot 的 `node_modules`（`LocalRuntime::node` 的 `package.json` 所在目录） | 包名 |
+| npm 包 | `npm install <包>`，装进 jot 的 `node_modules`（`node` 运行时的 `SpawnPlugin` 作为 `anchor` 的 `package.json` 所在目录） | 包名 |
 | PyPI 包 | `.venv/bin/pip install <包>`，装进 `.interpreter(…)` 的环境 | `py:<入口点或模块>` |
 | 单个文件 | 不用装 | 绝对路径（Node），`py:<模块>`（Python 项目目录里） |
 
@@ -781,19 +791,15 @@ $ npx rutis-host call commands.run '"count"'
 
 ### 开发循环
 
-宿主一侧要在不重启的情况下换上插件的新代码时（jot 想做一个 `--watch`），先让解析器忘掉已有的解析结果，再重新加载那一行：
+宿主一侧要在不重启的情况下换上插件的新代码时（jot 想做一个 `--watch`），重新加载那一行即可：每次解析都重新问运行时，没有要先忘掉的：
 
 ```rust,no_run
-# use std::sync::Arc;
-# use rutis_loader::runtime::RuntimeResolver;
 # use rutis_loader::Loader;
-# async fn demo(handle: Loader, node_rows: Arc<RuntimeResolver>, python_rows: Arc<RuntimeResolver>) {
+# async fn demo(handle: Loader) {
 use rutis::host::FiberState;
 use rutis_loader::report::{cannot_reload, EntryStatus};
 
 let id = "count";                                     // 文件变了的那一行
-node_rows.invalidate_all();
-python_rows.invalidate_all();
 match handle.reload(id).await {
     Ok(_) => eprintln!("{id}: reloaded"),
     Err(error) => {
